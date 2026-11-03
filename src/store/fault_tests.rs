@@ -269,6 +269,30 @@ fn limited_store_preserves_unknown_outcome_after_sync_error() {
 }
 
 #[test]
+fn generation_exhaustion_fails_closed_instead_of_wrapping() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let store = open_fault_store(&dir, fault).unwrap();
+    store.put(b"safe", b"value").unwrap();
+    store.inner.write().unwrap().generation = u64::MAX;
+    let error = store.put(b"uncertain", b"value").unwrap_err();
+    assert!(error.to_string().contains("uncertain"));
+    assert!(store.get(b"safe").is_err());
+    drop(store);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened.get(b"safe").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+    // The record was synchronized before the generation check failed, so the
+    // failed mutation can be recovered; its original outcome was unknown.
+    assert_eq!(
+        reopened.get(b"uncertain").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+}
+
+#[test]
 fn a_write_failure_clears_in_progress_preparation_reservations() {
     let dir = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));
