@@ -237,6 +237,15 @@ An initial [raw measurement](../benchmarks/results/2026-11-03-index-memory.json)
 
 The fixture log and checkpoint were approximately 42.6 MB and 29.2 MB for 200,000 keys. Each view lookup read and checked its whole index block. Both initial quiet checks passed; individual samples recorded VM steal, including a short sample at 12.5%. These results expose a large lookup penalty and do not establish general performance. The initial harness read `VmHWM` after dropping the object and produced peak figures below an earlier RSS sample; those peak fields are invalid and must not be used. The current harness samples RSS while each object remains open and does not claim to measure peak memory.
 
+A later [raw measurement](../benchmarks/results/2026-11-03-index-memory-smaller-blocks.json) uses 32 KiB verified blocks and prefix summaries, with the same fixture sizes and five repetitions per mode. The runs were separate, not paired on the same fixture:
+
+| Keys | Earlier view median lookup | Smaller-block view median lookup | Smaller-block view RSS at open | Writable store median lookup |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 898 µs | 29.5 µs | 1,384 KiB | 1.33 µs |
+| 200,000 | 1,135 µs | 30.6 µs | 1,420 KiB | 3.84 µs |
+
+At 200,000 keys this is roughly a 37-fold reduction for the view's sampled median, while the writable store remained faster at point lookups. The view held 893 block summaries, and RSS after its sampled lookups was 1,452 KiB. Both new quiet checks passed, no cgroup throttling or direct reclaim was recorded, and the largest VM steal sample was 1.82%. These keys differ within their first 16 bytes; longer common prefixes can require extra verified block reads. This is a warm-cache result on one VM, not a general latency, memory or competitor claim.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
