@@ -1,6 +1,6 @@
 # Benchmark plan
 
-No comparative performance results have been measured. The goal is to improve latency, throughput, scalability, and resource efficiency without weakening correctness or durability. No database can be assumed fastest at every operation or workload.
+No comparative performance results have been measured. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
 
 ## Comparators
 
@@ -14,6 +14,7 @@ Start with PostgreSQL, SQLite, and Turso Database on the same machine where thei
 - Datasets that fit in cache and datasets that exceed available memory; varied key/value sizes and project counts.
 - Warm operation, cold reopen, burst traffic, noisy neighbors, and bounded overload.
 - Corrupt/truncated files, process termination, recovery, and backup/restore correctness.
+- Deterministic fault injection and replay of synthetic or explicitly permitted, privacy-reviewed traces; check correctness as well as timing on each replay.
 - Relational transactions and document queries only when the candidate actually implements equivalent semantics. [TPC-C](https://www.tpc.org/tpcc/) is a later transactional reference; do not label a partial imitation an official TPC-C result.
 
 ## Measurement and fairness

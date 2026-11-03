@@ -1,6 +1,6 @@
 # Storage engine architecture
 
-This document describes the current prototype, not a promised final design. The product and package names are placeholders.
+This document describes the current prototype, not a promised final design. The product and package names are placeholders. See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md) for current behavior, proposed guarantees, and the rule that performance optimizations must not violate durability, isolation, or recovery guarantees.
 
 ## Boundaries
 

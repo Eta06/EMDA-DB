@@ -26,7 +26,7 @@ Exit evidence: documented guarantees and known failure boundaries, repeatable fa
 - Ordered range scans, pagination, bulk operations, conditional updates, and atomic increment.
 - Atomic batches and multi-key transactions with a specified isolation model, conflict behavior, and rollback.
 - Safe coordination between concurrent readers and writers, connection/request limits, and fair overload handling.
-- Explicit limits and storage quotas; configurable durability must make its tradeoffs clear.
+- Explicit limits and storage quotas. No performance optimization may violate the durability, isolation, or recovery guarantees in force; see the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md).
 
 Exit evidence: independent concurrent clients produce correct results, transactional writes are atomic, recovery preserves acknowledged writes under the documented fault model, and memory stays within configured limits in measured workloads.
 
@@ -56,9 +56,11 @@ Exit evidence: a documented SQL subset works over the shared transaction and sto
 - Define project/user identities, roles, data access rules, and least-privilege service boundaries.
 - Enforce project isolation at each layer and test cross-project access, unauthorized operations, malformed requests, and resource exhaustion.
 - Control per-project requests, connections, CPU, memory, storage, and background work; use admission control when capacity is exhausted.
-- Build project lifecycle and safe sleep/wake separately from the embedded engine. Store data durably while workers sleep; specify cold-start and active-transaction behavior.
+- Build project lifecycle and safe sleep/wake separately from the embedded engine. Store data durably while workers sleep; specify cold-start, ownership, and active-transaction behavior. See [scale-to-zero design goals](SCALE_TO_ZERO.md).
 
 Exit evidence: isolation and overload tests pass and operational limits are measurable. A process boundary alone does not establish complete isolation or high availability.
+
+See [project isolation design goals](PROJECT_ISOLATION.md) for threat boundaries, possible isolation tiers, and the evidence required before public claims.
 
 ## Priority 5: performance and scalability
 
@@ -83,6 +85,8 @@ Exit evidence: controlled node/process failures and restore tests meet documente
 ## Priority 7: broader features and smarter tooling
 
 The [competitor inventory](COMPETITOR_FEATURES.md) tracks additional capabilities to investigate, including full-text and geospatial search, vector similarity, time-series data, TTL, change streams/realtime subscriptions, more index types, server-side logic, and ecosystem tooling. Availability, compatibility, and implementation order remain decisions, not promises.
+
+The prioritized [performance and feature ideas](PERFORMANCE_AND_FEATURE_IDEAS.md) also cover fault injection, workload replay, observability, low-copy access, compression, online index/schema operations, embedded/cloud portability, and adaptive storage. Their correctness and transaction prerequisites determine implementation order.
 
 Potential differentiators to validate with real users and benchmarks:
 

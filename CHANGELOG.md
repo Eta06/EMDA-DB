@@ -16,6 +16,10 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - An attribution and notices file, versioning policy, and automated GitHub release workflow.
 - A regression test that rejects unknown on-disk record versions without modifying the log.
 - Instructions for trying the Apache-licensed Rust library from a Git dependency.
+- A storage and transaction contract distinguishing current behavior from proposed guarantees, with a rule against optimizations that violate durability, isolation, or recovery.
+- A README progress view and a prioritized assessment of proposed performance and database features.
+- Design goals for safe project scale-to-zero, including draining, recovery, ownership, and cold-start testing.
+- Project isolation threat boundaries, proposed protection layers and tiers, and validation requirements.
 
 ### Limitations
 
