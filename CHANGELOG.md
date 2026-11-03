@@ -38,6 +38,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Changed
 
+- Successful commits skip condition-variable notifications when no writer is waiting; synchronization and failure wake-ups remain intact.
+
 - Incomplete log tails and a missing log for an existing store now fail closed without silently truncating or recreating the log.
 - Readers can continue using the previous indexed value while a writer synchronizes; successful mutations still sync before becoming visible and returning.
 - Store initialization synchronizes the created directory path and ancestors; power-loss behavior is not yet proven.

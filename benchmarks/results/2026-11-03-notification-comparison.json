@@ -1,0 +1,1019 @@
+{
+  "before_revision": "78717772b78f78068a0b5258c62903be645278e0",
+  "after_revision": "dee179e449a56fd5ec355ccb692ccbf67b44b344",
+  "build": "Separate initially empty target directories, stable release, locked dependencies",
+  "limitations": "Closed-loop cached 250-key microbenchmark, 64-byte values, virtualized overlay filesystem with unknown physical backing. SQLite WAL FULL autocommit; features and full durability behavior differ. No universal ranking or power-loss validation.",
+  "binary_sha256": {
+    "before": "c9b64fdbb507a3414c538f9da1f65ebeecce7a82417b46ad21fbade73a9acd04",
+    "after": "f943cd4bb79c4f6864c67ccdc9816319c8c546f6979c4cbd50e7fc9ff954fe4d",
+    "sqlite": "f943cd4bb79c4f6864c67ccdc9816319c8c546f6979c4cbd50e7fc9ff954fe4d"
+  },
+  "runs": [
+    {
+      "clients": 1,
+      "version": "before",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=135.7 ops_per_sec=7371.0\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.3 p95_us=2.6 p99_us=8.2 p99_9_us=27.3 max_us=27.3\nwrite: count=508 p50_us=224.3 p95_us=394.6 p99_us=613.6 p99_9_us=5924.8 max_us=5924.8\nclient=0 elapsed_ms=135.5 reads=492 writes=508 max_read_ms=0.027 max_write_ms=5.925\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "after",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=139.4 ops_per_sec=7172.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.5 p95_us=2.7 p99_us=3.7 p99_9_us=10.3 max_us=10.3\nwrite: count=508 p50_us=241.7 p95_us=425.1 p99_us=606.1 p99_9_us=839.0 max_us=839.0\nclient=0 elapsed_ms=139.2 reads=492 writes=508 max_read_ms=0.010 max_write_ms=0.839\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=160.7 ops_per_sec=6222.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=3.3 p95_us=5.3 p99_us=29.1 p99_9_us=69.1 max_us=69.1\nwrite: count=508 p50_us=290.6 p95_us=443.1 p99_us=706.4 p99_9_us=2256.3 max_us=2256.3\nclient=0 elapsed_ms=160.5 reads=492 writes=508 max_read_ms=0.069 max_write_ms=2.256\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "after",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=130.8 ops_per_sec=7645.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.3 p95_us=2.5 p99_us=10.0 p99_9_us=23.8 max_us=23.8\nwrite: count=508 p50_us=224.6 p95_us=396.9 p99_us=560.5 p99_9_us=905.1 max_us=905.1\nclient=0 elapsed_ms=130.6 reads=492 writes=508 max_read_ms=0.024 max_write_ms=0.905\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=185.2 ops_per_sec=5400.0\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=3.4 p95_us=6.7 p99_us=26.4 p99_9_us=36.3 max_us=36.3\nwrite: count=508 p50_us=309.6 p95_us=587.3 p99_us=1630.1 p99_9_us=3172.9 max_us=3172.9\nclient=0 elapsed_ms=185.0 reads=492 writes=508 max_read_ms=0.036 max_write_ms=3.173\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "before",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=132.3 ops_per_sec=7557.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.3 p95_us=2.5 p99_us=4.5 p99_9_us=196.7 max_us=196.7\nwrite: count=508 p50_us=231.1 p95_us=375.3 p99_us=532.4 p99_9_us=1308.1 max_us=1308.1\nclient=0 elapsed_ms=132.1 reads=492 writes=508 max_read_ms=0.197 max_write_ms=1.308\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=193.2 ops_per_sec=5175.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=3.4 p95_us=6.9 p99_us=34.0 p99_9_us=411.9 max_us=411.9\nwrite: count=508 p50_us=261.7 p95_us=1057.8 p99_us=2338.0 p99_9_us=4450.7 max_us=4450.7\nclient=0 elapsed_ms=192.8 reads=492 writes=508 max_read_ms=0.412 max_write_ms=4.451\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "before",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=207.8 ops_per_sec=4812.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.5 p95_us=6.2 p99_us=18.1 p99_9_us=34.9 max_us=34.9\nwrite: count=508 p50_us=305.2 p95_us=1081.1 p99_us=2558.3 p99_9_us=3689.2 max_us=3689.2\nclient=0 elapsed_ms=205.9 reads=492 writes=508 max_read_ms=0.035 max_write_ms=3.689\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "after",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=143.1 ops_per_sec=6989.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.4 p95_us=3.0 p99_us=6.2 p99_9_us=11.1 max_us=11.1\nwrite: count=508 p50_us=236.2 p95_us=437.4 p99_us=1106.2 p99_9_us=1493.7 max_us=1493.7\nclient=0 elapsed_ms=142.9 reads=492 writes=508 max_read_ms=0.011 max_write_ms=1.494\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "before",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=169.8 ops_per_sec=5888.0\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.4 p95_us=4.3 p99_us=11.1 p99_9_us=253.3 max_us=253.3\nwrite: count=508 p50_us=208.5 p95_us=883.8 p99_us=3101.3 p99_9_us=4214.1 max_us=4214.1\nclient=0 elapsed_ms=169.5 reads=492 writes=508 max_read_ms=0.253 max_write_ms=4.214\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "after",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=141.2 ops_per_sec=7081.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.4 p95_us=3.1 p99_us=3.9 p99_9_us=7.9 max_us=7.9\nwrite: count=508 p50_us=239.1 p95_us=462.5 p99_us=690.0 p99_9_us=1285.9 max_us=1285.9\nclient=0 elapsed_ms=140.9 reads=492 writes=508 max_read_ms=0.008 max_write_ms=1.286\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=124.6 ops_per_sec=8024.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=3.4 p95_us=5.7 p99_us=28.1 p99_9_us=65.8 max_us=65.8\nwrite: count=508 p50_us=218.0 p95_us=359.1 p99_us=574.5 p99_9_us=826.8 max_us=826.8\nclient=0 elapsed_ms=124.4 reads=492 writes=508 max_read_ms=0.066 max_write_ms=0.827\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "after",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=138.8 ops_per_sec=7203.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.4 p95_us=3.1 p99_us=4.2 p99_9_us=15.9 max_us=15.9\nwrite: count=508 p50_us=238.1 p95_us=404.2 p99_us=600.9 p99_9_us=1338.4 max_us=1338.4\nclient=0 elapsed_ms=138.6 reads=492 writes=508 max_read_ms=0.016 max_write_ms=1.338\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "sqlite",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=133.3 ops_per_sec=7499.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=3.5 p95_us=5.5 p99_us=12.3 p99_9_us=46.5 max_us=46.5\nwrite: count=508 p50_us=223.9 p95_us=365.4 p99_us=892.7 p99_9_us=1513.3 max_us=1513.3\nclient=0 elapsed_ms=133.1 reads=492 writes=508 max_read_ms=0.046 max_write_ms=1.513\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "before",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=147.5 ops_per_sec=6777.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.4 p95_us=3.3 p99_us=7.2 p99_9_us=39.0 max_us=39.0\nwrite: count=508 p50_us=231.0 p95_us=425.6 p99_us=1482.1 p99_9_us=3807.9 max_us=3807.9\nclient=0 elapsed_ms=147.3 reads=492 writes=508 max_read_ms=0.039 max_write_ms=3.808\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "sqlite",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=135.6 ops_per_sec=7377.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=3.4 p95_us=5.4 p99_us=20.6 p99_9_us=48.3 max_us=48.3\nwrite: count=508 p50_us=224.7 p95_us=410.2 p99_us=766.7 p99_9_us=1662.9 max_us=1662.9\nclient=0 elapsed_ms=135.4 reads=492 writes=508 max_read_ms=0.048 max_write_ms=1.663\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "before",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=140.7 ops_per_sec=7106.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.3 p95_us=2.7 p99_us=6.5 p99_9_us=25.3 max_us=25.3\nwrite: count=508 p50_us=226.5 p95_us=407.1 p99_us=1439.4 p99_9_us=1605.9 max_us=1605.9\nclient=0 elapsed_ms=140.5 reads=492 writes=508 max_read_ms=0.025 max_write_ms=1.606\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "after",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=107.5 ops_per_sec=9303.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.4 p95_us=2.6 p99_us=3.5 p99_9_us=63.2 max_us=63.2\nwrite: count=508 p50_us=188.5 p95_us=308.7 p99_us=444.5 p99_9_us=785.8 max_us=785.8\nclient=0 elapsed_ms=107.3 reads=492 writes=508 max_read_ms=0.063 max_write_ms=0.786\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "before",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=156.7 ops_per_sec=6380.0\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.5 p95_us=2.9 p99_us=5.0 p99_9_us=20.7 max_us=20.7\nwrite: count=508 p50_us=269.5 p95_us=513.5 p99_us=1178.9 p99_9_us=2575.8 max_us=2575.8\nclient=0 elapsed_ms=156.5 reads=492 writes=508 max_read_ms=0.021 max_write_ms=2.576\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "after",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=112.6 ops_per_sec=8882.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=1.4 p95_us=2.7 p99_us=3.7 p99_9_us=22.0 max_us=22.0\nwrite: count=508 p50_us=193.5 p95_us=310.6 p99_us=537.6 p99_9_us=2181.8 max_us=2181.8\nclient=0 elapsed_ms=112.4 reads=492 writes=508 max_read_ms=0.022 max_write_ms=2.182\n",
+      "stderr": ""
+    },
+    {
+      "clients": 1,
+      "version": "sqlite",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=154.9 ops_per_sec=6457.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=492 p50_us=3.4 p95_us=5.6 p99_us=7.1 p99_9_us=17.6 max_us=17.6\nwrite: count=508 p50_us=267.9 p95_us=445.9 p99_us=661.4 p99_9_us=2306.3 max_us=2306.3\nclient=0 elapsed_ms=154.7 reads=492 writes=508 max_read_ms=0.018 max_write_ms=2.306\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "before",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=356.0 ops_per_sec=22470.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=4.4 p99_us=30.0 p99_9_us=153.8 max_us=223.1\nwrite: count=4054 p50_us=658.2 p95_us=1140.5 p99_us=2170.4 p99_9_us=2910.5 max_us=3641.5\nclient=0 elapsed_ms=347.1 reads=492 writes=508 max_read_ms=0.030 max_write_ms=3.630\nclient=1 elapsed_ms=355.8 reads=477 writes=523 max_read_ms=0.223 max_write_ms=2.576\nclient=2 elapsed_ms=345.0 reads=497 writes=503 max_read_ms=0.158 max_write_ms=2.910\nclient=3 elapsed_ms=349.0 reads=475 writes=525 max_read_ms=0.015 max_write_ms=2.957\nclient=4 elapsed_ms=348.3 reads=486 writes=514 max_read_ms=0.017 max_write_ms=3.642\nclient=5 elapsed_ms=350.6 reads=495 writes=505 max_read_ms=0.039 max_write_ms=2.573\nclient=6 elapsed_ms=341.1 reads=510 writes=490 max_read_ms=0.213 max_write_ms=2.469\nclient=7 elapsed_ms=339.8 reads=514 writes=486 max_read_ms=0.091 max_write_ms=2.938\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "after",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=343.0 ops_per_sec=23325.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.3 p95_us=4.7 p99_us=27.5 p99_9_us=94.2 max_us=610.5\nwrite: count=4054 p50_us=619.2 p95_us=1062.5 p99_us=2159.5 p99_9_us=4350.3 max_us=4490.5\nclient=0 elapsed_ms=326.9 reads=492 writes=508 max_read_ms=0.093 max_write_ms=4.350\nclient=1 elapsed_ms=329.0 reads=477 writes=523 max_read_ms=0.027 max_write_ms=4.373\nclient=2 elapsed_ms=336.8 reads=497 writes=503 max_read_ms=0.160 max_write_ms=4.479\nclient=3 elapsed_ms=342.8 reads=475 writes=525 max_read_ms=0.094 max_write_ms=4.368\nclient=4 elapsed_ms=341.7 reads=486 writes=514 max_read_ms=0.051 max_write_ms=4.333\nclient=5 elapsed_ms=340.1 reads=495 writes=505 max_read_ms=0.046 max_write_ms=4.491\nclient=6 elapsed_ms=318.8 reads=510 writes=490 max_read_ms=0.495 max_write_ms=3.940\nclient=7 elapsed_ms=322.8 reads=514 writes=486 max_read_ms=0.610 max_write_ms=4.349\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=1340.8 ops_per_sec=5966.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=3.3 p95_us=4.9 p99_us=9.5 p99_9_us=143.2 max_us=292.7\nwrite: count=4054 p50_us=194.7 p95_us=381.4 p99_us=563.5 p99_9_us=530429.6 max_us=1231724.4\nclient=0 elapsed_ms=1340.4 reads=492 writes=508 max_read_ms=0.084 max_write_ms=1231.724\nclient=1 elapsed_ms=625.8 reads=477 writes=523 max_read_ms=0.214 max_write_ms=530.430\nclient=2 elapsed_ms=735.8 reads=497 writes=503 max_read_ms=0.293 max_write_ms=630.594\nclient=3 elapsed_ms=939.7 reads=475 writes=525 max_read_ms=0.059 max_write_ms=831.387\nclient=4 elapsed_ms=132.8 reads=486 writes=514 max_read_ms=0.042 max_write_ms=2.089\nclient=5 elapsed_ms=443.7 reads=495 writes=505 max_read_ms=0.167 max_write_ms=330.698\nclient=6 elapsed_ms=1131.9 reads=510 writes=490 max_read_ms=0.093 max_write_ms=1031.640\nclient=7 elapsed_ms=340.0 reads=514 writes=486 max_read_ms=0.143 max_write_ms=180.184\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "after",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=352.8 ops_per_sec=22675.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=4.2 p99_us=20.2 p99_9_us=91.1 max_us=784.7\nwrite: count=4054 p50_us=690.5 p95_us=995.4 p99_us=1333.5 p99_9_us=1925.8 max_us=2539.3\nclient=0 elapsed_ms=349.5 reads=492 writes=508 max_read_ms=0.171 max_write_ms=2.510\nclient=1 elapsed_ms=343.8 reads=477 writes=523 max_read_ms=0.048 max_write_ms=1.912\nclient=2 elapsed_ms=351.9 reads=497 writes=503 max_read_ms=0.785 max_write_ms=1.815\nclient=3 elapsed_ms=352.5 reads=475 writes=525 max_read_ms=0.107 max_write_ms=1.734\nclient=4 elapsed_ms=344.6 reads=486 writes=514 max_read_ms=0.040 max_write_ms=1.926\nclient=5 elapsed_ms=336.4 reads=495 writes=505 max_read_ms=0.036 max_write_ms=2.539\nclient=6 elapsed_ms=332.2 reads=510 writes=490 max_read_ms=0.022 max_write_ms=2.132\nclient=7 elapsed_ms=329.1 reads=514 writes=486 max_read_ms=0.081 max_write_ms=2.510\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=1240.4 ops_per_sec=6449.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=3.3 p95_us=5.0 p99_us=12.5 p99_9_us=324.5 max_us=1655.0\nwrite: count=4054 p50_us=190.5 p95_us=371.1 p99_us=612.8 p99_9_us=530849.4 max_us=1132724.1\nclient=0 elapsed_ms=459.3 reads=492 writes=508 max_read_ms=1.655 max_write_ms=329.724\nclient=1 elapsed_ms=618.8 reads=477 writes=523 max_read_ms=0.421 max_write_ms=530.849\nclient=2 elapsed_ms=372.6 reads=497 writes=503 max_read_ms=0.324 max_write_ms=230.522\nclient=3 elapsed_ms=739.5 reads=475 writes=525 max_read_ms=0.206 max_write_ms=631.524\nclient=4 elapsed_ms=187.5 reads=486 writes=514 max_read_ms=0.068 max_write_ms=55.194\nclient=5 elapsed_ms=1240.2 reads=495 writes=505 max_read_ms=0.054 max_write_ms=1132.724\nclient=6 elapsed_ms=914.4 reads=510 writes=490 max_read_ms=0.059 max_write_ms=831.792\nclient=7 elapsed_ms=1039.2 reads=514 writes=486 max_read_ms=0.447 max_write_ms=931.522\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "before",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=368.7 ops_per_sec=21695.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.5 p95_us=4.7 p99_us=28.9 p99_9_us=98.5 max_us=284.8\nwrite: count=4054 p50_us=701.1 p95_us=1069.1 p99_us=1659.5 p99_9_us=5423.5 max_us=5517.8\nclient=0 elapsed_ms=354.0 reads=492 writes=508 max_read_ms=0.082 max_write_ms=5.503\nclient=1 elapsed_ms=368.5 reads=477 writes=523 max_read_ms=0.257 max_write_ms=5.518\nclient=2 elapsed_ms=361.3 reads=497 writes=503 max_read_ms=0.068 max_write_ms=5.367\nclient=3 elapsed_ms=360.6 reads=475 writes=525 max_read_ms=0.085 max_write_ms=5.471\nclient=4 elapsed_ms=354.5 reads=486 writes=514 max_read_ms=0.022 max_write_ms=5.504\nclient=5 elapsed_ms=366.6 reads=495 writes=505 max_read_ms=0.088 max_write_ms=3.549\nclient=6 elapsed_ms=360.7 reads=510 writes=490 max_read_ms=0.122 max_write_ms=5.423\nclient=7 elapsed_ms=339.2 reads=514 writes=486 max_read_ms=0.285 max_write_ms=2.753\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=1174.0 ops_per_sec=6814.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=3.3 p95_us=5.0 p99_us=8.5 p99_9_us=76.9 max_us=405.4\nwrite: count=4054 p50_us=191.9 p95_us=367.2 p99_us=552.7 p99_9_us=630463.2 max_us=1031646.1\nclient=0 elapsed_ms=349.0 reads=492 writes=508 max_read_ms=0.038 max_write_ms=230.245\nclient=1 elapsed_ms=716.1 reads=477 writes=523 max_read_ms=0.362 max_write_ms=630.463\nclient=2 elapsed_ms=1132.0 reads=497 writes=503 max_read_ms=0.157 max_write_ms=1031.646\nclient=3 elapsed_ms=956.6 reads=475 writes=525 max_read_ms=0.077 max_write_ms=831.495\nclient=4 elapsed_ms=1173.6 reads=486 writes=514 max_read_ms=0.038 max_write_ms=1030.965\nclient=5 elapsed_ms=227.5 reads=495 writes=505 max_read_ms=0.046 max_write_ms=104.692\nclient=6 elapsed_ms=536.5 reads=510 writes=490 max_read_ms=0.039 max_write_ms=430.786\nclient=7 elapsed_ms=815.7 reads=514 writes=486 max_read_ms=0.405 max_write_ms=730.505\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "before",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=355.3 ops_per_sec=22519.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=4.3 p99_us=20.9 p99_9_us=111.6 max_us=177.3\nwrite: count=4054 p50_us=699.4 p95_us=1012.0 p99_us=1275.3 p99_9_us=1639.9 max_us=1938.6\nclient=0 elapsed_ms=355.0 reads=492 writes=508 max_read_ms=0.157 max_write_ms=1.660\nclient=1 elapsed_ms=351.9 reads=477 writes=523 max_read_ms=0.043 max_write_ms=1.923\nclient=2 elapsed_ms=343.6 reads=497 writes=503 max_read_ms=0.030 max_write_ms=1.932\nclient=3 elapsed_ms=350.5 reads=475 writes=525 max_read_ms=0.056 max_write_ms=1.596\nclient=4 elapsed_ms=333.4 reads=486 writes=514 max_read_ms=0.074 max_write_ms=1.631\nclient=5 elapsed_ms=352.2 reads=495 writes=505 max_read_ms=0.177 max_write_ms=1.640\nclient=6 elapsed_ms=340.1 reads=510 writes=490 max_read_ms=0.110 max_write_ms=1.620\nclient=7 elapsed_ms=336.3 reads=514 writes=486 max_read_ms=0.089 max_write_ms=1.939\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "after",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=407.5 ops_per_sec=19631.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=4.9 p99_us=40.2 p99_9_us=146.2 max_us=255.0\nwrite: count=4054 p50_us=688.3 p95_us=1613.6 p99_us=3407.0 p99_9_us=6030.2 max_us=6156.5\nclient=0 elapsed_ms=371.0 reads=492 writes=508 max_read_ms=0.060 max_write_ms=5.932\nclient=1 elapsed_ms=398.5 reads=477 writes=523 max_read_ms=0.255 max_write_ms=6.156\nclient=2 elapsed_ms=389.4 reads=497 writes=503 max_read_ms=0.147 max_write_ms=5.872\nclient=3 elapsed_ms=406.4 reads=475 writes=525 max_read_ms=0.090 max_write_ms=5.958\nclient=4 elapsed_ms=393.8 reads=486 writes=514 max_read_ms=0.201 max_write_ms=6.065\nclient=5 elapsed_ms=393.2 reads=495 writes=505 max_read_ms=0.043 max_write_ms=6.030\nclient=6 elapsed_ms=399.6 reads=510 writes=490 max_read_ms=0.146 max_write_ms=6.047\nclient=7 elapsed_ms=377.1 reads=514 writes=486 max_read_ms=0.048 max_write_ms=6.140\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "before",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=377.2 ops_per_sec=21207.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=7.2 p99_us=31.0 p99_9_us=357.2 max_us=1516.1\nwrite: count=4054 p50_us=637.3 p95_us=1122.0 p99_us=3386.8 p99_9_us=5258.6 max_us=5386.2\nclient=0 elapsed_ms=368.1 reads=492 writes=508 max_read_ms=0.446 max_write_ms=5.214\nclient=1 elapsed_ms=373.0 reads=477 writes=523 max_read_ms=0.233 max_write_ms=5.091\nclient=2 elapsed_ms=374.4 reads=497 writes=503 max_read_ms=0.357 max_write_ms=5.271\nclient=3 elapsed_ms=376.9 reads=475 writes=525 max_read_ms=1.516 max_write_ms=5.213\nclient=4 elapsed_ms=328.0 reads=486 writes=514 max_read_ms=0.009 max_write_ms=5.386\nclient=5 elapsed_ms=351.0 reads=495 writes=505 max_read_ms=0.098 max_write_ms=5.385\nclient=6 elapsed_ms=323.4 reads=510 writes=490 max_read_ms=0.033 max_write_ms=5.372\nclient=7 elapsed_ms=353.4 reads=514 writes=486 max_read_ms=0.154 max_write_ms=5.255\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "after",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=344.9 ops_per_sec=23195.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=4.4 p99_us=24.3 p99_9_us=89.0 max_us=373.0\nwrite: count=4054 p50_us=658.2 p95_us=987.1 p99_us=1316.4 p99_9_us=3128.6 max_us=3142.2\nclient=0 elapsed_ms=324.9 reads=492 writes=508 max_read_ms=0.111 max_write_ms=3.129\nclient=1 elapsed_ms=344.5 reads=477 writes=523 max_read_ms=0.067 max_write_ms=3.136\nclient=2 elapsed_ms=322.1 reads=497 writes=503 max_read_ms=0.045 max_write_ms=3.142\nclient=3 elapsed_ms=338.3 reads=475 writes=525 max_read_ms=0.089 max_write_ms=3.125\nclient=4 elapsed_ms=336.7 reads=486 writes=514 max_read_ms=0.082 max_write_ms=2.986\nclient=5 elapsed_ms=339.4 reads=495 writes=505 max_read_ms=0.140 max_write_ms=3.064\nclient=6 elapsed_ms=326.4 reads=510 writes=490 max_read_ms=0.373 max_write_ms=3.133\nclient=7 elapsed_ms=331.7 reads=514 writes=486 max_read_ms=0.050 max_write_ms=3.133\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=1232.3 ops_per_sec=6492.0\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=3.2 p95_us=5.0 p99_us=12.9 p99_9_us=257.4 max_us=431.0\nwrite: count=4054 p50_us=192.0 p95_us=379.8 p99_us=649.0 p99_9_us=430403.8 max_us=1131819.2\nclient=0 elapsed_ms=344.6 reads=492 writes=508 max_read_ms=0.257 max_write_ms=229.948\nclient=1 elapsed_ms=653.5 reads=477 writes=523 max_read_ms=0.272 max_write_ms=530.479\nclient=2 elapsed_ms=846.1 reads=497 writes=503 max_read_ms=0.431 max_write_ms=731.488\nclient=3 elapsed_ms=1050.3 reads=475 writes=525 max_read_ms=0.062 max_write_ms=932.014\nclient=4 elapsed_ms=518.8 reads=486 writes=514 max_read_ms=0.071 max_write_ms=430.404\nclient=5 elapsed_ms=410.5 reads=495 writes=505 max_read_ms=0.179 max_write_ms=179.777\nclient=6 elapsed_ms=148.8 reads=510 writes=490 max_read_ms=0.040 max_write_ms=1.417\nclient=7 elapsed_ms=1232.0 reads=514 writes=486 max_read_ms=0.324 max_write_ms=1131.819\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "after",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=366.2 ops_per_sec=21846.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=4.3 p99_us=20.5 p99_9_us=184.0 max_us=245.1\nwrite: count=4054 p50_us=692.1 p95_us=1017.4 p99_us=1922.6 p99_9_us=5014.7 max_us=5477.3\nclient=0 elapsed_ms=348.8 reads=492 writes=508 max_read_ms=0.077 max_write_ms=5.430\nclient=1 elapsed_ms=359.3 reads=477 writes=523 max_read_ms=0.117 max_write_ms=4.880\nclient=2 elapsed_ms=350.8 reads=497 writes=503 max_read_ms=0.245 max_write_ms=5.449\nclient=3 elapsed_ms=365.7 reads=475 writes=525 max_read_ms=0.160 max_write_ms=4.952\nclient=4 elapsed_ms=352.5 reads=486 writes=514 max_read_ms=0.206 max_write_ms=5.467\nclient=5 elapsed_ms=344.4 reads=495 writes=505 max_read_ms=0.143 max_write_ms=5.477\nclient=6 elapsed_ms=346.1 reads=510 writes=490 max_read_ms=0.108 max_write_ms=4.927\nclient=7 elapsed_ms=344.0 reads=514 writes=486 max_read_ms=0.184 max_write_ms=5.015\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "sqlite",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=1549.7 ops_per_sec=5162.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=3.2 p95_us=4.8 p99_us=9.9 p99_9_us=120.4 max_us=373.9\nwrite: count=4054 p50_us=207.2 p95_us=398.3 p99_us=692.5 p99_9_us=630431.9 max_us=1432035.3\nclient=0 elapsed_ms=638.8 reads=492 writes=508 max_read_ms=0.030 max_write_ms=530.994\nclient=1 elapsed_ms=1549.4 reads=477 writes=523 max_read_ms=0.359 max_write_ms=1432.035\nclient=2 elapsed_ms=1140.3 reads=497 writes=503 max_read_ms=0.181 max_write_ms=1031.381\nclient=3 elapsed_ms=216.0 reads=475 writes=525 max_read_ms=0.043 max_write_ms=34.612\nclient=4 elapsed_ms=938.1 reads=486 writes=514 max_read_ms=0.066 max_write_ms=831.630\nclient=5 elapsed_ms=487.8 reads=495 writes=505 max_read_ms=0.039 max_write_ms=230.304\nclient=6 elapsed_ms=745.4 reads=510 writes=490 max_read_ms=0.120 max_write_ms=630.432\nclient=7 elapsed_ms=1336.1 reads=514 writes=486 max_read_ms=0.374 max_write_ms=1232.069\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "before",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=315.4 ops_per_sec=25366.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.3 p95_us=3.6 p99_us=25.6 p99_9_us=184.2 max_us=519.9\nwrite: count=4054 p50_us=566.6 p95_us=883.7 p99_us=2363.4 p99_9_us=5415.0 max_us=5818.2\nclient=0 elapsed_ms=304.8 reads=492 writes=508 max_read_ms=0.520 max_write_ms=5.415\nclient=1 elapsed_ms=315.2 reads=477 writes=523 max_read_ms=0.050 max_write_ms=4.875\nclient=2 elapsed_ms=273.2 reads=497 writes=503 max_read_ms=0.091 max_write_ms=5.500\nclient=3 elapsed_ms=299.6 reads=475 writes=525 max_read_ms=0.184 max_write_ms=5.460\nclient=4 elapsed_ms=311.6 reads=486 writes=514 max_read_ms=0.344 max_write_ms=5.134\nclient=5 elapsed_ms=309.8 reads=495 writes=505 max_read_ms=0.055 max_write_ms=5.816\nclient=6 elapsed_ms=300.6 reads=510 writes=490 max_read_ms=0.159 max_write_ms=5.818\nclient=7 elapsed_ms=295.7 reads=514 writes=486 max_read_ms=0.044 max_write_ms=5.398\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "sqlite",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=1238.5 ops_per_sec=6459.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=3.3 p95_us=4.8 p99_us=13.5 p99_9_us=129.6 max_us=341.9\nwrite: count=4054 p50_us=200.6 p95_us=374.2 p99_us=589.3 p99_9_us=430623.8 max_us=1131944.6\nclient=0 elapsed_ms=1238.2 reads=492 writes=508 max_read_ms=0.041 max_write_ms=1131.945\nclient=1 elapsed_ms=1031.2 reads=477 writes=523 max_read_ms=0.130 max_write_ms=931.490\nclient=2 elapsed_ms=846.0 reads=497 writes=503 max_read_ms=0.342 max_write_ms=731.198\nclient=3 elapsed_ms=154.3 reads=475 writes=525 max_read_ms=0.054 max_write_ms=1.610\nclient=4 elapsed_ms=651.3 reads=486 writes=514 max_read_ms=0.040 max_write_ms=531.042\nclient=5 elapsed_ms=305.0 reads=495 writes=505 max_read_ms=0.075 max_write_ms=180.047\nclient=6 elapsed_ms=410.1 reads=510 writes=490 max_read_ms=0.034 max_write_ms=230.293\nclient=7 elapsed_ms=530.4 reads=514 writes=486 max_read_ms=0.263 max_write_ms=430.624\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "before",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=403.9 ops_per_sec=19808.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.5 p95_us=5.1 p99_us=34.7 p99_9_us=197.7 max_us=319.7\nwrite: count=4054 p50_us=731.9 p95_us=1161.2 p99_us=2044.3 p99_9_us=3995.2 max_us=4045.2\nclient=0 elapsed_ms=378.1 reads=492 writes=508 max_read_ms=0.198 max_write_ms=3.983\nclient=1 elapsed_ms=403.3 reads=477 writes=523 max_read_ms=0.061 max_write_ms=4.003\nclient=2 elapsed_ms=365.0 reads=497 writes=503 max_read_ms=0.077 max_write_ms=3.995\nclient=3 elapsed_ms=393.9 reads=475 writes=525 max_read_ms=0.160 max_write_ms=4.045\nclient=4 elapsed_ms=386.6 reads=486 writes=514 max_read_ms=0.203 max_write_ms=3.999\nclient=5 elapsed_ms=361.0 reads=495 writes=505 max_read_ms=0.215 max_write_ms=3.504\nclient=6 elapsed_ms=371.9 reads=510 writes=490 max_read_ms=0.320 max_write_ms=4.043\nclient=7 elapsed_ms=370.0 reads=514 writes=486 max_read_ms=0.129 max_write_ms=3.982\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "after",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=356.0 ops_per_sec=22472.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.4 p95_us=4.4 p99_us=26.5 p99_9_us=206.8 max_us=544.0\nwrite: count=4054 p50_us=676.1 p95_us=1004.1 p99_us=1305.0 p99_9_us=2147.4 max_us=2252.0\nclient=0 elapsed_ms=334.7 reads=492 writes=508 max_read_ms=0.119 max_write_ms=2.147\nclient=1 elapsed_ms=345.6 reads=477 writes=523 max_read_ms=0.092 max_write_ms=2.126\nclient=2 elapsed_ms=338.1 reads=497 writes=503 max_read_ms=0.544 max_write_ms=2.223\nclient=3 elapsed_ms=355.8 reads=475 writes=525 max_read_ms=0.371 max_write_ms=2.248\nclient=4 elapsed_ms=333.5 reads=486 writes=514 max_read_ms=0.095 max_write_ms=2.252\nclient=5 elapsed_ms=333.5 reads=495 writes=505 max_read_ms=0.047 max_write_ms=2.113\nclient=6 elapsed_ms=328.7 reads=510 writes=490 max_read_ms=0.136 max_write_ms=2.118\nclient=7 elapsed_ms=324.9 reads=514 writes=486 max_read_ms=0.045 max_write_ms=2.230\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "before",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=364.3 ops_per_sec=21962.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.5 p95_us=4.4 p99_us=21.4 p99_9_us=98.7 max_us=141.6\nwrite: count=4054 p50_us=708.0 p95_us=1022.1 p99_us=1421.6 p99_9_us=2893.2 max_us=3233.5\nclient=0 elapsed_ms=353.6 reads=492 writes=508 max_read_ms=0.097 max_write_ms=3.226\nclient=1 elapsed_ms=363.9 reads=477 writes=523 max_read_ms=0.083 max_write_ms=2.859\nclient=2 elapsed_ms=359.0 reads=497 writes=503 max_read_ms=0.077 max_write_ms=3.158\nclient=3 elapsed_ms=360.1 reads=475 writes=525 max_read_ms=0.054 max_write_ms=2.827\nclient=4 elapsed_ms=357.7 reads=486 writes=514 max_read_ms=0.048 max_write_ms=2.893\nclient=5 elapsed_ms=345.8 reads=495 writes=505 max_read_ms=0.079 max_write_ms=3.193\nclient=6 elapsed_ms=346.1 reads=510 writes=490 max_read_ms=0.142 max_write_ms=2.804\nclient=7 elapsed_ms=344.1 reads=514 writes=486 max_read_ms=0.139 max_write_ms=3.234\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "after",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=268.1 ops_per_sec=29841.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=1.1 p95_us=3.4 p99_us=15.7 p99_9_us=79.3 max_us=140.5\nwrite: count=4054 p50_us=499.9 p95_us=782.4 p99_us=1077.9 p99_9_us=3087.0 max_us=3151.9\nclient=0 elapsed_ms=261.6 reads=492 writes=508 max_read_ms=0.100 max_write_ms=3.106\nclient=1 elapsed_ms=265.3 reads=477 writes=523 max_read_ms=0.013 max_write_ms=3.087\nclient=2 elapsed_ms=262.4 reads=497 writes=503 max_read_ms=0.016 max_write_ms=3.087\nclient=3 elapsed_ms=267.8 reads=475 writes=525 max_read_ms=0.024 max_write_ms=3.072\nclient=4 elapsed_ms=253.5 reads=486 writes=514 max_read_ms=0.013 max_write_ms=3.106\nclient=5 elapsed_ms=260.4 reads=495 writes=505 max_read_ms=0.085 max_write_ms=3.094\nclient=6 elapsed_ms=251.8 reads=510 writes=490 max_read_ms=0.060 max_write_ms=2.921\nclient=7 elapsed_ms=253.2 reads=514 writes=486 max_read_ms=0.140 max_write_ms=3.152\n",
+      "stderr": ""
+    },
+    {
+      "clients": 8,
+      "version": "sqlite",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "sqlite",
+        "8",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=8 keys=250 value_bytes=64 write_percent=50 completed=8000 elapsed_ms=1345.7 ops_per_sec=5944.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=3946 p50_us=3.2 p95_us=4.8 p99_us=10.7 p99_9_us=82.9 max_us=427.0\nwrite: count=4054 p50_us=199.3 p95_us=361.1 p99_us=651.8 p99_9_us=430143.9 max_us=1231719.3\nclient=0 elapsed_ms=936.3 reads=492 writes=508 max_read_ms=0.036 max_write_ms=831.381\nclient=1 elapsed_ms=1345.4 reads=477 writes=523 max_read_ms=0.388 max_write_ms=1231.719\nclient=2 elapsed_ms=593.9 reads=497 writes=503 max_read_ms=0.427 max_write_ms=430.144\nclient=3 elapsed_ms=336.0 reads=475 writes=525 max_read_ms=0.039 max_write_ms=230.208\nclient=4 elapsed_ms=751.6 reads=486 writes=514 max_read_ms=0.056 max_write_ms=631.211\nclient=5 elapsed_ms=457.0 reads=495 writes=505 max_read_ms=0.083 max_write_ms=330.039\nclient=6 elapsed_ms=1132.3 reads=510 writes=490 max_read_ms=0.055 max_write_ms=1031.924\nclient=7 elapsed_ms=216.7 reads=514 writes=486 max_read_ms=0.390 max_write_ms=79.316\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "before",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=775.6 ops_per_sec=82518.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.3 p99_us=30.1 p99_9_us=118.0 max_us=4086.0\nwrite: count=32024 p50_us=1377.1 p95_us=2350.9 p99_us=4701.7 p99_9_us=5479.6 max_us=7311.4\nclient=0 elapsed_ms=754.6 reads=492 writes=508 max_read_ms=0.069 max_write_ms=5.440\nclient=1 elapsed_ms=766.4 reads=477 writes=523 max_read_ms=0.071 max_write_ms=5.413\nclient=2 elapsed_ms=740.7 reads=497 writes=503 max_read_ms=0.250 max_write_ms=5.172\nclient=3 elapsed_ms=773.9 reads=475 writes=525 max_read_ms=0.075 max_write_ms=5.244\nclient=4 elapsed_ms=753.8 reads=486 writes=514 max_read_ms=0.288 max_write_ms=5.340\nclient=5 elapsed_ms=757.0 reads=495 writes=505 max_read_ms=0.118 max_write_ms=5.612\nclient=6 elapsed_ms=722.4 reads=510 writes=490 max_read_ms=0.058 max_write_ms=5.357\nclient=7 elapsed_ms=731.2 reads=514 writes=486 max_read_ms=0.145 max_write_ms=5.376\nclient=8 elapsed_ms=742.7 reads=500 writes=500 max_read_ms=0.088 max_write_ms=7.260\nclient=9 elapsed_ms=772.2 reads=482 writes=518 max_read_ms=0.069 max_write_ms=5.262\nclient=10 elapsed_ms=746.2 reads=498 writes=502 max_read_ms=0.031 max_write_ms=7.311\nclient=11 elapsed_ms=757.4 reads=489 writes=511 max_read_ms=0.093 max_write_ms=4.987\nclient=12 elapsed_ms=762.1 reads=491 writes=509 max_read_ms=0.098 max_write_ms=5.237\nclient=13 elapsed_ms=757.5 reads=493 writes=507 max_read_ms=0.056 max_write_ms=5.572\nclient=14 elapsed_ms=657.1 reads=553 writes=447 max_read_ms=0.158 max_write_ms=5.228\nclient=15 elapsed_ms=734.1 reads=507 writes=493 max_read_ms=0.094 max_write_ms=5.569\nclient=16 elapsed_ms=745.9 reads=505 writes=495 max_read_ms=0.072 max_write_ms=5.684\nclient=17 elapsed_ms=716.2 reads=505 writes=495 max_read_ms=0.165 max_write_ms=6.239\nclient=18 elapsed_ms=772.7 reads=467 writes=533 max_read_ms=0.183 max_write_ms=5.118\nclient=19 elapsed_ms=756.1 reads=495 writes=505 max_read_ms=0.059 max_write_ms=5.560\nclient=20 elapsed_ms=773.1 reads=480 writes=520 max_read_ms=0.074 max_write_ms=5.423\nclient=21 elapsed_ms=759.2 reads=485 writes=515 max_read_ms=0.144 max_write_ms=5.553\nclient=22 elapsed_ms=766.0 reads=481 writes=519 max_read_ms=0.055 max_write_ms=5.115\nclient=23 elapsed_ms=760.5 reads=489 writes=511 max_read_ms=0.159 max_write_ms=6.485\nclient=24 elapsed_ms=756.5 reads=495 writes=505 max_read_ms=0.139 max_write_ms=5.456\nclient=25 elapsed_ms=691.9 reads=528 writes=472 max_read_ms=0.138 max_write_ms=5.040\nclient=26 elapsed_ms=770.9 reads=469 writes=531 max_read_ms=0.246 max_write_ms=5.147\nclient=27 elapsed_ms=758.2 reads=501 writes=499 max_read_ms=0.194 max_write_ms=5.172\nclient=28 elapsed_ms=754.6 reads=499 writes=501 max_read_ms=0.056 max_write_ms=5.184\nclient=29 elapsed_ms=686.0 reads=535 writes=465 max_read_ms=0.106 max_write_ms=6.485\nclient=30 elapsed_ms=741.9 reads=500 writes=500 max_read_ms=0.174 max_write_ms=5.713\nclient=31 elapsed_ms=712.2 reads=519 writes=481 max_read_ms=0.036 max_write_ms=5.374\nclient=32 elapsed_ms=727.2 reads=498 writes=502 max_read_ms=0.137 max_write_ms=5.191\nclient=33 elapsed_ms=767.8 reads=477 writes=523 max_read_ms=0.041 max_write_ms=5.466\nclient=34 elapsed_ms=729.1 reads=502 writes=498 max_read_ms=0.080 max_write_ms=5.469\nclient=35 elapsed_ms=711.4 reads=523 writes=477 max_read_ms=0.066 max_write_ms=5.475\nclient=36 elapsed_ms=746.6 reads=505 writes=495 max_read_ms=0.090 max_write_ms=5.550\nclient=37 elapsed_ms=752.7 reads=501 writes=499 max_read_ms=0.079 max_write_ms=5.235\nclient=38 elapsed_ms=766.3 reads=486 writes=514 max_read_ms=0.103 max_write_ms=5.592\nclient=39 elapsed_ms=720.1 reads=523 writes=477 max_read_ms=4.086 max_write_ms=5.504\nclient=40 elapsed_ms=767.2 reads=489 writes=511 max_read_ms=0.037 max_write_ms=5.396\nclient=41 elapsed_ms=769.6 reads=488 writes=512 max_read_ms=0.223 max_write_ms=5.595\nclient=42 elapsed_ms=693.9 reads=529 writes=471 max_read_ms=0.082 max_write_ms=5.417\nclient=43 elapsed_ms=762.2 reads=489 writes=511 max_read_ms=0.102 max_write_ms=5.156\nclient=44 elapsed_ms=745.3 reads=499 writes=501 max_read_ms=0.220 max_write_ms=5.750\nclient=45 elapsed_ms=761.3 reads=492 writes=508 max_read_ms=0.162 max_write_ms=5.463\nclient=46 elapsed_ms=727.2 reads=502 writes=498 max_read_ms=0.181 max_write_ms=5.727\nclient=47 elapsed_ms=762.4 reads=492 writes=508 max_read_ms=0.280 max_write_ms=5.293\nclient=48 elapsed_ms=718.7 reads=520 writes=480 max_read_ms=0.089 max_write_ms=5.237\nclient=49 elapsed_ms=708.0 reads=525 writes=475 max_read_ms=0.063 max_write_ms=5.525\nclient=50 elapsed_ms=734.8 reads=505 writes=495 max_read_ms=0.228 max_write_ms=5.498\nclient=51 elapsed_ms=757.0 reads=486 writes=514 max_read_ms=0.101 max_write_ms=5.605\nclient=52 elapsed_ms=734.5 reads=498 writes=502 max_read_ms=0.096 max_write_ms=5.366\nclient=53 elapsed_ms=758.0 reads=494 writes=506 max_read_ms=1.065 max_write_ms=5.760\nclient=54 elapsed_ms=716.5 reads=514 writes=486 max_read_ms=0.066 max_write_ms=5.172\nclient=55 elapsed_ms=756.4 reads=495 writes=505 max_read_ms=0.055 max_write_ms=5.086\nclient=56 elapsed_ms=739.9 reads=511 writes=489 max_read_ms=0.047 max_write_ms=5.402\nclient=57 elapsed_ms=717.0 reads=523 writes=477 max_read_ms=0.129 max_write_ms=5.480\nclient=58 elapsed_ms=719.1 reads=514 writes=486 max_read_ms=0.053 max_write_ms=5.743\nclient=59 elapsed_ms=753.4 reads=486 writes=514 max_read_ms=0.118 max_write_ms=5.389\nclient=60 elapsed_ms=732.2 reads=505 writes=495 max_read_ms=0.080 max_write_ms=5.541\nclient=61 elapsed_ms=760.1 reads=492 writes=508 max_read_ms=0.084 max_write_ms=5.067\nclient=62 elapsed_ms=738.6 reads=508 writes=492 max_read_ms=0.099 max_write_ms=5.528\nclient=63 elapsed_ms=759.3 reads=493 writes=507 max_read_ms=0.055 max_write_ms=5.749\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "after",
+      "repetition": 1,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=684.8 ops_per_sec=93457.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.0 p95_us=2.9 p99_us=25.0 p99_9_us=91.1 max_us=516.7\nwrite: count=32024 p50_us=1307.8 p95_us=1844.5 p99_us=2188.3 p99_9_us=2691.3 max_us=3458.4\nclient=0 elapsed_ms=671.1 reads=492 writes=508 max_read_ms=0.072 max_write_ms=2.692\nclient=1 elapsed_ms=683.4 reads=477 writes=523 max_read_ms=0.052 max_write_ms=3.458\nclient=2 elapsed_ms=658.6 reads=497 writes=503 max_read_ms=0.091 max_write_ms=2.716\nclient=3 elapsed_ms=681.1 reads=475 writes=525 max_read_ms=0.136 max_write_ms=2.547\nclient=4 elapsed_ms=674.4 reads=486 writes=514 max_read_ms=0.105 max_write_ms=2.559\nclient=5 elapsed_ms=673.8 reads=495 writes=505 max_read_ms=0.082 max_write_ms=3.008\nclient=6 elapsed_ms=652.1 reads=510 writes=490 max_read_ms=0.085 max_write_ms=2.525\nclient=7 elapsed_ms=649.5 reads=514 writes=486 max_read_ms=0.027 max_write_ms=2.539\nclient=8 elapsed_ms=665.8 reads=500 writes=500 max_read_ms=0.040 max_write_ms=2.556\nclient=9 elapsed_ms=676.8 reads=482 writes=518 max_read_ms=0.049 max_write_ms=3.006\nclient=10 elapsed_ms=654.8 reads=498 writes=502 max_read_ms=0.112 max_write_ms=2.542\nclient=11 elapsed_ms=673.6 reads=489 writes=511 max_read_ms=0.142 max_write_ms=2.591\nclient=12 elapsed_ms=672.3 reads=491 writes=509 max_read_ms=0.110 max_write_ms=2.555\nclient=13 elapsed_ms=677.9 reads=493 writes=507 max_read_ms=0.061 max_write_ms=3.147\nclient=14 elapsed_ms=594.0 reads=553 writes=447 max_read_ms=0.133 max_write_ms=2.447\nclient=15 elapsed_ms=657.5 reads=507 writes=493 max_read_ms=0.159 max_write_ms=3.011\nclient=16 elapsed_ms=659.9 reads=505 writes=495 max_read_ms=0.059 max_write_ms=2.461\nclient=17 elapsed_ms=662.0 reads=505 writes=495 max_read_ms=0.036 max_write_ms=2.888\nclient=18 elapsed_ms=681.6 reads=467 writes=533 max_read_ms=0.100 max_write_ms=2.554\nclient=19 elapsed_ms=670.4 reads=495 writes=505 max_read_ms=0.395 max_write_ms=2.685\nclient=20 elapsed_ms=678.5 reads=480 writes=520 max_read_ms=0.054 max_write_ms=2.923\nclient=21 elapsed_ms=677.5 reads=485 writes=515 max_read_ms=0.074 max_write_ms=2.944\nclient=22 elapsed_ms=677.4 reads=481 writes=519 max_read_ms=0.092 max_write_ms=2.381\nclient=23 elapsed_ms=674.8 reads=489 writes=511 max_read_ms=0.303 max_write_ms=2.713\nclient=24 elapsed_ms=672.5 reads=495 writes=505 max_read_ms=0.051 max_write_ms=2.599\nclient=25 elapsed_ms=637.2 reads=528 writes=472 max_read_ms=0.070 max_write_ms=2.456\nclient=26 elapsed_ms=683.6 reads=469 writes=531 max_read_ms=0.117 max_write_ms=2.971\nclient=27 elapsed_ms=662.2 reads=501 writes=499 max_read_ms=0.077 max_write_ms=2.665\nclient=28 elapsed_ms=655.3 reads=499 writes=501 max_read_ms=0.054 max_write_ms=2.372\nclient=29 elapsed_ms=613.6 reads=535 writes=465 max_read_ms=0.062 max_write_ms=2.707\nclient=30 elapsed_ms=661.1 reads=500 writes=500 max_read_ms=0.134 max_write_ms=2.792\nclient=31 elapsed_ms=639.4 reads=519 writes=481 max_read_ms=0.129 max_write_ms=2.494\nclient=32 elapsed_ms=660.1 reads=498 writes=502 max_read_ms=0.063 max_write_ms=2.786\nclient=33 elapsed_ms=678.8 reads=477 writes=523 max_read_ms=0.123 max_write_ms=2.567\nclient=34 elapsed_ms=658.1 reads=502 writes=498 max_read_ms=0.082 max_write_ms=2.518\nclient=35 elapsed_ms=641.1 reads=523 writes=477 max_read_ms=0.026 max_write_ms=2.616\nclient=36 elapsed_ms=652.9 reads=505 writes=495 max_read_ms=0.045 max_write_ms=2.773\nclient=37 elapsed_ms=665.0 reads=501 writes=499 max_read_ms=0.043 max_write_ms=3.008\nclient=38 elapsed_ms=668.3 reads=486 writes=514 max_read_ms=0.064 max_write_ms=2.579\nclient=39 elapsed_ms=640.1 reads=523 writes=477 max_read_ms=0.067 max_write_ms=2.753\nclient=40 elapsed_ms=677.7 reads=489 writes=511 max_read_ms=0.517 max_write_ms=3.018\nclient=41 elapsed_ms=674.5 reads=488 writes=512 max_read_ms=0.081 max_write_ms=2.473\nclient=42 elapsed_ms=633.4 reads=529 writes=471 max_read_ms=0.055 max_write_ms=2.426\nclient=43 elapsed_ms=665.2 reads=489 writes=511 max_read_ms=0.107 max_write_ms=2.562\nclient=44 elapsed_ms=665.0 reads=499 writes=501 max_read_ms=0.079 max_write_ms=2.709\nclient=45 elapsed_ms=670.9 reads=492 writes=508 max_read_ms=0.134 max_write_ms=2.545\nclient=46 elapsed_ms=658.0 reads=502 writes=498 max_read_ms=0.074 max_write_ms=2.876\nclient=47 elapsed_ms=667.4 reads=492 writes=508 max_read_ms=0.061 max_write_ms=2.460\nclient=48 elapsed_ms=641.6 reads=520 writes=480 max_read_ms=0.071 max_write_ms=2.556\nclient=49 elapsed_ms=629.1 reads=525 writes=475 max_read_ms=0.058 max_write_ms=2.372\nclient=50 elapsed_ms=657.2 reads=505 writes=495 max_read_ms=0.066 max_write_ms=3.039\nclient=51 elapsed_ms=670.2 reads=486 writes=514 max_read_ms=0.249 max_write_ms=2.544\nclient=52 elapsed_ms=669.9 reads=498 writes=502 max_read_ms=0.200 max_write_ms=2.775\nclient=53 elapsed_ms=667.8 reads=494 writes=506 max_read_ms=0.057 max_write_ms=2.629\nclient=54 elapsed_ms=655.9 reads=514 writes=486 max_read_ms=0.150 max_write_ms=2.787\nclient=55 elapsed_ms=669.5 reads=495 writes=505 max_read_ms=0.063 max_write_ms=2.564\nclient=56 elapsed_ms=656.5 reads=511 writes=489 max_read_ms=0.082 max_write_ms=2.939\nclient=57 elapsed_ms=634.6 reads=523 writes=477 max_read_ms=0.061 max_write_ms=2.818\nclient=58 elapsed_ms=646.5 reads=514 writes=486 max_read_ms=0.323 max_write_ms=2.370\nclient=59 elapsed_ms=675.1 reads=486 writes=514 max_read_ms=0.116 max_write_ms=2.549\nclient=60 elapsed_ms=646.1 reads=505 writes=495 max_read_ms=0.068 max_write_ms=2.538\nclient=61 elapsed_ms=669.5 reads=492 writes=508 max_read_ms=0.216 max_write_ms=2.540\nclient=62 elapsed_ms=655.9 reads=508 writes=492 max_read_ms=0.308 max_write_ms=2.695\nclient=63 elapsed_ms=667.6 reads=493 writes=507 max_read_ms=0.379 max_write_ms=2.858\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "after",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=659.4 ops_per_sec=97054.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.0 p95_us=3.1 p99_us=31.6 p99_9_us=118.8 max_us=453.1\nwrite: count=32024 p50_us=1238.1 p95_us=1879.6 p99_us=2485.6 p99_9_us=4484.2 max_us=4854.7\nclient=0 elapsed_ms=648.6 reads=492 writes=508 max_read_ms=0.084 max_write_ms=4.179\nclient=1 elapsed_ms=654.5 reads=477 writes=523 max_read_ms=0.051 max_write_ms=4.147\nclient=2 elapsed_ms=641.8 reads=497 writes=503 max_read_ms=0.095 max_write_ms=4.240\nclient=3 elapsed_ms=650.8 reads=475 writes=525 max_read_ms=0.058 max_write_ms=4.023\nclient=4 elapsed_ms=648.1 reads=486 writes=514 max_read_ms=0.079 max_write_ms=4.746\nclient=5 elapsed_ms=641.1 reads=495 writes=505 max_read_ms=0.070 max_write_ms=4.654\nclient=6 elapsed_ms=624.4 reads=510 writes=490 max_read_ms=0.119 max_write_ms=4.484\nclient=7 elapsed_ms=627.9 reads=514 writes=486 max_read_ms=0.099 max_write_ms=4.488\nclient=8 elapsed_ms=639.1 reads=500 writes=500 max_read_ms=0.122 max_write_ms=4.354\nclient=9 elapsed_ms=651.4 reads=482 writes=518 max_read_ms=0.086 max_write_ms=4.242\nclient=10 elapsed_ms=638.8 reads=498 writes=502 max_read_ms=0.070 max_write_ms=4.754\nclient=11 elapsed_ms=637.6 reads=489 writes=511 max_read_ms=0.068 max_write_ms=4.533\nclient=12 elapsed_ms=648.0 reads=491 writes=509 max_read_ms=0.096 max_write_ms=4.600\nclient=13 elapsed_ms=643.1 reads=493 writes=507 max_read_ms=0.076 max_write_ms=4.074\nclient=14 elapsed_ms=582.8 reads=553 writes=447 max_read_ms=0.148 max_write_ms=4.714\nclient=15 elapsed_ms=634.7 reads=507 writes=493 max_read_ms=0.209 max_write_ms=4.147\nclient=16 elapsed_ms=638.3 reads=505 writes=495 max_read_ms=0.065 max_write_ms=4.207\nclient=17 elapsed_ms=628.2 reads=505 writes=495 max_read_ms=0.348 max_write_ms=4.786\nclient=18 elapsed_ms=653.6 reads=467 writes=533 max_read_ms=0.156 max_write_ms=4.523\nclient=19 elapsed_ms=644.9 reads=495 writes=505 max_read_ms=0.068 max_write_ms=4.483\nclient=20 elapsed_ms=649.7 reads=480 writes=520 max_read_ms=0.037 max_write_ms=4.703\nclient=21 elapsed_ms=651.1 reads=485 writes=515 max_read_ms=0.142 max_write_ms=4.432\nclient=22 elapsed_ms=655.4 reads=481 writes=519 max_read_ms=0.215 max_write_ms=4.855\nclient=23 elapsed_ms=647.5 reads=489 writes=511 max_read_ms=0.113 max_write_ms=4.745\nclient=24 elapsed_ms=642.3 reads=495 writes=505 max_read_ms=0.102 max_write_ms=4.703\nclient=25 elapsed_ms=610.5 reads=528 writes=472 max_read_ms=0.163 max_write_ms=4.185\nclient=26 elapsed_ms=658.1 reads=469 writes=531 max_read_ms=0.039 max_write_ms=4.057\nclient=27 elapsed_ms=633.4 reads=501 writes=499 max_read_ms=0.267 max_write_ms=4.213\nclient=28 elapsed_ms=637.8 reads=499 writes=501 max_read_ms=0.170 max_write_ms=4.727\nclient=29 elapsed_ms=592.7 reads=535 writes=465 max_read_ms=0.119 max_write_ms=4.755\nclient=30 elapsed_ms=634.1 reads=500 writes=500 max_read_ms=0.119 max_write_ms=4.122\nclient=31 elapsed_ms=616.4 reads=519 writes=481 max_read_ms=0.121 max_write_ms=4.535\nclient=32 elapsed_ms=638.5 reads=498 writes=502 max_read_ms=0.145 max_write_ms=4.717\nclient=33 elapsed_ms=651.8 reads=477 writes=523 max_read_ms=0.076 max_write_ms=4.694\nclient=34 elapsed_ms=635.7 reads=502 writes=498 max_read_ms=0.050 max_write_ms=4.098\nclient=35 elapsed_ms=618.7 reads=523 writes=477 max_read_ms=0.197 max_write_ms=4.678\nclient=36 elapsed_ms=628.0 reads=505 writes=495 max_read_ms=0.044 max_write_ms=4.607\nclient=37 elapsed_ms=640.1 reads=501 writes=499 max_read_ms=0.159 max_write_ms=4.464\nclient=38 elapsed_ms=649.8 reads=486 writes=514 max_read_ms=0.073 max_write_ms=4.360\nclient=39 elapsed_ms=608.2 reads=523 writes=477 max_read_ms=0.043 max_write_ms=4.113\nclient=40 elapsed_ms=642.0 reads=489 writes=511 max_read_ms=0.062 max_write_ms=4.378\nclient=41 elapsed_ms=646.9 reads=488 writes=512 max_read_ms=0.237 max_write_ms=4.467\nclient=42 elapsed_ms=604.3 reads=529 writes=471 max_read_ms=0.245 max_write_ms=4.023\nclient=43 elapsed_ms=648.0 reads=489 writes=511 max_read_ms=0.203 max_write_ms=4.740\nclient=44 elapsed_ms=638.5 reads=499 writes=501 max_read_ms=0.053 max_write_ms=4.679\nclient=45 elapsed_ms=644.4 reads=492 writes=508 max_read_ms=0.048 max_write_ms=4.695\nclient=46 elapsed_ms=629.5 reads=502 writes=498 max_read_ms=0.088 max_write_ms=4.200\nclient=47 elapsed_ms=640.2 reads=492 writes=508 max_read_ms=0.051 max_write_ms=4.088\nclient=48 elapsed_ms=608.8 reads=520 writes=480 max_read_ms=0.097 max_write_ms=4.474\nclient=49 elapsed_ms=609.7 reads=525 writes=475 max_read_ms=0.127 max_write_ms=4.661\nclient=50 elapsed_ms=634.0 reads=505 writes=495 max_read_ms=0.050 max_write_ms=4.652\nclient=51 elapsed_ms=644.3 reads=486 writes=514 max_read_ms=0.071 max_write_ms=4.095\nclient=52 elapsed_ms=641.1 reads=498 writes=502 max_read_ms=0.097 max_write_ms=4.639\nclient=53 elapsed_ms=637.1 reads=494 writes=506 max_read_ms=0.147 max_write_ms=3.962\nclient=54 elapsed_ms=631.9 reads=514 writes=486 max_read_ms=0.453 max_write_ms=4.025\nclient=55 elapsed_ms=647.2 reads=495 writes=505 max_read_ms=0.215 max_write_ms=4.730\nclient=56 elapsed_ms=630.8 reads=511 writes=489 max_read_ms=0.044 max_write_ms=4.412\nclient=57 elapsed_ms=608.5 reads=523 writes=477 max_read_ms=0.103 max_write_ms=4.172\nclient=58 elapsed_ms=631.5 reads=514 writes=486 max_read_ms=0.136 max_write_ms=4.308\nclient=59 elapsed_ms=647.5 reads=486 writes=514 max_read_ms=0.088 max_write_ms=4.183\nclient=60 elapsed_ms=642.8 reads=505 writes=495 max_read_ms=0.115 max_write_ms=4.700\nclient=61 elapsed_ms=643.2 reads=492 writes=508 max_read_ms=0.067 max_write_ms=4.041\nclient=62 elapsed_ms=633.8 reads=508 writes=492 max_read_ms=0.211 max_write_ms=4.156\nclient=63 elapsed_ms=641.2 reads=493 writes=507 max_read_ms=0.113 max_write_ms=4.742\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "before",
+      "repetition": 2,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=952.8 ops_per_sec=67170.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.8 p99_us=31.3 p99_9_us=122.2 max_us=2345.0\nwrite: count=32024 p50_us=1536.9 p95_us=4066.3 p99_us=6409.5 p99_9_us=8315.8 max_us=11130.9\nclient=0 elapsed_ms=938.9 reads=492 writes=508 max_read_ms=0.054 max_write_ms=8.051\nclient=1 elapsed_ms=948.3 reads=477 writes=523 max_read_ms=0.055 max_write_ms=8.246\nclient=2 elapsed_ms=926.7 reads=497 writes=503 max_read_ms=0.111 max_write_ms=8.488\nclient=3 elapsed_ms=947.3 reads=475 writes=525 max_read_ms=0.084 max_write_ms=8.214\nclient=4 elapsed_ms=940.8 reads=486 writes=514 max_read_ms=0.039 max_write_ms=8.399\nclient=5 elapsed_ms=930.0 reads=495 writes=505 max_read_ms=1.891 max_write_ms=8.615\nclient=6 elapsed_ms=907.4 reads=510 writes=490 max_read_ms=0.108 max_write_ms=8.286\nclient=7 elapsed_ms=911.3 reads=514 writes=486 max_read_ms=0.087 max_write_ms=8.198\nclient=8 elapsed_ms=934.0 reads=500 writes=500 max_read_ms=0.207 max_write_ms=8.239\nclient=9 elapsed_ms=940.5 reads=482 writes=518 max_read_ms=0.173 max_write_ms=8.139\nclient=10 elapsed_ms=924.6 reads=498 writes=502 max_read_ms=0.156 max_write_ms=8.053\nclient=11 elapsed_ms=939.5 reads=489 writes=511 max_read_ms=0.033 max_write_ms=8.412\nclient=12 elapsed_ms=941.4 reads=491 writes=509 max_read_ms=0.223 max_write_ms=8.316\nclient=13 elapsed_ms=936.7 reads=493 writes=507 max_read_ms=0.082 max_write_ms=8.487\nclient=14 elapsed_ms=852.4 reads=553 writes=447 max_read_ms=0.112 max_write_ms=8.459\nclient=15 elapsed_ms=919.1 reads=507 writes=493 max_read_ms=0.100 max_write_ms=8.471\nclient=16 elapsed_ms=935.6 reads=505 writes=495 max_read_ms=0.133 max_write_ms=8.215\nclient=17 elapsed_ms=905.8 reads=505 writes=495 max_read_ms=0.144 max_write_ms=8.413\nclient=18 elapsed_ms=948.9 reads=467 writes=533 max_read_ms=0.081 max_write_ms=8.266\nclient=19 elapsed_ms=933.9 reads=495 writes=505 max_read_ms=0.096 max_write_ms=8.072\nclient=20 elapsed_ms=948.2 reads=480 writes=520 max_read_ms=0.061 max_write_ms=8.428\nclient=21 elapsed_ms=943.3 reads=485 writes=515 max_read_ms=0.327 max_write_ms=8.490\nclient=22 elapsed_ms=947.5 reads=481 writes=519 max_read_ms=0.107 max_write_ms=8.014\nclient=23 elapsed_ms=941.7 reads=489 writes=511 max_read_ms=0.116 max_write_ms=7.924\nclient=24 elapsed_ms=932.7 reads=495 writes=505 max_read_ms=0.198 max_write_ms=8.445\nclient=25 elapsed_ms=893.1 reads=528 writes=472 max_read_ms=0.089 max_write_ms=8.297\nclient=26 elapsed_ms=951.3 reads=469 writes=531 max_read_ms=0.171 max_write_ms=8.467\nclient=27 elapsed_ms=936.2 reads=501 writes=499 max_read_ms=0.032 max_write_ms=8.404\nclient=28 elapsed_ms=923.9 reads=499 writes=501 max_read_ms=0.036 max_write_ms=8.249\nclient=29 elapsed_ms=868.2 reads=535 writes=465 max_read_ms=0.078 max_write_ms=8.260\nclient=30 elapsed_ms=932.7 reads=500 writes=500 max_read_ms=0.067 max_write_ms=8.308\nclient=31 elapsed_ms=901.7 reads=519 writes=481 max_read_ms=0.259 max_write_ms=7.970\nclient=32 elapsed_ms=929.6 reads=498 writes=502 max_read_ms=0.268 max_write_ms=8.105\nclient=33 elapsed_ms=948.8 reads=477 writes=523 max_read_ms=0.135 max_write_ms=8.267\nclient=34 elapsed_ms=918.8 reads=502 writes=498 max_read_ms=0.077 max_write_ms=8.516\nclient=35 elapsed_ms=896.0 reads=523 writes=477 max_read_ms=0.346 max_write_ms=8.289\nclient=36 elapsed_ms=932.3 reads=505 writes=495 max_read_ms=0.045 max_write_ms=8.482\nclient=37 elapsed_ms=934.7 reads=501 writes=499 max_read_ms=0.088 max_write_ms=8.406\nclient=38 elapsed_ms=944.5 reads=486 writes=514 max_read_ms=0.103 max_write_ms=8.284\nclient=39 elapsed_ms=901.0 reads=523 writes=477 max_read_ms=0.120 max_write_ms=11.131\nclient=40 elapsed_ms=946.8 reads=489 writes=511 max_read_ms=0.120 max_write_ms=8.261\nclient=41 elapsed_ms=939.9 reads=488 writes=512 max_read_ms=0.207 max_write_ms=8.258\nclient=42 elapsed_ms=894.9 reads=529 writes=471 max_read_ms=0.129 max_write_ms=8.022\nclient=43 elapsed_ms=934.7 reads=489 writes=511 max_read_ms=0.064 max_write_ms=8.493\nclient=44 elapsed_ms=926.2 reads=499 writes=501 max_read_ms=0.144 max_write_ms=8.106\nclient=45 elapsed_ms=924.0 reads=492 writes=508 max_read_ms=0.174 max_write_ms=8.474\nclient=46 elapsed_ms=931.3 reads=502 writes=498 max_read_ms=0.993 max_write_ms=8.113\nclient=47 elapsed_ms=946.6 reads=492 writes=508 max_read_ms=0.222 max_write_ms=8.265\nclient=48 elapsed_ms=901.4 reads=520 writes=480 max_read_ms=0.110 max_write_ms=8.058\nclient=49 elapsed_ms=890.7 reads=525 writes=475 max_read_ms=0.072 max_write_ms=8.235\nclient=50 elapsed_ms=908.1 reads=505 writes=495 max_read_ms=0.053 max_write_ms=8.182\nclient=51 elapsed_ms=945.0 reads=486 writes=514 max_read_ms=0.176 max_write_ms=8.473\nclient=52 elapsed_ms=933.2 reads=498 writes=502 max_read_ms=0.305 max_write_ms=8.269\nclient=53 elapsed_ms=935.9 reads=494 writes=506 max_read_ms=0.065 max_write_ms=8.276\nclient=54 elapsed_ms=902.5 reads=514 writes=486 max_read_ms=0.048 max_write_ms=8.463\nclient=55 elapsed_ms=932.1 reads=495 writes=505 max_read_ms=0.771 max_write_ms=8.291\nclient=56 elapsed_ms=909.2 reads=511 writes=489 max_read_ms=0.129 max_write_ms=8.448\nclient=57 elapsed_ms=895.2 reads=523 writes=477 max_read_ms=0.086 max_write_ms=8.257\nclient=58 elapsed_ms=906.6 reads=514 writes=486 max_read_ms=0.083 max_write_ms=8.460\nclient=59 elapsed_ms=943.3 reads=486 writes=514 max_read_ms=0.148 max_write_ms=8.430\nclient=60 elapsed_ms=920.6 reads=505 writes=495 max_read_ms=2.345 max_write_ms=8.531\nclient=61 elapsed_ms=939.4 reads=492 writes=508 max_read_ms=0.154 max_write_ms=8.441\nclient=62 elapsed_ms=905.9 reads=508 writes=492 max_read_ms=0.152 max_write_ms=8.169\nclient=63 elapsed_ms=937.9 reads=493 writes=507 max_read_ms=0.088 max_write_ms=8.401\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "before",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=804.4 ops_per_sec=79564.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.5 p99_us=26.0 p99_9_us=98.0 max_us=324.0\nwrite: count=32024 p50_us=1451.3 p95_us=2702.0 p99_us=4117.7 p99_9_us=5420.2 max_us=7513.4\nclient=0 elapsed_ms=776.5 reads=492 writes=508 max_read_ms=0.033 max_write_ms=5.641\nclient=1 elapsed_ms=803.1 reads=477 writes=523 max_read_ms=0.092 max_write_ms=4.471\nclient=2 elapsed_ms=772.6 reads=497 writes=503 max_read_ms=0.046 max_write_ms=6.320\nclient=3 elapsed_ms=801.5 reads=475 writes=525 max_read_ms=0.057 max_write_ms=7.115\nclient=4 elapsed_ms=793.2 reads=486 writes=514 max_read_ms=0.123 max_write_ms=5.027\nclient=5 elapsed_ms=780.2 reads=495 writes=505 max_read_ms=0.122 max_write_ms=6.740\nclient=6 elapsed_ms=784.2 reads=510 writes=490 max_read_ms=0.200 max_write_ms=6.703\nclient=7 elapsed_ms=773.7 reads=514 writes=486 max_read_ms=0.038 max_write_ms=5.119\nclient=8 elapsed_ms=779.5 reads=500 writes=500 max_read_ms=0.062 max_write_ms=5.517\nclient=9 elapsed_ms=797.1 reads=482 writes=518 max_read_ms=0.194 max_write_ms=6.654\nclient=10 elapsed_ms=770.2 reads=498 writes=502 max_read_ms=0.072 max_write_ms=4.467\nclient=11 elapsed_ms=792.1 reads=489 writes=511 max_read_ms=0.294 max_write_ms=5.108\nclient=12 elapsed_ms=793.1 reads=491 writes=509 max_read_ms=0.111 max_write_ms=4.521\nclient=13 elapsed_ms=785.4 reads=493 writes=507 max_read_ms=0.084 max_write_ms=5.660\nclient=14 elapsed_ms=722.1 reads=553 writes=447 max_read_ms=0.097 max_write_ms=6.353\nclient=15 elapsed_ms=761.1 reads=507 writes=493 max_read_ms=0.050 max_write_ms=4.745\nclient=16 elapsed_ms=764.2 reads=505 writes=495 max_read_ms=0.113 max_write_ms=4.689\nclient=17 elapsed_ms=772.0 reads=505 writes=495 max_read_ms=0.098 max_write_ms=4.539\nclient=18 elapsed_ms=800.5 reads=467 writes=533 max_read_ms=0.102 max_write_ms=6.751\nclient=19 elapsed_ms=783.0 reads=495 writes=505 max_read_ms=0.063 max_write_ms=5.693\nclient=20 elapsed_ms=794.9 reads=480 writes=520 max_read_ms=0.022 max_write_ms=6.753\nclient=21 elapsed_ms=783.9 reads=485 writes=515 max_read_ms=0.145 max_write_ms=6.636\nclient=22 elapsed_ms=792.0 reads=481 writes=519 max_read_ms=0.061 max_write_ms=4.475\nclient=23 elapsed_ms=788.5 reads=489 writes=511 max_read_ms=0.058 max_write_ms=4.780\nclient=24 elapsed_ms=790.9 reads=495 writes=505 max_read_ms=0.088 max_write_ms=6.454\nclient=25 elapsed_ms=747.2 reads=528 writes=472 max_read_ms=0.062 max_write_ms=6.746\nclient=26 elapsed_ms=797.0 reads=469 writes=531 max_read_ms=0.038 max_write_ms=6.282\nclient=27 elapsed_ms=777.8 reads=501 writes=499 max_read_ms=0.043 max_write_ms=4.987\nclient=28 elapsed_ms=784.0 reads=499 writes=501 max_read_ms=0.058 max_write_ms=4.806\nclient=29 elapsed_ms=729.1 reads=535 writes=465 max_read_ms=0.157 max_write_ms=4.882\nclient=30 elapsed_ms=774.5 reads=500 writes=500 max_read_ms=0.171 max_write_ms=4.481\nclient=31 elapsed_ms=759.9 reads=519 writes=481 max_read_ms=0.100 max_write_ms=5.698\nclient=32 elapsed_ms=785.0 reads=498 writes=502 max_read_ms=0.094 max_write_ms=4.849\nclient=33 elapsed_ms=799.7 reads=477 writes=523 max_read_ms=0.070 max_write_ms=4.641\nclient=34 elapsed_ms=777.1 reads=502 writes=498 max_read_ms=0.078 max_write_ms=5.420\nclient=35 elapsed_ms=756.3 reads=523 writes=477 max_read_ms=0.043 max_write_ms=6.567\nclient=36 elapsed_ms=773.3 reads=505 writes=495 max_read_ms=0.121 max_write_ms=5.027\nclient=37 elapsed_ms=781.0 reads=501 writes=499 max_read_ms=0.126 max_write_ms=6.711\nclient=38 elapsed_ms=791.5 reads=486 writes=514 max_read_ms=0.069 max_write_ms=4.720\nclient=39 elapsed_ms=752.2 reads=523 writes=477 max_read_ms=0.111 max_write_ms=6.548\nclient=40 elapsed_ms=786.3 reads=489 writes=511 max_read_ms=0.052 max_write_ms=6.631\nclient=41 elapsed_ms=790.6 reads=488 writes=512 max_read_ms=0.105 max_write_ms=6.504\nclient=42 elapsed_ms=751.2 reads=529 writes=471 max_read_ms=0.192 max_write_ms=7.044\nclient=43 elapsed_ms=795.4 reads=489 writes=511 max_read_ms=0.168 max_write_ms=4.972\nclient=44 elapsed_ms=787.8 reads=499 writes=501 max_read_ms=0.052 max_write_ms=4.834\nclient=45 elapsed_ms=783.8 reads=492 writes=508 max_read_ms=0.074 max_write_ms=5.557\nclient=46 elapsed_ms=774.2 reads=502 writes=498 max_read_ms=0.041 max_write_ms=6.559\nclient=47 elapsed_ms=780.9 reads=492 writes=508 max_read_ms=0.063 max_write_ms=5.082\nclient=48 elapsed_ms=744.4 reads=520 writes=480 max_read_ms=0.100 max_write_ms=4.589\nclient=49 elapsed_ms=749.1 reads=525 writes=475 max_read_ms=0.108 max_write_ms=4.519\nclient=50 elapsed_ms=772.0 reads=505 writes=495 max_read_ms=0.032 max_write_ms=4.563\nclient=51 elapsed_ms=792.3 reads=486 writes=514 max_read_ms=0.053 max_write_ms=7.513\nclient=52 elapsed_ms=778.6 reads=498 writes=502 max_read_ms=0.324 max_write_ms=6.764\nclient=53 elapsed_ms=782.9 reads=494 writes=506 max_read_ms=0.114 max_write_ms=6.608\nclient=54 elapsed_ms=774.5 reads=514 writes=486 max_read_ms=0.129 max_write_ms=6.336\nclient=55 elapsed_ms=775.9 reads=495 writes=505 max_read_ms=0.141 max_write_ms=6.759\nclient=56 elapsed_ms=773.2 reads=511 writes=489 max_read_ms=0.300 max_write_ms=7.511\nclient=57 elapsed_ms=745.9 reads=523 writes=477 max_read_ms=0.052 max_write_ms=4.515\nclient=58 elapsed_ms=756.7 reads=514 writes=486 max_read_ms=0.083 max_write_ms=5.101\nclient=59 elapsed_ms=790.9 reads=486 writes=514 max_read_ms=0.042 max_write_ms=4.654\nclient=60 elapsed_ms=766.5 reads=505 writes=495 max_read_ms=0.070 max_write_ms=6.547\nclient=61 elapsed_ms=788.1 reads=492 writes=508 max_read_ms=0.098 max_write_ms=5.204\nclient=62 elapsed_ms=772.8 reads=508 writes=492 max_read_ms=0.100 max_write_ms=4.287\nclient=63 elapsed_ms=783.3 reads=493 writes=507 max_read_ms=0.244 max_write_ms=4.584\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "after",
+      "repetition": 3,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=737.7 ops_per_sec=86753.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.1 p99_us=28.5 p99_9_us=114.9 max_us=770.5\nwrite: count=32024 p50_us=1404.9 p95_us=2007.6 p99_us=2466.7 p99_9_us=5035.2 max_us=5764.9\nclient=0 elapsed_ms=716.4 reads=492 writes=508 max_read_ms=0.045 max_write_ms=5.547\nclient=1 elapsed_ms=735.0 reads=477 writes=523 max_read_ms=0.133 max_write_ms=5.323\nclient=2 elapsed_ms=718.2 reads=497 writes=503 max_read_ms=0.217 max_write_ms=5.765\nclient=3 elapsed_ms=733.8 reads=475 writes=525 max_read_ms=0.164 max_write_ms=4.758\nclient=4 elapsed_ms=728.5 reads=486 writes=514 max_read_ms=0.095 max_write_ms=4.559\nclient=5 elapsed_ms=729.5 reads=495 writes=505 max_read_ms=0.057 max_write_ms=4.513\nclient=6 elapsed_ms=706.3 reads=510 writes=490 max_read_ms=0.219 max_write_ms=5.448\nclient=7 elapsed_ms=698.6 reads=514 writes=486 max_read_ms=0.044 max_write_ms=5.724\nclient=8 elapsed_ms=721.4 reads=500 writes=500 max_read_ms=0.314 max_write_ms=4.867\nclient=9 elapsed_ms=734.2 reads=482 writes=518 max_read_ms=0.047 max_write_ms=4.919\nclient=10 elapsed_ms=717.1 reads=498 writes=502 max_read_ms=0.310 max_write_ms=5.384\nclient=11 elapsed_ms=728.7 reads=489 writes=511 max_read_ms=0.129 max_write_ms=4.785\nclient=12 elapsed_ms=726.9 reads=491 writes=509 max_read_ms=0.307 max_write_ms=5.036\nclient=13 elapsed_ms=724.3 reads=493 writes=507 max_read_ms=0.357 max_write_ms=5.187\nclient=14 elapsed_ms=640.4 reads=553 writes=447 max_read_ms=0.098 max_write_ms=4.861\nclient=15 elapsed_ms=707.7 reads=507 writes=493 max_read_ms=0.108 max_write_ms=5.174\nclient=16 elapsed_ms=714.1 reads=505 writes=495 max_read_ms=0.106 max_write_ms=4.896\nclient=17 elapsed_ms=706.2 reads=505 writes=495 max_read_ms=0.333 max_write_ms=4.985\nclient=18 elapsed_ms=732.3 reads=467 writes=533 max_read_ms=0.067 max_write_ms=4.486\nclient=19 elapsed_ms=723.1 reads=495 writes=505 max_read_ms=0.051 max_write_ms=4.914\nclient=20 elapsed_ms=729.8 reads=480 writes=520 max_read_ms=0.116 max_write_ms=5.108\nclient=21 elapsed_ms=726.6 reads=485 writes=515 max_read_ms=0.112 max_write_ms=5.419\nclient=22 elapsed_ms=730.7 reads=481 writes=519 max_read_ms=0.048 max_write_ms=4.908\nclient=23 elapsed_ms=721.7 reads=489 writes=511 max_read_ms=0.276 max_write_ms=5.721\nclient=24 elapsed_ms=723.5 reads=495 writes=505 max_read_ms=0.037 max_write_ms=5.673\nclient=25 elapsed_ms=684.1 reads=528 writes=472 max_read_ms=0.109 max_write_ms=5.188\nclient=26 elapsed_ms=735.6 reads=469 writes=531 max_read_ms=0.684 max_write_ms=5.030\nclient=27 elapsed_ms=715.6 reads=501 writes=499 max_read_ms=0.052 max_write_ms=4.956\nclient=28 elapsed_ms=718.9 reads=499 writes=501 max_read_ms=0.049 max_write_ms=5.643\nclient=29 elapsed_ms=664.1 reads=535 writes=465 max_read_ms=0.087 max_write_ms=4.892\nclient=30 elapsed_ms=717.8 reads=500 writes=500 max_read_ms=0.088 max_write_ms=5.241\nclient=31 elapsed_ms=694.8 reads=519 writes=481 max_read_ms=0.247 max_write_ms=5.182\nclient=32 elapsed_ms=717.2 reads=498 writes=502 max_read_ms=0.135 max_write_ms=5.004\nclient=33 elapsed_ms=733.3 reads=477 writes=523 max_read_ms=0.079 max_write_ms=4.568\nclient=34 elapsed_ms=711.1 reads=502 writes=498 max_read_ms=0.042 max_write_ms=4.722\nclient=35 elapsed_ms=686.1 reads=523 writes=477 max_read_ms=0.053 max_write_ms=4.640\nclient=36 elapsed_ms=714.2 reads=505 writes=495 max_read_ms=0.130 max_write_ms=4.983\nclient=37 elapsed_ms=714.8 reads=501 writes=499 max_read_ms=0.089 max_write_ms=5.554\nclient=38 elapsed_ms=725.6 reads=486 writes=514 max_read_ms=0.169 max_write_ms=4.598\nclient=39 elapsed_ms=681.0 reads=523 writes=477 max_read_ms=0.097 max_write_ms=5.176\nclient=40 elapsed_ms=720.2 reads=489 writes=511 max_read_ms=0.097 max_write_ms=5.569\nclient=41 elapsed_ms=732.1 reads=488 writes=512 max_read_ms=0.208 max_write_ms=5.335\nclient=42 elapsed_ms=681.3 reads=529 writes=471 max_read_ms=0.077 max_write_ms=5.589\nclient=43 elapsed_ms=724.6 reads=489 writes=511 max_read_ms=0.084 max_write_ms=5.594\nclient=44 elapsed_ms=717.9 reads=499 writes=501 max_read_ms=0.084 max_write_ms=5.338\nclient=45 elapsed_ms=720.9 reads=492 writes=508 max_read_ms=0.160 max_write_ms=4.543\nclient=46 elapsed_ms=704.8 reads=502 writes=498 max_read_ms=0.109 max_write_ms=4.812\nclient=47 elapsed_ms=722.7 reads=492 writes=508 max_read_ms=0.054 max_write_ms=4.617\nclient=48 elapsed_ms=691.2 reads=520 writes=480 max_read_ms=0.770 max_write_ms=5.174\nclient=49 elapsed_ms=690.1 reads=525 writes=475 max_read_ms=0.119 max_write_ms=4.682\nclient=50 elapsed_ms=707.6 reads=505 writes=495 max_read_ms=0.059 max_write_ms=5.330\nclient=51 elapsed_ms=727.1 reads=486 writes=514 max_read_ms=0.136 max_write_ms=5.191\nclient=52 elapsed_ms=721.4 reads=498 writes=502 max_read_ms=0.079 max_write_ms=5.201\nclient=53 elapsed_ms=724.5 reads=494 writes=506 max_read_ms=0.064 max_write_ms=5.197\nclient=54 elapsed_ms=696.4 reads=514 writes=486 max_read_ms=0.278 max_write_ms=4.917\nclient=55 elapsed_ms=720.0 reads=495 writes=505 max_read_ms=0.036 max_write_ms=4.583\nclient=56 elapsed_ms=706.1 reads=511 writes=489 max_read_ms=0.075 max_write_ms=4.721\nclient=57 elapsed_ms=683.9 reads=523 writes=477 max_read_ms=0.123 max_write_ms=5.717\nclient=58 elapsed_ms=712.5 reads=514 writes=486 max_read_ms=0.047 max_write_ms=4.944\nclient=59 elapsed_ms=729.6 reads=486 writes=514 max_read_ms=0.079 max_write_ms=4.989\nclient=60 elapsed_ms=713.0 reads=505 writes=495 max_read_ms=0.082 max_write_ms=4.631\nclient=61 elapsed_ms=725.6 reads=492 writes=508 max_read_ms=0.035 max_write_ms=5.046\nclient=62 elapsed_ms=704.9 reads=508 writes=492 max_read_ms=0.107 max_write_ms=5.035\nclient=63 elapsed_ms=728.0 reads=493 writes=507 max_read_ms=0.141 max_write_ms=5.651\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "after",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=741.1 ops_per_sec=86358.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.0 p99_us=27.5 p99_9_us=95.2 max_us=439.0\nwrite: count=32024 p50_us=1379.0 p95_us=2087.9 p99_us=3379.0 p99_9_us=4596.1 max_us=5062.7\nclient=0 elapsed_ms=727.0 reads=492 writes=508 max_read_ms=0.037 max_write_ms=4.400\nclient=1 elapsed_ms=736.1 reads=477 writes=523 max_read_ms=0.042 max_write_ms=4.112\nclient=2 elapsed_ms=721.9 reads=497 writes=503 max_read_ms=0.062 max_write_ms=4.256\nclient=3 elapsed_ms=736.4 reads=475 writes=525 max_read_ms=0.369 max_write_ms=4.140\nclient=4 elapsed_ms=728.9 reads=486 writes=514 max_read_ms=0.077 max_write_ms=4.797\nclient=5 elapsed_ms=721.6 reads=495 writes=505 max_read_ms=0.090 max_write_ms=4.281\nclient=6 elapsed_ms=700.9 reads=510 writes=490 max_read_ms=0.219 max_write_ms=4.127\nclient=7 elapsed_ms=706.0 reads=514 writes=486 max_read_ms=0.112 max_write_ms=4.222\nclient=8 elapsed_ms=718.7 reads=500 writes=500 max_read_ms=0.059 max_write_ms=4.864\nclient=9 elapsed_ms=732.4 reads=482 writes=518 max_read_ms=0.095 max_write_ms=4.804\nclient=10 elapsed_ms=724.5 reads=498 writes=502 max_read_ms=0.089 max_write_ms=4.518\nclient=11 elapsed_ms=732.5 reads=489 writes=511 max_read_ms=0.072 max_write_ms=4.114\nclient=12 elapsed_ms=726.8 reads=491 writes=509 max_read_ms=0.110 max_write_ms=4.683\nclient=13 elapsed_ms=727.9 reads=493 writes=507 max_read_ms=0.137 max_write_ms=4.418\nclient=14 elapsed_ms=645.0 reads=553 writes=447 max_read_ms=0.096 max_write_ms=4.780\nclient=15 elapsed_ms=711.4 reads=507 writes=493 max_read_ms=0.079 max_write_ms=4.788\nclient=16 elapsed_ms=705.1 reads=505 writes=495 max_read_ms=0.032 max_write_ms=4.092\nclient=17 elapsed_ms=710.4 reads=505 writes=495 max_read_ms=0.063 max_write_ms=4.137\nclient=18 elapsed_ms=740.0 reads=467 writes=533 max_read_ms=0.263 max_write_ms=4.669\nclient=19 elapsed_ms=718.1 reads=495 writes=505 max_read_ms=0.100 max_write_ms=4.514\nclient=20 elapsed_ms=736.1 reads=480 writes=520 max_read_ms=0.093 max_write_ms=4.573\nclient=21 elapsed_ms=729.5 reads=485 writes=515 max_read_ms=0.112 max_write_ms=4.321\nclient=22 elapsed_ms=733.4 reads=481 writes=519 max_read_ms=0.107 max_write_ms=4.452\nclient=23 elapsed_ms=722.6 reads=489 writes=511 max_read_ms=0.143 max_write_ms=4.371\nclient=24 elapsed_ms=717.5 reads=495 writes=505 max_read_ms=0.047 max_write_ms=4.439\nclient=25 elapsed_ms=679.7 reads=528 writes=472 max_read_ms=0.126 max_write_ms=4.909\nclient=26 elapsed_ms=739.5 reads=469 writes=531 max_read_ms=0.048 max_write_ms=4.588\nclient=27 elapsed_ms=719.8 reads=501 writes=499 max_read_ms=0.177 max_write_ms=4.988\nclient=28 elapsed_ms=728.0 reads=499 writes=501 max_read_ms=0.084 max_write_ms=4.735\nclient=29 elapsed_ms=668.4 reads=535 writes=465 max_read_ms=0.082 max_write_ms=4.597\nclient=30 elapsed_ms=720.5 reads=500 writes=500 max_read_ms=0.156 max_write_ms=4.596\nclient=31 elapsed_ms=697.0 reads=519 writes=481 max_read_ms=0.095 max_write_ms=4.645\nclient=32 elapsed_ms=724.4 reads=498 writes=502 max_read_ms=0.058 max_write_ms=4.638\nclient=33 elapsed_ms=737.9 reads=477 writes=523 max_read_ms=0.041 max_write_ms=4.990\nclient=34 elapsed_ms=713.1 reads=502 writes=498 max_read_ms=0.107 max_write_ms=4.029\nclient=35 elapsed_ms=680.5 reads=523 writes=477 max_read_ms=0.058 max_write_ms=4.109\nclient=36 elapsed_ms=713.7 reads=505 writes=495 max_read_ms=0.159 max_write_ms=4.232\nclient=37 elapsed_ms=722.2 reads=501 writes=499 max_read_ms=0.054 max_write_ms=4.473\nclient=38 elapsed_ms=733.2 reads=486 writes=514 max_read_ms=0.105 max_write_ms=4.887\nclient=39 elapsed_ms=682.7 reads=523 writes=477 max_read_ms=0.157 max_write_ms=4.679\nclient=40 elapsed_ms=729.8 reads=489 writes=511 max_read_ms=0.041 max_write_ms=4.631\nclient=41 elapsed_ms=727.7 reads=488 writes=512 max_read_ms=0.190 max_write_ms=4.207\nclient=42 elapsed_ms=684.8 reads=529 writes=471 max_read_ms=0.051 max_write_ms=4.184\nclient=43 elapsed_ms=731.2 reads=489 writes=511 max_read_ms=0.439 max_write_ms=5.038\nclient=44 elapsed_ms=727.6 reads=499 writes=501 max_read_ms=0.063 max_write_ms=4.806\nclient=45 elapsed_ms=726.9 reads=492 writes=508 max_read_ms=0.083 max_write_ms=5.063\nclient=46 elapsed_ms=720.2 reads=502 writes=498 max_read_ms=0.056 max_write_ms=4.297\nclient=47 elapsed_ms=725.8 reads=492 writes=508 max_read_ms=0.051 max_write_ms=4.379\nclient=48 elapsed_ms=692.3 reads=520 writes=480 max_read_ms=0.081 max_write_ms=4.074\nclient=49 elapsed_ms=684.0 reads=525 writes=475 max_read_ms=0.034 max_write_ms=4.600\nclient=50 elapsed_ms=715.1 reads=505 writes=495 max_read_ms=0.369 max_write_ms=4.637\nclient=51 elapsed_ms=725.0 reads=486 writes=514 max_read_ms=0.043 max_write_ms=4.725\nclient=52 elapsed_ms=718.3 reads=498 writes=502 max_read_ms=0.075 max_write_ms=4.104\nclient=53 elapsed_ms=725.7 reads=494 writes=506 max_read_ms=0.134 max_write_ms=4.149\nclient=54 elapsed_ms=696.7 reads=514 writes=486 max_read_ms=0.310 max_write_ms=4.284\nclient=55 elapsed_ms=727.9 reads=495 writes=505 max_read_ms=0.074 max_write_ms=3.949\nclient=56 elapsed_ms=703.2 reads=511 writes=489 max_read_ms=0.058 max_write_ms=4.025\nclient=57 elapsed_ms=684.8 reads=523 writes=477 max_read_ms=0.121 max_write_ms=4.918\nclient=58 elapsed_ms=703.0 reads=514 writes=486 max_read_ms=0.090 max_write_ms=4.109\nclient=59 elapsed_ms=725.9 reads=486 writes=514 max_read_ms=0.066 max_write_ms=4.129\nclient=60 elapsed_ms=715.1 reads=505 writes=495 max_read_ms=0.083 max_write_ms=4.054\nclient=61 elapsed_ms=725.5 reads=492 writes=508 max_read_ms=0.062 max_write_ms=4.562\nclient=62 elapsed_ms=712.9 reads=508 writes=492 max_read_ms=0.069 max_write_ms=4.409\nclient=63 elapsed_ms=725.5 reads=493 writes=507 max_read_ms=0.086 max_write_ms=4.951\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "before",
+      "repetition": 4,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=706.0 ops_per_sec=90649.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.0 p99_us=27.5 p99_9_us=90.6 max_us=1360.6\nwrite: count=32024 p50_us=1344.8 p95_us=1929.1 p99_us=2282.4 p99_9_us=4167.9 max_us=4519.0\nclient=0 elapsed_ms=687.5 reads=492 writes=508 max_read_ms=0.055 max_write_ms=3.776\nclient=1 elapsed_ms=699.5 reads=477 writes=523 max_read_ms=0.147 max_write_ms=4.156\nclient=2 elapsed_ms=692.1 reads=497 writes=503 max_read_ms=0.492 max_write_ms=4.069\nclient=3 elapsed_ms=701.5 reads=475 writes=525 max_read_ms=0.055 max_write_ms=4.271\nclient=4 elapsed_ms=700.1 reads=486 writes=514 max_read_ms=0.081 max_write_ms=4.271\nclient=5 elapsed_ms=687.7 reads=495 writes=505 max_read_ms=0.122 max_write_ms=3.855\nclient=6 elapsed_ms=663.4 reads=510 writes=490 max_read_ms=0.068 max_write_ms=3.809\nclient=7 elapsed_ms=662.9 reads=514 writes=486 max_read_ms=0.032 max_write_ms=3.913\nclient=8 elapsed_ms=681.2 reads=500 writes=500 max_read_ms=0.382 max_write_ms=4.268\nclient=9 elapsed_ms=697.1 reads=482 writes=518 max_read_ms=0.044 max_write_ms=3.577\nclient=10 elapsed_ms=678.9 reads=498 writes=502 max_read_ms=0.108 max_write_ms=4.207\nclient=11 elapsed_ms=696.3 reads=489 writes=511 max_read_ms=0.074 max_write_ms=3.684\nclient=12 elapsed_ms=696.0 reads=491 writes=509 max_read_ms=1.361 max_write_ms=3.830\nclient=13 elapsed_ms=694.8 reads=493 writes=507 max_read_ms=0.040 max_write_ms=4.127\nclient=14 elapsed_ms=614.8 reads=553 writes=447 max_read_ms=0.091 max_write_ms=4.326\nclient=15 elapsed_ms=678.5 reads=507 writes=493 max_read_ms=0.060 max_write_ms=3.916\nclient=16 elapsed_ms=678.4 reads=505 writes=495 max_read_ms=0.031 max_write_ms=3.673\nclient=17 elapsed_ms=685.1 reads=505 writes=495 max_read_ms=0.044 max_write_ms=4.201\nclient=18 elapsed_ms=703.1 reads=467 writes=533 max_read_ms=0.073 max_write_ms=4.223\nclient=19 elapsed_ms=686.4 reads=495 writes=505 max_read_ms=0.045 max_write_ms=3.857\nclient=20 elapsed_ms=698.5 reads=480 writes=520 max_read_ms=0.035 max_write_ms=3.962\nclient=21 elapsed_ms=693.5 reads=485 writes=515 max_read_ms=0.061 max_write_ms=3.588\nclient=22 elapsed_ms=700.6 reads=481 writes=519 max_read_ms=0.081 max_write_ms=4.214\nclient=23 elapsed_ms=693.8 reads=489 writes=511 max_read_ms=0.145 max_write_ms=4.260\nclient=24 elapsed_ms=688.7 reads=495 writes=505 max_read_ms=0.059 max_write_ms=4.051\nclient=25 elapsed_ms=649.8 reads=528 writes=472 max_read_ms=0.063 max_write_ms=4.184\nclient=26 elapsed_ms=704.9 reads=469 writes=531 max_read_ms=0.222 max_write_ms=4.178\nclient=27 elapsed_ms=680.6 reads=501 writes=499 max_read_ms=0.074 max_write_ms=4.136\nclient=28 elapsed_ms=684.6 reads=499 writes=501 max_read_ms=0.042 max_write_ms=4.519\nclient=29 elapsed_ms=640.7 reads=535 writes=465 max_read_ms=0.097 max_write_ms=4.181\nclient=30 elapsed_ms=679.6 reads=500 writes=500 max_read_ms=0.077 max_write_ms=4.356\nclient=31 elapsed_ms=658.9 reads=519 writes=481 max_read_ms=0.142 max_write_ms=3.933\nclient=32 elapsed_ms=684.1 reads=498 writes=502 max_read_ms=0.172 max_write_ms=4.138\nclient=33 elapsed_ms=697.4 reads=477 writes=523 max_read_ms=0.070 max_write_ms=4.168\nclient=34 elapsed_ms=675.0 reads=502 writes=498 max_read_ms=0.026 max_write_ms=4.161\nclient=35 elapsed_ms=663.3 reads=523 writes=477 max_read_ms=0.070 max_write_ms=3.644\nclient=36 elapsed_ms=680.5 reads=505 writes=495 max_read_ms=0.132 max_write_ms=4.253\nclient=37 elapsed_ms=681.1 reads=501 writes=499 max_read_ms=0.062 max_write_ms=3.925\nclient=38 elapsed_ms=692.3 reads=486 writes=514 max_read_ms=0.108 max_write_ms=4.174\nclient=39 elapsed_ms=660.4 reads=523 writes=477 max_read_ms=0.041 max_write_ms=4.204\nclient=40 elapsed_ms=695.8 reads=489 writes=511 max_read_ms=0.037 max_write_ms=4.104\nclient=41 elapsed_ms=688.7 reads=488 writes=512 max_read_ms=0.067 max_write_ms=4.178\nclient=42 elapsed_ms=657.7 reads=529 writes=471 max_read_ms=0.252 max_write_ms=4.252\nclient=43 elapsed_ms=692.1 reads=489 writes=511 max_read_ms=0.168 max_write_ms=4.177\nclient=44 elapsed_ms=685.1 reads=499 writes=501 max_read_ms=0.106 max_write_ms=4.291\nclient=45 elapsed_ms=696.3 reads=492 writes=508 max_read_ms=0.053 max_write_ms=3.980\nclient=46 elapsed_ms=684.1 reads=502 writes=498 max_read_ms=0.052 max_write_ms=3.836\nclient=47 elapsed_ms=695.9 reads=492 writes=508 max_read_ms=0.076 max_write_ms=4.249\nclient=48 elapsed_ms=648.3 reads=520 writes=480 max_read_ms=0.088 max_write_ms=3.916\nclient=49 elapsed_ms=652.3 reads=525 writes=475 max_read_ms=0.066 max_write_ms=4.177\nclient=50 elapsed_ms=686.0 reads=505 writes=495 max_read_ms=0.163 max_write_ms=3.800\nclient=51 elapsed_ms=695.2 reads=486 writes=514 max_read_ms=0.114 max_write_ms=3.703\nclient=52 elapsed_ms=691.5 reads=498 writes=502 max_read_ms=0.064 max_write_ms=3.929\nclient=53 elapsed_ms=682.6 reads=494 writes=506 max_read_ms=0.087 max_write_ms=4.217\nclient=54 elapsed_ms=668.4 reads=514 writes=486 max_read_ms=0.065 max_write_ms=3.974\nclient=55 elapsed_ms=689.1 reads=495 writes=505 max_read_ms=0.097 max_write_ms=4.157\nclient=56 elapsed_ms=673.2 reads=511 writes=489 max_read_ms=0.099 max_write_ms=3.775\nclient=57 elapsed_ms=657.2 reads=523 writes=477 max_read_ms=0.083 max_write_ms=4.388\nclient=58 elapsed_ms=656.9 reads=514 writes=486 max_read_ms=0.092 max_write_ms=4.245\nclient=59 elapsed_ms=696.0 reads=486 writes=514 max_read_ms=0.046 max_write_ms=4.192\nclient=60 elapsed_ms=664.8 reads=505 writes=495 max_read_ms=0.088 max_write_ms=4.198\nclient=61 elapsed_ms=691.4 reads=492 writes=508 max_read_ms=0.178 max_write_ms=4.333\nclient=62 elapsed_ms=680.6 reads=508 writes=492 max_read_ms=0.082 max_write_ms=4.195\nclient=63 elapsed_ms=686.6 reads=493 writes=507 max_read_ms=0.088 max_write_ms=4.204\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "before",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=886.6 ops_per_sec=72189.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.2 p99_us=27.0 p99_9_us=113.7 max_us=1481.7\nwrite: count=32024 p50_us=1442.7 p95_us=3242.2 p99_us=4912.0 p99_9_us=34505.0 max_us=35177.2\nclient=0 elapsed_ms=859.3 reads=492 writes=508 max_read_ms=0.142 max_write_ms=34.983\nclient=1 elapsed_ms=882.3 reads=477 writes=523 max_read_ms=0.083 max_write_ms=34.994\nclient=2 elapsed_ms=857.3 reads=497 writes=503 max_read_ms=0.250 max_write_ms=34.860\nclient=3 elapsed_ms=883.8 reads=475 writes=525 max_read_ms=0.103 max_write_ms=32.017\nclient=4 elapsed_ms=881.9 reads=486 writes=514 max_read_ms=0.118 max_write_ms=31.939\nclient=5 elapsed_ms=859.2 reads=495 writes=505 max_read_ms=0.060 max_write_ms=34.626\nclient=6 elapsed_ms=842.9 reads=510 writes=490 max_read_ms=0.216 max_write_ms=31.782\nclient=7 elapsed_ms=793.7 reads=514 writes=486 max_read_ms=0.121 max_write_ms=30.345\nclient=8 elapsed_ms=847.8 reads=500 writes=500 max_read_ms=0.293 max_write_ms=34.769\nclient=9 elapsed_ms=881.2 reads=482 writes=518 max_read_ms=0.186 max_write_ms=31.666\nclient=10 elapsed_ms=845.7 reads=498 writes=502 max_read_ms=0.072 max_write_ms=34.926\nclient=11 elapsed_ms=862.6 reads=489 writes=511 max_read_ms=0.114 max_write_ms=34.905\nclient=12 elapsed_ms=879.7 reads=491 writes=509 max_read_ms=0.073 max_write_ms=31.625\nclient=13 elapsed_ms=844.9 reads=493 writes=507 max_read_ms=0.121 max_write_ms=34.169\nclient=14 elapsed_ms=746.1 reads=553 writes=447 max_read_ms=0.095 max_write_ms=35.030\nclient=15 elapsed_ms=845.6 reads=507 writes=493 max_read_ms=0.080 max_write_ms=31.766\nclient=16 elapsed_ms=834.6 reads=505 writes=495 max_read_ms=0.164 max_write_ms=31.347\nclient=17 elapsed_ms=846.7 reads=505 writes=495 max_read_ms=0.063 max_write_ms=31.986\nclient=18 elapsed_ms=883.8 reads=467 writes=533 max_read_ms=0.173 max_write_ms=31.654\nclient=19 elapsed_ms=857.9 reads=495 writes=505 max_read_ms=0.114 max_write_ms=34.411\nclient=20 elapsed_ms=883.2 reads=480 writes=520 max_read_ms=0.219 max_write_ms=31.645\nclient=21 elapsed_ms=863.8 reads=485 writes=515 max_read_ms=0.112 max_write_ms=34.860\nclient=22 elapsed_ms=881.2 reads=481 writes=519 max_read_ms=0.068 max_write_ms=35.170\nclient=23 elapsed_ms=858.3 reads=489 writes=511 max_read_ms=0.087 max_write_ms=34.931\nclient=24 elapsed_ms=863.3 reads=495 writes=505 max_read_ms=0.159 max_write_ms=34.834\nclient=25 elapsed_ms=781.2 reads=528 writes=472 max_read_ms=0.026 max_write_ms=34.583\nclient=26 elapsed_ms=885.0 reads=469 writes=531 max_read_ms=0.040 max_write_ms=31.553\nclient=27 elapsed_ms=850.1 reads=501 writes=499 max_read_ms=1.482 max_write_ms=35.170\nclient=28 elapsed_ms=838.8 reads=499 writes=501 max_read_ms=0.054 max_write_ms=34.270\nclient=29 elapsed_ms=786.5 reads=535 writes=465 max_read_ms=0.104 max_write_ms=31.700\nclient=30 elapsed_ms=854.5 reads=500 writes=500 max_read_ms=0.116 max_write_ms=34.562\nclient=31 elapsed_ms=817.3 reads=519 writes=481 max_read_ms=0.057 max_write_ms=34.742\nclient=32 elapsed_ms=858.3 reads=498 writes=502 max_read_ms=0.049 max_write_ms=34.947\nclient=33 elapsed_ms=885.7 reads=477 writes=523 max_read_ms=0.050 max_write_ms=34.916\nclient=34 elapsed_ms=832.5 reads=502 writes=498 max_read_ms=0.064 max_write_ms=34.807\nclient=35 elapsed_ms=798.4 reads=523 writes=477 max_read_ms=0.229 max_write_ms=31.951\nclient=36 elapsed_ms=844.1 reads=505 writes=495 max_read_ms=0.157 max_write_ms=31.763\nclient=37 elapsed_ms=843.2 reads=501 writes=499 max_read_ms=0.109 max_write_ms=34.648\nclient=38 elapsed_ms=884.0 reads=486 writes=514 max_read_ms=0.052 max_write_ms=31.989\nclient=39 elapsed_ms=798.2 reads=523 writes=477 max_read_ms=0.073 max_write_ms=34.378\nclient=40 elapsed_ms=857.9 reads=489 writes=511 max_read_ms=0.092 max_write_ms=34.973\nclient=41 elapsed_ms=878.8 reads=488 writes=512 max_read_ms=0.103 max_write_ms=34.633\nclient=42 elapsed_ms=774.7 reads=529 writes=471 max_read_ms=0.033 max_write_ms=34.981\nclient=43 elapsed_ms=838.6 reads=489 writes=511 max_read_ms=0.040 max_write_ms=31.663\nclient=44 elapsed_ms=838.4 reads=499 writes=501 max_read_ms=0.088 max_write_ms=31.340\nclient=45 elapsed_ms=845.8 reads=492 writes=508 max_read_ms=0.077 max_write_ms=34.163\nclient=46 elapsed_ms=829.3 reads=502 writes=498 max_read_ms=0.074 max_write_ms=31.300\nclient=47 elapsed_ms=861.0 reads=492 writes=508 max_read_ms=0.463 max_write_ms=34.740\nclient=48 elapsed_ms=812.2 reads=520 writes=480 max_read_ms=0.097 max_write_ms=34.755\nclient=49 elapsed_ms=795.7 reads=525 writes=475 max_read_ms=0.055 max_write_ms=31.660\nclient=50 elapsed_ms=842.5 reads=505 writes=495 max_read_ms=0.104 max_write_ms=34.328\nclient=51 elapsed_ms=863.8 reads=486 writes=514 max_read_ms=0.053 max_write_ms=35.000\nclient=52 elapsed_ms=852.7 reads=498 writes=502 max_read_ms=0.165 max_write_ms=31.794\nclient=53 elapsed_ms=850.6 reads=494 writes=506 max_read_ms=0.033 max_write_ms=34.505\nclient=54 elapsed_ms=812.2 reads=514 writes=486 max_read_ms=0.241 max_write_ms=31.950\nclient=55 elapsed_ms=847.2 reads=495 writes=505 max_read_ms=0.088 max_write_ms=31.589\nclient=56 elapsed_ms=826.9 reads=511 writes=489 max_read_ms=0.216 max_write_ms=34.982\nclient=57 elapsed_ms=796.9 reads=523 writes=477 max_read_ms=0.085 max_write_ms=32.098\nclient=58 elapsed_ms=825.1 reads=514 writes=486 max_read_ms=0.166 max_write_ms=34.924\nclient=59 elapsed_ms=857.9 reads=486 writes=514 max_read_ms=0.051 max_write_ms=34.630\nclient=60 elapsed_ms=832.6 reads=505 writes=495 max_read_ms=0.047 max_write_ms=34.721\nclient=61 elapsed_ms=863.7 reads=492 writes=508 max_read_ms=0.058 max_write_ms=34.808\nclient=62 elapsed_ms=822.9 reads=508 writes=492 max_read_ms=0.046 max_write_ms=31.771\nclient=63 elapsed_ms=868.1 reads=493 writes=507 max_read_ms=0.192 max_write_ms=35.177\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "after",
+      "repetition": 5,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=735.0 ops_per_sec=87070.0\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.1 p99_us=25.9 p99_9_us=106.0 max_us=339.1\nwrite: count=32024 p50_us=1370.3 p95_us=2185.4 p99_us=3262.3 p99_9_us=4291.4 max_us=5276.8\nclient=0 elapsed_ms=718.6 reads=492 writes=508 max_read_ms=0.045 max_write_ms=4.148\nclient=1 elapsed_ms=729.0 reads=477 writes=523 max_read_ms=0.182 max_write_ms=5.072\nclient=2 elapsed_ms=714.6 reads=497 writes=503 max_read_ms=0.145 max_write_ms=4.163\nclient=3 elapsed_ms=731.2 reads=475 writes=525 max_read_ms=0.070 max_write_ms=4.349\nclient=4 elapsed_ms=724.5 reads=486 writes=514 max_read_ms=0.072 max_write_ms=4.507\nclient=5 elapsed_ms=720.8 reads=495 writes=505 max_read_ms=0.337 max_write_ms=4.197\nclient=6 elapsed_ms=703.9 reads=510 writes=490 max_read_ms=0.050 max_write_ms=4.032\nclient=7 elapsed_ms=698.2 reads=514 writes=486 max_read_ms=0.059 max_write_ms=4.141\nclient=8 elapsed_ms=719.2 reads=500 writes=500 max_read_ms=0.034 max_write_ms=4.144\nclient=9 elapsed_ms=727.6 reads=482 writes=518 max_read_ms=0.063 max_write_ms=4.075\nclient=10 elapsed_ms=712.6 reads=498 writes=502 max_read_ms=0.105 max_write_ms=5.277\nclient=11 elapsed_ms=720.1 reads=489 writes=511 max_read_ms=0.096 max_write_ms=4.027\nclient=12 elapsed_ms=722.7 reads=491 writes=509 max_read_ms=0.086 max_write_ms=4.361\nclient=13 elapsed_ms=720.2 reads=493 writes=507 max_read_ms=0.113 max_write_ms=4.568\nclient=14 elapsed_ms=644.0 reads=553 writes=447 max_read_ms=0.055 max_write_ms=4.103\nclient=15 elapsed_ms=708.4 reads=507 writes=493 max_read_ms=0.097 max_write_ms=4.128\nclient=16 elapsed_ms=705.0 reads=505 writes=495 max_read_ms=0.128 max_write_ms=4.565\nclient=17 elapsed_ms=705.6 reads=505 writes=495 max_read_ms=0.058 max_write_ms=4.052\nclient=18 elapsed_ms=732.9 reads=467 writes=533 max_read_ms=0.132 max_write_ms=4.187\nclient=19 elapsed_ms=715.9 reads=495 writes=505 max_read_ms=0.032 max_write_ms=3.989\nclient=20 elapsed_ms=725.1 reads=480 writes=520 max_read_ms=0.157 max_write_ms=4.534\nclient=21 elapsed_ms=726.5 reads=485 writes=515 max_read_ms=0.292 max_write_ms=5.067\nclient=22 elapsed_ms=728.6 reads=481 writes=519 max_read_ms=0.067 max_write_ms=4.191\nclient=23 elapsed_ms=722.9 reads=489 writes=511 max_read_ms=0.071 max_write_ms=4.177\nclient=24 elapsed_ms=719.6 reads=495 writes=505 max_read_ms=0.162 max_write_ms=4.279\nclient=25 elapsed_ms=676.9 reads=528 writes=472 max_read_ms=0.123 max_write_ms=4.676\nclient=26 elapsed_ms=733.5 reads=469 writes=531 max_read_ms=0.166 max_write_ms=4.059\nclient=27 elapsed_ms=715.3 reads=501 writes=499 max_read_ms=0.273 max_write_ms=4.403\nclient=28 elapsed_ms=716.9 reads=499 writes=501 max_read_ms=0.065 max_write_ms=4.543\nclient=29 elapsed_ms=676.1 reads=535 writes=465 max_read_ms=0.164 max_write_ms=5.030\nclient=30 elapsed_ms=711.5 reads=500 writes=500 max_read_ms=0.114 max_write_ms=4.182\nclient=31 elapsed_ms=694.1 reads=519 writes=481 max_read_ms=0.103 max_write_ms=4.162\nclient=32 elapsed_ms=724.5 reads=498 writes=502 max_read_ms=0.084 max_write_ms=4.149\nclient=33 elapsed_ms=728.9 reads=477 writes=523 max_read_ms=0.091 max_write_ms=5.060\nclient=34 elapsed_ms=714.6 reads=502 writes=498 max_read_ms=0.066 max_write_ms=3.990\nclient=35 elapsed_ms=684.8 reads=523 writes=477 max_read_ms=0.116 max_write_ms=4.329\nclient=36 elapsed_ms=709.3 reads=505 writes=495 max_read_ms=0.028 max_write_ms=5.215\nclient=37 elapsed_ms=716.4 reads=501 writes=499 max_read_ms=0.058 max_write_ms=5.214\nclient=38 elapsed_ms=725.1 reads=486 writes=514 max_read_ms=0.329 max_write_ms=4.223\nclient=39 elapsed_ms=686.8 reads=523 writes=477 max_read_ms=0.155 max_write_ms=3.931\nclient=40 elapsed_ms=720.5 reads=489 writes=511 max_read_ms=0.035 max_write_ms=4.368\nclient=41 elapsed_ms=724.1 reads=488 writes=512 max_read_ms=0.086 max_write_ms=5.040\nclient=42 elapsed_ms=670.8 reads=529 writes=471 max_read_ms=0.073 max_write_ms=4.555\nclient=43 elapsed_ms=725.9 reads=489 writes=511 max_read_ms=0.178 max_write_ms=3.919\nclient=44 elapsed_ms=712.0 reads=499 writes=501 max_read_ms=0.082 max_write_ms=4.130\nclient=45 elapsed_ms=719.3 reads=492 writes=508 max_read_ms=0.075 max_write_ms=4.291\nclient=46 elapsed_ms=712.5 reads=502 writes=498 max_read_ms=0.063 max_write_ms=5.229\nclient=47 elapsed_ms=720.5 reads=492 writes=508 max_read_ms=0.111 max_write_ms=4.070\nclient=48 elapsed_ms=689.5 reads=520 writes=480 max_read_ms=0.037 max_write_ms=4.119\nclient=49 elapsed_ms=679.7 reads=525 writes=475 max_read_ms=0.027 max_write_ms=4.326\nclient=50 elapsed_ms=712.4 reads=505 writes=495 max_read_ms=0.112 max_write_ms=4.205\nclient=51 elapsed_ms=726.3 reads=486 writes=514 max_read_ms=0.024 max_write_ms=4.417\nclient=52 elapsed_ms=715.0 reads=498 writes=502 max_read_ms=0.030 max_write_ms=4.001\nclient=53 elapsed_ms=722.0 reads=494 writes=506 max_read_ms=0.129 max_write_ms=4.187\nclient=54 elapsed_ms=691.2 reads=514 writes=486 max_read_ms=0.137 max_write_ms=4.346\nclient=55 elapsed_ms=719.4 reads=495 writes=505 max_read_ms=0.339 max_write_ms=4.769\nclient=56 elapsed_ms=696.8 reads=511 writes=489 max_read_ms=0.064 max_write_ms=4.270\nclient=57 elapsed_ms=687.9 reads=523 writes=477 max_read_ms=0.078 max_write_ms=4.060\nclient=58 elapsed_ms=702.8 reads=514 writes=486 max_read_ms=0.163 max_write_ms=4.089\nclient=59 elapsed_ms=723.7 reads=486 writes=514 max_read_ms=0.044 max_write_ms=4.115\nclient=60 elapsed_ms=714.6 reads=505 writes=495 max_read_ms=0.032 max_write_ms=4.668\nclient=61 elapsed_ms=715.9 reads=492 writes=508 max_read_ms=0.130 max_write_ms=4.541\nclient=62 elapsed_ms=700.6 reads=508 writes=492 max_read_ms=0.132 max_write_ms=3.684\nclient=63 elapsed_ms=718.5 reads=493 writes=507 max_read_ms=0.092 max_write_ms=5.045\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "after",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=970.2 ops_per_sec=65968.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.8 p99_us=30.4 p99_9_us=119.6 max_us=2420.4\nwrite: count=32024 p50_us=1573.7 p95_us=4080.5 p99_us=6628.2 p99_9_us=8998.5 max_us=10146.2\nclient=0 elapsed_ms=952.2 reads=492 writes=508 max_read_ms=0.048 max_write_ms=10.075\nclient=1 elapsed_ms=964.8 reads=477 writes=523 max_read_ms=0.376 max_write_ms=9.155\nclient=2 elapsed_ms=953.8 reads=497 writes=503 max_read_ms=0.067 max_write_ms=8.344\nclient=3 elapsed_ms=967.0 reads=475 writes=525 max_read_ms=0.169 max_write_ms=10.108\nclient=4 elapsed_ms=952.1 reads=486 writes=514 max_read_ms=0.091 max_write_ms=8.300\nclient=5 elapsed_ms=953.4 reads=495 writes=505 max_read_ms=0.082 max_write_ms=9.014\nclient=6 elapsed_ms=940.4 reads=510 writes=490 max_read_ms=0.134 max_write_ms=8.276\nclient=7 elapsed_ms=921.8 reads=514 writes=486 max_read_ms=0.149 max_write_ms=10.095\nclient=8 elapsed_ms=941.5 reads=500 writes=500 max_read_ms=0.120 max_write_ms=9.360\nclient=9 elapsed_ms=961.7 reads=482 writes=518 max_read_ms=0.115 max_write_ms=8.582\nclient=10 elapsed_ms=958.3 reads=498 writes=502 max_read_ms=0.063 max_write_ms=8.585\nclient=11 elapsed_ms=957.8 reads=489 writes=511 max_read_ms=0.077 max_write_ms=10.085\nclient=12 elapsed_ms=957.9 reads=491 writes=509 max_read_ms=0.052 max_write_ms=8.576\nclient=13 elapsed_ms=946.0 reads=493 writes=507 max_read_ms=0.085 max_write_ms=10.097\nclient=14 elapsed_ms=857.6 reads=553 writes=447 max_read_ms=0.154 max_write_ms=8.313\nclient=15 elapsed_ms=933.4 reads=507 writes=493 max_read_ms=0.109 max_write_ms=10.146\nclient=16 elapsed_ms=935.4 reads=505 writes=495 max_read_ms=0.179 max_write_ms=8.591\nclient=17 elapsed_ms=932.2 reads=505 writes=495 max_read_ms=0.051 max_write_ms=9.990\nclient=18 elapsed_ms=968.3 reads=467 writes=533 max_read_ms=0.125 max_write_ms=9.940\nclient=19 elapsed_ms=951.3 reads=495 writes=505 max_read_ms=0.157 max_write_ms=8.329\nclient=20 elapsed_ms=964.1 reads=480 writes=520 max_read_ms=0.160 max_write_ms=9.929\nclient=21 elapsed_ms=962.4 reads=485 writes=515 max_read_ms=0.052 max_write_ms=8.527\nclient=22 elapsed_ms=964.5 reads=481 writes=519 max_read_ms=0.126 max_write_ms=9.996\nclient=23 elapsed_ms=960.7 reads=489 writes=511 max_read_ms=0.075 max_write_ms=10.093\nclient=24 elapsed_ms=958.0 reads=495 writes=505 max_read_ms=0.098 max_write_ms=10.039\nclient=25 elapsed_ms=914.2 reads=528 writes=472 max_read_ms=0.081 max_write_ms=10.040\nclient=26 elapsed_ms=968.2 reads=469 writes=531 max_read_ms=0.272 max_write_ms=10.035\nclient=27 elapsed_ms=946.4 reads=501 writes=499 max_read_ms=0.143 max_write_ms=9.018\nclient=28 elapsed_ms=953.3 reads=499 writes=501 max_read_ms=0.095 max_write_ms=8.513\nclient=29 elapsed_ms=894.8 reads=535 writes=465 max_read_ms=0.348 max_write_ms=8.516\nclient=30 elapsed_ms=945.8 reads=500 writes=500 max_read_ms=0.063 max_write_ms=8.402\nclient=31 elapsed_ms=927.4 reads=519 writes=481 max_read_ms=0.109 max_write_ms=8.518\nclient=32 elapsed_ms=944.7 reads=498 writes=502 max_read_ms=0.331 max_write_ms=8.588\nclient=33 elapsed_ms=961.5 reads=477 writes=523 max_read_ms=0.083 max_write_ms=8.043\nclient=34 elapsed_ms=948.3 reads=502 writes=498 max_read_ms=0.350 max_write_ms=8.823\nclient=35 elapsed_ms=921.1 reads=523 writes=477 max_read_ms=0.097 max_write_ms=8.614\nclient=36 elapsed_ms=954.9 reads=505 writes=495 max_read_ms=0.060 max_write_ms=9.857\nclient=37 elapsed_ms=947.1 reads=501 writes=499 max_read_ms=0.192 max_write_ms=9.917\nclient=38 elapsed_ms=964.1 reads=486 writes=514 max_read_ms=0.136 max_write_ms=8.300\nclient=39 elapsed_ms=908.1 reads=523 writes=477 max_read_ms=0.059 max_write_ms=10.006\nclient=40 elapsed_ms=957.7 reads=489 writes=511 max_read_ms=0.061 max_write_ms=9.021\nclient=41 elapsed_ms=958.0 reads=488 writes=512 max_read_ms=0.051 max_write_ms=8.306\nclient=42 elapsed_ms=909.1 reads=529 writes=471 max_read_ms=0.321 max_write_ms=10.111\nclient=43 elapsed_ms=959.7 reads=489 writes=511 max_read_ms=2.420 max_write_ms=10.024\nclient=44 elapsed_ms=946.7 reads=499 writes=501 max_read_ms=0.161 max_write_ms=9.689\nclient=45 elapsed_ms=950.7 reads=492 writes=508 max_read_ms=0.162 max_write_ms=10.072\nclient=46 elapsed_ms=941.7 reads=502 writes=498 max_read_ms=0.073 max_write_ms=8.789\nclient=47 elapsed_ms=955.0 reads=492 writes=508 max_read_ms=0.107 max_write_ms=10.059\nclient=48 elapsed_ms=914.6 reads=520 writes=480 max_read_ms=0.943 max_write_ms=8.580\nclient=49 elapsed_ms=915.1 reads=525 writes=475 max_read_ms=0.051 max_write_ms=8.535\nclient=50 elapsed_ms=943.8 reads=505 writes=495 max_read_ms=0.120 max_write_ms=8.491\nclient=51 elapsed_ms=960.0 reads=486 writes=514 max_read_ms=0.118 max_write_ms=8.506\nclient=52 elapsed_ms=950.7 reads=498 writes=502 max_read_ms=0.133 max_write_ms=9.940\nclient=53 elapsed_ms=949.7 reads=494 writes=506 max_read_ms=0.187 max_write_ms=9.018\nclient=54 elapsed_ms=936.3 reads=514 writes=486 max_read_ms=0.056 max_write_ms=10.085\nclient=55 elapsed_ms=960.0 reads=495 writes=505 max_read_ms=0.084 max_write_ms=8.494\nclient=56 elapsed_ms=925.1 reads=511 writes=489 max_read_ms=0.096 max_write_ms=8.613\nclient=57 elapsed_ms=920.9 reads=523 writes=477 max_read_ms=0.091 max_write_ms=8.298\nclient=58 elapsed_ms=923.1 reads=514 writes=486 max_read_ms=0.067 max_write_ms=8.999\nclient=59 elapsed_ms=958.6 reads=486 writes=514 max_read_ms=0.078 max_write_ms=9.396\nclient=60 elapsed_ms=934.4 reads=505 writes=495 max_read_ms=0.141 max_write_ms=8.323\nclient=61 elapsed_ms=957.8 reads=492 writes=508 max_read_ms=0.066 max_write_ms=8.594\nclient=62 elapsed_ms=935.6 reads=508 writes=492 max_read_ms=0.061 max_write_ms=9.402\nclient=63 elapsed_ms=955.0 reads=493 writes=507 max_read_ms=0.228 max_write_ms=8.574\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "before",
+      "repetition": 6,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=873.1 ops_per_sec=73301.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.8 p99_us=30.2 p99_9_us=117.1 max_us=358.4\nwrite: count=32024 p50_us=1445.0 p95_us=3463.9 p99_us=6730.7 p99_9_us=14774.2 max_us=19093.9\nclient=0 elapsed_ms=851.1 reads=492 writes=508 max_read_ms=0.201 max_write_ms=14.911\nclient=1 elapsed_ms=871.2 reads=477 writes=523 max_read_ms=0.216 max_write_ms=13.667\nclient=2 elapsed_ms=863.4 reads=497 writes=503 max_read_ms=0.064 max_write_ms=18.475\nclient=3 elapsed_ms=863.3 reads=475 writes=525 max_read_ms=0.103 max_write_ms=18.557\nclient=4 elapsed_ms=864.8 reads=486 writes=514 max_read_ms=0.060 max_write_ms=18.035\nclient=5 elapsed_ms=842.8 reads=495 writes=505 max_read_ms=0.081 max_write_ms=18.167\nclient=6 elapsed_ms=838.8 reads=510 writes=490 max_read_ms=0.147 max_write_ms=14.912\nclient=7 elapsed_ms=823.3 reads=514 writes=486 max_read_ms=0.129 max_write_ms=14.926\nclient=8 elapsed_ms=840.2 reads=500 writes=500 max_read_ms=0.119 max_write_ms=15.159\nclient=9 elapsed_ms=861.5 reads=482 writes=518 max_read_ms=0.094 max_write_ms=12.337\nclient=10 elapsed_ms=837.1 reads=498 writes=502 max_read_ms=0.067 max_write_ms=13.587\nclient=11 elapsed_ms=853.0 reads=489 writes=511 max_read_ms=0.118 max_write_ms=13.529\nclient=12 elapsed_ms=857.0 reads=491 writes=509 max_read_ms=0.083 max_write_ms=16.948\nclient=13 elapsed_ms=857.9 reads=493 writes=507 max_read_ms=0.041 max_write_ms=13.577\nclient=14 elapsed_ms=752.8 reads=553 writes=447 max_read_ms=0.128 max_write_ms=13.665\nclient=15 elapsed_ms=853.0 reads=507 writes=493 max_read_ms=0.057 max_write_ms=14.816\nclient=16 elapsed_ms=840.5 reads=505 writes=495 max_read_ms=0.116 max_write_ms=18.252\nclient=17 elapsed_ms=851.5 reads=505 writes=495 max_read_ms=0.094 max_write_ms=18.171\nclient=18 elapsed_ms=872.2 reads=467 writes=533 max_read_ms=0.189 max_write_ms=13.803\nclient=19 elapsed_ms=844.1 reads=495 writes=505 max_read_ms=0.056 max_write_ms=13.564\nclient=20 elapsed_ms=865.8 reads=480 writes=520 max_read_ms=0.090 max_write_ms=14.836\nclient=21 elapsed_ms=853.9 reads=485 writes=515 max_read_ms=0.074 max_write_ms=12.408\nclient=22 elapsed_ms=869.3 reads=481 writes=519 max_read_ms=0.302 max_write_ms=14.894\nclient=23 elapsed_ms=861.6 reads=489 writes=511 max_read_ms=0.210 max_write_ms=16.964\nclient=24 elapsed_ms=849.9 reads=495 writes=505 max_read_ms=0.083 max_write_ms=18.773\nclient=25 elapsed_ms=805.5 reads=528 writes=472 max_read_ms=0.062 max_write_ms=13.808\nclient=26 elapsed_ms=867.0 reads=469 writes=531 max_read_ms=0.043 max_write_ms=18.200\nclient=27 elapsed_ms=848.5 reads=501 writes=499 max_read_ms=0.208 max_write_ms=13.559\nclient=28 elapsed_ms=838.6 reads=499 writes=501 max_read_ms=0.167 max_write_ms=14.337\nclient=29 elapsed_ms=794.8 reads=535 writes=465 max_read_ms=0.046 max_write_ms=13.603\nclient=30 elapsed_ms=841.0 reads=500 writes=500 max_read_ms=0.085 max_write_ms=13.902\nclient=31 elapsed_ms=810.1 reads=519 writes=481 max_read_ms=0.114 max_write_ms=13.706\nclient=32 elapsed_ms=853.4 reads=498 writes=502 max_read_ms=0.048 max_write_ms=14.827\nclient=33 elapsed_ms=865.6 reads=477 writes=523 max_read_ms=0.061 max_write_ms=14.227\nclient=34 elapsed_ms=840.3 reads=502 writes=498 max_read_ms=0.026 max_write_ms=18.137\nclient=35 elapsed_ms=814.1 reads=523 writes=477 max_read_ms=0.120 max_write_ms=18.729\nclient=36 elapsed_ms=838.6 reads=505 writes=495 max_read_ms=0.162 max_write_ms=14.967\nclient=37 elapsed_ms=846.6 reads=501 writes=499 max_read_ms=0.215 max_write_ms=15.021\nclient=38 elapsed_ms=858.0 reads=486 writes=514 max_read_ms=0.216 max_write_ms=13.610\nclient=39 elapsed_ms=809.1 reads=523 writes=477 max_read_ms=0.236 max_write_ms=17.947\nclient=40 elapsed_ms=863.1 reads=489 writes=511 max_read_ms=0.063 max_write_ms=14.774\nclient=41 elapsed_ms=855.7 reads=488 writes=512 max_read_ms=0.074 max_write_ms=13.738\nclient=42 elapsed_ms=807.2 reads=529 writes=471 max_read_ms=0.117 max_write_ms=15.064\nclient=43 elapsed_ms=864.5 reads=489 writes=511 max_read_ms=0.102 max_write_ms=18.291\nclient=44 elapsed_ms=845.1 reads=499 writes=501 max_read_ms=0.215 max_write_ms=15.067\nclient=45 elapsed_ms=856.2 reads=492 writes=508 max_read_ms=0.219 max_write_ms=13.588\nclient=46 elapsed_ms=856.2 reads=502 writes=498 max_read_ms=0.060 max_write_ms=16.921\nclient=47 elapsed_ms=861.8 reads=492 writes=508 max_read_ms=0.091 max_write_ms=13.482\nclient=48 elapsed_ms=819.1 reads=520 writes=480 max_read_ms=0.036 max_write_ms=19.094\nclient=49 elapsed_ms=817.7 reads=525 writes=475 max_read_ms=0.042 max_write_ms=13.648\nclient=50 elapsed_ms=842.2 reads=505 writes=495 max_read_ms=0.117 max_write_ms=13.552\nclient=51 elapsed_ms=862.1 reads=486 writes=514 max_read_ms=0.124 max_write_ms=13.819\nclient=52 elapsed_ms=852.7 reads=498 writes=502 max_read_ms=0.050 max_write_ms=18.748\nclient=53 elapsed_ms=851.1 reads=494 writes=506 max_read_ms=0.134 max_write_ms=14.220\nclient=54 elapsed_ms=845.1 reads=514 writes=486 max_read_ms=0.358 max_write_ms=13.675\nclient=55 elapsed_ms=855.3 reads=495 writes=505 max_read_ms=0.123 max_write_ms=13.647\nclient=56 elapsed_ms=825.6 reads=511 writes=489 max_read_ms=0.069 max_write_ms=16.987\nclient=57 elapsed_ms=815.8 reads=523 writes=477 max_read_ms=0.051 max_write_ms=13.548\nclient=58 elapsed_ms=812.7 reads=514 writes=486 max_read_ms=0.097 max_write_ms=16.985\nclient=59 elapsed_ms=861.9 reads=486 writes=514 max_read_ms=0.072 max_write_ms=13.633\nclient=60 elapsed_ms=839.0 reads=505 writes=495 max_read_ms=0.115 max_write_ms=13.633\nclient=61 elapsed_ms=853.4 reads=492 writes=508 max_read_ms=0.207 max_write_ms=13.811\nclient=62 elapsed_ms=833.2 reads=508 writes=492 max_read_ms=0.088 max_write_ms=12.954\nclient=63 elapsed_ms=856.8 reads=493 writes=507 max_read_ms=0.320 max_write_ms=17.373\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "before",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=862.5 ops_per_sec=74203.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.3 p99_us=30.2 p99_9_us=108.4 max_us=1404.8\nwrite: count=32024 p50_us=1495.1 p95_us=3202.7 p99_us=4820.5 p99_9_us=6151.3 max_us=7208.5\nclient=0 elapsed_ms=839.0 reads=492 writes=508 max_read_ms=0.076 max_write_ms=6.151\nclient=1 elapsed_ms=855.6 reads=477 writes=523 max_read_ms=0.216 max_write_ms=6.939\nclient=2 elapsed_ms=828.3 reads=497 writes=503 max_read_ms=0.099 max_write_ms=5.026\nclient=3 elapsed_ms=856.0 reads=475 writes=525 max_read_ms=0.071 max_write_ms=6.998\nclient=4 elapsed_ms=835.4 reads=486 writes=514 max_read_ms=0.077 max_write_ms=5.724\nclient=5 elapsed_ms=830.0 reads=495 writes=505 max_read_ms=0.049 max_write_ms=6.204\nclient=6 elapsed_ms=801.8 reads=510 writes=490 max_read_ms=0.165 max_write_ms=6.047\nclient=7 elapsed_ms=799.0 reads=514 writes=486 max_read_ms=0.104 max_write_ms=6.131\nclient=8 elapsed_ms=826.2 reads=500 writes=500 max_read_ms=0.051 max_write_ms=5.626\nclient=9 elapsed_ms=847.2 reads=482 writes=518 max_read_ms=0.092 max_write_ms=7.083\nclient=10 elapsed_ms=828.1 reads=498 writes=502 max_read_ms=0.082 max_write_ms=5.797\nclient=11 elapsed_ms=835.9 reads=489 writes=511 max_read_ms=0.049 max_write_ms=6.125\nclient=12 elapsed_ms=833.2 reads=491 writes=509 max_read_ms=0.086 max_write_ms=5.816\nclient=13 elapsed_ms=834.0 reads=493 writes=507 max_read_ms=0.106 max_write_ms=5.755\nclient=14 elapsed_ms=736.5 reads=553 writes=447 max_read_ms=0.083 max_write_ms=5.570\nclient=15 elapsed_ms=810.3 reads=507 writes=493 max_read_ms=0.098 max_write_ms=6.624\nclient=16 elapsed_ms=815.0 reads=505 writes=495 max_read_ms=0.063 max_write_ms=6.121\nclient=17 elapsed_ms=822.4 reads=505 writes=495 max_read_ms=0.182 max_write_ms=6.447\nclient=18 elapsed_ms=861.0 reads=467 writes=533 max_read_ms=0.254 max_write_ms=7.086\nclient=19 elapsed_ms=819.7 reads=495 writes=505 max_read_ms=0.030 max_write_ms=6.104\nclient=20 elapsed_ms=855.3 reads=480 writes=520 max_read_ms=0.101 max_write_ms=7.040\nclient=21 elapsed_ms=837.8 reads=485 writes=515 max_read_ms=0.109 max_write_ms=5.575\nclient=22 elapsed_ms=848.6 reads=481 writes=519 max_read_ms=0.105 max_write_ms=6.978\nclient=23 elapsed_ms=836.4 reads=489 writes=511 max_read_ms=0.189 max_write_ms=5.853\nclient=24 elapsed_ms=828.2 reads=495 writes=505 max_read_ms=0.089 max_write_ms=6.138\nclient=25 elapsed_ms=780.8 reads=528 writes=472 max_read_ms=0.052 max_write_ms=5.954\nclient=26 elapsed_ms=857.5 reads=469 writes=531 max_read_ms=0.074 max_write_ms=7.134\nclient=27 elapsed_ms=824.3 reads=501 writes=499 max_read_ms=0.064 max_write_ms=7.209\nclient=28 elapsed_ms=828.3 reads=499 writes=501 max_read_ms=0.279 max_write_ms=5.826\nclient=29 elapsed_ms=768.9 reads=535 writes=465 max_read_ms=0.070 max_write_ms=5.606\nclient=30 elapsed_ms=824.9 reads=500 writes=500 max_read_ms=0.091 max_write_ms=5.746\nclient=31 elapsed_ms=798.3 reads=519 writes=481 max_read_ms=0.486 max_write_ms=6.024\nclient=32 elapsed_ms=829.2 reads=498 writes=502 max_read_ms=0.066 max_write_ms=5.735\nclient=33 elapsed_ms=854.0 reads=477 writes=523 max_read_ms=0.635 max_write_ms=7.026\nclient=34 elapsed_ms=810.6 reads=502 writes=498 max_read_ms=0.116 max_write_ms=5.354\nclient=35 elapsed_ms=786.8 reads=523 writes=477 max_read_ms=1.405 max_write_ms=6.170\nclient=36 elapsed_ms=814.9 reads=505 writes=495 max_read_ms=0.079 max_write_ms=5.831\nclient=37 elapsed_ms=825.7 reads=501 writes=499 max_read_ms=0.058 max_write_ms=5.759\nclient=38 elapsed_ms=838.5 reads=486 writes=514 max_read_ms=0.082 max_write_ms=6.186\nclient=39 elapsed_ms=777.6 reads=523 writes=477 max_read_ms=0.154 max_write_ms=5.831\nclient=40 elapsed_ms=831.6 reads=489 writes=511 max_read_ms=0.231 max_write_ms=6.066\nclient=41 elapsed_ms=833.6 reads=488 writes=512 max_read_ms=0.185 max_write_ms=5.967\nclient=42 elapsed_ms=786.0 reads=529 writes=471 max_read_ms=0.101 max_write_ms=6.153\nclient=43 elapsed_ms=833.6 reads=489 writes=511 max_read_ms=0.360 max_write_ms=5.930\nclient=44 elapsed_ms=829.2 reads=499 writes=501 max_read_ms=0.185 max_write_ms=5.777\nclient=45 elapsed_ms=838.9 reads=492 writes=508 max_read_ms=0.136 max_write_ms=5.815\nclient=46 elapsed_ms=825.6 reads=502 writes=498 max_read_ms=0.080 max_write_ms=5.939\nclient=47 elapsed_ms=830.4 reads=492 writes=508 max_read_ms=0.089 max_write_ms=5.978\nclient=48 elapsed_ms=788.0 reads=520 writes=480 max_read_ms=0.403 max_write_ms=6.210\nclient=49 elapsed_ms=785.3 reads=525 writes=475 max_read_ms=0.124 max_write_ms=7.173\nclient=50 elapsed_ms=809.1 reads=505 writes=495 max_read_ms=0.082 max_write_ms=6.185\nclient=51 elapsed_ms=845.5 reads=486 writes=514 max_read_ms=0.279 max_write_ms=6.887\nclient=52 elapsed_ms=825.9 reads=498 writes=502 max_read_ms=0.205 max_write_ms=6.170\nclient=53 elapsed_ms=846.4 reads=494 writes=506 max_read_ms=0.077 max_write_ms=7.108\nclient=54 elapsed_ms=802.4 reads=514 writes=486 max_read_ms=0.072 max_write_ms=6.355\nclient=55 elapsed_ms=837.0 reads=495 writes=505 max_read_ms=0.080 max_write_ms=6.025\nclient=56 elapsed_ms=815.4 reads=511 writes=489 max_read_ms=0.164 max_write_ms=6.297\nclient=57 elapsed_ms=796.4 reads=523 writes=477 max_read_ms=0.108 max_write_ms=5.543\nclient=58 elapsed_ms=797.5 reads=514 writes=486 max_read_ms=0.066 max_write_ms=6.180\nclient=59 elapsed_ms=848.0 reads=486 writes=514 max_read_ms=0.100 max_write_ms=6.657\nclient=60 elapsed_ms=813.4 reads=505 writes=495 max_read_ms=0.064 max_write_ms=6.253\nclient=61 elapsed_ms=832.2 reads=492 writes=508 max_read_ms=0.057 max_write_ms=5.985\nclient=62 elapsed_ms=816.7 reads=508 writes=492 max_read_ms=0.223 max_write_ms=6.194\nclient=63 elapsed_ms=829.9 reads=493 writes=507 max_read_ms=0.110 max_write_ms=6.155\n",
+      "stderr": ""
+    },
+    {
+      "clients": 64,
+      "version": "after",
+      "repetition": 7,
+      "command": [
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "64",
+        "1000",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=64 keys=250 value_bytes=64 write_percent=50 completed=64000 elapsed_ms=964.6 ops_per_sec=66352.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=31976 p50_us=1.1 p95_us=3.3 p99_us=29.5 p99_9_us=114.5 max_us=778.8\nwrite: count=32024 p50_us=1497.6 p95_us=3992.6 p99_us=7626.8 p99_9_us=16130.9 max_us=19144.3\nclient=0 elapsed_ms=903.4 reads=492 writes=508 max_read_ms=0.053 max_write_ms=14.223\nclient=1 elapsed_ms=951.3 reads=477 writes=523 max_read_ms=0.088 max_write_ms=14.212\nclient=2 elapsed_ms=930.6 reads=497 writes=503 max_read_ms=0.058 max_write_ms=14.308\nclient=3 elapsed_ms=935.3 reads=475 writes=525 max_read_ms=0.047 max_write_ms=14.123\nclient=4 elapsed_ms=930.8 reads=486 writes=514 max_read_ms=0.262 max_write_ms=14.173\nclient=5 elapsed_ms=925.7 reads=495 writes=505 max_read_ms=0.084 max_write_ms=18.154\nclient=6 elapsed_ms=896.4 reads=510 writes=490 max_read_ms=0.055 max_write_ms=18.302\nclient=7 elapsed_ms=911.3 reads=514 writes=486 max_read_ms=0.249 max_write_ms=15.710\nclient=8 elapsed_ms=919.2 reads=500 writes=500 max_read_ms=0.143 max_write_ms=16.561\nclient=9 elapsed_ms=936.4 reads=482 writes=518 max_read_ms=0.312 max_write_ms=15.913\nclient=10 elapsed_ms=930.3 reads=498 writes=502 max_read_ms=0.197 max_write_ms=14.149\nclient=11 elapsed_ms=940.1 reads=489 writes=511 max_read_ms=0.062 max_write_ms=14.207\nclient=12 elapsed_ms=935.3 reads=491 writes=509 max_read_ms=0.166 max_write_ms=16.548\nclient=13 elapsed_ms=922.6 reads=493 writes=507 max_read_ms=0.037 max_write_ms=13.874\nclient=14 elapsed_ms=826.6 reads=553 writes=447 max_read_ms=0.137 max_write_ms=14.144\nclient=15 elapsed_ms=927.5 reads=507 writes=493 max_read_ms=0.108 max_write_ms=18.560\nclient=16 elapsed_ms=920.6 reads=505 writes=495 max_read_ms=0.246 max_write_ms=18.139\nclient=17 elapsed_ms=921.8 reads=505 writes=495 max_read_ms=0.047 max_write_ms=18.279\nclient=18 elapsed_ms=959.3 reads=467 writes=533 max_read_ms=0.092 max_write_ms=13.851\nclient=19 elapsed_ms=930.4 reads=495 writes=505 max_read_ms=0.178 max_write_ms=13.824\nclient=20 elapsed_ms=946.8 reads=480 writes=520 max_read_ms=0.128 max_write_ms=15.873\nclient=21 elapsed_ms=932.7 reads=485 writes=515 max_read_ms=0.034 max_write_ms=15.913\nclient=22 elapsed_ms=951.3 reads=481 writes=519 max_read_ms=0.052 max_write_ms=16.744\nclient=23 elapsed_ms=932.4 reads=489 writes=511 max_read_ms=0.087 max_write_ms=18.566\nclient=24 elapsed_ms=928.2 reads=495 writes=505 max_read_ms=0.032 max_write_ms=14.196\nclient=25 elapsed_ms=865.5 reads=528 writes=472 max_read_ms=0.071 max_write_ms=13.424\nclient=26 elapsed_ms=962.9 reads=469 writes=531 max_read_ms=0.084 max_write_ms=18.553\nclient=27 elapsed_ms=919.1 reads=501 writes=499 max_read_ms=0.073 max_write_ms=18.350\nclient=28 elapsed_ms=926.3 reads=499 writes=501 max_read_ms=0.779 max_write_ms=18.666\nclient=29 elapsed_ms=863.5 reads=535 writes=465 max_read_ms=0.081 max_write_ms=16.724\nclient=30 elapsed_ms=905.6 reads=500 writes=500 max_read_ms=0.146 max_write_ms=18.912\nclient=31 elapsed_ms=891.0 reads=519 writes=481 max_read_ms=0.322 max_write_ms=14.106\nclient=32 elapsed_ms=928.8 reads=498 writes=502 max_read_ms=0.236 max_write_ms=18.371\nclient=33 elapsed_ms=955.6 reads=477 writes=523 max_read_ms=0.069 max_write_ms=13.800\nclient=34 elapsed_ms=919.3 reads=502 writes=498 max_read_ms=0.081 max_write_ms=14.138\nclient=35 elapsed_ms=871.4 reads=523 writes=477 max_read_ms=0.672 max_write_ms=14.126\nclient=36 elapsed_ms=915.5 reads=505 writes=495 max_read_ms=0.058 max_write_ms=14.274\nclient=37 elapsed_ms=901.4 reads=501 writes=499 max_read_ms=0.039 max_write_ms=18.309\nclient=38 elapsed_ms=933.5 reads=486 writes=514 max_read_ms=0.114 max_write_ms=18.650\nclient=39 elapsed_ms=883.9 reads=523 writes=477 max_read_ms=0.103 max_write_ms=16.131\nclient=40 elapsed_ms=931.9 reads=489 writes=511 max_read_ms=0.114 max_write_ms=18.847\nclient=41 elapsed_ms=935.3 reads=488 writes=512 max_read_ms=0.131 max_write_ms=16.129\nclient=42 elapsed_ms=874.4 reads=529 writes=471 max_read_ms=0.060 max_write_ms=17.893\nclient=43 elapsed_ms=928.0 reads=489 writes=511 max_read_ms=0.159 max_write_ms=18.283\nclient=44 elapsed_ms=915.3 reads=499 writes=501 max_read_ms=0.060 max_write_ms=14.128\nclient=45 elapsed_ms=930.7 reads=492 writes=508 max_read_ms=0.201 max_write_ms=13.836\nclient=46 elapsed_ms=921.4 reads=502 writes=498 max_read_ms=0.073 max_write_ms=18.376\nclient=47 elapsed_ms=933.5 reads=492 writes=508 max_read_ms=0.137 max_write_ms=18.346\nclient=48 elapsed_ms=877.3 reads=520 writes=480 max_read_ms=0.072 max_write_ms=16.554\nclient=49 elapsed_ms=886.2 reads=525 writes=475 max_read_ms=0.186 max_write_ms=14.296\nclient=50 elapsed_ms=926.0 reads=505 writes=495 max_read_ms=0.074 max_write_ms=14.154\nclient=51 elapsed_ms=930.8 reads=486 writes=514 max_read_ms=0.113 max_write_ms=18.496\nclient=52 elapsed_ms=913.7 reads=498 writes=502 max_read_ms=0.173 max_write_ms=16.171\nclient=53 elapsed_ms=933.8 reads=494 writes=506 max_read_ms=0.117 max_write_ms=18.579\nclient=54 elapsed_ms=901.6 reads=514 writes=486 max_read_ms=0.081 max_write_ms=13.874\nclient=55 elapsed_ms=921.2 reads=495 writes=505 max_read_ms=0.094 max_write_ms=14.113\nclient=56 elapsed_ms=904.1 reads=511 writes=489 max_read_ms=0.078 max_write_ms=18.624\nclient=57 elapsed_ms=894.3 reads=523 writes=477 max_read_ms=0.068 max_write_ms=19.144\nclient=58 elapsed_ms=889.9 reads=514 writes=486 max_read_ms=0.057 max_write_ms=18.403\nclient=59 elapsed_ms=931.9 reads=486 writes=514 max_read_ms=0.105 max_write_ms=13.823\nclient=60 elapsed_ms=908.1 reads=505 writes=495 max_read_ms=0.078 max_write_ms=14.265\nclient=61 elapsed_ms=933.1 reads=492 writes=508 max_read_ms=0.126 max_write_ms=14.213\nclient=62 elapsed_ms=908.8 reads=508 writes=492 max_read_ms=0.123 max_write_ms=14.139\nclient=63 elapsed_ms=919.4 reads=493 writes=507 max_read_ms=0.084 max_write_ms=16.510\n",
+      "stderr": ""
+    }
+  ],
+  "strace": {
+    "before": {
+      "command": [
+        "strace",
+        "-f",
+        "-c",
+        "-e",
+        "trace=futex,fdatasync",
+        "/tmp/emda-r3-after-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "500",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=500 elapsed_ms=183.3 ops_per_sec=2728.0\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=261 p50_us=43.8 p95_us=86.1 p99_us=152.4 p99_9_us=797.5 max_us=797.5\nwrite: count=239 p50_us=610.3 p95_us=1140.2 p99_us=2735.0 p99_9_us=3775.4 max_us=3775.4\nclient=0 elapsed_ms=181.0 reads=261 writes=239 max_read_ms=0.797 max_write_ms=3.775\n",
+      "summary": "strace: Process 117716 attached\n% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 61.18    0.051481          52       981           futex\n 38.82    0.032669          66       489           fdatasync\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.084150          57      1470           total\n"
+    },
+    "after": {
+      "command": [
+        "strace",
+        "-f",
+        "-c",
+        "-e",
+        "trace=futex,fdatasync",
+        "/tmp/emda-r4-target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "500",
+        "250",
+        "50",
+        "/workspace",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=500 elapsed_ms=131.4 ops_per_sec=3805.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=261 p50_us=42.2 p95_us=79.4 p99_us=114.2 p99_9_us=211.4 max_us=211.4\nwrite: count=239 p50_us=435.7 p95_us=809.6 p99_us=2255.1 p99_9_us=3648.3 max_us=3648.3\nclient=0 elapsed_ms=130.1 reads=261 writes=239 max_read_ms=0.211 max_write_ms=3.648\n",
+      "summary": "strace: Process 117737 attached\n% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 52.68    0.042822          87       489           fdatasync\n 47.32    0.038471       12823         3           futex\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.081293         165       492           total\n"
+    }
+  },
+  "machine": {
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "architecture": "x86_64",
+    "kernel": "6.18.57",
+    "logical_cpus_reported": 5,
+    "cgroup_cpu_max": "400000 100000",
+    "cgroup_memory_max_bytes": "34359738368",
+    "measurement_directory": "/workspace",
+    "filesystem_type": "overlay",
+    "filesystem_backing": "Unknown; overlay behavior and physical storage not independently verified.",
+    "virtualization": "KVM reported by lscpu"
+  },
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "recorded_at_utc": "2026-11-03T19:17:37.445630+00:00"
+}

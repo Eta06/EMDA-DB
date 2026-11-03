@@ -107,6 +107,20 @@ The raw file includes 1 MiB interference and multiple fixed-size key-value workl
 
 Separately instrumented eight-client runs counted 2,273 versus 766 `statx` calls, and 2,282 `write` calls versus 475 `writev` plus 300 `write` calls. These counts include initialization and output, and tracing changes scheduling and batch composition; the recorded tracing times are not performance measurements. All comparisons ran on a virtualized overlay filesystem whose underlying storage was not independently verified. SQLite has SQL, transactions, and other features absent from the prototype, and the engines' full durability behavior was not independently validated.
 
+## Avoiding notifications without waiters
+
+[Raw results](../benchmarks/results/2026-11-03-notification-comparison.json) record seven runs per configuration using 250 cached keys, 64-byte values, 1,000 operations per client, and roughly 50% writes. Builds used separate initially empty target directories. The before binary is from `8103736`; revision `7871777` changes only documentation and recorded results.
+
+| Clients | Before ops/s | After ops/s | Before write p99 | After write p99 |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 6,778 | 7,204 | 1.439 ms | 0.601 ms |
+| 8 | 21,963 | 22,675 | 2.044 ms | 1.334 ms |
+| 64 | 74,204 | 86,754 | 4.821 ms | 3.262 ms |
+
+These are medians of run-level measurements on the same virtualized overlay environment, with substantial scheduling and tail variability. Single-client write p50 increased slightly from 0.231 to 0.236 ms. SQLite's single-client p50 was 0.262 ms in this sample, but its eight-client p50 remained much lower: 0.195 ms versus the prototype's 0.676 ms. This does not establish a sustained single-client advantage or universal superiority. SQLite also implements SQL and transactions absent from this prototype.
+
+A separate instrumented single-client run counted 981 futex calls before and three after, with exactly 489 `fdatasync` calls in both runs, including initialization. The optimization skips notifications when nobody is waiting; it does not skip synchronization. Tracing affects timings, which are not used in the table. Existing failure, queue-capacity, handoff, and concurrent-history tests exercise notification correctness.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
