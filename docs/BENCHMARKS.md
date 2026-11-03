@@ -260,6 +260,15 @@ python3 scripts/compaction_compare.py --directory /workspace --output /tmp/compa
 
 Each revision must contain the same benchmark example. Binary hashes are recorded, but the revision-to-binary association is supplied by the caller. The defaults use 200 and 5,000 source keys and five repetitions per version.
 
+The [recorded comparison](../benchmarks/results/2026-11-03-compaction-grouped.json) builds revisions `c4c73e1` and `af617d6` in separate clean worktrees and empty target directories, then alternates their binaries across fresh fixtures. The candidate groups ordinary records before synchronization and still reopens and verifies the target before publication.
+
+| Source keys | Live keys | Before median (range) | Grouped median (range) |
+| ---: | ---: | ---: | ---: |
+| 200 | 175 | 46.1 ms (45.0–55.5 ms) | 4.11 ms (3.50–10.68 ms) |
+| 5,000 | 4,375 | 1,169.5 ms (1,120.7–1,186.2 ms) | 29.63 ms (26.49–30.84 ms) |
+
+For 5,000 source keys, both versions produced a 406,903-byte compacted log from a 716,095-byte source log. The grouped median was approximately 39 times faster in this sample. Both quiet checks passed; the VM recorded no cgroup throttling or direct reclaim, with individual steal samples up to 4.35% during fixture setup, measurement and cleanup. These are five warm-cache runs on one virtualized filesystem, with 64-byte values and selected content checks. They do not establish power-loss safety, online compaction performance, or a competitor ranking.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
