@@ -121,7 +121,7 @@ fn corrupt_or_truncated_backup_is_rejected_before_publication() {
     truncated.pop();
     let mut missing_complete_record = original.clone();
     // Header (8) plus first record (17 header + 5 key + 3 value + 4 checksum).
-    let first_record_end = 8 + 17 + 5 + 3 + 4;
+    let first_record_end = 8 + 28 + 17 + 5 + 3 + 4;
     let footer_start = missing_complete_record.len() - 48;
     missing_complete_record.drain(first_record_end..footer_start);
     for (index, bytes) in [bad_header, bad_data, truncated, missing_complete_record]
@@ -147,7 +147,7 @@ fn backup_with_recomputed_outer_hash_still_checks_record_integrity() {
     let backup = dir.path().join("snapshot");
     store.backup(&backup).unwrap();
     let mut bytes = fs::read(&backup).unwrap();
-    bytes[8 + 17 + 3] ^= 1;
+    bytes[8 + 28 + 17 + 3] ^= 1;
     let footer = bytes.len() - 48;
     let digest = Sha256::digest(&bytes[8..footer]);
     bytes[footer + 16..].copy_from_slice(&digest);
@@ -170,7 +170,7 @@ fn corrupt_live_log_is_not_published_as_a_backup() {
         .write(true)
         .open(live.join("records.log"))
         .unwrap();
-    log.seek(SeekFrom::Start(20)).unwrap();
+    log.seek(SeekFrom::Start(28 + 20)).unwrap();
     log.write_all(b"X").unwrap();
     log.sync_all().unwrap();
     let backup = dir.path().join("snapshot");
@@ -222,7 +222,8 @@ fn backup_rejects_corruption_beyond_the_recovery_buffer() {
         .write(true)
         .open(live.join("records.log"))
         .unwrap();
-    log.seek(SeekFrom::Start((17 + 3 + 65_700) as u64)).unwrap();
+    log.seek(SeekFrom::Start((28 + 17 + 3 + 65_700) as u64))
+        .unwrap();
     log.write_all(&[0x10]).unwrap();
     log.sync_all().unwrap();
     let destination = dir.path().join("snapshot");

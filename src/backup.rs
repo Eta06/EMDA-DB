@@ -2,7 +2,7 @@
 
 use crate::log::Log;
 use crate::log_io::LogIo;
-use crate::record;
+use crate::{record, witness};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -21,6 +21,7 @@ struct BackupInfo {
 }
 
 pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
+    log.verify_witness()?;
     let parent = parent_directory(destination)?;
     let mut temp = tempfile::Builder::new()
         .prefix(".db-backup-")
@@ -70,6 +71,59 @@ pub(crate) fn restore(source: &Path, destination: &Path) -> io::Result<()> {
     })
 }
 
+pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()> {
+    if !source.is_legacy() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "store already has a commit witness",
+        ));
+    }
+    let parent = parent_directory(destination)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".db-upgrade-")
+        .tempdir_in(parent)?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(staging.path().join("store.lock"))?;
+    fs2::FileExt::try_lock_exclusive(&lock)?;
+    let mut target = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(staging.path().join("records.log"))?;
+    let header = witness::new_header()?;
+    target.write_all(&header)?;
+    let length = source.len()?;
+    let digest = copy_data(
+        length,
+        |buffer, offset| source.read_bytes(buffer, offset),
+        &mut target,
+    )?;
+    target.sync_all()?;
+    if target.metadata()?.len() != witness::LOG_HEADER_SIZE as u64 + length
+        || hash_data(length, |buffer, offset| {
+            FileExt::read_exact_at(&target, buffer, witness::LOG_HEADER_SIZE as u64 + offset)
+        })? != digest
+    {
+        return Err(record::invalid_data("upgraded log checksum mismatch"));
+    }
+    // Validate every copied record before establishing the new boundary.
+    let (target, _) = Log::from_io(Box::new(target))?;
+    target.install_restore_witness(staging.path())?;
+    lock.sync_all()?;
+    File::open(staging.path())?.sync_all()?;
+    publish_directory(staging.path(), destination)?;
+    let _ = staging.keep();
+    File::open(parent)?.sync_all().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("upgraded store may exist but directory synchronization failed: {error}"),
+        )
+    })
+}
+
 fn restore_into(backup: &File, info: &BackupInfo, destination: &Path) -> io::Result<()> {
     let lock = OpenOptions::new()
         .read(true)
@@ -103,7 +157,8 @@ fn restore_into(backup: &File, info: &BackupInfo, destination: &Path) -> io::Res
         return Err(record::invalid_data("restored log checksum mismatch"));
     }
     // Revalidate the restored bytes, including every record checksum.
-    let _ = Log::from_io(Box::new(log))?;
+    let (log, _) = Log::from_io(Box::new(log))?;
+    log.install_restore_witness(destination)?;
     File::open(destination)?.sync_all()?;
     Ok(())
 }

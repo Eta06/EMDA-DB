@@ -196,6 +196,83 @@ fn a_write_failure_clears_in_progress_preparation_reservations() {
     assert!(store.put(b"later", b"value").is_err());
 }
 
+#[derive(Clone, Copy)]
+enum WitnessFault {
+    WriteBefore,
+    WriteAfter,
+    Sync,
+}
+
+struct InjectedWitness {
+    bytes: Mutex<Vec<u8>>,
+    fault: WitnessFault,
+}
+
+impl crate::witness::WitnessIo for InjectedWitness {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.bytes.lock().unwrap().len() as u64)
+    }
+    fn read_exact_at(&self, buffer: &mut [u8], _offset: u64) -> io::Result<()> {
+        buffer.copy_from_slice(&self.bytes.lock().unwrap());
+        Ok(())
+    }
+    fn write_all_at(&self, buffer: &[u8], _offset: u64) -> io::Result<()> {
+        if matches!(self.fault, WitnessFault::WriteBefore) {
+            return Err(io::Error::other("injected witness write failure"));
+        }
+        self.bytes.lock().unwrap().copy_from_slice(buffer);
+        if matches!(self.fault, WitnessFault::WriteAfter) {
+            return Err(io::Error::other("injected witness write outcome unknown"));
+        }
+        Ok(())
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        if matches!(self.fault, WitnessFault::Sync) {
+            return Err(io::Error::other("injected witness sync failure"));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn witness_write_and_sync_failures_never_acknowledge_and_poison_the_store() {
+    for fault in [
+        WitnessFault::WriteBefore,
+        WitnessFault::WriteAfter,
+        WitnessFault::Sync,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let id = [4; 16];
+        let store = Store::open_using(dir.path(), |path, _| {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(path.join("records.log"))?;
+            let (mut log, index) = Log::from_io(Box::new(file))?;
+            let marker = InjectedWitness {
+                bytes: Mutex::new(crate::witness::encode_for_test(&id, 0)),
+                fault,
+            };
+            log.attach_test_witness(crate::witness::Witness::for_test(Box::new(marker), id, 0));
+            Ok((log, index))
+        })
+        .unwrap();
+        let error = store.put(b"uncertain", b"value").unwrap_err();
+        assert!(error.to_string().contains("uncertain"));
+        assert!(store.get(b"uncertain").is_err());
+        assert!(store.put(b"later", b"value").is_err());
+        drop(store);
+        // The append completed before the injected witness failure; its
+        // unacknowledged outcome may be visible after recovery.
+        let reopened = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            reopened.get(b"uncertain").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+    }
+}
+
 #[test]
 fn short_read_is_reported_without_returning_partial_data() {
     let dir = tempfile::tempdir().unwrap();
@@ -385,7 +462,7 @@ fn short_read_after_buffer_refill_fails_recovery_without_changing_log() {
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
     assert!(before.len() > 64 * 1024);
-    let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(1, 11))));
+    let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(2, 11))));
     let result = open_fault_store(&dir, fault);
     assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::UnexpectedEof));
     assert_eq!(fs::read(&path).unwrap(), before);
@@ -406,7 +483,7 @@ fn short_read_in_large_direct_payload_preserves_log() {
     }
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
-    let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(1, 11))));
+    let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(2, 11))));
     let result = open_fault_store(&dir, fault);
     assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::UnexpectedEof));
     assert_eq!(fs::read(&path).unwrap(), before);

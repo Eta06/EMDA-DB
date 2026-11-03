@@ -3,9 +3,10 @@
 use crate::log_io::LogIo;
 use crate::record::{self, HEADER_SIZE, Header, Operation};
 use crate::recovery::RecoveryReader;
+use crate::witness::{self, LOG_HEADER_SIZE, LogId, Witness};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, IoSlice};
+use std::io::{self, IoSlice, Write};
 use std::path::Path;
 
 #[derive(Clone, Copy)]
@@ -24,6 +25,8 @@ pub(crate) struct AppendRecord<'a> {
 
 pub(crate) struct Log {
     file: Box<dyn LogIo>,
+    log_id: Option<LogId>,
+    witness: Option<Witness>,
 }
 
 impl Log {
@@ -31,30 +34,84 @@ impl Log {
         path: &Path,
         may_initialize: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(may_initialize)
-            .open(path.join("records.log"))
-            .map_err(|error| {
-                if !may_initialize && error.kind() == io::ErrorKind::NotFound {
-                    record::invalid_data(
-                        "existing store is missing its log; refusing to create an empty store",
-                    )
-                } else {
-                    error
-                }
-            })?;
+        let log_path = path.join("records.log");
+        let witness_exists = witness::exists(path)?;
+        let (file, created) = if may_initialize && !witness_exists {
+            match OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create_new(true)
+                .open(&log_path)
+            {
+                Ok(file) => (file, true),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (
+                    OpenOptions::new().read(true).append(true).open(&log_path)?,
+                    false,
+                ),
+                Err(error) => return Err(error),
+            }
+        } else {
+            (OpenOptions::new().read(true).append(true).open(&log_path).map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    record::invalid_data("existing store is missing its log; refusing to create an empty store")
+                } else { error }
+            })?, false)
+        };
+        if created {
+            let header = witness::new_header()?;
+            (&file).write_all(&header)?;
+            file.sync_data()?;
+            let id = witness::parse_header(&header)?;
+            let _ = Witness::create(path, id, LOG_HEADER_SIZE as u64)?;
+        }
         // Persist directory entries before acknowledging future writes.
         File::open(path)?.sync_all()?;
-        Self::from_io(Box::new(file))
+        let file: Box<dyn LogIo> = Box::new(file);
+        let id = log_identity(file.as_ref())?;
+        let (witness, boundary) = match id {
+            Some(id) => {
+                let (witness, boundary) = Witness::open(path, id)?;
+                (Some(witness), Some(boundary))
+            }
+            None if witness::exists(path)? => {
+                return Err(record::invalid_data(
+                    "commit witness exists without its versioned log",
+                ));
+            }
+            None => (None, None),
+        };
+        let (log, index) = Self::from_parts(file, id, witness, boundary)?;
+        if let Some(boundary) = boundary {
+            let total = log.file.len()?;
+            if total > boundary {
+                // A complete but unacknowledged tail may survive a crash.
+                // Validate it first, then synchronize it before advancing the witness.
+                log.file.sync_data()?;
+                log.witness.as_ref().unwrap().advance(total)?;
+            }
+        }
+        Ok((log, index))
     }
 
     pub(crate) fn from_io(
         file: Box<dyn LogIo>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        let mut log = Self { file };
-        let index = log.recover()?;
+        let id = log_identity(file.as_ref())?;
+        Self::from_parts(file, id, None, None)
+    }
+
+    fn from_parts(
+        file: Box<dyn LogIo>,
+        log_id: Option<LogId>,
+        witness: Option<Witness>,
+        boundary: Option<u64>,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+        let mut log = Self {
+            file,
+            log_id,
+            witness,
+        };
+        let index = log.recover(boundary)?;
         Ok((log, index))
     }
 
@@ -80,6 +137,9 @@ impl Log {
         records: impl ExactSizeIterator<Item = AppendRecord<'a>>,
     ) -> io::Result<Vec<ValueLocation>> {
         let mut offset = self.file.len()?;
+        if let Some(witness) = &self.witness {
+            witness.verify(offset)?;
+        }
         let mut locations = Vec::with_capacity(records.len());
         let mut buffers = Vec::with_capacity(records.len());
         for record in records {
@@ -106,14 +166,48 @@ impl Log {
     }
 
     pub(crate) fn sync_data(&self) -> io::Result<()> {
-        self.file.sync_data()
+        self.file.sync_data()?;
+        if let Some(witness) = &self.witness {
+            witness.advance(self.file.len()?)?;
+        }
+        Ok(())
     }
 
-    fn recover(&mut self) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
+    pub(crate) fn install_restore_witness(&self, directory: &Path) -> io::Result<()> {
+        if let Some(id) = self.log_id {
+            let _ = Witness::create(directory, id, self.file.len()?)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_legacy(&self) -> bool {
+        self.log_id.is_none()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn attach_test_witness(&mut self, witness: Witness) {
+        self.witness = Some(witness);
+    }
+
+    pub(crate) fn verify_witness(&self) -> io::Result<()> {
+        if let Some(witness) = &self.witness {
+            witness.verify(self.file.len()?)?;
+        }
+        Ok(())
+    }
+
+    fn recover(&mut self, boundary: Option<u64>) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
         let mut index = BTreeMap::new();
         let total = self.file.len()?;
         let mut offset = 0_u64;
         let mut reader = RecoveryReader::new(self.file.as_ref(), total);
+        if self.log_id.is_some() {
+            let mut header = [0_u8; LOG_HEADER_SIZE];
+            reader.read_exact(&mut header)?;
+            witness::parse_header(&header)?;
+            offset = LOG_HEADER_SIZE as u64;
+        }
+        let mut saw_boundary = boundary.is_none_or(|value| value == offset);
         while offset < total {
             if total - offset < HEADER_SIZE as u64 {
                 return Err(incomplete_record(offset));
@@ -147,9 +241,34 @@ impl Log {
                 }
             }
             offset += record_len;
+            if boundary == Some(offset) {
+                saw_boundary = true;
+            }
+        }
+        if !saw_boundary {
+            return Err(record::invalid_data(
+                "log does not contain its acknowledged commit boundary",
+            ));
         }
         Ok(index)
     }
+}
+
+fn log_identity(file: &dyn LogIo) -> io::Result<Option<LogId>> {
+    if file.len()? < witness::LOG_MAGIC.len() as u64 {
+        return Ok(None);
+    }
+    let mut magic = [0_u8; 8];
+    file.read_exact_at(&mut magic, 0)?;
+    if &magic != witness::LOG_MAGIC {
+        return Ok(None);
+    }
+    if file.len()? < LOG_HEADER_SIZE as u64 {
+        return Err(record::invalid_data("incomplete versioned log header"));
+    }
+    let mut header = [0_u8; LOG_HEADER_SIZE];
+    file.read_exact_at(&mut header, 0)?;
+    Ok(Some(witness::parse_header(&header)?))
 }
 
 fn incomplete_record(offset: u64) -> io::Error {
@@ -157,3 +276,7 @@ fn incomplete_record(offset: u64) -> io::Error {
         "incomplete log record at byte {offset}; store was not modified"
     ))
 }
+
+#[cfg(test)]
+#[path = "log_tests.rs"]
+mod tests;

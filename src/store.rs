@@ -112,6 +112,24 @@ impl Store {
         backup::restore(source.as_ref(), destination.as_ref())
     }
 
+    /// Copies a legacy store into a new directory with a commit witness.
+    ///
+    /// The source is not modified. This establishes a boundary for the data
+    /// that is present and valid now; it cannot detect prior loss from a legacy
+    /// log. The destination must not exist. Mutations wait until the copy and
+    /// verification finish. A publication sync error leaves the result uncertain.
+    pub fn upgrade_legacy(&self, destination: impl AsRef<Path>) -> io::Result<()> {
+        let _writer = self
+            .writes
+            .write()
+            .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        let _inner = self.read()?;
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        backup::upgrade_legacy(&self.log, destination.as_ref())
+    }
+
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
         let _writer = self

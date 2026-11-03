@@ -12,5 +12,6 @@ mod log_io;
 mod record;
 mod recovery;
 mod store;
+mod witness;
 
 pub use store::Store;

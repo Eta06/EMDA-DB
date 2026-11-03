@@ -7,6 +7,8 @@ use std::thread;
 use std::time::Duration;
 use tempfile::tempdir;
 
+const LOG_HEADER_BYTES: u64 = 28;
+
 #[test]
 fn updates_deletes_and_empty_values_survive_reopening() {
     let dir = tempdir().unwrap();
@@ -57,10 +59,10 @@ fn fully_present_corrupt_record_is_not_silently_discarded() {
         .write(true)
         .open(&path)
         .unwrap();
-    log.seek(SeekFrom::Start(20)).unwrap();
+    log.seek(SeekFrom::Start(LOG_HEADER_BYTES + 20)).unwrap();
     let mut original = [0];
     log.read_exact(&mut original).unwrap();
-    log.seek(SeekFrom::Start(20)).unwrap();
+    log.seek(SeekFrom::Start(LOG_HEADER_BYTES + 20)).unwrap();
     log.write_all(&[original[0] ^ 1]).unwrap();
     log.sync_all().unwrap();
     let result = Store::open(dir.path());
@@ -79,7 +81,7 @@ fn corrupt_header_is_not_mistaken_for_an_incomplete_tail() {
         .write(true)
         .open(dir.path().join("records.log"))
         .unwrap();
-    log.seek(SeekFrom::Start(5)).unwrap();
+    log.seek(SeekFrom::Start(LOG_HEADER_BYTES + 5)).unwrap();
     log.write_all(&[0xff]).unwrap();
     log.sync_all().unwrap();
     let result = Store::open(dir.path());
@@ -100,11 +102,12 @@ fn unsupported_record_version_is_rejected_without_changing_the_log() {
         .open(&path)
         .unwrap();
     let mut header = [0_u8; 17];
+    log.seek(SeekFrom::Start(LOG_HEADER_BYTES)).unwrap();
     log.read_exact(&mut header).unwrap();
     header[3] = b'2';
     let checksum = crc32fast::hash(&header[..13]);
     header[13..17].copy_from_slice(&checksum.to_le_bytes());
-    log.seek(SeekFrom::Start(0)).unwrap();
+    log.seek(SeekFrom::Start(LOG_HEADER_BYTES)).unwrap();
     log.write_all(&header).unwrap();
     log.sync_all().unwrap();
     let bytes_before = std::fs::read(&path).unwrap();
@@ -122,7 +125,7 @@ fn value_corruption_after_open_is_detected_on_read() {
         .write(true)
         .open(dir.path().join("records.log"))
         .unwrap();
-    log.seek(SeekFrom::Start(20)).unwrap();
+    log.seek(SeekFrom::Start(LOG_HEADER_BYTES + 20)).unwrap();
     log.write_all(b"X").unwrap();
     log.sync_all().unwrap();
     assert_eq!(
@@ -146,6 +149,11 @@ fn all_partial_final_records_fail_closed_without_data_loss() {
     for end in baseline_len as usize + 1..log_bytes.len() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("records.log"), &log_bytes[..end]).unwrap();
+        std::fs::copy(
+            source.path().join("commit.state"),
+            dir.path().join("commit.state"),
+        )
+        .unwrap();
         let result = Store::open(dir.path());
         assert!(
             matches!(result, Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData),
@@ -353,7 +361,7 @@ fn acknowledged_writes_survive_abrupt_process_termination() {
 #[test]
 fn recovery_checks_records_across_buffer_boundaries() {
     let dir = tempdir().unwrap();
-    let first = vec![0x5a; 65536 - 6 - 17 - 1 - 4];
+    let first = vec![0x5a; 65536 - 6 - LOG_HEADER_BYTES as usize - 17 - 1 - 4];
     let large = vec![0xc3; 131_079];
     {
         let store = Store::open(dir.path()).unwrap();
@@ -394,7 +402,10 @@ fn partial_records_at_buffer_boundaries_fail_closed() {
     {
         let store = Store::open(source.path()).unwrap();
         store
-            .put(b"a", &vec![0x5a; 65536 - 6 - 17 - 1 - 4])
+            .put(
+                b"a",
+                &vec![0x5a; 65536 - 6 - LOG_HEADER_BYTES as usize - 17 - 1 - 4],
+            )
             .unwrap();
         store.put(b"next", &vec![0xc3; 131_079]).unwrap();
     }
@@ -416,6 +427,11 @@ fn partial_records_at_buffer_boundaries_fail_closed() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("records.log");
         std::fs::write(&path, &original[..cut]).unwrap();
+        std::fs::copy(
+            source.path().join("commit.state"),
+            dir.path().join("commit.state"),
+        )
+        .unwrap();
         let result = Store::open(dir.path());
         assert!(
             matches!(result, Err(ref error) if error.kind() == std::io::ErrorKind::InvalidData),

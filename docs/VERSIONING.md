@@ -11,7 +11,7 @@ The product name is a placeholder. The package version in `Cargo.toml` is the so
 
 ## Independent compatibility boundaries
 
-The software version is **not** the same as the log format, public API, network protocol, or future SDK versions. Changes to those contracts must be described separately. The current experimental log uses the `DB01` record marker and has no production compatibility or migration guarantee. Unknown or invalid markers must be rejected rather than silently interpreted as the current format. Before making a compatibility promise, define format versions, backward-read support, upgrade/downgrade behavior, and tested migration and backup procedures.
+The software version is **not** the same as the log format, public API, network protocol, or future SDK versions. Changes to those contracts must be described separately. The experimental format uses `DB01` records; new stores wrap them in an `EMDALOG2` identity header with a separate commit witness. Older unwrapped `DB01` stores remain usable with their existing limitations. `Store::upgrade_legacy` creates a verified new-format copy without replacing the source or destination. The upgrade cannot detect data already lost before conversion. Older engines cannot open new-format logs, and there is no general downgrade guarantee. Unknown or invalid markers must be rejected rather than silently interpreted as the current format. Before making a production compatibility promise, define supported upgrades and downgrades and test persistent fixtures, migrations, and backups.
 
 ## Recording changes
 

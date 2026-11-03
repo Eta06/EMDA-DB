@@ -6,7 +6,7 @@ This document describes the current prototype, not a promised final design. The 
 
 - `store` and `store/commit`: public key/value API, exclusive process ownership, bounded group commit, synchronization, and outcome handling.
 - `record`: versioned binary framing, length limits, encoding, and checksum verification.
-- `log`, `log_io`, and `recovery`: append and sync, positional reads, bounded buffered replay, the in-memory key-to-offset index, and the testable I/O boundary.
+- `log`, `log_io`, `recovery`, and `witness`: append and sync, positional reads, bounded buffered replay, the checksummed commit boundary, the in-memory key-to-offset index, and testable I/O boundaries.
 - `backup`: checksummed full-log backup and validated, non-overwriting restore.
 - `directory`: synchronization of created store paths and their ancestors.
 - `tests`: behavior across reopen, deterministic I/O failures, concurrent clients, corruption, backups, and process termination.
@@ -15,7 +15,7 @@ The public API supports `put`, `get`, and `delete` on nonempty byte keys and bac
 
 ## Log format
 
-Records use a four-byte `DB01` magic/version, one-byte operation, little-endian 32-bit key and value lengths, a CRC32 of the header fields, the key and value bytes, and a CRC32 of the header and payload. Recovery reads the log sequentially through a buffer of at most 64 KiB, validates full records, and reconstructs the index in order. Large payloads can be read directly; the payload and unbounded index require additional memory. An incomplete trailing record, invalid header, or checksum error fails opening without truncating the log. An apparently incomplete tail cannot distinguish an interrupted unacknowledged write from certain underlying storage damage; no automatic repair is attempted. CRC32 detects accidental corruption; it does not prevent tampering.
+Records use a four-byte `DB01` magic/version, one-byte operation, little-endian 32-bit key and value lengths, a CRC32 of the header fields, the key and value bytes, and a CRC32 of the header and payload. New logs begin with an `EMDALOG2` identity header, paired with a checksummed `commit.state` witness. A batch is acknowledged only after log sync, witness update and sync, and index publication. A preserved witness detects truncation before its recorded record boundary. Recovery reads the log sequentially through a buffer of at most 64 KiB, validates full records, and reconstructs the index in order. A complete tail beyond the witness is synchronized and adopted; an incomplete tail, invalid header, or checksum error fails opening without truncating the log. Legacy unwrapped logs remain supported without the new boundary guarantee. CRC32 detects accidental corruption; it does not prevent tampering or repair lost data.
 
 The index stores keys, offsets, lengths, and value checksums in memory; it is not bounded. Values are read by offset and verified. The log grows without compaction. Recovery scans all records. The directory lock is advisory and assumes cooperating processes and a suitable filesystem. Store initialization synchronizes the created directory path and its ancestors; this does not prove power-loss behavior on all filesystems. Successful `sync_data` is not a guarantee against faulty hardware or filesystem behavior. Tests that kill a process do not simulate a power failure.
 

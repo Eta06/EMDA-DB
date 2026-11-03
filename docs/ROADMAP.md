@@ -10,6 +10,8 @@ The prototype provides `put`, `get`, and `delete` for byte keys/values, a checks
 
 These are prerequisites for trusting any feature built above the engine:
 
+**Status: in progress.** New-format stores have a synchronized commit witness and legacy stores can be copied into the new format. Boundary fault tests and initial backup/restore checks exist. Broader crash and directory-sync fault models, fuzzing, independent restore drills, and comparison coverage remain before this priority's exit criteria are met.
+
 - Define operation, error, concurrency, acknowledgement, and recovery semantics, including unknown write outcomes.
 - Harden and version the log format; distinguish incomplete writes from corruption as far as the format allows, and fail safely when the distinction cannot be made.
 - Handle durable directory creation and metadata changes; define filesystem and hardware assumptions explicitly.

@@ -35,6 +35,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - A large-write interference benchmark that checks small-write latency alongside the prototype and SQLite.
 - Vectored group appends, bounded off-lock write preparation, and shorter index read-lock lifetimes, with partial-I/O, reservation, and concurrent-history tests.
 - Raw clean-build results for large-write interference and several concurrent key-value workloads, including observed regressions and SQLite comparisons.
+- New-format logs with a synchronized, checksummed commit witness; boundary-truncation, witness corruption, crash-boundary, legacy-upgrade, and backup/restore tests.
+- A non-overwriting `Store::upgrade_legacy` operation that copies and verifies a legacy store into the new format without modifying its source.
 
 ### Changed
 
