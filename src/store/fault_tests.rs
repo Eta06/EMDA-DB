@@ -18,6 +18,7 @@ enum Fault {
     SyncBefore,
     SyncAfter,
     ShortRead(usize),
+    ShortReadAfter(usize, usize),
 }
 
 struct FaultIo {
@@ -42,9 +43,21 @@ impl LogIo for FaultIo {
     }
 
     fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
-        if let Some(Fault::ShortRead(bytes)) =
-            self.take_matching(|f| matches!(f, Fault::ShortRead(_)))
-        {
+        let failure = {
+            let mut fault = self.fault.lock().unwrap();
+            match *fault {
+                Some(Fault::ShortRead(bytes) | Fault::ShortReadAfter(0, bytes)) => {
+                    *fault = None;
+                    Some(bytes)
+                }
+                Some(Fault::ShortReadAfter(remaining, bytes)) => {
+                    *fault = Some(Fault::ShortReadAfter(remaining - 1, bytes));
+                    None
+                }
+                _ => None,
+            }
+        };
+        if let Some(bytes) = failure {
             let count = bytes.min(buffer.len());
             FileExt::read_exact_at(&self.file, &mut buffer[..count], offset)?;
             return Err(io::Error::new(
@@ -343,4 +356,47 @@ fn reads_observe_previous_value_while_a_write_is_syncing() {
         Some(&b"old"[..])
     );
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+}
+
+#[test]
+fn short_read_after_buffer_refill_fails_recovery_without_changing_log() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).unwrap();
+        for i in 0_u32..1500 {
+            store.put(&i.to_be_bytes(), &[i as u8; 64]).unwrap();
+        }
+    }
+    let path = dir.path().join("records.log");
+    let before = fs::read(&path).unwrap();
+    assert!(before.len() > 64 * 1024);
+    let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(1, 11))));
+    let result = open_fault_store(&dir, fault);
+    assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::UnexpectedEof));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened.get(&1499_u32.to_be_bytes()).unwrap().as_deref(),
+        Some(&[1499_u32 as u8; 64][..])
+    );
+}
+
+#[test]
+fn short_read_in_large_direct_payload_preserves_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let value = vec![0xa7; 256 * 1024];
+    {
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"large", &value).unwrap();
+    }
+    let path = dir.path().join("records.log");
+    let before = fs::read(&path).unwrap();
+    let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(1, 11))));
+    let result = open_fault_store(&dir, fault);
+    assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::UnexpectedEof));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(
+        Store::open(dir.path()).unwrap().get(b"large").unwrap(),
+        Some(value)
+    );
 }

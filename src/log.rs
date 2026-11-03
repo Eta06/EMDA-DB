@@ -2,6 +2,7 @@
 
 use crate::log_io::LogIo;
 use crate::record::{self, HEADER_SIZE, Header, Operation};
+use crate::recovery::RecoveryReader;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -91,25 +92,22 @@ impl Log {
         let mut index = BTreeMap::new();
         let total = self.file.len()?;
         let mut offset = 0_u64;
+        let mut reader = RecoveryReader::new(self.file.as_ref(), total);
         while offset < total {
             if total - offset < HEADER_SIZE as u64 {
                 return Err(incomplete_record(offset));
             }
             let mut header_bytes = [0_u8; HEADER_SIZE];
-            self.file.read_exact_at(&mut header_bytes, offset)?;
+            reader.read_exact(&mut header_bytes)?;
             let header = Header::parse(&header_bytes)?;
             let record_len = header.record_len();
             if total - offset < record_len {
                 return Err(incomplete_record(offset));
             }
             let mut payload = vec![0_u8; header.key_len + header.value_len];
-            self.file
-                .read_exact_at(&mut payload, offset + HEADER_SIZE as u64)?;
+            reader.read_exact(&mut payload)?;
             let mut checksum = [0_u8; 4];
-            self.file.read_exact_at(
-                &mut checksum,
-                offset + HEADER_SIZE as u64 + payload.len() as u64,
-            )?;
+            reader.read_exact(&mut checksum)?;
             record::verify(&header_bytes, &payload, u32::from_le_bytes(checksum))?;
             let key = payload[..header.key_len].to_vec();
             match header.operation {

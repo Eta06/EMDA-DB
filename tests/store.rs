@@ -349,3 +349,78 @@ fn acknowledged_writes_survive_abrupt_process_termination() {
         }
     }
 }
+
+#[test]
+fn recovery_checks_records_across_buffer_boundaries() {
+    let dir = tempdir().unwrap();
+    let first = vec![0x5a; 65536 - 6 - 17 - 1 - 4];
+    let large = vec![0xc3; 131_079];
+    {
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"a", &first).unwrap();
+        // The next header starts six bytes before a 64 KiB boundary, and its
+        // payload spans multiple buffers and the large-read path.
+        store.put(b"next", &large).unwrap();
+        store.put(b"last", b"value").unwrap();
+    }
+    {
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(store.get(b"a").unwrap(), Some(first));
+        assert_eq!(store.get(b"next").unwrap(), Some(large));
+        assert_eq!(store.get(b"last").unwrap().as_deref(), Some(&b"value"[..]));
+    }
+    let path = dir.path().join("records.log");
+    let mut log = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    log.seek(SeekFrom::Start((65536 - 6 + 17 + 4 + 12345) as u64))
+        .unwrap();
+    let mut byte = [0_u8];
+    log.read_exact(&mut byte).unwrap();
+    log.seek(SeekFrom::Current(-1)).unwrap();
+    log.write_all(&[byte[0] ^ 1]).unwrap();
+    log.sync_all().unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let error = Store::open(dir.path());
+    assert!(matches!(error, Err(ref error) if error.kind() == std::io::ErrorKind::InvalidData));
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn partial_records_at_buffer_boundaries_fail_closed() {
+    let source = tempdir().unwrap();
+    {
+        let store = Store::open(source.path()).unwrap();
+        store
+            .put(b"a", &vec![0x5a; 65536 - 6 - 17 - 1 - 4])
+            .unwrap();
+        store.put(b"next", &vec![0xc3; 131_079]).unwrap();
+    }
+    let original = std::fs::read(source.path().join("records.log")).unwrap();
+    let cuts = [
+        65_529,
+        65_531,
+        65_535,
+        65_536,
+        65_537,
+        65_546,
+        65_547,
+        131_071,
+        131_072,
+        131_073,
+        original.len() - 1,
+    ];
+    for cut in cuts {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("records.log");
+        std::fs::write(&path, &original[..cut]).unwrap();
+        let result = Store::open(dir.path());
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == std::io::ErrorKind::InvalidData),
+            "cut={cut}"
+        );
+        assert_eq!(std::fs::read(path).unwrap(), &original[..cut]);
+    }
+}

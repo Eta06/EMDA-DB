@@ -210,3 +210,25 @@ fn backup_during_concurrent_updates_has_a_complete_value() {
     assert!(value.iter().all(|byte| *byte == value[0]));
     assert!(value[0] <= 25);
 }
+
+#[test]
+fn backup_rejects_corruption_beyond_the_recovery_buffer() {
+    let dir = tempdir().unwrap();
+    let live = dir.path().join("live");
+    let store = Store::open(&live).unwrap();
+    store.put(b"key", &vec![0x5a; 70_000]).unwrap();
+    let mut log = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(live.join("records.log"))
+        .unwrap();
+    log.seek(SeekFrom::Start((17 + 3 + 65_700) as u64)).unwrap();
+    log.write_all(&[0x10]).unwrap();
+    log.sync_all().unwrap();
+    let destination = dir.path().join("snapshot");
+    assert_eq!(
+        store.backup(&destination).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    assert!(!destination.exists());
+}

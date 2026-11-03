@@ -10,6 +10,7 @@ mod directory;
 mod log;
 mod log_io;
 mod record;
+mod recovery;
 mod store;
 
 pub use store::Store;

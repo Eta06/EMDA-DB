@@ -29,6 +29,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Raw before/after benchmark runs against the prior engine and SQLite, including per-client and tail latency details.
 - Configurable benchmark value sizes for exploring workloads beyond small 64-byte values.
 - A reusable warm-cache recovery benchmark with non-overwriting fixture preparation.
+- Buffered log replay with the same record checks and tests for interrupted reads, truncation, corruption, and backup validation across buffer boundaries.
 
 ### Changed
 

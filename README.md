@@ -11,7 +11,7 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
 | Embedded key-value core | Prototype | Byte-key `put`, `get`, and `delete`; one store per process with an advisory lock. |
-| Persistence and recovery | Prototype, limited | Checksummed log and `sync_data` on writes; incomplete tails fail closed. Power-loss safety is not established. |
+| Persistence and recovery | Prototype, limited | Checksummed writes and buffered log replay; incomplete tails fail closed. Power-loss safety is not established. |
 | Backup and restore | Prototype | Full-log backup verifies record checksums and a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
 | Concurrent access | Prototype, limited | Concurrent writes can share a sync; reads proceed while a batch synchronizes. Multi-key transactions and isolation levels are not implemented. |
 | Benchmarking | Early baseline | A small embedded SQLite comparison is recorded; broader workloads and resource measurements remain planned. |
