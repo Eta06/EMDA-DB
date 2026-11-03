@@ -13,7 +13,7 @@ use std::time::Duration;
 #[derive(Clone, Copy)]
 enum GroupFault {
     None,
-    PartialAppend,
+    PartialAppend(usize),
     SyncError,
     SyncErrorAfter,
     SyncPanic,
@@ -42,9 +42,11 @@ impl LogIo for GroupIo {
     fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
         let count = self.appends.fetch_add(1, Ordering::SeqCst) + 1;
         let mut file = &self.file;
-        if count == 4 && matches!(self.fault, GroupFault::PartialAppend) {
-            file.write_all(&bytes[..5])?;
-            return Err(io::Error::from_raw_os_error(28));
+        if count == 4 {
+            if let GroupFault::PartialAppend(offset) = self.fault {
+                file.write_all(&bytes[..offset.min(bytes.len())])?;
+                return Err(io::Error::from_raw_os_error(28));
+            }
         }
         file.write_all(bytes)
     }
@@ -139,7 +141,7 @@ fn group_fault_case(fault: GroupFault) {
         "all grouped writers should be queued before release"
     );
     first.join().unwrap().unwrap();
-    if !matches!(fault, GroupFault::PartialAppend) {
+    if !matches!(fault, GroupFault::PartialAppend(_)) {
         group_started_rx
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
@@ -188,7 +190,7 @@ fn group_fault_case(fault: GroupFault) {
                 );
             }
         }
-        GroupFault::PartialAppend | GroupFault::SyncError | GroupFault::SyncErrorAfter => {
+        GroupFault::PartialAppend(_) | GroupFault::SyncError | GroupFault::SyncErrorAfter => {
             assert_eq!((successes, errors, panics), (0, 3, 0));
             assert!(store.get(b"safe").is_err());
             assert!(store.put(b"later", b"value").is_err());
@@ -203,9 +205,12 @@ fn group_fault_case(fault: GroupFault) {
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
     let reopened = Store::open(dir.path());
-    if matches!(fault, GroupFault::PartialAppend) {
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let record_len = record::encode(Operation::Put, b"group-0", b"value")
+        .unwrap()
+        .len();
+    if matches!(fault, GroupFault::PartialAppend(offset) if offset > 0 && offset < record_len) {
         assert!(matches!(reopened, Err(ref e) if e.kind() == io::ErrorKind::InvalidData));
-        assert_eq!(fs::read(path).unwrap(), before);
     } else {
         let reopened = reopened.unwrap();
         assert_eq!(
@@ -225,7 +230,12 @@ fn concurrent_writes_share_a_sync_before_success() {
 }
 #[test]
 fn partial_append_in_a_group_fails_all_and_preserves_the_log() {
-    group_fault_case(GroupFault::PartialAppend);
+    let record_len = record::encode(Operation::Put, b"group-0", b"value")
+        .unwrap()
+        .len();
+    for offset in 0..=record_len {
+        group_fault_case(GroupFault::PartialAppend(offset));
+    }
 }
 #[test]
 fn failed_group_sync_fails_all_waiters() {
