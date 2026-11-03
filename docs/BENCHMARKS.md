@@ -4,17 +4,33 @@ An initial local SQLite comparison harness exists; no general competitive perfor
 
 ## Initial local harness
 
-Run the Rust prototype and bundled SQLite through the same small, single-process harness. Both use byte keys, 64-byte values, and per-value CRC checks. Every acknowledged prototype mutation is covered by `sync_data` (concurrent mutations can share a sync); SQLite uses WAL, `synchronous=FULL`, autocommit, cached statements, and a 30-second busy timeout. These are not identical internal implementations or complete durability guarantees. The prototype verifies log records; SQLite has a different storage format and verification behavior.
+Run the Rust prototype and bundled SQLite through the same small, single-process harness. Both use byte keys, the same configured value size (64 bytes by default), and per-value CRC checks. Every acknowledged prototype mutation is covered by `sync_data` (concurrent mutations can share a sync); SQLite uses WAL, `synchronous=FULL`, autocommit, cached statements, and a 30-second busy timeout. These are not identical internal implementations or complete durability guarantees. The prototype verifies log records; SQLite has a different storage format and verification behavior.
 
 ```sh
-# Arguments: backend, clients, operations/client, keys, write %, existing directory.
+# Arguments: backend, clients, operations/client, keys, write %, existing directory, optional value bytes.
 cargo run --release --locked --example kv_bench -- prototype 4 250 250 50 .
 cargo run --release --locked --example kv_bench -- sqlite 4 250 250 50 .
+# For example: 8 clients, one hot key, 4 KiB values.
+cargo run --release --locked --example kv_bench -- prototype 8 500 1 50 . 4096
 ```
 
-Each run creates and removes a fresh temporary directory beneath the given directory; interruptions may leave a temporary directory behind. Use an appropriate measurement filesystem, not `/tmp` when it is RAM-backed. The harness initializes the data, warms up to 100 keys, and uses deterministic per-client random seeds. It prints completed operations, elapsed time, throughput, separate read/write p50/p95/p99/p99.9 and maximum latencies, per-client completion and worst-case latencies, SQLite version, and configuration. An operation error fails the run rather than being omitted from the results. CI only smoke-tests that both paths execute.
+Each run creates and removes a fresh temporary directory beneath the given directory; interruptions may leave a temporary directory behind. Use an appropriate measurement filesystem, not `/tmp` when it is RAM-backed. The harness initializes the data, warms up to 100 keys, and uses deterministic per-client random seeds. Value preparation is outside each operation's latency measurement but inside overall elapsed time. It prints completed operations, elapsed time, throughput, separate read/write p50/p95/p99/p99.9 and maximum latencies, per-client completion and worst-case latencies, SQLite version, and configuration. An operation error fails the run rather than being omitted from the results. CI only smoke-tests that both paths execute.
 
-This is a **closed-loop, in-process microbenchmark** with a small fixed-size value, not a production workload. It does not capture coordinated omission, CPU/RSS or I/O metrics, cold-start latency, multi-project fairness, power-loss behavior, PostgreSQL/MongoDB, service/network overhead, or independent durability validation. Record those separately, repeat tests under controlled conditions, and do not use this narrow result as a universal database ranking.
+This is a **closed-loop, in-process microbenchmark** with a configured fixed-size value, not a production workload. It does not capture coordinated omission, CPU/RSS or I/O metrics, cold-start latency, multi-project fairness, power-loss behavior, PostgreSQL/MongoDB, service/network overhead, or independent durability validation. Record those separately, repeat tests under controlled conditions, and do not use this narrow result as a universal database ranking.
+
+## Warm-cache recovery harness
+
+The recovery harness creates a new fixture using ordinary synchronized writes and measures reopening the same database repeatedly. `prepare` requires a new path and does not overwrite an existing store. The parent directory must already exist. A failed or interrupted preparation may leave its partial directory behind.
+
+```sh
+cargo run --release --locked --example recovery_bench -- prepare /path/to/new-fixture 100000
+cargo run --release --locked --example recovery_bench -- measure /path/to/new-fixture 100000 10
+# Optional final argument sets the fixed value size in bytes.
+cargo run --release --locked --example recovery_bench -- prepare /path/to/large-fixture 1000 4096
+cargo run --release --locked --example recovery_bench -- measure /path/to/large-fixture 1000 10 4096
+```
+
+Each open verifies every record checksum and rebuilds the index; three keys are checked after the open timer stops. The printed record count is the expected fixture size, not an independently counted number of distinct keys. Repeat measurements with the same prepared fixture and equivalent builds. These are warm-cache reopen timings: they do not measure cold storage, service wake-up, power-loss recovery, compaction, or backup/restore. The fixture remains on disk until its owner removes it.
 
 ## First recorded result
 
@@ -55,5 +71,7 @@ Start with PostgreSQL, SQLite, and Turso Database on the same machine where thei
 ## Measurement and fairness
 
 Record code revision, engine versions, compiler settings, hardware, filesystem, memory limits, network path, dataset, query/index definitions, durability and replication settings, warm-up, concurrency, and repetitions. Report throughput, p50/p95/p99 latency, failures and timeouts, CPU, memory, disk I/O, recovery time, and correctness. Include bounded offered load and overload behavior, not only successful requests; avoid coordinated omission when assessing tail latency. Compare the same operation and consistency/durability guarantees, and report configuration differences instead of disabling safety to win a benchmark.
+
+Build each source checkout in its own `CARGO_TARGET_DIR`; sharing a target directory across checkouts can reuse artifacts from the wrong source. Record the clean source revision and resulting binary hash for each comparison, and use the same benchmark harness and workload in each build.
 
 Publish the benchmark code, commands, raw results, and analysis. CI should check benchmark tooling for correctness, not enforce noisy shared-runner performance thresholds. Hardware-specific optimizations require a portable fallback and equivalent behavior tests.

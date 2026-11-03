@@ -9,7 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 type BenchResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
-const VALUE_SIZE: usize = 64;
+const DEFAULT_VALUE_SIZE: usize = 64;
+const MAX_VALUE_SIZE: usize = 16 * 1024 * 1024;
 
 struct Config {
     backend: String,
@@ -18,13 +19,17 @@ struct Config {
     keys: usize,
     write_percent: u64,
     directory: PathBuf,
+    value_size: usize,
 }
 
 impl Config {
     fn parse() -> BenchResult<Self> {
-        let args: Vec<_> = std::env::args().skip(1).collect();
-        if args.len() != 6 {
-            return Err("usage: kv_bench <prototype|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory>".into());
+        Self::parse_args(&std::env::args().skip(1).collect::<Vec<_>>())
+    }
+
+    fn parse_args(args: &[String]) -> BenchResult<Self> {
+        if !(6..=7).contains(&args.len()) {
+            return Err("usage: kv_bench <prototype|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory> [value-bytes]".into());
         }
         let result = Self {
             backend: args[0].clone(),
@@ -33,15 +38,17 @@ impl Config {
             keys: args[3].parse()?,
             write_percent: args[4].parse()?,
             directory: PathBuf::from(&args[5]),
+            value_size: args.get(6).map_or(Ok(DEFAULT_VALUE_SIZE), |s| s.parse())?,
         };
         if !matches!(result.backend.as_str(), "prototype" | "sqlite")
             || !(1..=64).contains(&result.clients)
             || !(1..=100_000).contains(&result.operations)
             || !(1..=1_000_000).contains(&result.keys)
             || result.write_percent > 100
+            || !(1..=MAX_VALUE_SIZE).contains(&result.value_size)
             || !result.directory.is_dir()
         {
-            return Err("invalid parameters: clients 1..64, operations 1..100000, keys 1..1000000, write percentage 0..100, and an existing directory are required".into());
+            return Err("invalid parameters: clients 1..64, operations 1..100000, keys 1..1000000, write percentage 0..100, value bytes 1..16777216, and an existing directory are required".into());
         }
         Ok(result)
     }
@@ -53,7 +60,7 @@ enum Worker {
 }
 
 impl Worker {
-    fn read(&mut self, key: &[u8]) -> BenchResult<()> {
+    fn read(&mut self, key: &[u8], value_size: usize) -> BenchResult<()> {
         let value = match self {
             Self::Prototype(store) => store.get(key)?.ok_or("missing key")?,
             Self::Sqlite(connection) => {
@@ -67,7 +74,7 @@ impl Worker {
                 value
             }
         };
-        if value.len() != VALUE_SIZE || value.iter().any(|byte| *byte != value[0]) {
+        if value.len() != value_size || value.iter().any(|byte| *byte != value[0]) {
             return Err("read returned an invalid value".into());
         }
         Ok(())
@@ -96,11 +103,12 @@ fn sqlite_connection(path: &Path) -> BenchResult<Connection> {
 }
 
 fn workers(config: &Config, directory: &Path) -> BenchResult<Vec<Worker>> {
+    let initial_value = vec![0; config.value_size];
     if config.backend == "prototype" {
         let store = Arc::new(Store::open(directory.join("store"))?);
         let mut initializer = Worker::Prototype(Arc::clone(&store));
         for key in 0..config.keys {
-            initializer.write(&(key as u64).to_be_bytes(), &[0; VALUE_SIZE])?;
+            initializer.write(&(key as u64).to_be_bytes(), &initial_value)?;
         }
         return Ok((0..config.clients)
             .map(|_| Worker::Prototype(Arc::clone(&store)))
@@ -119,7 +127,7 @@ fn workers(config: &Config, directory: &Path) -> BenchResult<Vec<Worker>> {
     connection.execute_batch("CREATE TABLE kv(key BLOB PRIMARY KEY, value BLOB NOT NULL, checksum INTEGER NOT NULL) WITHOUT ROWID;")?;
     let mut initializer = Worker::Sqlite(connection);
     for key in 0..config.keys {
-        initializer.write(&(key as u64).to_be_bytes(), &[0; VALUE_SIZE])?;
+        initializer.write(&(key as u64).to_be_bytes(), &initial_value)?;
     }
     drop(initializer);
     (0..config.clients)
@@ -148,15 +156,17 @@ fn workload(
     operations: usize,
     keys: usize,
     write_percent: u64,
+    value_size: usize,
 ) -> BenchResult<(Samples, Worker)> {
     let mut random = 0x9e37_79b9_7f4a_7c15_u64 ^ (id as u64 + 1);
     let mut samples = Samples::default();
+    let mut value = vec![0; value_size];
     barrier.wait();
     let started = Instant::now();
     for _ in 0..operations {
         let write = next_random(&mut random) % 100 < write_percent;
         let key = (next_random(&mut random) % keys as u64).to_be_bytes();
-        let value = [next_random(&mut random) as u8; VALUE_SIZE];
+        value.fill(next_random(&mut random) as u8);
         let started = Instant::now();
         if write {
             worker.write(&key, &value)?;
@@ -164,7 +174,7 @@ fn workload(
                 .writes
                 .push(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
         } else {
-            worker.read(&key)?;
+            worker.read(&key, value_size)?;
             samples
                 .reads
                 .push(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
@@ -211,7 +221,7 @@ fn main() -> BenchResult<()> {
     let mut workers = workers(&config, directory.path())?;
     // Warm a small identical key range before measuring; this is not a cold-cache test.
     for key in 0..config.keys.min(100) {
-        workers[0].read(&(key as u64).to_be_bytes())?;
+        workers[0].read(&(key as u64).to_be_bytes(), config.value_size)?;
     }
     let barrier = Arc::new(Barrier::new(config.clients + 1));
     let mut threads = Vec::new();
@@ -220,8 +230,17 @@ fn main() -> BenchResult<()> {
         let operations = config.operations;
         let keys = config.keys;
         let write_percent = config.write_percent;
+        let value_size = config.value_size;
         threads.push(thread::spawn(move || {
-            workload(worker, barrier, id, operations, keys, write_percent)
+            workload(
+                worker,
+                barrier,
+                id,
+                operations,
+                keys,
+                write_percent,
+                value_size,
+            )
         }));
     }
     let started = Instant::now();
@@ -267,7 +286,7 @@ fn main() -> BenchResult<()> {
         config.backend,
         config.clients,
         config.keys,
-        VALUE_SIZE,
+        config.value_size,
         config.write_percent,
         completed,
         elapsed.as_secs_f64() * 1000.0,
@@ -294,7 +313,26 @@ fn main() -> BenchResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::nearest_rank;
+    use super::{Config, DEFAULT_VALUE_SIZE, MAX_VALUE_SIZE, nearest_rank};
+
+    #[test]
+    fn accepts_configurable_value_sizes_and_rejects_out_of_range() {
+        let args = ["prototype", "2", "20", "16", "50", "."]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            Config::parse_args(&args).unwrap().value_size,
+            DEFAULT_VALUE_SIZE
+        );
+        let mut sized = args.clone();
+        sized.push("4096".into());
+        assert_eq!(Config::parse_args(&sized).unwrap().value_size, 4096);
+        *sized.last_mut().unwrap() = "0".into();
+        assert!(Config::parse_args(&sized).is_err());
+        *sized.last_mut().unwrap() = (MAX_VALUE_SIZE + 1).to_string();
+        assert!(Config::parse_args(&sized).is_err());
+    }
 
     #[test]
     fn percentile_reports_rare_outliers_and_maximum() {
