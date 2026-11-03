@@ -22,6 +22,21 @@ This is a **closed-loop, in-process microbenchmark** with a small fixed-size val
 
 In these runs, prototype read p95 was 3.2–4.6 µs and SQLite read p95 was 6.1–6.3 µs. Prototype write p99 was 8.5–21.5 ms and SQLite write p99 was 0.67–1.09 ms. There were only 528 writes in each run, so the tail figures are particularly noisy; they identify a reason to profile writer contention, not a general ranking or proof of reliability. Neither backend's full durability behavior was validated, and their features and internal guarantees differ. See the raw file and limitations above before interpreting these numbers.
 
+## Group commit comparison
+
+The [raw comparison and environment](../benchmarks/results/2026-11-03-group-commit-comparison.json) record five mixed-workload runs per engine with eight clients, 1,000 operations per client, 250 cached keys, 64-byte values, and about 50% writes. The table shows the median of each run's measured value. The earlier engine and group-commit engine used the source revisions recorded in the file; SQLite was 3.49.1, in WAL mode with `synchronous=FULL` and autocommit.
+
+| Measurement | Before group commit | With group commit | SQLite |
+| --- | ---: | ---: | ---: |
+| Mixed operations/second | 7,098 | 22,514 | 6,830 |
+| Write p50 | 0.270 ms | 0.682 ms | 0.192 ms |
+| Write p99 | 23.48 ms | 1.28 ms | 0.59 ms |
+| Write p99.9 | 243.3 ms | 2.45 ms | 530.4 ms |
+
+Grouping reduced the observed long waits and increased throughput in this small concurrent workload, while the typical write took longer. The p99.9 figure reflects only a few of roughly 4,000 writes per run, and the virtualized overlay filesystem's backing was not verified. These numbers do not establish durability, isolation, or performance superiority in general: SQLite supports SQL, transactions, and many features the prototype lacks. The file also includes single-client, four-client, read-only and write-only runs; process CPU and RSS include initialization and are not a standalone memory comparison. Use controlled, larger and out-of-cache workloads before drawing wider conclusions.
+
+SQLite's [WAL documentation](https://www.sqlite.org/wal.html) describes sequential writes and reader/writer overlap. Its [`synchronous` documentation](https://www.sqlite.org/pragma.html#pragma_synchronous) states that WAL with `FULL` synchronizes after each transaction commit. The harness leaves SQLite's automatic checkpoint configuration at its default; a checkpoint can affect measured latency.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.

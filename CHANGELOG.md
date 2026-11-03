@@ -26,6 +26,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Raw results and environment details for an initial small SQLite comparison.
 - Benchmark p99.9, maximum, and per-client latency reporting to expose rare stalls and skew.
 - Bounded group commit for concurrent single-key writes, with tests for shared synchronization, failure, panic, admission limits, and backup coordination.
+- Raw before/after benchmark runs against the prior engine and SQLite, including per-client and tail latency details.
 
 ### Changed
 
