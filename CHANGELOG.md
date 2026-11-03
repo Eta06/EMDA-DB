@@ -8,7 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
-- A process-kill test during a synchronized but unpublished compaction copy. The tested interruption leaves the source usable and may leave a private staging directory; it is not a physical power-loss test.
+- Process-kill tests during synchronized compaction staging and immediately after publication but before parent-directory sync. The first can leave a private staging directory; the second sees a complete copy on the still-running OS. Neither is a physical power-loss test.
 - A per-open-store 64 MiB aggregate budget for encoded records staged by concurrent transactions, with admission before staging and reservation cleanup on replacement, completion and unwind. The budget excludes other allocations and is not a total-memory quota.
 - Explicit read-only snapshot cancellation and optional monotonic deadlines checked at creation and operation boundaries. Expired snapshots retain their reservations until cancelled or dropped; ongoing I/O and transaction lifetimes are unaffected.
 - A sequential reference-model check for 64 short concurrent histories combining transactions, atomic batches, independent writes and bulk reads, with recovery checked after every history.

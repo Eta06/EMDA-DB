@@ -10,6 +10,7 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 ## Priority 0: remaining local foundation work
 
 - [ ] Expand interruption and failure injection across initialization, commit, backup, restore, upgrade and every directory-sync boundary. Record which persistence states the model covers and does not cover.
+- [x] Exercise process termination during synchronized compaction staging and after publication before parent-directory sync. The latter establishes only what remains visible on the running OS, not what survives a physical power failure.
 - [ ] Extend concurrent history and recovery testing beyond the current short histories. A 64-iteration model check now mixes seven concurrent operations: transactions, atomic batches, independent writes and bulk reads, with a reopen after every iteration; the check is not exhaustive. Add persistent fixtures for future supported format versions.
 - [ ] Extend recovery fuzzing with additional targets, malformed inputs, longer campaigns and replayable regression cases. The 363,780-input local recovery run is recorded in `benchmarks/results/2026-11-04-foundation-fuzz.json`; the historical checkpoint reader was included in `benchmarks/results/2026-11-03-checkpoint-view-fuzz.json`. Neither is exhaustive.
 - [ ] Measure memory, I/O and recovery behavior under workloads representative of the intended deployment, including large data and repeated restarts. Existing local point-operation comparisons are a baseline, not a comprehensive performance ranking.

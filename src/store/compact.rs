@@ -398,6 +398,17 @@ mod tests {
         };
         let parent = Path::new(&parent);
         let source = Store::open(parent.join("source")).unwrap();
+        if std::env::var("EMDA_COMPACTION_CRASH_STAGE").as_deref() == Ok("published") {
+            let _: io::Result<()> =
+                source.compact_to_with_sync(&parent.join("destination"), |_| {
+                    println!("COMPACTION_CRASH_BOUNDARY_REACHED");
+                    std::io::stdout().flush()?;
+                    loop {
+                        std::thread::park();
+                    }
+                });
+            return;
+        }
         let _: io::Result<()> = source.compact_to_using(
             &parent.join("destination"),
             |_| Ok(()),
@@ -408,7 +419,7 @@ mod tests {
                     .map(|(key, value)| (key.clone(), *value))
                     .collect();
                 copy_live_records(log, &one, target)?;
-                println!("COMPACTION_COPY_SYNCHRONIZED");
+                println!("COMPACTION_CRASH_BOUNDARY_REACHED");
                 std::io::stdout().flush()?;
                 loop {
                     std::thread::park();
@@ -417,27 +428,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn process_killed_during_compaction_keeps_source_and_does_not_publish_copy() {
+    fn kill_child_at_compaction_boundary(parent: &Path, stage: &str) {
         use std::io::BufRead;
         use std::process::{Command, Stdio};
         use std::sync::mpsc;
         use std::time::Duration;
-
-        let directory = tempfile::tempdir().unwrap();
-        let source_path = directory.path().join("source");
-        let source = Store::open(&source_path).unwrap();
-        source.put(b"a", b"one").unwrap();
-        source.put(b"b", b"two").unwrap();
-        let before = std::fs::read(source_path.join("records.log")).unwrap();
-        drop(source);
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "store::compact::tests::compaction_crash_child",
                 "--nocapture",
             ])
-            .env("EMDA_COMPACTION_CRASH_PATH", directory.path())
+            .env("EMDA_COMPACTION_CRASH_PATH", parent)
+            .env("EMDA_COMPACTION_CRASH_STAGE", stage)
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
@@ -448,7 +451,7 @@ mod tests {
                 .lines()
                 .map_while(Result::ok)
             {
-                if line.contains("COMPACTION_COPY_SYNCHRONIZED") {
+                if line.contains("COMPACTION_CRASH_BOUNDARY_REACHED") {
                     let _ = sender.send(());
                     break;
                 }
@@ -457,7 +460,19 @@ mod tests {
         let copied = receiver.recv_timeout(Duration::from_secs(20));
         child.kill().unwrap();
         child.wait().unwrap();
-        copied.expect("compaction process did not reach the staging boundary");
+        copied.expect("compaction process did not reach the requested boundary");
+    }
+
+    #[test]
+    fn process_killed_during_compaction_keeps_source_and_does_not_publish_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        let source = Store::open(&source_path).unwrap();
+        source.put(b"a", b"one").unwrap();
+        source.put(b"b", b"two").unwrap();
+        let before = std::fs::read(source_path.join("records.log")).unwrap();
+        drop(source);
+        kill_child_at_compaction_boundary(directory.path(), "staged");
         assert!(!directory.path().join("destination").exists());
         assert_eq!(
             std::fs::read(source_path.join("records.log")).unwrap(),
@@ -476,6 +491,28 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".db-compact-")
         }));
+    }
+
+    #[test]
+    fn process_killed_after_publication_sees_complete_copy_on_running_os() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        let source = Store::open(&source_path).unwrap();
+        source.put(b"a", b"old").unwrap();
+        source.put(b"a", b"current").unwrap();
+        source.put(b"b", b"present").unwrap();
+        let before = std::fs::read(source_path.join("records.log")).unwrap();
+        drop(source);
+        kill_child_at_compaction_boundary(directory.path(), "published");
+        assert_eq!(
+            std::fs::read(source_path.join("records.log")).unwrap(),
+            before
+        );
+        let source = Store::open(&source_path).unwrap();
+        let copy = Store::open(directory.path().join("destination")).unwrap();
+        let expected = vec![Some(b"current".to_vec()), Some(b"present".to_vec())];
+        assert_eq!(source.get_many(&[b"a", b"b"]).unwrap(), expected);
+        assert_eq!(copy.get_many(&[b"a", b"b"]).unwrap(), expected);
     }
 
     #[test]
