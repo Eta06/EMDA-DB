@@ -11,6 +11,20 @@ use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
 
+#[test]
+fn duplicated_store_lock_retains_ownership_until_the_duplicate_closes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let inherited = store._lock_file.try_clone().unwrap();
+    drop(store);
+    assert_eq!(
+        Store::open(directory.path()).err().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    drop(inherited);
+    assert!(Store::open(directory.path()).is_ok());
+}
+
 #[derive(Clone, Copy)]
 enum Fault {
     PartialAppend(usize),

@@ -20,6 +20,43 @@ struct BackupInfo {
     digest: [u8; 32],
 }
 
+// A staging lock must be explicitly released before the operation returns.
+// Another thread may spawn a child while it is held; an inherited descriptor
+// can otherwise keep the open-file-description lock alive until that child execs.
+struct StagingLock {
+    file: File,
+    active: bool,
+}
+
+impl StagingLock {
+    fn create(directory: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(directory.join("store.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&file)?;
+        Ok(Self { file, active: true })
+    }
+
+    fn release(&mut self) -> io::Result<()> {
+        if self.active {
+            fs2::FileExt::unlock(&self.file)?;
+            self.active = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StagingLock {
+    fn drop(&mut self) {
+        // Closing the final descriptor remains the fallback if unlock fails.
+        if self.active {
+            let _ = fs2::FileExt::unlock(&self.file);
+        }
+    }
+}
+
 pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
     create_with_sync(log, destination, |parent| File::open(parent)?.sync_all())
 }
@@ -121,17 +158,26 @@ pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()>
 }
 
 pub(crate) fn upgrade_format(source: &Log, destination: &Path) -> io::Result<()> {
+    upgrade_format_with_hooks(
+        source,
+        destination,
+        |parent| File::open(parent)?.sync_all(),
+        || Ok(()),
+    )
+}
+
+fn upgrade_format_with_hooks(
+    source: &Log,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    before_publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     source.verify_witness()?;
     let parent = parent_directory(destination)?;
     let staging = tempfile::Builder::new()
         .prefix(".db-upgrade-")
         .tempdir_in(parent)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(staging.path().join("store.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)?;
+    let mut lock = StagingLock::create(staging.path())?;
     let mut target = OpenOptions::new()
         .read(true)
         .write(true)
@@ -169,25 +215,28 @@ pub(crate) fn upgrade_format(source: &Log, destination: &Path) -> io::Result<()>
     // Validate every copied record before establishing the new boundary.
     let (target, _) = Log::from_io(Box::new(target))?;
     target.install_restore_witness(staging.path())?;
-    lock.sync_all()?;
+    lock.file.sync_all()?;
     File::open(staging.path())?.sync_all()?;
+    before_publish()?;
     publish_directory(staging.path(), destination)?;
     let _ = staging.keep();
-    File::open(parent)?.sync_all().map_err(|error| {
+    let synchronized = sync_parent(parent).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("upgraded store may exist but directory synchronization failed: {error}"),
         )
-    })
+    });
+    let released = lock.release().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("upgraded store may exist but staging lock release failed: {error}"),
+        )
+    });
+    synchronized.and(released)
 }
 
 fn restore_into(backup: &File, info: &BackupInfo, destination: &Path) -> io::Result<()> {
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(destination.join("store.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)?;
+    let mut lock = StagingLock::create(destination)?;
     let mut log = OpenOptions::new()
         .read(true)
         .write(true)
@@ -217,6 +266,7 @@ fn restore_into(backup: &File, info: &BackupInfo, destination: &Path) -> io::Res
     let (log, _) = Log::from_io(Box::new(log))?;
     log.install_restore_witness(destination)?;
     File::open(destination)?.sync_all()?;
+    lock.release()?;
     Ok(())
 }
 

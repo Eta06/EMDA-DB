@@ -1,6 +1,29 @@
 use super::*;
 use crate::Store;
 
+#[test]
+fn staging_lock_release_is_not_delayed_by_a_duplicate_descriptor() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut lock = StagingLock::create(directory.path()).unwrap();
+    let inherited = lock.file.try_clone().unwrap();
+    let contender = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(directory.path().join("store.lock"))
+        .unwrap();
+    assert!(fs2::FileExt::try_lock_exclusive(&contender).is_err());
+    lock.release().unwrap();
+    fs2::FileExt::try_lock_exclusive(&contender).unwrap();
+    drop(lock);
+    drop(inherited);
+    let second = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(directory.path().join("store.lock"))
+        .unwrap();
+    assert!(fs2::FileExt::try_lock_exclusive(&second).is_err());
+}
+
 fn pause_at_boundary() -> io::Result<()> {
     println!("BACKUP_CRASH_BOUNDARY_REACHED");
     std::io::stdout().flush()?;
@@ -18,6 +41,7 @@ fn publication_crash_child() {
     let source = parent.join("source");
     let backup = parent.join("backup");
     let restored = parent.join("restored");
+    let upgraded = parent.join("upgraded");
     let mode = std::env::var("EMDA_BACKUP_CRASH_STAGE").unwrap();
     let result = match mode.as_str() {
         "backup-staged" => {
@@ -30,6 +54,14 @@ fn publication_crash_child() {
         }
         "restore-staged" => restore_with_hooks(&backup, &restored, |_| Ok(()), pause_at_boundary),
         "restore-published" => restore_with_sync(&backup, &restored, |_| pause_at_boundary()),
+        "upgrade-staged" => {
+            let (log, _) = Log::open(&source, false).unwrap();
+            upgrade_format_with_hooks(&log, &upgraded, |_| Ok(()), pause_at_boundary)
+        }
+        "upgrade-published" => {
+            let (log, _) = Log::open(&source, false).unwrap();
+            upgrade_format_with_hooks(&log, &upgraded, |_| pause_at_boundary(), || Ok(()))
+        }
         _ => panic!("unknown test stage"),
     };
     result.unwrap();
@@ -150,6 +182,62 @@ fn process_kill_at_restore_publication_boundaries_preserves_backup() {
 }
 
 #[test]
+fn process_kill_at_upgrade_publication_boundaries_preserves_v2_and_v3_sources() {
+    for mode in ["upgrade-staged", "upgrade-published"] {
+        for v2 in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let source_path = directory.path().join("source");
+            let upgraded = directory.path().join("upgraded");
+            if v2 {
+                std::fs::create_dir(&source_path).unwrap();
+                std::fs::write(
+                    source_path.join("records.log"),
+                    include_bytes!("../../tests/fixtures/v2-batch-records.log"),
+                )
+                .unwrap();
+                std::fs::write(
+                    source_path.join("commit.state"),
+                    include_bytes!("../../tests/fixtures/v2-batch-commit.state"),
+                )
+                .unwrap();
+                std::fs::write(source_path.join("store.lock"), []).unwrap();
+            } else {
+                let source = Store::open(&source_path).unwrap();
+                source.put(b"alpha", b"one").unwrap();
+                source.put(b"beta", b"two").unwrap();
+            }
+            let before_log = std::fs::read(source_path.join("records.log")).unwrap();
+            let before_witness = std::fs::read(source_path.join("commit.state")).unwrap();
+            kill_at_boundary(directory.path(), mode);
+            assert_eq!(
+                std::fs::read(source_path.join("records.log")).unwrap(),
+                before_log
+            );
+            assert_eq!(
+                std::fs::read(source_path.join("commit.state")).unwrap(),
+                before_witness
+            );
+            let source = Store::open(&source_path).unwrap();
+            if mode == "upgrade-staged" {
+                assert!(!upgraded.exists());
+                assert!(std::fs::read_dir(directory.path()).unwrap().any(|entry| {
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".db-upgrade-")
+                }));
+                source.upgrade_format(&upgraded).unwrap();
+            }
+            let copy = Store::open(&upgraded).unwrap();
+            let expected = vec![Some(b"one".to_vec()), Some(b"two".to_vec())];
+            assert_eq!(source.get_many(&[b"alpha", b"beta"]).unwrap(), expected);
+            assert_eq!(copy.get_many(&[b"alpha", b"beta"]).unwrap(), expected);
+        }
+    }
+}
+
+#[test]
 fn restore_parent_sync_failure_reports_uncertain_publication() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("source")).unwrap();
@@ -200,4 +288,34 @@ fn backup_parent_sync_failure_reports_uncertain_publication() {
         Some(&b"durable"[..])
     );
     assert!(matches!(create(&log, &snapshot), Err(e) if e.kind() == io::ErrorKind::AlreadyExists));
+}
+
+#[test]
+fn upgrade_parent_sync_failure_reports_uncertain_publication() {
+    let directory = tempfile::tempdir().unwrap();
+    let source_path = directory.path().join("source");
+    let source = Store::open(&source_path).unwrap();
+    source.put(b"key", b"durable").unwrap();
+    drop(source);
+    let (log, _) = Log::open(&source_path, false).unwrap();
+    let upgraded = directory.path().join("upgraded");
+    let error = upgrade_format_with_hooks(
+        &log,
+        &upgraded,
+        |_| Err(io::Error::other("injected parent sync failure")),
+        || Ok(()),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("upgraded store may exist"));
+    assert_eq!(
+        Store::open(&upgraded)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"durable"[..])
+    );
+    assert!(
+        matches!(upgrade_format(&log, &upgraded), Err(error) if error.kind() == io::ErrorKind::AlreadyExists)
+    );
 }

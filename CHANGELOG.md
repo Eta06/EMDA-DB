@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Upgrade staging and publication process-kill tests for V2 and V3 sources, plus injected parent-directory sync failure and a regression test for staging-lock release with duplicated descriptors.
 - Process-kill checks at backup and restore staging and publication boundaries, including successful retry or reopening on the running OS. Interrupted staging can leave private files or directories containing data; physical power loss is not tested.
 - Process-kill tests during synchronized compaction staging and immediately after publication but before parent-directory sync. The first can leave a private staging directory; the second sees a complete copy on the still-running OS. Neither is a physical power-loss test.
 - A per-open-store 64 MiB aggregate budget for encoded records staged by concurrent transactions, with admission before staging and reservation cleanup on replacement, completion and unwind. The budget excludes other allocations and is not a total-memory quota.
@@ -79,6 +80,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Changed
 
+- Restore and upgrade explicitly release private staging locks, preventing a duplicated descriptor from unnecessarily extending the staging lock after successful release. Long-lived store-lock fork/exec behavior remains to be specified.
 - Separate-copy compaction synchronizes bounded groups of ordinary `DB01` records, rebuilds the target index by reopening, and still verifies the copy before publication. Grouping does not make compaction online or bound its total memory.
 - Historical checkpoint views use smaller verified index blocks and bounded prefix summaries. Ambiguous prefixes require a verified block read before choosing a search branch. The on-disk checkpoint format and trusted-digest requirements are unchanged. A 171,991-input model-based search fuzz run is recorded in `benchmarks/results/2026-11-03-checkpoint-order-fuzz.json`.
 - Successful commits skip condition-variable notifications when no writer is waiting; synchronization and failure wake-ups remain intact.
