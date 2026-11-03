@@ -22,7 +22,8 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 - [x] Add initial bytewise ordered scans with exclusive bounds and pagination. Each page is limited to 1,024 entries and 32 MiB of key/value data, but pages do not share a stable snapshot. Continue until an empty page; a byte-limited page can be short.
 - [x] Add single-key compare-exchange for conditional put/delete, synchronized on success and serialized against mutations; it does not detect ABA changes or provide multi-key transactions.
 - [x] Add signed 64-bit atomic increment with checked overflow and specified byte encoding; it is serialized against mutations.
-- [ ] Implement bulk operations. Profile and reduce compare-exchange/increment contention without weakening their semantics; both currently exclude all concurrent writers, including writers to other keys.
+- [x] Add bounded multi-key reads from one captured index state, preserving input order and missing keys. This is not a multi-key transaction.
+- [ ] Implement bulk writes. Profile and reduce compare-exchange/increment contention without weakening their semantics; both currently exclude all concurrent writers, including writers to other keys.
 - [ ] Specify and implement atomic multi-key batches and transactions, isolation, conflict behavior and rollback. Record and index updates must recover atomically. Independent operations and group commit are not transactions.
 - [ ] Add stable snapshots and explicit lifetime/resource management where required for multi-page scans and transactions.
 - [ ] Add configurable request/connection limits, fair overload handling and cancellation/timeouts without violating unknown-outcome semantics. The current embedded API does not include a production server.

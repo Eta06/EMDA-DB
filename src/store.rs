@@ -87,6 +87,46 @@ impl Store {
         location.map(|location| self.log.read(location)).transpose()
     }
 
+    /// Reads up to 1,024 keys from one captured index state, in input order.
+    ///
+    /// Missing keys return `None`, and duplicate keys produce duplicate results.
+    /// The call rejects results whose total key and value bytes exceed 32 MiB;
+    /// callers can split a larger request. No partial results are returned on
+    /// error. This is one read operation, not a multi-key transaction.
+    pub fn get_many(&self, keys: &[&[u8]]) -> io::Result<Vec<Option<Vec<u8>>>> {
+        if keys.len() > MAX_SCAN_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "too many keys in bulk read",
+            ));
+        }
+        for key in keys {
+            record::validate_key(key)?;
+        }
+        let inner = self.read()?;
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        let mut size = 0_usize;
+        let mut locations = Vec::with_capacity(keys.len());
+        for key in keys {
+            let location = inner.index.get(*key).copied();
+            size += key.len() + location.map_or(0, |entry| entry.length);
+            if size > MAX_SCAN_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "bulk read exceeds 32 MiB",
+                ));
+            }
+            locations.push(location);
+        }
+        drop(inner);
+        locations
+            .into_iter()
+            .map(|location| location.map(|location| self.log.read(location)).transpose())
+            .collect()
+    }
+
     /// Returns at most `limit` entries in bytewise key order.
     ///
     /// `after` and `before` are exclusive bounds; `None` means unbounded.

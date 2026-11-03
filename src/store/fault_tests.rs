@@ -338,6 +338,24 @@ fn short_read_is_reported_without_returning_partial_data() {
 }
 
 #[test]
+fn bulk_read_returns_no_partial_results_after_a_later_short_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
+    store.put(b"a", b"first").unwrap();
+    store.put(b"b", b"second").unwrap();
+    *fault.lock().unwrap() = Some(Fault::ShortReadAfter(1, 1));
+    assert_eq!(
+        store.get_many(&[b"a", b"b"]).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(
+        store.get_many(&[b"a", b"b"]).unwrap(),
+        vec![Some(b"first".to_vec()), Some(b"second".to_vec())]
+    );
+}
+
+#[test]
 fn short_read_during_recovery_preserves_the_log() {
     let dir = tempfile::tempdir().unwrap();
     {

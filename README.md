@@ -10,7 +10,7 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
-| Embedded key-value core | Prototype | Byte-key `put`, `get`, `delete`, conditional compare-exchange, signed 64-bit increment, and ordered paginated scans; one store per process with an advisory lock. |
+| Embedded key-value core | Prototype | Byte-key `put`, `get`, bounded bulk reads, `delete`, conditional compare-exchange, signed 64-bit increment, and ordered paginated scans; one store per process with an advisory lock. |
 | Persistence and recovery | Prototype, limited | On supported Linux filesystems, V3 synchronizes log data and a metadata witness in one full inode sync; V2 retains two syncs. Both detect loss below an intact boundary; incomplete tails fail closed. Legacy stores retain their earlier limitations. Power-loss safety is not established. |
 | Backup and restore | Prototype | Full-log backup verifies record checksums and a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
 | Concurrent access | Prototype, limited | Concurrent writes can share a sync; preparation and value reads do not hold the queue or index lock. Multi-key transactions and isolation levels are not implemented. |

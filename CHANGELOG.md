@@ -11,6 +11,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Ordered byte-key scans with exclusive bounds, pagination, and per-page limits of 1,024 entries and 32 MiB of key/value bytes. Each page captures the index at one instant; pages do not share a transaction snapshot.
 - Synchronized single-key compare-exchange for conditional put/delete, serialized against concurrent writers; mismatches make no write and I/O failure retains unknown-outcome semantics.
 - Synchronized signed 64-bit atomic increments using checked arithmetic and little-endian encoding, with missing keys treated as zero.
+- Bounded multi-key reads capturing one index state, with input ordering, missing-key and duplicate-key handling.
 - Concurrent multi-key operation histories checked against a sequential model and recovery, plus backup tests for every truncation and single-byte corruption position, competing restores, symlink destinations, and directory-sync failure after publication. A 363,780-input recovery fuzz campaign found no crash or sanitizer failure.
 
 - A ten-engine local comparison with 264 repeated measurements across mixed/read/write/CRUD workloads, 36 paired CPU-affinity runs, eleven successful process-restart checks, raw evidence and documented wins/losses.

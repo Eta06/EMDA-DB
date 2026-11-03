@@ -15,7 +15,7 @@ Research snapshot: 3 November 2026. This is a structured inventory of major engi
 | Update | `UPDATE`, conditional expressions | Update one/many, update operators, update pipelines | Replace one value via `put` |
 | Delete | `DELETE` | Delete one/many | Single key `delete` |
 | Upsert | `INSERT ... ON CONFLICT` | Upsert options on supported operations | Overwrite and single-key compare-exchange are supported; no document or SQL upsert |
-| Bulk operations | Multi-row SQL, `COPY` | Bulk write and multiple-document operations | No batching |
+| Bulk operations | Multi-row SQL, `COPY` | Bulk write and multiple-document operations | Bounded bulk reads; no bulk writes or atomic batches |
 | Filtering and projection | SQL `WHERE` and selected expressions | Query operators and projected fields | No filters or projection |
 | Sort, limit, pagination | `ORDER BY`, `LIMIT`, cursors | Sort, limit, cursors | Bytewise ordered scan with exclusive bounds and bounded pages; no stable multi-page snapshot |
 | Joins and relationships | Joins and foreign keys | `$lookup`, references and embedded documents | None |
