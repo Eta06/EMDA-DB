@@ -2,6 +2,19 @@
 
 A local comparison harness covers ten engines and six byte-key workloads; no general competitive performance claim has been established. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
 
+## Verified checkpoint reopen comparison: 2026-11-04
+
+The [raw paired results](../benchmarks/results/2026-11-04-checkpoint-open-comparison.json) compare full replay with `open_with_checkpoint` at source revision `01de13a`. Each fixture used 64-byte values and DB02 batches of up to 256 puts. Checkpoint creation and fixture preparation finished before a bounded quiet check; eight timed warm-cache opens per mode alternated order, and recovered sample values were verified after each timer. The benchmark process ran on CPUs 1–3 and orchestration on CPU 4 of the same four-CPU-quota Intel Xeon Platinum 8573C VM, with `/workspace` overlay storage. The backing storage and host interference are not controlled.
+
+| Fixture | Full replay median (range) | Checkpoint median (range) | Checkpoint creation | Log / index bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 100,000 writes, 1,000 keys | 19.684 ms (17.445–20.914) | 8.884 ms (8.012–26.597) | 37.413 ms | 9,310,194 / 26,100 |
+| 25,000 writes, 10,000 keys | 5.857 ms (5.580–8.590) | 4.492 ms (4.322–5.105) | 17.241 ms | 2,327,576 / 260,100 |
+
+The checkpoint had lower median reopen time in both fixtures, but its 26.597 ms run was slower than every full-replay run in the first fixture. Eight repetitions are exploratory, not an SLO or broad ranking. Creation blocks writes and its time is separate from reopen measurements. The checkpoint path still hashes every covered log byte, loads the complete live index into memory and requires a trusted separately stored digest. It does not provide bounded recovery time, bounded process memory, an independent backup, or physical power-loss evidence.
+
+Both quiet checks passed. Whole-cgroup counters for the timed loops recorded no CPU throttling, memory-limit events or direct reclaim. The highest reported VM steal during either loop was 0.77%; these counters include the benchmark, are not per-engine attribution, and do not rule out host or storage interference. Commands, source and binary hashes, per-run values, and telemetry are in the raw file. Reproduce after building `checkpoint_bench` in release mode with `python3 scripts/checkpoint_compare.py --directory /path/to/disk --output results.json`; adjust CPU sets for the host.
+
 ## Expanded local comparison and Linux noise controls: 2026-11-03
 
 The [complete report](LOCAL_COMPARISON_2026_11_03.md) records 264 runs across EMDA, SQLite (two binding/version configurations), PostgreSQL, Redis, MongoDB, Turso, RocksDB, LMDB, DuckDB and FoundationDB. It includes single/concurrent mixed workloads, read-only, write-only, 4 KiB values and CRUD cycles, plus 36 paired CPU-affinity measurements and eleven successful process-restart checks. The [methodology](COMPARISON_METHOD.md) documents durable settings, native versions, adapter overhead, VM controls and systems not measured.

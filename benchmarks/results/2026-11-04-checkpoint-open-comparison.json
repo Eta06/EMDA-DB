@@ -1,0 +1,1357 @@
+{
+  "revision": "01de13aa3aa6890ab5c1899fb377f060be75c730",
+  "git_status": "",
+  "source_sha256": {
+    "/workspace/database-engine/scripts/checkpoint_compare.py": "d0159101395f6a517bd80951cf62211049feb07fe5a48bb6f847c1e1e696911c",
+    "Cargo.lock": "a997cbe2b0911ebaa83db715f037a0b2f793796e765f2bf72317c581e0432057",
+    "Cargo.toml": "4d0adcdefef1ae59a0e4866ae259c2355ec7d52fce172cd81d8275d6b6791340",
+    "examples/checkpoint_bench.rs": "fbd663e3119513e37d818f68ef0a2b3744f94408d44c99db353fbfbd0a2c7ddc",
+    "scripts/benchmarks/telemetry.py": "7c0a54034db9909399f12b9ed280d1e79b105e10434849af4bd472904821de8c",
+    "src/backup/publication_tests.rs": "5677a10580000f6899e7bd918c913cc9c3f09d53164735102678991652b9b96f",
+    "src/backup.rs": "f6dd0837c32b9776e7b5c2dff008015fbf8e7a85a19600c973ff491d7b19a0fb",
+    "src/checkpoint.rs": "6a4529b4d73b428ff3684228a9b01f105fc56e6fba5a8d581fe536a80f7f3180",
+    "src/directory.rs": "81c4a81ff27adc861bc0b103b836931eb3a295203c879ce0ac941659cff31b68",
+    "src/lib.rs": "7fd080e9f501278d84f6b990ede5e8e3c7c562ae15f51911388ad14b576cf987",
+    "src/log.rs": "2fdaec0154dc6878fdf27a7d6f55336ce21b27fbb619ff121de81a0355ae9507",
+    "src/log_io.rs": "ab953b71ad159309faed6e5c421a72c170e2811ec1337bbdf1da17eec429926b",
+    "src/log_tests.rs": "384f5c0553a1052267518df5e95266cc5b6b870edcca5385d109610c8c023e7a",
+    "src/metadata_witness.rs": "71f9c07a52398736c0d0734db57723b4f8c500316cb08e60a273a1b7454016be",
+    "src/record/batch.rs": "7b4c581772f2be28ce61ddc11494d368badac32a7357642108f4e829795edbc9",
+    "src/record.rs": "380e84f54419efbc7735a839dc4ab1d1da93859ff74234d10273e308e68bb4d8",
+    "src/recovery.rs": "bbe3ff7b9a77077ef3831635c258d16858409464c878630807fbc4e78e497c16",
+    "src/store/atomic_batch.rs": "432718b0bae8be04c3c969869d43a11c3e875c22852c26171c46aad94b360c58",
+    "src/store/commit.rs": "626963e3d14a387b0452d19d2a229366ce647f9f48437f7e0ea9a8b6930498f7",
+    "src/store/compact.rs": "f4bbdc2c463e7a5cbae286130e8ecc82bb7d833a537ff834c0ee292969c50150",
+    "src/store/fault_tests.rs": "540f7bc07948b3a1155f1677c3e0100a1b79b60838311079b0018374a7b6e3ce",
+    "src/store/group_tests.rs": "2b30c15de596ef9b919ad560e768534ad2375878c394163d91b635574a770928",
+    "src/store/metadata_tests.rs": "21351d64fd7ba4651fd075dee3b6c35578cb5978ed55a051ac4d019a13a17c21",
+    "src/store/read_tests.rs": "f699cf37e01db0edf64e00f68be96fb8258397b19d5f400b8e61ca2485ab8c05",
+    "src/store/reservation_tests.rs": "f780e1a9b1afaa1f2eac0daabe98d4c77d86bbc027bed9f244966fb115aaabe2",
+    "src/store/snapshot.rs": "3e056df287c8edb37671c887d18aab243d257a0a39ce7ff3260e8cfd51e6c32a",
+    "src/store/transaction.rs": "a08d5f910a41652c0d00871dd93b9c77ae289fe75b0e062021d1f14145d90c37",
+    "src/store/wake_tests.rs": "c39507fa0cf7c470e065b9b09027a1c1456ab92c3f537568d99506eaf5cd4dbc",
+    "src/store.rs": "2ff28135d6bd532dcc5c58d57a6e5c9a8a9fb13d441acf63fe278ec69ad9c0f7",
+    "src/witness.rs": "86591d6cd74fdbe0dbf18bc7d142581d8832650db97683d131d3c9eb7ac571cf"
+  },
+  "binary_sha256": "d70a4436364a2541da78a851beca69b760d81cf5861a3f344af09785a99f9610",
+  "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+  "cpu_quota": "400000 100000",
+  "benchmark_cpus": [
+    1,
+    2,
+    3
+  ],
+  "housekeeping_cpus": [
+    4
+  ],
+  "allowed_cpus": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "started_utc": "2026-11-03T22:44:39Z",
+  "cases": [
+    {
+      "name": "churn",
+      "writes": 100000,
+      "keys": 1000,
+      "command": [
+        "taskset",
+        "-c",
+        "1-3",
+        "target/release/examples/checkpoint_bench",
+        "/workspace",
+        "100000",
+        "1000",
+        "8"
+      ],
+      "setup_output": [
+        "writes=100000 keys=1000 value_bytes=64 rounds=8 log_bytes=9310194 index_bytes=26100 checkpoint_create_us=37413"
+      ],
+      "pre_run_quiet": {
+        "quiet": true,
+        "observations": [
+          {
+            "elapsed_seconds": 1.000819,
+            "cgroup_cpu_delta": {
+              "usage_usec": 1568,
+              "user_usec": 1128,
+              "system_usec": 439,
+              "nice_usec": 0,
+              "nr_periods": 2,
+              "nr_throttled": 0,
+              "throttled_usec": 0,
+              "nr_bursts": 0,
+              "burst_usec": 0
+            },
+            "cgroup_cpu_cores_used": 0.0016,
+            "vm_steal_percent": 0.0,
+            "vm_iowait_percent": 0.0,
+            "io_delta": {
+              "rbytes": 0,
+              "wbytes": 0,
+              "rios": 0,
+              "wios": 0,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "memory_events_delta": {
+              "low": 0,
+              "high": 0,
+              "max": 0,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "memory_reclaim_delta": {
+              "pgscan": 0,
+              "pgsteal": 0,
+              "pgscan_direct": 0,
+              "pgmajfault": 0
+            },
+            "before": {
+              "monotonic_ns": 31369876931528,
+              "cpu_stat": {
+                "usage_usec": 6602936149,
+                "user_usec": 4752195990,
+                "system_usec": 1850740159,
+                "nice_usec": 13366,
+                "nr_periods": 109346,
+                "nr_throttled": 2297,
+                "throttled_usec": 99388719,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "proc_cpu": [
+                447986,
+                1,
+                185440,
+                14849860,
+                105061,
+                0,
+                43676,
+                90102,
+                0,
+                0
+              ],
+              "context_switches": 104255256,
+              "io_totals": {
+                "rbytes": 1408659456,
+                "wbytes": 135487827968,
+                "rios": 11233,
+                "wios": 16921728,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "memory_current": "21699297280",
+              "memory_events": {
+                "low": 0,
+                "high": 0,
+                "max": 78558,
+                "oom": 0,
+                "oom_kill": 0,
+                "oom_group_kill": 0
+              },
+              "memory_stat": {
+                "anon": 54743040,
+                "file": 19716841472,
+                "kernel": 1926729728,
+                "kernel_stack": 589824,
+                "pagetables": 1593344,
+                "sec_pagetables": 0,
+                "percpu": 196560,
+                "sock": 0,
+                "vmalloc": 0,
+                "shmem": 2281406464,
+                "file_mapped": 745472,
+                "file_dirty": 47779840,
+                "file_writeback": 0,
+                "swapcached": 0,
+                "anon_thp": 0,
+                "file_thp": 2457862144,
+                "shmem_thp": 0,
+                "inactive_anon": 398761984,
+                "active_anon": 1937281024,
+                "inactive_file": 10023378944,
+                "active_file": 7412068352,
+                "unevictable": 0,
+                "slab_reclaimable": 1917444544,
+                "slab_unreclaimable": 5542272,
+                "slab": 1922986816,
+                "workingset_refault_anon": 0,
+                "workingset_refault_file": 328029,
+                "workingset_activate_anon": 0,
+                "workingset_activate_file": 279834,
+                "workingset_restore_anon": 0,
+                "workingset_restore_file": 4,
+                "workingset_nodereclaim": 0,
+                "pgdemote_kswapd": 0,
+                "pgdemote_direct": 0,
+                "pgdemote_khugepaged": 0,
+                "pgdemote_proactive": 0,
+                "pgscan": 4206654,
+                "pgsteal": 4206591,
+                "pswpin": 0,
+                "pswpout": 0,
+                "pgscan_kswapd": 1459467,
+                "pgscan_direct": 2747187,
+                "pgscan_khugepaged": 0,
+                "pgscan_proactive": 0,
+                "pgsteal_kswapd": 1459429,
+                "pgsteal_direct": 2747162,
+                "pgsteal_khugepaged": 0,
+                "pgsteal_proactive": 0,
+                "pgfault": 152392713,
+                "pgmajfault": 1752,
+                "pgrefill": 4563,
+                "pgactivate": 8200304,
+                "pgdeactivate": 4563,
+                "pglazyfree": 247568,
+                "pglazyfreed": 0,
+                "swpin_zero": 0,
+                "swpout_zero": 0,
+                "thp_fault_alloc": 64,
+                "thp_collapse_alloc": 0,
+                "thp_swpout": 0,
+                "thp_swpout_fallback": 0
+              },
+              "cpu_pressure": null,
+              "io_pressure": null,
+              "driver_affinity": [
+                4
+              ]
+            },
+            "after": {
+              "monotonic_ns": 31370877750067,
+              "cpu_stat": {
+                "usage_usec": 6602937717,
+                "user_usec": 4752197118,
+                "system_usec": 1850740598,
+                "nice_usec": 13366,
+                "nr_periods": 109348,
+                "nr_throttled": 2297,
+                "throttled_usec": 99388719,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "proc_cpu": [
+                447986,
+                1,
+                185440,
+                14850360,
+                105061,
+                0,
+                43676,
+                90102,
+                0,
+                0
+              ],
+              "context_switches": 104255328,
+              "io_totals": {
+                "rbytes": 1408659456,
+                "wbytes": 135487827968,
+                "rios": 11233,
+                "wios": 16921728,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "memory_current": "21699297280",
+              "memory_events": {
+                "low": 0,
+                "high": 0,
+                "max": 78558,
+                "oom": 0,
+                "oom_kill": 0,
+                "oom_group_kill": 0
+              },
+              "memory_stat": {
+                "anon": 54743040,
+                "file": 19716841472,
+                "kernel": 1926729728,
+                "kernel_stack": 589824,
+                "pagetables": 1593344,
+                "sec_pagetables": 0,
+                "percpu": 196560,
+                "sock": 0,
+                "vmalloc": 0,
+                "shmem": 2281406464,
+                "file_mapped": 745472,
+                "file_dirty": 47779840,
+                "file_writeback": 0,
+                "swapcached": 0,
+                "anon_thp": 0,
+                "file_thp": 2457862144,
+                "shmem_thp": 0,
+                "inactive_anon": 398761984,
+                "active_anon": 1937281024,
+                "inactive_file": 10023378944,
+                "active_file": 7412068352,
+                "unevictable": 0,
+                "slab_reclaimable": 1917444544,
+                "slab_unreclaimable": 5542272,
+                "slab": 1922986816,
+                "workingset_refault_anon": 0,
+                "workingset_refault_file": 328029,
+                "workingset_activate_anon": 0,
+                "workingset_activate_file": 279834,
+                "workingset_restore_anon": 0,
+                "workingset_restore_file": 4,
+                "workingset_nodereclaim": 0,
+                "pgdemote_kswapd": 0,
+                "pgdemote_direct": 0,
+                "pgdemote_khugepaged": 0,
+                "pgdemote_proactive": 0,
+                "pgscan": 4206654,
+                "pgsteal": 4206591,
+                "pswpin": 0,
+                "pswpout": 0,
+                "pgscan_kswapd": 1459467,
+                "pgscan_direct": 2747187,
+                "pgscan_khugepaged": 0,
+                "pgscan_proactive": 0,
+                "pgsteal_kswapd": 1459429,
+                "pgsteal_direct": 2747162,
+                "pgsteal_khugepaged": 0,
+                "pgsteal_proactive": 0,
+                "pgfault": 152392713,
+                "pgmajfault": 1752,
+                "pgrefill": 4563,
+                "pgactivate": 8200304,
+                "pgdeactivate": 4563,
+                "pglazyfree": 247568,
+                "pglazyfreed": 0,
+                "swpin_zero": 0,
+                "swpout_zero": 0,
+                "thp_fault_alloc": 64,
+                "thp_collapse_alloc": 0,
+                "thp_swpout": 0,
+                "thp_swpout_fallback": 0
+              },
+              "cpu_pressure": null,
+              "io_pressure": null,
+              "driver_affinity": [
+                4
+              ]
+            },
+            "scope": "entire VM/cgroup, including the workload; not per-engine resource attribution"
+          }
+        ]
+      },
+      "noise": {
+        "elapsed_seconds": 0.258767,
+        "cgroup_cpu_delta": {
+          "usage_usec": 255693,
+          "user_usec": 197529,
+          "system_usec": 58164,
+          "nice_usec": 0,
+          "nr_periods": 3,
+          "nr_throttled": 0,
+          "throttled_usec": 0,
+          "nr_bursts": 0,
+          "burst_usec": 0
+        },
+        "cgroup_cpu_cores_used": 0.9881,
+        "vm_steal_percent": 0.7692,
+        "vm_iowait_percent": 0.7692,
+        "io_delta": {
+          "rbytes": 0,
+          "wbytes": 0,
+          "rios": 0,
+          "wios": 80,
+          "dbytes": 0,
+          "dios": 0
+        },
+        "memory_events_delta": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0
+        },
+        "memory_reclaim_delta": {
+          "pgscan": 0,
+          "pgsteal": 0,
+          "pgscan_direct": 0,
+          "pgmajfault": 0
+        },
+        "before": {
+          "monotonic_ns": 31370878061645,
+          "cpu_stat": {
+            "usage_usec": 6602937717,
+            "user_usec": 4752197118,
+            "system_usec": 1850740598,
+            "nice_usec": 13366,
+            "nr_periods": 109348,
+            "nr_throttled": 2297,
+            "throttled_usec": 99388719,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "proc_cpu": [
+            447986,
+            1,
+            185440,
+            14850360,
+            105061,
+            0,
+            43676,
+            90102,
+            0,
+            0
+          ],
+          "context_switches": 104255328,
+          "io_totals": {
+            "rbytes": 1408659456,
+            "wbytes": 135487827968,
+            "rios": 11233,
+            "wios": 16921728,
+            "dbytes": 0,
+            "dios": 0
+          },
+          "memory_current": "21699297280",
+          "memory_events": {
+            "low": 0,
+            "high": 0,
+            "max": 78558,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_stat": {
+            "anon": 54743040,
+            "file": 19716841472,
+            "kernel": 1926729728,
+            "kernel_stack": 589824,
+            "pagetables": 1593344,
+            "sec_pagetables": 0,
+            "percpu": 196560,
+            "sock": 0,
+            "vmalloc": 0,
+            "shmem": 2281406464,
+            "file_mapped": 745472,
+            "file_dirty": 47779840,
+            "file_writeback": 0,
+            "swapcached": 0,
+            "anon_thp": 0,
+            "file_thp": 2457862144,
+            "shmem_thp": 0,
+            "inactive_anon": 398761984,
+            "active_anon": 1937281024,
+            "inactive_file": 10023378944,
+            "active_file": 7412068352,
+            "unevictable": 0,
+            "slab_reclaimable": 1917444544,
+            "slab_unreclaimable": 5542272,
+            "slab": 1922986816,
+            "workingset_refault_anon": 0,
+            "workingset_refault_file": 328029,
+            "workingset_activate_anon": 0,
+            "workingset_activate_file": 279834,
+            "workingset_restore_anon": 0,
+            "workingset_restore_file": 4,
+            "workingset_nodereclaim": 0,
+            "pgdemote_kswapd": 0,
+            "pgdemote_direct": 0,
+            "pgdemote_khugepaged": 0,
+            "pgdemote_proactive": 0,
+            "pgscan": 4206654,
+            "pgsteal": 4206591,
+            "pswpin": 0,
+            "pswpout": 0,
+            "pgscan_kswapd": 1459467,
+            "pgscan_direct": 2747187,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgsteal_kswapd": 1459429,
+            "pgsteal_direct": 2747162,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgfault": 152392713,
+            "pgmajfault": 1752,
+            "pgrefill": 4563,
+            "pgactivate": 8200304,
+            "pgdeactivate": 4563,
+            "pglazyfree": 247568,
+            "pglazyfreed": 0,
+            "swpin_zero": 0,
+            "swpout_zero": 0,
+            "thp_fault_alloc": 64,
+            "thp_collapse_alloc": 0,
+            "thp_swpout": 0,
+            "thp_swpout_fallback": 0
+          },
+          "cpu_pressure": null,
+          "io_pressure": null,
+          "driver_affinity": [
+            4
+          ]
+        },
+        "after": {
+          "monotonic_ns": 31371136828535,
+          "cpu_stat": {
+            "usage_usec": 6603193410,
+            "user_usec": 4752394647,
+            "system_usec": 1850798762,
+            "nice_usec": 13366,
+            "nr_periods": 109351,
+            "nr_throttled": 2297,
+            "throttled_usec": 99388719,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "proc_cpu": [
+            448005,
+            1,
+            185445,
+            14850463,
+            105062,
+            0,
+            43677,
+            90103,
+            0,
+            0
+          ],
+          "context_switches": 104255629,
+          "io_totals": {
+            "rbytes": 1408659456,
+            "wbytes": 135487827968,
+            "rios": 11233,
+            "wios": 16921808,
+            "dbytes": 0,
+            "dios": 0
+          },
+          "memory_current": "21689098240",
+          "memory_events": {
+            "low": 0,
+            "high": 0,
+            "max": 78558,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_stat": {
+            "anon": 54173696,
+            "file": 19707498496,
+            "kernel": 1926434816,
+            "kernel_stack": 573440,
+            "pagetables": 1593344,
+            "sec_pagetables": 0,
+            "percpu": 196560,
+            "sock": 0,
+            "vmalloc": 0,
+            "shmem": 2281406464,
+            "file_mapped": 253952,
+            "file_dirty": 47779840,
+            "file_writeback": 0,
+            "swapcached": 0,
+            "anon_thp": 0,
+            "file_thp": 2457862144,
+            "shmem_thp": 0,
+            "inactive_anon": 398180352,
+            "active_anon": 1937276928,
+            "inactive_file": 10023346176,
+            "active_file": 7402758144,
+            "unevictable": 0,
+            "slab_reclaimable": 1917187640,
+            "slab_unreclaimable": 5529672,
+            "slab": 1922717312,
+            "workingset_refault_anon": 0,
+            "workingset_refault_file": 328029,
+            "workingset_activate_anon": 0,
+            "workingset_activate_file": 279834,
+            "workingset_restore_anon": 0,
+            "workingset_restore_file": 4,
+            "workingset_nodereclaim": 0,
+            "pgdemote_kswapd": 0,
+            "pgdemote_direct": 0,
+            "pgdemote_khugepaged": 0,
+            "pgdemote_proactive": 0,
+            "pgscan": 4206654,
+            "pgsteal": 4206591,
+            "pswpin": 0,
+            "pswpout": 0,
+            "pgscan_kswapd": 1459467,
+            "pgscan_direct": 2747187,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgsteal_kswapd": 1459429,
+            "pgsteal_direct": 2747162,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgfault": 152392729,
+            "pgmajfault": 1752,
+            "pgrefill": 4563,
+            "pgactivate": 8200312,
+            "pgdeactivate": 4563,
+            "pglazyfree": 247568,
+            "pglazyfreed": 0,
+            "swpin_zero": 0,
+            "swpout_zero": 0,
+            "thp_fault_alloc": 64,
+            "thp_collapse_alloc": 0,
+            "thp_swpout": 0,
+            "thp_swpout_fallback": 0
+          },
+          "cpu_pressure": null,
+          "io_pressure": null,
+          "driver_affinity": [
+            4
+          ]
+        },
+        "scope": "entire VM/cgroup, including the workload; not per-engine resource attribution"
+      },
+      "samples": [
+        {
+          "round": 1,
+          "mode": "full",
+          "open_us": 20914
+        },
+        {
+          "round": 1,
+          "mode": "checkpoint",
+          "open_us": 19179
+        },
+        {
+          "round": 2,
+          "mode": "checkpoint",
+          "open_us": 26597
+        },
+        {
+          "round": 2,
+          "mode": "full",
+          "open_us": 19676
+        },
+        {
+          "round": 3,
+          "mode": "full",
+          "open_us": 17445
+        },
+        {
+          "round": 3,
+          "mode": "checkpoint",
+          "open_us": 8451
+        },
+        {
+          "round": 4,
+          "mode": "checkpoint",
+          "open_us": 8012
+        },
+        {
+          "round": 4,
+          "mode": "full",
+          "open_us": 19692
+        },
+        {
+          "round": 5,
+          "mode": "full",
+          "open_us": 20371
+        },
+        {
+          "round": 5,
+          "mode": "checkpoint",
+          "open_us": 8411
+        },
+        {
+          "round": 6,
+          "mode": "checkpoint",
+          "open_us": 8887
+        },
+        {
+          "round": 6,
+          "mode": "full",
+          "open_us": 17715
+        },
+        {
+          "round": 7,
+          "mode": "full",
+          "open_us": 17475
+        },
+        {
+          "round": 7,
+          "mode": "checkpoint",
+          "open_us": 8880
+        },
+        {
+          "round": 8,
+          "mode": "checkpoint",
+          "open_us": 9006
+        },
+        {
+          "round": 8,
+          "mode": "full",
+          "open_us": 20402
+        }
+      ],
+      "summary": {
+        "full": {
+          "median_us": 19684.0,
+          "min_us": 17445,
+          "max_us": 20914
+        },
+        "checkpoint": {
+          "median_us": 8883.5,
+          "min_us": 8012,
+          "max_us": 26597
+        }
+      }
+    },
+    {
+      "name": "higher_key_count",
+      "writes": 25000,
+      "keys": 10000,
+      "command": [
+        "taskset",
+        "-c",
+        "1-3",
+        "target/release/examples/checkpoint_bench",
+        "/workspace",
+        "25000",
+        "10000",
+        "8"
+      ],
+      "setup_output": [
+        "writes=25000 keys=10000 value_bytes=64 rounds=8 log_bytes=2327576 index_bytes=260100 checkpoint_create_us=17241"
+      ],
+      "pre_run_quiet": {
+        "quiet": true,
+        "observations": [
+          {
+            "elapsed_seconds": 1.000553,
+            "cgroup_cpu_delta": {
+              "usage_usec": 41136,
+              "user_usec": 19670,
+              "system_usec": 21465,
+              "nice_usec": 0,
+              "nr_periods": 7,
+              "nr_throttled": 0,
+              "throttled_usec": 0,
+              "nr_bursts": 0,
+              "burst_usec": 0
+            },
+            "cgroup_cpu_cores_used": 0.0411,
+            "vm_steal_percent": 0.2,
+            "vm_iowait_percent": 0.0,
+            "io_delta": {
+              "rbytes": 0,
+              "wbytes": 0,
+              "rios": 0,
+              "wios": 0,
+              "dbytes": 0,
+              "dios": 0
+            },
+            "memory_events_delta": {
+              "low": 0,
+              "high": 0,
+              "max": 0,
+              "oom": 0,
+              "oom_kill": 0,
+              "oom_group_kill": 0
+            },
+            "memory_reclaim_delta": {
+              "pgscan": 0,
+              "pgsteal": 0,
+              "pgscan_direct": 0,
+              "pgmajfault": 0
+            },
+            "before": {
+              "monotonic_ns": 31371222486557,
+              "cpu_stat": {
+                "usage_usec": 6603246528,
+                "user_usec": 4752423667,
+                "system_usec": 1850822861,
+                "nice_usec": 13366,
+                "nr_periods": 109352,
+                "nr_throttled": 2297,
+                "throttled_usec": 99388719,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "proc_cpu": [
+                448008,
+                1,
+                185448,
+                14850497,
+                105065,
+                0,
+                43677,
+                90103,
+                0,
+                0
+              ],
+              "context_switches": 104256642,
+              "io_totals": {
+                "rbytes": 1408659456,
+                "wbytes": 135491506176,
+                "rios": 11233,
+                "wios": 16922286,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "memory_current": "21694722048",
+              "memory_events": {
+                "low": 0,
+                "high": 0,
+                "max": 78558,
+                "oom": 0,
+                "oom_kill": 0,
+                "oom_group_kill": 0
+              },
+              "memory_stat": {
+                "anon": 57176064,
+                "file": 19710119936,
+                "kernel": 1926541312,
+                "kernel_stack": 589824,
+                "pagetables": 1601536,
+                "sec_pagetables": 0,
+                "percpu": 196672,
+                "sock": 0,
+                "vmalloc": 0,
+                "shmem": 2281431040,
+                "file_mapped": 774144,
+                "file_dirty": 47779840,
+                "file_writeback": 0,
+                "swapcached": 0,
+                "anon_thp": 0,
+                "file_thp": 2457862144,
+                "shmem_thp": 0,
+                "inactive_anon": 401223680,
+                "active_anon": 1937281024,
+                "inactive_file": 10023612416,
+                "active_file": 7405088768,
+                "unevictable": 0,
+                "slab_reclaimable": 1917245096,
+                "slab_unreclaimable": 5541216,
+                "slab": 1922786312,
+                "workingset_refault_anon": 0,
+                "workingset_refault_file": 328029,
+                "workingset_activate_anon": 0,
+                "workingset_activate_file": 279834,
+                "workingset_restore_anon": 0,
+                "workingset_restore_file": 4,
+                "workingset_nodereclaim": 0,
+                "pgdemote_kswapd": 0,
+                "pgdemote_direct": 0,
+                "pgdemote_khugepaged": 0,
+                "pgdemote_proactive": 0,
+                "pgscan": 4206654,
+                "pgsteal": 4206591,
+                "pswpin": 0,
+                "pswpout": 0,
+                "pgscan_kswapd": 1459467,
+                "pgscan_direct": 2747187,
+                "pgscan_khugepaged": 0,
+                "pgscan_proactive": 0,
+                "pgsteal_kswapd": 1459429,
+                "pgsteal_direct": 2747162,
+                "pgsteal_khugepaged": 0,
+                "pgsteal_proactive": 0,
+                "pgfault": 152393898,
+                "pgmajfault": 1752,
+                "pgrefill": 4563,
+                "pgactivate": 8200881,
+                "pgdeactivate": 4563,
+                "pglazyfree": 247568,
+                "pglazyfreed": 0,
+                "swpin_zero": 0,
+                "swpout_zero": 0,
+                "thp_fault_alloc": 64,
+                "thp_collapse_alloc": 0,
+                "thp_swpout": 0,
+                "thp_swpout_fallback": 0
+              },
+              "cpu_pressure": null,
+              "io_pressure": null,
+              "driver_affinity": [
+                4
+              ]
+            },
+            "after": {
+              "monotonic_ns": 31372223039082,
+              "cpu_stat": {
+                "usage_usec": 6603287664,
+                "user_usec": 4752443337,
+                "system_usec": 1850844326,
+                "nice_usec": 13366,
+                "nr_periods": 109359,
+                "nr_throttled": 2297,
+                "throttled_usec": 99388719,
+                "nr_bursts": 0,
+                "burst_usec": 0
+              },
+              "proc_cpu": [
+                448010,
+                1,
+                185450,
+                14850992,
+                105065,
+                0,
+                43677,
+                90104,
+                0,
+                0
+              ],
+              "context_switches": 104256875,
+              "io_totals": {
+                "rbytes": 1408659456,
+                "wbytes": 135491506176,
+                "rios": 11233,
+                "wios": 16922286,
+                "dbytes": 0,
+                "dios": 0
+              },
+              "memory_current": "21694664704",
+              "memory_events": {
+                "low": 0,
+                "high": 0,
+                "max": 78558,
+                "oom": 0,
+                "oom_kill": 0,
+                "oom_group_kill": 0
+              },
+              "memory_stat": {
+                "anon": 57184256,
+                "file": 19710119936,
+                "kernel": 1926541312,
+                "kernel_stack": 589824,
+                "pagetables": 1597440,
+                "sec_pagetables": 0,
+                "percpu": 196560,
+                "sock": 0,
+                "vmalloc": 0,
+                "shmem": 2281431040,
+                "file_mapped": 774144,
+                "file_dirty": 47779840,
+                "file_writeback": 0,
+                "swapcached": 0,
+                "anon_thp": 0,
+                "file_thp": 2457862144,
+                "shmem_thp": 0,
+                "inactive_anon": 401313792,
+                "active_anon": 1937281024,
+                "inactive_file": 10023522304,
+                "active_file": 7405178880,
+                "unevictable": 0,
+                "slab_reclaimable": 1917245096,
+                "slab_unreclaimable": 5539520,
+                "slab": 1922784616,
+                "workingset_refault_anon": 0,
+                "workingset_refault_file": 328029,
+                "workingset_activate_anon": 0,
+                "workingset_activate_file": 279834,
+                "workingset_restore_anon": 0,
+                "workingset_restore_file": 4,
+                "workingset_nodereclaim": 0,
+                "pgdemote_kswapd": 0,
+                "pgdemote_direct": 0,
+                "pgdemote_khugepaged": 0,
+                "pgdemote_proactive": 0,
+                "pgscan": 4206654,
+                "pgsteal": 4206591,
+                "pswpin": 0,
+                "pswpout": 0,
+                "pgscan_kswapd": 1459467,
+                "pgscan_direct": 2747187,
+                "pgscan_khugepaged": 0,
+                "pgscan_proactive": 0,
+                "pgsteal_kswapd": 1459429,
+                "pgsteal_direct": 2747162,
+                "pgsteal_khugepaged": 0,
+                "pgsteal_proactive": 0,
+                "pgfault": 152402201,
+                "pgmajfault": 1752,
+                "pgrefill": 4563,
+                "pgactivate": 8200903,
+                "pgdeactivate": 4563,
+                "pglazyfree": 247568,
+                "pglazyfreed": 0,
+                "swpin_zero": 0,
+                "swpout_zero": 0,
+                "thp_fault_alloc": 64,
+                "thp_collapse_alloc": 0,
+                "thp_swpout": 0,
+                "thp_swpout_fallback": 0
+              },
+              "cpu_pressure": null,
+              "io_pressure": null,
+              "driver_affinity": [
+                4
+              ]
+            },
+            "scope": "entire VM/cgroup, including the workload; not per-engine resource attribution"
+          }
+        ]
+      },
+      "noise": {
+        "elapsed_seconds": 0.091035,
+        "cgroup_cpu_delta": {
+          "usage_usec": 83777,
+          "user_usec": 82525,
+          "system_usec": 1252,
+          "nice_usec": 0,
+          "nr_periods": 1,
+          "nr_throttled": 0,
+          "throttled_usec": 0,
+          "nr_bursts": 0,
+          "burst_usec": 0
+        },
+        "cgroup_cpu_cores_used": 0.9203,
+        "vm_steal_percent": 0.0,
+        "vm_iowait_percent": 0.0,
+        "io_delta": {
+          "rbytes": 0,
+          "wbytes": 0,
+          "rios": 0,
+          "wios": 80,
+          "dbytes": 0,
+          "dios": 0
+        },
+        "memory_events_delta": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0
+        },
+        "memory_reclaim_delta": {
+          "pgscan": 0,
+          "pgsteal": 0,
+          "pgscan_direct": 0,
+          "pgmajfault": 0
+        },
+        "before": {
+          "monotonic_ns": 31372223375036,
+          "cpu_stat": {
+            "usage_usec": 6603287664,
+            "user_usec": 4752443337,
+            "system_usec": 1850844326,
+            "nice_usec": 13366,
+            "nr_periods": 109359,
+            "nr_throttled": 2297,
+            "throttled_usec": 99388719,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "proc_cpu": [
+            448010,
+            1,
+            185450,
+            14850992,
+            105065,
+            0,
+            43677,
+            90104,
+            0,
+            0
+          ],
+          "context_switches": 104256875,
+          "io_totals": {
+            "rbytes": 1408659456,
+            "wbytes": 135491506176,
+            "rios": 11233,
+            "wios": 16922286,
+            "dbytes": 0,
+            "dios": 0
+          },
+          "memory_current": "21694664704",
+          "memory_events": {
+            "low": 0,
+            "high": 0,
+            "max": 78558,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_stat": {
+            "anon": 57184256,
+            "file": 19710119936,
+            "kernel": 1926541312,
+            "kernel_stack": 589824,
+            "pagetables": 1597440,
+            "sec_pagetables": 0,
+            "percpu": 196560,
+            "sock": 0,
+            "vmalloc": 0,
+            "shmem": 2281431040,
+            "file_mapped": 774144,
+            "file_dirty": 47779840,
+            "file_writeback": 0,
+            "swapcached": 0,
+            "anon_thp": 0,
+            "file_thp": 2457862144,
+            "shmem_thp": 0,
+            "inactive_anon": 401313792,
+            "active_anon": 1937281024,
+            "inactive_file": 10023522304,
+            "active_file": 7405178880,
+            "unevictable": 0,
+            "slab_reclaimable": 1917245096,
+            "slab_unreclaimable": 5539520,
+            "slab": 1922784616,
+            "workingset_refault_anon": 0,
+            "workingset_refault_file": 328029,
+            "workingset_activate_anon": 0,
+            "workingset_activate_file": 279834,
+            "workingset_restore_anon": 0,
+            "workingset_restore_file": 4,
+            "workingset_nodereclaim": 0,
+            "pgdemote_kswapd": 0,
+            "pgdemote_direct": 0,
+            "pgdemote_khugepaged": 0,
+            "pgdemote_proactive": 0,
+            "pgscan": 4206654,
+            "pgsteal": 4206591,
+            "pswpin": 0,
+            "pswpout": 0,
+            "pgscan_kswapd": 1459467,
+            "pgscan_direct": 2747187,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgsteal_kswapd": 1459429,
+            "pgsteal_direct": 2747162,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgfault": 152402201,
+            "pgmajfault": 1752,
+            "pgrefill": 4563,
+            "pgactivate": 8200903,
+            "pgdeactivate": 4563,
+            "pglazyfree": 247568,
+            "pglazyfreed": 0,
+            "swpin_zero": 0,
+            "swpout_zero": 0,
+            "thp_fault_alloc": 64,
+            "thp_collapse_alloc": 0,
+            "thp_swpout": 0,
+            "thp_swpout_fallback": 0
+          },
+          "cpu_pressure": null,
+          "io_pressure": null,
+          "driver_affinity": [
+            4
+          ]
+        },
+        "after": {
+          "monotonic_ns": 31372314410494,
+          "cpu_stat": {
+            "usage_usec": 6603371441,
+            "user_usec": 4752525862,
+            "system_usec": 1850845578,
+            "nice_usec": 13366,
+            "nr_periods": 109360,
+            "nr_throttled": 2297,
+            "throttled_usec": 99388719,
+            "nr_bursts": 0,
+            "burst_usec": 0
+          },
+          "proc_cpu": [
+            448018,
+            1,
+            185450,
+            14851029,
+            105065,
+            0,
+            43677,
+            90104,
+            0,
+            0
+          ],
+          "context_switches": 104257151,
+          "io_totals": {
+            "rbytes": 1408659456,
+            "wbytes": 135491506176,
+            "rios": 11233,
+            "wios": 16922366,
+            "dbytes": 0,
+            "dios": 0
+          },
+          "memory_current": "21689171968",
+          "memory_events": {
+            "low": 0,
+            "high": 0,
+            "max": 78558,
+            "oom": 0,
+            "oom_kill": 0,
+            "oom_group_kill": 0
+          },
+          "memory_stat": {
+            "anon": 54292480,
+            "file": 19707523072,
+            "kernel": 1926426624,
+            "kernel_stack": 573440,
+            "pagetables": 1597440,
+            "sec_pagetables": 0,
+            "percpu": 196560,
+            "sock": 0,
+            "vmalloc": 0,
+            "shmem": 2281431040,
+            "file_mapped": 253952,
+            "file_dirty": 47779840,
+            "file_writeback": 0,
+            "swapcached": 0,
+            "anon_thp": 0,
+            "file_thp": 2457862144,
+            "shmem_thp": 0,
+            "inactive_anon": 398422016,
+            "active_anon": 1937276928,
+            "inactive_file": 10023256064,
+            "active_file": 7402848256,
+            "unevictable": 0,
+            "slab_reclaimable": 1917170488,
+            "slab_unreclaimable": 5526352,
+            "slab": 1922696840,
+            "workingset_refault_anon": 0,
+            "workingset_refault_file": 328029,
+            "workingset_activate_anon": 0,
+            "workingset_activate_file": 279834,
+            "workingset_restore_anon": 0,
+            "workingset_restore_file": 4,
+            "workingset_nodereclaim": 0,
+            "pgdemote_kswapd": 0,
+            "pgdemote_direct": 0,
+            "pgdemote_khugepaged": 0,
+            "pgdemote_proactive": 0,
+            "pgscan": 4206654,
+            "pgsteal": 4206591,
+            "pswpin": 0,
+            "pswpout": 0,
+            "pgscan_kswapd": 1459467,
+            "pgscan_direct": 2747187,
+            "pgscan_khugepaged": 0,
+            "pgscan_proactive": 0,
+            "pgsteal_kswapd": 1459429,
+            "pgsteal_direct": 2747162,
+            "pgsteal_khugepaged": 0,
+            "pgsteal_proactive": 0,
+            "pgfault": 152402208,
+            "pgmajfault": 1752,
+            "pgrefill": 4563,
+            "pgactivate": 8200968,
+            "pgdeactivate": 4563,
+            "pglazyfree": 247568,
+            "pglazyfreed": 0,
+            "swpin_zero": 0,
+            "swpout_zero": 0,
+            "thp_fault_alloc": 64,
+            "thp_collapse_alloc": 0,
+            "thp_swpout": 0,
+            "thp_swpout_fallback": 0
+          },
+          "cpu_pressure": null,
+          "io_pressure": null,
+          "driver_affinity": [
+            4
+          ]
+        },
+        "scope": "entire VM/cgroup, including the workload; not per-engine resource attribution"
+      },
+      "samples": [
+        {
+          "round": 1,
+          "mode": "full",
+          "open_us": 6320
+        },
+        {
+          "round": 1,
+          "mode": "checkpoint",
+          "open_us": 4497
+        },
+        {
+          "round": 2,
+          "mode": "checkpoint",
+          "open_us": 4487
+        },
+        {
+          "round": 2,
+          "mode": "full",
+          "open_us": 5937
+        },
+        {
+          "round": 3,
+          "mode": "full",
+          "open_us": 6347
+        },
+        {
+          "round": 3,
+          "mode": "checkpoint",
+          "open_us": 4779
+        },
+        {
+          "round": 4,
+          "mode": "checkpoint",
+          "open_us": 5105
+        },
+        {
+          "round": 4,
+          "mode": "full",
+          "open_us": 8590
+        },
+        {
+          "round": 5,
+          "mode": "full",
+          "open_us": 5777
+        },
+        {
+          "round": 5,
+          "mode": "checkpoint",
+          "open_us": 4503
+        },
+        {
+          "round": 6,
+          "mode": "checkpoint",
+          "open_us": 4466
+        },
+        {
+          "round": 6,
+          "mode": "full",
+          "open_us": 5653
+        },
+        {
+          "round": 7,
+          "mode": "full",
+          "open_us": 5652
+        },
+        {
+          "round": 7,
+          "mode": "checkpoint",
+          "open_us": 4322
+        },
+        {
+          "round": 8,
+          "mode": "checkpoint",
+          "open_us": 4339
+        },
+        {
+          "round": 8,
+          "mode": "full",
+          "open_us": 5580
+        }
+      ],
+      "summary": {
+        "full": {
+          "median_us": 5857.0,
+          "min_us": 5580,
+          "max_us": 8590
+        },
+        "checkpoint": {
+          "median_us": 4492.0,
+          "min_us": 4322,
+          "max_us": 5105
+        }
+      }
+    }
+  ],
+  "limitations": "One VM, warm cache, closed-loop direct opens; process/VM noise counters include the workload. The checkpoint is explicitly trusted and the full prefix is hashed. Not a power-loss or memory-efficiency test.",
+  "finished_utc": "2026-11-03T22:44:42Z"
+}
