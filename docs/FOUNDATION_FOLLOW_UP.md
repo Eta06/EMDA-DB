@@ -28,7 +28,8 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 - [ ] Specify and implement atomic multi-key batches and transactions, isolation, conflict behavior and rollback. Record and index updates must recover atomically. Independent operations and group commit are not transactions.
 - [ ] Add stable snapshots and explicit lifetime/resource management where required for multi-page scans and transactions.
 - [ ] Add configurable request/connection limits, fair overload handling and cancellation/timeouts without violating unknown-outcome semantics. The current embedded API does not include a production server.
-- [ ] Enforce explicit memory and storage limits and quotas, including recovery and background work; scan response limits alone do not bound total store memory.
+- [x] Add an optional per-open log-file length cap with concurrency-safe admission and unknown-outcome handling.
+- [ ] Enforce persistent project-wide memory and storage quotas, including other files, recovery and background work; scan response limits and the per-open log cap do not bound total store memory or total disk usage. Limited stores currently serialize writers and must be benchmarked and optimized without oversubscription.
 - [ ] Demonstrate the priority's exit criteria: independent concurrent clients, transactional atomicity, acknowledged-write recovery under the documented fault model, and measured memory within configured limits.
 
 No optimization may weaken the durability, isolation or recovery guarantees in force. Preserve failures and unresolved gaps in reports rather than marking them complete without evidence.

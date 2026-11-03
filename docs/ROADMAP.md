@@ -30,7 +30,7 @@ Exit evidence: documented guarantees and known failure boundaries, repeatable fa
 - Ordered range scans, pagination and bulk reads: **prototype implemented** with entry/byte limits; stable multi-page snapshots remain unimplemented. Single-key compare-exchange and signed 64-bit increment are implemented and serialized against mutations. Bulk writes remain planned.
 - Atomic batches and multi-key transactions with a specified isolation model, conflict behavior, and rollback.
 - Safe coordination between concurrent readers and writers, connection/request limits, and fair overload handling.
-- Explicit limits and storage quotas. No performance optimization may violate the durability, isolation, or recovery guarantees in force; see the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md).
+- Explicit limits and storage quotas. An optional per-open log length cap exists; persistent project-wide quotas, other files and memory limits remain open. No performance optimization may violate the durability, isolation, or recovery guarantees in force; see the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md).
 
 Exit evidence: independent concurrent clients produce correct results, transactional writes are atomic, recovery preserves acknowledged writes under the documented fault model, and memory stays within configured limits in measured workloads.
 

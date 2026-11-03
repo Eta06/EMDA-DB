@@ -232,6 +232,43 @@ fn increment_sync_failure_is_uncertain_and_requires_reopen() {
 }
 
 #[test]
+fn limited_store_preserves_unknown_outcome_after_sync_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let mut store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
+    let record_len = record::encode(Operation::Put, b"key", b"value")
+        .unwrap()
+        .len() as u64;
+    store.max_log_bytes = Some(store.log.len().unwrap() + record_len);
+    *fault.lock().unwrap() = Some(Fault::SyncBefore);
+    assert!(
+        store
+            .put(b"key", b"value")
+            .unwrap_err()
+            .to_string()
+            .contains("uncertain")
+    );
+    // The failed append used the entire allowance, but the original unknown
+    // outcome must take precedence over reporting an ordinary quota rejection.
+    assert!(
+        store
+            .put(b"key", b"next")
+            .unwrap_err()
+            .to_string()
+            .contains("uncertain")
+    );
+    drop(store);
+    assert_eq!(
+        Store::open(dir.path())
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"value"[..])
+    );
+}
+
+#[test]
 fn a_write_failure_clears_in_progress_preparation_reservations() {
     let dir = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));

@@ -36,6 +36,8 @@ The engine appends checksummed records to a log, synchronizes every successful m
 
 `Store::compact_to` creates a verified, non-overwriting copy containing only live keys. It blocks mutations while copying, leaves the source unchanged, and does not automatically switch applications to the copy. Writes accepted by the source after it returns are not in the copy. It needs memory for multiple indexes and is not an online or bounded-memory compactor.
 
+`Store::open_with_log_limit` optionally caps the log file length for that open instance. It counts the header, overwrites and tombstones; at the cap even deletion can be rejected. The setting must be supplied again on reopen, serializes writers, and does not cap the index, other files or total project storage. Normal `Store::open` has no limit.
+
 To try the experimental Rust library from another project:
 
 ```toml

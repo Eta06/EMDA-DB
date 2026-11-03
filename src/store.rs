@@ -34,6 +34,7 @@ pub struct Store {
     // snapshot is complete; writers share it while the coordinator batches.
     writes: RwLock<()>,
     commits: Coordinator,
+    max_log_bytes: Option<u64>,
     // Held for the store lifetime. OS file locks are advisory.
     _lock_file: File,
 }
@@ -42,6 +43,24 @@ impl Store {
     /// Opens or creates a store. Only one store may hold its directory lock.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_using(path.as_ref(), Log::open)
+    }
+
+    /// Opens a store with an in-process limit on the log file's length.
+    ///
+    /// This is reapplied on each open; it is not a persistent project quota.
+    /// The log header and tombstones count toward the cap. It excludes other
+    /// files and memory, and limited stores serialize all mutations. Opening
+    /// may initialize or recover a store before checking its resulting length.
+    pub fn open_with_log_limit(path: impl AsRef<Path>, max_bytes: u64) -> io::Result<Self> {
+        let mut store = Self::open(path)?;
+        if store.log.len()? > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "existing log exceeds configured limit",
+            ));
+        }
+        store.max_log_bytes = Some(max_bytes);
+        Ok(store)
     }
 
     fn open_using(
@@ -70,6 +89,7 @@ impl Store {
             inner: RwLock::new(Inner { index }),
             writes: RwLock::new(()),
             commits: Coordinator::new(),
+            max_log_bytes: None,
             _lock_file: lock_file,
         })
     }
@@ -215,8 +235,7 @@ impl Store {
         if self.get(key)?.as_deref() != expected {
             return Ok(false);
         }
-        self.commits
-            .commit(&self.log, &self.inner, operation, key, value)?;
+        self.commit_limited(operation, key, value)?;
         Ok(true)
     }
 
@@ -247,13 +266,7 @@ impl Store {
         let next = current.checked_add(delta).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
-        self.commits.commit(
-            &self.log,
-            &self.inner,
-            Operation::Put,
-            key,
-            &next.to_le_bytes(),
-        )?;
+        self.commit_limited(Operation::Put, key, &next.to_le_bytes())?;
         Ok(next)
     }
 
@@ -319,10 +332,41 @@ impl Store {
 
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
+        if self.max_log_bytes.is_some() {
+            let _writer = self
+                .writes
+                .write()
+                .map_err(|_| io::Error::other("write barrier poisoned"))?;
+            return self.commit_limited(operation, key, value);
+        }
         let _writer = self
             .writes
             .read()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        self.commits
+            .commit(&self.log, &self.inner, operation, key, value)
+    }
+
+    // Limited stores hold the exclusive write barrier through the check and
+    // append, preventing concurrent writes from oversubscribing the quota.
+    fn commit_limited(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        if let Some(max) = self.max_log_bytes {
+            let record_bytes =
+                (record::HEADER_SIZE + key.len() + value.len() + record::CHECKSUM_SIZE) as u64;
+            if self
+                .log
+                .len()?
+                .checked_add(record_bytes)
+                .is_none_or(|end| end > max)
+            {
+                return Err(io::Error::other(
+                    "configured log size limit would be exceeded",
+                ));
+            }
+        }
         self.commits
             .commit(&self.log, &self.inner, operation, key, value)
     }

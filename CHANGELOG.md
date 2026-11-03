@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Optional per-open log-file length limits with serialized mutation admission, concurrent oversubscription checks and unknown-outcome handling. The limit is not persistent and does not cover memory or other files.
 - Verified separate-copy compaction that rechecks the source log/index, copies live keys, reopens and verifies the destination, and publishes without overwriting. Mutations are blocked during copying; the source remains intact and memory remains unbounded.
 - Ordered byte-key scans with exclusive bounds, pagination, and per-page limits of 1,024 entries and 32 MiB of key/value bytes. Each page captures the index at one instant; pages do not share a transaction snapshot.
 - Synchronized single-key compare-exchange for conditional put/delete, serialized against concurrent writers; mismatches make no write and I/O failure retains unknown-outcome semantics.
