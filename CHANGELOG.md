@@ -34,6 +34,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Clean-build recovery and writer comparisons, including SQLite and raw latency distributions across several workloads.
 - A large-write interference benchmark that checks small-write latency alongside the prototype and SQLite.
 - Vectored group appends, bounded off-lock write preparation, and shorter index read-lock lifetimes, with partial-I/O, reservation, and concurrent-history tests.
+- Raw clean-build results for large-write interference and several concurrent key-value workloads, including observed regressions and SQLite comparisons.
 
 ### Changed
 

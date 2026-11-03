@@ -89,6 +89,24 @@ The following writer comparison uses eight clients, 250 cached keys, 64-byte val
 
 SQLite's typical write latency was lower, while the prototype had higher throughput in this particular workload. SQLite implements SQL, transactions, and other features the prototype lacks; the engines' full durability behavior has not been independently compared. Tail results are especially variable: SQLite's run-level write p99.9 ranged from 1.9 to 180.2 ms. In a separate eight-client, 4 KiB-value workload, the prototype's median write p99.9 rose from 1.78 to 5.01 ms after the change despite higher throughput; the limited samples and shared virtualized machine do not establish the cause. The raw file also includes single-client, four-, 16-, and 64-client, hot-key, and write-only runs. These closed-loop, cached-data measurements do not establish a general performance, resource-efficiency, or reliability ranking.
 
+## Writer contention and grouped append comparison
+
+The [raw results and environment](../benchmarks/results/2026-11-03-writer-contention.json) compare the prior engine, the engine with vectored appends and shorter lock holds, and SQLite 3.49.1. Each revision used identical benchmark sources and a separate, initially empty build directory. The table reports medians across seven runs of one client writing an 8 MiB value 32 times, with four clients each writing 1,000 independent 64-byte values. Small-write timings include requests that started during the large-write stream even if they completed afterward.
+
+| Measurement | Before | After | SQLite |
+| --- | ---: | ---: | ---: |
+| Small-write p50 during large-write stream | 3.040 ms | 0.701 ms | 0.182 ms |
+| Small-write p99 during large-write stream | 8.130 ms | 5.789 ms | 0.813 ms |
+| Small writes sampled during the stream | 245 | 702 | 4,000 |
+| Large-write p50 | 4.919 ms | 5.833 ms | 21.101 ms |
+| Time for the large-write stream | 175.8 ms | 223.3 ms | 1,690.9 ms |
+
+The faster small writes coincided with slower large writes in this test. The overlap cohorts and stream durations differ: the before-engine p99 has only about two or three observations in its slowest 1% per run. The closed-loop clients do not impose an equal arrival rate, so these figures do not establish fairness or predictable tail latency. SQLite's typical small-write latency was lower; its large writes took longer in this workload. Its default automatic checkpoints and the different engines' feature sets and storage behavior affect the comparison.
+
+The raw file includes 1 MiB interference and multiple fixed-size key-value workloads. In five 64-client runs with 64-byte values and roughly 50% writes, the prototype's median run-level write p99 fell from 2.754 ms to 2.342 ms and throughput rose from 81,333 to 88,013 operations/second. In five eight-client runs with 4 KiB values, write p99 fell from 1.312 ms to 1.224 ms. Results were not uniformly better: median write p50 in the one-client 64-byte workload rose from 0.256 ms to 0.268 ms, and eight-client 64-byte write p99 rose from 1.342 ms to 1.396 ms. The run-to-run ranges overlap and tail observations are noisy.
+
+Separately instrumented eight-client runs counted 2,273 versus 766 `statx` calls, and 2,282 `write` calls versus 475 `writev` plus 300 `write` calls. These counts include initialization and output, and tracing changes scheduling and batch composition; the recorded tracing times are not performance measurements. All comparisons ran on a virtualized overlay filesystem whose underlying storage was not independently verified. SQLite has SQL, transactions, and other features absent from the prototype, and the engines' full durability behavior was not independently validated.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
