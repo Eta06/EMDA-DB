@@ -31,6 +31,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - A reusable warm-cache recovery benchmark with non-overwriting fixture preparation.
 - Buffered log replay with the same record checks and tests for interrupted reads, truncation, corruption, and backup validation across buffer boundaries.
 - Targeted writer wake-ups with periodic leadership rechecks and tests for delayed handoff, failed batches, poisoned locks, and capacity waiters.
+- Clean-build recovery and writer comparisons, including SQLite and raw latency distributions across several workloads.
 
 ### Changed
 

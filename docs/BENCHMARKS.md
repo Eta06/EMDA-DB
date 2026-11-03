@@ -53,6 +53,30 @@ Grouping reduced the observed long waits and increased throughput in this small 
 
 SQLite's [WAL documentation](https://www.sqlite.org/wal.html) describes sequential writes and reader/writer overlap. Its [`synchronous` documentation](https://www.sqlite.org/pragma.html#pragma_synchronous) states that WAL with `FULL` synchronizes after each transaction commit. The harness leaves SQLite's automatic checkpoint configuration at its default; a checkpoint can affect measured latency.
 
+## Buffered recovery and targeted writer wake-ups
+
+The [raw comparison and environment](../benchmarks/results/2026-11-03-recovery-and-wakeups.json) use clean, separately built binaries from the recorded revisions. Recovery runs reopen the same prepared log five times per run, with seven runs per version. The table reports the median of each run's median open time; every open verifies the record checksums and rebuilds the index.
+
+| Fixture | Before buffered replay | Buffered replay |
+| --- | ---: | ---: |
+| 100,000 records, 64-byte values | 108.0 ms | 33.9 ms |
+| 1,000 records, 4 KiB values | 2.11 ms | 1.34 ms |
+| 32 records, 128 KiB values | 1.07 ms | 1.07 ms |
+| 100 records, 64-byte values | 0.48 ms | 0.46 ms |
+
+For the 100,000-record fixture, an additional `strace` run counted 300,005 `pread64` calls before buffering and 147 after, including the three post-open key checks. The instrumented call counts help explain the improvement; `strace` timings are not used for the table. These are warm-cache measurements on virtualized overlay storage, not cold-storage or cloud wake-up measurements. The log is still scanned in full and the index remains unbounded.
+
+The following writer comparison uses eight clients, 250 cached keys, 64-byte values, 2,000 operations per client, and roughly 50% writes. It reports medians from seven runs per engine. The before engine already used group commit; the after engine adds targeted wake-ups and buffered recovery. SQLite 3.49.1 uses WAL, `synchronous=FULL`, and autocommit.
+
+| Measurement | Before targeted wake-ups | After targeted wake-ups | SQLite |
+| --- | ---: | ---: | ---: |
+| Mixed operations/second | 21,339 | 23,770 | 7,893 |
+| Write p50 | 0.739 ms | 0.661 ms | 0.178 ms |
+| Write p99 | 1.367 ms | 1.215 ms | 0.547 ms |
+| Write p99.9 | 2.874 ms | 2.300 ms | 16.727 ms |
+
+SQLite's typical write latency was lower, while the prototype had higher throughput in this particular workload. SQLite implements SQL, transactions, and other features the prototype lacks; the engines' full durability behavior has not been independently compared. Tail results are especially variable: SQLite's run-level write p99.9 ranged from 1.9 to 180.2 ms. In a separate eight-client, 4 KiB-value workload, the prototype's median write p99.9 rose from 1.78 to 5.01 ms after the change despite higher throughput; the limited samples and shared virtualized machine do not establish the cause. The raw file also includes single-client, four-, 16-, and 64-client, hot-key, and write-only runs. These closed-loop, cached-data measurements do not establish a general performance, resource-efficiency, or reliability ranking.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
