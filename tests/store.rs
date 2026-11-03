@@ -424,3 +424,18 @@ fn partial_records_at_buffer_boundaries_fail_closed() {
         assert_eq!(std::fs::read(path).unwrap(), &original[..cut]);
     }
 }
+
+#[test]
+fn recovery_preserves_maximum_sized_value() {
+    let dir = tempdir().unwrap();
+    let value: Vec<_> = (0..16 * 1024 * 1024).map(|i| (i * 17 + 3) as u8).collect();
+    {
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"maximum", &value).unwrap();
+    }
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened.get(b"maximum").unwrap().as_deref(),
+        Some(value.as_slice())
+    );
+}
