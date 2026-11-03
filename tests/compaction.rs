@@ -89,3 +89,25 @@ fn compaction_never_overwrites_existing_destination() {
             .starts_with(".db-compact-")
     }));
 }
+
+#[test]
+fn compaction_preserves_a_value_larger_than_the_copy_group_limit() {
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path().join("source")).unwrap();
+    let value = vec![0x5a; 4 * 1024 * 1024 + 1];
+    store.put(b"large", &value).unwrap();
+    store.put(b"small", b"ok").unwrap();
+    let destination = dir.path().join("compact");
+    store.compact_to(&destination).unwrap();
+    let copy = Store::open(&destination).unwrap();
+    assert_eq!(
+        copy.get(b"large").unwrap().as_deref(),
+        Some(value.as_slice())
+    );
+    assert_eq!(copy.get(b"small").unwrap().as_deref(), Some(&b"ok"[..]));
+    store.delete(b"large").unwrap();
+    assert_eq!(
+        copy.get(b"large").unwrap().as_deref(),
+        Some(value.as_slice())
+    );
+}

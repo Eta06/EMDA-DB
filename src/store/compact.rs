@@ -1,5 +1,60 @@
 //! Verified, non-overwriting compaction to a separate store.
 use super::*;
+use crate::log::AppendRecord;
+
+const MAX_COPY_RECORDS: usize = 64;
+const MAX_COPY_BYTES: usize = 4 * 1024 * 1024;
+
+struct CopyRecord {
+    encoded: Vec<u8>,
+    key_len: usize,
+    value_len: usize,
+    checksum: u32,
+}
+
+fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
+    if records.is_empty() {
+        return Ok(());
+    }
+    target.append_batch_unsynced(records.iter().map(|entry| AppendRecord {
+        encoded: &entry.encoded,
+        key_len: entry.key_len,
+        value_len: entry.value_len,
+        checksum: entry.checksum,
+    }))?;
+    target.sync_data()?;
+    records.clear();
+    Ok(())
+}
+
+fn copy_live_records(
+    source: &Log,
+    index: &BTreeMap<Vec<u8>, ValueLocation>,
+    target: &Log,
+) -> io::Result<()> {
+    let mut records = Vec::with_capacity(MAX_COPY_RECORDS);
+    let mut bytes = 0_usize;
+    for (key, &location) in index {
+        let length = record::HEADER_SIZE + key.len() + location.length + record::CHECKSUM_SIZE;
+        if !records.is_empty()
+            && (records.len() == MAX_COPY_RECORDS || bytes + length > MAX_COPY_BYTES)
+        {
+            flush_copy(target, &mut records)?;
+            bytes = 0;
+        }
+        let value = source.read(location)?;
+        let checksum = crc32fast::hash(&value);
+        let encoded = record::encode(Operation::Put, key, &value)?;
+        bytes += encoded.len();
+        records.push(CopyRecord {
+            encoded,
+            key_len: key.len(),
+            value_len: value.len(),
+            checksum,
+        });
+    }
+    flush_copy(target, &mut records)
+}
 
 impl Store {
     /// Copies current live keys into a verified new store with no old records.
@@ -21,6 +76,15 @@ impl Store {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.compact_to_using(destination, sync_parent, copy_live_records)
+    }
+
+    fn compact_to_using(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        copy: impl FnOnce(&Log, &BTreeMap<Vec<u8>, ValueLocation>, &Log) -> io::Result<()>,
+    ) -> io::Result<()> {
         let _writer = self
             .writes
             .write()
@@ -37,9 +101,10 @@ impl Store {
             .prefix(".db-compact-")
             .tempdir_in(parent)?;
         let target = Store::open(staging.path())?;
-        for (key, &location) in &inner.index {
-            target.put(key, &self.log.read(location)?)?;
-        }
+        // This store is private to the staging directory. Copy the existing
+        // DB01 records in bounded groups and synchronize each group; the target
+        // index is rebuilt and checked by reopening before publication.
+        copy(&self.log, &inner.index, &target.log)?;
         drop(target);
         // Reopen to exercise durable recovery, validate every record, and
         // compare actual values and key count before publishing the directory.
@@ -74,6 +139,257 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log_io::LogIo;
+    use std::io::Write;
+    use std::os::unix::fs::FileExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone, Copy)]
+    enum Fault {
+        None,
+        Append(usize),
+        Sync(usize),
+    }
+
+    struct CopyIo {
+        file: File,
+        fault: Fault,
+        appends: Arc<AtomicUsize>,
+        syncs: Arc<AtomicUsize>,
+    }
+
+    impl LogIo for CopyIo {
+        fn len(&self) -> io::Result<u64> {
+            Ok(self.file.metadata()?.len())
+        }
+        fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+            FileExt::read_exact_at(&self.file, buffer, offset)
+        }
+        fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
+            let count = self.appends.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut file = &self.file;
+            if matches!(self.fault, Fault::Append(fail) if count == fail) {
+                file.write_all(&bytes[..bytes.len().min(3)])?;
+                return Err(io::Error::other("injected partial append"));
+            }
+            file.write_all(bytes)
+        }
+        fn sync_data(&self) -> io::Result<()> {
+            let count = self.syncs.fetch_add(1, Ordering::SeqCst) + 1;
+            if matches!(self.fault, Fault::Sync(fail) if count == fail) {
+                return Err(io::Error::other("injected sync failure"));
+            }
+            self.file.sync_data()
+        }
+    }
+
+    fn target_log(path: &Path, fault: Fault) -> (Log, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        let appends = Arc::new(AtomicUsize::new(0));
+        let syncs = Arc::new(AtomicUsize::new(0));
+        let (log, _) = Log::from_io(Box::new(CopyIo {
+            file,
+            fault,
+            appends: Arc::clone(&appends),
+            syncs: Arc::clone(&syncs),
+        }))
+        .unwrap();
+        (log, appends, syncs)
+    }
+
+    #[test]
+    fn grouped_copy_syncs_bounded_db01_records_and_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Store::open(dir.path().join("source")).unwrap();
+        let keys = (0..130_u16).map(u16::to_be_bytes).collect::<Vec<_>>();
+        let operations = keys
+            .iter()
+            .map(|key| crate::BatchOperation::Put { key, value: b"v" })
+            .collect::<Vec<_>>();
+        source.write_batch(&operations).unwrap();
+        let path = dir.path().join("target.log");
+        let (target, appends, syncs) = target_log(&path, Fault::None);
+        {
+            let inner = source.read().unwrap();
+            copy_live_records(&source.log, &inner.index, &target).unwrap();
+        }
+        assert_eq!(appends.load(Ordering::SeqCst), 130);
+        assert_eq!(syncs.load(Ordering::SeqCst), 3);
+        drop(target);
+        let bytes = std::fs::read(&path).unwrap();
+        let mut offset = 0;
+        for _ in 0..130 {
+            assert_eq!(&bytes[offset..offset + 4], b"DB01");
+            let header: [u8; record::HEADER_SIZE] = bytes[offset..offset + record::HEADER_SIZE]
+                .try_into()
+                .unwrap();
+            offset += record::Header::parse(&header).unwrap().record_len() as usize;
+        }
+        assert_eq!(offset, bytes.len());
+        let (_, recovered) = Log::from_io(Box::new(File::open(&path).unwrap())).unwrap();
+        assert_eq!(recovered.len(), 130);
+    }
+
+    #[test]
+    fn copy_flushes_before_combined_values_exceed_byte_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Store::open(dir.path().join("source")).unwrap();
+        let value = vec![3; 3 * 1024 * 1024];
+        source.put(b"a", &value).unwrap();
+        source.put(b"b", &value).unwrap();
+        let (target, _, syncs) = target_log(&dir.path().join("target.log"), Fault::None);
+        let inner = source.read().unwrap();
+        copy_live_records(&source.log, &inner.index, &target).unwrap();
+        assert_eq!(syncs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn copy_propagates_partial_append_and_sync_failure_without_touching_source() {
+        for (index, fault) in [Fault::Append(2), Fault::Sync(1)].into_iter().enumerate() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("source");
+            let source = Store::open(&path).unwrap();
+            source.put(b"a", b"one").unwrap();
+            source.put(b"b", b"two").unwrap();
+            let before = std::fs::read(path.join("records.log")).unwrap();
+            let (target, _, _) = target_log(&dir.path().join(format!("target-{index}.log")), fault);
+            {
+                let inner = source.read().unwrap();
+                assert!(copy_live_records(&source.log, &inner.index, &target).is_err());
+            }
+            assert_eq!(std::fs::read(path.join("records.log")).unwrap(), before);
+            assert_eq!(source.get(b"a").unwrap().as_deref(), Some(&b"one"[..]));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn copy_propagates_each_metadata_witness_failure_without_touching_source() {
+        use crate::witness::{Witness, WitnessIo};
+        use rustix::fs::{XattrFlags, fgetxattr, fsetxattr};
+
+        #[derive(Clone, Copy)]
+        enum MetadataFault {
+            WriteBefore,
+            WriteAfter,
+            SyncBefore,
+            SyncAfter,
+        }
+        struct FaultWitness {
+            file: File,
+            fault: MetadataFault,
+        }
+        impl WitnessIo for FaultWitness {
+            fn len(&self) -> io::Result<u64> {
+                Ok(36)
+            }
+            fn read_exact_at(&self, bytes: &mut [u8], _: u64) -> io::Result<()> {
+                let expected = bytes.len();
+                if fgetxattr(&self.file, "user.db.commit.v3", bytes)? != expected {
+                    return Err(io::Error::other("unexpected metadata length"));
+                }
+                Ok(())
+            }
+            fn write_all_at(&self, bytes: &[u8], _: u64) -> io::Result<()> {
+                if matches!(self.fault, MetadataFault::WriteBefore) {
+                    return Err(io::Error::other("injected metadata write failure"));
+                }
+                fsetxattr(&self.file, "user.db.commit.v3", bytes, XattrFlags::REPLACE)?;
+                if matches!(self.fault, MetadataFault::WriteAfter) {
+                    return Err(io::Error::other("injected post-write failure"));
+                }
+                Ok(())
+            }
+            fn sync_data(&self) -> io::Result<()> {
+                if matches!(self.fault, MetadataFault::SyncBefore) {
+                    return Err(io::Error::other("injected metadata sync failure"));
+                }
+                self.file.sync_all()?;
+                if matches!(self.fault, MetadataFault::SyncAfter) {
+                    return Err(io::Error::other("injected post-sync failure"));
+                }
+                Ok(())
+            }
+        }
+
+        for fault in [
+            MetadataFault::WriteBefore,
+            MetadataFault::WriteAfter,
+            MetadataFault::SyncBefore,
+            MetadataFault::SyncAfter,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let source_path = directory.path().join("source");
+            let target_path = directory.path().join("target");
+            let source = Store::open(&source_path).unwrap();
+            source.put(b"a", b"one").unwrap();
+            let before = std::fs::read(source_path.join("records.log")).unwrap();
+            let mut target = Store::open(&target_path).unwrap();
+            let bytes = std::fs::read(target_path.join("records.log")).unwrap();
+            assert_eq!(&bytes[..8], b"EMDALOG3");
+            let id = bytes[8..24].try_into().unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(target_path.join("records.log"))
+                .unwrap();
+            let (witness, _) =
+                Witness::from_io(Box::new(FaultWitness { file, fault }), id).unwrap();
+            target.log.attach_test_witness(witness);
+            {
+                let inner = source.read().unwrap();
+                assert!(copy_live_records(&source.log, &inner.index, &target.log).is_err());
+            }
+            assert_eq!(
+                std::fs::read(source_path.join("records.log")).unwrap(),
+                before
+            );
+            assert_eq!(source.get(b"a").unwrap().as_deref(), Some(&b"one"[..]));
+        }
+    }
+
+    #[test]
+    fn interrupted_staged_copy_never_publishes_a_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source");
+        let source = Store::open(&source_path).unwrap();
+        source.put(b"a", b"one").unwrap();
+        source.put(b"b", b"two").unwrap();
+        let before = std::fs::read(source_path.join("records.log")).unwrap();
+        let destination = dir.path().join("destination");
+        let result = source.compact_to_using(
+            &destination,
+            |_| Ok(()),
+            |log, index, target| {
+                let one = index
+                    .iter()
+                    .take(1)
+                    .map(|(key, value)| (key.clone(), *value))
+                    .collect();
+                copy_live_records(log, &one, target)?;
+                Err(io::Error::other("injected interruption"))
+            },
+        );
+        assert!(result.is_err());
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read(source_path.join("records.log")).unwrap(),
+            before
+        );
+        assert!(std::fs::read_dir(dir.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".db-compact-")
+        }));
+    }
 
     #[test]
     fn failed_parent_sync_reports_uncertain_publication_and_preserves_source() {
