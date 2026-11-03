@@ -33,10 +33,10 @@ jobs:
       - name: Lint
         run: cargo +${{ matrix.toolchain }} clippy --all-targets --locked -- -D warnings
       - name: Run tests
-        run: cargo +${{ matrix.toolchain }} test --locked
+        run: cargo +${{ matrix.toolchain }} test --all-targets --locked
       - name: Test optimized build
         if: matrix.toolchain == 'stable'
-        run: cargo +${{ matrix.toolchain }} test --release --locked
+        run: cargo +${{ matrix.toolchain }} test --release --all-targets --locked
       - name: Benchmark smoke tests
         if: matrix.toolchain == 'stable'
         run: |

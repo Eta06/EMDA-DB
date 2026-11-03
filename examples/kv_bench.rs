@@ -131,6 +131,7 @@ fn workers(config: &Config, directory: &Path) -> BenchResult<Vec<Worker>> {
 struct Samples {
     reads: Vec<u64>,
     writes: Vec<u64>,
+    elapsed: Duration,
 }
 
 fn next_random(state: &mut u64) -> u64 {
@@ -151,6 +152,7 @@ fn workload(
     let mut random = 0x9e37_79b9_7f4a_7c15_u64 ^ (id as u64 + 1);
     let mut samples = Samples::default();
     barrier.wait();
+    let started = Instant::now();
     for _ in 0..operations {
         let write = next_random(&mut random) % 100 < write_percent;
         let key = (next_random(&mut random) % keys as u64).to_be_bytes();
@@ -168,6 +170,7 @@ fn workload(
                 .push(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
         }
     }
+    samples.elapsed = started.elapsed();
     // Keep connections alive until the measurement stops so SQLite's last
     // connection cleanup/checkpoint is not included in operation throughput.
     Ok((samples, worker))
@@ -179,17 +182,25 @@ fn show_latency(label: &str, samples: &mut [u64]) {
         return;
     }
     samples.sort_unstable();
-    let p = |percent: usize| -> f64 {
-        let index = (samples.len() * percent).div_ceil(100).saturating_sub(1);
-        samples[index] as f64 / 1_000.0
-    };
+    let p = |per_mille: u64| -> f64 { nearest_rank(samples, per_mille) as f64 / 1_000.0 };
     println!(
-        "{label}: count={} p50_us={:.1} p95_us={:.1} p99_us={:.1}",
+        "{label}: count={} p50_us={:.1} p95_us={:.1} p99_us={:.1} p99_9_us={:.1} max_us={:.1}",
         samples.len(),
-        p(50),
-        p(95),
-        p(99)
+        p(500),
+        p(950),
+        p(990),
+        p(999),
+        p(1000)
     );
+}
+
+// `samples` must already be sorted, and per_mille must be between 1 and 1000.
+fn nearest_rank(samples: &[u64], per_mille: u64) -> u64 {
+    debug_assert!(!samples.is_empty() && (1..=1000).contains(&per_mille));
+    // Config caps the sample count at 6.4 million, so the u64 product cannot
+    // overflow, including on targets where usize is 32-bit.
+    let rank = (samples.len() as u64 * per_mille).div_ceil(1000);
+    samples[(rank - 1) as usize]
 }
 
 fn main() -> BenchResult<()> {
@@ -217,10 +228,19 @@ fn main() -> BenchResult<()> {
     barrier.wait();
     let mut combined = Samples::default();
     let mut held_workers = Vec::with_capacity(config.clients);
+    let mut client_summaries = Vec::with_capacity(config.clients);
     let mut failure: Option<Box<dyn Error + Send + Sync>> = None;
-    for worker in threads {
+    for (id, worker) in threads.into_iter().enumerate() {
         match worker.join() {
             Ok(Ok((samples, connection))) => {
+                client_summaries.push((
+                    id,
+                    samples.elapsed,
+                    samples.reads.len(),
+                    samples.writes.len(),
+                    samples.reads.iter().copied().max().unwrap_or(0),
+                    samples.writes.iter().copied().max().unwrap_or(0),
+                ));
                 combined.reads.extend(samples.reads);
                 combined.writes.extend(samples.writes);
                 held_workers.push(connection);
@@ -260,6 +280,29 @@ fn main() -> BenchResult<()> {
     );
     show_latency("read", &mut combined.reads);
     show_latency("write", &mut combined.writes);
+    for (id, elapsed, reads, writes, max_read_ns, max_write_ns) in client_summaries {
+        println!(
+            "client={id} elapsed_ms={:.1} reads={reads} writes={writes} max_read_ms={:.3} max_write_ms={:.3}",
+            elapsed.as_secs_f64() * 1000.0,
+            max_read_ns as f64 / 1_000_000.0,
+            max_write_ns as f64 / 1_000_000.0
+        );
+    }
     drop(held_workers);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nearest_rank;
+
+    #[test]
+    fn percentile_reports_rare_outliers_and_maximum() {
+        let samples: Vec<_> = (1..=1000).collect();
+        assert_eq!(nearest_rank(&samples, 500), 500);
+        assert_eq!(nearest_rank(&samples, 990), 990);
+        assert_eq!(nearest_rank(&samples, 999), 999);
+        assert_eq!(nearest_rank(&samples, 1000), 1000);
+        assert_eq!(nearest_rank(&[10, 20], 999), 20);
+    }
 }
