@@ -37,6 +37,14 @@ impl Log {
         path: &Path,
         may_initialize: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+        Self::open_with_recovery_limit(path, may_initialize, None)
+    }
+
+    pub(crate) fn open_with_recovery_limit(
+        path: &Path,
+        may_initialize: bool,
+        max_live_keys: Option<usize>,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log_path = path.join("records.log");
         let witness_exists = witness::exists(path)?;
         let (file, created) = if may_initialize && !witness_exists {
@@ -102,7 +110,8 @@ impl Log {
             }
         };
         let file: Box<dyn LogIo> = Box::new(file);
-        let (mut log, index) = Self::from_parts(file, id, witness, boundary, metadata)?;
+        let (mut log, index) =
+            Self::from_parts(file, id, witness, boundary, metadata, max_live_keys)?;
         log.anchor = anchor;
         if let Some(boundary) = boundary {
             let total = log.file.len()?;
@@ -121,7 +130,7 @@ impl Log {
         let (id, metadata) = log_identity(file.as_ref())?;
         // Backup readers contain only the log bytes; their length and digest
         // are verified separately before a fresh witness is installed.
-        Self::from_parts(file, id, None, None, metadata)
+        Self::from_parts(file, id, None, None, metadata, None)
     }
 
     fn from_parts(
@@ -130,6 +139,7 @@ impl Log {
         witness: Option<Witness>,
         boundary: Option<u64>,
         metadata: bool,
+        max_live_keys: Option<usize>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log = Self {
             file,
@@ -138,7 +148,7 @@ impl Log {
             metadata,
             anchor: None,
         };
-        let index = log.recover(boundary)?;
+        let index = log.recover(boundary, max_live_keys)?;
         Ok((log, index))
     }
 
@@ -264,7 +274,7 @@ impl Log {
         expected: &BTreeMap<Vec<u8>, ValueLocation>,
     ) -> io::Result<()> {
         self.verify_witness()?;
-        if &self.recover(None)? != expected {
+        if &self.recover(None, None)? != expected {
             return Err(record::invalid_data(
                 "live index does not match verified log",
             ));
@@ -272,7 +282,11 @@ impl Log {
         self.verify_witness()
     }
 
-    fn recover(&self, boundary: Option<u64>) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
+    fn recover(
+        &self,
+        boundary: Option<u64>,
+        max_live_keys: Option<usize>,
+    ) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
         let mut index = BTreeMap::new();
         let total = self.file.len()?;
         let mut offset = 0_u64;
@@ -307,6 +321,14 @@ impl Log {
             let key = payload[..header.key_len].to_vec();
             match header.operation {
                 Operation::Put => {
+                    if max_live_keys
+                        .is_some_and(|max| index.len() >= max && !index.contains_key(&key))
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "recovery live key limit would be exceeded",
+                        ));
+                    }
                     index.insert(
                         key,
                         ValueLocation {

@@ -58,15 +58,18 @@ impl Store {
 
     /// Opens a store with optional per-open log-length and live-key limits.
     ///
-    /// The key limit is a count, not a process memory guarantee. Both limits
-    /// are checked after normal initialization/recovery and are not persisted.
+    /// The key limit is a count, not a process memory guarantee. It applies to
+    /// every replayed prefix, including keys that are later deleted. The log
+    /// length is checked after recovery. Neither setting is persisted.
     /// Stores using either limit serialize writes to prevent oversubscription.
     pub fn open_with_limits(
         path: impl AsRef<Path>,
         max_log_bytes: Option<u64>,
         max_live_keys: Option<usize>,
     ) -> io::Result<Self> {
-        let mut store = Self::open(path)?;
+        let mut store = Self::open_using(path.as_ref(), |path, initialize| {
+            Log::open_with_recovery_limit(path, initialize, max_live_keys)
+        })?;
         // Read errors must propagate; never treat an unknown file length as a
         // successful quota check.
         if let Some(max) = max_log_bytes {

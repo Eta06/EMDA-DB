@@ -68,3 +68,28 @@ fn both_limits_apply_without_modifying_rejected_records() {
     assert_eq!(store.get(b"a").unwrap().as_deref(), Some(&b"1"[..]));
     assert_eq!(store.get(b"b").unwrap(), None);
 }
+
+#[test]
+fn replay_peak_limit_fails_without_modification_and_compaction_can_reduce_peak() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"a", b"value").unwrap();
+    store.put(b"b", b"value").unwrap();
+    store.put(b"c", b"value").unwrap();
+    store.delete(b"a").unwrap();
+    store.delete(b"b").unwrap();
+    drop(store);
+    let before = std::fs::read(source.join("records.log")).unwrap();
+    let error = match Store::open_with_limits(&source, None, Some(1)) {
+        Ok(_) => panic!("replay must enforce the limit on historical prefixes"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("recovery live key limit"));
+    assert_eq!(std::fs::read(source.join("records.log")).unwrap(), before);
+    let store = Store::open(&source).unwrap();
+    let compacted = dir.path().join("compacted");
+    store.compact_to(&compacted).unwrap();
+    let reopened = Store::open_with_limits(compacted, None, Some(1)).unwrap();
+    assert_eq!(reopened.get(b"c").unwrap().as_deref(), Some(&b"value"[..]));
+}
