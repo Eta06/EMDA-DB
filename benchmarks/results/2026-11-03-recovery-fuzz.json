@@ -1,0 +1,25 @@
+{
+  "recorded_at_utc": "2026-11-03T19:47:39.810598+00:00",
+  "engine_revision": "e592b37d38750599bedae14553d76093b8b214ef",
+  "target_sha256": "45c1c509f255770213b81b03fb4a8718f0e6e2e60ee25da29f4747eb6ce95553",
+  "lock_sha256": "24a0daa4eb30baea1af4b7bf67aadeb9443e3d58b3fd722c8fba5dea1c2c9842",
+  "seed_sha256": {
+    "legacy": "b0f37de62232014cc51ea0b7d928fcd4045a85a8c3e7b59e2f24efa4eaccbfad",
+    "witnessed": "cd735a131041a75f1a1b8d1c415c8e3135d9d588611b84348964a9c90ca60d8f"
+  },
+  "binary_sha256": "8e472b75327cb5cbf839a2e94d0622464923288387c8ade40eb911ad841726d2",
+  "toolchain": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "0.13.2",
+  "command": "cargo +nightly fuzz run recovery /tmp/emda-stage1-verified-corpus -- -max_total_time=60 -max_len=8192 -timeout=10",
+  "seed": 406748588,
+  "executions": 127313,
+  "elapsed_seconds": 61,
+  "final_coverage_counters": 477,
+  "final_corpus_entries": 27,
+  "final_generation_limit_bytes": 1176,
+  "outcome": "completed without a detected crash",
+  "limitations": [
+    "Short coverage-guided run with two synthetic seeds; does not prove absence of bugs or cover all malformed inputs.",
+    "Uses actual filesystem operations in a temporary local environment; it does not simulate power failure, disk reordering, or injected I/O failures."
+  ]
+}
