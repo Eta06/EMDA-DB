@@ -1,0 +1,12 @@
+//! An experimental, disk-backed key/value storage engine.
+//!
+//! This library is not production-ready. See the README for limitations.
+
+#[cfg(not(unix))]
+compile_error!("this prototype currently supports Unix-like systems only");
+
+mod log;
+mod record;
+mod store;
+
+pub use store::Store;
