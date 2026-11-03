@@ -95,6 +95,33 @@ fn corrupt_header_is_not_mistaken_for_an_incomplete_tail() {
 }
 
 #[test]
+fn unsupported_record_version_is_rejected_without_changing_the_log() {
+    let dir = tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"key", b"value").unwrap();
+    }
+    let path = dir.path().join("records.log");
+    let mut log = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let mut header = [0_u8; 17];
+    log.read_exact(&mut header).unwrap();
+    header[3] = b'2';
+    let checksum = crc32fast::hash(&header[..13]);
+    header[13..17].copy_from_slice(&checksum.to_le_bytes());
+    log.seek(SeekFrom::Start(0)).unwrap();
+    log.write_all(&header).unwrap();
+    log.sync_all().unwrap();
+    let bytes_before = std::fs::read(&path).unwrap();
+    let result = Store::open(dir.path());
+    assert!(matches!(result, Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData));
+    assert_eq!(std::fs::read(path).unwrap(), bytes_before);
+}
+
+#[test]
 fn value_corruption_after_open_is_detected_on_read() {
     let dir = tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
