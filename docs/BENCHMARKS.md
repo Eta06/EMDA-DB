@@ -4,7 +4,7 @@ An initial local SQLite comparison harness exists; no general competitive perfor
 
 ## Initial local harness
 
-Run the Rust prototype and bundled SQLite through the same small, single-process harness. Both use byte keys, the same configured value size (64 bytes by default), and per-value CRC checks. Every acknowledged prototype mutation is covered by `sync_data` (concurrent mutations can share a sync); new-format stores also synchronize their commit witness before acknowledging. SQLite uses WAL, `synchronous=FULL`, autocommit, cached statements, and a 30-second busy timeout. These are not identical internal implementations or complete durability guarantees. The prototype verifies log records; SQLite has a different storage format and verification behavior.
+Run the Rust prototype and bundled SQLite through the same small, single-process harness. Both use byte keys, the same configured value size (64 bytes by default), and per-value CRC checks. Every acknowledged prototype mutation is synchronized before return (concurrent mutations can share a sync). V3 uses a full inode `fsync` for data plus its metadata witness; V2 uses log `fdatasync` followed by witness synchronization. SQLite uses WAL, `synchronous=FULL`, autocommit, cached statements, and a 30-second busy timeout. These are not identical internal implementations or complete durability guarantees. The prototype verifies log records; SQLite has a different storage format and verification behavior.
 
 ```sh
 # Arguments: backend, clients, operations/client, keys, write %, existing directory, optional value bytes.

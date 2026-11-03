@@ -8,6 +8,10 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- V3 metadata-backed commit witnesses on supported Linux filesystems: one full inode `fsync` covers records and the witness before publication and acknowledgement. V2 and legacy stores remain readable and writable.
+- Verified non-overwriting `Store::upgrade_format` copies, persistent V2 fixtures, log-only rollback detection, metadata fault/panic and delayed-sync tests, and exhaustive small append/witness crash-state combinations.
+- A repeatable latency matrix that rotates baseline/candidate/SQLite order across direct and loopback workloads and records source/binary hashes.
+
 - An experimental Rust key-value engine with `put`, `get`, and `delete` operations.
 - Checksummed append records, synchronized writes, reopen recovery, and a single-process ownership lock.
 - Concurrent-reader and serialized-writer coordination, plus tests for corruption, incomplete records, and abrupt process termination.

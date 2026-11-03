@@ -100,6 +100,8 @@ fn log_sync_precedes_witness_and_all_boundary_failures_propagate() {
             fault,
         });
         let log = Log {
+            metadata: false,
+            anchor: None,
             file: Box::new(LogHandle(Arc::clone(&state))),
             log_id: Some(id),
             witness: Some(Witness::for_test(
@@ -110,6 +112,49 @@ fn log_sync_precedes_witness_and_all_boundary_failures_propagate() {
         };
         let outcome = log.sync_data();
         assert_eq!(outcome.is_ok(), fault == Fault::None);
+        assert_eq!(&*state.events.lock().unwrap(), expected);
+    }
+}
+
+#[test]
+fn metadata_path_requires_witness_update_and_inode_sync_without_a_second_log_sync() {
+    for (fault, expected) in [
+        (Fault::WitnessRead, &["witness_read"][..]),
+        (
+            Fault::WitnessWriteBefore,
+            &["witness_read", "witness_write"][..],
+        ),
+        (
+            Fault::WitnessWriteAfter,
+            &["witness_read", "witness_write"][..],
+        ),
+        (
+            Fault::WitnessSync,
+            &["witness_read", "witness_write", "witness_sync"][..],
+        ),
+        (
+            Fault::None,
+            &["witness_read", "witness_write", "witness_sync"][..],
+        ),
+    ] {
+        let id = [4; 16];
+        let state = Arc::new(Shared {
+            events: Mutex::new(Vec::new()),
+            witness: Mutex::new(witness::encode_for_test(&id, 28)),
+            fault,
+        });
+        let log = Log {
+            metadata: true,
+            anchor: None,
+            file: Box::new(LogHandle(Arc::clone(&state))),
+            log_id: Some(id),
+            witness: Some(Witness::for_test(
+                Box::new(WitnessHandle(Arc::clone(&state))),
+                id,
+                28,
+            )),
+        };
+        assert_eq!(log.sync_data().is_ok(), fault == Fault::None);
         assert_eq!(&*state.events.lock().unwrap(), expected);
     }
 }

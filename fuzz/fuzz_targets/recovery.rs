@@ -3,7 +3,9 @@ use database_engine::Store;
 use libfuzzer_sys::fuzz_target;
 use std::{fs, io};
 
-// First byte: high bit indicates a witness file; low bits give its length.
+// First byte: bit 7 indicates an anchor/witness file; bit 6 indicates
+// metadata witness; low six bits give the external witness length. Metadata
+// is prefixed by its one-byte length after the external witness.
 // Remaining bytes are the witness followed by the log. Rejected malformed
 // input must not change either file; an I/O failure during witness publication
 // can have an uncertain outcome, so it is not treated as a no-write guarantee.
@@ -12,8 +14,9 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let has_witness = data[0] & 0x80 != 0;
+    let has_metadata = data[0] & 0x40 != 0;
     let witness_len = if has_witness {
-        (data[0] & 0x7f) as usize
+        (data[0] & 0x3f) as usize
     } else {
         0
     };
@@ -21,13 +24,38 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     let witness = &data[1..1 + witness_len];
-    let log = &data[1 + witness_len..];
+    let mut start = 1 + witness_len;
+    let metadata = if has_metadata {
+        if data.len() <= start {
+            return;
+        }
+        let length = data[start] as usize;
+        start += 1;
+        if data.len() < start + length {
+            return;
+        }
+        let bytes = &data[start..start + length];
+        start += length;
+        Some(bytes)
+    } else {
+        None
+    };
+    let log = &data[start..];
     let directory = tempfile::tempdir().expect("fuzz temporary directory");
     let log_path = directory.path().join("records.log");
     let witness_path = directory.path().join("commit.state");
     fs::write(&log_path, log).expect("write fuzz log");
     if has_witness {
         fs::write(&witness_path, witness).expect("write fuzz witness");
+    }
+    if let Some(bytes) = metadata {
+        rustix::fs::setxattr(
+            &log_path,
+            "user.db.commit.v3",
+            bytes,
+            rustix::fs::XattrFlags::empty(),
+        )
+        .expect("write fuzz metadata");
     }
     match Store::open(directory.path()) {
         Ok(store) => {
@@ -39,7 +67,13 @@ fuzz_target!(|data: &[u8]| {
                 io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
             ) =>
         {
-            assert_eq!(fs::read(log_path).expect("read rejected log"), log);
+            assert_eq!(fs::read(&log_path).expect("read rejected log"), log);
+            if let Some(bytes) = metadata {
+                let mut actual = [0; 255];
+                let count = rustix::fs::getxattr(&log_path, "user.db.commit.v3", &mut actual[..])
+                    .expect("read rejected metadata");
+                assert_eq!(&actual[..count], bytes);
+            }
             if has_witness {
                 assert_eq!(
                     fs::read(witness_path).expect("read rejected witness"),

@@ -11,7 +11,17 @@ The product name is a placeholder. The package version in `Cargo.toml` is the so
 
 ## Independent compatibility boundaries
 
-The software version is **not** the same as the log format, public API, network protocol, or future SDK versions. Changes to those contracts must be described separately. The experimental format uses `DB01` records; new stores wrap them in an `EMDALOG2` identity header with a separate commit witness. Older unwrapped `DB01` stores remain usable with their existing limitations. `Store::upgrade_legacy` creates a verified new-format copy without replacing the source or destination. The upgrade cannot detect data already lost before conversion. Older engines cannot open new-format logs, and there is no general downgrade guarantee. Unknown or invalid markers must be rejected rather than silently interpreted as the current format. Before making a production compatibility promise, define supported upgrades and downgrades and test persistent fixtures, migrations, and backups.
+The software version is **not** the same as the log format, public API, network protocol, or future SDK versions. Changes to those contracts are described separately.
+
+| Format | Records / witness | Compatibility |
+| --- | --- | --- |
+| Legacy | Unwrapped `DB01`; no witness | Read/write supported; complete-boundary loss can go undetected. |
+| V2 | 28-byte `EMDALOG2` identity header; changing `commit.state` boundary | Read/write supported with the original two ordered syncs. |
+| V3 | 28-byte `EMDALOG3` identity header; changing `user.db.commit.v3` xattr on `records.log`; immutable `commit.state` anchor at offset 28 | Current creation format on Linux with supported user xattrs; one full inode `fsync` covers data and metadata. |
+
+Both witness encodings retain the 36-byte `EMDAWIT2` envelope: magic, 16-byte identity, little-endian 64-bit boundary, and CRC32. Records remain `DB01`. New-store creation falls back to V2 only for unsupported xattrs; an existing V3 store with missing or unsupported metadata fails closed. V3 restore requires a filesystem supporting those metadata operations. Ordinary copies of a V3 directory must preserve its xattrs, log bytes, and identity anchor; the engine backup/restore API recreates and verifies the required metadata instead.
+
+`Store::upgrade_format(destination)` creates a verified, synchronized copy from any supported format into the current creation format at a new path. It preserves the source, log order, and existing destinations. `Store::upgrade_legacy` uses that path but accepts only unwrapped legacy sources. Upgrades cannot detect prior loss that the source format could not detect. V2 stores are never silently rewritten during opening. Older engines cannot read V3, and there is no automatic downgrade or stable format promise. Unknown or invalid markers are rejected. Persistent legacy and V2 fixtures, migration, backup/restore, corruption, and crash-state tests cover the supported paths.
 
 ## Recording changes
 

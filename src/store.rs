@@ -130,6 +130,24 @@ impl Store {
         backup::upgrade_legacy(&self.log, destination.as_ref())
     }
 
+    /// Copies any supported store into the current format at a new path.
+    ///
+    /// The source remains unchanged. On Linux filesystems supporting durable
+    /// user xattrs this creates V3; otherwise creation uses the V2 fallback.
+    /// The destination is verified and synchronized before publication, and
+    /// never replaces an existing path. An error after publication is uncertain.
+    pub fn upgrade_format(&self, destination: impl AsRef<Path>) -> io::Result<()> {
+        let _writer = self
+            .writes
+            .write()
+            .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        let _inner = self.read()?;
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        backup::upgrade_format(&self.log, destination.as_ref())
+    }
+
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
         let _writer = self
@@ -165,3 +183,6 @@ mod reservation_tests;
 
 #[cfg(test)]
 mod wake_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod metadata_tests;

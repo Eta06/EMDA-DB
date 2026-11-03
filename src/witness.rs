@@ -12,7 +12,7 @@ use std::sync::Mutex;
 pub(crate) const LOG_MAGIC: &[u8; 8] = b"EMDALOG2";
 const WITNESS_MAGIC: &[u8; 8] = b"EMDAWIT2";
 pub(crate) const LOG_HEADER_SIZE: usize = 28;
-const WITNESS_SIZE: usize = 36;
+pub(crate) const WITNESS_SIZE: usize = 36;
 const NAME: &str = "commit.state";
 pub(crate) type LogId = [u8; 16];
 
@@ -36,7 +36,7 @@ pub(crate) fn parse_header(header: &[u8; LOG_HEADER_SIZE]) -> io::Result<LogId> 
     Ok(header[8..24].try_into().unwrap())
 }
 
-fn encode(id: &LogId, offset: u64) -> [u8; WITNESS_SIZE] {
+pub(crate) fn encode(id: &LogId, offset: u64) -> [u8; WITNESS_SIZE] {
     let mut bytes = [0_u8; WITNESS_SIZE];
     bytes[..8].copy_from_slice(WITNESS_MAGIC);
     bytes[8..24].copy_from_slice(id);
@@ -56,6 +56,14 @@ pub(crate) trait WitnessIo: Send + Sync {
     fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()>;
     fn write_all_at(&self, bytes: &[u8], offset: u64) -> io::Result<()>;
     fn sync_data(&self) -> io::Result<()>;
+    fn read_marker(&self) -> io::Result<[u8; WITNESS_SIZE]> {
+        if self.len()? != WITNESS_SIZE as u64 {
+            return Err(record::invalid_data("invalid commit witness length"));
+        }
+        let mut bytes = [0; WITNESS_SIZE];
+        self.read_exact_at(&mut bytes, 0)?;
+        Ok(bytes)
+    }
 }
 
 impl WitnessIo for File {
@@ -74,11 +82,11 @@ impl WitnessIo for File {
 }
 
 fn read(file: &dyn WitnessIo, id: &LogId) -> io::Result<u64> {
-    if file.len()? != WITNESS_SIZE as u64 {
-        return Err(record::invalid_data("invalid commit witness length"));
-    }
-    let mut bytes = [0_u8; WITNESS_SIZE];
-    file.read_exact_at(&mut bytes, 0)?;
+    let bytes = file.read_marker()?;
+    decode(&bytes, id)
+}
+
+pub(crate) fn decode(bytes: &[u8; WITNESS_SIZE], id: &LogId) -> io::Result<u64> {
     if &bytes[..8] != WITNESS_MAGIC
         || &bytes[8..24] != id
         || crc32fast::hash(&bytes[..32]) != u32::from_le_bytes(bytes[32..].try_into().unwrap())
@@ -167,6 +175,18 @@ impl Witness {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn from_io(file: Box<dyn WitnessIo>, id: LogId) -> io::Result<(Self, u64)> {
+        let offset = read(file.as_ref(), &id)?;
+        Ok((
+            Self {
+                file,
+                id,
+                offset: Mutex::new(offset),
+            },
+            offset,
+        ))
     }
 
     #[cfg(test)]

@@ -9,6 +9,7 @@ mod backup;
 mod directory;
 mod log;
 mod log_io;
+mod metadata_witness;
 mod record;
 mod recovery;
 mod store;

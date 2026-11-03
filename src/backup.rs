@@ -2,7 +2,7 @@
 
 use crate::log::Log;
 use crate::log_io::LogIo;
-use crate::{record, witness};
+use crate::{metadata_witness, record, witness};
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -78,6 +78,11 @@ pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()>
             "store already has a commit witness",
         ));
     }
+    upgrade_format(source, destination)
+}
+
+pub(crate) fn upgrade_format(source: &Log, destination: &Path) -> io::Result<()> {
+    source.verify_witness()?;
     let parent = parent_directory(destination)?;
     let staging = tempfile::Builder::new()
         .prefix(".db-upgrade-")
@@ -93,14 +98,27 @@ pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()>
         .write(true)
         .create_new(true)
         .open(staging.path().join("records.log"))?;
-    let header = witness::new_header()?;
+    let mut header = witness::new_header()?;
     target.write_all(&header)?;
-    let length = source.len()?;
+    let start = if source.is_legacy() {
+        0
+    } else {
+        witness::LOG_HEADER_SIZE as u64
+    };
+    let length = source
+        .len()?
+        .checked_sub(start)
+        .ok_or_else(|| record::invalid_data("source log is shorter than its header"))?;
     let digest = copy_data(
         length,
-        |buffer, offset| source.read_bytes(buffer, offset),
+        |buffer, offset| source.read_bytes(buffer, start + offset),
         &mut target,
     )?;
+    let id = witness::parse_header(&header)?;
+    if metadata_witness::initialize(&target, &id, witness::LOG_HEADER_SIZE as u64 + length)? {
+        metadata_witness::mark_header(&mut header);
+        FileExt::write_all_at(&target, &header, 0)?;
+    }
     target.sync_all()?;
     if target.metadata()?.len() != witness::LOG_HEADER_SIZE as u64 + length
         || hash_data(length, |buffer, offset| {

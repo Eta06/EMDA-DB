@@ -1,8 +1,8 @@
 # Recovery fuzz target
 
-The `recovery` target feeds malformed legacy and witnessed logs to the public
+The `recovery` target feeds malformed legacy, V2 externally witnessed, and V3 metadata-witnessed logs to the public
 open path. It asserts that malformed input rejected during validation leaves its
-log and witness unchanged. I/O failures during witness publication can have an
+log and witnesses unchanged. V3 seeds include the required identity anchor and xattr bytes. The first input byte uses bit 7 for an external witness, bit 6 for metadata, and the lower six bits for external-witness length; optional metadata follows with its own one-byte length. I/O failures during witness publication can have an
 uncertain outcome and are treated separately.
 The checked-in seeds are synthetic. Install nightly Rust and `cargo-fuzz`, then
 copy the seeds to a temporary corpus before running so generated inputs do not

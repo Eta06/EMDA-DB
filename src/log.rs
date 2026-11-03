@@ -1,6 +1,7 @@
 //! Append, durability, read verification, and recovery for the record log.
 
 use crate::log_io::LogIo;
+use crate::metadata_witness;
 use crate::record::{self, HEADER_SIZE, Header, Operation};
 use crate::recovery::RecoveryReader;
 use crate::witness::{self, LOG_HEADER_SIZE, LogId, Witness};
@@ -27,6 +28,8 @@ pub(crate) struct Log {
     file: Box<dyn LogIo>,
     log_id: Option<LogId>,
     witness: Option<Witness>,
+    metadata: bool,
+    anchor: Option<Witness>,
 }
 
 impl Log {
@@ -58,36 +61,55 @@ impl Log {
             })?, false)
         };
         if created {
-            let header = witness::new_header()?;
-            (&file).write_all(&header)?;
-            file.sync_data()?;
+            let mut header = witness::new_header()?;
             let id = witness::parse_header(&header)?;
+            if metadata_witness::initialize(&file, &id, LOG_HEADER_SIZE as u64)? {
+                metadata_witness::mark_header(&mut header);
+            }
+            (&file).write_all(&header)?;
+            file.sync_all()?;
             let _ = Witness::create(path, id, LOG_HEADER_SIZE as u64)?;
         }
         // Persist directory entries before acknowledging future writes.
         File::open(path)?.sync_all()?;
-        let file: Box<dyn LogIo> = Box::new(file);
-        let id = log_identity(file.as_ref())?;
-        let (witness, boundary) = match id {
-            Some(id) => {
-                let (witness, boundary) = Witness::open(path, id)?;
-                (Some(witness), Some(boundary))
+        let (id, metadata) = log_identity(&file)?;
+        if !metadata && metadata_witness::is_present(&file)? {
+            return Err(record::invalid_data(
+                "metadata witness exists without its V3 log header",
+            ));
+        }
+        let mut anchor = None;
+        let (witness, boundary) = if metadata {
+            let (identity, initial_boundary) = Witness::open(path, id.unwrap())?;
+            if initial_boundary != LOG_HEADER_SIZE as u64 {
+                return Err(record::invalid_data("invalid metadata log identity anchor"));
             }
-            None if witness::exists(path)? => {
-                return Err(record::invalid_data(
-                    "commit witness exists without its versioned log",
-                ));
+            anchor = Some(identity);
+            let (witness, boundary) = metadata_witness::open(file.try_clone()?, id.unwrap())?;
+            (Some(witness), Some(boundary))
+        } else {
+            match id {
+                Some(id) => {
+                    let (witness, boundary) = Witness::open(path, id)?;
+                    (Some(witness), Some(boundary))
+                }
+                None if witness::exists(path)? => {
+                    return Err(record::invalid_data(
+                        "commit witness exists without its versioned log",
+                    ));
+                }
+                None => (None, None),
             }
-            None => (None, None),
         };
-        let (log, index) = Self::from_parts(file, id, witness, boundary)?;
+        let file: Box<dyn LogIo> = Box::new(file);
+        let (mut log, index) = Self::from_parts(file, id, witness, boundary, metadata)?;
+        log.anchor = anchor;
         if let Some(boundary) = boundary {
             let total = log.file.len()?;
             if total > boundary {
                 // A complete but unacknowledged tail may survive a crash.
-                // Validate it first, then synchronize it before advancing the witness.
-                log.file.sync_data()?;
-                log.witness.as_ref().unwrap().advance(total)?;
+                // Validate it first, then durably publish the adopted boundary.
+                log.sync_data()?;
             }
         }
         Ok((log, index))
@@ -96,8 +118,10 @@ impl Log {
     pub(crate) fn from_io(
         file: Box<dyn LogIo>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        let id = log_identity(file.as_ref())?;
-        Self::from_parts(file, id, None, None)
+        let (id, metadata) = log_identity(file.as_ref())?;
+        // Backup readers contain only the log bytes; their length and digest
+        // are verified separately before a fresh witness is installed.
+        Self::from_parts(file, id, None, None, metadata)
     }
 
     fn from_parts(
@@ -105,11 +129,14 @@ impl Log {
         log_id: Option<LogId>,
         witness: Option<Witness>,
         boundary: Option<u64>,
+        metadata: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let mut log = Self {
             file,
             log_id,
             witness,
+            metadata,
+            anchor: None,
         };
         let index = log.recover(boundary)?;
         Ok((log, index))
@@ -137,6 +164,14 @@ impl Log {
         records: impl ExactSizeIterator<Item = AppendRecord<'a>>,
     ) -> io::Result<Vec<ValueLocation>> {
         let mut offset = self.file.len()?;
+        if let Some(anchor) = &self.anchor {
+            anchor.verify(LOG_HEADER_SIZE as u64)?;
+        }
+        if self.metadata && self.witness.is_none() {
+            return Err(io::Error::other(
+                "metadata log has no attached commit witness",
+            ));
+        }
         if let Some(witness) = &self.witness {
             witness.verify(offset)?;
         }
@@ -166,6 +201,15 @@ impl Log {
     }
 
     pub(crate) fn sync_data(&self) -> io::Result<()> {
+        // V3's witness uses fsync on the log inode, covering data AND xattrs.
+        // V2 still requires log fdatasync followed by the external witness sync.
+        if self.metadata {
+            return self
+                .witness
+                .as_ref()
+                .ok_or_else(|| io::Error::other("metadata log has no attached commit witness"))?
+                .advance(self.file.len()?);
+        }
         self.file.sync_data()?;
         if let Some(witness) = &self.witness {
             witness.advance(self.file.len()?)?;
@@ -175,7 +219,18 @@ impl Log {
 
     pub(crate) fn install_restore_witness(&self, directory: &Path) -> io::Result<()> {
         if let Some(id) = self.log_id {
-            let _ = Witness::create(directory, id, self.file.len()?)?;
+            let length = self.file.len()?;
+            let boundary = if self.metadata {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(directory.join("records.log"))?;
+                metadata_witness::install(&file, &id, length)?;
+                LOG_HEADER_SIZE as u64
+            } else {
+                length
+            };
+            let _ = Witness::create(directory, id, boundary)?;
         }
         Ok(())
     }
@@ -190,6 +245,14 @@ impl Log {
     }
 
     pub(crate) fn verify_witness(&self) -> io::Result<()> {
+        if log_identity(self.file.as_ref())? != (self.log_id, self.metadata) {
+            return Err(record::invalid_data(
+                "log identity changed while the store was open",
+            ));
+        }
+        if let Some(anchor) = &self.anchor {
+            anchor.verify(LOG_HEADER_SIZE as u64)?;
+        }
         if let Some(witness) = &self.witness {
             witness.verify(self.file.len()?)?;
         }
@@ -204,7 +267,11 @@ impl Log {
         if self.log_id.is_some() {
             let mut header = [0_u8; LOG_HEADER_SIZE];
             reader.read_exact(&mut header)?;
-            witness::parse_header(&header)?;
+            if self.metadata {
+                metadata_witness::parse_header(&header)?;
+            } else {
+                witness::parse_header(&header)?;
+            }
             offset = LOG_HEADER_SIZE as u64;
         }
         let mut saw_boundary = boundary.is_none_or(|value| value == offset);
@@ -254,21 +321,27 @@ impl Log {
     }
 }
 
-fn log_identity(file: &dyn LogIo) -> io::Result<Option<LogId>> {
+fn log_identity(file: &dyn LogIo) -> io::Result<(Option<LogId>, bool)> {
     if file.len()? < witness::LOG_MAGIC.len() as u64 {
-        return Ok(None);
+        return Ok((None, false));
     }
     let mut magic = [0_u8; 8];
     file.read_exact_at(&mut magic, 0)?;
-    if &magic != witness::LOG_MAGIC {
-        return Ok(None);
+    let metadata = &magic == metadata_witness::MAGIC;
+    if &magic != witness::LOG_MAGIC && !metadata {
+        return Ok((None, false));
     }
     if file.len()? < LOG_HEADER_SIZE as u64 {
         return Err(record::invalid_data("incomplete versioned log header"));
     }
     let mut header = [0_u8; LOG_HEADER_SIZE];
     file.read_exact_at(&mut header, 0)?;
-    Ok(Some(witness::parse_header(&header)?))
+    let id = if metadata {
+        metadata_witness::parse_header(&header)?
+    } else {
+        witness::parse_header(&header)?
+    };
+    Ok((Some(id), metadata))
 }
 
 fn incomplete_record(offset: u64) -> io::Error {
