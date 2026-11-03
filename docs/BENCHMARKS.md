@@ -1,6 +1,14 @@
 # Benchmark plan
 
-An initial local SQLite comparison harness exists; no general competitive performance claim has been established. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
+A local comparison harness covers ten engines and six byte-key workloads; no general competitive performance claim has been established. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
+
+## Expanded local comparison and Linux noise controls: 2026-11-03
+
+The [complete report](LOCAL_COMPARISON_2026_11_03.md) records 264 runs across EMDA, SQLite (two binding/version configurations), PostgreSQL, Redis, MongoDB, Turso, RocksDB, LMDB, DuckDB and FoundationDB. It includes single/concurrent mixed workloads, read-only, write-only, 4 KiB values and CRUD cycles, plus 36 paired CPU-affinity measurements and eleven successful process-restart checks. The [methodology](COMPARISON_METHOD.md) documents durable settings, native versions, adapter overhead, VM controls and systems not measured.
+
+In the four-client mixed test, EMDA measured 10,397 operations/s versus SQLite's 4,514; write p50/p99 were 628/1,323 µs versus SQLite's 288/13,816 µs. SQLite won write-only p50 and p99. The tables report medians and ranges of run-level quantiles; they do not establish broad feature parity or universal superiority.
+
+Removing obsolete tmpfs build caches freed 7.6 GiB. The main matrix recorded no CPU throttling, direct memory reclaim or memory-limit events. Host steal remained, and pinning did not consistently help all engines in the calibration. No noisy runs were silently discarded; the interrupted pre-cleanup pass is retained separately. No engine code or durability setting changed for this comparison.
 
 ## V3 latency optimization: 2026-11-03
 

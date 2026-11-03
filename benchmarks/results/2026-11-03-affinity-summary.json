@@ -1,0 +1,671 @@
+{
+  "revision": "5cbc8079ff3877f5992552008491bae13dae13c3",
+  "successful_runs": 36,
+  "failures": [],
+  "groups": [
+    {
+      "backend": "prototype",
+      "case": "concurrent_mixed",
+      "mode": "unrestricted",
+      "runs": 6,
+      "metrics": {
+        "ops_per_sec": {
+          "median": 9992.650000000001,
+          "min": 7715.1,
+          "max": 10645.6,
+          "mean": 9614.216666666667,
+          "sample_cv_percent": 12.047146343163908
+        },
+        "read.p50_us": {
+          "median": 62.949999999999996,
+          "min": 54.8,
+          "max": 69.3,
+          "mean": 62.73333333333333,
+          "sample_cv_percent": 7.784879543091275
+        },
+        "read.p95_us": {
+          "median": 191.55,
+          "min": 158.9,
+          "max": 241.6,
+          "mean": 193.28333333333333,
+          "sample_cv_percent": 14.549319341432081
+        },
+        "read.p99_us": {
+          "median": 352.04999999999995,
+          "min": 253.3,
+          "max": 549.2,
+          "mean": 370.95,
+          "sample_cv_percent": 31.050487239173297
+        },
+        "read.p99_9_us": {
+          "median": 1005.4,
+          "min": 549.1,
+          "max": 2486.3,
+          "mean": 1235.0666666666666,
+          "sample_cv_percent": 60.519952282781
+        },
+        "read.max_us": {
+          "median": 1444.3,
+          "min": 575.5,
+          "max": 5332.4,
+          "mean": 1934.6999999999998,
+          "sample_cv_percent": 91.26834390993052
+        },
+        "write.p50_us": {
+          "median": 616.6,
+          "min": 606.8,
+          "max": 705.8,
+          "mean": 634.9166666666666,
+          "sample_cv_percent": 6.015576165821026
+        },
+        "write.p95_us": {
+          "median": 1062.3000000000002,
+          "min": 902.7,
+          "max": 1350.5,
+          "mean": 1104.6,
+          "sample_cv_percent": 17.26880691194135
+        },
+        "write.p99_us": {
+          "median": 1812.3999999999999,
+          "min": 1159.0,
+          "max": 2816.2,
+          "mean": 1901.8666666666666,
+          "sample_cv_percent": 35.54913779889746
+        },
+        "write.p99_9_us": {
+          "median": 3530.75,
+          "min": 1719.5,
+          "max": 115603.0,
+          "mean": 21983.8,
+          "sample_cv_percent": 208.6996572070947
+        },
+        "write.max_us": {
+          "median": 3764.75,
+          "min": 2521.1,
+          "max": 116867.5,
+          "mean": 22654.266666666666,
+          "sample_cv_percent": 203.81031613511777
+        }
+      },
+      "metadata": {
+        "durability": "sync-before-ack",
+        "requested_server_cpus": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "transport": "TCP loopback to Rust adapter",
+        "version": "0.1.0"
+      },
+      "quiet_failures": 0,
+      "throttled_runs": 0,
+      "memory_limit_runs": 0,
+      "direct_reclaim_runs": 0,
+      "max_steal_percent": 16.8539,
+      "retry_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "backend": "prototype",
+      "case": "concurrent_mixed",
+      "mode": "pinned",
+      "runs": 6,
+      "metrics": {
+        "ops_per_sec": {
+          "median": 10569.8,
+          "min": 6810.4,
+          "max": 11228.2,
+          "mean": 10080.55,
+          "sample_cv_percent": 16.316588722069323
+        },
+        "read.p50_us": {
+          "median": 56.349999999999994,
+          "min": 54.5,
+          "max": 59.6,
+          "mean": 56.833333333333336,
+          "sample_cv_percent": 3.0812728531527744
+        },
+        "read.p95_us": {
+          "median": 138.15,
+          "min": 129.1,
+          "max": 151.4,
+          "mean": 139.65,
+          "sample_cv_percent": 7.244303195424556
+        },
+        "read.p99_us": {
+          "median": 235.05,
+          "min": 203.2,
+          "max": 349.7,
+          "mean": 248.23333333333332,
+          "sample_cv_percent": 20.66778587352513
+        },
+        "read.p99_9_us": {
+          "median": 640.2,
+          "min": 520.7,
+          "max": 5420.6,
+          "mean": 1433.25,
+          "sample_cv_percent": 136.51467899982364
+        },
+        "read.max_us": {
+          "median": 857.8499999999999,
+          "min": 523.5,
+          "max": 84237.9,
+          "mean": 14782.783333333333,
+          "sample_cv_percent": 230.18331940261945
+        },
+        "write.p50_us": {
+          "median": 630.3499999999999,
+          "min": 592.7,
+          "max": 670.3,
+          "mean": 630.1333333333333,
+          "sample_cv_percent": 4.690729931728241
+        },
+        "write.p95_us": {
+          "median": 950.7,
+          "min": 854.9,
+          "max": 2408.8,
+          "mean": 1184.4833333333333,
+          "sample_cv_percent": 50.89363742975262
+        },
+        "write.p99_us": {
+          "median": 1422.45,
+          "min": 1119.2,
+          "max": 5170.3,
+          "mean": 2023.0833333333335,
+          "sample_cv_percent": 77.11936175682068
+        },
+        "write.p99_9_us": {
+          "median": 2402.3,
+          "min": 1820.2,
+          "max": 84966.0,
+          "mean": 16331.2,
+          "sample_cv_percent": 205.96487007558443
+        },
+        "write.max_us": {
+          "median": 2552.6,
+          "min": 2086.1,
+          "max": 89496.4,
+          "mean": 17536.05,
+          "sample_cv_percent": 201.2504305283071
+        }
+      },
+      "metadata": {
+        "durability": "sync-before-ack",
+        "requested_server_cpus": [
+          1,
+          2,
+          3
+        ],
+        "transport": "TCP loopback to Rust adapter",
+        "version": "0.1.0"
+      },
+      "quiet_failures": 0,
+      "throttled_runs": 0,
+      "memory_limit_runs": 0,
+      "direct_reclaim_runs": 0,
+      "max_steal_percent": 13.4185,
+      "retry_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "concurrent_mixed",
+      "mode": "unrestricted",
+      "runs": 6,
+      "metrics": {
+        "ops_per_sec": {
+          "median": 5377.9,
+          "min": 4894.6,
+          "max": 5735.9,
+          "mean": 5375.816666666667,
+          "sample_cv_percent": 6.303835235072448
+        },
+        "read.p50_us": {
+          "median": 36.9,
+          "min": 35.7,
+          "max": 41.4,
+          "mean": 37.45,
+          "sample_cv_percent": 5.788298247788689
+        },
+        "read.p95_us": {
+          "median": 80.25,
+          "min": 70.7,
+          "max": 86.4,
+          "mean": 79.1,
+          "sample_cv_percent": 8.611944564036394
+        },
+        "read.p99_us": {
+          "median": 161.10000000000002,
+          "min": 143.5,
+          "max": 187.6,
+          "mean": 163.16666666666669,
+          "sample_cv_percent": 9.131122681568634
+        },
+        "read.p99_9_us": {
+          "median": 552.0,
+          "min": 404.6,
+          "max": 865.1,
+          "mean": 622.1333333333333,
+          "sample_cv_percent": 30.781040614573772
+        },
+        "read.max_us": {
+          "median": 819.95,
+          "min": 422.4,
+          "max": 1941.0,
+          "mean": 950.3666666666667,
+          "sample_cv_percent": 60.65314156276913
+        },
+        "write.p50_us": {
+          "median": 278.1,
+          "min": 257.4,
+          "max": 296.2,
+          "mean": 277.05,
+          "sample_cv_percent": 5.972434967352498
+        },
+        "write.p95_us": {
+          "median": 550.5,
+          "min": 488.6,
+          "max": 746.1,
+          "mean": 573.05,
+          "sample_cv_percent": 15.599841827097501
+        },
+        "write.p99_us": {
+          "median": 8634.2,
+          "min": 2055.9,
+          "max": 18813.6,
+          "mean": 8475.866666666667,
+          "sample_cv_percent": 68.5723745516933
+        },
+        "write.p99_9_us": {
+          "median": 154681.8,
+          "min": 82429.2,
+          "max": 229827.0,
+          "mean": 163465.73333333334,
+          "sample_cv_percent": 36.58823111084427
+        },
+        "write.max_us": {
+          "median": 529790.8500000001,
+          "min": 179792.0,
+          "max": 530032.4,
+          "mean": 454890.38333333336,
+          "sample_cv_percent": 30.90085688393223
+        }
+      },
+      "metadata": {
+        "journal_mode": "wal",
+        "requested_server_cpus": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "synchronous": 2,
+        "transport": "TCP loopback to Rust adapter",
+        "version": "3.49.1"
+      },
+      "quiet_failures": 0,
+      "throttled_runs": 0,
+      "memory_limit_runs": 0,
+      "direct_reclaim_runs": 0,
+      "max_steal_percent": 1.1876,
+      "retry_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "backend": "sqlite",
+      "case": "concurrent_mixed",
+      "mode": "pinned",
+      "runs": 6,
+      "metrics": {
+        "ops_per_sec": {
+          "median": 5050.15,
+          "min": 4913.0,
+          "max": 5515.6,
+          "mean": 5154.65,
+          "sample_cv_percent": 5.3400340334035
+        },
+        "read.p50_us": {
+          "median": 42.150000000000006,
+          "min": 38.7,
+          "max": 44.2,
+          "mean": 41.483333333333334,
+          "sample_cv_percent": 5.244754812427646
+        },
+        "read.p95_us": {
+          "median": 85.35,
+          "min": 78.5,
+          "max": 96.1,
+          "mean": 85.93333333333334,
+          "sample_cv_percent": 6.69408311164072
+        },
+        "read.p99_us": {
+          "median": 167.25,
+          "min": 142.8,
+          "max": 215.3,
+          "mean": 173.75,
+          "sample_cv_percent": 17.551399742990693
+        },
+        "read.p99_9_us": {
+          "median": 532.9,
+          "min": 365.2,
+          "max": 2571.3,
+          "mean": 970.8666666666667,
+          "sample_cv_percent": 90.45747384400612
+        },
+        "read.max_us": {
+          "median": 803.05,
+          "min": 395.6,
+          "max": 3149.5,
+          "mean": 1380.0833333333333,
+          "sample_cv_percent": 85.14898055747389
+        },
+        "write.p50_us": {
+          "median": 287.5,
+          "min": 269.2,
+          "max": 303.6,
+          "mean": 286.9,
+          "sample_cv_percent": 4.056180477316015
+        },
+        "write.p95_us": {
+          "median": 691.0,
+          "min": 468.0,
+          "max": 845.9,
+          "mean": 662.4333333333334,
+          "sample_cv_percent": 20.971782094405313
+        },
+        "write.p99_us": {
+          "median": 18855.4,
+          "min": 1359.0,
+          "max": 33810.9,
+          "mean": 19242.15,
+          "sample_cv_percent": 67.83196147140919
+        },
+        "write.p99_9_us": {
+          "median": 154640.75,
+          "min": 104423.0,
+          "max": 229741.0,
+          "mean": 158795.6,
+          "sample_cv_percent": 28.93591202159597
+        },
+        "write.max_us": {
+          "median": 279425.9,
+          "min": 179283.5,
+          "max": 630325.3,
+          "mean": 329899.95,
+          "sample_cv_percent": 53.44775871831452
+        }
+      },
+      "metadata": {
+        "journal_mode": "wal",
+        "requested_server_cpus": [
+          1,
+          2,
+          3
+        ],
+        "synchronous": 2,
+        "transport": "TCP loopback to Rust adapter",
+        "version": "3.49.1"
+      },
+      "quiet_failures": 0,
+      "throttled_runs": 0,
+      "memory_limit_runs": 0,
+      "direct_reclaim_runs": 0,
+      "max_steal_percent": 1.7032,
+      "retry_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "concurrent_mixed",
+      "mode": "unrestricted",
+      "runs": 6,
+      "metrics": {
+        "ops_per_sec": {
+          "median": 4416.2,
+          "min": 2935.2,
+          "max": 5321.1,
+          "mean": 4229.016666666666,
+          "sample_cv_percent": 26.028505810614565
+        },
+        "read.p50_us": {
+          "median": 434.55,
+          "min": 413.6,
+          "max": 452.7,
+          "mean": 433.48333333333335,
+          "sample_cv_percent": 3.01013543250702
+        },
+        "read.p95_us": {
+          "median": 1048.8,
+          "min": 905.8,
+          "max": 1915.4,
+          "mean": 1196.1666666666667,
+          "sample_cv_percent": 32.402136684085995
+        },
+        "read.p99_us": {
+          "median": 2137.75,
+          "min": 1220.6,
+          "max": 5926.6,
+          "mean": 2710.7,
+          "sample_cv_percent": 68.55220230766201
+        },
+        "read.p99_9_us": {
+          "median": 6901.55,
+          "min": 2457.6,
+          "max": 91563.7,
+          "mean": 28900.533333333333,
+          "sample_cv_percent": 132.74632972551296
+        },
+        "read.max_us": {
+          "median": 8474.7,
+          "min": 3611.2,
+          "max": 98721.0,
+          "mean": 31149.416666666668,
+          "sample_cv_percent": 129.4532166847348
+        },
+        "write.p50_us": {
+          "median": 1014.6500000000001,
+          "min": 927.1,
+          "max": 1080.8,
+          "mean": 1009.2333333333333,
+          "sample_cv_percent": 6.485260122662627
+        },
+        "write.p95_us": {
+          "median": 2422.3,
+          "min": 1571.7,
+          "max": 4718.3,
+          "mean": 2750.116666666667,
+          "sample_cv_percent": 49.02109408065866
+        },
+        "write.p99_us": {
+          "median": 4844.049999999999,
+          "min": 2071.3,
+          "max": 11309.3,
+          "mean": 5518.0,
+          "sample_cv_percent": 71.8392945157331
+        },
+        "write.p99_9_us": {
+          "median": 6586.85,
+          "min": 3661.1,
+          "max": 190327.9,
+          "mean": 51945.1,
+          "sample_cv_percent": 149.85578450925553
+        },
+        "write.max_us": {
+          "median": 10354.6,
+          "min": 4760.3,
+          "max": 191139.4,
+          "mean": 53945.75,
+          "sample_cv_percent": 143.08083457830833
+        }
+      },
+      "metadata": {
+        "driver_version": "3.3.7",
+        "fsync": "on",
+        "full_page_writes": "on",
+        "requested_server_cpus": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "synchronous_commit": "on",
+        "transport": "TCP loopback through container port forwarding",
+        "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+        "wal_sync_method": "fdatasync"
+      },
+      "quiet_failures": 1,
+      "throttled_runs": 0,
+      "memory_limit_runs": 0,
+      "direct_reclaim_runs": 0,
+      "max_steal_percent": 16.0714,
+      "retry_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "backend": "postgres",
+      "case": "concurrent_mixed",
+      "mode": "pinned",
+      "runs": 6,
+      "metrics": {
+        "ops_per_sec": {
+          "median": 6707.4,
+          "min": 3693.7,
+          "max": 7641.3,
+          "mean": 6413.0,
+          "sample_cv_percent": 21.708559319672112
+        },
+        "read.p50_us": {
+          "median": 270.9,
+          "min": 242.4,
+          "max": 292.0,
+          "mean": 268.93333333333334,
+          "sample_cv_percent": 6.570251824942698
+        },
+        "read.p95_us": {
+          "median": 516.8,
+          "min": 465.0,
+          "max": 942.9,
+          "mean": 579.9833333333333,
+          "sample_cv_percent": 31.056156373726633
+        },
+        "read.p99_us": {
+          "median": 754.85,
+          "min": 652.3,
+          "max": 3303.3,
+          "mean": 1151.65,
+          "sample_cv_percent": 91.64898156234518
+        },
+        "read.p99_9_us": {
+          "median": 2559.7,
+          "min": 2049.0,
+          "max": 142846.9,
+          "mean": 25955.466666666667,
+          "sample_cv_percent": 220.63716832672512
+        },
+        "read.max_us": {
+          "median": 2894.8500000000004,
+          "min": 2467.9,
+          "max": 143583.3,
+          "mean": 27200.63333333333,
+          "sample_cv_percent": 209.80157222563292
+        },
+        "write.p50_us": {
+          "median": 774.4,
+          "min": 698.0,
+          "max": 894.4,
+          "mean": 782.8,
+          "sample_cv_percent": 8.578471476683212
+        },
+        "write.p95_us": {
+          "median": 1332.85,
+          "min": 1178.6,
+          "max": 2986.6,
+          "mean": 1590.7333333333333,
+          "sample_cv_percent": 43.27673126840701
+        },
+        "write.p99_us": {
+          "median": 1844.4499999999998,
+          "min": 1570.2,
+          "max": 6148.2,
+          "mean": 2506.6,
+          "sample_cv_percent": 71.31232847972485
+        },
+        "write.p99_9_us": {
+          "median": 3626.8,
+          "min": 2308.0,
+          "max": 134060.2,
+          "mean": 26237.81666666667,
+          "sample_cv_percent": 201.70021542443743
+        },
+        "write.max_us": {
+          "median": 4301.700000000001,
+          "min": 2483.1,
+          "max": 144656.6,
+          "mean": 28356.916666666668,
+          "sample_cv_percent": 201.25924705176425
+        }
+      },
+      "metadata": {
+        "driver_version": "3.3.7",
+        "fsync": "on",
+        "full_page_writes": "on",
+        "requested_server_cpus": [
+          1,
+          2,
+          3
+        ],
+        "synchronous_commit": "on",
+        "transport": "TCP loopback through container port forwarding",
+        "version": "PostgreSQL 18.6 (Debian 18.6-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+        "wal_sync_method": "fdatasync"
+      },
+      "quiet_failures": 0,
+      "throttled_runs": 1,
+      "memory_limit_runs": 0,
+      "direct_reclaim_runs": 0,
+      "max_steal_percent": 21.978,
+      "retry_counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

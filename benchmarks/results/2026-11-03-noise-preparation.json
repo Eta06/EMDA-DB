@@ -1,0 +1,43 @@
+{
+  "utc": "2026-11-03T21:00:15Z",
+  "reason": "Remove obsolete EMDA Cargo caches on tmpfs to reduce cgroup memory pressure. Dedicated latency baseline binaries, source, active target, dependencies and raw results retained.",
+  "before": {
+    "memory.current": "28603420672\n",
+    "memory.stat": "anon 58761216\nfile 26606903296\nkernel 1936633856\nkernel_stack 573440\npagetables 1589248\nsec_pagetables 0\npercpu 56896\nsock 0\nvmalloc 0\nshmem 10392674304\nfile_mapped 241664\nfile_dirty 69980160\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 2300575744\nshmem_thp 0\ninactive_anon 4853645312\nactive_anon 5597544448\ninactive_file 9282326528\nactive_file 6931914752\nunevictable 0\nslab_reclaimable 1903083760\nslab_unreclaimable 31273368\nslab 1934357128\nworkingset_refault_anon 0\nworkingset_refault_file 286464\nworkingset_activate_anon 0\nworkingset_activate_file 279834\nworkingset_restore_anon 0\nworkingset_restore_file 4\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgscan 4206654\npgsteal 4206591\npswpin 0\npswpout 0\npgscan_kswapd 1459467\npgscan_direct 2747187\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 1459429\npgsteal_direct 2747162\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 101463418\npgmajfault 433\npgrefill 4563\npgactivate 6392268\npgdeactivate 4563\npglazyfree 965\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nthp_fault_alloc 10\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\n",
+    "memory.events": "low 0\nhigh 0\nmax 78558\noom 0\noom_kill 0\noom_group_kill 0\n"
+  },
+  "removed_verified_build_caches": [
+    "/tmp/emda-checksum-target",
+    "/tmp/emda-durability-target",
+    "/tmp/emda-fair-target",
+    "/tmp/emda-final-target",
+    "/tmp/emda-hash-target",
+    "/tmp/emda-integrated-target",
+    "/tmp/emda-k1-test-target",
+    "/tmp/emda-pipeline-target",
+    "/tmp/emda-position-target",
+    "/tmp/emda-pure-after-target",
+    "/tmp/emda-pure-before-target",
+    "/tmp/emda-pure-targeted-target",
+    "/tmp/emda-r2-batch-target",
+    "/tmp/emda-r2-reserve-target",
+    "/tmp/emda-r2-sharded-target",
+    "/tmp/emda-r3-after-target",
+    "/tmp/emda-r3-baseline-target",
+    "/tmp/emda-r4-target",
+    "/tmp/emda-recovery-buffered-target",
+    "/tmp/emda-recovery-original-target",
+    "/tmp/emda-recovery-smoke-target",
+    "/tmp/emda-reuse-target",
+    "/tmp/emda-short-read-target",
+    "/tmp/emda-stage1-fuzz-target",
+    "/tmp/emda-vector-target",
+    "/tmp/emda-wake-base-target",
+    "/tmp/emda-wake-opt-target"
+  ],
+  "after": {
+    "memory.current": "20434333696\n",
+    "memory.stat": "anon 58937344\nfile 18487070720\nkernel 1887297536\nkernel_stack 573440\npagetables 1585152\nsec_pagetables 0\npercpu 56784\nsock 0\nvmalloc 0\nshmem 2272841728\nfile_mapped 241664\nfile_dirty 69980160\nfile_writeback 0\nswapcached 0\nanon_thp 0\nfile_thp 2300575744\nshmem_thp 0\ninactive_anon 408342528\nactive_anon 1923313664\ninactive_file 9282326528\nactive_file 6931914752\nunevictable 0\nslab_reclaimable 1876305960\nslab_unreclaimable 8724880\nslab 1885030840\nworkingset_refault_anon 0\nworkingset_refault_file 286464\nworkingset_activate_anon 0\nworkingset_activate_file 279834\nworkingset_restore_anon 0\nworkingset_restore_file 4\nworkingset_nodereclaim 0\npgdemote_kswapd 0\npgdemote_direct 0\npgdemote_khugepaged 0\npgdemote_proactive 0\npgscan 4206654\npgsteal 4206591\npswpin 0\npswpout 0\npgscan_kswapd 1459467\npgscan_direct 2747187\npgscan_khugepaged 0\npgscan_proactive 0\npgsteal_kswapd 1459429\npgsteal_direct 2747162\npgsteal_khugepaged 0\npgsteal_proactive 0\npgfault 101463473\npgmajfault 433\npgrefill 4563\npgactivate 6392301\npgdeactivate 4563\npglazyfree 965\npglazyfreed 0\nswpin_zero 0\nswpout_zero 0\nthp_fault_alloc 10\nthp_collapse_alloc 0\nthp_swpout 0\nthp_swpout_fallback 0\n",
+    "memory.events": "low 0\nhigh 0\nmax 78558\noom 0\noom_kill 0\noom_group_kill 0\n"
+  }
+}

@@ -78,9 +78,16 @@ These are different categories of systems; an engine, a database service, and a 
 | [Turso Database](https://docs.turso.tech/tursodb/concurrent-writes) | Rust, SQLite-compatible embedded engine. Its default allows one writer; MVCC concurrent writes require explicit configuration and conflict retries. Some features are experimental. | No SQL or comparable concurrent transaction mode. |
 | [SpacetimeDB](https://spacetimedb.com/docs/) | In-memory relational state, transactional reducers, durable commit log and subscriptions. Current server licensing is BSL and must be reviewed before use. | No relational model, reducers, subscriptions or replicated service. |
 | [FoundationDB](https://apple.github.io/foundationdb/) | Distributed ordered key-value database with ACID transactions; assess clustering, fault tolerance and operational cost. | No multi-key transactions or distribution. |
+| [RocksDB](https://rocksdb.org/docs/) | Embedded ordered key-value engine with an LSM tree, WAL, compaction, column families, snapshots, iterators and batching. | No compaction, ordered scans, column families or multi-key batches. |
+| [LMDB](https://www.symas.com/lmdb) | Embedded memory-mapped key-value engine with ACID transactions, concurrent readers, a single writer, named databases and cursors. | No multi-key transactions, snapshot API, named databases or cursors. |
+| [DuckDB](https://duckdb.org/docs/stable/) | Embedded analytical SQL engine with columnar execution, joins, aggregations and external-file queries. | No SQL or analytical execution; point writes do not measure DuckDB's main strengths. |
 | [Cloudflare D1](https://developers.cloudflare.com/d1/) | Managed SQLite-semantics databases with per-database resource limits and overload behavior. | Embedded local prototype; no hosted service or management plane. |
 | [Neon](https://neon.com/docs/introduction/architecture-overview) | Serverless PostgreSQL architecture separates compute and durable storage and supports idle compute suspension. | No remote storage layer or automatic project sleep/wake. |
 | [Appwrite](https://appwrite.io/docs/products/databases) | Backend platform with database APIs, permissions and other services; compare developer experience and project configuration separately from engine throughput. | No cloud platform or SDK. |
+
+## Measured comparison coverage
+
+The [local comparison](LOCAL_COMPARISON_2026_11_03.md) measures byte-key CRUD for the prototype and nine other engines, with a second SQLite binding/version configuration. These measurements do not imply SQL/document/transaction feature parity. The [coverage boundaries](COMPARISON_METHOD.md#coverage-beyond-local-point-operation-tests) explain why hosted platforms and SpacetimeDB are not represented by local engine numbers.
 
 ## Primary references
 

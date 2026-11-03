@@ -14,13 +14,15 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 | Persistence and recovery | Prototype, limited | On supported Linux filesystems, V3 synchronizes log data and a metadata witness in one full inode sync; V2 retains two syncs. Both detect loss below an intact boundary; incomplete tails fail closed. Legacy stores retain their earlier limitations. Power-loss safety is not established. |
 | Backup and restore | Prototype | Full-log backup verifies record checksums and a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
 | Concurrent access | Prototype, limited | Concurrent writes can share a sync; preparation and value reads do not hold the queue or index lock. Multi-key transactions and isolation levels are not implemented. |
-| Benchmarking | Early baseline | SQLite, PostgreSQL and Redis loopback comparisons, process-restart checks, and a local restore drill are recorded; broader workloads and resource measurements remain planned. |
+| Benchmarking | Expanded local baseline | Ten engines across six byte-key workloads: 264 repeated measurements, 36 CPU-affinity comparisons, and eleven process-restart configurations. VM interference is recorded; broader feature workloads remain planned. |
 | Versioning and CI | In progress | Changelog, format marker, release workflow, and automated tests exist; no release has been tagged and the release workflow has not run on a real tag. |
 | SQL, document model, and queries | Planned | Require transaction semantics, schema/query design, and indexes. |
 | Bounded memory and compaction | Planned | The in-memory key index is unbounded and the log grows indefinitely. |
 | Cloud, isolation, sleep/wake, and replication | Planned | There is no network server or managed service yet. |
 
-The latest [192-run latency comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus the previous engine: 282 µs, compared with SQLite's 304 µs in that direct-call mixed workload. Results vary: SQLite still had lower median write latency under concurrent writers, while the engine improved throughput and several tail-latency measurements. Raw runs, losses, filesystem assumptions, and verification results are published with the comparison.
+The latest [ten-engine comparison](docs/LOCAL_COMPARISON_2026_11_03.md) includes SQLite, PostgreSQL, Redis, MongoDB, Turso, RocksDB, LMDB, DuckDB and FoundationDB. In the four-client mixed workload, the prototype delivered **10,397 operations/s versus SQLite's 4,514**, while SQLite had faster median writes: **288 µs versus 628 µs**. SQLite also won write-only p99 latency. All 300 performance runs and eleven process-restart checks passed. The report includes run ranges, adapter differences and remaining VM interference; these are small local workloads, not a universal ranking.
+
+The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
 
 ## Featured directions
 
