@@ -34,6 +34,22 @@ python3 scripts/network_compare.py redis --directory . --clients 4 --operations 
 
 All paths check the values and CRC32 checksums; Redis stores four extra checksum bytes with each value. The Python client uses deterministic workloads, checks all values after measurement, and fails rather than omitting an operation error. PostgreSQL and SQLite provide SQL and transactions that the prototype lacks; Redis keeps its dataset in memory and has distinct AOF behavior. Synchronization settings are not proof of identical crash or power-loss guarantees. Results are closed-loop and subject to coordinated omission, Python scheduling, cache and storage effects, and the network/container differences above. Do not rank whole database systems from this narrow byte-key workload.
 
+The [raw new-format comparison](../benchmarks/results/2026-11-03-witness-network-comparison.json) records four runs each at one, four, and eight clients; read-only, write-only, and 4 KiB mixed workloads are included. The table shows the median run-level measurements for four clients, each issuing 1,000 operations across 250 cached keys with 64-byte values and roughly 50% writes. PostgreSQL 17.11 and Redis 7.4.12 ran in containers with data directories bind-mounted under the same `/workspace` overlay; the prototype and bundled SQLite 3.49.1 used loopback adapters on the host.
+
+| Engine | Operations/s | Read p50 | Write p50 | Write p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Prototype before witness | 8,651 | 0.080 ms | 0.753 ms | 1.473 ms |
+| Prototype with witness | 5,338 | 0.073 ms | 1.322 ms | 2.224 ms |
+| SQLite | 5,092 | 0.038 ms | 0.277 ms | 13.774 ms |
+| PostgreSQL | 4,674 | 0.416 ms | 1.126 ms | 2.402 ms |
+| Redis | 4,094 | 0.767 ms | 0.989 ms | 2.699 ms |
+
+The new commit witness adds a second synchronized file and substantially increased write latency in this test. SQLite's median write was lower, while its run-level write p99 varied between 3.55 and 19.00 ms. These short, closed-loop runs include different protocols, drivers, container forwarding, and database features. They do not establish a general speed or durability ranking; the raw file contains individual results, binary hashes, settings, environment, and limits.
+
+In a separate [process-crash check](../benchmarks/results/2026-11-03-durable-crash-checks.json), each engine acknowledged 100 writes, its benchmark server or container was killed, and the same storage was reopened. All 100 values were verified for each engine. This tests one abrupt process interruption after completed writes; it does not simulate power loss, storage reordering, or crashes at every commit boundary.
+
+A [local restore drill](../benchmarks/results/2026-11-03-restore-drill.json) wrote a backup to a separate temporary filesystem, took the source path offline, restored 99 values and a deletion, and confirmed a later write was absent. Reproduce it with `cargo run --locked --example restore_drill -- <database-parent> <backup-parent>`. Both locations in the recorded run were on the same machine; this is not an off-site or independent failure-domain recovery drill.
+
 ## Warm-cache recovery harness
 
 The recovery harness creates a new fixture using ordinary synchronized writes and measures reopening the same database repeatedly. `prepare` requires a new path and does not overwrite an existing store. The parent directory must already exist. A failed or interrupted preparation may leave its partial directory behind.

@@ -1,0 +1,10 @@
+{
+  "recorded_at_utc": "2026-11-03T19:46:48.575005+00:00",
+  "engine_revision": "e592b37d38750599bedae14553d76093b8b214ef",
+  "drill_source_sha256": "bc5a74b1e80ee10fb679440702dbfe76e46bba5667a0f321ca13ddeccea81f81",
+  "command": "cargo +stable run --offline --locked --example restore_drill -- /workspace /tmp",
+  "build": "debug",
+  "stdout": "verified_values=99 deleted_absent=true later_write_absent=true backup_bytes=28490 distinct_filesystems=true",
+  "method": "100 initial keys, one delete, one overwrite, snapshot to a separate temporary filesystem, later source write, rename source path offline, restore and verify snapshot. All files synthetic and removed afterward.",
+  "limitation": "The two temporary filesystems share the same machine; this is not an off-site or independent failure-domain disaster-recovery test."
+}

@@ -1,0 +1,39 @@
+{
+  "recorded_at_utc": "2026-11-03T19:41:35.599203+00:00",
+  "revision": "e592b37d38750599bedae14553d76093b8b214ef",
+  "method": "100 sequential acknowledged 64-byte writes, SIGKILL of the specific benchmark server or container, restart on the same directory, verify all 100. This tests process interruption only, not power loss or all crash boundaries.",
+  "checks": [
+    {
+      "backend": "prototype",
+      "acknowledged": 100,
+      "verified_after_restart": 100,
+      "kill": "SIGKILL",
+      "storage": "temporary directory on /workspace overlay"
+    },
+    {
+      "backend": "sqlite",
+      "acknowledged": 100,
+      "verified_after_restart": 100,
+      "kill": "SIGKILL",
+      "storage": "temporary directory on /workspace overlay"
+    },
+    {
+      "backend": "postgresql",
+      "version": "17.11",
+      "acknowledged": 100,
+      "verified_after_restart": 100,
+      "kill": "container SIGKILL",
+      "durability": "fsync=on synchronous_commit=on full_page_writes=on",
+      "storage": "bind mount beneath /workspace overlay"
+    },
+    {
+      "backend": "redis",
+      "version": "7.4.12",
+      "acknowledged": 100,
+      "verified_after_restart": 100,
+      "kill": "container SIGKILL",
+      "durability": "AOF appendfsync always",
+      "storage": "bind mount beneath /workspace overlay"
+    }
+  ]
+}

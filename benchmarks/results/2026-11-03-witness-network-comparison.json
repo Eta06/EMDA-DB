@@ -1,0 +1,6902 @@
+{
+  "recorded_at_utc": "2026-11-03T19:39:45.970213+00:00",
+  "revisions": {
+    "before": "98689e72697ae660511aad39c8761dd2edc0cc4d",
+    "witness": "e592b37d38750599bedae14553d76093b8b214ef"
+  },
+  "build": "Rust stable release --locked --offline, separate initially empty CARGO_TARGET_DIR per revision; benchmark adapter copied unchanged into old source",
+  "binary_sha256": {
+    "before": "18e7294731704453ef22b8675c0845e05366e65fa438f49850672e3c7b51c7ed",
+    "witness": "fb24621c9ff3a814999a82ee2be9ad20522df5897be336d35739ebcceb338989"
+  },
+  "benchmark_source_sha256": {
+    "client": "404cd600629d0d6b4020a413bbd1a2ce920dc3f2108c23966a517de045a49813",
+    "adapter": "c4cfd259748cf57beb00a26ac9b10e5513503ec02092ff4818c124bc634e8427",
+    "support": "0c285146243513bcd8fac4b39c71f71669d541368c318dfa9f2700065b0eadf1"
+  },
+  "machine": {
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "logical_cpus_reported": 5,
+    "architecture": "x86_64",
+    "kernel": "6.18.57",
+    "cgroup_cpu_max": "400000 100000",
+    "cgroup_memory_max": "34359738368",
+    "filesystem_type": "overlay",
+    "filesystem_backing": "Unknown; overlay physical storage is not independently verified.",
+    "measurement_directory": "/workspace",
+    "virtualization": "KVM reported by lscpu"
+  },
+  "software": {
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+    "postgres_image": "sha256:99445113a4a19e82dd3713c65bd9f6fb5bf972065ab043df8d1e1c93e957da9a",
+    "redis_image": "sha256:9823645c452a9a994f575ed238e1a4f67365acbf8e842db769060820fab06449",
+    "sqlite_version": "3.49.1"
+  },
+  "limitations": [
+    "Closed-loop, cached byte-key workloads; no offered-load control, coordinated omission correction, SQL query or transaction benchmark, multi-project isolation, large datasets, independent power-loss validation, or universal ranking.",
+    "All clients use TCP loopback. Prototype and SQLite run behind a purpose-built native adapter; PostgreSQL and Redis use their own protocols and Docker port forwarding. Python driver and network overhead differ, as do feature sets.",
+    "Prototype syncs log and commit witness before acknowledgement; SQLite WAL synchronous FULL, PostgreSQL fsync/synchronous_commit/full_page_writes on, Redis AOF appendfsync always. These are not identical complete durability guarantees.",
+    "Redis is memory-resident and stores four extra checksum bytes in each value; prototype/SQLite/PostgreSQL use distinct internal checksum/storage formats.",
+    "Runs are short on a shared virtualized CPU and filesystem; p99.9 has few samples. Report run ranges and do not infer stable differences from overlapping noisy results."
+  ],
+  "runs": [
+    {
+      "case": "mixed-1",
+      "version": "legacy",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.277,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 101.14,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4943.7,
+        "read": {
+          "count": 238,
+          "max_us": 164.3,
+          "p50_us": 35.2,
+          "p95_us": 70.8,
+          "p99_9_us": 164.3,
+          "p99_us": 100.2
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 921.7,
+          "p50_us": 314.9,
+          "p95_us": 476.6,
+          "p99_9_us": 921.7,
+          "p99_us": 602.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "witness",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.48,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 182.4,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2741.2,
+        "read": {
+          "count": 238,
+          "max_us": 2738.3,
+          "p50_us": 34.5,
+          "p95_us": 68.0,
+          "p99_9_us": 2738.3,
+          "p99_us": 266.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 3273.2,
+          "p50_us": 608.3,
+          "p95_us": 895.7,
+          "p99_9_us": 3273.2,
+          "p99_us": 1646.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.344,
+      "result": {
+        "backend": "sqlite",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 140.84,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3550.1,
+        "read": {
+          "count": 238,
+          "max_us": 304.7,
+          "p50_us": 49.0,
+          "p95_us": 83.0,
+          "p99_9_us": 304.7,
+          "p99_us": 226.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 814.8,
+          "p50_us": 468.3,
+          "p95_us": 594.1,
+          "p99_9_us": 814.8,
+          "p99_us": 793.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "postgres",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.509,
+      "result": {
+        "backend": "postgres",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 144.92,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3450.2,
+        "read": {
+          "count": 238,
+          "max_us": 1782.8,
+          "p50_us": 124.2,
+          "p95_us": 219.5,
+          "p99_9_us": 1782.8,
+          "p99_us": 271.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 946.1,
+          "p50_us": 399.6,
+          "p95_us": 635.0,
+          "p99_9_us": 946.1,
+          "p99_us": 878.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "redis",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.468,
+      "result": {
+        "backend": "redis",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 138.02,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3622.7,
+        "read": {
+          "count": 238,
+          "max_us": 330.3,
+          "p50_us": 68.8,
+          "p95_us": 123.8,
+          "p99_9_us": 330.3,
+          "p99_us": 239.2
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 1165.2,
+          "p50_us": 435.1,
+          "p95_us": 619.5,
+          "p99_9_us": 1165.2,
+          "p99_us": 894.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "legacy",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.232,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 85.2,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5868.4,
+        "read": {
+          "count": 238,
+          "max_us": 336.2,
+          "p50_us": 34.0,
+          "p95_us": 92.9,
+          "p99_9_us": 336.2,
+          "p99_us": 146.3
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 728.7,
+          "p50_us": 255.6,
+          "p95_us": 382.5,
+          "p99_9_us": 728.7,
+          "p99_us": 657.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "redis",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.489,
+      "result": {
+        "backend": "redis",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 174.26,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2869.2,
+        "read": {
+          "count": 238,
+          "max_us": 1490.5,
+          "p50_us": 115.3,
+          "p95_us": 199.3,
+          "p99_9_us": 1490.5,
+          "p99_us": 405.5
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 10895.1,
+          "p50_us": 474.6,
+          "p95_us": 687.1,
+          "p99_9_us": 10895.1,
+          "p99_us": 1565.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "postgres",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.55,
+      "result": {
+        "backend": "postgres",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 215.23,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2323.1,
+        "read": {
+          "count": 238,
+          "max_us": 732.7,
+          "p50_us": 208.8,
+          "p95_us": 333.2,
+          "p99_9_us": 732.7,
+          "p99_us": 545.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 3014.3,
+          "p50_us": 574.0,
+          "p95_us": 819.1,
+          "p99_9_us": 3014.3,
+          "p99_us": 1387.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.309,
+      "result": {
+        "backend": "sqlite",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 129.88,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3849.7,
+        "read": {
+          "count": 238,
+          "max_us": 372.3,
+          "p50_us": 39.2,
+          "p95_us": 74.3,
+          "p99_9_us": 372.3,
+          "p99_us": 170.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 962.1,
+          "p50_us": 458.9,
+          "p95_us": 563.3,
+          "p99_9_us": 962.1,
+          "p99_us": 717.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "witness",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.43,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 181.73,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2751.4,
+        "read": {
+          "count": 238,
+          "max_us": 149.0,
+          "p50_us": 34.7,
+          "p95_us": 63.3,
+          "p99_9_us": 149.0,
+          "p99_us": 121.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 2219.6,
+          "p50_us": 639.5,
+          "p95_us": 794.8,
+          "p99_9_us": 2219.6,
+          "p99_us": 977.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.294,
+      "result": {
+        "backend": "sqlite",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 115.12,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4343.3,
+        "read": {
+          "count": 238,
+          "max_us": 221.1,
+          "p50_us": 41.8,
+          "p95_us": 84.9,
+          "p99_9_us": 221.1,
+          "p99_us": 114.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 670.6,
+          "p50_us": 383.4,
+          "p95_us": 538.6,
+          "p99_9_us": 670.6,
+          "p99_us": 640.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "postgres",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.554,
+      "result": {
+        "backend": "postgres",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 204.11,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2449.7,
+        "read": {
+          "count": 238,
+          "max_us": 481.8,
+          "p50_us": 198.7,
+          "p95_us": 295.9,
+          "p99_9_us": 481.8,
+          "p99_us": 389.2
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 1238.3,
+          "p50_us": 552.7,
+          "p95_us": 837.8,
+          "p99_9_us": 1238.3,
+          "p99_us": 1148.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "redis",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.472,
+      "result": {
+        "backend": "redis",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 158.35,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3157.5,
+        "read": {
+          "count": 238,
+          "max_us": 302.5,
+          "p50_us": 91.3,
+          "p95_us": 146.9,
+          "p99_9_us": 302.5,
+          "p99_us": 248.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 4561.7,
+          "p50_us": 468.2,
+          "p95_us": 715.4,
+          "p99_9_us": 4561.7,
+          "p99_us": 1099.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "legacy",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.276,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 108.17,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4622.4,
+        "read": {
+          "count": 238,
+          "max_us": 189.8,
+          "p50_us": 38.0,
+          "p95_us": 75.2,
+          "p99_9_us": 189.8,
+          "p99_us": 108.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 1203.3,
+          "p50_us": 349.0,
+          "p95_us": 516.4,
+          "p99_9_us": 1203.3,
+          "p99_us": 928.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "witness",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.429,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 187.46,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2667.2,
+        "read": {
+          "count": 238,
+          "max_us": 329.3,
+          "p50_us": 44.7,
+          "p95_us": 85.2,
+          "p99_9_us": 329.3,
+          "p99_us": 123.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 1007.0,
+          "p50_us": 641.4,
+          "p95_us": 809.2,
+          "p99_9_us": 1007.0,
+          "p99_us": 993.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.308,
+      "result": {
+        "backend": "sqlite",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 138.26,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3616.4,
+        "read": {
+          "count": 238,
+          "max_us": 229.6,
+          "p50_us": 56.2,
+          "p95_us": 83.8,
+          "p99_9_us": 229.6,
+          "p99_us": 177.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 886.7,
+          "p50_us": 465.7,
+          "p95_us": 587.5,
+          "p99_9_us": 886.7,
+          "p99_us": 751.6
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "witness",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.353,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 144.0,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3472.2,
+        "read": {
+          "count": 238,
+          "max_us": 305.2,
+          "p50_us": 40.5,
+          "p95_us": 79.8,
+          "p99_9_us": 305.2,
+          "p99_us": 115.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 1241.3,
+          "p50_us": 485.8,
+          "p95_us": 687.5,
+          "p99_9_us": 1241.3,
+          "p99_us": 858.1
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "legacy",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.275,
+      "result": {
+        "backend": "prototype",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 105.23,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4751.3,
+        "read": {
+          "count": 238,
+          "max_us": 143.3,
+          "p50_us": 36.1,
+          "p95_us": 72.1,
+          "p99_9_us": 143.3,
+          "p99_us": 105.8
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 665.6,
+          "p50_us": 336.3,
+          "p95_us": 500.7,
+          "p99_9_us": 665.6,
+          "p99_us": 587.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "redis",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.469,
+      "result": {
+        "backend": "redis",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 167.26,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2989.3,
+        "read": {
+          "count": 238,
+          "max_us": 439.0,
+          "p50_us": 127.0,
+          "p95_us": 206.6,
+          "p99_9_us": 439.0,
+          "p99_us": 269.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 1065.4,
+          "p50_us": 473.7,
+          "p95_us": 750.5,
+          "p99_9_us": 1065.4,
+          "p99_us": 884.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-1",
+      "version": "postgres",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "1",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.542,
+      "result": {
+        "backend": "postgres",
+        "clients": 1,
+        "completed": 500,
+        "elapsed_ms": 161.98,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3086.7,
+        "read": {
+          "count": 238,
+          "max_us": 350.1,
+          "p50_us": 134.4,
+          "p95_us": 228.1,
+          "p99_9_us": 350.1,
+          "p99_us": 303.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 262,
+          "max_us": 4231.1,
+          "p50_us": 438.9,
+          "p95_us": 673.9,
+          "p99_9_us": 4231.1,
+          "p99_us": 929.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "legacy",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.642,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 460.58,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 8684.7,
+        "read": {
+          "count": 1989,
+          "max_us": 777.8,
+          "p50_us": 72.5,
+          "p95_us": 235.9,
+          "p99_9_us": 717.7,
+          "p99_us": 381.2
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 1670.6,
+          "p50_us": 766.1,
+          "p95_us": 1135.2,
+          "p99_9_us": 1635.7,
+          "p99_us": 1338.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "witness",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.979,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 758.75,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 5271.8,
+        "read": {
+          "count": 1989,
+          "max_us": 1167.8,
+          "p50_us": 73.4,
+          "p95_us": 242.2,
+          "p99_9_us": 667.9,
+          "p99_us": 393.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 8425.9,
+          "p50_us": 1343.2,
+          "p95_us": 1842.7,
+          "p99_9_us": 8274.7,
+          "p99_us": 2240.1
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.995,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 801.13,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4993.0,
+        "read": {
+          "count": 1989,
+          "max_us": 548.6,
+          "p50_us": 37.8,
+          "p95_us": 98.4,
+          "p99_9_us": 532.9,
+          "p99_us": 209.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 180083.6,
+          "p50_us": 310.2,
+          "p95_us": 747.2,
+          "p99_9_us": 130138.6,
+          "p99_us": 19002.9
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "postgres",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.316,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 903.2,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4428.7,
+        "read": {
+          "count": 1989,
+          "max_us": 3161.0,
+          "p50_us": 454.4,
+          "p95_us": 1025.9,
+          "p99_9_us": 3013.4,
+          "p99_us": 1379.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 4238.9,
+          "p50_us": 1177.3,
+          "p95_us": 1995.3,
+          "p99_9_us": 3875.4,
+          "p99_us": 2744.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "redis",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.28,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 967.4,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4134.8,
+        "read": {
+          "count": 1989,
+          "max_us": 6847.9,
+          "p50_us": 759.1,
+          "p95_us": 1540.9,
+          "p99_9_us": 6234.4,
+          "p99_us": 2539.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 6557.4,
+          "p50_us": 957.3,
+          "p95_us": 1667.8,
+          "p99_9_us": 5704.9,
+          "p99_us": 2507.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "legacy",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.641,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 464.23,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 8616.3,
+        "read": {
+          "count": 1989,
+          "max_us": 3396.4,
+          "p50_us": 83.1,
+          "p95_us": 278.9,
+          "p99_9_us": 2916.9,
+          "p99_us": 427.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 3775.7,
+          "p50_us": 734.3,
+          "p95_us": 1191.3,
+          "p99_9_us": 2320.6,
+          "p99_us": 1577.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "redis",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.272,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 949.5,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4212.8,
+        "read": {
+          "count": 1989,
+          "max_us": 5727.4,
+          "p50_us": 774.2,
+          "p95_us": 1520.6,
+          "p99_9_us": 3920.4,
+          "p99_us": 1953.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 3094.8,
+          "p50_us": 983.3,
+          "p95_us": 1620.2,
+          "p99_9_us": 2780.6,
+          "p99_us": 1962.9
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "postgres",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.209,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 818.55,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4886.7,
+        "read": {
+          "count": 1989,
+          "max_us": 2440.2,
+          "p50_us": 401.2,
+          "p95_us": 864.8,
+          "p99_9_us": 2205.7,
+          "p99_us": 1122.8
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 3174.9,
+          "p50_us": 1093.7,
+          "p95_us": 1810.6,
+          "p99_9_us": 2591.7,
+          "p99_us": 2274.0
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.025,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 851.27,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4698.9,
+        "read": {
+          "count": 1989,
+          "max_us": 663.2,
+          "p50_us": 39.2,
+          "p95_us": 96.7,
+          "p99_9_us": 564.9,
+          "p99_us": 291.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 530467.5,
+          "p50_us": 276.9,
+          "p95_us": 554.2,
+          "p99_9_us": 104538.1,
+          "p99_us": 8791.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "witness",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.975,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 740.19,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 5404.0,
+        "read": {
+          "count": 1989,
+          "max_us": 3498.8,
+          "p50_us": 71.0,
+          "p95_us": 258.6,
+          "p99_9_us": 1310.8,
+          "p99_us": 457.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 3969.6,
+          "p50_us": 1299.9,
+          "p95_us": 1819.0,
+          "p99_9_us": 3495.0,
+          "p99_us": 2207.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.957,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 770.51,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 5191.4,
+        "read": {
+          "count": 1989,
+          "max_us": 2158.6,
+          "p50_us": 35.2,
+          "p95_us": 68.5,
+          "p99_9_us": 2128.5,
+          "p99_us": 155.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 530608.4,
+          "p50_us": 264.6,
+          "p95_us": 508.8,
+          "p99_9_us": 179633.2,
+          "p99_us": 3551.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "postgres",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.273,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 886.15,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4513.9,
+        "read": {
+          "count": 1989,
+          "max_us": 2358.6,
+          "p50_us": 431.7,
+          "p95_us": 952.7,
+          "p99_9_us": 2338.8,
+          "p99_us": 1365.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 5927.4,
+          "p50_us": 1158.3,
+          "p95_us": 1922.7,
+          "p99_9_us": 5567.2,
+          "p99_us": 2429.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "redis",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.364,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 986.89,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4053.1,
+        "read": {
+          "count": 1989,
+          "max_us": 5531.4,
+          "p50_us": 754.4,
+          "p95_us": 1670.1,
+          "p99_9_us": 4255.5,
+          "p99_us": 2540.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 5205.3,
+          "p50_us": 993.7,
+          "p95_us": 1844.7,
+          "p99_9_us": 4656.8,
+          "p99_us": 2890.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "legacy",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.649,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 458.83,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 8717.8,
+        "read": {
+          "count": 1989,
+          "max_us": 804.2,
+          "p50_us": 78.9,
+          "p95_us": 250.4,
+          "p99_9_us": 699.1,
+          "p99_us": 386.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 1792.3,
+          "p50_us": 740.1,
+          "p95_us": 1128.4,
+          "p99_9_us": 1707.6,
+          "p99_us": 1424.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "witness",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.971,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 726.0,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 5509.7,
+        "read": {
+          "count": 1989,
+          "max_us": 685.4,
+          "p50_us": 72.2,
+          "p95_us": 238.7,
+          "p99_9_us": 542.8,
+          "p99_us": 392.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 4205.5,
+          "p50_us": 1289.0,
+          "p95_us": 1772.7,
+          "p99_9_us": 4040.8,
+          "p99_us": 2139.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.917,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 726.16,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 5508.4,
+        "read": {
+          "count": 1989,
+          "max_us": 521.9,
+          "p50_us": 38.3,
+          "p95_us": 85.1,
+          "p99_9_us": 414.0,
+          "p99_us": 169.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 429725.2,
+          "p50_us": 277.7,
+          "p95_us": 586.5,
+          "p99_9_us": 129477.7,
+          "p99_us": 18756.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "witness",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.035,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 779.49,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 5131.6,
+        "read": {
+          "count": 1989,
+          "max_us": 710.7,
+          "p50_us": 89.9,
+          "p95_us": 282.2,
+          "p99_9_us": 654.4,
+          "p99_us": 423.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 7954.4,
+          "p50_us": 1362.7,
+          "p95_us": 1888.6,
+          "p99_9_us": 7587.6,
+          "p99_us": 2439.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "legacy",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.671,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 484.5,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 8255.9,
+        "read": {
+          "count": 1989,
+          "max_us": 2006.5,
+          "p50_us": 81.9,
+          "p95_us": 245.3,
+          "p99_9_us": 780.0,
+          "p99_us": 399.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 3830.7,
+          "p50_us": 784.8,
+          "p95_us": 1176.9,
+          "p99_9_us": 2920.3,
+          "p99_us": 1522.0
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "redis",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.455,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 1138.69,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 3512.8,
+        "read": {
+          "count": 1989,
+          "max_us": 12219.4,
+          "p50_us": 847.3,
+          "p95_us": 1625.9,
+          "p99_9_us": 12165.9,
+          "p99_us": 3342.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 13269.0,
+          "p50_us": 1083.9,
+          "p95_us": 1735.2,
+          "p99_9_us": 12548.5,
+          "p99_us": 11611.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4",
+      "version": "postgres",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.216,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 827.59,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4833.3,
+        "read": {
+          "count": 1989,
+          "max_us": 3660.0,
+          "p50_us": 387.4,
+          "p95_us": 876.2,
+          "p99_9_us": 2822.2,
+          "p99_us": 1225.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2011,
+          "max_us": 14395.6,
+          "p50_us": 1083.0,
+          "p95_us": 1850.4,
+          "p99_9_us": 5504.3,
+          "p99_us": 2373.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "legacy",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.769,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 600.12,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 13330.7,
+        "read": {
+          "count": 3978,
+          "max_us": 1526.8,
+          "p50_us": 110.1,
+          "p95_us": 456.2,
+          "p99_9_us": 1085.4,
+          "p99_us": 719.8
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 2675.4,
+          "p50_us": 962.4,
+          "p95_us": 1489.5,
+          "p99_9_us": 2441.5,
+          "p99_us": 1826.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "witness",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.088,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 849.77,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 9414.3,
+        "read": {
+          "count": 3978,
+          "max_us": 1431.6,
+          "p50_us": 111.6,
+          "p95_us": 412.9,
+          "p99_9_us": 1104.1,
+          "p99_us": 662.8
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 3392.8,
+          "p50_us": 1464.4,
+          "p95_us": 2075.8,
+          "p99_9_us": 3123.3,
+          "p99_us": 2434.4
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.714,
+      "result": {
+        "backend": "sqlite",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1523.76,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 5250.2,
+        "read": {
+          "count": 3978,
+          "max_us": 572.8,
+          "p50_us": 37.2,
+          "p95_us": 79.2,
+          "p99_9_us": 401.5,
+          "p99_us": 146.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 1031115.0,
+          "p50_us": 262.2,
+          "p95_us": 619.8,
+          "p99_9_us": 429934.5,
+          "p99_us": 18906.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "postgres",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 2.032,
+      "result": {
+        "backend": "postgres",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1652.38,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4841.5,
+        "read": {
+          "count": 3978,
+          "max_us": 6936.6,
+          "p50_us": 986.2,
+          "p95_us": 2769.7,
+          "p99_9_us": 5726.6,
+          "p99_us": 4030.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 8304.8,
+          "p50_us": 1872.5,
+          "p95_us": 3682.0,
+          "p99_9_us": 7181.8,
+          "p99_us": 5020.1
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "redis",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.95,
+      "result": {
+        "backend": "redis",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1641.52,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4873.5,
+        "read": {
+          "count": 3978,
+          "max_us": 7214.8,
+          "p50_us": 1461.9,
+          "p95_us": 2769.6,
+          "p99_9_us": 4986.4,
+          "p99_us": 3613.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 7345.4,
+          "p50_us": 1572.9,
+          "p95_us": 2845.5,
+          "p99_9_us": 5212.4,
+          "p99_us": 3563.0
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "legacy",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.781,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 614.18,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 13025.5,
+        "read": {
+          "count": 3978,
+          "max_us": 1644.1,
+          "p50_us": 128.5,
+          "p95_us": 515.5,
+          "p99_9_us": 1477.5,
+          "p99_us": 889.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 2458.4,
+          "p50_us": 973.9,
+          "p95_us": 1485.8,
+          "p99_9_us": 2176.4,
+          "p99_us": 1821.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "redis",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.96,
+      "result": {
+        "backend": "redis",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1644.35,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4865.1,
+        "read": {
+          "count": 3978,
+          "max_us": 6226.6,
+          "p50_us": 1458.7,
+          "p95_us": 2793.3,
+          "p99_9_us": 5340.2,
+          "p99_us": 3623.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 6873.3,
+          "p50_us": 1558.6,
+          "p95_us": 2778.9,
+          "p99_9_us": 5600.4,
+          "p99_us": 3718.0
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "postgres",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 2.092,
+      "result": {
+        "backend": "postgres",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1698.14,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4711.0,
+        "read": {
+          "count": 3978,
+          "max_us": 7340.3,
+          "p50_us": 1013.9,
+          "p95_us": 2794.6,
+          "p99_9_us": 5784.3,
+          "p99_us": 3994.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 7573.0,
+          "p50_us": 1913.3,
+          "p95_us": 3717.7,
+          "p99_9_us": 7143.2,
+          "p99_us": 4905.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 2.014,
+      "result": {
+        "backend": "sqlite",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1836.58,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4355.9,
+        "read": {
+          "count": 3978,
+          "max_us": 902.0,
+          "p50_us": 37.2,
+          "p95_us": 77.8,
+          "p99_9_us": 685.2,
+          "p99_us": 149.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 1531904.9,
+          "p50_us": 261.8,
+          "p95_us": 512.7,
+          "p99_9_us": 830495.5,
+          "p99_us": 11303.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "witness",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.047,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 830.97,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 9627.3,
+        "read": {
+          "count": 3978,
+          "max_us": 6431.9,
+          "p50_us": 102.5,
+          "p95_us": 418.7,
+          "p99_9_us": 3512.3,
+          "p99_us": 655.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 6382.4,
+          "p50_us": 1426.7,
+          "p95_us": 2005.0,
+          "p99_9_us": 3751.8,
+          "p99_us": 2442.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.436,
+      "result": {
+        "backend": "sqlite",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1273.76,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 6280.6,
+        "read": {
+          "count": 3978,
+          "max_us": 627.7,
+          "p50_us": 35.5,
+          "p95_us": 74.6,
+          "p99_9_us": 377.1,
+          "p99_us": 123.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 631137.5,
+          "p50_us": 240.2,
+          "p95_us": 583.1,
+          "p99_9_us": 330490.2,
+          "p99_us": 33709.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "postgres",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 2.073,
+      "result": {
+        "backend": "postgres",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1715.42,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4663.6,
+        "read": {
+          "count": 3978,
+          "max_us": 6852.3,
+          "p50_us": 1040.1,
+          "p95_us": 2862.3,
+          "p99_9_us": 5644.9,
+          "p99_us": 4065.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 7793.6,
+          "p50_us": 1906.2,
+          "p95_us": 3762.6,
+          "p99_9_us": 6351.1,
+          "p99_us": 4857.1
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "redis",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.923,
+      "result": {
+        "backend": "redis",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1637.7,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4884.9,
+        "read": {
+          "count": 3978,
+          "max_us": 8905.1,
+          "p50_us": 1456.6,
+          "p95_us": 2717.1,
+          "p99_9_us": 6021.9,
+          "p99_us": 3528.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 11352.7,
+          "p50_us": 1561.8,
+          "p95_us": 2768.8,
+          "p99_9_us": 5996.8,
+          "p99_us": 3558.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "legacy",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.782,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 613.28,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 13044.6,
+        "read": {
+          "count": 3978,
+          "max_us": 1773.2,
+          "p50_us": 130.5,
+          "p95_us": 542.7,
+          "p99_9_us": 1498.4,
+          "p99_us": 875.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 2578.2,
+          "p50_us": 961.3,
+          "p95_us": 1519.5,
+          "p99_9_us": 2310.1,
+          "p99_us": 1835.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "witness",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.016,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 780.99,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 10243.4,
+        "read": {
+          "count": 3978,
+          "max_us": 1093.7,
+          "p50_us": 95.1,
+          "p95_us": 340.8,
+          "p99_9_us": 814.7,
+          "p99_us": 540.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 4700.1,
+          "p50_us": 1359.1,
+          "p95_us": 1942.0,
+          "p99_9_us": 4154.3,
+          "p99_us": 2327.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.457,
+      "result": {
+        "backend": "sqlite",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1296.72,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 6169.4,
+        "read": {
+          "count": 3978,
+          "max_us": 4845.0,
+          "p50_us": 35.9,
+          "p95_us": 75.3,
+          "p99_9_us": 561.2,
+          "p99_us": 172.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 730048.1,
+          "p50_us": 246.6,
+          "p95_us": 572.7,
+          "p99_9_us": 329897.8,
+          "p99_us": 18796.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "witness",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.144,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 896.09,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 8927.7,
+        "read": {
+          "count": 3978,
+          "max_us": 2886.0,
+          "p50_us": 110.8,
+          "p95_us": 426.3,
+          "p99_9_us": 1486.8,
+          "p99_us": 695.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 6358.7,
+          "p50_us": 1522.9,
+          "p95_us": 2182.7,
+          "p99_9_us": 5648.9,
+          "p99_us": 2746.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "legacy",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.776,
+      "result": {
+        "backend": "prototype",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 611.72,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 13077.8,
+        "read": {
+          "count": 3978,
+          "max_us": 1643.3,
+          "p50_us": 136.7,
+          "p95_us": 533.4,
+          "p99_9_us": 1302.6,
+          "p99_us": 850.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 4194.8,
+          "p50_us": 961.0,
+          "p95_us": 1483.7,
+          "p99_9_us": 3652.8,
+          "p99_us": 1848.9
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "redis",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.977,
+      "result": {
+        "backend": "redis",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1647.44,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4856.0,
+        "read": {
+          "count": 3978,
+          "max_us": 8213.1,
+          "p50_us": 1490.1,
+          "p95_us": 2759.5,
+          "p99_9_us": 6154.7,
+          "p99_us": 3435.2
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 5885.5,
+          "p50_us": 1551.3,
+          "p95_us": 2853.3,
+          "p99_9_us": 4762.5,
+          "p99_us": 3740.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-8",
+      "version": "postgres",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "8",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 2.192,
+      "result": {
+        "backend": "postgres",
+        "clients": 8,
+        "completed": 8000,
+        "elapsed_ms": 1763.0,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 4537.7,
+        "read": {
+          "count": 3978,
+          "max_us": 7021.1,
+          "p50_us": 1050.0,
+          "p95_us": 2967.5,
+          "p99_9_us": 5746.6,
+          "p99_us": 4158.1
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 4022,
+          "max_us": 7762.7,
+          "p50_us": 1974.2,
+          "p95_us": 3887.6,
+          "p99_9_us": 6773.0,
+          "p99_us": 5124.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "legacy",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.501,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 366.23,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5461.0,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 1707.7,
+          "p50_us": 692.3,
+          "p95_us": 1023.2,
+          "p99_9_us": 1553.3,
+          "p99_us": 1255.1
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "witness",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.833,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 622.29,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3214.0,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 4228.2,
+          "p50_us": 1191.6,
+          "p95_us": 1576.0,
+          "p99_9_us": 4056.3,
+          "p99_us": 1933.0
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.798,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 635.94,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3145.0,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 230192.5,
+          "p50_us": 273.6,
+          "p95_us": 521.8,
+          "p99_9_us": 129323.6,
+          "p99_us": 3864.5
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "postgres",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.936,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 542.67,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3685.4,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 3980.5,
+          "p50_us": 1014.3,
+          "p95_us": 1665.2,
+          "p99_9_us": 3728.1,
+          "p99_us": 2238.8
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "redis",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.873,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 560.08,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3570.9,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 4231.1,
+          "p50_us": 1061.0,
+          "p95_us": 1640.1,
+          "p99_9_us": 3676.9,
+          "p99_us": 1987.4
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "legacy",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.557,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 402.6,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4967.7,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 1562.4,
+          "p50_us": 770.1,
+          "p95_us": 1089.8,
+          "p99_9_us": 1540.6,
+          "p99_us": 1316.5
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "redis",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.832,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 539.04,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3710.3,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 3727.9,
+          "p50_us": 1026.7,
+          "p95_us": 1564.9,
+          "p99_9_us": 3075.6,
+          "p99_us": 1956.8
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "postgres",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.966,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 570.61,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3505.0,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 4573.0,
+          "p50_us": 1064.5,
+          "p95_us": 1703.2,
+          "p99_9_us": 4170.8,
+          "p99_us": 2147.3
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.926,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 744.43,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2686.6,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 630319.2,
+          "p50_us": 281.5,
+          "p95_us": 543.2,
+          "p99_9_us": 130440.9,
+          "p99_us": 2539.0
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "witness",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.89,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 650.94,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3072.5,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 5621.8,
+          "p50_us": 1263.7,
+          "p95_us": 1701.4,
+          "p99_9_us": 4793.4,
+          "p99_us": 2076.9
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.819,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 644.1,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3105.1,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 429576.4,
+          "p50_us": 269.1,
+          "p95_us": 507.1,
+          "p99_9_us": 329890.8,
+          "p99_us": 1696.6
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "postgres",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.948,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 570.06,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3508.4,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 3371.1,
+          "p50_us": 1072.0,
+          "p95_us": 1641.6,
+          "p99_9_us": 2560.1,
+          "p99_us": 1937.1
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "redis",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.841,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 547.99,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3649.7,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 9121.3,
+          "p50_us": 1023.7,
+          "p95_us": 1502.0,
+          "p99_9_us": 6792.3,
+          "p99_us": 1857.2
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "legacy",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.532,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 369.28,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5415.9,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 3663.6,
+          "p50_us": 708.4,
+          "p95_us": 1029.9,
+          "p99_9_us": 3444.1,
+          "p99_us": 1356.6
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "witness",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.919,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 674.47,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2965.3,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 4385.0,
+          "p50_us": 1267.8,
+          "p95_us": 1915.6,
+          "p99_9_us": 3967.4,
+          "p99_us": 3062.9
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.842,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 665.21,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3006.6,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 530457.1,
+          "p50_us": 281.3,
+          "p95_us": 498.2,
+          "p99_9_us": 180155.2,
+          "p99_us": 1644.2
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "witness",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.954,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 724.27,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2761.4,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 7869.0,
+          "p50_us": 1360.7,
+          "p95_us": 1891.0,
+          "p99_9_us": 7041.4,
+          "p99_us": 3396.2
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "legacy",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.547,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 385.75,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5184.7,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 4787.6,
+          "p50_us": 732.6,
+          "p95_us": 1048.1,
+          "p99_9_us": 1671.4,
+          "p99_us": 1262.7
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "redis",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.769,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 476.02,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4201.5,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 4840.1,
+          "p50_us": 873.5,
+          "p95_us": 1406.3,
+          "p99_9_us": 2951.7,
+          "p99_us": 1762.6
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "writes-4",
+      "version": "postgres",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "100",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.943,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 569.7,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3510.6,
+        "read": {
+          "count": 0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 2000,
+          "max_us": 6546.1,
+          "p50_us": 1051.4,
+          "p95_us": 1699.3,
+          "p99_9_us": 6390.0,
+          "p99_us": 2090.5
+        },
+        "write_percent": 100
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "legacy",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.383,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 226.53,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 17658.0,
+        "read": {
+          "count": 4000,
+          "max_us": 953.8,
+          "p50_us": 185.5,
+          "p95_us": 451.5,
+          "p99_9_us": 779.3,
+          "p99_us": 630.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "witness",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.494,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 254.99,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 15686.6,
+        "read": {
+          "count": 4000,
+          "max_us": 1517.5,
+          "p50_us": 216.5,
+          "p95_us": 500.9,
+          "p99_9_us": 1032.0,
+          "p99_us": 700.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.425,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 240.91,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16604.0,
+        "read": {
+          "count": 4000,
+          "max_us": 1049.5,
+          "p50_us": 205.6,
+          "p95_us": 467.5,
+          "p99_9_us": 917.1,
+          "p99_us": 627.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "postgres",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.901,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 508.77,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 7862.1,
+        "read": {
+          "count": 4000,
+          "max_us": 3102.0,
+          "p50_us": 418.0,
+          "p95_us": 1039.5,
+          "p99_9_us": 2372.8,
+          "p99_us": 1481.3
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "redis",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.864,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 561.73,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 7120.9,
+        "read": {
+          "count": 4000,
+          "max_us": 3659.2,
+          "p50_us": 476.2,
+          "p95_us": 1013.0,
+          "p99_9_us": 2942.0,
+          "p99_us": 1353.3
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "legacy",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.388,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 245.2,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16313.1,
+        "read": {
+          "count": 4000,
+          "max_us": 1753.1,
+          "p50_us": 200.6,
+          "p95_us": 483.3,
+          "p99_9_us": 1008.1,
+          "p99_us": 637.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "redis",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.841,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 551.2,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 7256.9,
+        "read": {
+          "count": 4000,
+          "max_us": 3535.6,
+          "p50_us": 487.3,
+          "p95_us": 1034.5,
+          "p99_9_us": 2193.9,
+          "p99_us": 1383.2
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "postgres",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.916,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 513.82,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 7784.8,
+        "read": {
+          "count": 4000,
+          "max_us": 2951.4,
+          "p50_us": 391.6,
+          "p95_us": 1031.0,
+          "p99_9_us": 2363.3,
+          "p99_us": 1481.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.452,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 266.83,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 14990.6,
+        "read": {
+          "count": 4000,
+          "max_us": 944.9,
+          "p50_us": 228.0,
+          "p95_us": 521.6,
+          "p99_9_us": 818.8,
+          "p99_us": 668.8
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "witness",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.492,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 247.25,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16177.9,
+        "read": {
+          "count": 4000,
+          "max_us": 970.9,
+          "p50_us": 207.7,
+          "p95_us": 454.8,
+          "p99_9_us": 819.5,
+          "p99_us": 632.4
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.415,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 246.13,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16251.3,
+        "read": {
+          "count": 4000,
+          "max_us": 950.9,
+          "p50_us": 211.6,
+          "p95_us": 462.8,
+          "p99_9_us": 793.8,
+          "p99_us": 611.5
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "postgres",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.938,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 573.12,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 6979.4,
+        "read": {
+          "count": 4000,
+          "max_us": 2660.8,
+          "p50_us": 478.9,
+          "p95_us": 1119.4,
+          "p99_9_us": 2241.7,
+          "p99_us": 1544.0
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "redis",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.782,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 495.17,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 8078.1,
+        "read": {
+          "count": 4000,
+          "max_us": 4103.6,
+          "p50_us": 417.5,
+          "p95_us": 941.0,
+          "p99_9_us": 3244.8,
+          "p99_us": 1309.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "legacy",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.384,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 223.01,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 17936.3,
+        "read": {
+          "count": 4000,
+          "max_us": 1004.7,
+          "p50_us": 187.4,
+          "p95_us": 434.4,
+          "p99_9_us": 823.1,
+          "p99_us": 601.6
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "witness",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.472,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 242.27,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16510.7,
+        "read": {
+          "count": 4000,
+          "max_us": 1196.8,
+          "p50_us": 206.2,
+          "p95_us": 477.6,
+          "p99_9_us": 945.3,
+          "p99_us": 632.5
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.402,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 236.79,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16892.9,
+        "read": {
+          "count": 4000,
+          "max_us": 830.4,
+          "p50_us": 195.1,
+          "p95_us": 461.5,
+          "p99_9_us": 775.4,
+          "p99_us": 608.2
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "witness",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.443,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 248.44,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16100.2,
+        "read": {
+          "count": 4000,
+          "max_us": 1019.8,
+          "p50_us": 209.5,
+          "p95_us": 479.6,
+          "p99_9_us": 939.2,
+          "p99_us": 675.9
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "legacy",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.399,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 241.23,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 16582.0,
+        "read": {
+          "count": 4000,
+          "max_us": 1137.2,
+          "p50_us": 199.5,
+          "p95_us": 481.1,
+          "p99_9_us": 880.7,
+          "p99_us": 659.8
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "redis",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.853,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 535.77,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 7465.9,
+        "read": {
+          "count": 4000,
+          "max_us": 4202.3,
+          "p50_us": 457.8,
+          "p95_us": 954.4,
+          "p99_9_us": 1728.8,
+          "p99_us": 1274.7
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "reads-4",
+      "version": "postgres",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "1000",
+        "--keys",
+        "250",
+        "--write-percent",
+        "0",
+        "--value-bytes",
+        "64"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.906,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 4000,
+        "elapsed_ms": 537.78,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 1000,
+        "ops_per_sec": 7438.0,
+        "read": {
+          "count": 4000,
+          "max_us": 4130.5,
+          "p50_us": 417.1,
+          "p95_us": 1117.9,
+          "p99_9_us": 2633.0,
+          "p99_us": 1561.3
+        },
+        "value_bytes": 64,
+        "write": {
+          "count": 0
+        },
+        "write_percent": 0
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "legacy",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.561,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 386.39,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5176.2,
+        "read": {
+          "count": 988,
+          "max_us": 2221.3,
+          "p50_us": 203.0,
+          "p95_us": 841.5,
+          "p99_9_us": 2221.3,
+          "p99_us": 1199.9
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 2557.9,
+          "p50_us": 983.2,
+          "p95_us": 1633.0,
+          "p99_9_us": 2494.2,
+          "p99_us": 2166.7
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "witness",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.765,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 485.5,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4119.4,
+        "read": {
+          "count": 988,
+          "max_us": 1616.6,
+          "p50_us": 122.8,
+          "p95_us": 754.4,
+          "p99_9_us": 1616.6,
+          "p99_us": 1175.7
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 4528.8,
+          "p50_us": 1406.1,
+          "p95_us": 2156.8,
+          "p99_9_us": 3307.1,
+          "p99_us": 2509.0
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "sqlite",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.77,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 537.34,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3722.1,
+        "read": {
+          "count": 988,
+          "max_us": 1418.4,
+          "p50_us": 55.8,
+          "p95_us": 253.6,
+          "p99_9_us": 1418.4,
+          "p99_us": 433.7
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 331168.9,
+          "p50_us": 324.5,
+          "p95_us": 1793.8,
+          "p99_9_us": 104543.7,
+          "p99_us": 19288.3
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "postgres",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.069,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 632.0,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3164.5,
+        "read": {
+          "count": 988,
+          "max_us": 2855.2,
+          "p50_us": 747.2,
+          "p95_us": 1676.3,
+          "p99_9_us": 2855.2,
+          "p99_us": 2219.6
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 4241.6,
+          "p50_us": 1308.3,
+          "p95_us": 2368.3,
+          "p99_9_us": 4032.2,
+          "p99_us": 2990.1
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "redis",
+      "repetition": 1,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.141,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 752.08,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2659.3,
+        "read": {
+          "count": 988,
+          "max_us": 5139.0,
+          "p50_us": 1113.4,
+          "p95_us": 2332.8,
+          "p99_9_us": 5139.0,
+          "p99_us": 3114.3
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 11939.9,
+          "p50_us": 1381.2,
+          "p95_us": 2631.2,
+          "p99_9_us": 11283.7,
+          "p99_us": 3307.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "legacy",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.583,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 356.94,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5603.2,
+        "read": {
+          "count": 988,
+          "max_us": 2173.7,
+          "p50_us": 188.3,
+          "p95_us": 697.0,
+          "p99_9_us": 2173.7,
+          "p99_us": 1095.5
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 4449.2,
+          "p50_us": 890.7,
+          "p95_us": 1557.7,
+          "p99_9_us": 4418.0,
+          "p99_us": 2127.8
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "redis",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.108,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 723.18,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2765.6,
+        "read": {
+          "count": 988,
+          "max_us": 5612.8,
+          "p50_us": 1074.8,
+          "p95_us": 2198.2,
+          "p99_9_us": 5612.8,
+          "p99_us": 3139.2
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 5321.7,
+          "p50_us": 1370.8,
+          "p95_us": 2495.6,
+          "p99_9_us": 4318.6,
+          "p99_us": 3198.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "postgres",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.08,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 616.6,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3243.6,
+        "read": {
+          "count": 988,
+          "max_us": 4077.1,
+          "p50_us": 740.5,
+          "p95_us": 1578.9,
+          "p99_9_us": 4077.1,
+          "p99_us": 2259.5
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 4827.5,
+          "p50_us": 1285.9,
+          "p95_us": 2279.2,
+          "p99_9_us": 4489.8,
+          "p99_us": 3055.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "sqlite",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.784,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 560.81,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3566.3,
+        "read": {
+          "count": 988,
+          "max_us": 1152.4,
+          "p50_us": 59.6,
+          "p95_us": 201.5,
+          "p99_9_us": 1152.4,
+          "p99_us": 404.1
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 104590.9,
+          "p50_us": 331.0,
+          "p95_us": 3653.8,
+          "p99_9_us": 79572.6,
+          "p99_us": 34573.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "witness",
+      "repetition": 2,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.82,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 526.28,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3800.2,
+        "read": {
+          "count": 988,
+          "max_us": 2770.2,
+          "p50_us": 116.9,
+          "p95_us": 607.7,
+          "p99_9_us": 2770.2,
+          "p99_us": 1135.7
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 4479.6,
+          "p50_us": 1499.7,
+          "p95_us": 2338.9,
+          "p99_9_us": 4410.2,
+          "p99_us": 3248.1
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "sqlite",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.735,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 517.91,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3861.7,
+        "read": {
+          "count": 988,
+          "max_us": 1253.6,
+          "p50_us": 50.4,
+          "p95_us": 213.1,
+          "p99_9_us": 1253.6,
+          "p99_us": 382.7
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 229960.0,
+          "p50_us": 318.3,
+          "p95_us": 3638.6,
+          "p99_9_us": 79431.7,
+          "p99_us": 19555.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "postgres",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.032,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 633.63,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3156.4,
+        "read": {
+          "count": 988,
+          "max_us": 3865.9,
+          "p50_us": 678.3,
+          "p95_us": 1544.5,
+          "p99_9_us": 3865.9,
+          "p99_us": 2031.8
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 4560.9,
+          "p50_us": 1404.2,
+          "p95_us": 2538.9,
+          "p99_9_us": 3910.7,
+          "p99_us": 3348.6
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "redis",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.052,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 656.02,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3048.7,
+        "read": {
+          "count": 988,
+          "max_us": 4241.9,
+          "p50_us": 996.3,
+          "p95_us": 2002.2,
+          "p99_9_us": 4241.9,
+          "p99_us": 2828.3
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 3476.9,
+          "p50_us": 1232.6,
+          "p95_us": 2111.8,
+          "p99_9_us": 3470.5,
+          "p99_us": 2509.4
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "legacy",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.579,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 368.08,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5433.7,
+        "read": {
+          "count": 988,
+          "max_us": 2241.1,
+          "p50_us": 195.2,
+          "p95_us": 851.7,
+          "p99_9_us": 2241.1,
+          "p99_us": 1294.9
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 2176.2,
+          "p50_us": 871.1,
+          "p95_us": 1522.2,
+          "p99_9_us": 1972.7,
+          "p99_us": 1817.6
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "witness",
+      "repetition": 3,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.785,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 530.22,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3772.0,
+        "read": {
+          "count": 988,
+          "max_us": 2835.0,
+          "p50_us": 130.2,
+          "p95_us": 750.8,
+          "p99_9_us": 2835.0,
+          "p99_us": 1229.7
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 5398.8,
+          "p50_us": 1478.2,
+          "p95_us": 2717.8,
+          "p99_9_us": 5033.7,
+          "p99_us": 4366.6
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "sqlite",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "sqlite",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.862,
+      "result": {
+        "backend": "sqlite",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 606.97,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3295.0,
+        "read": {
+          "count": 988,
+          "max_us": 1937.6,
+          "p50_us": 66.2,
+          "p95_us": 303.1,
+          "p99_9_us": 1937.6,
+          "p99_us": 599.7
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 129601.6,
+          "p50_us": 356.7,
+          "p95_us": 3664.4,
+          "p99_9_us": 104488.3,
+          "p99_us": 34359.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "witness",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.73,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 480.73,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 4160.3,
+        "read": {
+          "count": 988,
+          "max_us": 1330.1,
+          "p50_us": 131.4,
+          "p95_us": 656.8,
+          "p99_9_us": 1330.1,
+          "p99_us": 929.0
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 3731.1,
+          "p50_us": 1425.2,
+          "p95_us": 2133.1,
+          "p99_9_us": 3569.8,
+          "p99_us": 2800.4
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "legacy",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "prototype",
+        "--server",
+        "/tmp/emda-stage1-before-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 0.564,
+      "result": {
+        "backend": "prototype",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 356.15,
+        "keys": 250,
+        "metadata": {
+          "transport": "TCP loopback to native benchmark adapter"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 5615.6,
+        "read": {
+          "count": 988,
+          "max_us": 1892.8,
+          "p50_us": 186.2,
+          "p95_us": 852.6,
+          "p99_9_us": 1892.8,
+          "p99_us": 1311.8
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 2348.7,
+          "p50_us": 818.7,
+          "p95_us": 1509.5,
+          "p99_9_us": 2348.6,
+          "p99_us": 1984.5
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "redis",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "redis",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.062,
+      "result": {
+        "backend": "redis",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 722.25,
+        "keys": 250,
+        "metadata": {
+          "appendfsync": "always",
+          "appendonly": "yes",
+          "driver_version": "6.4.0",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "7.4.12"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 2769.1,
+        "read": {
+          "count": 988,
+          "max_us": 6636.8,
+          "p50_us": 1039.8,
+          "p95_us": 2318.9,
+          "p99_9_us": 6636.8,
+          "p99_us": 3539.8
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 6800.1,
+          "p50_us": 1360.8,
+          "p95_us": 2596.9,
+          "p99_9_us": 6498.8,
+          "p99_us": 3692.2
+        },
+        "write_percent": 50
+      }
+    },
+    {
+      "case": "mixed-4-4kib",
+      "version": "postgres",
+      "repetition": 4,
+      "command": [
+        "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+        "/workspace/database-engine/scripts/network_compare.py",
+        "postgres",
+        "--server",
+        "/tmp/emda-stage1-comparison-clean/release/examples/network_bench_server",
+        "--directory",
+        "/workspace",
+        "--clients",
+        "4",
+        "--operations",
+        "500",
+        "--keys",
+        "250",
+        "--write-percent",
+        "50",
+        "--value-bytes",
+        "4096"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "wall_seconds": 1.035,
+      "result": {
+        "backend": "postgres",
+        "clients": 4,
+        "completed": 2000,
+        "elapsed_ms": 634.46,
+        "keys": 250,
+        "metadata": {
+          "driver_version": "3.3.7",
+          "fsync": "on",
+          "full_page_writes": "on",
+          "synchronous_commit": "on",
+          "transport": "TCP loopback through container port forwarding",
+          "version": "PostgreSQL 17.11 (Debian 17.11-1.pgdg12+2) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit"
+        },
+        "operations_per_client": 500,
+        "ops_per_sec": 3152.3,
+        "read": {
+          "count": 988,
+          "max_us": 4286.7,
+          "p50_us": 750.5,
+          "p95_us": 1656.7,
+          "p99_9_us": 4286.7,
+          "p99_us": 2486.7
+        },
+        "value_bytes": 4096,
+        "write": {
+          "count": 1012,
+          "max_us": 5088.1,
+          "p50_us": 1343.2,
+          "p95_us": 2251.9,
+          "p99_9_us": 4419.4,
+          "p99_us": 3120.9
+        },
+        "write_percent": 50
+      }
+    }
+  ],
+  "finished_at_utc": "2026-11-03T19:41:30.742818+00:00"
+}
