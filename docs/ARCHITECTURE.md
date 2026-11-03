@@ -9,6 +9,7 @@ This document describes the current prototype, not a promised final design. The 
 - `log`, `log_io`, `recovery`, and `witness`: append and sync, positional reads, bounded buffered replay, the checksummed commit boundary, the in-memory key-to-offset index, and testable I/O boundaries.
 - `backup`: checksummed full-log backup and validated, non-overwriting restore.
 - `checkpoint`: explicit persisted index snapshots bound to a separately trusted digest and witnessed log prefix, with suffix replay; full prefix hashing and in-memory indexes remain.
+- `checkpoint_view`: a shared-lock, bounded-memory reader of a verified historical index; it does not validate or replay later log records and cannot coexist with a cooperating writable store.
 - `directory`: synchronization of created store paths and their ancestors.
 - `tests`: behavior across reopen, deterministic I/O failures, concurrent clients, corruption, backups, and process termination.
 

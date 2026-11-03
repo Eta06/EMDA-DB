@@ -67,6 +67,48 @@ pub(crate) struct Log {
 }
 
 impl Log {
+    /// Opens only the log and witness for an explicitly historical checkpoint
+    /// view. The caller must hold a shared lock for the log's lifetime.
+    pub(crate) fn open_checkpoint_view(path: &Path) -> io::Result<(Self, u64)> {
+        let file = File::open(path.join("records.log"))?;
+        let (id, metadata) = log_identity(&file)?;
+        let id = id.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "checkpoint views require a witnessed store",
+            )
+        })?;
+        if !metadata && metadata_witness::is_present(&file)? {
+            return Err(record::invalid_data(
+                "metadata witness exists without its V3 log header",
+            ));
+        }
+        let (anchor, witness, boundary) = if metadata {
+            let (anchor, initial) = Witness::open_readonly(path, id)?;
+            if initial != LOG_HEADER_SIZE as u64 {
+                return Err(record::invalid_data("invalid metadata log identity anchor"));
+            }
+            let (witness, boundary) = metadata_witness::open(file.try_clone()?, id)?;
+            (Some(anchor), witness, boundary)
+        } else {
+            let (witness, boundary) = Witness::open_readonly(path, id)?;
+            (None, witness, boundary)
+        };
+        if boundary < LOG_HEADER_SIZE as u64 || boundary > file.metadata()?.len() {
+            return Err(record::invalid_data("commit witness is outside the log"));
+        }
+        Ok((
+            Self {
+                file: Box::new(file),
+                log_id: Some(id),
+                witness: Some(witness),
+                metadata,
+                anchor,
+            },
+            boundary,
+        ))
+    }
+
     pub(crate) fn open(
         path: &Path,
         may_initialize: bool,

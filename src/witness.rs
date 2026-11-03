@@ -109,6 +109,10 @@ pub(crate) struct Witness {
 }
 
 impl Witness {
+    pub(crate) fn open_readonly(directory: &Path, id: LogId) -> io::Result<(Self, u64)> {
+        Self::from_io(Box::new(File::open(directory.join(NAME))?), id)
+    }
+
     pub(crate) fn create(directory: &Path, id: LogId, offset: u64) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)

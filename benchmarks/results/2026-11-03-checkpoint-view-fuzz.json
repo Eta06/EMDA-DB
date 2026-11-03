@@ -1,0 +1,28 @@
+{
+  "base_revision": "dbbc64094d9b9ce2f431cef9cfff246ccedc4a78",
+  "source_state": "Checkpoint view changes uncommitted at build; source and binary hashes identify tested code.",
+  "source_sha256": {
+    "src/checkpoint.rs": "2098b127a92f79d2391cd801dfa4eeb225ce8bfc79e7a07c61f3ebea7ce6c7e5",
+    "src/checkpoint_view.rs": "47042a791fcf808a4e1847b8d0dc99f04b33b1ebf9d0484b38157e2eeaf19e28",
+    "src/log.rs": "4c48db522c43a20d4ed116226aee4ee2c2faeddb309a26e5f19eb93acf19029c",
+    "src/witness.rs": "6a5eda8ecb7af7e7845fa7fa90b90260475c571a3d5053093d34e4acd091b512",
+    "fuzz/fuzz_targets/checkpoint.rs": "169bd7420e0f584a65f60072cd793f2cfb15aca5d771e6cc4271cffd97d0b35d"
+  },
+  "binary_sha256": "9a2a85d694465297c1a23e3d32077f2a77e2ea795d3ec91c755b458c54168f76",
+  "seed_sha256": {
+    "fuzz/checkpoint-seeds/forged-index": "3cc32b82f21e000396f562585f318e63aff1c32756d700aa6c29c45131c4f969",
+    "fuzz/checkpoint-seeds/untrusted-digest": "39d4a6d361a8c37203dda9af0355e8f7093eaf48635eeb5b5b51432fcd90b8c9",
+    "fuzz/checkpoint-seeds/valid": "1dc82a2e88b676c13bc2e556e4137badaad9c966132b901bedcbc968947a63fc"
+  },
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run checkpoint CORPUS -- -max_total_time=75 -max_len=8192 -timeout=10 -print_final_stats=1",
+  "scope": "Checkpoint parser and historical view with independently trusted and deliberately untrusted digest modes",
+  "initial_seeds": 3,
+  "seed": 492149908,
+  "duration_seconds": 76,
+  "executions": 297135,
+  "coverage_counters_hit": 917,
+  "features": 1368,
+  "result": "no crash or sanitizer finding",
+  "limitations": "One short local campaign. It is not exhaustive, a physical power-loss test, or an authentication guarantee when the caller trusts an attacker-controlled digest."
+}

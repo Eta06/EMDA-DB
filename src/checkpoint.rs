@@ -135,6 +135,35 @@ fn load_file(
     max_live_keys: Option<usize>,
     trusted_digest: &[u8; 32],
 ) -> io::Result<Loaded> {
+    let mut index = BTreeMap::new();
+    let (prefix, peak) = visit_file(
+        file,
+        log,
+        witness_boundary,
+        max_live_keys,
+        trusted_digest,
+        |_, _, key, _, location| {
+            index.insert(key.to_vec(), location);
+            Ok(())
+        },
+    )?;
+    Ok(Loaded {
+        prefix,
+        index,
+        peak,
+    })
+}
+
+// The visitor receives untrusted entries before the entire file and log hash
+// are verified. Its results must remain private until this function succeeds.
+pub(crate) fn visit_file(
+    file: &File,
+    log: &Log,
+    witness_boundary: u64,
+    max_live_keys: Option<usize>,
+    trusted_digest: &[u8; 32],
+    mut visit: impl FnMut(u64, &[u8; 2], &[u8], &[u8; 16], ValueLocation) -> io::Result<()>,
+) -> io::Result<(u64, usize)> {
     let length = file.metadata()?.len();
     if length < HEADER_BYTES + DIGEST_BYTES {
         return Err(record::invalid_data("incomplete index checkpoint"));
@@ -184,11 +213,13 @@ fn load_file(
         return Err(record::invalid_data("impossible checkpoint entry count"));
     }
     let mut consumed = HEADER_BYTES;
-    let mut index = BTreeMap::<Vec<u8>, ValueLocation>::new();
+    let mut previous = Vec::<u8>::new();
     for _ in 0..count {
+        let entry_start = consumed;
         let mut key_len = [0_u8; 2];
         read_checked(&mut reader, &mut digest, &mut key_len)?;
-        let key_len = u16::from_le_bytes(key_len) as usize;
+        let key_len_bytes = key_len;
+        let key_len = u16::from_le_bytes(key_len_bytes) as usize;
         if key_len == 0 || key_len > 1024 {
             return Err(record::invalid_data("invalid checkpoint key length"));
         }
@@ -216,22 +247,23 @@ fn load_file(
                 "checkpoint value location outside log prefix",
             ));
         }
-        if index
-            .last_key_value()
-            .is_some_and(|(previous, _)| previous >= &key)
-        {
+        if !previous.is_empty() && previous >= key {
             return Err(record::invalid_data(
                 "checkpoint keys are not strictly ordered",
             ));
         }
-        index.insert(
-            key,
+        visit(
+            entry_start,
+            &key_len_bytes,
+            &key,
+            &tail,
             ValueLocation {
                 offset,
                 length: value_len,
                 checksum,
             },
-        );
+        )?;
+        previous = key;
     }
     if consumed != payload_len {
         return Err(record::invalid_data("trailing data in index checkpoint"));
@@ -244,9 +276,5 @@ fn load_file(
     if hash_log(log, prefix)? != expected_log_digest {
         return Err(record::invalid_data("checkpoint does not match log prefix"));
     }
-    Ok(Loaded {
-        prefix,
-        index,
-        peak,
-    })
+    Ok((prefix, peak))
 }

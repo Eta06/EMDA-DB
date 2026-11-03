@@ -11,13 +11,14 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 
 - [ ] Expand interruption and failure injection across initialization, commit, backup, restore, upgrade and every directory-sync boundary. Record which persistence states the model covers and does not cover.
 - [ ] Extend concurrent history and recovery testing beyond the current short independent single-key and two-key histories. Add persistent fixtures for future supported format versions.
-- [ ] Extend recovery fuzzing with additional targets, malformed inputs, longer campaigns and replayable regression cases. The 363,780-input local recovery run is recorded in `benchmarks/results/2026-11-04-foundation-fuzz.json`; it is not exhaustive.
+- [ ] Extend recovery fuzzing with additional targets, malformed inputs, longer campaigns and replayable regression cases. The 363,780-input local recovery run is recorded in `benchmarks/results/2026-11-04-foundation-fuzz.json`; the historical checkpoint reader was included in `benchmarks/results/2026-11-03-checkpoint-view-fuzz.json`. Neither is exhaustive.
 - [ ] Measure memory, I/O and recovery behavior under workloads representative of the intended deployment, including large data and repeated restarts. Existing local point-operation comparisons are a baseline, not a comprehensive performance ranking.
 - [ ] Keep write acknowledgement, unknown outcomes, corruption handling and compatibility limitations aligned with `STORAGE_TRANSACTION_CONTRACT.md` as behavior changes.
 
 ## Priority 1: durable storage and core operations
 
 - [x] Add an explicit on-disk index checkpoint verified against a separately trusted digest and suffix replay, with historical peak accounting and fail-closed corruption/format checks. The checkpoint is a derived plaintext file, not a backup or a security boundary when its digest is attacker-controlled.
+- [x] Add a bounded-memory historical checkpoint reader with per-block integrity checks and a shared store lock. It does not validate or replay the later log tail and is not a live writable index.
 - [ ] Implement a live disk-backed index and bounded memory/cache management; opening a checkpoint still loads the full key index into memory and hashes the complete covered log prefix.
 - [x] Add verified, non-overwriting compaction into a separate store while keeping the source intact and blocking concurrent mutations during the copy.
 - [ ] Design and implement automatic checkpoints, live/online compaction, garbage collection and bounded recovery. Explicit index checkpoints still hash the full covered prefix. Protect readers and snapshots during reclamation. Separate-copy compaction currently needs multiple in-memory indexes, requires manual switchover and does not include later source writes.

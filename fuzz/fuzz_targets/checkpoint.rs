@@ -1,5 +1,5 @@
 #![no_main]
-use database_engine::Store;
+use database_engine::{CheckpointView, Store};
 use libfuzzer_sys::fuzz_target;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -39,6 +39,14 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(store.get(b"beta").unwrap().as_deref(), Some(&b"two"[..]));
         }
         let _ = store.scan(None, None, 10);
+    }
+    if let Ok(view) = CheckpointView::open(dir.path(), &checkpoint, &token) {
+        if trusted {
+            assert_eq!(view.get(b"alpha").unwrap().as_deref(), Some(&b"one"[..]));
+            assert_eq!(view.get(b"beta").unwrap().as_deref(), Some(&b"two"[..]));
+        }
+        let _ = view.get(b"other");
+        let _ = view.scan(None, None, 10);
     }
     assert_eq!(fs::read(log).expect("read log"), LOG);
     assert_eq!(fs::read(witness).expect("read witness"), WITNESS);
