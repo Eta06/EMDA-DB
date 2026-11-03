@@ -2,7 +2,7 @@
 
 Research snapshot: 3 November 2026. This is a structured inventory of major engine and operational capabilities, not an exhaustive enumeration of every command, extension, managed-service feature, or release-specific option. PostgreSQL references below are to the current PostgreSQL 18 documentation; MongoDB references are to its current database manual. MongoDB features can depend on server version, edition, deployment topology, or Atlas. PostgreSQL extensions and external services are identified where relevant. Verify exact details before using a feature as a compatibility or benchmark requirement.
 
-**Current prototype:** embedded byte-key/value `put`, `get`, and `delete`; checksum-verified append log; serialized writes/concurrent readers; reopen and incomplete-tail recovery; advisory exclusive lock. It has none of the SQL, document, multi-key transaction, index, server, cloud, or distributed features listed below unless explicitly stated. This table is a research backlog, not a feature commitment.
+**Current prototype:** embedded byte-key/value `put`, `get`, and `delete`; checksum-verified append log; serialized writes/concurrent readers; fail-closed incomplete-tail handling; experimental full-log backup/restore; advisory exclusive lock. It has none of the SQL, document, multi-key transaction, index, server, cloud, or distributed features listed below unless explicitly stated. This table is a research backlog, not a feature commitment.
 
 ## Models and operations
 
@@ -45,9 +45,9 @@ Research snapshot: 3 November 2026. This is a structured inventory of major engi
 | Atomic operations | SQL transactions | Single-document writes atomic; multi-document transactions supported with deployment restrictions | One mutation serialized and synced; no multi-key transaction |
 | Isolation and concurrency | MVCC, locks, multiple isolation levels | Concurrency controls and transaction/read/write concerns | Concurrent readers; one writer under an in-process lock |
 | Compare-and-set / conditional update | Conditional `UPDATE` and transaction patterns | Conditional filters on update | None |
-| Write-ahead log and recovery | WAL and crash recovery | Journaling and recovery; guarantees depend on configuration and write concern | Append log, checksums, incomplete-tail recovery |
+| Write-ahead log and recovery | WAL and crash recovery | Journaling and recovery; guarantees depend on configuration and write concern | Append log and checksums; incomplete tails rejected without automatic repair |
 | Checkpoints, compaction, cleanup | Checkpoints, vacuum and related maintenance | Storage-engine maintenance; details depend on engine/deployment | No compaction; full log replay |
-| Backup and point-in-time recovery | `pg_dump`, physical backups and WAL-based recovery when configured | Backup tooling and deployment-specific/Atlas backup options | No backup tool or PITR |
+| Backup and point-in-time recovery | `pg_dump`, physical backups and WAL-based recovery when configured | Backup tooling and deployment-specific/Atlas backup options | Experimental full-log backup/restore; no PITR |
 | Replication | Physical streaming and logical replication | Replica sets and replication | None |
 | High availability/failover | Standby and external orchestration patterns | Replica set election/failover | None |
 | Partitioning/sharding | Table partitioning; automatic distributed sharding requires additional technology | Sharded clusters | None |

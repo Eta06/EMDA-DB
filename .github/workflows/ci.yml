@@ -37,3 +37,8 @@ jobs:
       - name: Test optimized build
         if: matrix.toolchain == 'stable'
         run: cargo +${{ matrix.toolchain }} test --release --locked
+      - name: Benchmark smoke tests
+        if: matrix.toolchain == 'stable'
+        run: |
+          cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
+          cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP"

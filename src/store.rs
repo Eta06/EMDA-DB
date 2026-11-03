@@ -2,21 +2,23 @@
 
 use crate::log::{Log, ValueLocation};
 use crate::record::{self, Operation};
+use crate::{backup, directory};
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 struct Inner {
-    log: Log,
     index: BTreeMap<Vec<u8>, ValueLocation>,
     uncertain: bool,
 }
 
 /// A single-process store. Successful mutations have been synchronized to disk.
 pub struct Store {
+    log: Log,
     inner: RwLock<Inner>,
+    writer: Mutex<()>,
     // Held for the store lifetime. OS file locks are advisory.
     _lock_file: File,
 }
@@ -24,22 +26,37 @@ pub struct Store {
 impl Store {
     /// Opens or creates a store. Only one store may hold its directory lock.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref();
-        fs::create_dir_all(path)?;
-        let lock_file = OpenOptions::new()
+        Self::open_using(path.as_ref(), Log::open)
+    }
+
+    fn open_using(
+        path: &Path,
+        open_log: impl FnOnce(&Path, bool) -> io::Result<(Log, BTreeMap<Vec<u8>, ValueLocation>)>,
+    ) -> io::Result<Self> {
+        directory::create_and_sync(path)?;
+        let lock_path = path.join("store.lock");
+        let new_lock = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path.join("store.lock"))?;
+            .create_new(true)
+            .open(&lock_path);
+        let (lock_file, may_initialize) = match new_lock {
+            Ok(file) => (file, true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => (
+                OpenOptions::new().read(true).write(true).open(&lock_path)?,
+                false,
+            ),
+            Err(error) => return Err(error),
+        };
         fs2::FileExt::try_lock_exclusive(&lock_file)?;
-        let (log, index) = Log::open(path)?;
+        let (log, index) = open_log(path, may_initialize)?;
         Ok(Self {
+            log,
             inner: RwLock::new(Inner {
-                log,
                 index,
                 uncertain: false,
             }),
+            writer: Mutex::new(()),
             _lock_file: lock_file,
         })
     }
@@ -48,13 +65,13 @@ impl Store {
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
         let inner = self.read()?;
-        if inner.uncertain {
+        if inner.uncertain || self.writer.is_poisoned() {
             return Err(uncertain_error());
         }
         inner
             .index
             .get(key)
-            .map(|location| inner.log.read(*location))
+            .map(|location| self.log.read(*location))
             .transpose()
     }
 
@@ -68,25 +85,52 @@ impl Store {
         self.append(Operation::Delete, key, &[])
     }
 
-    fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
-        // Encoding happens under the lock to avoid unbounded concurrent buffers.
-        record::validate_key(key)?;
-        let mut inner = self.write()?;
+    /// Creates a consistent, checksummed backup at a new path.
+    ///
+    /// Mutations are blocked until the backup has been fully written and
+    /// verified. An existing destination is never overwritten. A failed
+    /// directory synchronization after publication has an uncertain outcome.
+    pub fn backup(&self, destination: impl AsRef<Path>) -> io::Result<()> {
+        let _writer = self.writer()?;
+        let inner = self.read()?;
         if inner.uncertain {
             return Err(uncertain_error());
         }
+        backup::create(&self.log, destination.as_ref())
+    }
+
+    /// Restores a validated backup into a new directory; existing paths are
+    /// never overwritten. A failed directory synchronization after publication
+    /// has an uncertain outcome and the destination must be inspected.
+    pub fn restore(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
+        backup::restore(source.as_ref(), destination.as_ref())
+    }
+
+    fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
+        // Encoding happens under the lock to avoid unbounded concurrent buffers.
+        record::validate_key(key)?;
+        let _writer = self.writer()?;
+        if self.read()?.uncertain {
+            return Err(uncertain_error());
+        }
         let encoded = record::encode(operation, key, value)?;
-        let location = match inner.log.append(&encoded, key, value) {
+        let location = match self.log.append(&encoded, key, value) {
             Ok(location) => location,
             Err(error) => {
                 // A failed write or sync can have written some or all of the record.
-                inner.uncertain = true;
+                self.write()?.uncertain = true;
                 return Err(io::Error::new(
                     error.kind(),
                     format!("write outcome is uncertain; reopen the store: {error}"),
                 ));
             }
         };
+        let mut inner = self.write().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("write outcome is uncertain; reopen the store: {error}"),
+            )
+        })?;
         match operation {
             Operation::Put => {
                 inner.index.insert(key.to_vec(), location);
@@ -108,8 +152,17 @@ impl Store {
             .write()
             .map_err(|_| io::Error::other("store lock poisoned"))
     }
+
+    fn writer(&self) -> io::Result<MutexGuard<'_, ()>> {
+        self.writer.lock().map_err(|_| {
+            io::Error::other("writer lock poisoned; a write may have an uncertain outcome")
+        })
+    }
 }
 
 fn uncertain_error() -> io::Error {
     io::Error::other("a previous write had an uncertain outcome; reopen the store")
 }
+
+#[cfg(test)]
+mod fault_tests;

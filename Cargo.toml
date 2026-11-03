@@ -9,6 +9,9 @@ publish = false
 [dependencies]
 crc32fast = "1.5"
 fs2 = "0.4"
+rustix = { version = "1.1", features = ["fs"] }
+sha2 = "0.10"
+tempfile = "3.20"
 
 [dev-dependencies]
-tempfile = "3.20"
+rusqlite = { version = "0.35", features = ["bundled"] }

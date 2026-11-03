@@ -25,31 +25,23 @@ fn updates_deletes_and_empty_values_survive_reopening() {
 }
 
 #[test]
-fn incomplete_tail_is_removed_before_future_writes() {
+fn incomplete_tail_refuses_to_open_without_modifying_the_log() {
     let dir = tempdir().unwrap();
     {
         let store = Store::open(dir.path()).unwrap();
         store.put(b"saved", b"value").unwrap();
     }
     let log = dir.path().join("records.log");
-    let valid_len = std::fs::metadata(&log).unwrap().len();
     OpenOptions::new()
         .append(true)
         .open(&log)
         .unwrap()
         .write_all(b"DB")
         .unwrap();
-    {
-        let store = Store::open(dir.path()).unwrap();
-        assert_eq!(std::fs::metadata(&log).unwrap().len(), valid_len);
-        store.put(b"after", b"recovery").unwrap();
-    }
-    let store = Store::open(dir.path()).unwrap();
-    assert_eq!(store.get(b"saved").unwrap().as_deref(), Some(&b"value"[..]));
-    assert_eq!(
-        store.get(b"after").unwrap().as_deref(),
-        Some(&b"recovery"[..])
-    );
+    let bytes_before = std::fs::read(&log).unwrap();
+    let result = Store::open(dir.path());
+    assert!(matches!(result, Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData));
+    assert_eq!(std::fs::read(&log).unwrap(), bytes_before);
 }
 
 #[test]
@@ -140,7 +132,7 @@ fn value_corruption_after_open_is_detected_on_read() {
 }
 
 #[test]
-fn all_partial_final_records_recover_and_accept_new_writes() {
+fn all_partial_final_records_fail_closed_without_data_loss() {
     let source = tempdir().unwrap();
     let log_path = source.path().join("records.log");
     let baseline_len;
@@ -154,13 +146,15 @@ fn all_partial_final_records_recover_and_accept_new_writes() {
     for end in baseline_len as usize + 1..log_bytes.len() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("records.log"), &log_bytes[..end]).unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        assert_eq!(store.get(b"first").unwrap().as_deref(), Some(&b"saved"[..]));
-        assert_eq!(store.get(b"last").unwrap(), None);
-        store.put(b"next", b"ok").unwrap();
-        drop(store);
-        let reopened = Store::open(dir.path()).unwrap();
-        assert_eq!(reopened.get(b"next").unwrap().as_deref(), Some(&b"ok"[..]));
+        let result = Store::open(dir.path());
+        assert!(
+            matches!(result, Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData),
+            "partial log length {end}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("records.log")).unwrap(),
+            &log_bytes[..end]
+        );
     }
 }
 
@@ -171,6 +165,20 @@ fn second_owner_cannot_open_a_locked_store() {
     assert!(Store::open(dir.path()).is_err());
     drop(store);
     assert!(Store::open(dir.path()).is_ok());
+}
+
+#[test]
+fn missing_log_of_existing_store_does_not_create_an_empty_database() {
+    let dir = tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"important", b"value").unwrap();
+    }
+    let log = dir.path().join("records.log");
+    std::fs::remove_file(&log).unwrap();
+    let result = Store::open(dir.path());
+    assert!(matches!(result, Err(ref e) if e.kind() == std::io::ErrorKind::InvalidData));
+    assert!(!log.exists());
 }
 
 #[test]

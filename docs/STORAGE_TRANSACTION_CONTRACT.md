@@ -10,17 +10,17 @@ No performance optimization is accepted if it violates the durability, isolation
 
 ### Successful writes and ordering
 
-- `put` and `delete` append one checksummed record, call `File::sync_data`, update the in-memory index, and only then return success. The write lock covers this sequence. Deleting a missing key writes a deletion record.
-- Readers share a read lock; a writer is exclusive. Operations in one open store are ordered by this lock. A read beginning after a successful write returns that value unless a later mutation replaces or deletes it, or an I/O/corruption error occurs. An overlapping read can occur before or after the write.
+- `put` and `delete` append one checksummed record, call `File::sync_data`, update the in-memory index, and only then return success. A writer mutex serializes the full sequence. Deleting a missing key writes a deletion record. Deleted and superseded values remain in the append-only log and full-log backups; delete does not perform secure erasure.
+- Readers share an index read lock and can observe the previous indexed value while a writer synchronizes; the index update is exclusive. A read beginning after a successful write returns that value unless a later mutation replaces or deletes it, or an I/O/corruption error occurs. An overlapping read can occur before or after the index update.
 - A single successful mutation concerns one key. There is no multi-key transaction, atomic batch, range query, user-visible sequence number, or change stream. `get` returns an owned byte vector; the engine does not offer zero-copy reads.
 - An OS advisory lock prevents cooperating processes from opening the same store at once. This is not a security boundary or a guarantee against processes that ignore the lock.
 
 ### Crash, power failure, and uncertain outcomes
 
 - After a successful return, the prototype has requested synchronization of the appended log data. The intended process-crash behavior depends on the filesystem and device honoring that request. The tests cover reopening after a killed process, not every crash point or hardware failure.
-- If append or synchronization returns an error, some or all bytes may already have been written. The mutation's outcome is **unknown**, and this store instance refuses further reads and writes until reopened. A complete but unacknowledged record can appear after recovery. There is no request-id or retry-deduplication guarantee.
-- On reopen, the engine scans the log in append order and truncates an incomplete final record. A complete invalid header or checksum makes opening fail. An apparently incomplete tail can also result from storage damage, so the prototype cannot always tell an unacknowledged partial write from lost or damaged acknowledged data. Automatic tail truncation may therefore conceal damage.
-- No universal power-loss guarantee is established: parent-directory creation is not fully proven durable, underlying filesystem and device behavior matters, and power-cut/fault-injection testing is absent. Backups and restore tooling are also absent. Do not use this prototype for important production data.
+- If append or synchronization returns an error, some or all bytes may already have been written. The mutation's outcome is **unknown**, and this store instance refuses further reads and writes until reopened. A complete but unacknowledged record can appear after recovery. A poisoned writer lock also blocks subsequent operations. There is no request-id or retry-deduplication guarantee.
+- On reopen, the engine scans the log in append order and refuses to open an incomplete final record, invalid header, or checksum error without truncating the log. An apparently incomplete tail can result from an interrupted unacknowledged write or storage damage; the prototype cannot distinguish them and does not automatically repair either case. An existing store with a lock marker but no log is not silently recreated as empty. The prototype has no independent durable high-water mark: loss of all store files, or truncation exactly at a valid record boundary (including an empty log), may go undetected. Independent verified backups and a stronger commit/recovery design are required.
+- Store initialization synchronizes the path and its ancestor directories, but no universal power-loss guarantee is established: underlying filesystem and device behavior matters, and actual power-cut testing is absent. Full-log backup/restore is experimental and depends on supported filesystem operations; independent backups and restore drills are still necessary. Do not use this prototype for important production data.
 
 ### Isolation, snapshots, and interfaces
 
@@ -30,7 +30,7 @@ No performance optimization is accepted if it violates the durability, isolation
 
 ### Corruption and format compatibility
 
-- Header and record CRC32 checks detect some accidental corruption on reopen; current value bytes are checked on read. CRC32 is not authentication, cannot detect every possible error, and cannot reconstruct damaged data. A detected checksum failure is reported; no automatic repair from replicas or backups exists.
+- Header and record CRC32 checks detect some accidental corruption on reopen; current value bytes are checked on read. CRC32 is not authentication, cannot detect every possible error, and cannot reconstruct damaged data. A detected checksum failure is reported; no automatic repair from replicas or backups exists. Backups add a length and SHA-256 digest and revalidate records, but are unencrypted, unauthenticated, and not proof of protection against all storage failures.
 - Records use the experimental `DB01` marker. Unknown or invalid markers are rejected. The software version and on-disk format version are separate; the current prototype has no stable backward-compatibility, downgrade, or migration promise. See [VERSIONING.md](VERSIONING.md).
 
 ## Proposed contract for future design
@@ -49,4 +49,4 @@ The following are acceptance targets, not existing guarantees. Exact algorithms 
 
 ## Evidence required before a guarantee is advertised
 
-Use deterministic partial-read/write and sync-error injection, process termination at commit boundaries, storage-full tests, corrupted headers and payloads, recovery and verified restore tests, model-based concurrent histories, and format-compatibility fixtures. Power-loss claims need tests that simulate the relevant storage and filesystem failure model; a process kill alone is insufficient. Snapshot, compaction, index, and cross-interface tests must be added as those features are implemented. Report the assumptions and any untested failure cases alongside the results.
+Deterministic partial-append, injected disk-full and sync errors, short-read errors, a controlled concurrent read during sync, corrupted headers/payloads, process termination after acknowledged writes, and backup/restore checks exist. Further work must exercise interruption at every commit/backup boundary, directory-sync and actual power-loss models, broader model-based concurrent histories, and persistent format-compatibility fixtures. A process kill alone is insufficient for power-loss claims. Snapshot, compaction, index, and cross-interface tests must be added as those features are implemented. Report the assumptions and any untested failure cases alongside the results.

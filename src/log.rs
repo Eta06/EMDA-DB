@@ -1,10 +1,10 @@
 //! Append, durability, read verification, and recovery for the record log.
 
+use crate::log_io::LogIo;
 use crate::record::{self, HEADER_SIZE, Header, Operation};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::FileExt as UnixFileExt;
+use std::io;
 use std::path::Path;
 
 #[derive(Clone, Copy)]
@@ -15,18 +15,36 @@ pub(crate) struct ValueLocation {
 }
 
 pub(crate) struct Log {
-    file: File,
+    file: Box<dyn LogIo>,
 }
 
 impl Log {
-    pub(crate) fn open(path: &Path) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+    pub(crate) fn open(
+        path: &Path,
+        may_initialize: bool,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let file = OpenOptions::new()
             .read(true)
             .append(true)
-            .create(true)
-            .open(path.join("records.log"))?;
+            .create(may_initialize)
+            .open(path.join("records.log"))
+            .map_err(|error| {
+                if !may_initialize && error.kind() == io::ErrorKind::NotFound {
+                    record::invalid_data(
+                        "existing store is missing its log; refusing to create an empty store",
+                    )
+                } else {
+                    error
+                }
+            })?;
         // Persist directory entries before acknowledging future writes.
         File::open(path)?.sync_all()?;
+        Self::from_io(Box::new(file))
+    }
+
+    pub(crate) fn from_io(
+        file: Box<dyn LogIo>,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let mut log = Self { file };
         let index = log.recover()?;
         Ok((log, index))
@@ -41,14 +59,22 @@ impl Log {
         Ok(value)
     }
 
+    pub(crate) fn len(&self) -> io::Result<u64> {
+        self.file.len()
+    }
+
+    pub(crate) fn read_bytes(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        self.file.read_exact_at(buffer, offset)
+    }
+
     pub(crate) fn append(
-        &mut self,
+        &self,
         encoded: &[u8],
         key: &[u8],
         value: &[u8],
     ) -> io::Result<ValueLocation> {
-        let start = self.file.metadata()?.len();
-        self.file.write_all(encoded)?;
+        let start = self.file.len()?;
+        self.file.append_all(encoded)?;
         self.file.sync_data()?;
         Ok(ValueLocation {
             offset: start + HEADER_SIZE as u64 + key.len() as u64,
@@ -59,26 +85,27 @@ impl Log {
 
     fn recover(&mut self) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
         let mut index = BTreeMap::new();
-        let total = self.file.metadata()?.len();
+        let total = self.file.len()?;
         let mut offset = 0_u64;
-        self.file.seek(SeekFrom::Start(0))?;
         while offset < total {
             if total - offset < HEADER_SIZE as u64 {
-                self.truncate_tail(offset)?;
-                break;
+                return Err(incomplete_record(offset));
             }
             let mut header_bytes = [0_u8; HEADER_SIZE];
-            self.file.read_exact(&mut header_bytes)?;
+            self.file.read_exact_at(&mut header_bytes, offset)?;
             let header = Header::parse(&header_bytes)?;
             let record_len = header.record_len();
             if total - offset < record_len {
-                self.truncate_tail(offset)?;
-                break;
+                return Err(incomplete_record(offset));
             }
             let mut payload = vec![0_u8; header.key_len + header.value_len];
-            self.file.read_exact(&mut payload)?;
+            self.file
+                .read_exact_at(&mut payload, offset + HEADER_SIZE as u64)?;
             let mut checksum = [0_u8; 4];
-            self.file.read_exact(&mut checksum)?;
+            self.file.read_exact_at(
+                &mut checksum,
+                offset + HEADER_SIZE as u64 + payload.len() as u64,
+            )?;
             record::verify(&header_bytes, &payload, u32::from_le_bytes(checksum))?;
             let key = payload[..header.key_len].to_vec();
             match header.operation {
@@ -98,12 +125,12 @@ impl Log {
             }
             offset += record_len;
         }
-        self.file.seek(SeekFrom::End(0))?;
         Ok(index)
     }
+}
 
-    fn truncate_tail(&mut self, offset: u64) -> io::Result<()> {
-        self.file.set_len(offset)?;
-        self.file.sync_data()
-    }
+fn incomplete_record(offset: u64) -> io::Error {
+    record::invalid_data(&format!(
+        "incomplete log record at byte {offset}; store was not modified"
+    ))
 }

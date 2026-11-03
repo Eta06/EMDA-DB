@@ -4,7 +4,7 @@ The product name is a placeholder. This roadmap describes intended work, not imp
 
 ## Current baseline
 
-The prototype provides `put`, `get`, and `delete` for byte keys/values, a checksummed append log, read verification, serialized writes/concurrent readers, recovery of incomplete trailing records, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, the log cannot be compacted, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
+The prototype provides `put`, `get`, and `delete` for byte keys/values, a checksummed append log, fail-closed handling of incomplete records, concurrent readers/serialized writers, experimental full-log backup/restore, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, the log cannot be compacted, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
 
 ## Priority 0: correctness and measurable foundations
 
@@ -13,9 +13,9 @@ These are prerequisites for trusting any feature built above the engine:
 - Define operation, error, concurrency, acknowledgement, and recovery semantics, including unknown write outcomes.
 - Harden and version the log format; distinguish incomplete writes from corruption as far as the format allows, and fail safely when the distinction cannot be made.
 - Handle durable directory creation and metadata changes; define filesystem and hardware assumptions explicitly.
-- Add crash/fault injection, malformed-file and truncation tests, model-based concurrency tests, and fuzz testing. Process termination tests do not prove power-loss safety.
-- Implement and test consistent backup/restore before claiming that stored data is protected.
-- Build reproducible benchmarks for existing CRUD, concurrency, recovery, memory, and I/O; compare equivalent operations and durability settings with PostgreSQL, SQLite, Turso, and MongoDB where their models allow.
+- Expand the initial I/O fault-injection and malformed/truncation tests to cover directory synchronization, crashes at commit boundaries, model-based concurrency, and fuzz testing. Process termination tests do not prove power-loss safety.
+- Exercise the experimental backup/restore implementation under broader failure models and independent restore drills before claiming that stored data is protected.
+- Expand the initial SQLite comparison harness for existing CRUD, concurrency, recovery, memory, and I/O; compare equivalent operations and durability settings with PostgreSQL, SQLite, Turso, and MongoDB where their models allow.
 
 Exit evidence: documented guarantees and known failure boundaries, repeatable fault tests, verified restores, and published benchmark configuration and results. Do not claim production readiness or competitor performance parity before these exist.
 

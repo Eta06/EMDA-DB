@@ -11,11 +11,12 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
 | Embedded key-value core | Prototype | Byte-key `put`, `get`, and `delete`; one store per process with an advisory lock. |
-| Persistence and recovery | Prototype, limited | Checksummed log and `sync_data` on writes; incomplete-tail recovery. Power-loss safety and backup/restore are not established. |
-| Concurrent access | Prototype, limited | Concurrent readers and one serialized writer. Multi-key transactions and isolation levels are not implemented. |
+| Persistence and recovery | Prototype, limited | Checksummed log and `sync_data` on writes; incomplete tails fail closed. Power-loss safety is not established. |
+| Backup and restore | Prototype | Full-log backup verifies record checksums and a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
+| Concurrent access | Prototype, limited | Reads can proceed while one writer synchronizes. Multi-key transactions and isolation levels are not implemented. |
 | Versioning and CI | In progress | Changelog, format marker, release workflow, and automated tests exist; no release has been tagged and the release workflow has not run on a real tag. |
 | SQL, document model, and queries | Planned | Require transaction semantics, schema/query design, and indexes. |
-| Bounded memory, compaction, and backups | Planned | The index is currently unbounded; the log grows indefinitely; backup tooling is absent. |
+| Bounded memory and compaction | Planned | The in-memory key index is unbounded and the log grows indefinitely. |
 | Cloud, isolation, sleep/wake, and replication | Planned | There is no network server or managed service yet. |
 
 ## Featured directions
@@ -24,7 +25,7 @@ Our intended features include a shared engine for key-value, document, and SQL i
 
 **No performance optimization may violate the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](docs/STORAGE_TRANSACTION_CONTRACT.md) and [project isolation design goals](docs/PROJECT_ISOLATION.md) for current limitations and the evidence required before making a guarantee.
 
-The engine appends checksummed records to a log, synchronizes each mutation before returning, and rebuilds an in-memory key-to-file-offset index when reopened. Values are read from disk. A single writer is coordinated with concurrent readers within the process; an advisory lock prevents multiple cooperating processes from opening the same database directory. An incomplete final log record is discarded on recovery. Fully present records with invalid headers or checksums cause opening to fail.
+The engine appends checksummed records to a log, synchronizes each mutation before returning, and rebuilds an in-memory key-to-file-offset index when reopened. Values are read from disk. A single writer is coordinated with concurrent readers within the process; an advisory lock prevents multiple cooperating processes from opening the same database directory. Incomplete or invalid records cause opening to fail without truncating the log.
 
 To try the experimental Rust library from another project:
 
@@ -47,7 +48,7 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-This is an early experiment, **not a production database**. It does not yet offer transactions across keys, SQL, documents, queries, secondary indexes, compaction, bounded index memory, authentication, a network server, project isolation, distributed replication, backup tools, or an automatic sleep/wake service. Its append-only log grows indefinitely and recovery scans it entirely. Checksums detect corruption but cannot recover damaged data. File locking is advisory and depends on filesystem behavior. It currently targets Unix-like systems and has only been tested on Linux. Durability depends on correct filesystem and storage-device behavior; tests cannot prove protection against all hardware failures. An I/O error during a mutation leaves its outcome uncertain; the instance refuses further operations until reopened.
+This is an early experiment, **not a production database**. It does not yet offer transactions across keys, SQL, documents, queries, secondary indexes, compaction, bounded index memory, authentication, a network server, project isolation, distributed replication, or an automatic sleep/wake service. Its append-only log grows indefinitely and recovery scans it entirely. Deletion adds a tombstone: earlier values remain in the log and full-log backups. Checksums detect some corruption but cannot recover damaged data; truncation at a valid record boundary may go undetected. Backups are unencrypted full-log copies and are not authenticated. File locking is advisory and depends on filesystem behavior. Backup restore publication is supported on Linux and Apple platforms; only Linux has been tested. Durability depends on correct filesystem and storage-device behavior; tests cannot prove protection against all hardware failures. An I/O error during a mutation leaves its outcome uncertain; the instance refuses further operations until reopened.
 
 To develop this repository, install Rust 1.85 or newer and Python 3.11 or newer, then run:
 

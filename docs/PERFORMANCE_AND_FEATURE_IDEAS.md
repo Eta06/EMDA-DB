@@ -4,7 +4,7 @@ These ideas are **planned or research**, not implemented features. Priorities re
 
 ## Critical: deterministic fault injection
 
-Build a repeatable way to inject interrupted and partial writes, short reads, sync errors, disk-full errors, corruption, and failures during recovery, future checkpoints, compaction, and migrations. Add controlled concurrent schedules and verify atomicity as transaction support is added. Process-kill tests already exist, but they do not replace these tests or simulate all power-loss behavior.
+The initial test I/O boundary injects partial appends/disk-full errors, sync failures, short reads, and controlled concurrent schedules. Expand it to failures during recovery, directory synchronization, future checkpoints, compaction, and migrations, and verify atomicity as transaction support is added. Process-kill tests exist, but they do not replace these tests or simulate all power-loss behavior.
 
 **Why now:** the engine needs a trustworthy correctness baseline before complex optimization or new query interfaces.
 
