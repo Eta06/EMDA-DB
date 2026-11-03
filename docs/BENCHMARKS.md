@@ -246,6 +246,20 @@ A later [raw measurement](../benchmarks/results/2026-11-03-index-memory-smaller-
 
 At 200,000 keys this is roughly a 37-fold reduction for the view's sampled median, while the writable store remained faster at point lookups. The view held 893 block summaries, and RSS after its sampled lookups was 1,452 KiB. Both new quiet checks passed, no cgroup throttling or direct reclaim was recorded, and the largest VM steal sample was 1.82%. These keys differ within their first 16 bytes; longer common prefixes can require extra verified block reads. This is a warm-cache result on one VM, not a general latency, memory or competitor claim.
 
+## Separate-copy compaction comparison
+
+`examples/compaction_bench.rs` prepares a synthetic store with 64-byte values, overwrites half of its keys, deletes one eighth, times a verified `compact_to` operation and checks selected live and deleted values after reopening the copy. `scripts/compaction_compare.py` alternates two separately built binaries across fresh fixtures, records each run and VM/cgroup noise, and reports medians and ranges. This measures separate-copy compaction, which blocks source mutations; it does not measure online compaction or physical power-loss behavior.
+
+Build each revision in its own clean checkout and empty `CARGO_TARGET_DIR`. From the driver checkout, provide both binaries, their revisions, an existing temporary-fixture directory and a new result path:
+
+```sh
+python3 scripts/compaction_compare.py --directory /workspace --output /tmp/compaction-results.json \
+  --before-binary /tmp/build-before/release/examples/compaction_bench --before-revision <before-commit> \
+  --after-binary /tmp/build-after/release/examples/compaction_bench --after-revision <after-commit>
+```
+
+Each revision must contain the same benchmark example. Binary hashes are recorded, but the revision-to-binary association is supplied by the caller. The defaults use 200 and 5,000 source keys and five repetitions per version.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
