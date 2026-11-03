@@ -32,6 +32,18 @@ cargo run --release --locked --example recovery_bench -- measure /path/to/large-
 
 Each open verifies every record checksum and rebuilds the index; three keys are checked after the open timer stops. The printed record count is the expected fixture size, not an independently counted number of distinct keys. Repeat measurements with the same prepared fixture and equivalent builds. These are warm-cache reopen timings: they do not measure cold storage, service wake-up, power-loss recovery, compaction, or backup/restore. The fixture remains on disk until its owner removes it.
 
+## Large-write interference harness
+
+The contention harness runs one client writing a large value while other clients repeatedly update independent 64-byte values. Both backends use the same checksum-verifying adapters as the key-value harness. The prototype synchronizes before returning each write; SQLite uses WAL, `synchronous=FULL`, and autocommit.
+
+```sh
+# backend, large value bytes, large writes, small clients, small writes/client, existing directory
+cargo run --release --locked --example contention_bench -- prototype 8388608 32 4 1000 .
+cargo run --release --locked --example contention_bench -- sqlite 8388608 32 4 1000 .
+```
+
+The harness creates and removes a temporary directory beneath the supplied directory; an interrupted run may leave it behind. Large values can consume substantial disk space: the prototype retains every update in its append-only log. The program validates the final values and checksums outside the timers. It reports latency for all small writes, for small writes that start while the large-write stream is active (including those that finish afterward), and for large writes. The overlap count may be small or zero; do not compare overlap percentiles without reporting the sample counts and duration. Preparation and final validation occur outside the timers. This closed-loop workload is intended to expose interference, not estimate service-level latency, fairness across projects, cold-storage performance, or a universal ranking.
+
 ## First recorded result
 
 [Raw results and environment](../benchmarks/results/2026-11-03-overlay-kv-baseline.json) capture three runs per backend at revision `0bca7172cf62f619b5fa3261522c30f7940dc944`. The workload uses four clients, 250 cached keys, 64-byte values, and 1,000 operations per run with roughly half writes. It ran in a virtualized environment on an overlay filesystem whose underlying storage was not independently verified.
