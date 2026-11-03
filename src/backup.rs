@@ -21,6 +21,14 @@ struct BackupInfo {
 }
 
 pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
+    create_with_sync(log, destination, |parent| File::open(parent)?.sync_all())
+}
+
+fn create_with_sync(
+    log: &Log,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     log.verify_witness()?;
     let parent = parent_directory(destination)?;
     let mut temp = tempfile::Builder::new()
@@ -42,7 +50,7 @@ pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
     // verified file, and never replace an existing destination.
     temp.persist_noclobber(destination)
         .map_err(|error| error.error)?;
-    File::open(parent)?.sync_all().map_err(|error| {
+    sync_parent(parent).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("backup may exist but directory synchronization failed: {error}"),
@@ -51,6 +59,14 @@ pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn restore(source: &Path, destination: &Path) -> io::Result<()> {
+    restore_with_sync(source, destination, |parent| File::open(parent)?.sync_all())
+}
+
+fn restore_with_sync(
+    source: &Path,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     let backup = File::open(source)?;
     let info = validate(&backup)?;
     let parent = parent_directory(destination)?;
@@ -63,13 +79,16 @@ pub(crate) fn restore(source: &Path, destination: &Path) -> io::Result<()> {
     publish_directory(staging.path(), destination)?;
     // The directory moved; prevent TempDir from trying to clean the old path.
     let _ = staging.keep();
-    File::open(parent)?.sync_all().map_err(|error| {
+    sync_parent(parent).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("restore may exist but directory synchronization failed: {error}"),
         )
     })
 }
+
+#[cfg(test)]
+mod publication_tests;
 
 pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()> {
     if !source.is_legacy() {

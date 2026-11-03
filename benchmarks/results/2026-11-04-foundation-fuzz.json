@@ -1,0 +1,16 @@
+{
+  "scope": "Recovery fuzz campaign; engine source at parent revision before backup-publication testability refactor, which does not change recovery.",
+  "source_revision": "9717bb65d019661d90a2ff8467eb03f6b273f442",
+  "binary_sha256": "fcfc85754743a45ae58ed276e5dada78b2731c9b6f434a59979b3eb6753e79c3",
+  "toolchain": "nightly-2026-11-03",
+  "initial_seed_files": 4,
+  "seed": 3210634821,
+  "duration_seconds": 181,
+  "executions": 363780,
+  "coverage_counters_hit": 574,
+  "features": 1046,
+  "final_corpus_entries": 49,
+  "maximum_input_bytes": 8192,
+  "result": "no crash or sanitizer finding",
+  "limitations": "Short single-host fuzz campaign; no exhaustive proof, physical power loss, or independent backup recovery."
+}

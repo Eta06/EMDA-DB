@@ -233,3 +233,110 @@ fn backup_rejects_corruption_beyond_the_recovery_buffer() {
     );
     assert!(!destination.exists());
 }
+
+#[test]
+fn every_truncated_or_single_byte_corrupted_backup_fails_without_publication() {
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path().join("live")).unwrap();
+    store.put(b"key", b"small payload").unwrap();
+    store.delete(b"deleted").unwrap();
+    let original_path = dir.path().join("original");
+    store.backup(&original_path).unwrap();
+    let original = fs::read(&original_path).unwrap();
+    let input = dir.path().join("damaged");
+    let target = dir.path().join("restored");
+    for end in 0..original.len() {
+        fs::write(&input, &original[..end]).unwrap();
+        assert!(
+            Store::restore(&input, &target).is_err(),
+            "truncation at {end}"
+        );
+        assert!(!target.exists(), "published truncated backup at {end}");
+    }
+    for offset in 0..original.len() {
+        let mut altered = original.clone();
+        altered[offset] ^= 1;
+        fs::write(&input, altered).unwrap();
+        assert!(
+            Store::restore(&input, &target).is_err(),
+            "corruption at {offset}"
+        );
+        assert!(!target.exists(), "published corrupted backup at {offset}");
+    }
+    Store::restore(&original_path, &target).unwrap();
+    assert_eq!(
+        Store::open(target).unwrap().get(b"key").unwrap().as_deref(),
+        Some(&b"small payload"[..])
+    );
+}
+
+#[test]
+fn simultaneous_restores_to_same_path_publish_exactly_one_valid_store() {
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path().join("live")).unwrap();
+    store.put(b"key", b"verified").unwrap();
+    let backup = dir.path().join("snapshot");
+    store.backup(&backup).unwrap();
+    let target = dir.path().join("restored");
+    let barrier = Barrier::new(5);
+    let outcomes = thread::scope(|scope| {
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            let (backup, target, barrier) = (&backup, &target, &barrier);
+            workers.push(scope.spawn(move || {
+                barrier.wait();
+                Store::restore(backup, target)
+            }));
+        }
+        barrier.wait();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    for error in outcomes.into_iter().filter_map(Result::err) {
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    }
+    assert_eq!(
+        Store::open(&target)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"verified"[..])
+    );
+    assert!(fs::read_dir(dir.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".db-restore-")
+    }));
+}
+
+#[test]
+fn restore_never_replaces_existing_symlink_or_its_target() {
+    use std::os::unix::fs::symlink;
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path().join("live")).unwrap();
+    store.put(b"key", b"value").unwrap();
+    let backup = dir.path().join("snapshot");
+    store.backup(&backup).unwrap();
+    let existing = dir.path().join("existing");
+    fs::create_dir(&existing).unwrap();
+    fs::write(existing.join("sentinel"), b"keep me").unwrap();
+    let link = dir.path().join("link");
+    symlink(&existing, &link).unwrap();
+    assert_eq!(
+        Store::restore(&backup, &link).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(existing.join("sentinel")).unwrap(), b"keep me");
+}
