@@ -2,6 +2,47 @@
 
 An initial local SQLite comparison harness exists; no general competitive performance claim has been established. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
 
+## V3 latency optimization: 2026-11-03
+
+The [raw 192-run matrix](../benchmarks/results/2026-11-03-metadata-latency-comparison.json) compares V2 revision `9ceec73` with V3 revision `34f5bdb` and bundled SQLite 3.49.1. Each of eight workloads ran four times per engine through both direct Rust calls and the unchanged loopback adapter; engine order rotated between rounds. The matrix covers 1/4/8 clients, read-only/write-only/mixed operations, and 64-byte/4-KiB/128-KiB values. Each run uses a fresh store and deterministic workloads. Source hashes, binary hashes, exact commands, per-run values, and median/min/max summaries are recorded. The host reported an Intel Xeon Platinum 8573C with a four-CPU cgroup quota; data lived on `/workspace` overlay storage whose backing device was not independently established.
+
+V3 replaces two sequential per-batch synchronization barriers with one **full inode `fsync`** covering both records and a checksummed xattr boundary. It retains sync-before-acknowledgement, record verification, failure poisoning, and detection of truncation below an intact witness. A separate immutable identity anchor detects missing or substituted headers. This requires Linux filesystem support for durable user xattrs; it does not establish hardware power-loss safety. Existing V2 stores keep the old protocol until explicitly copied with `Store::upgrade_format`. See the [storage contract](STORAGE_TRANSACTION_CONTRACT.md) for the changed internal ordering and filesystem assumptions.
+
+Single client, direct Rust API, 2,000 operations over 250 cached keys, 64-byte values, roughly 50% writes. Entries are medians of four run-level measurements:
+
+| Engine | Operations/s | Read p50 | Write p50 | Write p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Before (V2) | 3,079 | 1.5 µs | 568.6 µs | 2,276.9 µs |
+| After (V3) | 6,457 | 1.4 µs | 281.8 µs | 631.8 µs |
+| SQLite WAL/FULL | 5,941 | 3.5 µs | 304.2 µs | 648.8 µs |
+
+The new median write latency was 50.4% below V2 and 7.4% below SQLite in this workload. The SQLite p50 range was 204.6–319.7 µs versus V3's 257.0–285.0 µs: SQLite was faster in some individual runs. The ranges overlap, so this small sample does not establish a statistically reliable advantage over SQLite. V3 also had a 2.89 ms write-p99 outlier in one run; medians do not remove that observation.
+
+Four clients, loopback adapter, 1,000 operations/client, 250 cached keys, 64-byte values, roughly 50% writes:
+
+| Engine | Operations/s | Read p50 | Write p50 | Write p99 |
+| --- | ---: | ---: | ---: | ---: |
+| Before (V2) | 5,193 | 73.3 µs | 1,325.6 µs | 2,471.6 µs |
+| After (V3) | 7,928 | 73.5 µs | 820.2 µs | 2,101.7 µs |
+| SQLite WAL/FULL | 4,608 | 40.1 µs | 314.4 µs | 11,301.8 µs |
+
+Here V3 reduced median write latency by 38.1% versus V2, but SQLite's median write was still much faster. V3 improved throughput and had lower aggregate write-p99 than SQLite; SQLite's p99 varied from 1.51 to 19.13 ms. In the four-client **direct-call** case, V3 write p50/p99 were 505.9/1,125.9 µs versus SQLite's 245.8/1,071.0 µs, while throughput was 13,814 versus 5,290 operations/s. The raw data also records p99.9, maximum latencies, and per-client completion times: SQLite's rare writer stalls can be hidden even by p99. Grouping, lock scheduling, and wire/client overhead affect these distributions differently. With one loopback client, V3's median write was 343.4 µs versus SQLite's 329.5 µs. There is no across-the-board SQLite latency win.
+
+[Verification evidence](../benchmarks/results/2026-11-03-metadata-verification.json) records 90 Rust tests across stable/MSRV and release configurations, a 160,711-input local fuzz campaign, a process-kill test, and a cross-filesystem local restore drill. A separate syscall-count run with 100 initialization writes plus 1,000 measured writes counted V2's 2,201 `fdatasync` + 7 `fsync` calls versus V3's 1,108 `fsync` calls; tracing perturbs timing and these are counts, not performance measurements. GitHub CI and the manually triggered recovery-fuzz workflow passed on the implementation revision. These checks do not prove protection against physical power loss.
+
+To repeat, build the release examples from both revisions using the same Rust toolchain and separate target directories, then run:
+
+```sh
+python3 scripts/latency_matrix.py \
+  --baseline-directory /path/to/before/target/release/examples \
+  --baseline-revision 9ceec73732e6f95e0af0e432b4f29e44c3088f7b \
+  --candidate-directory target/release/examples \
+  --directory /path/to/measurement-disk \
+  --output latency.json --rounds 4
+```
+
+These are short, warm, closed-loop tests on one virtualized host. No latency SLA, coordinated-omission correction, broad feature equivalence, or universal ranking follows from them. PostgreSQL and Redis were not rerun for this optimization; their previous measurements below are historical results of the V2 engine.
+
 ## Initial local harness
 
 Run the Rust prototype and bundled SQLite through the same small, single-process harness. Both use byte keys, the same configured value size (64 bytes by default), and per-value CRC checks. Every acknowledged prototype mutation is synchronized before return (concurrent mutations can share a sync). V3 uses a full inode `fsync` for data plus its metadata witness; V2 uses log `fdatasync` followed by witness synchronization. SQLite uses WAL, `synchronous=FULL`, autocommit, cached statements, and a 30-second busy timeout. These are not identical internal implementations or complete durability guarantees. The prototype verifies log records; SQLite has a different storage format and verification behavior.

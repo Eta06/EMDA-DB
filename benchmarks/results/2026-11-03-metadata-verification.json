@@ -1,0 +1,44 @@
+{
+  "revision": "34f5bdbd45087cdfbeeaf7466f63983ac4f0d16e",
+  "tests": {
+    "rust_debug": "90 passed on Rust 1.85.0 and stable",
+    "rust_release": "90 passed on stable",
+    "rustfmt": "passed on stable and 1.85.0",
+    "clippy": "all targets, -D warnings, passed on stable and 1.85.0",
+    "python_release_checks": "8 passed"
+  },
+  "fuzz": {
+    "command": "cargo +nightly-2026-11-03 fuzz run recovery /tmp/emda-v3-corpus -- -max_total_time=60 -max_len=8192 -timeout=10",
+    "inputs": 160711,
+    "seconds": 61,
+    "result": "no detected crash",
+    "initial_seeds": [
+      "legacy",
+      "witnessed",
+      "metadata"
+    ],
+    "additional_seed_reloaded_during_run": "metadata-record",
+    "limits": "malformed input and fail-closed recovery; not physical power loss"
+  },
+  "restore_drill": {
+    "command": "target/release/examples/restore_drill /workspace /tmp",
+    "result": "verified_values=99 deleted_absent=true later_write_absent=true backup_bytes=28490 distinct_filesystems=true",
+    "limits": "one host, two filesystems; not off-site or independent failure domains"
+  },
+  "profiling": {
+    "command": "strace -f -c target/release/examples/kv_bench prototype 1 1000 100 100 /workspace 64",
+    "scope": "100 initialized keys plus 1000 measured writes, startup/cleanup included",
+    "baseline": {
+      "fdatasync": 2201,
+      "fsync": 7
+    },
+    "v3": {
+      "fdatasync": 0,
+      "fsync": 1108
+    },
+    "limits": "tracing perturbs execution; syscall counts are evidence of barrier removal, not latency results"
+  },
+  "ci": "https://github.com/Eta06/EMDA-DB/actions/runs/41712246226",
+  "ci_fuzz": "https://github.com/Eta06/EMDA-DB/actions/runs/41712380444",
+  "process_crash_test": "acknowledged_writes_survive_abrupt_process_termination: passed for new V3 stores (130 acknowledged writes across sequential and concurrent writers); process kill, not physical power loss"
+}

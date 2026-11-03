@@ -20,6 +20,8 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 | Bounded memory and compaction | Planned | The in-memory key index is unbounded and the log grows indefinitely. |
 | Cloud, isolation, sleep/wake, and replication | Planned | There is no network server or managed service yet. |
 
+The latest [192-run latency comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus the previous engine: 282 µs, compared with SQLite's 304 µs in that direct-call mixed workload. Results vary: SQLite still had lower median write latency under concurrent writers, while the engine improved throughput and several tail-latency measurements. Raw runs, losses, filesystem assumptions, and verification results are published with the comparison.
+
 ## Featured directions
 
 Our intended features include a shared engine for key-value, document, and SQL interfaces; deterministic fault injection; reproducible workload replay; observability; change streams and reactive queries; TTL; embedded-to-cloud portability; optional compression; and safely optimized low-copy access. [Project scale-to-zero](docs/SCALE_TO_ZERO.md) remains planned: inactive projects can stop their dedicated workers while their data remains stored. Online migrations and adaptive storage are longer-term research. See [performance and feature ideas](docs/PERFORMANCE_AND_FEATURE_IDEAS.md) for prerequisites and status.
