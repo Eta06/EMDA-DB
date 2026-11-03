@@ -73,6 +73,16 @@ class NoiseTelemetryTests(unittest.TestCase):
         self.assertEqual(result["cgroup_cpu_delta"]["nr_throttled"], 2)
         self.assertEqual(result["io_delta"]["wbytes"], 100)
 
+    def test_memory_pressure_deltas_and_unavailable_counters(self):
+        before = {"monotonic_ns": 0, "cpu_stat": {}, "proc_cpu": [], "io_totals": {},
+                  "memory_events": {"max": 8, "oom": 0}, "memory_stat": {"pgscan_direct": 12}}
+        after = {**before, "monotonic_ns": 1000000000,
+                 "memory_events": {"max": 10, "oom": 0}, "memory_stat": {"pgscan_direct": 40}}
+        result = difference(before, after)
+        self.assertEqual(result["memory_events_delta"], {"max": 2, "oom": 0})
+        self.assertEqual(result["memory_reclaim_delta"], {"pgscan_direct": 28})
+        self.assertEqual(difference(before, {**after, "memory_events": {}, "memory_stat": {}})["memory_events_delta"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,10 +41,17 @@ def snapshot():
         "context_switches": next((int(line.split()[1]) for line in (proc_stat or "").splitlines() if line.startswith("ctxt ")), None),
         "io_totals": io_totals,
         "memory_current": read("/sys/fs/cgroup/memory.current"),
+        "memory_events": key_values("/sys/fs/cgroup/memory.events"),
+        "memory_stat": key_values("/sys/fs/cgroup/memory.stat"),
         "cpu_pressure": read("/sys/fs/cgroup/cpu.pressure"),
         "io_pressure": read("/sys/fs/cgroup/io.pressure"),
         "driver_affinity": sorted(os.sched_getaffinity(0)),
     }
+
+
+def key_values(path):
+    contents = read(path)
+    return dict((key, int(value)) for key, value in (line.split() for line in contents.splitlines())) if contents else {}
 
 
 def difference(before, after):
@@ -58,6 +65,10 @@ def difference(before, after):
         "vm_steal_percent": round(ticks[7] * 100 / total, 4) if total and len(ticks) >= 8 else None,
         "vm_iowait_percent": round(ticks[4] * 100 / total, 4) if total and len(ticks) >= 5 else None,
         "io_delta": {k: after["io_totals"][k] - v for k, v in before["io_totals"].items() if k in after["io_totals"]},
+        "memory_events_delta": {k: after.get("memory_events", {})[k] - v for k, v in before.get("memory_events", {}).items() if k in after.get("memory_events", {})},
+        "memory_reclaim_delta": {k: after.get("memory_stat", {})[k] - before["memory_stat"][k]
+                                 for k in ("pgscan", "pgsteal", "pgscan_direct", "pgmajfault")
+                                 if k in before.get("memory_stat", {}) and k in after.get("memory_stat", {})},
         "before": before, "after": after,
         "scope": "entire VM/cgroup, including the workload; not per-engine resource attribution",
     }
@@ -73,6 +84,8 @@ def quiet_window(seconds=1.0, attempts=5):
         io_bytes = sum(observation["io_delta"].get(key, 0) for key in ("rbytes", "wbytes"))
         if (observation["cgroup_cpu_cores_used"] < 0.15
                 and observation["cgroup_cpu_delta"].get("nr_throttled", 0) == 0
+                and all(value == 0 for key, value in observation["memory_events_delta"].items() if key in ("high", "max", "oom", "oom_kill"))
+                and observation["memory_reclaim_delta"].get("pgscan_direct", 0) == 0
                 and io_bytes < 2 * 1024**2
                 and (observation["vm_iowait_percent"] or 0) < 2
                 and (observation["vm_steal_percent"] or 0) < 2):
