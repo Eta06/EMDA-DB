@@ -2,6 +2,8 @@
 
 The product name is a placeholder. This roadmap describes intended work, not implemented features or a release schedule. Its ambition is broad parity with relevant PostgreSQL and MongoDB capabilities plus useful new ideas. The [competitor inventory](COMPETITOR_FEATURES.md) records the currently researched capabilities and their sources; it is a living inventory, not an exhaustive list of every release-specific option. New discoveries and changed requirements should be added without implying feature compatibility before it is implemented and tested.
 
+See [foundation and storage follow-up](FOUNDATION_FOLLOW_UP.md) for deferred validation and the current priority 0/1 checklist.
+
 ## Current baseline
 
 The prototype provides `put`, `get`, and `delete` for byte keys/values, a checksummed append log, fail-closed handling of incomplete records, concurrent readers and bounded group commit, experimental full-log backup/restore, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, the log cannot be compacted, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
@@ -25,7 +27,7 @@ Exit evidence: documented guarantees and known failure boundaries, repeatable fa
 
 - Persistent on-disk index and bounded memory/cache management; avoid requiring every key or value to fit in RAM.
 - Log checkpoints, safe compaction, garbage collection, and bounded recovery time.
-- Ordered range scans, pagination, bulk operations, conditional updates, and atomic increment.
+- Ordered range scans and pagination: **prototype implemented** with per-page count/byte limits; stable multi-page snapshots remain unimplemented. Single-key compare-exchange and signed 64-bit increment are implemented and serialized against mutations. Bulk operations remain planned.
 - Atomic batches and multi-key transactions with a specified isolation model, conflict behavior, and rollback.
 - Safe coordination between concurrent readers and writers, connection/request limits, and fair overload handling.
 - Explicit limits and storage quotas. No performance optimization may violate the durability, isolation, or recovery guarantees in force; see the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md).

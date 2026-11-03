@@ -96,3 +96,64 @@ fn blocked_read_does_not_block_a_write_and_observes_its_original_value() {
         Some(&b"new"[..])
     );
 }
+
+#[test]
+fn scan_captures_locations_before_concurrent_updates_without_blocking_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = Arc::new(
+        Store::open_using(dir.path(), |path, _| {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(path.join("records.log"))?;
+            File::open(path)?.sync_all()?;
+            Log::from_io(Box::new(BlockingReadIo {
+                file,
+                armed: Arc::clone(&armed),
+                started: started_tx,
+                resume: Mutex::new(resume_rx),
+            }))
+        })
+        .unwrap(),
+    );
+    store.put(b"a", b"old-a").unwrap();
+    store.put(b"b", b"old-b").unwrap();
+    armed.store(true, Ordering::SeqCst);
+    let reading = Arc::clone(&store);
+    let reader = thread::spawn(move || reading.scan(None, None, 10));
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let writing = Arc::clone(&store);
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        let result = writing
+            .put(b"a", b"new-a")
+            .and_then(|()| writing.delete(b"b"))
+            .and_then(|()| writing.put(b"c", b"new-c"));
+        let _ = done_tx.send(result);
+    });
+    let completed = done_rx.recv_timeout(Duration::from_secs(3));
+    resume_tx.send(()).unwrap();
+    let original = reader.join().unwrap().unwrap();
+    writer.join().unwrap();
+    completed
+        .expect("blocked scan held the index lock")
+        .unwrap();
+    assert_eq!(
+        original,
+        vec![
+            (b"a".to_vec(), b"old-a".to_vec()),
+            (b"b".to_vec(), b"old-b".to_vec())
+        ]
+    );
+    assert_eq!(
+        store.scan(None, None, 10).unwrap(),
+        vec![
+            (b"a".to_vec(), b"new-a".to_vec()),
+            (b"c".to_vec(), b"new-c".to_vec())
+        ]
+    );
+}

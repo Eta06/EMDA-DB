@@ -10,7 +10,7 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
-| Embedded key-value core | Prototype | Byte-key `put`, `get`, and `delete`; one store per process with an advisory lock. |
+| Embedded key-value core | Prototype | Byte-key `put`, `get`, `delete`, conditional compare-exchange, signed 64-bit increment, and ordered paginated scans; one store per process with an advisory lock. |
 | Persistence and recovery | Prototype, limited | On supported Linux filesystems, V3 synchronizes log data and a metadata witness in one full inode sync; V2 retains two syncs. Both detect loss below an intact boundary; incomplete tails fail closed. Legacy stores retain their earlier limitations. Power-loss safety is not established. |
 | Backup and restore | Prototype | Full-log backup verifies record checksums and a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
 | Concurrent access | Prototype, limited | Concurrent writes can share a sync; preparation and value reads do not hold the queue or index lock. Multi-key transactions and isolation levels are not implemented. |
@@ -31,6 +31,8 @@ Our intended features include a shared engine for key-value, document, and SQL i
 **No performance optimization may violate the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](docs/STORAGE_TRANSACTION_CONTRACT.md) and [project isolation design goals](docs/PROJECT_ISOLATION.md) for current limitations and the evidence required before making a guarantee.
 
 The engine appends checksummed records to a log, synchronizes every successful mutation before returning, and rebuilds an in-memory key-to-file-offset index when reopened. Concurrent single-key writes can share one synchronization; this is not a multi-key transaction. Values are read from disk. A single log writer is coordinated with concurrent readers within the process; an advisory lock prevents multiple cooperating processes from opening the same database directory. Incomplete or invalid records cause opening to fail without truncating the log.
+
+`Store::scan` returns keys in bytewise order with exclusive optional bounds. Each call captures the index at one instant, but separate pages can see concurrent changes. A page contains at most 1,024 entries and 32 MiB of key/value bytes. Because the byte limit can make a page short, continue using its last key until a page is empty.
 
 To try the experimental Rust library from another project:
 
@@ -64,6 +66,8 @@ cargo test --locked
 cargo test --release --locked
 python3 -m unittest discover -s scripts/tests -v
 ```
+
+Track outstanding foundation and storage work in the [follow-up checklist](docs/FOUNDATION_FOLLOW_UP.md).
 
 Explore the [changelog](CHANGELOG.md), [versioning policy](docs/VERSIONING.md), [architecture](docs/ARCHITECTURE.md), [storage and transaction contract](docs/STORAGE_TRANSACTION_CONTRACT.md), [prioritized roadmap](docs/ROADMAP.md), [competitor feature inventory](docs/COMPETITOR_FEATURES.md), and [benchmark plan and recorded results](docs/BENCHMARKS.md). The recorded measurements reflect their stated test conditions; they are not a general performance ranking. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and verification expectations.
 

@@ -13,7 +13,7 @@ use std::path::Path;
 #[derive(Clone, Copy)]
 pub(crate) struct ValueLocation {
     offset: u64,
-    length: usize,
+    pub(crate) length: usize,
     checksum: u32,
 }
 

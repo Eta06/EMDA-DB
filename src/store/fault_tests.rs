@@ -182,6 +182,56 @@ fn failed_sync_has_unknown_outcome_and_blocks_further_operations() {
 }
 
 #[test]
+fn conditional_mismatch_does_not_write_and_failed_match_is_uncertain() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
+    store.put(b"key", b"old").unwrap();
+    *fault.lock().unwrap() = Some(Fault::SyncBefore);
+    assert!(
+        !store
+            .compare_exchange(b"key", Some(b"wrong"), Some(b"new"))
+            .unwrap()
+    );
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"old"[..]));
+    let error = store
+        .compare_exchange(b"key", Some(b"old"), Some(b"new"))
+        .unwrap_err();
+    assert!(error.to_string().contains("uncertain"));
+    assert!(store.get(b"key").is_err());
+    assert!(store.compare_exchange(b"key", Some(b"old"), None).is_err());
+    drop(store);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(reopened.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+}
+
+#[test]
+fn increment_sync_failure_is_uncertain_and_requires_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
+    assert_eq!(store.increment_i64(b"counter", 3).unwrap(), 3);
+    *fault.lock().unwrap() = Some(Fault::SyncBefore);
+    assert!(
+        store
+            .increment_i64(b"counter", 4)
+            .unwrap_err()
+            .to_string()
+            .contains("uncertain")
+    );
+    assert!(store.increment_i64(b"counter", 1).is_err());
+    drop(store);
+    assert_eq!(
+        Store::open(dir.path())
+            .unwrap()
+            .get(b"counter")
+            .unwrap()
+            .as_deref(),
+        Some(&7_i64.to_le_bytes()[..])
+    );
+}
+
+#[test]
 fn a_write_failure_clears_in_progress_preparation_reservations() {
     let dir = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));
