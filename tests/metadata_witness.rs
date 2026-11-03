@@ -372,3 +372,81 @@ fn replay_key_limit_does_not_advance_witness_for_unacknowledged_tail() {
     );
     assert_ne!(marker(dir.path()), first_boundary);
 }
+
+#[test]
+fn atomic_batch_torn_tails_and_corruption_fail_closed_at_every_byte() {
+    use database_engine::BatchOperation as Op;
+    let source = tempdir().unwrap();
+    let store = Store::open(source.path()).unwrap();
+    store.put(b"a", b"old-a").unwrap();
+    store.put(b"b", b"old-b").unwrap();
+    let before = fs::read(source.path().join("records.log")).unwrap();
+    let old_boundary = marker(source.path());
+    let anchor = fs::read(source.path().join("commit.state")).unwrap();
+    store
+        .write_batch(&[
+            Op::Put {
+                key: b"a",
+                value: b"new-a",
+            },
+            Op::Put {
+                key: b"b",
+                value: b"new-b",
+            },
+        ])
+        .unwrap();
+    let after = fs::read(source.path().join("records.log")).unwrap();
+    let new_boundary = marker(source.path());
+    assert_eq!(&after[before.len()..before.len() + 4], b"DB02");
+    drop(store);
+    for length in before.len() + 1..after.len() {
+        let dir = tempdir().unwrap();
+        install(dir.path(), &after[..length], &anchor, Some(&old_boundary));
+        invalid(dir.path());
+        assert_eq!(marker(dir.path()), old_boundary, "truncation at {length}");
+    }
+    for position in before.len()..after.len() {
+        let dir = tempdir().unwrap();
+        let mut corrupt = after.clone();
+        corrupt[position] ^= 1;
+        install(dir.path(), &corrupt, &anchor, Some(&new_boundary));
+        invalid(dir.path());
+        assert_eq!(marker(dir.path()), new_boundary, "corruption at {position}");
+    }
+    let dir = tempdir().unwrap();
+    install(dir.path(), &after, &anchor, Some(&old_boundary));
+    let recovered = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        recovered.get_many(&[b"a", b"b"]).unwrap(),
+        vec![Some(b"new-a".to_vec()), Some(b"new-b".to_vec())]
+    );
+    assert_eq!(marker(dir.path()), new_boundary);
+}
+
+#[test]
+fn batch_nested_corruption_is_rejected_even_with_recomputed_outer_checksum() {
+    use database_engine::BatchOperation as Op;
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let start = fs::metadata(dir.path().join("records.log")).unwrap().len() as usize;
+    store
+        .write_batch(&[Op::Put {
+            key: b"a",
+            value: b"value",
+        }])
+        .unwrap();
+    drop(store);
+    let path = dir.path().join("records.log");
+    let mut log = fs::read(&path).unwrap();
+    // DB02 header + sentinel key + count + nested DB01 header + nested key.
+    let nested_value = start + 17 + 1 + 4 + 17 + 1;
+    log[nested_value] ^= 1;
+    let footer = log.len() - 4;
+    let checksum = crc32fast::hash(&log[start..footer]);
+    log[footer..].copy_from_slice(&checksum.to_le_bytes());
+    fs::write(&path, &log).unwrap();
+    assert!(
+        matches!(Store::open(dir.path()), Err(ref e) if e.kind() == io::ErrorKind::InvalidData)
+    );
+    assert_eq!(fs::read(path).unwrap(), log);
+}

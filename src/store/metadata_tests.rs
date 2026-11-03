@@ -166,3 +166,179 @@ fn metadata_fsync_must_complete_before_publication_or_acknowledgement() {
     ));
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
 }
+
+#[test]
+fn atomic_batch_is_not_published_until_metadata_fsync_completes() {
+    use crate::BatchOperation as Op;
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = Arc::new(store(
+        dir.path(),
+        Fault::Block,
+        Arc::clone(&armed),
+        entered_tx,
+        resume_rx,
+    ));
+    store.put(b"a", b"old-a").unwrap();
+    store.put(b"b", b"old-b").unwrap();
+    armed.store(true, Ordering::Release);
+    let writing = Arc::clone(&store);
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        let result = writing.write_batch(&[
+            Op::Put {
+                key: b"a",
+                value: b"new-a",
+            },
+            Op::Put {
+                key: b"b",
+                value: b"new-b",
+            },
+        ]);
+        done_tx.send(result).unwrap();
+    });
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let before = store.get_many(&[b"a", b"b"]);
+    let ack = done_rx.try_recv();
+    resume_tx.send(()).unwrap();
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    writer.join().unwrap();
+    assert_eq!(
+        before.unwrap(),
+        vec![Some(b"old-a".to_vec()), Some(b"old-b".to_vec())]
+    );
+    assert!(matches!(ack, Err(mpsc::TryRecvError::Empty)));
+    assert_eq!(
+        store.get_many(&[b"a", b"b"]).unwrap(),
+        vec![Some(b"new-a".to_vec()), Some(b"new-b".to_vec())]
+    );
+}
+
+#[test]
+fn atomic_batch_metadata_failures_never_publish_a_partial_batch() {
+    use crate::BatchOperation as Op;
+    for fault in [
+        Fault::Read,
+        Fault::WriteBefore,
+        Fault::WriteAfter,
+        Fault::SyncBefore,
+        Fault::SyncAfter,
+        Fault::Panic,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered, _) = mpsc::channel();
+        let (_, resume) = mpsc::channel();
+        let store = store(dir.path(), fault, Arc::clone(&armed), entered, resume);
+        store.put(b"a", b"old").unwrap();
+        store.put(b"b", b"old").unwrap();
+        armed.store(true, Ordering::Release);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.write_batch(&[
+                Op::Put {
+                    key: b"a",
+                    value: b"new",
+                },
+                Op::Put {
+                    key: b"b",
+                    value: b"new",
+                },
+            ])
+        }));
+        assert!(!matches!(outcome, Ok(Ok(()))));
+        assert!(store.get_many(&[b"a", b"b"]).is_err());
+        drop(store);
+        let reopened = Store::open(dir.path()).unwrap();
+        let pair = reopened.get_many(&[b"a", b"b"]).unwrap();
+        assert!(
+            pair == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
+                || pair == vec![Some(b"new".to_vec()), Some(b"new".to_vec())],
+            "partial batch: {pair:?}"
+        );
+    }
+}
+
+#[test]
+fn transaction_conflicts_with_writer_that_was_syncing_during_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = Arc::new(store(
+        dir.path(),
+        Fault::Block,
+        Arc::clone(&armed),
+        entered_tx,
+        resume_rx,
+    ));
+    store.put(b"key", b"old").unwrap();
+    armed.store(true, Ordering::Release);
+    let writing = Arc::clone(&store);
+    let writer = thread::spawn(move || writing.put(b"key", b"new"));
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let transactional = Arc::clone(&store);
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let transaction = thread::spawn(move || {
+        transactional.transaction(|tx| {
+            assert_eq!(tx.get(b"key")?.as_deref(), Some(&b"old"[..]));
+            tx.put(b"other", b"staged")?;
+            observed_tx.send(()).unwrap();
+            Ok(())
+        })
+    });
+    let observed = observed_rx.recv_timeout(Duration::from_secs(5));
+    resume_tx.send(()).unwrap();
+    writer.join().unwrap().unwrap();
+    observed.unwrap();
+    assert_eq!(
+        transaction.join().unwrap().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(store.get(b"other").unwrap(), None);
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+}
+
+#[test]
+fn transaction_commit_metadata_failures_never_recover_partial_writes() {
+    for fault in [
+        Fault::Read,
+        Fault::WriteBefore,
+        Fault::WriteAfter,
+        Fault::SyncBefore,
+        Fault::SyncAfter,
+        Fault::Panic,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered, _) = mpsc::channel();
+        let (_, resume) = mpsc::channel();
+        let store = store(dir.path(), fault, Arc::clone(&armed), entered, resume);
+        store.put(b"a", b"old").unwrap();
+        store.put(b"b", b"old").unwrap();
+        armed.store(true, Ordering::Release);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.transaction(|tx| {
+                tx.put(b"a", b"new")?;
+                tx.put(b"b", b"new")?;
+                Ok(())
+            })
+        }));
+        assert!(!matches!(outcome, Ok(Ok(()))));
+        assert!(store.get_many(&[b"a", b"b"]).is_err());
+        drop(store);
+        let pair = Store::open(dir.path())
+            .unwrap()
+            .get_many(&[b"a", b"b"])
+            .unwrap();
+        assert!(
+            pair == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
+                || pair == vec![Some(b"new".to_vec()), Some(b"new".to_vec())],
+            "partial transaction: {pair:?}"
+        );
+    }
+}

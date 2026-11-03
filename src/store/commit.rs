@@ -4,7 +4,7 @@
 //! publishes their index updates before waking the callers. Grouping is not a
 //! multi-key transaction: a failed or interrupted group has unknown outcomes.
 use super::Inner;
-use crate::log::{AppendRecord, Log};
+use crate::log::{AppendRecord, Log, prepare_batch};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 use std::collections::VecDeque;
 use std::io;
@@ -341,13 +341,36 @@ impl Coordinator {
             value_len: entry.value_len,
             checksum: entry.checksum,
         }))?;
+        // Fully validate every batch and allocate its index updates before
+        // synchronization and before taking the publication lock. Once the
+        // lock is held, publication has no fallible parsing or offset math.
+        let mut batch_updates = Vec::with_capacity(batch.len());
+        for (entry, &location) in batch.iter().zip(&locations) {
+            if entry.operation == Operation::Batch {
+                let start = HEADER_SIZE + entry.key.len();
+                let end = start
+                    .checked_add(entry.value_len)
+                    .ok_or_else(|| record::invalid_data("batch offset overflow"))?;
+                let payload = entry
+                    .encoded
+                    .get(start..end)
+                    .ok_or_else(|| record::invalid_data("incomplete encoded batch"))?;
+                batch_updates.push(Some(prepare_batch(payload, location)?));
+            } else {
+                batch_updates.push(None);
+            }
+        }
         // Never publish an index update or complete a caller before sync.
         log.sync_data()?;
         {
             let mut inner = inner
                 .write()
                 .map_err(|_| io::Error::other("store lock poisoned"))?;
-            for (entry, location) in batch.iter_mut().zip(locations) {
+            let next_generation = inner
+                .generation
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("commit generation exhausted; reopen the store"))?;
+            for ((entry, location), updates) in batch.iter_mut().zip(locations).zip(batch_updates) {
                 match entry.operation {
                     Operation::Put => {
                         inner.index.insert(std::mem::take(&mut entry.key), location);
@@ -355,8 +378,18 @@ impl Coordinator {
                     Operation::Delete => {
                         inner.index.remove(&entry.key);
                     }
+                    Operation::Batch => {
+                        for update in updates.expect("validated batch updates") {
+                            if let Some(location) = update.location {
+                                inner.index.insert(update.key, location);
+                            } else {
+                                inner.index.remove(&update.key);
+                            }
+                        }
+                    }
                 }
             }
+            inner.generation = next_generation;
         }
         let mut state = self.lock()?;
         let bytes = batch.iter().map(|entry| entry.encoded.len()).sum::<usize>();

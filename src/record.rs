@@ -3,15 +3,19 @@
 use std::io;
 
 const MAGIC: &[u8; 4] = b"DB01";
+const BATCH_MAGIC: &[u8; 4] = b"DB02";
 pub(crate) const HEADER_SIZE: usize = 17;
 pub(crate) const CHECKSUM_SIZE: usize = 4;
 const MAX_KEY: usize = 1024;
-const MAX_VALUE: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_VALUE: usize = 16 * 1024 * 1024;
+
+pub(crate) mod batch;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Operation {
     Put,
     Delete,
+    Batch,
 }
 
 pub(crate) struct Header {
@@ -22,12 +26,13 @@ pub(crate) struct Header {
 
 impl Header {
     pub(crate) fn parse(bytes: &[u8; HEADER_SIZE]) -> io::Result<Self> {
-        if &bytes[..4] != MAGIC || crc32fast::hash(&bytes[..13]) != read_u32(&bytes[13..17]) {
+        if crc32fast::hash(&bytes[..13]) != read_u32(&bytes[13..17]) {
             return Err(invalid_data("invalid record header"));
         }
-        let operation = match bytes[4] {
-            1 => Operation::Put,
-            2 => Operation::Delete,
+        let operation = match (&bytes[..4], bytes[4]) {
+            (magic, 1) if magic == MAGIC => Operation::Put,
+            (magic, 2) if magic == MAGIC => Operation::Delete,
+            (magic, 3) if magic == BATCH_MAGIC => Operation::Batch,
             _ => return Err(invalid_data("invalid record operation")),
         };
         let key_len = read_u32(&bytes[5..9]) as usize;
@@ -36,6 +41,7 @@ impl Header {
             || key_len > MAX_KEY
             || value_len > MAX_VALUE
             || (operation == Operation::Delete && value_len != 0)
+            || (operation == Operation::Batch && key_len != 1)
         {
             return Err(invalid_data("invalid record length"));
         }
@@ -59,16 +65,24 @@ pub(crate) fn validate(operation: Operation, key: &[u8], value: &[u8]) -> io::Re
     if operation == Operation::Delete && !value.is_empty() {
         return Err(invalid_input("delete records cannot have a value"));
     }
+    if operation == Operation::Batch && key != [0] {
+        return Err(invalid_input("invalid batch record key"));
+    }
     Ok(())
 }
 
 pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<Vec<u8>> {
     validate(operation, key, value)?;
     let mut record = Vec::with_capacity(HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE);
-    record.extend_from_slice(MAGIC);
+    record.extend_from_slice(if operation == Operation::Batch {
+        BATCH_MAGIC
+    } else {
+        MAGIC
+    });
     record.push(match operation {
         Operation::Put => 1,
         Operation::Delete => 2,
+        Operation::Batch => 3,
     });
     record.extend_from_slice(&(key.len() as u32).to_le_bytes());
     record.extend_from_slice(&(value.len() as u32).to_le_bytes());

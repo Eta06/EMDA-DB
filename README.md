@@ -10,10 +10,10 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
-| Embedded key-value core | Prototype | Byte-key `put`, `get`, bounded bulk reads, `delete`, conditional compare-exchange, signed 64-bit increment, and ordered paginated scans; one store per process with an advisory lock. |
+| Embedded key-value core | Prototype | Byte-key operations, bounded bulk reads, atomic write batches, conditional updates, signed 64-bit increments, and ordered paginated scans; one store per process with an advisory lock. |
 | Persistence and recovery | Prototype, limited | On supported Linux filesystems, V3 synchronizes log data and a metadata witness in one full inode sync; V2 retains two syncs. Both detect loss below an intact boundary; incomplete tails fail closed. Legacy stores retain their earlier limitations. Power-loss safety is not established. |
 | Backup and restore | Prototype | Full-log backup verifies record checksums and a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
-| Concurrent access | Prototype, limited | Concurrent writes can share a sync; preparation and value reads do not hold the queue or index lock. Multi-key transactions and isolation levels are not implemented. |
+| Concurrent access | Prototype, limited | Concurrent writes can share a sync. Bounded optimistic serializable transactions support point and range reads; any concurrent mutation conflicts. |
 | Benchmarking | Expanded local baseline | Ten engines across six byte-key workloads: 264 repeated measurements, 36 CPU-affinity comparisons, and eleven process-restart configurations. VM interference is recorded; broader feature workloads remain planned. |
 | Versioning and CI | In progress | Changelog, format marker, release workflow, and automated tests exist; no release has been tagged and the release workflow has not run on a real tag. |
 | SQL, document model, and queries | Planned | Require transaction semantics, schema/query design, and indexes. |
@@ -31,6 +31,26 @@ Our intended features include a shared engine for key-value, document, and SQL i
 **No performance optimization may violate the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](docs/STORAGE_TRANSACTION_CONTRACT.md) and [project isolation design goals](docs/PROJECT_ISOLATION.md) for current limitations and the evidence required before making a guarantee.
 
 The engine appends checksummed records to a log, synchronizes every successful mutation before returning, and rebuilds an in-memory key-to-file-offset index when reopened. Concurrent single-key writes can share one synchronization; this is not a multi-key transaction. Values are read from disk. A single log writer is coordinated with concurrent readers within the process; an advisory lock prevents multiple cooperating processes from opening the same database directory. Incomplete or invalid records cause opening to fail without truncating the log.
+
+`Store::write_batch` atomically publishes an ordered set of puts and deletes in one synchronized record. It supports up to 1,024 operations and a 16 MiB encoded payload, and requires a witnessed V2/V3 store. A failed write can have an unknown outcome. Batches introduce `DB02` records: **older revisions cannot reopen logs containing them**. See [format compatibility](docs/VERSIONING.md#independent-compatibility-boundaries). A batch is a blind atomic write. `Store::transaction` additionally offers optimistic serializable read-modify-write transactions with bounded snapshots, point/range reads and rollback on callback error. Any intervening mutation causes a `WouldBlock` conflict; callbacks are never automatically retried, and external side effects are not rolled back. Transaction snapshots currently support at most 16,384 keys and 4 MiB of key bytes. Writes use the same DB02 format and compatibility rules.
+
+For example, a transaction can read and update multiple keys together:
+
+```rust
+use database_engine::Store;
+
+fn example(db: &Store) -> std::io::Result<()> {
+    db.transaction(|tx| {
+        let old = tx.get(b"account:1")?;
+        if old.as_deref() == Some(b"open") {
+            tx.put(b"account:1", b"closed")?;
+            tx.put(b"audit:1", b"closed")?;
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+```
 
 `Store::scan` returns keys in bytewise order with exclusive optional bounds. Each call captures the index at one instant, but separate pages can see concurrent changes. A page contains at most 1,024 entries and 32 MiB of key/value bytes. Because the byte limit can make a page short, continue using its last key until a page is empty.
 
@@ -63,7 +83,7 @@ fn main() -> std::io::Result<()> {
 }
 ```
 
-This is an early experiment, **not a production database**. It does not yet offer transactions across keys, SQL, documents, queries, secondary indexes, automatic live compaction, bounded index memory, authentication, a production network service, project isolation, distributed replication, or an automatic sleep/wake service. Its append-only log grows indefinitely and recovery scans it entirely. Deletion adds a tombstone: earlier values remain in the log and full-log backups. Checksums detect some corruption but cannot recover damaged data. New stores can detect log truncation before an intact commit witness; rollback of both log data and witness (including V3 filesystem metadata) can still go undetected. `Store::upgrade_format` creates a verified copy of an older database at a new path. V3 requires Linux user xattrs and full `fsync`; existing V2 stores keep their two-sync path. Missing V3 metadata fails closed. Use the backup/restore API for copies, or preserve xattrs as well as the log and identity file. Backups are unencrypted full-log copies and are not authenticated. File locking is advisory and depends on filesystem behavior. Backup restore publication is supported on Linux and Apple platforms; only Linux has been tested. Durability depends on correct filesystem and storage-device behavior; tests cannot prove protection against all hardware failures. An I/O error during a mutation leaves its outcome uncertain; the instance refuses further operations until reopened.
+This is an early experiment, **not a production database**. It does not yet offer SQL, documents, general query planning, secondary indexes, automatic live compaction, bounded index memory, authentication, a production network service, project isolation, distributed replication, or an automatic sleep/wake service. Its append-only log grows indefinitely and recovery scans it entirely. Deletion adds a tombstone: earlier values remain in the log and full-log backups. Checksums detect some corruption but cannot recover damaged data. New stores can detect log truncation before an intact commit witness; rollback of both log data and witness (including V3 filesystem metadata) can still go undetected. `Store::upgrade_format` creates a verified copy of an older database at a new path. V3 requires Linux user xattrs and full `fsync`; existing V2 stores keep their two-sync path. Missing V3 metadata fails closed. Use the backup/restore API for copies, or preserve xattrs as well as the log and identity file. Backups are unencrypted full-log copies and are not authenticated. File locking is advisory and depends on filesystem behavior. Backup restore publication is supported on Linux and Apple platforms; only Linux has been tested. Durability depends on correct filesystem and storage-device behavior; tests cannot prove protection against all hardware failures. An I/O error during a mutation leaves its outcome uncertain; the instance refuses further operations until reopened.
 
 To develop this repository, install Rust 1.85 or newer and Python 3.11 or newer, then run:
 

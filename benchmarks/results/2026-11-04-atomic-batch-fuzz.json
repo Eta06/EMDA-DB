@@ -1,0 +1,22 @@
+{
+  "scope": "Recovery fuzz campaign including a valid witnessed V2 DB02 batch seed. Not a physical power-loss test.",
+  "base_revision": "bf7821761230bc37b182db34d4bbb0c27752e41c",
+  "source_state": "Uncommitted batch implementation; transaction generation changes were added after the fuzz binary was built. Listed parser source hashes and the binary hash identify the tested parser and binary; a subsequent clean-revision campaign is needed for full provenance.",
+  "parser_sha256": {
+    "src/record.rs": "380e84f54419efbc7735a839dc4ab1d1da93859ff74234d10273e308e68bb4d8",
+    "src/record/batch.rs": "7b4c581772f2be28ce61ddc11494d368badac32a7357642108f4e829795edbc9",
+    "src/log.rs": "f128603b17fd826f812d2877d232b8924922b5cd18610a4349f9677012a1df37"
+  },
+  "binary_sha256": "50993f2f79fcf2a55931f2b1e44e97ddb97183d72131aa64d2fea67d80edae95",
+  "seed_sha256": "02cd2d374838b4b03918a7dc07248fc0b8ac9d628569ec5c1cd8eef5d2f99af5",
+  "toolchain": "nightly-2026-11-03",
+  "seed": 1607960713,
+  "initial_seed_files": 5,
+  "seconds": 181,
+  "executions": 440108,
+  "coverage_counters_hit": 710,
+  "features": 1021,
+  "max_input_bytes": 8192,
+  "result": "no crash or sanitizer finding",
+  "limitations": "Single short local campaign; does not establish production durability or validate all transaction interleavings."
+}

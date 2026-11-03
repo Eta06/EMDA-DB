@@ -2,7 +2,7 @@
 
 Research snapshot: 3 November 2026. This is a structured inventory of major engine and operational capabilities, not an exhaustive enumeration of every command, extension, managed-service feature, or release-specific option. PostgreSQL references below are to the current PostgreSQL 18 documentation; MongoDB references are to its current database manual. MongoDB features can depend on server version, edition, deployment topology, or Atlas. PostgreSQL extensions and external services are identified where relevant. Verify exact details before using a feature as a compatibility or benchmark requirement.
 
-**Current prototype:** embedded byte-key/value `put`, `get`, and `delete`; checksum-verified append log; single log writer with bounded group commit and concurrent readers; fail-closed incomplete-tail handling; experimental full-log backup/restore; advisory exclusive lock. It has none of the SQL, document, multi-key transaction, index, server, cloud, or distributed features listed below unless explicitly stated. This table is a research backlog, not a feature commitment.
+**Current prototype:** embedded byte-key/value `put`, `get`, and `delete`; checksum-verified append log; single log writer with bounded group commit and concurrent readers; fail-closed incomplete-tail handling; experimental full-log backup/restore; advisory exclusive lock. It has an experimental bounded multi-key transaction API; SQL, document, secondary index, server, cloud, and distributed features remain unimplemented unless explicitly stated. This table is a research backlog, not a feature commitment.
 
 ## Models and operations
 
@@ -15,7 +15,7 @@ Research snapshot: 3 November 2026. This is a structured inventory of major engi
 | Update | `UPDATE`, conditional expressions | Update one/many, update operators, update pipelines | Replace one value via `put` |
 | Delete | `DELETE` | Delete one/many | Single key `delete` |
 | Upsert | `INSERT ... ON CONFLICT` | Upsert options on supported operations | Overwrite and single-key compare-exchange are supported; no document or SQL upsert |
-| Bulk operations | Multi-row SQL, `COPY` | Bulk write and multiple-document operations | Bounded bulk reads; no bulk writes or atomic batches |
+| Bulk operations | Multi-row SQL, `COPY` | Bulk write and multiple-document operations | Bounded bulk reads and atomic ordered write batches |
 | Filtering and projection | SQL `WHERE` and selected expressions | Query operators and projected fields | No filters or projection |
 | Sort, limit, pagination | `ORDER BY`, `LIMIT`, cursors | Sort, limit, cursors | Bytewise ordered scan with exclusive bounds, bounded pages and process-local read-only snapshots |
 | Joins and relationships | Joins and foreign keys | `$lookup`, references and embedded documents | None |
@@ -42,9 +42,9 @@ Research snapshot: 3 November 2026. This is a structured inventory of major engi
 
 | Capability | PostgreSQL | MongoDB | Prototype |
 | --- | --- | --- | --- |
-| Atomic operations | SQL transactions | Single-document writes atomic; multi-document transactions supported with deployment restrictions | One mutation serialized and synced; no multi-key transaction |
-| Isolation and concurrency | MVCC, locks, multiple isolation levels | Concurrency controls and transaction/read/write concerns | Concurrent readers and grouped single-key writes; no transaction isolation levels |
-| Compare-and-set / conditional update | Conditional `UPDATE` and transaction patterns | Conditional filters on update | Single-key byte-value compare-exchange; no multi-key conditions |
+| Atomic operations | SQL transactions | Single-document writes atomic; multi-document transactions supported with deployment restrictions | Synchronized single-key writes and atomic multi-key write batches; bounded optimistic serializable read-modify-write transactions |
+| Isolation and concurrency | MVCC, locks, multiple isolation levels | Concurrency controls and transaction/read/write concerns | Optimistic serializable transactions over bounded snapshots; any intervening mutation conflicts |
+| Compare-and-set / conditional update | Conditional `UPDATE` and transaction patterns | Conditional filters on update | Single-key compare-exchange and transactional conditions; no SQL/document predicates |
 | Write-ahead log and recovery | WAL and crash recovery | Journaling and recovery; guarantees depend on configuration and write concern | Append log and checksums; incomplete tails rejected without automatic repair |
 | Checkpoints, compaction, cleanup | Checkpoints, vacuum and related maintenance | Storage-engine maintenance; details depend on engine/deployment | Verified separate-copy compaction; no live compaction or checkpoints; full log replay |
 | Backup and point-in-time recovery | `pg_dump`, physical backups and WAL-based recovery when configured | Backup tooling and deployment-specific/Atlas backup options | Experimental full-log backup/restore; no PITR |
@@ -77,9 +77,9 @@ These are different categories of systems; an engine, a database service, and a 
 | [Redis](https://redis.io/docs/latest/get-started/) | In-memory data structures, atomic operations, replication and configurable persistence. Assess data structures, expiration, pub/sub, streams and operational semantics by version. | No in-memory database mode, TTL, pub/sub or replication. |
 | [Turso Database](https://docs.turso.tech/tursodb/concurrent-writes) | Rust, SQLite-compatible embedded engine. Its default allows one writer; MVCC concurrent writes require explicit configuration and conflict retries. Some features are experimental. | No SQL or comparable concurrent transaction mode. |
 | [SpacetimeDB](https://spacetimedb.com/docs/) | In-memory relational state, transactional reducers, durable commit log and subscriptions. Current server licensing is BSL and must be reviewed before use. | No relational model, reducers, subscriptions or replicated service. |
-| [FoundationDB](https://apple.github.io/foundationdb/) | Distributed ordered key-value database with ACID transactions; assess clustering, fault tolerance and operational cost. | No multi-key transactions or distribution. |
-| [RocksDB](https://rocksdb.org/docs/) | Embedded ordered key-value engine with an LSM tree, WAL, compaction, column families, snapshots, iterators and batching. | Separate-copy compaction and ordered scans; no live compaction, column families or multi-key batches. |
-| [LMDB](https://www.symas.com/lmdb) | Embedded memory-mapped key-value engine with ACID transactions, concurrent readers, a single writer, named databases and cursors. | No multi-key transactions, snapshot API, named databases or cursors. |
+| [FoundationDB](https://apple.github.io/foundationdb/) | Distributed ordered key-value database with ACID transactions; assess clustering, fault tolerance and operational cost. | Bounded serializable transaction prototype; no distribution. |
+| [RocksDB](https://rocksdb.org/docs/) | Embedded ordered key-value engine with an LSM tree, WAL, compaction, column families, snapshots, iterators and batching. | Separate-copy compaction and ordered scans; no live compaction or column families. |
+| [LMDB](https://www.symas.com/lmdb) | Embedded memory-mapped key-value engine with ACID transactions, concurrent readers, a single writer, named databases and cursors. | Bounded in-process snapshots and transactions; no named databases or persistent cursors. |
 | [DuckDB](https://duckdb.org/docs/stable/) | Embedded analytical SQL engine with columnar execution, joins, aggregations and external-file queries. | No SQL or analytical execution; point writes do not measure DuckDB's main strengths. |
 | [Cloudflare D1](https://developers.cloudflare.com/d1/) | Managed SQLite-semantics databases with per-database resource limits and overload behavior. | Embedded local prototype; no hosted service or management plane. |
 | [Neon](https://neon.com/docs/introduction/architecture-overview) | Serverless PostgreSQL architecture separates compute and durable storage and supports idle compute suspension. | No remote storage layer or automatic project sleep/wake. |

@@ -6,7 +6,7 @@ See [foundation and storage follow-up](FOUNDATION_FOLLOW_UP.md) for deferred val
 
 ## Current baseline
 
-The prototype provides byte-key operations, a checksummed append log, fail-closed handling of incomplete records, concurrent readers and bounded group commit, experimental backup/restore, separate-copy compaction, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, live-store compaction is not implemented, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
+The prototype provides byte-key operations, a checksummed append log, fail-closed handling of incomplete records, concurrent readers and bounded group commit, experimental backup/restore, separate-copy compaction, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, live-store compaction is not implemented, multi-key transactions are an early bounded prototype, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
 
 ## Priority 0: correctness and measurable foundations
 
@@ -28,7 +28,7 @@ Exit evidence: documented guarantees and known failure boundaries, repeatable fa
 - Persistent on-disk index and bounded memory/cache management; avoid requiring every key or value to fit in RAM.
 - Log checkpoints, in-place/online compaction, garbage collection, and bounded recovery time. A verified separate-copy compaction prototype exists; it does not switch the live store or bound memory.
 - Ordered range scans, pagination and bulk reads: **prototype implemented** with entry/byte limits. Bounded read-only snapshots offer stable pages within one process and have per-store aggregate key/count limits; transaction snapshots remain open. Single-key compare-exchange and signed 64-bit increment are implemented and serialized against mutations. Bulk writes remain planned.
-- Atomic batches and multi-key transactions with a specified isolation model, conflict behavior, and rollback.
+- Atomic batches and optimistic serializable read-modify-write transactions: **prototype implemented** with bounded snapshots and DB02 records, including explicit older-reader incompatibility. Transactions conservatively conflict on any intervening mutation; broader model checking, workloads, and transaction resource controls remain open.
 - Safe coordination between concurrent readers and writers, connection/request limits, and fair overload handling.
 - Explicit limits and storage quotas. Optional per-open log-length and live-key count caps exist; persistent project-wide quotas, other files and memory limits remain open. No performance optimization may violate the durability, isolation, or recovery guarantees in force; see the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md).
 

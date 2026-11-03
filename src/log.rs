@@ -17,6 +17,39 @@ pub(crate) struct ValueLocation {
     checksum: u32,
 }
 
+pub(crate) struct BatchUpdate {
+    pub(crate) key: Vec<u8>,
+    pub(crate) location: Option<ValueLocation>,
+}
+
+/// Decode and validate every child before the caller publishes any changes.
+pub(crate) fn prepare_batch(payload: &[u8], outer: ValueLocation) -> io::Result<Vec<BatchUpdate>> {
+    if payload.len() != outer.length {
+        return Err(record::invalid_data("batch value length mismatch"));
+    }
+    record::batch::decode_payload(payload)?
+        .into_iter()
+        .map(|entry| {
+            let location = match entry.operation {
+                Operation::Put => Some(ValueLocation {
+                    offset: outer
+                        .offset
+                        .checked_add(entry.value_offset as u64)
+                        .ok_or_else(|| record::invalid_data("batch value offset overflow"))?,
+                    length: entry.value_len,
+                    checksum: entry.checksum,
+                }),
+                Operation::Delete => None,
+                Operation::Batch => return Err(record::invalid_data("nested batch")),
+            };
+            Ok(BatchUpdate {
+                key: entry.key.to_vec(),
+                location,
+            })
+        })
+        .collect()
+}
+
 pub(crate) struct AppendRecord<'a> {
     pub(crate) encoded: &'a [u8],
     pub(crate) key_len: usize,
@@ -349,6 +382,34 @@ impl Log {
                 }
                 Operation::Delete => {
                     index.remove(&key);
+                }
+                Operation::Batch => {
+                    if key != [0] {
+                        return Err(record::invalid_data("invalid batch record key"));
+                    }
+                    let outer = ValueLocation {
+                        offset: offset + HEADER_SIZE as u64 + header.key_len as u64,
+                        length: header.value_len,
+                        checksum: crc32fast::hash(&payload[header.key_len..]),
+                    };
+                    for update in prepare_batch(&payload[header.key_len..], outer)? {
+                        match update.location {
+                            Some(location) => {
+                                if max_live_keys.is_some_and(|max| {
+                                    index.len() >= max && !index.contains_key(&update.key)
+                                }) {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "recovery live key limit would be exceeded",
+                                    ));
+                                }
+                                index.insert(update.key, location);
+                            }
+                            None => {
+                                index.remove(&update.key);
+                            }
+                        }
+                    }
                 }
             }
             offset += record_len;

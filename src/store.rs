@@ -10,17 +10,21 @@ use std::ops::Bound::{Excluded, Unbounded};
 use std::path::Path;
 use std::sync::{Mutex, RwLock, RwLockReadGuard};
 
+mod atomic_batch;
 mod commit;
 mod compact;
 mod snapshot;
+mod transaction;
 use commit::Coordinator;
 pub use snapshot::{
     MAX_ACTIVE_SNAPSHOTS, MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES,
     MAX_SNAPSHOT_TOTAL_KEYS, Snapshot,
 };
+pub use transaction::Transaction;
 
 struct Inner {
     index: BTreeMap<Vec<u8>, ValueLocation>,
+    generation: u64,
 }
 
 /// A key and its value returned by an ordered scan.
@@ -122,7 +126,10 @@ impl Store {
         let (log, index) = open_log(path, may_initialize)?;
         Ok(Self {
             log,
-            inner: RwLock::new(Inner { index }),
+            inner: RwLock::new(Inner {
+                index,
+                generation: 0,
+            }),
             writes: RwLock::new(()),
             commits: Coordinator::new(),
             max_log_bytes: None,

@@ -15,7 +15,9 @@ mod recovery;
 mod store;
 mod witness;
 
+pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use store::{
     Entry, MAX_ACTIVE_SNAPSHOTS, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES, MAX_SNAPSHOT_KEY_BYTES,
     MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES, MAX_SNAPSHOT_TOTAL_KEYS, Snapshot, Store,
+    Transaction,
 };

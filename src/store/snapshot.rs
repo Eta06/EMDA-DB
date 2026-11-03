@@ -48,7 +48,8 @@ impl SnapshotBudget {
 /// not byte-accurate process memory limits and do not apply across stores.
 pub struct Snapshot<'a> {
     store: &'a Store,
-    index: BTreeMap<Vec<u8>, ValueLocation>,
+    pub(super) index: BTreeMap<Vec<u8>, ValueLocation>,
+    pub(super) generation: u64,
     reserved_keys: usize,
     reserved_key_bytes: usize,
 }
@@ -98,6 +99,7 @@ impl Store {
         let mut snapshot = Snapshot {
             store: self,
             index: BTreeMap::new(),
+            generation: inner.generation,
             reserved_keys: key_count,
             reserved_key_bytes: key_bytes,
         };
@@ -109,12 +111,17 @@ impl Store {
 }
 
 impl Snapshot<'_> {
-    /// Reads the value selected when this snapshot was created.
-    pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        record::validate_key(key)?;
+    pub(super) fn ensure_healthy(&self) -> io::Result<()> {
         if self.store.commits.failed() {
             return Err(uncertain_error());
         }
+        Ok(())
+    }
+
+    /// Reads the value selected when this snapshot was created.
+    pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        record::validate_key(key)?;
+        self.ensure_healthy()?;
         self.index
             .get(key)
             .copied()
