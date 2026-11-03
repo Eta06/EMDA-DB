@@ -8,6 +8,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Explicit witnessed-store index checkpoints with a separately trusted SHA-256 digest, historical key-peak enforcement, non-overwriting publication and suffix replay. Checkpoint opening still hashes the covered log prefix and loads the index into memory; checkpoints are plaintext derived data, not backups.
+- A checkpoint parser fuzz target and fixed V2/DB02 index fixtures, including forged-checkpoint and unknown-codec cases.
 - Atomic ordered multi-key write batches, encoded as one synchronized `DB02` record with individually checked nested records. Older revisions cannot open logs containing `DB02`; witnessed V2/V3 stores are required.
 - Bounded optimistic serializable read-modify-write transactions with point/range reads, read-your-writes, rollback on callback failure and conservative store-wide conflict detection. Callbacks are never automatically retried. A preliminary 440,108-input recovery fuzz run included a valid DB02 seed; provenance and limits are recorded in `benchmarks/results/2026-11-04-atomic-batch-fuzz.json`.
 

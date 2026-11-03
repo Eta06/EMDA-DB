@@ -17,9 +17,10 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 
 ## Priority 1: durable storage and core operations
 
-- [ ] Implement a durable on-disk index and bounded memory/cache management; the existing in-memory index grows with the number of keys.
+- [x] Add an explicit on-disk index checkpoint verified against a separately trusted digest and suffix replay, with historical peak accounting and fail-closed corruption/format checks. The checkpoint is a derived plaintext file, not a backup or a security boundary when its digest is attacker-controlled.
+- [ ] Implement a live disk-backed index and bounded memory/cache management; opening a checkpoint still loads the full key index into memory and hashes the complete covered log prefix.
 - [x] Add verified, non-overwriting compaction into a separate store while keeping the source intact and blocking concurrent mutations during the copy.
-- [ ] Design and implement crash-safe checkpoints, live/online compaction, garbage collection and bounded recovery. Protect readers and any future snapshots during reclamation. Separate-copy compaction currently needs multiple in-memory indexes, requires manual switchover and does not include later source writes.
+- [ ] Design and implement automatic checkpoints, live/online compaction, garbage collection and bounded recovery. Explicit index checkpoints still hash the full covered prefix. Protect readers and snapshots during reclamation. Separate-copy compaction currently needs multiple in-memory indexes, requires manual switchover and does not include later source writes.
 - [x] Add initial bytewise ordered scans with exclusive bounds and pagination. Each page is limited to 1,024 entries and 32 MiB of key/value data; ordinary scan pages can see changes. Continue until an empty page; a byte-limited page can be short.
 - [x] Add single-key compare-exchange for conditional put/delete, synchronized on success and serialized against mutations; it does not detect ABA changes or provide multi-key transactions.
 - [x] Add signed 64-bit atomic increment with checked overflow and specified byte encoding; it is serialized against mutations.

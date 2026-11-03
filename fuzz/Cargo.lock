@@ -87,6 +87,7 @@ dependencies = [
  "database-engine",
  "libfuzzer-sys",
  "rustix",
+ "sha2",
  "tempfile",
 ]
 

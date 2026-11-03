@@ -1,5 +1,6 @@
 //! Append, durability, read verification, and recovery for the record log.
 
+use crate::checkpoint;
 use crate::log_io::LogIo;
 use crate::metadata_witness;
 use crate::record::{self, HEADER_SIZE, Header, Operation};
@@ -12,9 +13,9 @@ use std::path::Path;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ValueLocation {
-    offset: u64,
+    pub(crate) offset: u64,
     pub(crate) length: usize,
-    checksum: u32,
+    pub(crate) checksum: u32,
 }
 
 pub(crate) struct BatchUpdate {
@@ -78,6 +79,33 @@ impl Log {
         may_initialize: bool,
         max_live_keys: Option<usize>,
         max_log_bytes: Option<u64>,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+        Self::open_configured(path, may_initialize, max_live_keys, max_log_bytes, None)
+    }
+
+    pub(crate) fn open_with_checkpoint(
+        path: &Path,
+        may_initialize: bool,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        max_live_keys: Option<usize>,
+        max_log_bytes: Option<u64>,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+        Self::open_configured(
+            path,
+            may_initialize,
+            max_live_keys,
+            max_log_bytes,
+            Some((checkpoint, trusted_digest)),
+        )
+    }
+
+    fn open_configured(
+        path: &Path,
+        may_initialize: bool,
+        max_live_keys: Option<usize>,
+        max_log_bytes: Option<u64>,
+        checkpoint: Option<(&Path, &[u8; 32])>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log_path = path.join("records.log");
         let witness_exists = witness::exists(path)?;
@@ -152,8 +180,15 @@ impl Log {
             }
         };
         let file: Box<dyn LogIo> = Box::new(file);
-        let (mut log, index) =
-            Self::from_parts(file, id, witness, boundary, metadata, max_live_keys)?;
+        let (mut log, index) = Self::from_parts(
+            file,
+            id,
+            witness,
+            boundary,
+            metadata,
+            max_live_keys,
+            checkpoint,
+        )?;
         log.anchor = anchor;
         if let Some(boundary) = boundary {
             let total = log.file.len()?;
@@ -172,7 +207,7 @@ impl Log {
         let (id, metadata) = log_identity(file.as_ref())?;
         // Backup readers contain only the log bytes; their length and digest
         // are verified separately before a fresh witness is installed.
-        Self::from_parts(file, id, None, None, metadata, None)
+        Self::from_parts(file, id, None, None, metadata, None, None)
     }
 
     fn from_parts(
@@ -182,6 +217,7 @@ impl Log {
         boundary: Option<u64>,
         metadata: bool,
         max_live_keys: Option<usize>,
+        checkpoint: Option<(&Path, &[u8; 32])>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log = Self {
             file,
@@ -190,7 +226,25 @@ impl Log {
             metadata,
             anchor: None,
         };
-        let index = log.recover(boundary, max_live_keys)?;
+        let start = if let Some((path, trusted_digest)) = checkpoint {
+            let witnessed = boundary.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "checkpoint requires a witnessed store",
+                )
+            })?;
+            Some(checkpoint::load(
+                path,
+                &log,
+                witnessed,
+                max_live_keys,
+                trusted_digest,
+            )?)
+        } else {
+            None
+        };
+        let mut peak = start.as_ref().map_or(0, |checkpoint| checkpoint.peak);
+        let index = log.recover_from(boundary, max_live_keys, start, &mut peak)?;
         Ok((log, index))
     }
 
@@ -314,26 +368,32 @@ impl Log {
     pub(crate) fn verify_index(
         &self,
         expected: &BTreeMap<Vec<u8>, ValueLocation>,
-    ) -> io::Result<()> {
+    ) -> io::Result<usize> {
         self.verify_witness()?;
-        if &self.recover(None, None)? != expected {
+        let mut peak = 0;
+        if &self.recover_from(None, None, None, &mut peak)? != expected {
             return Err(record::invalid_data(
                 "live index does not match verified log",
             ));
         }
-        self.verify_witness()
+        self.verify_witness()?;
+        Ok(peak)
     }
 
-    fn recover(
+    fn recover_from(
         &self,
         boundary: Option<u64>,
         max_live_keys: Option<usize>,
+        start: Option<checkpoint::Loaded>,
+        peak: &mut usize,
     ) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
-        let mut index = BTreeMap::new();
         let total = self.file.len()?;
-        let mut offset = 0_u64;
-        let mut reader = RecoveryReader::new(self.file.as_ref(), total);
-        if self.log_id.is_some() {
+        let (mut index, mut offset) = match start {
+            Some(checkpoint) => (checkpoint.index, checkpoint.prefix),
+            None => (BTreeMap::new(), 0),
+        };
+        let mut reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
+        if offset == 0 && self.log_id.is_some() {
             let mut header = [0_u8; LOG_HEADER_SIZE];
             reader.read_exact(&mut header)?;
             if self.metadata {
@@ -409,9 +469,11 @@ impl Log {
                                 index.remove(&update.key);
                             }
                         }
+                        *peak = (*peak).max(index.len());
                     }
                 }
             }
+            *peak = (*peak).max(index.len());
             offset += record_len;
             if boundary == Some(offset) {
                 saw_boundary = true;

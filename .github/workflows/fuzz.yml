@@ -25,10 +25,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/recovery-corpus"
           cp fuzz/seeds/* "$RUNNER_TEMP/recovery-corpus/"
           cargo +nightly-2026-11-03 fuzz run recovery "$RUNNER_TEMP/recovery-corpus" -- -max_total_time=60 -max_len=8192 -timeout=10
+      - name: Run checkpoint parser fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/checkpoint-corpus"
+          cp fuzz/checkpoint-seeds/* "$RUNNER_TEMP/checkpoint-corpus/"
+          cargo +nightly-2026-11-03 fuzz run checkpoint "$RUNNER_TEMP/checkpoint-corpus" -- -max_total_time=60 -max_len=8192 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: recovery-fuzz-reproducer
-          path: fuzz/artifacts/recovery/
+          path: fuzz/artifacts/
           if-no-files-found: ignore

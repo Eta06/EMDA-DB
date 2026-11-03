@@ -6,6 +6,7 @@
 compile_error!("this prototype currently supports Unix-like systems only");
 
 mod backup;
+mod checkpoint;
 mod directory;
 mod log;
 mod log_io;

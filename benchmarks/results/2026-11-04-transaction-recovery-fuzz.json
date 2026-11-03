@@ -1,0 +1,17 @@
+{
+  "source_revision": "66b2dfc967ef094fefbac795f761a75c8a13e7d8",
+  "git_status": "",
+  "binary_sha256": "ce5d8b15e7aa9a57a4cf67f003658183be57eff4e55ad9861a75a57b66e4a7e7",
+  "seed_sha256": "02cd2d374838b4b03918a7dc07248fc0b8ac9d628569ec5c1cd8eef5d2f99af5",
+  "command": "cargo +nightly-2026-11-03 fuzz run recovery CORPUS -- -max_total_time=120 -max_len=8192 -timeout=10",
+  "scope": "Recovery parser including witnessed DB02 atomic-batch seed",
+  "toolchain": "nightly-2026-11-03",
+  "initial_seeds": 5,
+  "seed": 3421053320,
+  "duration_seconds": 121,
+  "executions": 263011,
+  "coverage_counters_hit": 701,
+  "features": 1101,
+  "result": "no crash or sanitizer finding",
+  "limitations": "One short local campaign; not a power-loss test or exhaustive transaction verification."
+}

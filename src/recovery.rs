@@ -25,6 +25,18 @@ impl<'a> RecoveryReader<'a> {
         }
     }
 
+    pub(crate) fn at(file: &'a dyn LogIo, total: u64, offset: u64) -> io::Result<Self> {
+        if offset > total {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "recovery offset exceeds log length",
+            ));
+        }
+        let mut reader = Self::new(file, total);
+        reader.offset = offset;
+        Ok(reader)
+    }
+
     pub(crate) fn read_exact(&mut self, mut output: &mut [u8]) -> io::Result<()> {
         if output.len() as u64 > self.total - self.offset {
             return Err(io::Error::new(

@@ -652,3 +652,31 @@ fn short_read_in_large_direct_payload_preserves_log() {
         Some(value)
     );
 }
+
+#[test]
+fn checkpoint_parent_sync_failure_reports_uncertain_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"key", b"value").unwrap();
+    let checkpoint = dir.path().join("index");
+    let inner = store.read().unwrap();
+    let error = crate::checkpoint::create_with_sync(&store.log, &inner.index, &checkpoint, |_| {
+        Err(io::Error::other("injected directory sync failure"))
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("may exist"));
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+    drop(inner);
+    drop(store);
+    let bytes = std::fs::read(&checkpoint).unwrap();
+    let token: [u8; 32] = bytes[bytes.len() - 32..].try_into().unwrap();
+    assert_eq!(
+        Store::open_with_checkpoint(&source, &checkpoint, &token)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"value"[..])
+    );
+}

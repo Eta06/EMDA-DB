@@ -25,7 +25,7 @@ Exit evidence: documented guarantees and known failure boundaries, repeatable fa
 
 ## Priority 1: durable storage and core operations
 
-- Persistent on-disk index and bounded memory/cache management; avoid requiring every key or value to fit in RAM.
+- Persistent on-disk index and bounded memory/cache management; avoid requiring every key or value to fit in RAM. An explicit verified index checkpoint exists, but reopening it still loads all keys and hashes the complete covered log prefix.
 - Log checkpoints, in-place/online compaction, garbage collection, and bounded recovery time. A verified separate-copy compaction prototype exists; it does not switch the live store or bound memory.
 - Ordered range scans, pagination and bulk reads: **prototype implemented** with entry/byte limits. Bounded read-only snapshots offer stable pages within one process and have per-store aggregate key/count limits; transaction snapshots remain open. Single-key compare-exchange and signed 64-bit increment are implemented and serialized against mutations. Bulk writes remain planned.
 - Atomic batches and optimistic serializable read-modify-write transactions: **prototype implemented** with bounded snapshots and DB02 records, including explicit older-reader incompatibility. Transactions conservatively conflict on any intervening mutation; broader model checking, workloads, and transaction resource controls remain open.

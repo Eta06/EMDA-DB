@@ -450,3 +450,78 @@ fn batch_nested_corruption_is_rejected_even_with_recomputed_outer_checksum() {
     );
     assert_eq!(fs::read(path).unwrap(), log);
 }
+
+#[test]
+fn checkpoint_ahead_of_witness_is_rejected_without_adopting_tail() {
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put(b"a", b"one").unwrap();
+    let old_boundary = marker(dir.path());
+    store.put(b"b", b"two").unwrap();
+    let checkpoint = dir.path().join("index");
+    let token = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let log = fs::read(dir.path().join("records.log")).unwrap();
+    setxattr(
+        dir.path().join("records.log"),
+        NAME,
+        &old_boundary,
+        XattrFlags::empty(),
+    )
+    .unwrap();
+    assert!(Store::open_with_checkpoint(dir.path(), &checkpoint, &token).is_err());
+    assert_eq!(marker(dir.path()), old_boundary);
+    assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
+    let recovered = Store::open(dir.path()).unwrap();
+    assert_eq!(recovered.get(b"b").unwrap().as_deref(), Some(&b"two"[..]));
+    assert_ne!(marker(dir.path()), old_boundary);
+}
+
+#[test]
+fn checkpoint_replay_rejects_every_partial_batch_tail_and_adopts_complete_tail() {
+    use database_engine::BatchOperation as Op;
+    let source = tempdir().unwrap();
+    let store = Store::open(source.path()).unwrap();
+    store.put(b"a", b"old").unwrap();
+    let checkpoint = source.path().join("index");
+    let token = store.checkpoint_to(&checkpoint).unwrap();
+    let before = fs::read(source.path().join("records.log")).unwrap();
+    let old_boundary = marker(source.path());
+    let anchor = fs::read(source.path().join("commit.state")).unwrap();
+    store
+        .write_batch(&[
+            Op::Put {
+                key: b"a",
+                value: b"new",
+            },
+            Op::Put {
+                key: b"b",
+                value: b"new",
+            },
+        ])
+        .unwrap();
+    let after = fs::read(source.path().join("records.log")).unwrap();
+    let new_boundary = marker(source.path());
+    drop(store);
+    for length in before.len() + 1..after.len() {
+        let dir = tempdir().unwrap();
+        install(dir.path(), &after[..length], &anchor, Some(&old_boundary));
+        assert!(
+            Store::open_with_checkpoint(dir.path(), &checkpoint, &token).is_err(),
+            "partial tail at {length}"
+        );
+        assert_eq!(
+            fs::read(dir.path().join("records.log")).unwrap(),
+            after[..length]
+        );
+        assert_eq!(marker(dir.path()), old_boundary);
+    }
+    let dir = tempdir().unwrap();
+    install(dir.path(), &after, &anchor, Some(&old_boundary));
+    let recovered = Store::open_with_checkpoint(dir.path(), &checkpoint, &token).unwrap();
+    assert_eq!(
+        recovered.get_many(&[b"a", b"b"]).unwrap(),
+        vec![Some(b"new".to_vec()), Some(b"new".to_vec())]
+    );
+    assert_eq!(marker(dir.path()), new_boundary);
+}

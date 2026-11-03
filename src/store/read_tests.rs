@@ -216,3 +216,53 @@ fn compaction_keeps_readers_available_and_blocks_writes_until_copy_finishes() {
         Some(&b"old"[..])
     );
 }
+
+#[test]
+fn checkpoint_keeps_readers_available_and_blocks_writes_until_publication_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("source");
+    let checkpoint = dir.path().join("index");
+    let store = Arc::new(Store::open(&path).unwrap());
+    store.put(b"key", b"old").unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let checkpoint_store = Arc::clone(&store);
+    let checkpoint_path = checkpoint.clone();
+    let worker = thread::spawn(move || {
+        checkpoint_store.checkpoint_to_with_sync(&checkpoint_path, |_| {
+            started_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+            Ok(())
+        })
+    });
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let writer_store = Arc::clone(&store);
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        let _ = done_tx.send(writer_store.put(b"key", b"new"));
+    });
+    let reader_store = Arc::clone(&store);
+    let (read_tx, read_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let _ = read_tx.send(reader_store.get(b"key"));
+    });
+    let read = read_rx.recv_timeout(Duration::from_secs(3));
+    let wrote_early = done_rx.recv_timeout(Duration::from_millis(100));
+    resume_tx.send(()).unwrap();
+    let token = worker.join().unwrap().unwrap();
+    writer.join().unwrap();
+    reader.join().unwrap();
+    assert_eq!(read.unwrap().unwrap().as_deref(), Some(&b"old"[..]));
+    assert!(matches!(wrote_early, Err(mpsc::RecvTimeoutError::Timeout)));
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+    drop(store);
+    // The new record is in the tail and must be replayed from the checkpoint.
+    assert_eq!(
+        Store::open_with_checkpoint(&path, &checkpoint, &token)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"new"[..])
+    );
+}

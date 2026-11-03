@@ -1,0 +1,21 @@
+{
+  "scope": "Checkpoint parser with trusted and deliberately untrusted digest modes",
+  "base_revision": "66b2dfc967ef094fefbac795f761a75c8a13e7d8",
+  "source_state": "Uncommitted checkpoint implementation; the fuzz harness was formatted after the binary was built without semantic changes. Parser source hashes and binary hash are recorded.",
+  "parser_sha256": {
+    "src/checkpoint.rs": "6a4529b4d73b428ff3684228a9b01f105fc56e6fba5a8d581fe536a80f7f3180",
+    "src/log.rs": "2fdaec0154dc6878fdf27a7d6f55336ce21b27fbb619ff121de81a0355ae9507",
+    "src/recovery.rs": "bbe3ff7b9a77077ef3831635c258d16858409464c878630807fbc4e78e497c16",
+    "src/store.rs": "2ff28135d6bd532dcc5c58d57a6e5c9a8a9fb13d441acf63fe278ec69ad9c0f7"
+  },
+  "binary_sha256": "7380044e9ed4e34121943f832dd081548ef8f969161f19db150964a65cf5d70b",
+  "toolchain": "nightly-2026-11-03",
+  "initial_seeds": 3,
+  "seed": 3288928188,
+  "duration_seconds": 121,
+  "executions": 479388,
+  "coverage_counters_hit": 658,
+  "features": 847,
+  "result": "no crash or sanitizer finding",
+  "limitations": "Short local campaign. A caller-supplied attacker-controlled digest is not trusted metadata and does not authenticate a checkpoint."
+}

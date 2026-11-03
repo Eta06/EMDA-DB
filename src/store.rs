@@ -56,6 +56,46 @@ impl Store {
         Self::open_using(path.as_ref(), Log::open)
     }
 
+    /// Opens using an explicit verified index checkpoint and replays its tail.
+    ///
+    /// The caller must supply the digest returned when the checkpoint was
+    /// created and protect it separately from the checkpoint file. The covered
+    /// log prefix is also hashed. An invalid, unrelated, or too-new checkpoint
+    /// is rejected. Call `open` to ignore it and replay the complete log. The
+    /// index still resides in memory; this convenience method applies no limits.
+    pub fn open_with_checkpoint(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+    ) -> io::Result<Self> {
+        Self::open_with_checkpoint_and_limits(path, checkpoint, trusted_digest, None, None)
+    }
+
+    /// Opens using a verified checkpoint and optional per-open limits.
+    /// The live-key cap also covers the checkpoint's historical peak.
+    pub fn open_with_checkpoint_and_limits(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        max_log_bytes: Option<u64>,
+        max_live_keys: Option<usize>,
+    ) -> io::Result<Self> {
+        // A checkpoint is meaningful only for an existing log. Avoid creating
+        // a new store (or a lock-only directory) when the source is missing.
+        std::fs::metadata(path.as_ref().join("records.log"))?;
+        let store = Self::open_using(path.as_ref(), |path, initialize| {
+            Log::open_with_checkpoint(
+                path,
+                initialize,
+                checkpoint.as_ref(),
+                trusted_digest,
+                max_live_keys,
+                max_log_bytes,
+            )
+        })?;
+        Self::set_open_limits(store, max_log_bytes, max_live_keys)
+    }
+
     /// Opens a store with an in-process limit on the log file's length.
     ///
     /// This is reapplied on each open; it is not a persistent project quota.
@@ -77,9 +117,17 @@ impl Store {
         max_log_bytes: Option<u64>,
         max_live_keys: Option<usize>,
     ) -> io::Result<Self> {
-        let mut store = Self::open_using(path.as_ref(), |path, initialize| {
+        let store = Self::open_using(path.as_ref(), |path, initialize| {
             Log::open_with_recovery_limit(path, initialize, max_live_keys, max_log_bytes)
         })?;
+        Self::set_open_limits(store, max_log_bytes, max_live_keys)
+    }
+
+    fn set_open_limits(
+        mut store: Self,
+        max_log_bytes: Option<u64>,
+        max_live_keys: Option<usize>,
+    ) -> io::Result<Self> {
         // Read errors must propagate; never treat an unknown file length as a
         // successful quota check.
         if let Some(max) = max_log_bytes {
@@ -330,6 +378,35 @@ impl Store {
             return Err(uncertain_error());
         }
         backup::create(&self.log, destination.as_ref())
+    }
+
+    /// Writes a verified, non-overwriting index checkpoint to a new path.
+    ///
+    /// Mutations wait while the source log and index are validated and copied.
+    /// It contains keys and locations, not values, and is not an independent
+    /// backup. The returned digest must be retained in trusted metadata
+    /// separately from the checkpoint. A directory sync failure after
+    /// publication has an uncertain outcome. A witnessed store is required.
+    pub fn checkpoint_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
+        self.checkpoint_to_with_sync(destination.as_ref(), |parent| {
+            File::open(parent)?.sync_all()
+        })
+    }
+
+    fn checkpoint_to_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        let _writer = self
+            .writes
+            .write()
+            .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        let inner = self.read()?;
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        crate::checkpoint::create_with_sync(&self.log, &inner.index, destination, sync_parent)
     }
 
     /// Restores a validated backup into a new directory; existing paths are
