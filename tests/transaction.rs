@@ -413,3 +413,37 @@ fn transaction_log_limit_rejects_without_partial_publication() {
     );
     assert_eq!(store.get_many(&[b"a", b"b"]).unwrap(), vec![None, None]);
 }
+
+#[test]
+fn public_staged_budget_limits_concurrent_transaction_payloads_and_recovers_capacity() {
+    fn hold_transactions(store: &Store, value: &[u8], depth: u8) {
+        let key = [b'a' + depth];
+        let result: io::Result<()> = store.transaction(|tx| {
+            let staged = tx.put(&key, value);
+            if depth == 4 {
+                assert!(
+                    staged
+                        .unwrap_err()
+                        .to_string()
+                        .contains("aggregate transaction")
+                );
+                assert_eq!(tx.get(&key)?, None);
+            } else {
+                staged.expect("first four transactions fit the aggregate budget");
+                hold_transactions(store, value, depth + 1);
+            }
+            Err(io::Error::other("abort to release staged data"))
+        });
+        assert!(result.is_err());
+    }
+
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let value = vec![7; database_engine::MAX_TRANSACTION_STAGED_TOTAL_BYTES / 5 + 1];
+    hold_transactions(&store, &value, 0);
+    for key in b'a'..=b'e' {
+        assert_eq!(store.get(&[key]).unwrap(), None);
+    }
+    store.transaction(|tx| tx.put(b"after", b"ok")).unwrap();
+    assert_eq!(store.get(b"after").unwrap().as_deref(), Some(&b"ok"[..]));
+}

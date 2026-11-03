@@ -35,6 +35,8 @@ The engine appends checksummed records to a log, synchronizes every successful m
 
 `Store::write_batch` atomically publishes an ordered set of puts and deletes in one synchronized record. It supports up to 1,024 operations and a 16 MiB encoded payload, and requires a witnessed V2/V3 store. A failed write can have an unknown outcome. Batches introduce `DB02` records: **older revisions cannot reopen logs containing them**. See [format compatibility](docs/VERSIONING.md#independent-compatibility-boundaries). A batch is a blind atomic write. `Store::transaction` additionally offers optimistic serializable read-modify-write transactions with bounded snapshots, point/range reads and rollback on callback error. Any intervening mutation causes a `WouldBlock` conflict; callbacks are never automatically retried, and external side effects are not rolled back. Transaction snapshots currently support at most 16,384 keys and 4 MiB of key bytes. Writes use the same DB02 format and compatibility rules.
 
+Transactions on one open store share a 64 MiB limit on encoded staged records, in addition to the per-transaction limits. Staging that would exceed the shared limit fails before changing that staged entry. A callback that catches the error can continue with its earlier staged changes; propagating the error aborts the transaction. The limit excludes snapshots, response copies, commit encoding and allocator overhead, so it is not a total memory quota.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

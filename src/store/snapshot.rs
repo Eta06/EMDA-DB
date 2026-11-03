@@ -50,7 +50,7 @@ impl SnapshotBudget {
 /// An expired snapshot continues to reserve its resources until cancelled or
 /// dropped. Expiry is checked at operation boundaries, not during I/O.
 pub struct Snapshot<'a> {
-    store: &'a Store,
+    pub(super) store: &'a Store,
     pub(super) index: BTreeMap<Vec<u8>, ValueLocation>,
     pub(super) generation: u64,
     reserved_keys: usize,

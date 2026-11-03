@@ -20,7 +20,7 @@ pub use snapshot::{
     MAX_ACTIVE_SNAPSHOTS, MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES,
     MAX_SNAPSHOT_TOTAL_KEYS, Snapshot,
 };
-pub use transaction::Transaction;
+pub use transaction::{MAX_TRANSACTION_STAGED_TOTAL_BYTES, Transaction};
 
 struct Inner {
     index: BTreeMap<Vec<u8>, ValueLocation>,
@@ -46,6 +46,7 @@ pub struct Store {
     max_log_bytes: Option<u64>,
     max_live_keys: Option<usize>,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
+    transaction_budget: Mutex<transaction::TransactionBudget>,
     // Held for the store lifetime. OS file locks are advisory.
     _lock_file: File,
 }
@@ -183,6 +184,7 @@ impl Store {
             max_log_bytes: None,
             max_live_keys: None,
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
+            transaction_budget: Mutex::new(transaction::TransactionBudget::default()),
             _lock_file: lock_file,
         })
     }

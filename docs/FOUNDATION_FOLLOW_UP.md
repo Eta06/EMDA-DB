@@ -29,6 +29,7 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 - [x] Implement bounded atomic multi-key write batches as single synchronized DB02 records, including failure, crash-state, format-compatibility and recovery checks. DB02 records are unreadable by earlier revisions; batch writes require witnessed stores.
 - [ ] Profile and reduce compare-exchange/increment/batch contention without weakening their semantics; they currently exclude all concurrent writers, including writers to other keys.
 - [x] Implement a bounded optimistic serializable read-modify-write transaction prototype, including point/range reads, read-your-writes, rollback on callback error, conservative store-wide conflict detection and atomic DB02 commit. Independent operations and group commit are not transactions.
+- [x] Bound the aggregate encoded staged-record bytes held by concurrent transactions on one open store, with admission before staging and cleanup on completion or unwind. This is not a total-memory or cross-store quota.
 - [ ] Extend transaction model checking, fault campaigns, benchmarks and resource limits. Reduce false conflicts safely; current transactions conflict on any intervening mutation, require a bounded full-index snapshot and do not automatically retry callbacks.
 - [x] Add bounded, process-local read-only snapshots with stable paginated scans; each snapshot is released on drop and borrows the store.
 - [x] Add per-store aggregate limits for active snapshots, copied key count and copied key bytes; release reservations on drop.
