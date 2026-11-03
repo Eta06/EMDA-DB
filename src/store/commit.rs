@@ -32,6 +32,8 @@ struct Entry {
 // so checking the predicate and going to sleep cannot miss a notification.
 struct Completion {
     done: AtomicBool,
+    // Read and changed only while the coordinator state mutex is held.
+    waiting: AtomicBool,
     changed: Condvar,
 }
 
@@ -44,7 +46,6 @@ struct State {
     queue: VecDeque<Entry>,
     buffered_bytes: usize,
     buffered_records: usize,
-    #[cfg(test)]
     admission_waiters: usize,
     active: bool,
     active_completions: Vec<Arc<Completion>>,
@@ -70,7 +71,6 @@ impl Coordinator {
                 queue: VecDeque::new(),
                 buffered_bytes: 0,
                 buffered_records: 0,
-                #[cfg(test)]
                 admission_waiters: 0,
                 active: false,
                 active_completions: Vec::new(),
@@ -120,6 +120,7 @@ impl Coordinator {
             checksum: crc32fast::hash(value),
             completion: Arc::new(Completion {
                 done: AtomicBool::new(false),
+                waiting: AtomicBool::new(false),
                 changed: Condvar::new(),
             }),
         });
@@ -227,15 +228,9 @@ impl Coordinator {
             && (state.buffered_bytes + bytes > self.max_bytes
                 || state.buffered_records >= self.max_records)
         {
-            #[cfg(test)]
-            {
-                state.admission_waiters += 1;
-            }
+            state.admission_waiters += 1;
             state = self.wait(&self.admission_changed, state)?;
-            #[cfg(test)]
-            {
-                state.admission_waiters -= 1;
-            }
+            state.admission_waiters -= 1;
         }
         if self.failed() {
             return Err(Self::failure(&state));
@@ -266,6 +261,7 @@ impl Coordinator {
         let bytes = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
         let completion = Arc::new(Completion {
             done: AtomicBool::new(false),
+            waiting: AtomicBool::new(false),
             changed: Condvar::new(),
         });
         let mut reservation = self.reserve(bytes)?;
@@ -330,7 +326,9 @@ impl Coordinator {
             } else {
                 // Periodically recheck leadership in case a notified queue
                 // head is delayed or unavailable. This is not a latency SLA.
+                completion.waiting.store(true, Ordering::Relaxed);
                 state = self.wait_request(&completion.changed, state)?;
+                completion.waiting.store(false, Ordering::Relaxed);
             }
         }
     }
@@ -369,14 +367,18 @@ impl Coordinator {
         // that head is delayed; this is not a latency or fairness guarantee.
         for entry in batch {
             entry.completion.done.store(true, Ordering::Release);
-            entry.completion.changed.notify_one();
+            if entry.completion.waiting.load(Ordering::Relaxed) {
+                entry.completion.changed.notify_one();
+            }
         }
         state.active_completions.clear();
         state.active = false;
         if let Some(next) = state.queue.front() {
             next.completion.changed.notify_one();
         }
-        self.admission_changed.notify_all();
+        if state.admission_waiters > 0 {
+            self.admission_changed.notify_all();
+        }
         Ok(())
     }
 }
@@ -404,7 +406,9 @@ impl Drop for Reservation<'_> {
         if !self.coordinator.failed() {
             state.buffered_bytes -= self.bytes;
             state.buffered_records -= 1;
-            self.coordinator.admission_changed.notify_all();
+            if state.admission_waiters > 0 {
+                self.coordinator.admission_changed.notify_all();
+            }
         }
     }
 }
