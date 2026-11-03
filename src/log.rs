@@ -5,7 +5,7 @@ use crate::record::{self, HEADER_SIZE, Header, Operation};
 use crate::recovery::RecoveryReader;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io;
+use std::io::{self, IoSlice};
 use std::path::Path;
 
 #[derive(Clone, Copy)]
@@ -13,6 +13,13 @@ pub(crate) struct ValueLocation {
     offset: u64,
     length: usize,
     checksum: u32,
+}
+
+pub(crate) struct AppendRecord<'a> {
+    pub(crate) encoded: &'a [u8],
+    pub(crate) key_len: usize,
+    pub(crate) value_len: usize,
+    pub(crate) checksum: u32,
 }
 
 pub(crate) struct Log {
@@ -68,20 +75,34 @@ impl Log {
         self.file.read_exact_at(buffer, offset)
     }
 
-    pub(crate) fn append_unsynced(
+    pub(crate) fn append_batch_unsynced<'a>(
         &self,
-        encoded: &[u8],
-        key_len: usize,
-        value_len: usize,
-        checksum: u32,
-    ) -> io::Result<ValueLocation> {
-        let start = self.file.len()?;
-        self.file.append_all(encoded)?;
-        Ok(ValueLocation {
-            offset: start + HEADER_SIZE as u64 + key_len as u64,
-            length: value_len,
-            checksum,
-        })
+        records: impl ExactSizeIterator<Item = AppendRecord<'a>>,
+    ) -> io::Result<Vec<ValueLocation>> {
+        let mut offset = self.file.len()?;
+        let mut locations = Vec::with_capacity(records.len());
+        let mut buffers = Vec::with_capacity(records.len());
+        for record in records {
+            let value_offset = offset
+                .checked_add(HEADER_SIZE as u64)
+                .and_then(|value| value.checked_add(record.key_len as u64))
+                .ok_or_else(|| io::Error::other("log offset overflow"))?;
+            offset = offset
+                .checked_add(record.encoded.len() as u64)
+                .ok_or_else(|| io::Error::other("log offset overflow"))?;
+            locations.push(ValueLocation {
+                offset: value_offset,
+                length: record.value_len,
+                checksum: record.checksum,
+            });
+            buffers.push(IoSlice::new(record.encoded));
+        }
+        if buffers.len() == 1 {
+            self.file.append_all(&buffers[0])?;
+        } else {
+            self.file.append_vectored(&mut buffers)?;
+        }
+        Ok(locations)
     }
 
     pub(crate) fn sync_data(&self) -> io::Result<()> {

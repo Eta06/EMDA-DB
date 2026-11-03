@@ -112,7 +112,7 @@ fn many_waiters_case(fault: GroupFault) {
             assert_eq!((success, error, panic), (0, WRITERS - 1, 1));
             assert!(store.get(b"safe").is_err());
         }
-        GroupFault::PartialAppend(_) => unreachable!(),
+        GroupFault::PartialAppend(_) | GroupFault::PartialBatch(_) => unreachable!(),
     }
 }
 

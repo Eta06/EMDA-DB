@@ -71,11 +71,11 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        inner
-            .index
-            .get(key)
-            .map(|location| self.log.read(*location))
-            .transpose()
+        // The log is append-only, so a location remains valid even if a
+        // concurrent writer publishes a newer value after this lookup.
+        let location = inner.index.get(key).copied();
+        drop(inner);
+        location.map(|location| self.log.read(location)).transpose()
     }
 
     /// Replaces the value at `key`; synchronization completes before success.
@@ -138,6 +138,12 @@ mod fault_tests;
 
 #[cfg(test)]
 mod group_tests;
+
+#[cfg(test)]
+mod read_tests;
+
+#[cfg(test)]
+mod reservation_tests;
 
 #[cfg(test)]
 mod wake_tests;

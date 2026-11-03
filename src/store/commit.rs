@@ -4,7 +4,7 @@
 //! publishes their index updates before waking the callers. Grouping is not a
 //! multi-key transaction: a failed or interrupted group has unknown outcomes.
 use super::Inner;
-use crate::log::Log;
+use crate::log::{AppendRecord, Log};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 use std::collections::VecDeque;
 use std::io;
@@ -216,20 +216,9 @@ impl Coordinator {
         state.active = false;
     }
 
-    pub(super) fn commit(
-        &self,
-        log: &Log,
-        inner: &RwLock<Inner>,
-        operation: Operation,
-        key: &[u8],
-        value: &[u8],
-    ) -> io::Result<()> {
-        // Store::append validates key and value lengths before admission.
-        let bytes = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
-        let completion = Arc::new(Completion {
-            done: AtomicBool::new(false),
-            changed: Condvar::new(),
-        });
+    // Reserve queue capacity before doing allocation and checksumming. The
+    // reservation keeps preparation bounded without holding the queue lock.
+    fn reserve(&self, bytes: usize) -> io::Result<Reservation<'_>> {
         let mut state = self.lock()?;
         if bytes > self.max_bytes {
             return Err(io::Error::other("record exceeds the write buffer limit"));
@@ -251,17 +240,53 @@ impl Coordinator {
         if self.failed() {
             return Err(Self::failure(&state));
         }
-        let encoded = record::encode(operation, key, value)?;
-        state.queue.push_back(Entry {
-            operation,
-            key: key.to_vec(),
-            encoded,
-            value_len: value.len(),
-            checksum: crc32fast::hash(value),
-            completion: Arc::clone(&completion),
-        });
         state.buffered_bytes += bytes;
         state.buffered_records += 1;
+        Ok(Reservation {
+            coordinator: self,
+            bytes,
+            active: true,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn reserve_for_test(&self, bytes: usize) -> io::Result<impl Drop + '_> {
+        self.reserve(bytes)
+    }
+
+    pub(super) fn commit(
+        &self,
+        log: &Log,
+        inner: &RwLock<Inner>,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+    ) -> io::Result<()> {
+        // Store::append validates key and value lengths before admission.
+        let bytes = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
+        let completion = Arc::new(Completion {
+            done: AtomicBool::new(false),
+            changed: Condvar::new(),
+        });
+        let mut reservation = self.reserve(bytes)?;
+        let encoded = record::encode(operation, key, value)?;
+        let checksum = crc32fast::hash(value);
+        let key = key.to_vec();
+        let mut state = self.lock()?;
+        if self.failed() {
+            let error = Self::failure(&state);
+            drop(state);
+            return Err(error);
+        }
+        state.queue.push_back(Entry {
+            operation,
+            key,
+            encoded,
+            value_len: value.len(),
+            checksum,
+            completion: Arc::clone(&completion),
+        });
+        reservation.active = false;
         loop {
             if completion.done.load(Ordering::Acquire) {
                 return Ok(());
@@ -312,15 +337,12 @@ impl Coordinator {
 
     fn flush(&self, log: &Log, inner: &RwLock<Inner>, batch: Vec<Entry>) -> io::Result<()> {
         let mut batch = batch;
-        let mut locations = Vec::with_capacity(batch.len());
-        for entry in &batch {
-            locations.push(log.append_unsynced(
-                &entry.encoded,
-                entry.key.len(),
-                entry.value_len,
-                entry.checksum,
-            )?);
-        }
+        let locations = log.append_batch_unsynced(batch.iter().map(|entry| AppendRecord {
+            encoded: &entry.encoded,
+            key_len: entry.key.len(),
+            value_len: entry.value_len,
+            checksum: entry.checksum,
+        }))?;
         // Never publish an index update or complete a caller before sync.
         log.sync_data()?;
         {
@@ -356,6 +378,34 @@ impl Coordinator {
         }
         self.admission_changed.notify_all();
         Ok(())
+    }
+}
+
+// A failed or panicking preparation cannot strand the capacity it reserved.
+// Once the record is queued, its batch owns that capacity instead.
+struct Reservation<'a> {
+    coordinator: &'a Coordinator,
+    bytes: usize,
+    active: bool,
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut state = self.coordinator.state.lock().unwrap_or_else(|poison| {
+            self.coordinator.failed.store(true, Ordering::Release);
+            let state = poison.into_inner();
+            self.coordinator.notify_failed(&state);
+            state
+        });
+        // Failure resets accounting for every queued and reserved write.
+        if !self.coordinator.failed() {
+            state.buffered_bytes -= self.bytes;
+            state.buffered_records -= 1;
+            self.coordinator.admission_changed.notify_all();
+        }
     }
 }
 

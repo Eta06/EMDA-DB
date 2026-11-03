@@ -33,6 +33,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Targeted writer wake-ups with periodic leadership rechecks and tests for delayed handoff, failed batches, poisoned locks, and capacity waiters.
 - Clean-build recovery and writer comparisons, including SQLite and raw latency distributions across several workloads.
 - A large-write interference benchmark that checks small-write latency alongside the prototype and SQLite.
+- Vectored group appends, bounded off-lock write preparation, and shorter index read-lock lifetimes, with partial-I/O, reservation, and concurrent-history tests.
 
 ### Changed
 

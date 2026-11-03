@@ -3,7 +3,7 @@ use super::fault_tests::BlockingSyncIo;
 use super::*;
 use crate::log_io::LogIo;
 use std::fs;
-use std::io::Write;
+use std::io::{IoSlice, Write};
 use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -14,6 +14,7 @@ use std::time::Duration;
 pub(super) enum GroupFault {
     None,
     PartialAppend(usize),
+    PartialBatch(usize),
     SyncError,
     SyncErrorAfter,
     SyncPanic,
@@ -49,6 +50,25 @@ impl LogIo for GroupIo {
             }
         }
         file.write_all(bytes)
+    }
+
+    fn append_vectored(&self, buffers: &mut [IoSlice<'_>]) -> io::Result<()> {
+        if let GroupFault::PartialBatch(mut remaining) = self.fault {
+            let mut file = &self.file;
+            for buffer in buffers {
+                let count = remaining.min(buffer.len());
+                file.write_all(&buffer[..count])?;
+                remaining -= count;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            return Err(io::Error::from_raw_os_error(28));
+        }
+        for buffer in buffers {
+            self.append_all(buffer)?;
+        }
+        Ok(())
     }
 
     fn sync_data(&self) -> io::Result<()> {
@@ -141,7 +161,10 @@ fn group_fault_case(fault: GroupFault) {
         "all grouped writers should be queued before release"
     );
     first.join().unwrap().unwrap();
-    if !matches!(fault, GroupFault::PartialAppend(_)) {
+    if !matches!(
+        fault,
+        GroupFault::PartialAppend(_) | GroupFault::PartialBatch(_)
+    ) {
         group_started_rx
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
@@ -190,7 +213,10 @@ fn group_fault_case(fault: GroupFault) {
                 );
             }
         }
-        GroupFault::PartialAppend(_) | GroupFault::SyncError | GroupFault::SyncErrorAfter => {
+        GroupFault::PartialAppend(_)
+        | GroupFault::PartialBatch(_)
+        | GroupFault::SyncError
+        | GroupFault::SyncErrorAfter => {
             assert_eq!((successes, errors, panics), (0, 3, 0));
             assert!(store.get(b"safe").is_err());
             assert!(store.put(b"later", b"value").is_err());
@@ -209,7 +235,18 @@ fn group_fault_case(fault: GroupFault) {
     let record_len = record::encode(Operation::Put, b"group-0", b"value")
         .unwrap()
         .len();
-    if matches!(fault, GroupFault::PartialAppend(offset) if offset > 0 && offset < record_len) {
+    if let GroupFault::PartialBatch(offset) = fault {
+        let prior_len = record::encode(Operation::Put, b"safe", b"committed")
+            .unwrap()
+            .len()
+            + record::encode(Operation::Put, b"first", b"committed")
+                .unwrap()
+                .len();
+        assert_eq!(before.len(), prior_len + offset);
+    }
+    if matches!(fault, GroupFault::PartialAppend(offset) if offset > 0 && offset < record_len)
+        || matches!(fault, GroupFault::PartialBatch(offset) if offset % record_len != 0)
+    {
         assert!(matches!(reopened, Err(ref e) if e.kind() == io::ErrorKind::InvalidData));
     } else {
         let reopened = reopened.unwrap();
@@ -221,6 +258,18 @@ fn group_fault_case(fault: GroupFault) {
             reopened.get(b"first").unwrap().as_deref(),
             Some(&b"committed"[..])
         );
+        if let GroupFault::PartialBatch(offset) = fault {
+            let visible = (0..3)
+                .filter(|id| {
+                    reopened
+                        .get(format!("group-{id}").as_bytes())
+                        .unwrap()
+                        .as_deref()
+                        == Some(&b"value"[..])
+                })
+                .count();
+            assert_eq!(visible, offset / record_len);
+        }
     }
 }
 
@@ -235,6 +284,15 @@ fn partial_append_in_a_group_fails_all_and_preserves_the_log() {
         .len();
     for offset in 0..=record_len {
         group_fault_case(GroupFault::PartialAppend(offset));
+    }
+}
+#[test]
+fn partial_vectored_batch_at_every_byte_fails_closed_and_preserves_the_log() {
+    let record_len = record::encode(Operation::Put, b"group-0", b"value")
+        .unwrap()
+        .len();
+    for offset in 0..=3 * record_len {
+        group_fault_case(GroupFault::PartialBatch(offset));
     }
 }
 #[test]

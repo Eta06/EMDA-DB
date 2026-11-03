@@ -182,6 +182,21 @@ fn failed_sync_has_unknown_outcome_and_blocks_further_operations() {
 }
 
 #[test]
+fn a_write_failure_clears_in_progress_preparation_reservations() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
+    store.put(b"safe", b"committed").unwrap();
+    let pending = store.commits.reserve_for_test(1024).unwrap();
+    *fault.lock().unwrap() = Some(Fault::PartialAppend(5));
+    assert!(store.put(b"failed", b"value").is_err());
+    drop(pending);
+    assert_eq!(store.commits.buffered(), (0, 0));
+    assert!(store.get(b"safe").is_err());
+    assert!(store.put(b"later", b"value").is_err());
+}
+
+#[test]
 fn short_read_is_reported_without_returning_partial_data() {
     let dir = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));
