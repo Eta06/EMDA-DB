@@ -74,3 +74,55 @@ fn snapshot_enforces_caller_and_hard_limits_without_partial_views() {
     );
     assert!(snapshot.scan(None, None, 0).is_err());
 }
+
+#[test]
+fn concurrent_snapshot_limit_releases_capacity_on_drop() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put(b"k", b"value").unwrap();
+    let mut snapshots = Vec::new();
+    for _ in 0..database_engine::MAX_ACTIVE_SNAPSHOTS {
+        snapshots.push(store.snapshot(1, 1).unwrap());
+    }
+    assert!(store.snapshot(1, 1).is_err());
+    drop(snapshots.pop().unwrap());
+    snapshots.push(store.snapshot(1, 1).unwrap());
+    assert!(store.snapshot(1, 1).is_err());
+    drop(snapshots);
+    assert!(store.snapshot(1, 1).is_ok());
+}
+
+#[test]
+fn racing_snapshot_creation_cannot_exceed_active_limit() {
+    use std::sync::Barrier;
+    use std::thread;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put(b"k", b"v").unwrap();
+    let start = Barrier::new(33);
+    let acquired = Barrier::new(33);
+    let winners = thread::scope(|scope| {
+        let workers = (0..32)
+            .map(|_| {
+                let (store, start, acquired) = (&store, &start, &acquired);
+                scope.spawn(move || {
+                    start.wait();
+                    let snapshot = store.snapshot(1, 1);
+                    let success = snapshot.is_ok();
+                    acquired.wait();
+                    drop(snapshot);
+                    success
+                })
+            })
+            .collect::<Vec<_>>();
+        start.wait();
+        acquired.wait();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|won| *won)
+            .count()
+    });
+    assert_eq!(winners, database_engine::MAX_ACTIVE_SNAPSHOTS);
+    assert!(store.snapshot(1, 1).is_ok());
+}

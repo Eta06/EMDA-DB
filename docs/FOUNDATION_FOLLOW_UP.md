@@ -27,7 +27,8 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 - [ ] Implement bulk writes. Profile and reduce compare-exchange/increment contention without weakening their semantics; both currently exclude all concurrent writers, including writers to other keys.
 - [ ] Specify and implement atomic multi-key batches and transactions, isolation, conflict behavior and rollback. Record and index updates must recover atomically. Independent operations and group commit are not transactions.
 - [x] Add bounded, process-local read-only snapshots with stable paginated scans; each snapshot is released on drop and borrows the store.
-- [ ] Add aggregate snapshot resource accounting, expiry/cancellation and transaction-compatible snapshot lifetime/garbage collection. Existing per-snapshot limits do not bound memory across multiple snapshots and no live log reclamation exists.
+- [x] Add per-store aggregate limits for active snapshots, copied key count and copied key bytes; release reservations on drop.
+- [ ] Add snapshot expiry/cancellation and transaction-compatible snapshot lifetime/garbage collection. Snapshot counters are not total process-memory or cross-store quotas, and no live log reclamation exists.
 - [ ] Add configurable request/connection limits, fair overload handling and cancellation/timeouts without violating unknown-outcome semantics. The current embedded API does not include a production server.
 - [x] Add an optional per-open log-file length cap with concurrency-safe admission, rejection before replay and unknown-outcome handling.
 - [x] Add an optional per-open live-key count limit, allowing existing-key updates and freeing slots after deletions, with serialized admission. Enforce it during recovery for every historical prefix; a historical peak can require compaction into a separate copy before opening under a lower cap.

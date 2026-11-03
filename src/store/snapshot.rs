@@ -5,15 +5,63 @@ use super::*;
 pub const MAX_SNAPSHOT_KEYS: usize = 16_384;
 /// Hard per-snapshot limit on the total number of copied key bytes.
 pub const MAX_SNAPSHOT_KEY_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum simultaneously active snapshots per open store.
+pub const MAX_ACTIVE_SNAPSHOTS: usize = 16;
+/// Maximum combined copied keys across snapshots on one open store.
+pub const MAX_SNAPSHOT_TOTAL_KEYS: usize = 65_536;
+/// Maximum combined copied key bytes across snapshots on one open store.
+pub const MAX_SNAPSHOT_TOTAL_KEY_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Default)]
+pub(super) struct SnapshotBudget {
+    active: usize,
+    keys: usize,
+    key_bytes: usize,
+}
+
+impl SnapshotBudget {
+    fn reserve(&mut self, keys: usize, key_bytes: usize) -> io::Result<()> {
+        if self.active >= MAX_ACTIVE_SNAPSHOTS
+            || keys > MAX_SNAPSHOT_TOTAL_KEYS - self.keys
+            || key_bytes > MAX_SNAPSHOT_TOTAL_KEY_BYTES - self.key_bytes
+        {
+            return Err(io::Error::other("aggregate snapshot limit exceeded"));
+        }
+        self.active += 1;
+        self.keys += keys;
+        self.key_bytes += key_bytes;
+        Ok(())
+    }
+
+    fn release(&mut self, keys: usize, key_bytes: usize) {
+        self.active -= 1;
+        self.keys -= keys;
+        self.key_bytes -= key_bytes;
+    }
+}
 
 /// A stable read-only index view borrowing the open store.
 ///
 /// Drop it to release its copied index. Snapshots are process-local, do not
 /// survive reopening, and do not make independent writes transactional.
-/// Aggregate memory across multiple snapshots is not currently limited.
+/// Per-store snapshot count, total keys and key bytes are limited. These are
+/// not byte-accurate process memory limits and do not apply across stores.
 pub struct Snapshot<'a> {
     store: &'a Store,
     index: BTreeMap<Vec<u8>, ValueLocation>,
+    reserved_keys: usize,
+    reserved_key_bytes: usize,
+}
+
+impl Drop for Snapshot<'_> {
+    fn drop(&mut self) {
+        let mut budget = self
+            .store
+            .snapshot_budget
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        budget.release(self.reserved_keys, self.reserved_key_bytes);
+    }
 }
 
 impl Store {
@@ -34,16 +82,29 @@ impl Store {
         if inner.index.len() > max_keys {
             return Err(io::Error::other("snapshot key count limit exceeded"));
         }
-        let mut index = BTreeMap::new();
         let mut key_bytes = 0_usize;
-        for (key, &location) in &inner.index {
+        for key in inner.index.keys() {
             key_bytes += key.len();
             if key_bytes > max_key_bytes {
                 return Err(io::Error::other("snapshot key byte limit exceeded"));
             }
-            index.insert(key.clone(), location);
         }
-        Ok(Snapshot { store: self, index })
+        let key_count = inner.index.len();
+        self.snapshot_budget
+            .lock()
+            .map_err(|_| io::Error::other("snapshot budget poisoned"))?
+            .reserve(key_count, key_bytes)?;
+        // Once reserved, Drop also releases accounting if copying unwinds.
+        let mut snapshot = Snapshot {
+            store: self,
+            index: BTreeMap::new(),
+            reserved_keys: key_count,
+            reserved_key_bytes: key_bytes,
+        };
+        for (key, &location) in &inner.index {
+            snapshot.index.insert(key.clone(), location);
+        }
+        Ok(snapshot)
     }
 }
 
@@ -99,5 +160,22 @@ impl Snapshot<'_> {
             result.push((key.clone(), self.store.log.read(location)?));
         }
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_key_and_byte_budgets_are_released_after_reservation() {
+        let mut budget = SnapshotBudget::default();
+        budget.reserve(MAX_SNAPSHOT_TOTAL_KEYS, 1).unwrap();
+        assert!(budget.reserve(1, 0).is_err());
+        budget.release(MAX_SNAPSHOT_TOTAL_KEYS, 1);
+        budget.reserve(1, MAX_SNAPSHOT_TOTAL_KEY_BYTES).unwrap();
+        assert!(budget.reserve(0, 1).is_err());
+        budget.release(1, MAX_SNAPSHOT_TOTAL_KEY_BYTES);
+        assert!(budget.reserve(1, 1).is_ok());
     }
 }

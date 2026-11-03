@@ -8,7 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
-- Bounded, process-local read-only index snapshots with stable paginated scans and lifetime tied to the open store. Per-snapshot limits do not cap aggregate snapshot memory; write transactions are not implemented.
+- Bounded, process-local read-only index snapshots with stable paginated scans and lifetime tied to the open store. Per-store limits cover active snapshot count and aggregate copied keys/key bytes; they do not cap total memory. Write transactions are not implemented.
 - Optional per-open log-file length limits with serialized mutation admission, concurrent oversubscription checks, rejection before replay and unknown-outcome handling. The limit is not persistent and does not cover memory or other files.
 - Optional per-open live-key count limits, with serialized admission, existing-key updates and reusable slots after deletion. Recovery enforces the cap on every historical prefix; this is not a process-memory guarantee.
 - Verified separate-copy compaction that rechecks the source log/index, copies live keys, reopens and verifies the destination, and publishes without overwriting. Mutations are blocked during copying; the source remains intact and memory remains unbounded.

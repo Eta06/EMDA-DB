@@ -8,13 +8,16 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::Path;
-use std::sync::{RwLock, RwLockReadGuard};
+use std::sync::{Mutex, RwLock, RwLockReadGuard};
 
 mod commit;
 mod compact;
 mod snapshot;
 use commit::Coordinator;
-pub use snapshot::{MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, Snapshot};
+pub use snapshot::{
+    MAX_ACTIVE_SNAPSHOTS, MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES,
+    MAX_SNAPSHOT_TOTAL_KEYS, Snapshot,
+};
 
 struct Inner {
     index: BTreeMap<Vec<u8>, ValueLocation>,
@@ -38,6 +41,7 @@ pub struct Store {
     commits: Coordinator,
     max_log_bytes: Option<u64>,
     max_live_keys: Option<usize>,
+    snapshot_budget: Mutex<snapshot::SnapshotBudget>,
     // Held for the store lifetime. OS file locks are advisory.
     _lock_file: File,
 }
@@ -123,6 +127,7 @@ impl Store {
             commits: Coordinator::new(),
             max_log_bytes: None,
             max_live_keys: None,
+            snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
             _lock_file: lock_file,
         })
     }
