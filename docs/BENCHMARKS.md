@@ -4,7 +4,7 @@ An initial local SQLite comparison harness exists; no general competitive perfor
 
 ## Initial local harness
 
-Run the Rust prototype and bundled SQLite through the same small, single-process harness. Both use byte keys, the same configured value size (64 bytes by default), and per-value CRC checks. Every acknowledged prototype mutation is covered by `sync_data` (concurrent mutations can share a sync); SQLite uses WAL, `synchronous=FULL`, autocommit, cached statements, and a 30-second busy timeout. These are not identical internal implementations or complete durability guarantees. The prototype verifies log records; SQLite has a different storage format and verification behavior.
+Run the Rust prototype and bundled SQLite through the same small, single-process harness. Both use byte keys, the same configured value size (64 bytes by default), and per-value CRC checks. Every acknowledged prototype mutation is covered by `sync_data` (concurrent mutations can share a sync); new-format stores also synchronize their commit witness before acknowledging. SQLite uses WAL, `synchronous=FULL`, autocommit, cached statements, and a 30-second busy timeout. These are not identical internal implementations or complete durability guarantees. The prototype verifies log records; SQLite has a different storage format and verification behavior.
 
 ```sh
 # Arguments: backend, clients, operations/client, keys, write %, existing directory, optional value bytes.
@@ -17,6 +17,22 @@ cargo run --release --locked --example kv_bench -- prototype 8 500 1 50 . 4096
 Each run creates and removes a fresh temporary directory beneath the given directory; interruptions may leave a temporary directory behind. Use an appropriate measurement filesystem, not `/tmp` when it is RAM-backed. The harness initializes the data, warms up to 100 keys, and uses deterministic per-client random seeds. Value preparation is outside each operation's latency measurement but inside overall elapsed time. It prints completed operations, elapsed time, throughput, separate read/write p50/p95/p99/p99.9 and maximum latencies, per-client completion and worst-case latencies, SQLite version, and configuration. An operation error fails the run rather than being omitted from the results. CI only smoke-tests that both paths execute.
 
 This is a **closed-loop, in-process microbenchmark** with a configured fixed-size value, not a production workload. It does not capture coordinated omission, CPU/RSS or I/O metrics, cold-start latency, multi-project fairness, power-loss behavior, PostgreSQL/MongoDB, service/network overhead, or independent durability validation. Record those separately, repeat tests under controlled conditions, and do not use this narrow result as a universal database ranking.
+
+## Loopback comparison with PostgreSQL and Redis
+
+`scripts/network_compare.py` exercises the prototype, bundled SQLite, PostgreSQL and Redis through TCP clients on localhost. The Rust benchmark adapter exposes the prototype and SQLite to the same Python driver; it is loopback-only benchmark tooling with no authentication or service-level security. PostgreSQL and Redis use their own protocols and Python drivers, and container port forwarding introduces additional overhead. This is not an identical wire-protocol comparison.
+
+Install the optional benchmark-only Python dependencies from `scripts/benchmark-requirements.txt`. Run disposable local PostgreSQL and Redis instances with persistent data directories on the measurement filesystem. The PostgreSQL instance must use database `benchmark`, user `postgres`, `fsync=on`, `synchronous_commit=on` and `full_page_writes=on`. Redis must use AOF with `appendonly=yes` and `appendfsync=always`. Set `EMDA_BENCH_PG_PORT`, `EMDA_BENCH_PG_PASSWORD`, and `EMDA_BENCH_REDIS_PORT` in the environment; credentials are not printed in results. The script creates and removes only its uniquely named table or keys.
+
+```sh
+cargo build --release --locked --example network_bench_server
+python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory . --clients 4 --operations 1000
+python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory . --clients 4 --operations 1000
+python3 scripts/network_compare.py postgres --directory . --clients 4 --operations 1000
+python3 scripts/network_compare.py redis --directory . --clients 4 --operations 1000
+```
+
+All paths check the values and CRC32 checksums; Redis stores four extra checksum bytes with each value. The Python client uses deterministic workloads, checks all values after measurement, and fails rather than omitting an operation error. PostgreSQL and SQLite provide SQL and transactions that the prototype lacks; Redis keeps its dataset in memory and has distinct AOF behavior. Synchronization settings are not proof of identical crash or power-loss guarantees. Results are closed-loop and subject to coordinated omission, Python scheduling, cache and storage effects, and the network/container differences above. Do not rank whole database systems from this narrow byte-key workload.
 
 ## Warm-cache recovery harness
 

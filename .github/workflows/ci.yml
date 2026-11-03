@@ -46,6 +46,9 @@ jobs:
           cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP" 4096
           cargo +stable run --release --locked --example contention_bench -- prototype 131072 2 2 20 "$RUNNER_TEMP"
           cargo +stable run --release --locked --example contention_bench -- sqlite 131072 2 2 20 "$RUNNER_TEMP"
+          cargo +stable build --release --locked --example network_bench_server
+          python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
+          python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
           cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-smoke" 100
           cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-smoke" 100 3
           cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-large-smoke" 10 131072
