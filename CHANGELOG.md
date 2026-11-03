@@ -25,6 +25,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - A local closed-loop key-value benchmark harness for the prototype and bundled SQLite; it is a narrow baseline, not a general performance ranking.
 - Raw results and environment details for an initial small SQLite comparison.
 - Benchmark p99.9, maximum, and per-client latency reporting to expose rare stalls and skew.
+- Bounded group commit for concurrent single-key writes, with tests for shared synchronization, failure, panic, admission limits, and backup coordination.
 
 ### Changed
 

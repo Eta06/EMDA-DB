@@ -4,7 +4,7 @@ The product name is a placeholder. This roadmap describes intended work, not imp
 
 ## Current baseline
 
-The prototype provides `put`, `get`, and `delete` for byte keys/values, a checksummed append log, fail-closed handling of incomplete records, concurrent readers/serialized writers, experimental full-log backup/restore, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, the log cannot be compacted, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
+The prototype provides `put`, `get`, and `delete` for byte keys/values, a checksummed append log, fail-closed handling of incomplete records, concurrent readers and bounded group commit, experimental full-log backup/restore, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, the log cannot be compacted, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
 
 ## Priority 0: correctness and measurable foundations
 
@@ -65,7 +65,7 @@ See [project isolation design goals](PROJECT_ISOLATION.md) for threat boundaries
 ## Priority 5: performance and scalability
 
 - Profile the full workload before changing the engine; track latency distributions, throughput, resource use, failures, and correctness.
-- Evaluate group commit, efficient binary encoding, cache policies, concurrency strategies, and compact indexes with equivalent durability semantics.
+- Evaluate the initial group commit implementation under broader workloads and failure models; investigate efficient binary encoding, cache policies, concurrency strategies, and compact indexes with equivalent durability semantics.
 - Evaluate SIMD and assembly only for measured hotspots, with CPU feature detection, portable fallbacks, fuzzing, and identical correctness tests.
 - Add project fairness, capacity-aware scheduling, cold-start optimization, and safe multithreading based on measured results.
 - Compare against PostgreSQL, MongoDB and other relevant systems using [BENCHMARKS.md](BENCHMARKS.md); publish raw results and configurations.

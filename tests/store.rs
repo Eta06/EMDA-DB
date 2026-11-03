@@ -279,10 +279,23 @@ fn child_writer_process() {
     let Ok(path) = std::env::var("ENGINE_CHILD_PATH") else {
         return;
     };
-    let store = Store::open(path).unwrap();
+    let store = Arc::new(Store::open(path).unwrap());
     for item in 0..10 {
         let key = format!("child-{item}");
         store.put(key.as_bytes(), b"committed").unwrap();
+    }
+    let mut workers = Vec::new();
+    for id in 0..6 {
+        let store = Arc::clone(&store);
+        workers.push(thread::spawn(move || {
+            for item in 0..20 {
+                let key = format!("group-child-{id}-{item}");
+                store.put(key.as_bytes(), b"committed").unwrap();
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
     }
     println!("ENGINE_WRITES_ACKNOWLEDGED");
     std::io::stdout().flush().unwrap();
@@ -325,5 +338,14 @@ fn acknowledged_writes_survive_abrupt_process_termination() {
             store.get(key.as_bytes()).unwrap().as_deref(),
             Some(&b"committed"[..])
         );
+    }
+    for id in 0..6 {
+        for item in 0..20 {
+            let key = format!("group-child-{id}-{item}");
+            assert_eq!(
+                store.get(key.as_bytes()).unwrap().as_deref(),
+                Some(&b"committed"[..])
+            );
+        }
     }
 }

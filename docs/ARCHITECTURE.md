@@ -4,14 +4,14 @@ This document describes the current prototype, not a promised final design. The 
 
 ## Boundaries
 
-- `store`: public key/value API, exclusive process ownership, synchronization, and outcome handling.
+- `store` and `store/commit`: public key/value API, exclusive process ownership, bounded group commit, synchronization, and outcome handling.
 - `record`: versioned binary framing, length limits, encoding, and checksum verification.
 - `log` and `log_io`: append and sync, positional reads, recovery, the in-memory key-to-offset index, and the testable I/O boundary.
 - `backup`: checksummed full-log backup and validated, non-overwriting restore.
 - `directory`: synchronization of created store paths and their ancestors.
 - `tests`: behavior across reopen, deterministic I/O failures, concurrent clients, corruption, backups, and process termination.
 
-The public API supports `put`, `get`, and `delete` on nonempty byte keys and backup/restore. Values may be empty. A writer mutex serializes mutations and backup snapshots; an index reader-writer lock permits concurrent reads while an append is synchronizing. Each successful mutation calls `sync_data` before publishing the index change and returning. On an I/O error during a write, the result is uncertain and that store instance refuses further operations until it is reopened.
+The public API supports `put`, `get`, and `delete` on nonempty byte keys and backup/restore. Values may be empty. A commit coordinator queues concurrent writes, appends their records in order, synchronizes batches, and only then publishes their index changes and returns success. A batch contains at most 64 records; admission limits pending encoded bytes and record count. A reader-writer lock permits reads while a batch is synchronizing. A separate barrier makes backups wait for in-flight writes and prevents new writes during the copy. Grouping independent mutations does not provide multi-key transactions. An I/O error or leader panic leaves unacknowledged outcomes uncertain and makes that store instance refuse further operations until it is reopened.
 
 ## Log format
 

@@ -274,7 +274,7 @@ fn main() -> BenchResult<()> {
         completed as f64 / elapsed.as_secs_f64()
     );
     println!(
-        "mode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=per-write-sync sqlite=WAL-FULL sqlite_version={} debug_assertions={}",
+        "mode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version={} debug_assertions={}",
         rusqlite::version(),
         cfg!(debug_assertions)
     );

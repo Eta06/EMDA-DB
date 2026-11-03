@@ -265,11 +265,11 @@ fn concurrent_writers_cannot_continue_after_an_uncertain_write() {
     assert_eq!(fs::read(path).unwrap(), before);
 }
 
-struct BlockingSyncIo {
-    file: File,
-    armed: Arc<AtomicBool>,
-    started: mpsc::Sender<()>,
-    resume: Mutex<mpsc::Receiver<()>>,
+pub(super) struct BlockingSyncIo {
+    pub(super) file: File,
+    pub(super) armed: Arc<AtomicBool>,
+    pub(super) started: mpsc::Sender<()>,
+    pub(super) resume: Mutex<mpsc::Receiver<()>>,
 }
 
 impl LogIo for BlockingSyncIo {

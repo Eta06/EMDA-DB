@@ -67,20 +67,24 @@ impl Log {
         self.file.read_exact_at(buffer, offset)
     }
 
-    pub(crate) fn append(
+    pub(crate) fn append_unsynced(
         &self,
         encoded: &[u8],
-        key: &[u8],
-        value: &[u8],
+        key_len: usize,
+        value_len: usize,
+        checksum: u32,
     ) -> io::Result<ValueLocation> {
         let start = self.file.len()?;
         self.file.append_all(encoded)?;
-        self.file.sync_data()?;
         Ok(ValueLocation {
-            offset: start + HEADER_SIZE as u64 + key.len() as u64,
-            length: value.len(),
-            checksum: crc32fast::hash(value),
+            offset: start + HEADER_SIZE as u64 + key_len as u64,
+            length: value_len,
+            checksum,
         })
+    }
+
+    pub(crate) fn sync_data(&self) -> io::Result<()> {
+        self.file.sync_data()
     }
 
     fn recover(&mut self) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {

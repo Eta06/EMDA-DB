@@ -51,7 +51,7 @@ impl Header {
     }
 }
 
-pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<Vec<u8>> {
+pub(crate) fn validate(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
     validate_key(key)?;
     if value.len() > MAX_VALUE {
         return Err(invalid_input("value exceeds 16 MiB"));
@@ -59,6 +59,11 @@ pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Resu
     if operation == Operation::Delete && !value.is_empty() {
         return Err(invalid_input("delete records cannot have a value"));
     }
+    Ok(())
+}
+
+pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<Vec<u8>> {
+    validate(operation, key, value)?;
     let mut record = Vec::with_capacity(HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE);
     record.extend_from_slice(MAGIC);
     record.push(match operation {
