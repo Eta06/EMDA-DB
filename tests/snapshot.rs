@@ -93,6 +93,56 @@ fn concurrent_snapshot_limit_releases_capacity_on_drop() {
 }
 
 #[test]
+fn cancellation_is_idempotent_and_releases_capacity_without_affecting_others() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put(b"k", b"value").unwrap();
+    let mut snapshots = (0..database_engine::MAX_ACTIVE_SNAPSHOTS)
+        .map(|_| store.snapshot(1, 1).unwrap())
+        .collect::<Vec<_>>();
+    assert!(store.snapshot(1, 1).is_err());
+    let mut cancelled = snapshots.pop().unwrap();
+    cancelled.cancel();
+    cancelled.cancel();
+    assert!(cancelled.is_cancelled());
+    assert!(cancelled.get(b"k").is_err());
+    assert!(cancelled.scan(None, None, 1).is_err());
+    assert_eq!(
+        snapshots[0].get(b"k").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+    assert_eq!(
+        store.transaction(|tx| tx.get(b"k")).unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+    let replacement = store.snapshot(1, 1).unwrap();
+    drop(cancelled);
+    assert!(store.snapshot(1, 1).is_err());
+    drop(replacement);
+    assert!(store.snapshot(1, 1).is_ok());
+}
+
+#[test]
+fn deadline_snapshot_rejects_an_expired_deadline_before_reserving() {
+    use std::time::{Duration, Instant};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put(b"k", b"v").unwrap();
+    assert_eq!(
+        store
+            .snapshot_until(1, 1, Instant::now())
+            .err()
+            .unwrap()
+            .kind(),
+        ErrorKind::TimedOut
+    );
+    let snapshot = store
+        .snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+        .unwrap();
+    assert_eq!(snapshot.get(b"k").unwrap().as_deref(), Some(&b"v"[..]));
+}
+
+#[test]
 fn racing_snapshot_creation_cannot_exceed_active_limit() {
     use std::sync::Barrier;
     use std::thread;
