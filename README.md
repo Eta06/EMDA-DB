@@ -38,6 +38,8 @@ The engine appends checksummed records to a log, synchronizes every successful m
 
 `Store::open_with_log_limit` optionally caps the log file length for that open instance. It counts the header, overwrites and tombstones; at the cap even deletion can be rejected. The setting must be supplied again on reopen, serializes writers, and does not cap the index, other files or total project storage. Normal `Store::open` has no limit.
 
+`Store::open_with_limits` can also cap the number of live keys. Existing keys can be updated and deleting a key frees a slot. This count limit is checked after recovery, is not persisted, and is not a process-memory limit; recovery and compaction can still use multiple unbounded indexes.
+
 To try the experimental Rust library from another project:
 
 ```toml

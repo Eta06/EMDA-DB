@@ -35,6 +35,7 @@ pub struct Store {
     writes: RwLock<()>,
     commits: Coordinator,
     max_log_bytes: Option<u64>,
+    max_live_keys: Option<usize>,
     // Held for the store lifetime. OS file locks are advisory.
     _lock_file: File,
 }
@@ -52,14 +53,40 @@ impl Store {
     /// files and memory, and limited stores serialize all mutations. Opening
     /// may initialize or recover a store before checking its resulting length.
     pub fn open_with_log_limit(path: impl AsRef<Path>, max_bytes: u64) -> io::Result<Self> {
+        Self::open_with_limits(path, Some(max_bytes), None)
+    }
+
+    /// Opens a store with optional per-open log-length and live-key limits.
+    ///
+    /// The key limit is a count, not a process memory guarantee. Both limits
+    /// are checked after normal initialization/recovery and are not persisted.
+    /// Stores using either limit serialize writes to prevent oversubscription.
+    pub fn open_with_limits(
+        path: impl AsRef<Path>,
+        max_log_bytes: Option<u64>,
+        max_live_keys: Option<usize>,
+    ) -> io::Result<Self> {
         let mut store = Self::open(path)?;
-        if store.log.len()? > max_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "existing log exceeds configured limit",
-            ));
+        // Read errors must propagate; never treat an unknown file length as a
+        // successful quota check.
+        if let Some(max) = max_log_bytes {
+            if store.log.len()? > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "existing log exceeds configured limit",
+                ));
+            }
         }
-        store.max_log_bytes = Some(max_bytes);
+        if let Some(max) = max_live_keys {
+            if store.read()?.index.len() > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "existing key count exceeds configured limit",
+                ));
+            }
+        }
+        store.max_log_bytes = max_log_bytes;
+        store.max_live_keys = max_live_keys;
         Ok(store)
     }
 
@@ -90,6 +117,7 @@ impl Store {
             writes: RwLock::new(()),
             commits: Coordinator::new(),
             max_log_bytes: None,
+            max_live_keys: None,
             _lock_file: lock_file,
         })
     }
@@ -332,7 +360,7 @@ impl Store {
 
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
-        if self.max_log_bytes.is_some() {
+        if self.max_log_bytes.is_some() || self.max_live_keys.is_some() {
             let _writer = self
                 .writes
                 .write()
@@ -352,6 +380,16 @@ impl Store {
     fn commit_limited(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         if self.commits.failed() {
             return Err(uncertain_error());
+        }
+        if operation == Operation::Put {
+            if let Some(max) = self.max_live_keys {
+                let inner = self.read()?;
+                if !inner.index.contains_key(key) && inner.index.len() >= max {
+                    return Err(io::Error::other(
+                        "configured live key limit would be exceeded",
+                    ));
+                }
+            }
         }
         if let Some(max) = self.max_log_bytes {
             let record_bytes =
