@@ -29,6 +29,15 @@ fn create_with_sync(
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
+    create_with_hooks(log, destination, sync_parent, || Ok(()))
+}
+
+fn create_with_hooks(
+    log: &Log,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    before_publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     log.verify_witness()?;
     let parent = parent_directory(destination)?;
     let mut temp = tempfile::Builder::new()
@@ -46,6 +55,7 @@ fn create_with_sync(
     temp.write_all(&digest)?;
     temp.as_file().sync_all()?;
     validate(temp.as_file())?;
+    before_publish()?;
     // The temp file is on the destination filesystem. Publish only a complete,
     // verified file, and never replace an existing destination.
     temp.persist_noclobber(destination)
@@ -67,6 +77,15 @@ fn restore_with_sync(
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
+    restore_with_hooks(source, destination, sync_parent, || Ok(()))
+}
+
+fn restore_with_hooks(
+    source: &Path,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    before_publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     let backup = File::open(source)?;
     let info = validate(&backup)?;
     let parent = parent_directory(destination)?;
@@ -76,6 +95,7 @@ fn restore_with_sync(
         .prefix(".db-restore-")
         .tempdir_in(parent)?;
     restore_into(&backup, &info, staging.path())?;
+    before_publish()?;
     publish_directory(staging.path(), destination)?;
     // The directory moved; prevent TempDir from trying to clean the old path.
     let _ = staging.keep();
