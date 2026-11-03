@@ -1,0 +1,29 @@
+{
+  "base_revision": "bb8bf7def7878f3971e9c6e6099b85c3094f8dc9",
+  "source_state": "Smaller-block checkpoint-view changes uncommitted at build; source, seed and binary hashes identify tested code.",
+  "source_sha256": {
+    "src/checkpoint.rs": "2098b127a92f79d2391cd801dfa4eeb225ce8bfc79e7a07c61f3ebea7ce6c7e5",
+    "src/checkpoint_view.rs": "4779069932df43e1410dfa80598e86691a5c6e4ca03a7958da31c034c9d20ece",
+    "src/log.rs": "4c48db522c43a20d4ed116226aee4ee2c2faeddb309a26e5f19eb93acf19029c",
+    "src/witness.rs": "6a5eda8ecb7af7e7845fa7fa90b90260475c571a3d5053093d34e4acd091b512",
+    "fuzz/fuzz_targets/checkpoint_order.rs": "2b88bab73a6419e6af6ae4959c3f7bca00680207ea3bf87016527de8623b2b73"
+  },
+  "binary_sha256": "6c7c3af22c4064def970bc61254e13acfe3b9b34fd747e72925d1a9e6e3579a1",
+  "seed_sha256": {
+    "fuzz/checkpoint-order-seeds/existing-shared-prefix": "997f1ca2b50fbccc3de307bb827f26b023f8f3142f8a25ad5b94d9a0edfaf4de",
+    "fuzz/checkpoint-order-seeds/literal": "5da16719e0f32a5584cc6709235a905686a36dbd9e1881c547e34e7441736a30",
+    "fuzz/checkpoint-order-seeds/missing-shared-prefix": "944e78d897e3f733ceb84231bab7e8591110ce43ad01946c7d46c7d7a8656759",
+    "fuzz/checkpoint-order-seeds/short-key": "25dfd29c09617dcc9852281c030e5b3037a338a4712a42a21c907f259c6412a0"
+  },
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run checkpoint_order CORPUS -- -max_total_time=75 -max_len=1025 -timeout=10 -print_final_stats=1",
+  "scope": "Point lookups and ordered scans through multiple verified checkpoint blocks against a BTreeMap reference, including short keys, missing keys and shared 16-byte prefixes.",
+  "initial_seeds": 4,
+  "seed": 3505146375,
+  "duration_seconds": 76,
+  "executions": 171991,
+  "coverage_counters_hit": 1609,
+  "features": 2153,
+  "result": "no model mismatch, crash or sanitizer finding",
+  "limitations": "One short local campaign over a fixed synthetic 6048-key fixture. This is not exhaustive, a corruption-recovery test, or a physical power-loss test."
+}

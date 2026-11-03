@@ -201,11 +201,88 @@ fn large_index_uses_multiple_verified_blocks_and_supports_cross_block_scans() {
     for i in [0, 500, 1000, 1099] {
         assert_eq!(view.get(&keys[i]).unwrap().as_deref(), Some(&keys[i][..4]));
     }
-    // Each entry occupies 1,038 bytes: the block boundary falls after key 1009.
-    let page = view.scan(Some(&keys[1007]), Some(&keys[1013]), 10).unwrap();
+    // Each entry occupies 1,038 bytes: the first block ends after key 30.
+    let page = view.scan(Some(&keys[28]), Some(&keys[34]), 10).unwrap();
     assert_eq!(page.len(), 5);
-    for (entry, key) in page.iter().zip(&keys[1008..1013]) {
+    for (entry, key) in page.iter().zip(&keys[29..34]) {
         assert_eq!(&entry.0, key);
         assert_eq!(entry.1, key[..4]);
     }
+}
+
+#[test]
+fn short_and_shared_prefixes_choose_the_correct_verified_block() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("store");
+    let checkpoint = dir.path().join("index");
+    let store = Store::open(&path).unwrap();
+    let prefix = [b'q'; 16];
+    let keys = (0..5000_u32)
+        .map(|number| [prefix.as_slice(), &number.to_be_bytes()].concat())
+        .collect::<Vec<_>>();
+    store.put(b"q", b"short").unwrap();
+    store.put(&prefix[..15], b"shorter").unwrap();
+    store.put(&prefix, b"exact").unwrap();
+    for chunk in keys.chunks(500) {
+        let ops = chunk
+            .iter()
+            .map(|key| Op::Put { key, value: b"v" })
+            .collect::<Vec<_>>();
+        store.write_batch(&ops).unwrap();
+    }
+    let token = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let view = CheckpointView::open(&path, &checkpoint, &token).unwrap();
+    assert!(view.block_count() >= 6);
+    assert_eq!(view.get(b"q").unwrap().as_deref(), Some(&b"short"[..]));
+    assert_eq!(
+        view.get(&prefix[..15]).unwrap().as_deref(),
+        Some(&b"shorter"[..])
+    );
+    assert_eq!(view.get(&prefix).unwrap().as_deref(), Some(&b"exact"[..]));
+    for index in [0, 1, 858, 859, 860, 861, 862, 863, 2000, 4999] {
+        assert_eq!(view.get(&keys[index]).unwrap().as_deref(), Some(&b"v"[..]));
+    }
+    let missing = [prefix.as_slice(), &9000_u32.to_be_bytes()].concat();
+    assert_eq!(view.get(&missing).unwrap(), None);
+    let page = view.scan(Some(&keys[857]), Some(&keys[866]), 20).unwrap();
+    assert_eq!(
+        page.iter().map(|entry| &entry.0).collect::<Vec<_>>(),
+        keys[858..866].iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn ambiguous_prefix_search_checks_block_integrity_before_branching() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("store");
+    let checkpoint = dir.path().join("index");
+    let store = Store::open(&path).unwrap();
+    let prefix = [b'x'; 16];
+    let keys = (0..5000_u32)
+        .map(|number| [prefix.as_slice(), &number.to_be_bytes()].concat())
+        .collect::<Vec<_>>();
+    for chunk in keys.chunks(500) {
+        let operations = chunk
+            .iter()
+            .map(|key| Op::Put { key, value: b"v" })
+            .collect::<Vec<_>>();
+        store.write_batch(&operations).unwrap();
+    }
+    let token = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let view = CheckpointView::open(&path, &checkpoint, &token).unwrap();
+    assert_eq!(view.block_count(), 6);
+    let entries_per_block = database_engine::MAX_CHECKPOINT_VIEW_BLOCK_BYTES / (18 + 20);
+    let mut cp = OpenOptions::new().write(true).open(&checkpoint).unwrap();
+    cp.seek(SeekFrom::Start(
+        (68 + 3 * entries_per_block * (18 + 20) + 2) as u64,
+    ))
+    .unwrap();
+    cp.write_all(b"z").unwrap();
+    cp.sync_all().unwrap();
+    assert_eq!(
+        view.get(&keys[4000]).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
 }

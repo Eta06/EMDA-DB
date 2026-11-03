@@ -28,5 +28,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "checkpoint_order"
+path = "fuzz_targets/checkpoint_order.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

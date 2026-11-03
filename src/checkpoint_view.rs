@@ -10,21 +10,38 @@ use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 /// Maximum number of index blocks retained in one checkpoint view.
-pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 4096;
+pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 131_072;
 /// Maximum checkpoint index bytes read into memory for one block.
-pub const MAX_CHECKPOINT_VIEW_BLOCK_BYTES: usize = 1024 * 1024;
+pub const MAX_CHECKPOINT_VIEW_BLOCK_BYTES: usize = 32 * 1024;
+const KEY_PREFIX_BYTES: usize = 16;
 const MAX_CHECKPOINT_VIEW_FILE_BYTES: u64 =
     MAX_CHECKPOINT_VIEW_BLOCKS as u64 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES as u64 + 100;
 
 struct Block {
-    first_key: Vec<u8>,
+    first_key_prefix: [u8; KEY_PREFIX_BYTES],
+    first_key_len: usize,
     offset: u64,
     length: usize,
     digest: [u8; 32],
 }
 
+impl Block {
+    fn compare_prefix(&self, key: &[u8]) -> Option<std::cmp::Ordering> {
+        let shared = self.first_key_len.min(key.len()).min(KEY_PREFIX_BYTES);
+        let comparison = self.first_key_prefix[..shared].cmp(&key[..shared]);
+        if comparison != std::cmp::Ordering::Equal {
+            return Some(comparison);
+        }
+        if self.first_key_len <= KEY_PREFIX_BYTES || key.len() <= KEY_PREFIX_BYTES {
+            return Some(self.first_key_len.cmp(&key.len()));
+        }
+        None
+    }
+}
+
 struct BlockBuilder {
-    first_key: Vec<u8>,
+    first_key_prefix: [u8; KEY_PREFIX_BYTES],
+    first_key_len: usize,
     offset: u64,
     length: usize,
     digest: Sha256,
@@ -33,7 +50,8 @@ struct BlockBuilder {
 impl BlockBuilder {
     fn finish(self) -> Block {
         Block {
-            first_key: self.first_key,
+            first_key_prefix: self.first_key_prefix,
+            first_key_len: self.first_key_len,
             offset: self.offset,
             length: self.length,
             digest: self.digest.finalize().into(),
@@ -98,8 +116,12 @@ impl CheckpointView {
                             "checkpoint has too many view blocks",
                         ));
                     }
+                    let mut first_key_prefix = [0; KEY_PREFIX_BYTES];
+                    let prefix_len = key.len().min(KEY_PREFIX_BYTES);
+                    first_key_prefix[..prefix_len].copy_from_slice(&key[..prefix_len]);
                     current = Some(BlockBuilder {
-                        first_key: key.to_vec(),
+                        first_key_prefix,
+                        first_key_len: key.len(),
                         offset,
                         length: 0,
                         digest: Sha256::new(),
@@ -162,16 +184,43 @@ impl CheckpointView {
         Ok(bytes)
     }
 
+    // Prefixes suffice for most comparisons. When both keys share a complete
+    // prefix, verify and inspect the on-disk block before choosing a branch.
+    // The directory is derived from the checkpoint only after its trusted
+    // digest and covered log prefix have been checked.
+    fn compare_first_key(&self, block: &Block, key: &[u8]) -> io::Result<std::cmp::Ordering> {
+        if let Some(comparison) = block.compare_prefix(key) {
+            return Ok(comparison);
+        }
+        let bytes = self.read_block(block)?;
+        let mut cursor = BlockCursor::new(&bytes, self.prefix);
+        let (first, _) = cursor
+            .next()?
+            .ok_or_else(|| record::invalid_data("empty checkpoint index block"))?;
+        Ok(first.cmp(key))
+    }
+
+    fn preceding_block(&self, key: &[u8]) -> io::Result<Option<usize>> {
+        let mut low = 0;
+        let mut high = self.blocks.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if self.compare_first_key(&self.blocks[middle], key)? != std::cmp::Ordering::Greater {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(low.checked_sub(1))
+    }
+
     /// Reads one key from the historical checkpoint.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
-        let position = self
-            .blocks
-            .partition_point(|block| block.first_key.as_slice() <= key);
-        if position == 0 {
+        let Some(position) = self.preceding_block(key)? else {
             return Ok(None);
-        }
-        let bytes = self.read_block(&self.blocks[position - 1])?;
+        };
+        let bytes = self.read_block(&self.blocks[position])?;
         let mut cursor = BlockCursor::new(&bytes, self.prefix);
         while let Some((candidate, location)) = cursor.next()? {
             match candidate.cmp(key) {
@@ -203,11 +252,10 @@ impl CheckpointView {
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
         }
-        let start = after.map_or(0, |key| {
-            self.blocks
-                .partition_point(|block| block.first_key.as_slice() <= key)
-                .saturating_sub(1)
-        });
+        let start = match after {
+            Some(key) => self.preceding_block(key)?.unwrap_or(0),
+            None => 0,
+        };
         let mut result = Vec::new();
         let mut size = 0_usize;
         for block in self.blocks.iter().skip(start) {
@@ -298,5 +346,47 @@ impl<'a> BlockCursor<'a> {
                 checksum,
             },
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_order_is_exact_or_requires_full_key_comparison() {
+        let mut keys = Vec::new();
+        for len in 1..=40 {
+            for fill in [0_u8, 42, 255] {
+                let key = vec![fill; len];
+                keys.push(key.clone());
+                for position in [0, len / 2, len - 1] {
+                    let mut different = key.clone();
+                    different[position] = fill.wrapping_add(1);
+                    keys.push(different);
+                }
+            }
+        }
+        for first in &keys {
+            let mut prefix = [0_u8; KEY_PREFIX_BYTES];
+            let len = first.len().min(KEY_PREFIX_BYTES);
+            prefix[..len].copy_from_slice(&first[..len]);
+            let block = Block {
+                first_key_prefix: prefix,
+                first_key_len: first.len(),
+                offset: 0,
+                length: 0,
+                digest: [0; 32],
+            };
+            for key in &keys {
+                match block.compare_prefix(key) {
+                    Some(ordering) => assert_eq!(ordering, first.cmp(key)),
+                    None => {
+                        assert!(first.len() > KEY_PREFIX_BYTES && key.len() > KEY_PREFIX_BYTES);
+                        assert_eq!(&first[..KEY_PREFIX_BYTES], &key[..KEY_PREFIX_BYTES]);
+                    }
+                }
+            }
+        }
     }
 }

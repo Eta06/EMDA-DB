@@ -72,6 +72,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Changed
 
+- Historical checkpoint views use smaller verified index blocks and bounded prefix summaries. Ambiguous prefixes require a verified block read before choosing a search branch. The on-disk checkpoint format and trusted-digest requirements are unchanged. A 171,991-input model-based search fuzz run is recorded in `benchmarks/results/2026-11-03-checkpoint-order-fuzz.json`.
 - Successful commits skip condition-variable notifications when no writer is waiting; synchronization and failure wake-ups remain intact.
 
 - Incomplete log tails and a missing log for an existing store now fail closed without silently truncating or recreating the log.
