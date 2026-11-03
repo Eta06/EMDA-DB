@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- A sequential reference-model check for 64 short concurrent histories combining transactions, atomic batches, independent writes and bulk reads, with recovery checked after every history.
 - A shared-lock historical checkpoint reader that keeps a bounded block directory, verifies each index block on access, and reads values from the verified log prefix. It does not replay or validate the tail and is not a live writable index. A short 297,135-input fuzz run is recorded in `benchmarks/results/2026-11-03-checkpoint-view-fuzz.json`.
 - Paired warm-cache checkpoint versus full-replay measurements, including checkpoint creation cost, individual runs, Linux noise telemetry and observed outliers.
 
