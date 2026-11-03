@@ -215,6 +215,19 @@ These are medians of run-level measurements on the same virtualized overlay envi
 
 A separate instrumented single-client run counted 981 futex calls before and three after, with exactly 489 `fdatasync` calls in both runs, including initialization. The optimization skips notifications when nobody is waiting; it does not skip synchronization. Tracing affects timings, which are not used in the table. Existing failure, queue-capacity, handoff, and concurrent-history tests exercise notification correctness.
 
+## Historical index memory and lookup measurement
+
+The Linux-only `index_memory_bench` and `scripts/index_memory_compare.py` compare the checkpoint-loaded writable store with the historical checkpoint view in separate fresh processes. They prepare a disposable fixture, alternate measured order, check every returned value, report each open and point-read time and Linux process RSS, and record VM/cgroup noise. The fixture has no log tail. The view holds a shared lock and does not replay or validate a tail, whereas the writable store does, so they have different semantics. RSS excludes the OS page cache and is not a memory quota. Both openings hash the full checkpoint prefix.
+
+For example, from the repository root, with an existing directory for temporary fixtures and a new output path:
+
+```sh
+cargo build --release --example index_memory_bench --locked
+python3 scripts/index_memory_compare.py --directory /tmp --output /tmp/index-memory-results.json
+```
+
+The default cases use 10,000 and 200,000 keys, 128-byte keys, 64-byte values, five repetitions per mode, and 16 point reads per repetition. These are warm-cache, direct API measurements on one VM, not a competitor or production comparison. `--keys`, `--key-bytes`, and `--rounds` change the workload; the two modes must not be described as offering identical recovery or concurrency behavior.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
