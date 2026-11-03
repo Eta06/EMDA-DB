@@ -1,0 +1,95 @@
+# Database roadmap
+
+The product name is a placeholder. This roadmap describes intended work, not implemented features or a release schedule. Its ambition is broad parity with relevant PostgreSQL and MongoDB capabilities plus useful new ideas. The [competitor inventory](COMPETITOR_FEATURES.md) records the currently researched capabilities and their sources; it is a living inventory, not an exhaustive list of every release-specific option. New discoveries and changed requirements should be added without implying feature compatibility before it is implemented and tested.
+
+## Current baseline
+
+The prototype provides `put`, `get`, and `delete` for byte keys/values, a checksummed append log, read verification, serialized writes/concurrent readers, recovery of incomplete trailing records, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, the log cannot be compacted, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
+
+## Priority 0: correctness and measurable foundations
+
+These are prerequisites for trusting any feature built above the engine:
+
+- Define operation, error, concurrency, acknowledgement, and recovery semantics, including unknown write outcomes.
+- Harden and version the log format; distinguish incomplete writes from corruption as far as the format allows, and fail safely when the distinction cannot be made.
+- Handle durable directory creation and metadata changes; define filesystem and hardware assumptions explicitly.
+- Add crash/fault injection, malformed-file and truncation tests, model-based concurrency tests, and fuzz testing. Process termination tests do not prove power-loss safety.
+- Implement and test consistent backup/restore before claiming that stored data is protected.
+- Build reproducible benchmarks for existing CRUD, concurrency, recovery, memory, and I/O; compare equivalent operations and durability settings with PostgreSQL, SQLite, Turso, and MongoDB where their models allow.
+
+Exit evidence: documented guarantees and known failure boundaries, repeatable fault tests, verified restores, and published benchmark configuration and results. Do not claim production readiness or competitor performance parity before these exist.
+
+## Priority 1: durable storage and core operations
+
+- Persistent on-disk index and bounded memory/cache management; avoid requiring every key or value to fit in RAM.
+- Log checkpoints, safe compaction, garbage collection, and bounded recovery time.
+- Ordered range scans, pagination, bulk operations, conditional updates, and atomic increment.
+- Atomic batches and multi-key transactions with a specified isolation model, conflict behavior, and rollback.
+- Safe coordination between concurrent readers and writers, connection/request limits, and fair overload handling.
+- Explicit limits and storage quotas; configurable durability must make its tradeoffs clear.
+
+Exit evidence: independent concurrent clients produce correct results, transactional writes are atomic, recovery preserves acknowledged writes under the documented fault model, and memory stays within configured limits in measured workloads.
+
+## Priority 2: document data and queries
+
+- Collections, typed fields, nested values, schema validation, and explicit missing/null behavior.
+- Document create/read/update/delete, upsert, bulk operations, conditional updates, and atomic operators.
+- Filters, projection, sorting, pagination, and indexed equality and range queries.
+- Secondary, unique, composite and partial indexes; maintain indexes atomically with records.
+- Aggregation, relationships/lookup and richer operators as semantics are specified and tested.
+- Query plans, statistics, explainability, and bounded execution.
+
+Exit evidence: representative MongoDB-style CRUD and queries work through a documented interface with correctness, concurrency, recovery, and benchmark coverage. Compatibility with a particular MongoDB version or wire protocol is a separate decision.
+
+## Priority 3: relational and SQL interfaces
+
+- Tables, typed columns, constraints, primary and foreign keys, and schema migrations.
+- SQL parsing and planning; begin with a documented subset of `CREATE`, `INSERT`, `SELECT`, `UPDATE`, and `DELETE`.
+- Joins, aggregates, sorting, indexes, transactions, and query diagnostics in measured increments.
+- Expand supported SQL features and standards compatibility only with behavior and regression tests.
+
+Exit evidence: a documented SQL subset works over the shared transaction and storage engine. Full PostgreSQL SQL or wire compatibility is not implied.
+
+## Priority 4: secure service and project isolation
+
+- Add a bounded network API and SDKs with timeouts, authentication, authorization, TLS, and audit-safe diagnostics.
+- Define project/user identities, roles, data access rules, and least-privilege service boundaries.
+- Enforce project isolation at each layer and test cross-project access, unauthorized operations, malformed requests, and resource exhaustion.
+- Control per-project requests, connections, CPU, memory, storage, and background work; use admission control when capacity is exhausted.
+- Build project lifecycle and safe sleep/wake separately from the embedded engine. Store data durably while workers sleep; specify cold-start and active-transaction behavior.
+
+Exit evidence: isolation and overload tests pass and operational limits are measurable. A process boundary alone does not establish complete isolation or high availability.
+
+## Priority 5: performance and scalability
+
+- Profile the full workload before changing the engine; track latency distributions, throughput, resource use, failures, and correctness.
+- Evaluate group commit, efficient binary encoding, cache policies, concurrency strategies, and compact indexes with equivalent durability semantics.
+- Evaluate SIMD and assembly only for measured hotspots, with CPU feature detection, portable fallbacks, fuzzing, and identical correctness tests.
+- Add project fairness, capacity-aware scheduling, cold-start optimization, and safe multithreading based on measured results.
+- Compare against PostgreSQL, MongoDB and other relevant systems using [BENCHMARKS.md](BENCHMARKS.md); publish raw results and configurations.
+
+The goal is to be competitive or better on specific measured workloads. No engine can be assumed to outperform every competitor on every operation, hardware configuration, and durability setting.
+
+## Priority 6: replication and operations
+
+- Replication and failover with explicit consistency and acknowledgement semantics.
+- Point-in-time recovery, independent backups, restore drills, retention, and disaster recovery.
+- Monitoring, tracing, metrics, audit events, query diagnostics, alerts, and capacity planning.
+- Horizontal partitioning/sharding only after single-node and replication behavior are sound.
+- Rolling upgrades, format migrations, imports/exports, SDK compatibility, and operational tooling.
+
+Exit evidence: controlled node/process failures and restore tests meet documented recovery objectives; distributed failure tests demonstrate the stated guarantees.
+
+## Priority 7: broader features and smarter tooling
+
+The [competitor inventory](COMPETITOR_FEATURES.md) tracks additional capabilities to investigate, including full-text and geospatial search, vector similarity, time-series data, TTL, change streams/realtime subscriptions, more index types, server-side logic, and ecosystem tooling. Availability, compatibility, and implementation order remain decisions, not promises.
+
+Potential differentiators to validate with real users and benchmarks:
+
+- Query and index recommendations that explain expected tradeoffs.
+- Optional resource-aware scheduling and predictable cold-start controls.
+- Clear data-access explanations, diagnostics, and recovery guidance.
+- Schema-change analysis and safer migration planning.
+- Optional AI-assisted query or schema suggestions using explicitly configured data-access and privacy boundaries.
+
+Suggestions must not silently weaken authorization or durability, destroy data, or change a project's configuration without an explicit mechanism chosen by its owner. Benchmark potential improvements before enabling them by default.

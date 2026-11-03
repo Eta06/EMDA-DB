@@ -25,4 +25,6 @@ cargo test --locked
 cargo test --release --locked
 ```
 
-Explore the [architecture](docs/ARCHITECTURE.md), [competitor feature inventory](docs/COMPETITOR_FEATURES.md), and [benchmark plan](docs/BENCHMARKS.md). No performance claims have been made. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and verification expectations.
+Explore the [architecture](docs/ARCHITECTURE.md), [prioritized roadmap](docs/ROADMAP.md), [competitor feature inventory](docs/COMPETITOR_FEATURES.md), and [benchmark plan](docs/BENCHMARKS.md). No performance claims have been made. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and verification expectations.
+
+Licensed under [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution and notices.
