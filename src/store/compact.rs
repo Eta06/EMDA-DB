@@ -392,6 +392,93 @@ mod tests {
     }
 
     #[test]
+    fn compaction_crash_child() {
+        let Ok(parent) = std::env::var("EMDA_COMPACTION_CRASH_PATH") else {
+            return;
+        };
+        let parent = Path::new(&parent);
+        let source = Store::open(parent.join("source")).unwrap();
+        let _: io::Result<()> = source.compact_to_using(
+            &parent.join("destination"),
+            |_| Ok(()),
+            |log, index, target| {
+                let one = index
+                    .iter()
+                    .take(1)
+                    .map(|(key, value)| (key.clone(), *value))
+                    .collect();
+                copy_live_records(log, &one, target)?;
+                println!("COMPACTION_COPY_SYNCHRONIZED");
+                std::io::stdout().flush()?;
+                loop {
+                    std::thread::park();
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn process_killed_during_compaction_keeps_source_and_does_not_publish_copy() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("source");
+        let source = Store::open(&source_path).unwrap();
+        source.put(b"a", b"one").unwrap();
+        source.put(b"b", b"two").unwrap();
+        let before = std::fs::read(source_path.join("records.log")).unwrap();
+        drop(source);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "store::compact::tests::compaction_crash_child",
+                "--nocapture",
+            ])
+            .env("EMDA_COMPACTION_CRASH_PATH", directory.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = child.stdout.take().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(output)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if line.contains("COMPACTION_COPY_SYNCHRONIZED") {
+                    let _ = sender.send(());
+                    break;
+                }
+            }
+        });
+        let copied = receiver.recv_timeout(Duration::from_secs(20));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        copied.expect("compaction process did not reach the staging boundary");
+        assert!(!directory.path().join("destination").exists());
+        assert_eq!(
+            std::fs::read(source_path.join("records.log")).unwrap(),
+            before
+        );
+        let recovered = Store::open(&source_path).unwrap();
+        assert_eq!(
+            recovered.get_many(&[b"a", b"b"]).unwrap(),
+            vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+        );
+        recovered.put(b"after", b"ok").unwrap();
+        assert!(std::fs::read_dir(directory.path()).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".db-compact-")
+        }));
+    }
+
+    #[test]
     fn failed_parent_sync_reports_uncertain_publication_and_preserves_source() {
         let dir = tempfile::tempdir().unwrap();
         let source = Store::open(dir.path().join("source")).unwrap();
