@@ -20,13 +20,14 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 - [ ] Implement a durable on-disk index and bounded memory/cache management; the existing in-memory index grows with the number of keys.
 - [x] Add verified, non-overwriting compaction into a separate store while keeping the source intact and blocking concurrent mutations during the copy.
 - [ ] Design and implement crash-safe checkpoints, live/online compaction, garbage collection and bounded recovery. Protect readers and any future snapshots during reclamation. Separate-copy compaction currently needs multiple in-memory indexes, requires manual switchover and does not include later source writes.
-- [x] Add initial bytewise ordered scans with exclusive bounds and pagination. Each page is limited to 1,024 entries and 32 MiB of key/value data, but pages do not share a stable snapshot. Continue until an empty page; a byte-limited page can be short.
+- [x] Add initial bytewise ordered scans with exclusive bounds and pagination. Each page is limited to 1,024 entries and 32 MiB of key/value data; ordinary scan pages can see changes. Continue until an empty page; a byte-limited page can be short.
 - [x] Add single-key compare-exchange for conditional put/delete, synchronized on success and serialized against mutations; it does not detect ABA changes or provide multi-key transactions.
 - [x] Add signed 64-bit atomic increment with checked overflow and specified byte encoding; it is serialized against mutations.
 - [x] Add bounded multi-key reads from one captured index state, preserving input order and missing keys. This is not a multi-key transaction.
 - [ ] Implement bulk writes. Profile and reduce compare-exchange/increment contention without weakening their semantics; both currently exclude all concurrent writers, including writers to other keys.
 - [ ] Specify and implement atomic multi-key batches and transactions, isolation, conflict behavior and rollback. Record and index updates must recover atomically. Independent operations and group commit are not transactions.
-- [ ] Add stable snapshots and explicit lifetime/resource management where required for multi-page scans and transactions.
+- [x] Add bounded, process-local read-only snapshots with stable paginated scans; each snapshot is released on drop and borrows the store.
+- [ ] Add aggregate snapshot resource accounting, expiry/cancellation and transaction-compatible snapshot lifetime/garbage collection. Existing per-snapshot limits do not bound memory across multiple snapshots and no live log reclamation exists.
 - [ ] Add configurable request/connection limits, fair overload handling and cancellation/timeouts without violating unknown-outcome semantics. The current embedded API does not include a production server.
 - [x] Add an optional per-open log-file length cap with concurrency-safe admission, rejection before replay and unknown-outcome handling.
 - [x] Add an optional per-open live-key count limit, allowing existing-key updates and freeing slots after deletions, with serialized admission. Enforce it during recovery for every historical prefix; a historical peak can require compaction into a separate copy before opening under a lower cap.

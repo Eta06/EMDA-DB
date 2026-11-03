@@ -34,6 +34,8 @@ The engine appends checksummed records to a log, synchronizes every successful m
 
 `Store::scan` returns keys in bytewise order with exclusive optional bounds. Each call captures the index at one instant, but separate pages can see concurrent changes. A page contains at most 1,024 entries and 32 MiB of key/value bytes. Because the byte limit can make a page short, continue using its last key until a page is empty.
 
+For stable pagination, `Store::snapshot(max_keys, max_key_bytes)` copies a bounded index view and returns a read-only snapshot borrowing the open store. `Snapshot::get` and `Snapshot::scan` continue to see that view across later writes. Each snapshot supports at most 16,384 keys and 4 MiB of key bytes; multiple snapshots have no aggregate memory quota. Snapshots are released on drop, do not survive reopening, and are not multi-key write transactions.
+
 `Store::compact_to` creates a verified, non-overwriting copy containing only live keys. It blocks mutations while copying, leaves the source unchanged, and does not automatically switch applications to the copy. Writes accepted by the source after it returns are not in the copy. It needs memory for multiple indexes and is not an online or bounded-memory compactor.
 
 `Store::open_with_log_limit` optionally caps the log file length for that open instance. It counts the header, overwrites and tombstones; at the cap even deletion can be rejected. The setting must be supplied again on reopen; an oversized log is rejected before replay. It serializes writers and does not cap the index, other files or total project storage. Normal `Store::open` has no limit.

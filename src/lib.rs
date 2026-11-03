@@ -15,4 +15,7 @@ mod recovery;
 mod store;
 mod witness;
 
-pub use store::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES, Store};
+pub use store::{
+    Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES, MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, Snapshot,
+    Store,
+};

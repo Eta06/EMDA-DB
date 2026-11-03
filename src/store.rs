@@ -12,7 +12,9 @@ use std::sync::{RwLock, RwLockReadGuard};
 
 mod commit;
 mod compact;
+mod snapshot;
 use commit::Coordinator;
+pub use snapshot::{MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, Snapshot};
 
 struct Inner {
     index: BTreeMap<Vec<u8>, ValueLocation>,

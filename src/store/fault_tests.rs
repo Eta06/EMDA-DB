@@ -393,6 +393,37 @@ fn bulk_read_returns_no_partial_results_after_a_later_short_read() {
 }
 
 #[test]
+fn snapshot_refuses_reads_after_uncertain_write_and_propagates_read_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
+    store.put(b"a", b"first").unwrap();
+    store.put(b"b", b"second").unwrap();
+    let snapshot = store.snapshot(2, 2).unwrap();
+    *fault.lock().unwrap() = Some(Fault::ShortReadAfter(1, 1));
+    assert_eq!(
+        snapshot.scan(None, None, 2).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    *fault.lock().unwrap() = Some(Fault::SyncBefore);
+    assert!(store.put(b"c", b"uncertain").is_err());
+    assert!(
+        snapshot
+            .get(b"a")
+            .unwrap_err()
+            .to_string()
+            .contains("uncertain")
+    );
+    assert!(
+        snapshot
+            .scan(None, None, 2)
+            .unwrap_err()
+            .to_string()
+            .contains("uncertain")
+    );
+}
+
+#[test]
 fn short_read_during_recovery_preserves_the_log() {
     let dir = tempfile::tempdir().unwrap();
     {

@@ -17,7 +17,7 @@ Research snapshot: 3 November 2026. This is a structured inventory of major engi
 | Upsert | `INSERT ... ON CONFLICT` | Upsert options on supported operations | Overwrite and single-key compare-exchange are supported; no document or SQL upsert |
 | Bulk operations | Multi-row SQL, `COPY` | Bulk write and multiple-document operations | Bounded bulk reads; no bulk writes or atomic batches |
 | Filtering and projection | SQL `WHERE` and selected expressions | Query operators and projected fields | No filters or projection |
-| Sort, limit, pagination | `ORDER BY`, `LIMIT`, cursors | Sort, limit, cursors | Bytewise ordered scan with exclusive bounds and bounded pages; no stable multi-page snapshot |
+| Sort, limit, pagination | `ORDER BY`, `LIMIT`, cursors | Sort, limit, cursors | Bytewise ordered scan with exclusive bounds, bounded pages and process-local read-only snapshots |
 | Joins and relationships | Joins and foreign keys | `$lookup`, references and embedded documents | None |
 | Grouping and aggregation | `GROUP BY`, aggregates, window functions | Aggregation pipeline and operators | None |
 | Schema rules | Types, defaults, checks, constraints | Flexible documents; optional schema validation | Keys/values are uninterpreted bytes |

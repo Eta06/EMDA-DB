@@ -27,7 +27,7 @@ Exit evidence: documented guarantees and known failure boundaries, repeatable fa
 
 - Persistent on-disk index and bounded memory/cache management; avoid requiring every key or value to fit in RAM.
 - Log checkpoints, in-place/online compaction, garbage collection, and bounded recovery time. A verified separate-copy compaction prototype exists; it does not switch the live store or bound memory.
-- Ordered range scans, pagination and bulk reads: **prototype implemented** with entry/byte limits; stable multi-page snapshots remain unimplemented. Single-key compare-exchange and signed 64-bit increment are implemented and serialized against mutations. Bulk writes remain planned.
+- Ordered range scans, pagination and bulk reads: **prototype implemented** with entry/byte limits. Bounded read-only snapshots offer stable pages within one process; aggregate limits and transaction snapshots remain open. Single-key compare-exchange and signed 64-bit increment are implemented and serialized against mutations. Bulk writes remain planned.
 - Atomic batches and multi-key transactions with a specified isolation model, conflict behavior, and rollback.
 - Safe coordination between concurrent readers and writers, connection/request limits, and fair overload handling.
 - Explicit limits and storage quotas. Optional per-open log-length and live-key count caps exist; persistent project-wide quotas, other files and memory limits remain open. No performance optimization may violate the durability, isolation, or recovery guarantees in force; see the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md).
