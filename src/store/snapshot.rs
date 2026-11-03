@@ -1,5 +1,6 @@
 //! Bounded in-process read-only index snapshots over immutable log locations.
 use super::*;
+use std::sync::{Arc, TryLockError, Weak};
 use std::time::Instant;
 
 /// Hard per-snapshot limit on the number of copied keys.
@@ -47,16 +48,63 @@ impl SnapshotBudget {
 /// survive reopening, and do not make independent writes transactional.
 /// Per-store snapshot count, total keys and key bytes are limited. These are
 /// not byte-accurate process memory limits and do not apply across stores.
-/// An expired snapshot continues to reserve its resources until cancelled or
-/// dropped. Expiry is checked at operation boundaries, not during I/O.
+/// Expired snapshots can be reclaimed on later snapshot admission or an explicit
+/// reaping call. Expiry is checked at operation boundaries, not during I/O.
 pub struct Snapshot<'a> {
     pub(super) store: &'a Store,
-    pub(super) index: BTreeMap<Vec<u8>, ValueLocation>,
     pub(super) generation: u64,
+    state: Arc<RwLock<SnapshotData>>,
+}
+
+pub(super) type SnapshotRegistry = Vec<Weak<RwLock<SnapshotData>>>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotStatus {
+    Active,
+    Expired,
+    Cancelled,
+}
+
+pub(super) struct SnapshotData {
+    pub(super) index: BTreeMap<Vec<u8>, ValueLocation>,
     reserved_keys: usize,
     reserved_key_bytes: usize,
-    active: bool,
+    status: SnapshotStatus,
     deadline: Option<Instant>,
+}
+
+impl SnapshotData {
+    fn release(&mut self, store: &Store, status: SnapshotStatus) {
+        if self.status == SnapshotStatus::Active {
+            // Release the copied keys before capacity becomes available again.
+            self.index.clear();
+            store
+                .snapshot_budget
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .release(self.reserved_keys, self.reserved_key_bytes);
+        }
+        self.status = status;
+    }
+}
+
+struct SnapshotReservation<'a> {
+    store: &'a Store,
+    keys: usize,
+    key_bytes: usize,
+    active: bool,
+}
+
+impl Drop for SnapshotReservation<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.store
+                .snapshot_budget
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .release(self.keys, self.key_bytes);
+        }
+    }
 }
 
 impl Drop for Snapshot<'_> {
@@ -70,12 +118,25 @@ impl Store {
     /// Limits cannot exceed the public hard per-snapshot limits. The operation
     /// copies keys and offsets, not values, and never returns a partial snapshot.
     pub fn snapshot(&self, max_keys: usize, max_key_bytes: usize) -> io::Result<Snapshot<'_>> {
+        self.snapshot_with_deadline(max_keys, max_key_bytes, None)
+    }
+
+    fn snapshot_with_deadline(
+        &self,
+        max_keys: usize,
+        max_key_bytes: usize,
+        deadline: Option<Instant>,
+    ) -> io::Result<Snapshot<'_>> {
         if max_keys > MAX_SNAPSHOT_KEYS || max_key_bytes > MAX_SNAPSHOT_KEY_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "snapshot limits exceed supported maximum",
             ));
         }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
+        }
+        self.reap_expired_snapshots()?;
         let inner = self.read()?;
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -95,18 +156,60 @@ impl Store {
             .lock()
             .map_err(|_| io::Error::other("snapshot budget poisoned"))?
             .reserve(key_count, key_bytes)?;
-        // Once reserved, Drop also releases accounting if copying unwinds.
-        let mut snapshot = Snapshot {
+        // Protect the reservation even if allocating the shared state unwinds.
+        let mut reservation = SnapshotReservation {
             store: self,
-            index: BTreeMap::new(),
-            generation: inner.generation,
-            reserved_keys: key_count,
-            reserved_key_bytes: key_bytes,
+            keys: key_count,
+            key_bytes,
             active: true,
-            deadline: None,
         };
-        for (key, &location) in &inner.index {
-            snapshot.index.insert(key.clone(), location);
+        let snapshot = Snapshot {
+            store: self,
+            generation: inner.generation,
+            state: Arc::new(RwLock::new(SnapshotData {
+                index: BTreeMap::new(),
+                reserved_keys: key_count,
+                reserved_key_bytes: key_bytes,
+                status: SnapshotStatus::Active,
+                deadline,
+            })),
+        };
+        reservation.active = false;
+        {
+            let mut data = snapshot
+                .state
+                .write()
+                .map_err(|_| io::Error::other("snapshot state poisoned"))?;
+            for (key, &location) in &inner.index {
+                data.index.insert(key.clone(), location);
+            }
+        }
+        snapshot.ensure_healthy()?;
+        if deadline.is_some() {
+            let mut registry = self
+                .snapshot_registry
+                .lock()
+                .map_err(|_| io::Error::other("snapshot registry poisoned"))?;
+            // Many callers can pass the earlier reap concurrently; prune again
+            // under the registry lock and cap even stale or busy entries.
+            registry.retain(|weak| {
+                let Some(state) = weak.upgrade() else {
+                    return false;
+                };
+                match state.try_read() {
+                    Ok(data) => data.status == SnapshotStatus::Active,
+                    Err(TryLockError::WouldBlock) => true,
+                    Err(TryLockError::Poisoned(error)) => {
+                        error.into_inner().status == SnapshotStatus::Active
+                    }
+                }
+            });
+            if registry.len() >= MAX_ACTIVE_SNAPSHOTS {
+                return Err(io::Error::other(
+                    "snapshot deadline registry temporarily full",
+                ));
+            }
+            registry.push(Arc::downgrade(&snapshot.state));
         }
         Ok(snapshot)
     }
@@ -115,38 +218,77 @@ impl Store {
     ///
     /// The deadline is process-local and monotonic. An operation started before
     /// expiry can finish afterwards; I/O and lock waits are not interrupted.
-    /// Expiry does not automatically reclaim memory: cancel or drop the view.
+    /// Expired views are reclaimed on a later snapshot request or explicit
+    /// `reap_expired_snapshots` call when no read is using them. There is no
+    /// background timer, and ongoing reads are not interrupted.
     pub fn snapshot_until(
         &self,
         max_keys: usize,
         max_key_bytes: usize,
         deadline: Instant,
     ) -> io::Result<Snapshot<'_>> {
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
-        }
-        let mut snapshot = self.snapshot(max_keys, max_key_bytes)?;
-        snapshot.deadline = Some(deadline);
-        snapshot.ensure_healthy()?;
-        Ok(snapshot)
+        self.snapshot_with_deadline(max_keys, max_key_bytes, Some(deadline))
+    }
+
+    /// Reclaims expired snapshots that have no operation currently using them.
+    /// Busy snapshots are skipped; call again later. This does not reclaim the log.
+    pub fn reap_expired_snapshots(&self) -> io::Result<usize> {
+        let mut registry = self
+            .snapshot_registry
+            .lock()
+            .map_err(|_| io::Error::other("snapshot registry poisoned"))?;
+        let mut reaped = 0;
+        registry.retain(|weak| {
+            let Some(state) = weak.upgrade() else {
+                return false;
+            };
+            let mut data = match state.try_write() {
+                Ok(data) => data,
+                Err(TryLockError::WouldBlock) => return true,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            };
+            if data.status != SnapshotStatus::Active {
+                return false;
+            }
+            if data
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                data.release(self, SnapshotStatus::Expired);
+                reaped += 1;
+                return false;
+            }
+            true
+        });
+        Ok(reaped)
     }
 }
 
 impl Snapshot<'_> {
     pub(super) fn ensure_healthy(&self) -> io::Result<()> {
-        if !self.active {
+        drop(self.read_index()?);
+        Ok(())
+    }
+
+    pub(super) fn read_index(&self) -> io::Result<RwLockReadGuard<'_, SnapshotData>> {
+        let data = self
+            .state
+            .read()
+            .map_err(|_| io::Error::other("snapshot state poisoned"))?;
+        if data.status == SnapshotStatus::Cancelled {
             return Err(io::Error::other("snapshot has been cancelled"));
         }
-        if self
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
+        if data.status == SnapshotStatus::Expired
+            || data
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
         {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
         }
         if self.store.commits.failed() {
             return Err(uncertain_error());
         }
-        Ok(())
+        Ok(data)
     }
 
     /// Cancels this snapshot and releases its copied index and reservations.
@@ -154,30 +296,27 @@ impl Snapshot<'_> {
     /// Cancellation is idempotent. Later reads return an error rather than an
     /// empty result. It has no effect on other snapshots or transactions.
     pub fn cancel(&mut self) {
-        if !self.active {
-            return;
-        }
-        // Free the copied keys before returning capacity to another snapshot.
-        self.index.clear();
-        let mut budget = self
-            .store
-            .snapshot_budget
-            .lock()
+        let mut data = self
+            .state
+            .write()
             .unwrap_or_else(|poison| poison.into_inner());
-        budget.release(self.reserved_keys, self.reserved_key_bytes);
-        self.active = false;
+        data.release(self.store, SnapshotStatus::Cancelled);
     }
 
     /// Whether this snapshot has been explicitly cancelled.
     pub fn is_cancelled(&self) -> bool {
-        !self.active
+        self.state
+            .read()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .status
+            == SnapshotStatus::Cancelled
     }
 
     /// Reads the value selected when this snapshot was created.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
-        self.ensure_healthy()?;
-        self.index
+        let data = self.read_index()?;
+        data.index
             .get(key)
             .copied()
             .map(|location| self.store.log.read(location))
@@ -201,7 +340,7 @@ impl Snapshot<'_> {
                 "scan limit must be between 1 and 1024",
             ));
         }
-        self.ensure_healthy()?;
+        let data = self.read_index()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
         }
@@ -211,7 +350,7 @@ impl Snapshot<'_> {
         );
         let mut result = Vec::new();
         let mut bytes = 0_usize;
-        for (key, &location) in self.index.range::<[u8], _>(bounds).take(limit) {
+        for (key, &location) in data.index.range::<[u8], _>(bounds).take(limit) {
             let size = key.len() + location.length;
             if bytes + size > MAX_SCAN_BYTES {
                 break;
@@ -245,7 +384,7 @@ mod tests {
         let store = Store::open(directory.path()).unwrap();
         store.put(b"k", b"v").unwrap();
         let mut snapshot = store.snapshot(1, 1).unwrap();
-        snapshot.deadline = Some(Instant::now());
+        snapshot.state.write().unwrap().deadline = Some(Instant::now());
         assert_eq!(
             snapshot.get(b"k").unwrap_err().kind(),
             io::ErrorKind::TimedOut
@@ -259,5 +398,141 @@ mod tests {
         assert!(snapshot.is_cancelled());
         assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
         assert!(snapshot.get(b"k").is_err());
+    }
+
+    #[test]
+    fn admission_reaps_expired_snapshots_without_double_releasing_capacity() {
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put(b"k", b"v").unwrap();
+        let expired = store
+            .snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+            .unwrap();
+        let others = (1..MAX_ACTIVE_SNAPSHOTS)
+            .map(|_| store.snapshot(1, 1).unwrap())
+            .collect::<Vec<_>>();
+        assert!(store.snapshot(1, 1).is_err());
+        expired.state.write().unwrap().deadline = Some(Instant::now());
+        let replacement = store.snapshot(1, 1).unwrap();
+        assert_eq!(
+            expired.get(b"k").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            store.snapshot_budget.lock().unwrap().active,
+            MAX_ACTIVE_SNAPSHOTS
+        );
+        drop(expired);
+        assert_eq!(
+            store.snapshot_budget.lock().unwrap().active,
+            MAX_ACTIVE_SNAPSHOTS
+        );
+        drop(replacement);
+        drop(others);
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+    }
+
+    #[test]
+    fn reaping_skips_a_snapshot_while_its_index_is_in_use() {
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put(b"k", b"v").unwrap();
+        let snapshot = store
+            .snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+            .unwrap();
+        snapshot.state.write().unwrap().deadline = Some(Instant::now());
+        let active_read = snapshot.state.read().unwrap();
+        assert_eq!(store.reap_expired_snapshots().unwrap(), 0);
+        assert_eq!(active_read.index.len(), 1);
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 1);
+        drop(active_read);
+        assert_eq!(store.reap_expired_snapshots().unwrap(), 1);
+        assert_eq!(store.reap_expired_snapshots().unwrap(), 0);
+        assert_eq!(
+            snapshot.get(b"k").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+    }
+
+    #[test]
+    fn concurrent_expiry_reaping_and_drop_release_each_reservation_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put(b"k", b"v").unwrap();
+        let admitted = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                let (store, admitted) = (&store, &admitted);
+                scope.spawn(move || {
+                    for _ in 0..50 {
+                        if let Ok(snapshot) =
+                            store.snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+                        {
+                            admitted.fetch_add(1, Ordering::SeqCst);
+                            assert!(
+                                store.snapshot_registry.lock().unwrap().len()
+                                    <= MAX_ACTIVE_SNAPSHOTS
+                            );
+                            snapshot.state.write().unwrap().deadline = Some(Instant::now());
+                            assert_eq!(
+                                snapshot.get(b"k").unwrap_err().kind(),
+                                io::ErrorKind::TimedOut
+                            );
+                            store.reap_expired_snapshots().unwrap();
+                            std::thread::yield_now();
+                        }
+                    }
+                });
+            }
+        });
+        assert!(admitted.load(Ordering::SeqCst) > 0);
+        store.reap_expired_snapshots().unwrap();
+        let budget = store.snapshot_budget.lock().unwrap();
+        assert_eq!((budget.active, budget.keys, budget.key_bytes), (0, 0, 0));
+        assert!(store.snapshot_registry.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn busy_stale_registry_entries_cannot_grow_registry_or_leak_reservations() {
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put(b"k", b"v").unwrap();
+        let snapshots = (0..MAX_ACTIVE_SNAPSHOTS)
+            .map(|_| {
+                store
+                    .snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut guards = snapshots
+            .iter()
+            .map(|snapshot| snapshot.state.write().unwrap())
+            .collect::<Vec<_>>();
+        for data in &mut guards {
+            data.release(&store, SnapshotStatus::Cancelled);
+        }
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+        let error = store
+            .snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("registry temporarily full"));
+        assert_eq!(
+            store.snapshot_registry.lock().unwrap().len(),
+            MAX_ACTIVE_SNAPSHOTS
+        );
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+        drop(guards);
+        assert!(
+            store
+                .snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+                .is_ok()
+        );
     }
 }

@@ -103,11 +103,16 @@ impl Transaction<'_> {
     /// Reads from staged changes first, then from the initial snapshot.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
-        self.snapshot.ensure_healthy()?;
+        let snapshot = self.snapshot.read_index()?;
         if let Some(value) = self.staged.get(key) {
             return Ok(value.clone());
         }
-        self.snapshot.get(key)
+        snapshot
+            .index
+            .get(key)
+            .copied()
+            .map(|location| self.snapshot.store.log.read(location))
+            .transpose()
     }
 
     /// Stages a replacement. It is not visible to other readers before commit.
@@ -139,7 +144,7 @@ impl Transaction<'_> {
                 "scan limit must be between 1 and 1024",
             ));
         }
-        self.snapshot.ensure_healthy()?;
+        let snapshot = self.snapshot.read_index()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
         }
@@ -147,12 +152,14 @@ impl Transaction<'_> {
             after.map_or(Unbounded, Excluded),
             before.map_or(Unbounded, Excluded),
         );
-        let mut base = self.snapshot.index.range::<[u8], _>(bounds).peekable();
+        let mut base = snapshot.index.range::<[u8], _>(bounds).peekable();
         let mut pending = self.staged.range::<[u8], _>(bounds).peekable();
         let mut result = Vec::new();
         let mut bytes = 0_usize;
         while result.len() < limit {
-            self.snapshot.ensure_healthy()?;
+            if self.snapshot.store.commits.failed() {
+                return Err(uncertain_error());
+            }
             let choice = match (base.peek(), pending.peek()) {
                 (None, None) => break,
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -165,10 +172,7 @@ impl Transaction<'_> {
                 if bytes + size > MAX_SCAN_BYTES {
                     break;
                 }
-                let value = self
-                    .snapshot
-                    .get(key)?
-                    .ok_or_else(|| io::Error::other("snapshot index changed unexpectedly"))?;
+                let value = self.snapshot.store.log.read(*location)?;
                 bytes += size;
                 result.push((key.clone(), value));
             } else {

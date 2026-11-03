@@ -46,6 +46,7 @@ pub struct Store {
     max_log_bytes: Option<u64>,
     max_live_keys: Option<usize>,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
+    snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
     transaction_budget: Mutex<transaction::TransactionBudget>,
     // Held for the store lifetime. OS file locks are advisory.
     _lock_file: File,
@@ -184,6 +185,7 @@ impl Store {
             max_log_bytes: None,
             max_live_keys: None,
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
+            snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::default()),
             transaction_budget: Mutex::new(transaction::TransactionBudget::default()),
             _lock_file: lock_file,
         })

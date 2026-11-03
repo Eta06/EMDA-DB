@@ -98,6 +98,68 @@ fn blocked_read_does_not_block_a_write_and_observes_its_original_value() {
 }
 
 #[test]
+fn expired_snapshot_reaping_does_not_interrupt_a_blocked_read() {
+    use std::time::Instant;
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = Store::open_using(dir.path(), |path, _| {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(path.join("records.log"))?;
+        File::open(path)?.sync_all()?;
+        Log::from_io(Box::new(BlockingReadIo {
+            file,
+            armed: Arc::clone(&armed),
+            started: started_tx,
+            resume: Mutex::new(resume_rx),
+        }))
+    })
+    .unwrap();
+    store.put(b"key", b"old").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let snapshot = store.snapshot_until(1, 3, deadline).unwrap();
+    armed.store(true, Ordering::SeqCst);
+    thread::scope(|scope| {
+        let reader = scope.spawn(|| snapshot.get(b"key"));
+        let started = started_rx.recv_timeout(Duration::from_secs(10));
+        if started.is_err() {
+            let _ = resume_tx.send(());
+            reader.join().unwrap().unwrap();
+            panic!("snapshot read did not reach its I/O boundary");
+        }
+        thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+        );
+        let (reaped_tx, reaped_rx) = mpsc::channel();
+        let store_ref = &store;
+        let reaper = scope.spawn(move || {
+            let _ = reaped_tx.send(store_ref.reap_expired_snapshots());
+        });
+        let before_resume = reaped_rx.recv_timeout(Duration::from_secs(1));
+        resume_tx.send(()).unwrap();
+        let value = reader.join().unwrap().unwrap();
+        reaper.join().unwrap();
+        assert_eq!(
+            before_resume
+                .expect("reaper waited for an active read")
+                .unwrap(),
+            0
+        );
+        assert_eq!(value.as_deref(), Some(&b"old"[..]));
+    });
+    assert_eq!(store.reap_expired_snapshots().unwrap(), 1);
+    assert_eq!(
+        snapshot.get(b"key").unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    assert!(store.snapshot(1, 3).is_ok());
+}
+
+#[test]
 fn scan_captures_locations_before_concurrent_updates_without_blocking_writes() {
     let dir = tempfile::tempdir().unwrap();
     let armed = Arc::new(AtomicBool::new(false));
