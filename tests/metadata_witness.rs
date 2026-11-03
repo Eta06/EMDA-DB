@@ -347,6 +347,13 @@ fn replay_key_limit_does_not_advance_witness_for_unacknowledged_tail() {
         XattrFlags::empty(),
     )
     .unwrap();
+    let error = match Store::open_with_limits(dir.path(), Some((log.len() - 1) as u64), None) {
+        Ok(_) => panic!("length limit must reject the unacknowledged tail"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(marker(dir.path()), first_boundary);
+    assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
     let error = match Store::open_with_limits(dir.path(), None, Some(1)) {
         Ok(_) => panic!("limit must reject the unacknowledged second key"),
         Err(error) => error,

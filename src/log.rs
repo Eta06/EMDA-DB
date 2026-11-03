@@ -37,13 +37,14 @@ impl Log {
         path: &Path,
         may_initialize: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        Self::open_with_recovery_limit(path, may_initialize, None)
+        Self::open_with_recovery_limit(path, may_initialize, None, None)
     }
 
     pub(crate) fn open_with_recovery_limit(
         path: &Path,
         may_initialize: bool,
         max_live_keys: Option<usize>,
+        max_log_bytes: Option<u64>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log_path = path.join("records.log");
         let witness_exists = witness::exists(path)?;
@@ -80,6 +81,14 @@ impl Log {
         }
         // Persist directory entries before acknowledging future writes.
         File::open(path)?.sync_all()?;
+        if let Some(max) = max_log_bytes {
+            if file.metadata()?.len() > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "existing log exceeds configured limit",
+                ));
+            }
+        }
         let (id, metadata) = log_identity(&file)?;
         if !metadata && metadata_witness::is_present(&file)? {
             return Err(record::invalid_data(

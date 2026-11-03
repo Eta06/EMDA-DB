@@ -51,7 +51,7 @@ impl Store {
     /// This is reapplied on each open; it is not a persistent project quota.
     /// The log header and tombstones count toward the cap. It excludes other
     /// files and memory, and limited stores serialize all mutations. Opening
-    /// may initialize or recover a store before checking its resulting length.
+    /// may initialize a new store before checking its resulting length.
     pub fn open_with_log_limit(path: impl AsRef<Path>, max_bytes: u64) -> io::Result<Self> {
         Self::open_with_limits(path, Some(max_bytes), None)
     }
@@ -60,7 +60,7 @@ impl Store {
     ///
     /// The key limit is a count, not a process memory guarantee. It applies to
     /// every replayed prefix, including keys that are later deleted. The log
-    /// length is checked after recovery. Neither setting is persisted.
+    /// length is checked before replay. Neither setting is persisted.
     /// Stores using either limit serialize writes to prevent oversubscription.
     pub fn open_with_limits(
         path: impl AsRef<Path>,
@@ -68,7 +68,7 @@ impl Store {
         max_live_keys: Option<usize>,
     ) -> io::Result<Self> {
         let mut store = Self::open_using(path.as_ref(), |path, initialize| {
-            Log::open_with_recovery_limit(path, initialize, max_live_keys)
+            Log::open_with_recovery_limit(path, initialize, max_live_keys, max_log_bytes)
         })?;
         // Read errors must propagate; never treat an unknown file length as a
         // successful quota check.
