@@ -330,3 +330,38 @@ fn metadata_without_a_valid_v3_header_never_opens_as_legacy_or_v2() {
     );
     assert_eq!(fs::read(&path).unwrap(), b"");
 }
+
+#[test]
+fn replay_key_limit_does_not_advance_witness_for_unacknowledged_tail() {
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put(b"first", b"one").unwrap();
+    let first_boundary = marker(dir.path());
+    store.put(b"second", b"two").unwrap();
+    drop(store);
+    let log = fs::read(dir.path().join("records.log")).unwrap();
+    setxattr(
+        dir.path().join("records.log"),
+        NAME,
+        &first_boundary,
+        XattrFlags::empty(),
+    )
+    .unwrap();
+    let error = match Store::open_with_limits(dir.path(), None, Some(1)) {
+        Ok(_) => panic!("limit must reject the unacknowledged second key"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(marker(dir.path()), first_boundary);
+    assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened.get(b"first").unwrap().as_deref(),
+        Some(&b"one"[..])
+    );
+    assert_eq!(
+        reopened.get(b"second").unwrap().as_deref(),
+        Some(&b"two"[..])
+    );
+    assert_ne!(marker(dir.path()), first_boundary);
+}
