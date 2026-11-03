@@ -6,7 +6,7 @@ See [foundation and storage follow-up](FOUNDATION_FOLLOW_UP.md) for deferred val
 
 ## Current baseline
 
-The prototype provides `put`, `get`, and `delete` for byte keys/values, a checksummed append log, fail-closed handling of incomplete records, concurrent readers and bounded group commit, experimental full-log backup/restore, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, the log cannot be compacted, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
+The prototype provides byte-key operations, a checksummed append log, fail-closed handling of incomplete records, concurrent readers and bounded group commit, experimental backup/restore, separate-copy compaction, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, live-store compaction is not implemented, there are no multi-key transactions, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).
 
 ## Priority 0: correctness and measurable foundations
 
@@ -26,7 +26,7 @@ Exit evidence: documented guarantees and known failure boundaries, repeatable fa
 ## Priority 1: durable storage and core operations
 
 - Persistent on-disk index and bounded memory/cache management; avoid requiring every key or value to fit in RAM.
-- Log checkpoints, safe compaction, garbage collection, and bounded recovery time.
+- Log checkpoints, in-place/online compaction, garbage collection, and bounded recovery time. A verified separate-copy compaction prototype exists; it does not switch the live store or bound memory.
 - Ordered range scans, pagination and bulk reads: **prototype implemented** with entry/byte limits; stable multi-page snapshots remain unimplemented. Single-key compare-exchange and signed 64-bit increment are implemented and serialized against mutations. Bulk writes remain planned.
 - Atomic batches and multi-key transactions with a specified isolation model, conflict behavior, and rollback.
 - Safe coordination between concurrent readers and writers, connection/request limits, and fair overload handling.

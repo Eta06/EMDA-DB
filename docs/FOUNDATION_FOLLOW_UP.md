@@ -18,7 +18,8 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 ## Priority 1: durable storage and core operations
 
 - [ ] Implement a durable on-disk index and bounded memory/cache management; the existing in-memory index grows with the number of keys.
-- [ ] Design and implement crash-safe checkpoints, compaction, garbage collection and bounded recovery. Protect readers and any future snapshots during reclamation.
+- [x] Add verified, non-overwriting compaction into a separate store while keeping the source intact and blocking concurrent mutations during the copy.
+- [ ] Design and implement crash-safe checkpoints, live/online compaction, garbage collection and bounded recovery. Protect readers and any future snapshots during reclamation. Separate-copy compaction currently needs multiple in-memory indexes, requires manual switchover and does not include later source writes.
 - [x] Add initial bytewise ordered scans with exclusive bounds and pagination. Each page is limited to 1,024 entries and 32 MiB of key/value data, but pages do not share a stable snapshot. Continue until an empty page; a byte-limited page can be short.
 - [x] Add single-key compare-exchange for conditional put/delete, synchronized on success and serialized against mutations; it does not detect ABA changes or provide multi-key transactions.
 - [x] Add signed 64-bit atomic increment with checked overflow and specified byte encoding; it is serialized against mutations.

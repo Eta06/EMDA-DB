@@ -10,7 +10,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, IoSlice, Write};
 use std::path::Path;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ValueLocation {
     offset: u64,
     pub(crate) length: usize,
@@ -131,7 +131,7 @@ impl Log {
         boundary: Option<u64>,
         metadata: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        let mut log = Self {
+        let log = Self {
             file,
             log_id,
             witness,
@@ -259,7 +259,20 @@ impl Log {
         Ok(())
     }
 
-    fn recover(&mut self, boundary: Option<u64>) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
+    pub(crate) fn verify_index(
+        &self,
+        expected: &BTreeMap<Vec<u8>, ValueLocation>,
+    ) -> io::Result<()> {
+        self.verify_witness()?;
+        if &self.recover(None)? != expected {
+            return Err(record::invalid_data(
+                "live index does not match verified log",
+            ));
+        }
+        self.verify_witness()
+    }
+
+    fn recover(&self, boundary: Option<u64>) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
         let mut index = BTreeMap::new();
         let total = self.file.len()?;
         let mut offset = 0_u64;

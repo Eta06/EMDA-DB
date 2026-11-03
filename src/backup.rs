@@ -308,7 +308,7 @@ fn hash_data(
     Ok(digest.finalize().into())
 }
 
-fn parent_directory(path: &Path) -> io::Result<&Path> {
+pub(crate) fn parent_directory(path: &Path) -> io::Result<&Path> {
     if path.file_name().is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -322,13 +322,13 @@ fn parent_directory(path: &Path) -> io::Result<&Path> {
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-fn publish_directory(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_directory(source: &Path, destination: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE).map_err(Into::into)
 }
 
 #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-fn publish_directory(_source: &Path, _destination: &Path) -> io::Result<()> {
+pub(crate) fn publish_directory(_source: &Path, _destination: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic non-overwriting restore is not supported on this platform",

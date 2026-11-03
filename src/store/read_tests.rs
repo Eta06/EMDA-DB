@@ -157,3 +157,62 @@ fn scan_captures_locations_before_concurrent_updates_without_blocking_writes() {
         ]
     );
 }
+
+#[test]
+fn compaction_keeps_readers_available_and_blocks_writes_until_copy_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = Arc::new(
+        Store::open_using(&dir.path().join("live"), |path, _| {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(path.join("records.log"))?;
+            File::open(path)?.sync_all()?;
+            Log::from_io(Box::new(BlockingReadIo {
+                file,
+                armed: Arc::clone(&armed),
+                started: started_tx,
+                resume: Mutex::new(resume_rx),
+            }))
+        })
+        .unwrap(),
+    );
+    store.put(b"key", b"old").unwrap();
+    let destination = dir.path().join("copy");
+    armed.store(true, Ordering::SeqCst);
+    let copying = Arc::clone(&store);
+    let copy_path = destination.clone();
+    let copier = thread::spawn(move || copying.compact_to(copy_path));
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let writing = Arc::clone(&store);
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        let _ = done_tx.send(writing.put(b"key", b"new"));
+    });
+    let reading = Arc::clone(&store);
+    let (read_tx, read_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        let _ = read_tx.send(reading.get(b"key"));
+    });
+    let read = read_rx.recv_timeout(Duration::from_secs(3));
+    let wrote_early = done_rx.recv_timeout(Duration::from_millis(100));
+    resume_tx.send(()).unwrap();
+    copier.join().unwrap().unwrap();
+    writer.join().unwrap();
+    reader.join().unwrap();
+    assert_eq!(read.unwrap().unwrap().as_deref(), Some(&b"old"[..]));
+    assert!(matches!(wrote_early, Err(mpsc::RecvTimeoutError::Timeout)));
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+    assert_eq!(
+        Store::open(destination)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"old"[..])
+    );
+}

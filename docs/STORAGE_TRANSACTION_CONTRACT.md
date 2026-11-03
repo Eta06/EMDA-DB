@@ -27,7 +27,7 @@ No performance optimization is accepted if it violates the durability, isolation
 ### Isolation, snapshots, and interfaces
 
 - There are **no transaction isolation levels** today. The lock behavior above covers individual in-process key/value operations only; it does not provide multi-key atomicity, snapshot isolation, serializable transactions, or distributed consistency.
-- There are no user-visible snapshots, snapshot lifetimes, version garbage collection, or compaction. The log grows without bound and its key index is held in memory.
+- There are no user-visible snapshots, snapshot lifetimes, version garbage collection, or automatic live-store compaction. The log grows without bound and its key index is held in memory. `compact_to` verifies the complete source log and its live index, writes only live records into a separate staging store, reopens and verifies it, and publishes it without replacing an existing path. It blocks mutations during copying but leaves the source and its readers intact; changes after it returns are absent from the copy. A failure syncing the destination parent after publication has an uncertain outcome. It does not bound memory, provide automatic switchover, or make historical data in the source or older backups disappear.
 - SQL and document interfaces do not exist, so no atomicity or consistency guarantee across interfaces is currently available.
 
 ### Corruption and format compatibility

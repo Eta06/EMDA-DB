@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::{RwLock, RwLockReadGuard};
 
 mod commit;
+mod compact;
 use commit::Coordinator;
 
 struct Inner {
