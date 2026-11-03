@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
-enum GroupFault {
+pub(super) enum GroupFault {
     None,
     PartialAppend(usize),
     SyncError,
@@ -19,15 +19,15 @@ enum GroupFault {
     SyncPanic,
 }
 
-struct GroupIo {
-    file: File,
-    appends: Arc<std::sync::atomic::AtomicUsize>,
-    syncs: Arc<std::sync::atomic::AtomicUsize>,
-    started: mpsc::Sender<()>,
-    resume: Mutex<mpsc::Receiver<()>>,
-    group_started: mpsc::Sender<()>,
-    group_resume: Mutex<mpsc::Receiver<()>>,
-    fault: GroupFault,
+pub(super) struct GroupIo {
+    pub(super) file: File,
+    pub(super) appends: Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) syncs: Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) started: mpsc::Sender<()>,
+    pub(super) resume: Mutex<mpsc::Receiver<()>>,
+    pub(super) group_started: mpsc::Sender<()>,
+    pub(super) group_resume: Mutex<mpsc::Receiver<()>>,
+    pub(super) fault: GroupFault,
 }
 
 impl LogIo for GroupIo {

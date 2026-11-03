@@ -138,3 +138,6 @@ mod fault_tests;
 
 #[cfg(test)]
 mod group_tests;
+
+#[cfg(test)]
+mod wake_tests;
