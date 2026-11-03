@@ -1,6 +1,6 @@
 //! Shared, checksum-verifying backends for the local benchmark examples.
 use database_engine::Store;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -15,17 +15,27 @@ pub(crate) enum Worker {
 
 impl Worker {
     pub(crate) fn read_value(&mut self, key: &[u8]) -> BenchResult<Vec<u8>> {
+        self.read_optional(key)?.ok_or_else(|| "missing key".into())
+    }
+
+    pub(crate) fn read_optional(&mut self, key: &[u8]) -> BenchResult<Option<Vec<u8>>> {
         match self {
-            Self::Prototype(store) => Ok(store.get(key)?.ok_or("missing key")?),
+            Self::Prototype(store) => Ok(store.get(key)?),
             Self::Sqlite(connection) => {
                 let mut statement =
                     connection.prepare_cached("SELECT value, checksum FROM kv WHERE key = ?1")?;
-                let (value, expected): (Vec<u8>, u32) =
-                    statement.query_row([key], |row| Ok((row.get(0)?, row.get(1)?)))?;
-                if crc32fast::hash(&value) != expected {
-                    return Err("SQLite value checksum mismatch".into());
+                let row: Option<(Vec<u8>, u32)> = statement
+                    .query_row([key], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .optional()?;
+                match row {
+                    None => Ok(None),
+                    Some((value, expected)) => {
+                        if crc32fast::hash(&value) != expected {
+                            return Err("SQLite value checksum mismatch".into());
+                        }
+                        Ok(Some(value))
+                    }
                 }
-                Ok(value)
             }
         }
     }

@@ -18,6 +18,18 @@ enum Backend {
     Sqlite(PathBuf),
 }
 
+fn delete(worker: &mut Worker, key: &[u8]) -> BenchResult<()> {
+    match worker {
+        Worker::Prototype(store) => store.delete(key)?,
+        Worker::Sqlite(connection) => {
+            connection
+                .prepare_cached("DELETE FROM kv WHERE key = ?1")?
+                .execute([key])?;
+        }
+    }
+    Ok(())
+}
+
 fn handle(mut stream: TcpStream, mut worker: Worker) -> BenchResult<()> {
     stream.set_nodelay(true)?;
     loop {
@@ -36,13 +48,27 @@ fn handle(mut stream: TcpStream, mut worker: Worker) -> BenchResult<()> {
         let mut value = vec![0; value_len];
         stream.read_exact(&mut key)?;
         stream.read_exact(&mut value)?;
-        let result: BenchResult<Vec<u8>> = match header[0] {
-            b'R' if value_len == 0 => worker.read_value(&key),
-            b'W' => worker.write(&key, &value).map(|_| Vec::new()),
+        let result: BenchResult<Option<Vec<u8>>> = match header[0] {
+            b'R' if value_len == 0 => worker.read_optional(&key),
+            b'W' => worker.write(&key, &value).map(|_| Some(Vec::new())),
+            b'D' if value_len == 0 => delete(&mut worker, &key).map(|_| Some(Vec::new())),
+            b'M' if value_len == 0 => Ok(Some(match &worker {
+                Worker::Prototype(_) => format!(
+                    r#"{{"version":"{}","durability":"sync-before-ack"}}"#,
+                    env!("CARGO_PKG_VERSION")
+                )
+                .into_bytes(),
+                Worker::Sqlite(_) => format!(
+                    r#"{{"version":"{}","journal_mode":"wal","synchronous":2}}"#,
+                    rusqlite::version()
+                )
+                .into_bytes(),
+            })),
             _ => Err("invalid benchmark request".into()),
         };
         let (status, response) = match result {
-            Ok(value) => (0, value),
+            Ok(Some(value)) => (0, value),
+            Ok(None) => (2, Vec::new()),
             Err(error) => (1, error.to_string().into_bytes()),
         };
         stream.write_all(&[status])?;

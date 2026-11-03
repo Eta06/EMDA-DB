@@ -1,2 +1,8 @@
 psycopg[binary]==3.3.7
 redis==6.4.0
+pymongo==4.15.5
+lmdb==3.0.0
+rocksdict==0.3.29
+duckdb==2.0.0
+pyturso==0.8.3
+foundationdb==7.3.79
