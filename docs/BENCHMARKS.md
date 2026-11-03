@@ -228,6 +228,15 @@ python3 scripts/index_memory_compare.py --directory /tmp --output /tmp/index-mem
 
 The default cases use 10,000 and 200,000 keys, 128-byte keys, 64-byte values, five repetitions per mode, and 16 point reads per repetition. These are warm-cache, direct API measurements on one VM, not a competitor or production comparison. `--keys`, `--key-bytes`, and `--rounds` change the workload; the two modes must not be described as offering identical recovery or concurrency behavior.
 
+An initial [raw measurement](../benchmarks/results/2026-11-03-index-memory.json) on the earlier 1 MiB-block reader shows the tradeoff, using medians across five separate processes per mode:
+
+| Keys | Opened writable store RSS | Historical view RSS | Writable median lookup | View median lookup |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 3,724 KiB | 1,380 KiB | 1.47 µs | 898 µs |
+| 200,000 | 48,160 KiB | 1,384 KiB | 4.13 µs | 1,135 µs |
+
+The fixture log and checkpoint were approximately 42.6 MB and 29.2 MB for 200,000 keys. Each view lookup read and checked its whole index block. Both initial quiet checks passed; individual samples recorded VM steal, including a short sample at 12.5%. These results expose a large lookup penalty and do not establish general performance. The initial harness read `VmHWM` after dropping the object and produced peak figures below an earlier RSS sample; those peak fields are invalid and must not be used. The current harness samples RSS while each object remains open and does not claim to measure peak memory.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.

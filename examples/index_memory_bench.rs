@@ -117,13 +117,14 @@ fn measure(
     let path = parent.join("store");
     let checkpoint = parent.join("index");
     let start = Instant::now();
-    let (open_us, rss_kib, blocks, lookup_ns) = match mode {
+    let (open_us, rss_kib, after_rss_kib, blocks, lookup_ns) = match mode {
         "store" => {
             let store = Store::open_with_checkpoint(&path, &checkpoint, token)?;
             let open_us = start.elapsed().as_micros();
             let rss_kib = memory_kib("VmRSS:")?;
             let lookup_ns = lookups(count, key_len, |key| store.get(key))?;
-            (open_us, rss_kib, 0, lookup_ns)
+            let after_rss_kib = memory_kib("VmRSS:")?;
+            (open_us, rss_kib, after_rss_kib, 0, lookup_ns)
         }
         "view" => {
             let view = CheckpointView::open(&path, &checkpoint, token)?;
@@ -131,18 +132,18 @@ fn measure(
             let rss_kib = memory_kib("VmRSS:")?;
             let blocks = view.block_count();
             let lookup_ns = lookups(count, key_len, |key| view.get(key))?;
-            (open_us, rss_kib, blocks, lookup_ns)
+            let after_rss_kib = memory_kib("VmRSS:")?;
+            (open_us, rss_kib, after_rss_kib, blocks, lookup_ns)
         }
         _ => return Err("unknown measurement mode".into()),
     };
-    let hwm_kib = memory_kib("VmHWM:")?;
     let lookups = lookup_ns
         .iter()
         .map(u128::to_string)
         .collect::<Vec<_>>()
         .join(",");
     println!(
-        "mode={mode} open_us={open_us} rss_kib={rss_kib} peak_rss_kib={hwm_kib} blocks={blocks} lookups_ns={lookups}"
+        "mode={mode} open_us={open_us} rss_kib={rss_kib} after_rss_kib={after_rss_kib} blocks={blocks} lookups_ns={lookups}"
     );
     Ok(())
 }

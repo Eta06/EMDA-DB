@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure warm checkpoint opens, peak RSS and checked point reads on Linux."""
+"""Measure warm checkpoint opens, sampled RSS and checked point reads on Linux."""
 import argparse
 import hashlib
 import json
@@ -89,7 +89,7 @@ def main():
                         raise RuntimeError("incomplete lookup sample")
                     case["runs"].append({"round": round_index + 1, "mode": mode,
                         "open_us": int(sample["open_us"]), "rss_kib": int(sample["rss_kib"]),
-                        "peak_rss_kib": int(sample["peak_rss_kib"]), "blocks": int(sample["blocks"]),
+                        "after_rss_kib": int(sample["after_rss_kib"]), "blocks": int(sample["blocks"]),
                         "lookups_ns": lookups, "noise": noise})
             case["summary"] = {}
             for mode in ("store", "view"):
@@ -97,7 +97,7 @@ def main():
                 case["summary"][mode] = {
                     "median_open_us": statistics.median(run["open_us"] for run in samples),
                     "median_rss_kib": statistics.median(run["rss_kib"] for run in samples),
-                    "median_peak_rss_kib": statistics.median(run["peak_rss_kib"] for run in samples),
+                    "median_after_rss_kib": statistics.median(run["after_rss_kib"] for run in samples),
                     "median_lookup_ns": statistics.median(value for run in samples for value in run["lookups_ns"]),
                 }
             result["cases"].append(case)
