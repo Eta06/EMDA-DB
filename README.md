@@ -14,6 +14,7 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 | Persistence and recovery | Prototype, limited | Checksummed log and `sync_data` on writes; incomplete tails fail closed. Power-loss safety is not established. |
 | Backup and restore | Prototype | Full-log backup verifies record checksums and a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
 | Concurrent access | Prototype, limited | Reads can proceed while one writer synchronizes. Multi-key transactions and isolation levels are not implemented. |
+| Benchmarking | Early baseline | A small embedded SQLite comparison is recorded; broader workloads and resource measurements remain planned. |
 | Versioning and CI | In progress | Changelog, format marker, release workflow, and automated tests exist; no release has been tagged and the release workflow has not run on a real tag. |
 | SQL, document model, and queries | Planned | Require transaction semantics, schema/query design, and indexes. |
 | Bounded memory and compaction | Planned | The in-memory key index is unbounded and the log grows indefinitely. |

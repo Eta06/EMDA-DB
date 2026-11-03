@@ -23,6 +23,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Initial deterministic fault injection for partial appends, simulated disk-full/sync failures, short reads, writer panics, and controlled concurrency.
 - Experimental checksummed full-log backup/restore that refuses to overwrite existing destinations.
 - A local closed-loop key-value benchmark harness for the prototype and bundled SQLite; it is a narrow baseline, not a general performance ranking.
+- Raw results and environment details for an initial small SQLite comparison.
 
 ### Changed
 

@@ -1,0 +1,119 @@
+{
+  "recorded_at_utc": "2026-11-03T17:20:11+00:00",
+  "source_commit": "0bca7172cf62f619b5fa3261522c30f7940dc944",
+  "source_tree_clean": true,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "build": "cargo +stable build --release --locked --example kv_bench",
+  "machine": {
+    "architecture": "x86_64",
+    "kernel": "6.18.57",
+    "cpu_model": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "logical_cpus_reported": 5,
+    "cgroup_cpu_max": "400000 100000",
+    "cgroup_memory_max_bytes": "34359738368",
+    "measurement_directory": "/workspace",
+    "filesystem_type": "overlay",
+    "filesystem_backing": "Unknown; overlay behavior and underlying physical storage are not independently verified.",
+    "virtualization": "KVM, as reported by lscpu"
+  },
+  "limitations": [
+    "Small, closed-loop in-process microbenchmark; the 250-key dataset fits in cache and is not representative of all database workloads.",
+    "Only three runs per backend, with no controlled CPU or storage isolation; results can vary substantially and are not a general ranking.",
+    "This does not measure CPU/RSS, cold starts, out-of-cache reads, deletes, recovery, network, project isolation, power-loss behavior, or reliability.",
+    "Per-write sync and SQLite WAL with synchronous=FULL are requested, but the storage guarantees and engine features are not identical or independently validated.",
+    "The prototype lacks multi-key transactions and other database features present in SQLite; low latency here is not feature parity."
+  ],
+  "repetitions": 3,
+  "runs": [
+    {
+      "repetition": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "250",
+        "250",
+        "50",
+        "/workspace"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=208.9 ops_per_sec=4787.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=per-write-sync sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=472 p50_us=1.6 p95_us=4.6 p99_us=10.9\nwrite: count=528 p50_us=281.3 p95_us=957.4 p99_us=21499.5",
+      "stderr": "",
+      "exit_code": 0
+    },
+    {
+      "repetition": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "250",
+        "250",
+        "50",
+        "/workspace"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=233.1 ops_per_sec=4289.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=per-write-sync sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=472 p50_us=3.4 p95_us=6.1 p99_us=37.3\nwrite: count=528 p50_us=304.3 p95_us=473.6 p99_us=1089.2",
+      "stderr": "",
+      "exit_code": 0
+    },
+    {
+      "repetition": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "250",
+        "250",
+        "50",
+        "/workspace"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=219.0 ops_per_sec=4566.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=per-write-sync sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=472 p50_us=3.5 p95_us=6.2 p99_us=31.7\nwrite: count=528 p50_us=259.2 p95_us=459.8 p99_us=1008.4",
+      "stderr": "",
+      "exit_code": 0
+    },
+    {
+      "repetition": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "250",
+        "250",
+        "50",
+        "/workspace"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=149.6 ops_per_sec=6683.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=per-write-sync sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=472 p50_us=1.4 p95_us=3.2 p99_us=5.5\nwrite: count=528 p50_us=254.9 p95_us=421.3 p99_us=8502.9",
+      "stderr": "",
+      "exit_code": 0
+    },
+    {
+      "repetition": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "250",
+        "250",
+        "50",
+        "/workspace"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=150.4 ops_per_sec=6647.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=per-write-sync sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=472 p50_us=1.4 p95_us=3.8 p99_us=7.9\nwrite: count=528 p50_us=246.2 p95_us=519.6 p99_us=9101.1",
+      "stderr": "",
+      "exit_code": 0
+    },
+    {
+      "repetition": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "250",
+        "250",
+        "50",
+        "/workspace"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1000 elapsed_ms=219.7 ops_per_sec=4552.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=per-write-sync sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=472 p50_us=3.5 p95_us=6.3 p99_us=23.2\nwrite: count=528 p50_us=278.0 p95_us=425.4 p99_us=670.1",
+      "stderr": "",
+      "exit_code": 0
+    }
+  ]
+}
