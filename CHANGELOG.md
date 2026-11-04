@@ -8,6 +8,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- A reproducible comparison of managed and unmanaged checkpoint rollover, including the cost of persisting selection and observed VM interference.
+
 - Managed checkpoint publication and recovery synchronize each directory ancestor needed to retain the selected paths; injected ancestor-sync failures fail closed.
 
 - Explicit full-log rebuilding of managed checkpoint selections when the previous checkpoint is unavailable or its suffix exceeds managed limits. The operation holds the store lock and rejects malformed selection metadata, but its in-memory recovery is not resource-bounded.

@@ -505,6 +505,24 @@ The [recorded comparison](../benchmarks/results/2026-11-03-compaction-grouped.js
 
 For 5,000 source keys, both versions produced a 406,903-byte compacted log from a 716,095-byte source log. The grouped median was approximately 39 times faster in this sample. Both quiet checks passed; the VM recorded no cgroup throttling or direct reclaim, with individual steal samples up to 4.35% during fixture setup, measurement and cleanup. These are five warm-cache runs on one virtualized filesystem, with 64-byte values and selected content checks. They do not establish power-loss safety, online compaction performance, or a competitor ranking.
 
+## Managed checkpoint handoff (2026-11-04)
+
+Revision `e309ddd` compares the existing checkpoint-backed live rollover with the opt-in managed rollover, which additionally persists and synchronizes its selection and directory ancestry. The benchmark checks that checkpoint digests agree, reopens each result, checks sampled values, and cleans up only its own disposable files. It uses a warm overlay filesystem on one Linux VM, 32-byte keys, 64-byte values, 1,024 suffix keys and one client. A longer [repeat](../benchmarks/results/2026-11-04-managed-rollover-repeat.json) ran each method ten times:
+
+| Base keys | Unmanaged median (range) | Managed median (range) |
+| ---: | ---: | ---: |
+| 10,000 | 12.46 ms (12.17–20.00 ms) | 16.07 ms (14.65–22.10 ms) |
+| 50,000 | 56.06 ms (49.89–82.43 ms) | 57.49 ms (52.28–194.55 ms) |
+
+The timer includes validation, synchronization and switching, but excludes opening and post-operation verification. Unmanaged rollover requires the caller to persist and select the digest separately; that external work is not included, so these are not equivalent end-to-end durability workflows. Both repeat quiet checks passed, but VM-wide short-interval CPU steal reached 6.25% and 27.13% respectively, with one managed 50,000-key outlier. A separate [five-run comparison](../benchmarks/results/2026-11-04-managed-rollover-comparison.json) had a failed 50,000-key quiet check and up to 50% sampled steal. These are noisy single-machine measurements, not production or competitor rankings, and do not measure physical power-loss behavior. Further profiling should investigate handoff latency without weakening synchronization.
+
+Reproduce with:
+
+```sh
+cargo build --release --locked --example checkpoint_rollover_bench --example index_memory_bench
+python3 scripts/checkpoint_rollover_compare.py --directory /path/to/disposable-fixtures --output /path/to/new-result.json --rounds 10 --keys 10000,50000 --key-bytes 32 --tail-keys 1024 --managed
+```
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
