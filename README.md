@@ -36,6 +36,8 @@ A [paired metadata-reuse comparison](docs/PLANNER_METADATA_COMPARISON_2026_11_04
 
 A [nonunique equality-query comparison](docs/NONUNIQUE_QUERY_COMPARISON_2026_11_04.md) reports the prototype scan and planned paths against SQLite, including a repeat and a corrected SQLite scan baseline.
 
+A [rejected scan-exhaustion experiment](docs/SCAN_EXHAUSTION_EXPERIMENT_2026_11_04.md) records mixed results and retains its unmerged patches and raw samples.
+
 A [retired-log reclamation comparison](docs/ONLINE_RECLAMATION_COMPARISON_2026_11_04.md) records its extra cleanup time and lower named log lengths, along with the filesystem and workload limitations.
 
 The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
