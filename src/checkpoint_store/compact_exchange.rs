@@ -101,14 +101,11 @@ impl CheckpointStore {
         source_directory_is_owned(&source)?;
         let digest = self.compact_to(&previous)?;
         (hook.borrow_mut())(ExchangePoint::CopyPublished)?;
-        let mut candidate = Self::open_with_resource_limits(
+        let mut candidate = Self::open_with_options(
             &previous,
             previous.join(crate::COMPACTED_CHECKPOINT_FILE),
             &digest,
-            self.max_tail_bytes,
-            self.max_tail_keys,
-            self.max_tail_key_bytes,
-            self.max_log_bytes,
+            self.limits(),
         )?;
         if original_selection.is_some() {
             // The file's final absolute path is used before exchange. Nobody

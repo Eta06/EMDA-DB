@@ -1,5 +1,5 @@
 //! Experimental writable checkpoint index with a bounded log-suffix overlay.
-use crate::checkpoint_view::CheckpointView;
+use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits};
 use crate::log::Log;
 use crate::record::batch::{BatchOperation, encode_payload};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
@@ -46,13 +46,36 @@ enum OpenSource<'a> {
     Managed,
 }
 
-#[derive(Clone, Copy)]
-struct OpenLimits {
-    max_tail_bytes: u64,
-    max_tail_keys: usize,
-    max_tail_key_bytes: usize,
-    max_log_bytes: Option<u64>,
+/// Per-open logical admission limits for a writable checkpoint-backed store.
+/// These do not bound allocations outside the named structures, elapsed time,
+/// backups, other files, or total process/project resource consumption.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointStoreLimits {
+    /// Maximum bytes in the replayed suffix after the checkpoint.
+    pub max_tail_bytes: u64,
+    /// Maximum distinct keys retained in the suffix overlay.
+    pub max_tail_keys: usize,
+    /// Maximum combined bytes of suffix overlay keys.
+    pub max_tail_key_bytes: usize,
+    /// Optional maximum whole log length, including headers and old records.
+    pub max_log_bytes: Option<u64>,
+    /// Maximum checkpoint file length and retained block-directory entries.
+    pub checkpoint_view: CheckpointViewLimits,
 }
+
+impl Default for CheckpointStoreLimits {
+    fn default() -> Self {
+        Self {
+            max_tail_bytes: MAX_RECOVERED_VIEW_TAIL_BYTES,
+            max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
+            max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
+            max_log_bytes: None,
+            checkpoint_view: CheckpointViewLimits::default(),
+        }
+    }
+}
+
+type OpenLimits = CheckpointStoreLimits;
 
 /// An experimental writable store backed by a verified on-disk checkpoint.
 ///
@@ -79,6 +102,7 @@ pub struct CheckpointStore {
     max_tail_keys: usize,
     max_tail_key_bytes: usize,
     max_log_bytes: Option<u64>,
+    checkpoint_view_limits: CheckpointViewLimits,
 }
 
 impl CheckpointStore {
@@ -143,7 +167,27 @@ impl CheckpointStore {
                 max_tail_keys,
                 max_tail_key_bytes,
                 max_log_bytes,
+                ..Default::default()
             },
+            Log::open_checkpoint_writer,
+        )
+    }
+
+    /// Opens an explicit checkpoint with configurable per-open logical limits.
+    /// The limits also apply to new views during rollover and replacement;
+    /// they must be supplied again on reopen. A published checkpoint that
+    /// exceeds them cannot be adopted and may remain at its destination.
+    pub fn open_with_options(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointStoreLimits,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            limits,
             Log::open_checkpoint_writer,
         )
     }
@@ -178,10 +222,38 @@ impl CheckpointStore {
                 max_tail_keys,
                 max_tail_key_bytes,
                 max_log_bytes,
+                ..Default::default()
             },
             Log::open_checkpoint_writer,
             selection::synchronize,
         )
+    }
+
+    /// Opens a managed selection with configurable per-open logical limits.
+    /// Selection, checkpoint and store directories must be trusted as for
+    /// `open_managed`; limits are not persisted and must be reapplied.
+    pub fn open_managed_with_options(
+        path: impl AsRef<Path>,
+        limits: CheckpointStoreLimits,
+    ) -> io::Result<Self> {
+        Self::open_source_using(
+            path.as_ref(),
+            OpenSource::Managed,
+            limits,
+            Log::open_checkpoint_writer,
+            selection::synchronize,
+        )
+    }
+
+    /// Returns the logical limits applied to this open instance.
+    pub fn limits(&self) -> CheckpointStoreLimits {
+        CheckpointStoreLimits {
+            max_tail_bytes: self.max_tail_bytes,
+            max_tail_keys: self.max_tail_keys,
+            max_tail_key_bytes: self.max_tail_key_bytes,
+            max_log_bytes: self.max_log_bytes,
+            checkpoint_view: self.checkpoint_view_limits,
+        }
     }
 
     fn open_using(
@@ -212,7 +284,9 @@ impl CheckpointStore {
             max_tail_keys,
             max_tail_key_bytes,
             max_log_bytes,
+            checkpoint_view,
         } = limits;
+        checkpoint_view.validate()?;
         RecoveredCheckpointView::validate_limits(
             max_tail_bytes,
             max_tail_keys,
@@ -258,7 +332,13 @@ impl CheckpointStore {
                 ));
             }
         }
-        let base = CheckpointView::open_locked(&path, &checkpoint, &digest, lock)?;
+        let base = CheckpointView::open_locked_with_limits(
+            &path,
+            &checkpoint,
+            &digest,
+            lock,
+            checkpoint_view,
+        )?;
         let view = RecoveredCheckpointView::from_base_for_writer(
             base,
             max_tail_bytes,
@@ -325,6 +405,7 @@ impl CheckpointStore {
             max_tail_keys,
             max_tail_key_bytes,
             max_log_bytes,
+            checkpoint_view_limits: checkpoint_view,
         })
     }
 
@@ -581,7 +662,13 @@ impl CheckpointStore {
     ) -> io::Result<RecoveredCheckpointView> {
         (|| {
             let lock = state.view.base.duplicate_store_lock()?;
-            let base = CheckpointView::open_locked(&self.path, destination, digest, lock)?;
+            let base = CheckpointView::open_locked_with_limits(
+                &self.path,
+                destination,
+                digest,
+                lock,
+                self.checkpoint_view_limits,
+            )?;
             let view = RecoveredCheckpointView::from_base(
                 base,
                 self.max_tail_bytes,

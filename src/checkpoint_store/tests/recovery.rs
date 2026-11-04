@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn checkpoint_view_limit_rejects_before_adopting_a_complete_tail() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let tail = record::encode(Operation::Put, b"tail", b"unacknowledged").unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap()
+        .write_all(&tail)
+        .unwrap();
+    let log_before = fs::read(path.join("records.log")).unwrap();
+    let witness_before = fs::read(path.join("commit.state")).unwrap();
+    let limits = CheckpointStoreLimits {
+        checkpoint_view: crate::CheckpointViewLimits {
+            max_file_bytes: fs::metadata(&checkpoint).unwrap().len() - 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let error =
+        retry_lock(|| CheckpointStore::open_with_options(&path, &checkpoint, &digest, limits))
+            .err()
+            .expect("checkpoint admission must reject");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), log_before);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness_before);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(
+        reopened.get(b"tail").unwrap().as_deref(),
+        Some(&b"unacknowledged"[..])
+    );
+}
+
+#[test]
 fn complete_unacknowledged_tail_is_validated_synchronized_and_adopted() {
     let (dir, path, checkpoint, digest) = fixture();
     let witness_before = fs::read(path.join("commit.state")).unwrap();
@@ -266,6 +299,7 @@ fn unacknowledged_tail_log_sync_failures_return_error_and_retry_safely() {
                     max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
                     max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
                     max_log_bytes: None,
+                    ..Default::default()
                 },
                 |path, boundary, length| {
                     let mut log = Log::open_checkpoint_writer(path, boundary, length)?;
@@ -330,6 +364,7 @@ fn unacknowledged_tail_witness_failures_never_return_a_store() {
                         max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
                         max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
                         max_log_bytes: None,
+                        ..Default::default()
                     },
                     |path, boundary, length| {
                         let mut log = Log::open_checkpoint_writer(path, boundary, length)?;

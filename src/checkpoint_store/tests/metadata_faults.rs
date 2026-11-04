@@ -189,6 +189,7 @@ fn unacknowledged_tail_metadata_failures_do_not_return_a_store() {
                         max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
                         max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
                         max_log_bytes: None,
+                        ..Default::default()
                     },
                     |path, boundary, length| {
                         let mut log = Log::open_checkpoint_writer(path, boundary, length)?;

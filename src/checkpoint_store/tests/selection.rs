@@ -485,6 +485,7 @@ fn managed_open_rejects_selection_and_directory_sync_failures_before_return() {
                     max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
                     max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
                     max_log_bytes: None,
+                    ..Default::default()
                 },
                 Log::open_checkpoint_writer,
                 |store| {
@@ -627,6 +628,7 @@ fn managed_open_refuses_each_failed_selection_ancestor_sync() {
                     max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
                     max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
                     max_log_bytes: None,
+                    ..Default::default()
                 },
                 Log::open_checkpoint_writer,
                 |store| {
