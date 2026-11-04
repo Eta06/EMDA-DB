@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--directory", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--binary", default="target/release/examples/kv_bench")
+    parser.add_argument("--baseline-binary")
+    parser.add_argument("--baseline-revision")
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--operations", type=int, default=200)
     args = parser.parse_args()
@@ -34,6 +36,10 @@ def main():
             or not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or os.path.lexists(args.output)):
         parser.error("existing directory and binary, new output path, valid rounds and operations required")
+    if bool(args.baseline_binary) != bool(args.baseline_revision):
+        parser.error("baseline binary and revision must be provided together")
+    if args.baseline_binary and not Path(args.baseline_binary).is_file():
+        parser.error("baseline binary must exist")
     allowed = sorted(os.sched_getaffinity(0))
     if len(allowed) < 2:
         parser.error("at least two allowed CPUs are required")
@@ -53,30 +59,39 @@ def main():
         "limitations": "One VM and filesystem, direct embedded APIs, warm cache, 16 pre-existing eight-byte keys and 64-byte values. The cap is exactly 128 live-key bytes; workloads update existing keys and do not measure insertion or rejection. Each acknowledged write synchronizes under the same prototype durability contract; capped mutations serialize while uncapped writes may share syncs. The example verifies sampled values after reopen. Latency percentiles are per-run summaries, not individual samples. VM/cgroup noise includes fixture setup, reopen and cleanup. No power-loss validation or general ranking.",
         "cases": [],
     }
+    variants = [(mode, args.binary, mode) for mode in MODES]
+    if args.baseline_binary:
+        report["baseline_revision"] = subprocess.check_output(
+            ["git", "rev-parse", "--verify", args.baseline_revision + "^{commit}"], text=True
+        ).strip()
+        report["baseline_binary_sha256"] = sha256(args.baseline_binary)
+        report["binary_provenance"] = "Baseline revision is caller-supplied; binary hashes are recorded. Build each from its corresponding clean source."
+        variants.insert(0, ("baseline-key-byte-limit", args.baseline_binary, "prototype-key-byte-limit"))
     cpus = ",".join(map(str, benchmark_cpus))
     for clients in (1, 4):
         for write_percent in (50, 100):
             case = {"clients": clients, "write_percent": write_percent, "keys": 16,
                     "operations_per_client": args.operations, "quiet_check": quiet_window(), "runs": []}
             for round_index in range(args.rounds):
-                order = MODES if round_index % 2 == 0 else tuple(reversed(MODES))
-                for mode in order:
+                rotation = round_index % len(variants)
+                order = variants[rotation:] + variants[:rotation]
+                for mode, binary, backend in order:
                     before = snapshot()
-                    command = ["taskset", "-c", cpus, args.binary, mode, str(clients), str(args.operations),
+                    command = ["taskset", "-c", cpus, binary, backend, str(clients), str(args.operations),
                                "16", str(write_percent), args.directory, "64"]
                     process = subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
                     noise = difference(before, snapshot())
                     lines = process.stdout.strip().splitlines()
                     head = parse_line(lines[0])
                     latency = {line.split(":", 1)[0]: parse_line(line) for line in lines if line.startswith(("read:", "write:"))}
-                    if (head.get("backend") != mode or int(head.get("completed", 0)) != clients * args.operations
+                    if (head.get("backend") != backend or int(head.get("completed", 0)) != clients * args.operations
                             or "verified_reopen=true" not in lines or int(latency["write"]["count"]) == 0):
                         raise RuntimeError("invalid benchmark output or failed reopen verification")
                     case["runs"].append({"round": round_index + 1, "mode": mode,
                                          "operations_per_second": float(head["ops_per_sec"]),
                                          "latency": latency, "stdout": process.stdout, "noise": noise})
             case["summary"] = {}
-            for mode in MODES:
+            for mode, _, _ in variants:
                 runs = [run for run in case["runs"] if run["mode"] == mode]
                 speeds = [run["operations_per_second"] for run in runs]
                 case["summary"][mode] = {
