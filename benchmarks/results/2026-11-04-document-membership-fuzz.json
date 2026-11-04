@@ -1,0 +1,39 @@
+{
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "environment": "Local Linux VM; temporary corpora and normal filesystem operations.",
+  "runs": [
+    {
+      "target": "document_membership",
+      "revision": "785997014fb445567e62e4a9010e676580cb2267",
+      "git_status": "clean",
+      "seed": 3359167127,
+      "executions": 11394,
+      "duration_seconds": 121,
+      "initial_seeds": {
+        "checkpoint": "9abb8da60dc38893f3ec7c47e53e343dda12831ff6b098b4e81aaf395fb6f543",
+        "ordinary": "e9bbd36d1d21f1b0b710283f098be5059f3169adc7ba9a64d7202c4063aaf083"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "a8b398de3f6223867666640ac07ae1fc9b8106b9e749b9b3a798fd2b3795ccae",
+      "result": "completed without a finding"
+    },
+    {
+      "target": "document_array_queries",
+      "revision": "785997014fb445567e62e4a9010e676580cb2267",
+      "git_status": "clean",
+      "seed": 3271182195,
+      "executions": 7386,
+      "duration_seconds": 61,
+      "initial_seeds": {
+        "checkpoint": "8165a181fabc3df8ece339b7fb118a03667a049789c0893e391acb88c89dcd32",
+        "ordinary": "3ba502397e4c148d25e188f7ff1b503b632e062ed330c054c85e963e01f24c5c"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "26dbb4d0b3b4bdce3020668b3c4ef7099149714c8ac0e542323a79a00669333f",
+      "result": "completed without a finding"
+    }
+  ],
+  "note": "An earlier array regression invocation used a misspelled target name and did not run; the successful run above uses the correct target and clean seeds.",
+  "scope": "Serial generated document updates, deletes, queries and reopens on both storage backends. Membership target compares a simple reference model with scans and singleton-index planning. The array run checks the shared filter-budget regression. Short campaigns do not exhaust inputs, concurrent histories, storage faults, or physical power loss."
+}
