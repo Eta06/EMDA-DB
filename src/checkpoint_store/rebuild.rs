@@ -1,6 +1,6 @@
 //! Explicit offline recovery of a managed checkpoint selection.
 use super::{CheckpointStore, CheckpointView, selection};
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::Path;
 
@@ -24,13 +24,29 @@ impl CheckpointStore {
             path.as_ref(),
             destination.as_ref(),
             || Ok(()),
-            |parent| File::open(parent)?.sync_all(),
+            selection::sync_ancestors,
         )
     }
 
     pub(super) fn rebuild_managed_with_hooks(
         path: &Path,
         destination: &Path,
+        before_selection_rename: impl FnOnce() -> io::Result<()>,
+        sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        Self::rebuild_managed_with_sync_hooks(
+            path,
+            destination,
+            selection::sync_ancestors,
+            before_selection_rename,
+            sync_selection_parent,
+        )
+    }
+
+    pub(super) fn rebuild_managed_with_sync_hooks(
+        path: &Path,
+        destination: &Path,
+        sync_checkpoint_ancestors: impl FnOnce(&Path) -> io::Result<()>,
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
@@ -62,6 +78,15 @@ impl CheckpointStore {
         // A valid but stale selection need not have an accessible checkpoint.
         selection::load(&path)?;
         let digest = store.checkpoint_to(&destination)?;
+        let checkpoint_parent = destination
+            .parent()
+            .expect("resolved checkpoint destination has a parent");
+        sync_checkpoint_ancestors(checkpoint_parent).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("checkpoint was published but its directory ancestry sync failed: {error}"),
+            )
+        })?;
         let lock = store.duplicate_store_lock()?;
         let view =
             CheckpointView::open_locked(&path, &destination, &digest, lock).map_err(|error| {

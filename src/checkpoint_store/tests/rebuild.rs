@@ -278,3 +278,50 @@ fn managed_rebuild_process_kill_preserves_a_recoverable_selection() {
         reopened.put(b"after", b"recovered").unwrap();
     }
 }
+
+#[test]
+fn rebuild_preserves_selection_if_any_checkpoint_ancestor_sync_fails() {
+    let (probe, _, _, _) = fixture();
+    let count = fs::canonicalize(probe.path()).unwrap().ancestors().count();
+    drop(probe);
+    for fail_at in 0..count {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        store.rollover_managed(dir.path().join("first")).unwrap();
+        store.put(b"before", b"acknowledged").unwrap();
+        drop(store);
+        let selection = super::super::selection::path(&path);
+        let previous = fs::read(&selection).unwrap();
+        let mut seen = 0;
+        let result = CheckpointStore::rebuild_managed_with_sync_hooks(
+            &path,
+            &dir.path().join("rebuilt"),
+            |parent| {
+                super::super::selection::sync_ancestors_with(parent, |ancestor| {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        Err(io::Error::other("injected ancestor sync"))
+                    } else {
+                        File::open(ancestor)?.sync_all()
+                    }
+                })
+            },
+            || panic!("selection publication must not begin"),
+            |_| panic!("selection publication must not begin"),
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ancestry sync failed")
+        );
+        assert_eq!(seen, fail_at + 1);
+        assert_eq!(fs::read(selection).unwrap(), previous);
+        let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"before").unwrap().as_deref(),
+            Some(&b"acknowledged"[..])
+        );
+    }
+}

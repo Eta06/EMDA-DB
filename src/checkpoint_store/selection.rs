@@ -115,9 +115,23 @@ pub(super) fn load(store: &Path) -> io::Result<Option<Selection>> {
 }
 
 pub(super) fn synchronize(store: &Path) -> io::Result<()> {
-    synchronize_with(store, File::sync_all, |parent| {
-        File::open(parent)?.sync_all()
-    })
+    synchronize_with(store, File::sync_all, sync_ancestors)
+}
+
+// A durable file name also depends on the directory entries naming all of
+// its ancestors. Call only with an absolute, resolved directory path.
+pub(super) fn sync_ancestors(directory: &Path) -> io::Result<()> {
+    sync_ancestors_with(directory, |path| File::open(path)?.sync_all())
+}
+
+pub(super) fn sync_ancestors_with(
+    directory: &Path,
+    mut sync: impl FnMut(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    for ancestor in directory.ancestors() {
+        sync(ancestor)?;
+    }
+    Ok(())
 }
 
 pub(super) fn synchronize_with(
@@ -196,5 +210,37 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn every_ancestor_is_synced_bottom_up_and_errors_stop_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("one").join("two");
+        std::fs::create_dir_all(&directory).unwrap();
+        let directory = std::fs::canonicalize(directory).unwrap();
+        let ancestors = directory
+            .ancestors()
+            .map(Path::to_path_buf)
+            .collect::<Vec<_>>();
+        for fail_at in 0..ancestors.len() {
+            let mut seen = Vec::new();
+            let result = sync_ancestors_with(&directory, |path| {
+                seen.push(path.to_path_buf());
+                if seen.len() - 1 == fail_at {
+                    Err(io::Error::other("injected directory sync failure"))
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(result.is_err());
+            assert_eq!(seen, ancestors[..=fail_at]);
+        }
+        let mut seen = Vec::new();
+        sync_ancestors_with(&directory, |path| {
+            seen.push(path.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen, ancestors);
     }
 }

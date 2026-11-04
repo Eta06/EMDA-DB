@@ -487,9 +487,9 @@ impl CheckpointStore {
     pub fn rollover_managed(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
         self.rollover_managed_with_hooks(
             destination.as_ref(),
-            |parent| std::fs::File::open(parent)?.sync_all(),
+            |_| Ok(()),
             || Ok(()),
-            |parent| std::fs::File::open(parent)?.sync_all(),
+            selection::sync_ancestors,
         )
     }
 
@@ -524,7 +524,10 @@ impl CheckpointStore {
         }
         // Check path encoding and length before creating any checkpoint.
         selection::Selection::new(destination.clone(), [0; 32])?;
-        let digest = self.create_checkpoint(&state, &destination, sync_checkpoint_parent)?;
+        let digest = self.create_checkpoint(&state, &destination, |parent| {
+            sync_checkpoint_parent(parent)?;
+            selection::sync_ancestors(parent)
+        })?;
         let next_view = self.rollover_view(&state, &destination, &digest)?;
         let next = selection::Selection::new(destination, digest)?;
         if let Err(error) = selection::publish(

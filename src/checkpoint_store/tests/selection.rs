@@ -518,3 +518,130 @@ fn managed_open_rejects_selection_and_directory_sync_failures_before_return() {
         reopened.put(b"after", b"value").unwrap();
     }
 }
+
+#[test]
+fn managed_rollover_stops_if_any_checkpoint_ancestor_sync_fails() {
+    let (probe, _, _, _) = fixture();
+    let count = fs::canonicalize(probe.path()).unwrap().ancestors().count();
+    drop(probe);
+    for fail_at in 0..count {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        store.rollover_managed(dir.path().join("first")).unwrap();
+        store.put(b"before", b"acknowledged").unwrap();
+        let selection = super::super::selection::path(&path);
+        let old_selection = fs::read(&selection).unwrap();
+        let mut seen = 0;
+        let result = store.rollover_managed_with_hooks(
+            &dir.path().join("next"),
+            |parent| {
+                super::super::selection::sync_ancestors_with(parent, |ancestor| {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        Err(io::Error::other("injected ancestor sync"))
+                    } else {
+                        File::open(ancestor)?.sync_all()
+                    }
+                })
+            },
+            || panic!("selection publication must not begin"),
+            |_| panic!("selection publication must not begin"),
+        );
+        assert!(result.is_err());
+        assert_eq!(seen, fail_at + 1);
+        assert_eq!(fs::read(&selection).unwrap(), old_selection);
+        store.put(b"after", b"accepted").unwrap();
+        drop(store);
+        let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"after").unwrap().as_deref(),
+            Some(&b"accepted"[..])
+        );
+    }
+}
+
+#[test]
+fn managed_rollover_poisoned_if_any_selection_ancestor_sync_fails() {
+    let (probe, probe_path, _, _) = fixture();
+    let count = fs::canonicalize(&probe_path).unwrap().ancestors().count();
+    drop(probe);
+    for fail_at in 0..count {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        store.rollover_managed(dir.path().join("first")).unwrap();
+        store.put(b"before", b"acknowledged").unwrap();
+        let mut seen = 0;
+        let result = store.rollover_managed_with_hooks(
+            &dir.path().join("next"),
+            |parent| File::open(parent)?.sync_all(),
+            || Ok(()),
+            |parent| {
+                super::super::selection::sync_ancestors_with(parent, |ancestor| {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        Err(io::Error::other("injected ancestor sync"))
+                    } else {
+                        File::open(ancestor)?.sync_all()
+                    }
+                })
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("reopen required"));
+        assert_eq!(seen, fail_at + 1);
+        assert!(store.get(b"before").is_err());
+        assert!(store.put(b"after", b"not committed").is_err());
+        drop(store);
+        let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"before").unwrap().as_deref(),
+            Some(&b"acknowledged"[..])
+        );
+        assert_eq!(reopened.get(b"after").unwrap(), None);
+    }
+}
+
+#[test]
+fn managed_open_refuses_each_failed_selection_ancestor_sync() {
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.rollover_managed(dir.path().join("first")).unwrap();
+    store.put(b"before", b"acknowledged").unwrap();
+    drop(store);
+    let count = fs::canonicalize(&path).unwrap().ancestors().count();
+    for fail_at in 0..count {
+        let mut seen = 0;
+        let result = CheckpointStore::open_source_using(
+            &path,
+            OpenSource::Managed,
+            OpenLimits {
+                max_tail_bytes: MAX_RECOVERED_VIEW_TAIL_BYTES,
+                max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
+                max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
+                max_log_bytes: None,
+            },
+            Log::open_checkpoint_writer,
+            |store| {
+                super::super::selection::synchronize_with(store, File::sync_all, |parent| {
+                    super::super::selection::sync_ancestors_with(parent, |ancestor| {
+                        let index = seen;
+                        seen += 1;
+                        if index == fail_at {
+                            Err(io::Error::other("injected ancestor sync"))
+                        } else {
+                            File::open(ancestor)?.sync_all()
+                        }
+                    })
+                })
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(seen, fail_at + 1);
+        let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"before").unwrap().as_deref(),
+            Some(&b"acknowledged"[..])
+        );
+    }
+}
