@@ -259,6 +259,22 @@ python3 scripts/transaction_compare.py --directory /workspace --output /tmp/tran
 
 The runner rotates backend order and records every successful operation's latency, per-client conflicts, total elapsed time, source and binary hashes, and VM/cgroup noise. Defaults are 1, 4 and 8 clients, 100 operations per client, five repetitions per mode and workload. These are synthetic closed-loop direct API measurements, not PostgreSQL or MongoDB transaction comparisons. The engines' implementation details and complete durability behavior differ, so results do not establish a general performance or reliability ranking.
 
+The [recorded run](../benchmarks/results/2026-11-04-transaction-comparison.json) used revision `54f7afe`, SQLite 3.49.1 and five repetitions for each configuration. The table reports medians of run-level results; conflict counts include retries across all clients in one run.
+
+| Workload | Clients | Mode | Transactions/s | p99 latency | Maximum latency | Conflicts |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| Disjoint | 4 | Conservative | 3,391 | 2.29 ms | 83.3 ms | 37 |
+| Disjoint | 4 | Read set | 3,566 | 16.75 ms | 58.9 ms | 0 |
+| Disjoint | 4 | SQLite | 2,369 | 0.83 ms | 129.8 ms | — |
+| Disjoint | 8 | Conservative | 3,344 | 31.81 ms | 183.2 ms | 114 |
+| Disjoint | 8 | Read set | 3,280 | 46.79 ms | 166.0 ms | 0 |
+| Disjoint | 8 | SQLite | 1,714 | 2.23 ms | 430.7 ms | — |
+| Shared | 8 | Conservative | 3,503 | 32.63 ms | 158.7 ms | 113 |
+| Shared | 8 | Read set | 3,419 | 44.62 ms | 197.4 ms | 151 |
+| Shared | 8 | SQLite | 1,705 | 1.20 ms | 430.6 ms | — |
+
+Read-set validation removed the observed disjoint-key conflicts, but did not improve eight-client throughput or tail latency in this sample. Both prototype modes had substantially higher p99 than SQLite, while SQLite's worst observed operation in each run was longer. SQLite's busy waits are not counted as conflicts. The p99 for eight clients is based on 800 operations per run, and the run-level ranges are wide: disjoint read-set p99 ranged from 23.6 to 83.9 ms. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.91% during setup, measurement and cleanup. This points to a need to investigate writer admission and fairness; it does not prove the cause or establish a general ranking.
+
 ## Separate-copy compaction comparison
 
 `examples/compaction_bench.rs` prepares a synthetic store with 64-byte values, overwrites half of its keys, deletes one eighth, times a verified `compact_to` operation and checks selected live and deleted values after reopening the copy. `scripts/compaction_compare.py` alternates two separately built binaries across fresh fixtures, records each run and VM/cgroup noise, and reports medians and ranges. This measures separate-copy compaction, which blocks source mutations; it does not measure online compaction or physical power-loss behavior.

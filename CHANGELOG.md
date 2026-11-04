@@ -9,6 +9,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 ### Added
 
 - An opt-in serializable read-set transaction mode that validates point reads and complete scan ranges, allowing unrelated writes to avoid conservative conflicts. Read dependencies and validation work are bounded; absent-key insert/delete cycles that restore absence need not conflict. Two short model-fuzz campaigns are recorded in `benchmarks/results/2026-11-03-read-set-fuzz.json`.
+- A two-key transaction comparison against SQLite, including per-operation latency, retry counts, validation after reopen and observed tail-latency regressions.
 - Upgrade staging and publication process-kill tests for V2 and V3 sources, plus injected parent-directory sync failure and a regression test for staging-lock release with duplicated descriptors.
 - Process-kill checks at backup and restore staging and publication boundaries, including successful retry or reopening on the running OS. Interrupted staging can leave private files or directories containing data; physical power loss is not tested.
 - Process-kill tests during synchronized compaction staging and immediately after publication but before parent-directory sync. The first can leave a private staging directory; the second sees a complete copy on the still-running OS. Neither is a physical power-loss test.
