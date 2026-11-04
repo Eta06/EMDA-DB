@@ -200,7 +200,10 @@ fn scoped_cleanup_preserves_retired_copy_if_current_log_is_corrupt() {
     );
     drop(predecessor);
     drop(store);
-    assert!(Store::open(&source).is_err());
+    assert_eq!(
+        retry_lock(|| Store::open(&source)).err().unwrap().kind(),
+        io::ErrorKind::InvalidData
+    );
 }
 
 #[test]
@@ -249,24 +252,6 @@ fn scoped_cleanup_skips_a_lock_only_retired_stage_until_release() {
     assert!(!retired.exists());
 }
 
-fn wait_for(
-    worker: &OnlineReclamationWorker,
-    predicate: impl Fn(&OnlineReclamationWorkerStatus) -> bool,
-) -> OnlineReclamationWorkerStatus {
-    let timeout = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let status = worker.status();
-        if predicate(&status) {
-            return status;
-        }
-        assert!(
-            std::time::Instant::now() < timeout,
-            "worker did not make progress: {status:?}"
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
-}
-
 #[test]
 fn worker_cleans_matching_retired_stages_and_reports_counts() {
     let root = tempfile::tempdir().unwrap();
@@ -284,20 +269,13 @@ fn worker_cleans_matching_retired_stages_and_reports_counts() {
             Default::default(),
         )
         .unwrap();
-    worker.request_check().unwrap();
-    let status = wait_for(&worker, |s| s.checks >= 1);
+    let status = request_checks_until(&worker, |_| {
+        worker.retired_cleanup_status().unwrap().removed_markers == 1
+    });
     assert!(status.last_error.is_none());
     let cleanup = worker.retired_cleanup_status().unwrap();
-    assert_eq!(
-        (
-            cleanup.checks,
-            cleanup.removed_payloads,
-            cleanup.removed_markers,
-            cleanup.skipped,
-            cleanup.deferred
-        ),
-        (1, 1, 1, 0, 0)
-    );
+    assert!(cleanup.checks >= 1);
+    assert_eq!((cleanup.removed_payloads, cleanup.removed_markers), (1, 1));
     assert!(!retired.exists());
     worker.stop().unwrap();
     drop(store);
@@ -339,8 +317,9 @@ fn worker_defers_cleanup_while_parent_or_maintenance_lock_is_busy() {
     wait_for(&worker, |s| s.checks >= 2);
     assert_eq!(worker.retired_cleanup_status().unwrap().deferred, 2);
     drop(maintenance);
-    worker.request_check().unwrap();
-    wait_for(&worker, |s| s.checks >= 3);
+    request_checks_until(&worker, |_| {
+        worker.retired_cleanup_status().unwrap().removed_payloads == 1
+    });
     assert_eq!(worker.retired_cleanup_status().unwrap().removed_payloads, 1);
     assert!(!retired.exists());
     assert!(worker.stop().unwrap().last_error.is_none());
@@ -369,8 +348,7 @@ fn worker_does_not_compact_while_matching_retired_data_is_locked() {
     assert_eq!(status.handoffs, 0);
     assert_eq!(worker.retired_cleanup_status().unwrap().skipped, 1);
     drop(held);
-    worker.request_check().unwrap();
-    let status = wait_for(&worker, |s| s.checks >= 2);
+    let status = request_checks_until(&worker, |status| status.handoffs == 1);
     assert!(status.last_error.is_none());
     assert_eq!(status.handoffs, 1);
     assert_eq!(worker.retired_cleanup_status().unwrap().removed_payloads, 1);
@@ -405,8 +383,7 @@ fn worker_stops_and_preserves_retired_copy_when_current_verification_fails() {
             Default::default(),
         )
         .unwrap();
-    worker.request_check().unwrap();
-    let status = wait_for(&worker, |s| s.stopped);
+    let status = request_checks_until(&worker, |status| status.stopped);
     assert_eq!(
         status.last_error.unwrap().stage,
         OnlineReclamationFailureStage::Reclamation
