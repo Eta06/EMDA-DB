@@ -294,6 +294,8 @@ For disjoint keys, FIFO reduced the sampled p99 and maximum while raising median
 
 `examples/compaction_bench.rs` prepares a synthetic store with 64-byte values, overwrites half of its keys, deletes one eighth, times a verified `compact_to` operation and checks selected live and deleted values after reopening the copy. `scripts/compaction_compare.py` alternates two separately built binaries across fresh fixtures, records each run and VM/cgroup noise, and reports medians and ranges. This measures separate-copy compaction, which blocks source mutations; it does not measure online compaction or physical power-loss behavior.
 
+A [later paired run](../benchmarks/results/2026-11-04-staging-overhead.json) compares the versioned staging ownership and cleanup implementation against its immediate predecessor. With seven runs per version, median compaction for 200 source keys was 673 µs before and 678 µs after; for 5,000 source keys it was 8.11 ms before and 8.33 ms after. Ranges overlap in both cases. The new implementation adds marker-file and parent-directory synchronization before staging; this small VM sample does not reliably establish its overhead on other filesystems or hardware. Both quiet checks passed, with no cgroup throttling or direct reclaim during recorded runs, but individual VM steal samples reached 25% during whole-process setup, measurement and cleanup.
+
 Build each revision in its own clean checkout and empty `CARGO_TARGET_DIR`. From the driver checkout, provide both binaries, their revisions, an existing temporary-fixture directory and a new result path:
 
 ```sh
