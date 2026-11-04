@@ -1,0 +1,28 @@
+{
+  "description": "Serial reference model for atomic document array updates and recovery",
+  "runs": [
+    {
+      "source_revision": "b180ef7 (worktree candidate; production code matches main revision 13befe8)",
+      "binary_sha256": "60971145e65be1bd2eed5f830d2af823a416cf1d317a63ee2a267a199ee73229",
+      "seed": 81463109,
+      "requested_seconds": 120,
+      "actual_seconds": 121,
+      "inputs_executed": 7026,
+      "result": "passed"
+    },
+    {
+      "source_revision": "13befe8e07a8ac28155829d4ea65a09819681e53",
+      "binary_sha256": "8c78aef698e3b593e331093a9fb96d2279a563f9fd06f589a7d95efe93c4c9ae",
+      "seed": 81463111,
+      "requested_seconds": 60,
+      "actual_seconds": 61,
+      "inputs_executed": 4944,
+      "result": "passed"
+    }
+  ],
+  "toolchain": "nightly-2026-11-03 and cargo-fuzz",
+  "max_input_bytes": 96,
+  "timeout_seconds": 10,
+  "environment": "Linux cloud VM; local temporary corpus and store",
+  "scope": "Generated sequences of push, add-unique, remove, pop, rejected non-array mutations, explicit rollback and reopen are compared with an independent value model and unique-index checks on ordinary and checkpoint-backed stores. Short serial fuzz runs do not exhaust concurrent schedules, fault states, physical power loss or off-host restoration."
+}

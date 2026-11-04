@@ -14,6 +14,9 @@ mod transaction;
 mod update;
 
 #[cfg(test)]
+pub(crate) mod array_fault_model;
+
+#[cfg(test)]
 mod point_read_tests;
 
 pub use aggregate::{AggregateGroup, AggregateRequest, AggregateResult, LookupEntry, LookupResult};

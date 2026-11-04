@@ -64,3 +64,33 @@ fn document_and_unique_index_remain_atomic_across_metadata_faults() {
         assert_eq!(page.documents[0].id, "id");
     }
 }
+
+#[test]
+fn array_index_and_raw_write_recover_together_after_v3_metadata_errors() {
+    use crate::document::array_fault_model::{prepare, update, verify};
+    for fault in [
+        Fault::Read,
+        Fault::WriteBefore,
+        Fault::WriteAfter,
+        Fault::SyncBefore,
+        Fault::SyncTimeout,
+        Fault::SyncAfter,
+        Fault::Panic,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered, _) = mpsc::channel();
+        let (_, resume) = mpsc::channel();
+        let store = store(root.path(), fault, Arc::clone(&armed), entered, resume);
+        prepare(&DocumentDatabase::new(&store));
+        armed.store(true, Ordering::Release);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            update(&DocumentDatabase::new(&store))
+        }));
+        assert!(!matches!(outcome, Ok(Ok(()))));
+        assert!(store.get(b"receipt").is_err());
+        drop(store);
+        let reopened = retry_lock(|| Store::open(root.path())).unwrap();
+        verify(&DocumentDatabase::new(&reopened));
+    }
+}

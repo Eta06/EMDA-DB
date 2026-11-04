@@ -1,0 +1,12 @@
+{
+  "engine_revision": "13befe8e07a8ac28155829d4ea65a09819681e53",
+  "test_binary_sha256": "604e99287f4195f501575832a2bcab48ec57975b1a30a684e807f0adbd0b0df2",
+  "command": "cargo test --locked --release --lib array_index_and_raw_write -- --nocapture",
+  "transaction_record_bytes": 334,
+  "runs": [
+    {"temporary_filesystem": "tmpfs (/tmp)", "v2_append_cut_points": 335, "v3_append_cut_points": 335, "elapsed_test_seconds": 0.19, "result": "passed"},
+    {"temporary_filesystem": "workspace overlay (backing device not independently verified)", "v2_append_cut_points": 335, "v3_append_cut_points": 335, "elapsed_test_seconds": 2.37, "result": "passed"}
+  ],
+  "additional_injections_per_run": "V2 log sync before/after and timeout, append panics at three offsets; V3 append panics at three offsets and seven witness read/write/sync/timeout/panic failures",
+  "scope": "A document-array mutation, unique-index change and raw-key receipt share one atomic transaction. Reopen either yields a consistent old/new state or fails closed without truncating log bytes. Process-level I/O injection on a running OS is not a physical power loss, independent off-host restore or proof of all filesystem persistence states."
+}

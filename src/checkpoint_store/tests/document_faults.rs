@@ -80,3 +80,58 @@ fn partial_and_failed_document_commits_recover_atomically_or_fail_closed() {
         assert_eq!(fs::read(path.join("records.log")).unwrap(), bytes);
     }
 }
+
+#[test]
+fn array_index_and_raw_write_recover_together_for_every_v2_append_cut() {
+    use crate::document::array_fault_model::{prepare, update, verify};
+    let length = {
+        let (_root, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let db = DocumentDatabase::with_checkpoint_store(&store);
+        prepare(&db);
+        let log = path.join("records.log");
+        let before = fs::metadata(&log).unwrap().len();
+        update(&db).unwrap();
+        usize::try_from(fs::metadata(log).unwrap().len() - before).unwrap()
+    };
+    assert!(length > 30);
+    eprintln!("V2 array transaction append cut points: {}", length + 1);
+    let mut faults = (0..=length).map(LogFault::Partial).collect::<Vec<_>>();
+    faults.extend([
+        LogFault::SyncBefore,
+        LogFault::SyncAfter,
+        LogFault::SyncTimeout,
+        LogFault::Panic(0),
+        LogFault::Panic(length / 2),
+        LogFault::Panic(length),
+    ]);
+    for fault in faults {
+        let (_root, path, checkpoint, digest) = fixture();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        prepare(&DocumentDatabase::with_checkpoint_store(&store));
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        store
+            .log
+            .replace_io_for_test(Box::new(FaultLog { file, fault }));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            update(&DocumentDatabase::with_checkpoint_store(&store))
+        }));
+        assert!(!matches!(outcome, Ok(Ok(()))));
+        assert!(store.get(b"base").is_err());
+        drop(store);
+        let log = path.join("records.log");
+        let bytes = fs::read(&log).unwrap();
+        match retry_lock(|| Store::open(&path)) {
+            Ok(reopened) => verify(&DocumentDatabase::new(&reopened)),
+            Err(error) => assert!(matches!(
+                error.kind(),
+                io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+            )),
+        }
+        assert_eq!(fs::read(log).unwrap(), bytes);
+    }
+}

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Exercise atomic document-array, unique-index and raw-key commits under every V2/V3 append cut and selected synchronization and metadata failures.
+
 - Add atomic bounded JSON array push, add-unique, remove and first/last pop updates to both document backends. These new `DocumentUpdate` variants require downstream exhaustive matches to be updated.
 
 - Check concurrent document, index and raw-key transactions against real-time serial histories and recovery on both writable backends.
