@@ -556,6 +556,15 @@ mod tests {
             store.get(b"direct").unwrap().as_deref(),
             Some(&b"allowed"[..])
         );
+        drop(store);
+        let recovered = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
+        assert_eq!(
+            recovered.get(b"direct").unwrap().as_deref(),
+            Some(&b"allowed"[..])
+        );
+        recovered
+            .transaction(|tx| tx.put(b"after-reopen", b"ok"))
+            .unwrap();
     }
 
     #[test]

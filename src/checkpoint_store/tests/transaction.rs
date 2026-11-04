@@ -25,6 +25,15 @@ fn poisoned_transaction_budget_rejects_new_admissions() {
         store.get(b"direct").unwrap().as_deref(),
         Some(&b"allowed"[..])
     );
+    drop(store);
+    let recovered = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(
+        recovered.get(b"direct").unwrap().as_deref(),
+        Some(&b"allowed"[..])
+    );
+    recovered
+        .transaction(|tx| tx.put(b"after-reopen", b"ok"))
+        .unwrap();
 }
 
 #[test]
