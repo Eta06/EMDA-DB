@@ -567,11 +567,39 @@ impl Log {
     /// Callers must keep visitor results private until the complete replay succeeds.
     pub(crate) fn visit_records(
         &self,
+        offset: u64,
+        boundary: Option<u64>,
+        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.visit_records_to(offset, self.file.len()?, boundary, visit)
+    }
+
+    /// Visits a fixed, previously synchronized record range. The caller must
+    /// capture both boundaries while excluding in-flight writes and keep the
+    /// append-only log alive. Later appends are not read. A truncated range or
+    /// a boundary in the middle of a record fails closed.
+    pub(crate) fn visit_synchronized_range(
+        &self,
+        offset: u64,
+        end: u64,
+        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.file.len()? < end {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "log was shortened during bounded replay",
+            ));
+        }
+        self.visit_records_to(offset, end, None, visit)
+    }
+
+    fn visit_records_to(
+        &self,
         mut offset: u64,
+        total: u64,
         boundary: Option<u64>,
         mut visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
-        let total = self.file.len()?;
         let mut reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
         if offset == 0 && self.log_id.is_some() {
             let mut header = [0_u8; LOG_HEADER_SIZE];

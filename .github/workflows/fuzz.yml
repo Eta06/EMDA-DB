@@ -115,6 +115,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/document-schema-migration-corpus"
           cp fuzz/document-schema-migration-seeds/* "$RUNNER_TEMP/document-schema-migration-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_schema_migration "$RUNNER_TEMP/document-schema-migration-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
+      - name: Run online-compaction model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/online-compaction-corpus"
+          cp fuzz/online-compaction-seeds/* "$RUNNER_TEMP/online-compaction-corpus/"
+          cargo +nightly-2026-11-03 fuzz run online_compaction "$RUNNER_TEMP/online-compaction-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

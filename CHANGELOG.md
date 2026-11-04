@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Experimental opt-in Linux ordinary-store compaction can prepare and catch up a copy while guarded callbacks continue, then pauses callbacks for verification and atomic exchange. The previous store is retained; logical caps, error boundaries and format implications are documented.
+
 - Resumable document schema migrations validate bounded batches, persist progress and enforce both active and pending schemas on concurrent writes until publication.
 
 - Resumable incremental document index builds and drops persist bounded progress, coordinate with concurrent writers, and publish or remove indexes atomically. Collection metadata advances to version 2; see the document guide for uniqueness and recovery semantics.

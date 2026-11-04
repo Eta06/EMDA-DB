@@ -11,7 +11,7 @@ enum ExchangePoint {
     AfterExchange,
 }
 
-fn source_directory_is_owned(path: &Path) -> io::Result<()> {
+pub(super) fn source_directory_is_owned(path: &Path) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let name = entry.file_name();

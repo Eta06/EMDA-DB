@@ -150,3 +150,9 @@ bench = false
 
 [workspace]
 members = ["."]
+[[bin]]
+name = "online_compaction"
+path = "fuzz_targets/online_compaction.rs"
+test = false
+doc = false
+bench = false
