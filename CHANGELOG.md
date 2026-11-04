@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Record repeated compound-range comparisons with SQLite, PostgreSQL and MongoDB, and add a disposable cross-engine CI smoke workflow.
+
 - Plan compound equality-prefix ranges only when required predicates also prove all later indexed fields are present.
 
 - Defer scheduled reclamation on a proven pre-compaction maintenance-lock conflict and expose a deferral count; ambiguous I/O and cleanup failures still stop the worker.

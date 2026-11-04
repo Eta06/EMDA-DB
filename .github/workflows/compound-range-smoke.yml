@@ -1,0 +1,72 @@
+name: Compound range cross-engine smoke
+
+"on":
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/compound-range-smoke.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "examples/compound_range_query_bench.rs"
+      - "scripts/compound_range_external_compare.py"
+      - "scripts/nonunique_query_compare.py"
+      - "scripts/benchmark-requirements.txt"
+      - "scripts/benchmarks/**"
+      - "scripts/tests/test_compound_range_external_compare.py"
+      - "src/**"
+  pull_request:
+    paths:
+      - ".github/workflows/compound-range-smoke.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "examples/compound_range_query_bench.rs"
+      - "scripts/compound_range_external_compare.py"
+      - "scripts/nonunique_query_compare.py"
+      - "scripts/benchmark-requirements.txt"
+      - "scripts/benchmarks/**"
+      - "scripts/tests/test_compound_range_external_compare.py"
+      - "src/**"
+
+permissions:
+  contents: read
+
+jobs:
+  cross-engine:
+    name: PostgreSQL, MongoDB and in-process adapters
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Install pinned benchmark drivers
+        run: |
+          python3 -m venv "$RUNNER_TEMP/benchmark-venv"
+          python3 -c 'import os; from pathlib import Path; lines = [line for line in Path("scripts/benchmark-requirements.txt").read_text().splitlines() if line.startswith(("psycopg[binary]==", "pymongo=="))]; assert len(lines) == 2; Path(os.environ["RUNNER_TEMP"], "cross-engine-requirements.txt").write_text("\n".join(lines) + "\n")'
+          "$RUNNER_TEMP/benchmark-venv/bin/python" -m pip install -r "$RUNNER_TEMP/cross-engine-requirements.txt"
+      - name: Load pinned disposable-server images
+        run: |
+          docker pull postgres@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8
+          docker tag postgres@sha256:5c4783a8cc3f0074912164f94dfa1be4e043438f0f707cf968d7af9a0d31a2c8 postgres:18-bookworm
+          docker pull mongo@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142
+          docker tag mongo@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142 mongo:8.0
+          docker pull redis@sha256:99ffb973380cc2f47bca06bd094f7f8c7138a0879a63cb8939896a22b7a65bba
+          docker tag redis@sha256:99ffb973380cc2f47bca06bd094f7f8c7138a0879a63cb8939896a22b7a65bba redis:8.2-bookworm
+      - name: Build and run verified comparison smoke
+        run: |
+          cargo +stable build --release --locked --example compound_range_query_bench
+          cpu_pair="$(python3 -c 'import os; c=sorted(os.sched_getaffinity(0)); assert len(c) >= 2; print(c[0], c[1])')"
+          read -r driver_cpu server_cpu <<< "$cpu_pair"
+          "$RUNNER_TEMP/benchmark-venv/bin/python" scripts/compound_range_external_compare.py \
+            --directory "$RUNNER_TEMP" --binary target/release/examples/compound_range_query_bench \
+            --output "$RUNNER_TEMP/compound-range-smoke.json" --cases 16:4 --rounds 2 --cycles 2 \
+            --driver-cpus "$driver_cpu" --server-cpus "$server_cpu"
+      - name: Preserve smoke report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compound-range-cross-engine-smoke
+          path: ${{ runner.temp }}/compound-range-smoke.json
+          if-no-files-found: ignore

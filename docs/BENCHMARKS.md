@@ -663,3 +663,4 @@ python3 scripts/compound_range_external_compare.py --directory /path/to/test-fil
 ```
 
 Use CPU sets available in the current environment. Results do not cover concurrent clients, cold-cache behavior, independent restores or physical power loss.
+ A [cross-engine smoke workflow](../.github/workflows/compound-range-smoke.yml) runs for relevant pushes and pull requests, or manually; it pulls pinned disposable-server images on the GitHub runner and preserves the report.
