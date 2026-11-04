@@ -327,6 +327,16 @@ python3 scripts/checkpoint_snapshot_compare.py --directory /workspace --output /
 
 Defaults use 12,000 and 200,000 checkpointed keys, 4,096 suffix keys, 128-byte keys, four snapshots and five rounds. Snapshot creation times exclude store opening and fixture preparation. Process RSS and high-water RSS exclude the OS page cache and are not total-memory quotas. The benchmark does not exercise concurrent writes, physical power loss or off-host recovery.
 
+The [recorded run](../benchmarks/results/2026-11-04-checkpoint-snapshot-comparison.json) used revision `47c74e0` and five runs per case:
+
+| Base keys | Mode | RSS after opening | RSS after four snapshots | Median snapshot creation |
+| ---: | --- | ---: | ---: | ---: |
+| 12,000 | Ordinary | 5,336 KiB | 20,200 KiB | 3.88 ms |
+| 12,000 | Checkpoint | 2,576 KiB | 6,436 KiB | 0.35 ms |
+| 200,000 | Checkpoint | 2,640 KiB | 6,736 KiB | 0.42 ms |
+
+Each case had 4,096 distinct suffix keys. Ordinary snapshots are omitted at 200,000 base keys because their current 16,384-key per-view cap rejects that fixture. Store opening, checkpoint hashing and suffix replay occur before the snapshot timer; median opening was 9.40 ms for the ordinary 12,000-key case, 8.11 ms for checkpoint at 12,000 keys and 107.01 ms for checkpoint at 200,000 keys. RSS includes each process's open store and snapshots, excludes OS page cache, and is not a memory quota. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.27% across setup, measurement and cleanup. This is one warm-cache VM sample, not a general ranking or a test of concurrent writes.
+
 ## Checkpoint transaction range comparison
 
 `examples/checkpoint_range_bench.rs` runs one-client transactions over a store of ordered keys. Each transaction reads a one-entry page from an exclusive bounded range and increments a separate counter; it verifies the first entry and checks the counter after reopening. The checkpoint read-set path captures the entire requested range before returning that page. SQLite uses a `WITHOUT ROWID` table, cached statements, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level checksums. The two engines have different isolation and locking implementations; the workload does not include a concurrent writer or measure range revalidation after an intervening write.
