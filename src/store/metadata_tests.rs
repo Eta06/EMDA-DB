@@ -340,7 +340,12 @@ fn limited_key_byte_accounting_is_rebuilt_after_uncertain_single_and_batch_write
 #[test]
 fn capped_existing_key_updates_share_a_witness_sync_and_block_deletion() {
     use std::time::Instant;
-    for (max_keys, max_bytes) in [(Some(4), None), (None, Some(4)), (Some(4), Some(4))] {
+    for (max_keys, max_bytes, log_capped) in [
+        (Some(4), None, false),
+        (None, Some(4), false),
+        (Some(4), Some(4), false),
+        (Some(4), Some(4), true),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let armed = Arc::new(AtomicBool::new(false));
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -355,7 +360,8 @@ fn capped_existing_key_updates_share_a_witness_sync_and_block_deletion() {
         for key in [b"a", b"b", b"c", b"d"] {
             store.put(key, b"old").unwrap();
         }
-        let store = Arc::new(Store::set_open_limits(store, None, max_keys, max_bytes).unwrap());
+        let max_log = log_capped.then(|| store.log.len().unwrap() + 1024);
+        let store = Arc::new(Store::set_open_limits(store, max_log, max_keys, max_bytes).unwrap());
         armed.store(true, Ordering::Release);
         let first_store = Arc::clone(&store);
         let first = thread::spawn(move || first_store.put(b"a", b"new"));
@@ -414,14 +420,14 @@ fn capped_existing_key_updates_share_a_witness_sync_and_block_deletion() {
         assert_eq!(entered_rx.try_iter().count(), 1);
         drop(store);
         let recovered =
-            Store::open_with_resource_limits(dir.path(), None, max_keys, max_bytes).unwrap();
+            Store::open_with_resource_limits(dir.path(), max_log, max_keys, max_bytes).unwrap();
         recovered.put(b"z", b"replacement").unwrap();
         assert!(recovered.put(b"extra", b"over quota").is_err());
     }
 }
 
 #[test]
-fn log_length_cap_keeps_existing_updates_serialized_and_cannot_be_oversubscribed() {
+fn log_length_cap_reserves_inflight_bytes_before_other_updates() {
     let dir = tempfile::tempdir().unwrap();
     let armed = Arc::new(AtomicBool::new(false));
     let (entered_tx, entered_rx) = mpsc::channel();
@@ -444,18 +450,27 @@ fn log_length_cap_keeps_existing_updates_serialized_and_cannot_be_oversubscribed
     let entered = entered_rx.recv_timeout(Duration::from_secs(10));
     let second_store = Arc::clone(&store);
     let (attempted_tx, attempted_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let second = thread::spawn(move || {
         let _ = attempted_tx.send(());
-        second_store.put(b"b", b"new")
+        let _ = done_tx.send(second_store.put(b"b", b"new"));
     });
     let attempted = attempted_rx.recv_timeout(Duration::from_secs(10));
+    let early = done_rx.recv_timeout(Duration::from_secs(3));
+    let arrived_early = early.is_ok();
     for _ in 0..4 {
         let _ = resume_tx.send(());
     }
     let first_result = first.join().unwrap();
-    let second_result = second.join().unwrap();
+    let second_result =
+        early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(10)).unwrap());
+    second.join().unwrap();
     entered.expect("first update did not start synchronization");
     attempted.expect("second update did not start");
+    assert!(
+        arrived_early,
+        "capacity should be reserved before the first sync completes"
+    );
     first_result.unwrap();
     assert!(second_result.is_err());
     assert_eq!(store.log.len().unwrap(), cap);
@@ -527,7 +542,8 @@ fn failed_capped_group_sync_never_acknowledges_waiters_or_oversubscribes() {
         for key in [b"a", b"b", b"c", b"d"] {
             store.put(key, b"old").unwrap();
         }
-        let store = Arc::new(Store::set_open_limits(store, None, Some(4), Some(4)).unwrap());
+        let max_log = Some(store.log.len().unwrap() + 1024);
+        let store = Arc::new(Store::set_open_limits(store, max_log, Some(4), Some(4)).unwrap());
         armed.store(true, Ordering::Release);
         let first_store = Arc::clone(&store);
         let first = thread::spawn(move || first_store.put(b"a", b"new"));
@@ -574,7 +590,7 @@ fn failed_capped_group_sync_never_acknowledges_waiters_or_oversubscribes() {
         assert!(store.get(b"a").is_err());
         drop(store);
         let recovered =
-            Store::open_with_resource_limits(dir.path(), None, Some(4), Some(4)).unwrap();
+            Store::open_with_resource_limits(dir.path(), max_log, Some(4), Some(4)).unwrap();
         assert_eq!(recovered.get(b"a").unwrap().as_deref(), Some(&b"new"[..]));
         for key in [b"b", b"c", b"d"] {
             let value = recovered.get(key).unwrap().unwrap();

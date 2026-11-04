@@ -221,9 +221,10 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
     for iteration in 0..2048 {
         let directory = tempfile::tempdir().unwrap();
         let capped = iteration % 2 == 0;
+        let log_cap = (iteration % 4 == 0).then_some(1024 * 1024);
         let open = || {
             if capped {
-                Store::open_with_resource_limits(directory.path(), None, Some(2), Some(2))
+                Store::open_with_resource_limits(directory.path(), log_cap, Some(2), Some(2))
             } else {
                 Store::open(directory.path())
             }

@@ -253,7 +253,8 @@ fn limited_store_preserves_unknown_outcome_after_sync_error() {
     let record_len = record::encode(Operation::Put, b"key", b"value")
         .unwrap()
         .len() as u64;
-    store.max_log_bytes = Some(store.log.len().unwrap() + record_len);
+    let length = store.log.len().unwrap();
+    store.log_quota = Some(LogQuota::new(length + record_len, length).unwrap());
     *fault.lock().unwrap() = Some(Fault::SyncBefore);
     assert!(
         store
@@ -278,6 +279,33 @@ fn limited_store_preserves_unknown_outcome_after_sync_error() {
             .get(b"key")
             .unwrap()
             .as_deref(),
+        Some(&b"value"[..])
+    );
+}
+
+#[test]
+fn failed_preparation_releases_log_capacity_for_a_later_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let length = store.log.len().unwrap();
+    let record_len = record::encode(Operation::Put, b"key", b"value")
+        .unwrap()
+        .len() as u64;
+    let mut store = Store::set_open_limits(store, Some(length + record_len), None, None).unwrap();
+    store.commits = Coordinator::for_test(1, 1);
+    let before = std::fs::read(directory.path().join("records.log")).unwrap();
+    assert!(store.put(b"key", b"value").is_err());
+    assert_eq!(
+        std::fs::read(directory.path().join("records.log")).unwrap(),
+        before
+    );
+    store.commits = Coordinator::new();
+    store.put(b"key", b"value").unwrap();
+    assert!(store.put(b"x", b"value").is_err());
+    drop(store);
+    let recovered = Store::open_with_log_limit(directory.path(), length + record_len).unwrap();
+    assert_eq!(
+        recovered.get(b"key").unwrap().as_deref(),
         Some(&b"value"[..])
     );
 }

@@ -26,3 +26,8 @@ the log, and repeatedly reopens with the same logical live-key byte cap. Its
 checked-in synthetic seeds are in `fuzz/key-byte-limit-seeds`. This tests the
 per-open key-byte accounting, not total memory, concurrent scheduling,
 physical power loss, or persistent project quotas.
+
+The `log_limit` target models encoded record lengths and key/value state under
+a per-open log-length cap, including atomic batches, rejected writes and
+reopening. Its seeds are in `fuzz/log-limit-seeds`. It is single-threaded and
+does not replace concurrent reservation, I/O fault or power-loss tests.

@@ -14,11 +14,13 @@ use std::sync::{Mutex, RwLock, RwLockReadGuard};
 mod atomic_batch;
 mod commit;
 mod compact;
+mod log_quota;
 mod read_set;
 mod snapshot;
 mod transaction;
 mod transaction_queue;
 use commit::Coordinator;
+use log_quota::LogQuota;
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
     MAX_TRANSACTION_VALIDATION_ITEMS,
@@ -52,7 +54,7 @@ pub struct Store {
     // snapshot is complete; writers share it while the coordinator batches.
     writes: RwLock<()>,
     commits: Coordinator,
-    max_log_bytes: Option<u64>,
+    log_quota: Option<LogQuota>,
     max_live_keys: Option<usize>,
     max_live_key_bytes: Option<usize>,
     // With this limit enabled, the exclusive write barrier serializes every
@@ -116,8 +118,9 @@ impl Store {
     ///
     /// This is reapplied on each open; it is not a persistent project quota.
     /// The log header and tombstones count toward the cap. It excludes other
-    /// files and memory, and limited stores serialize all mutations. Opening
-    /// may initialize a new store before checking its resulting length.
+    /// files and memory. In-flight records reserve space before admission and
+    /// independent writes may share a sync. Opening may initialize a new store
+    /// before checking its resulting length.
     pub fn open_with_log_limit(path: impl AsRef<Path>, max_bytes: u64) -> io::Result<Self> {
         Self::open_with_limits(path, Some(max_bytes), None)
     }
@@ -127,9 +130,9 @@ impl Store {
     /// The key limit is a count, not a process memory guarantee. It applies to
     /// every replayed prefix, including keys that are later deleted. The log
     /// length is checked before replay. Neither setting is persisted.
-    /// A log-length cap serializes writes. With only a live-key cap, operations
-    /// that may change membership serialize; updates to existing keys may share
-    /// synchronization while they hold a shared membership barrier.
+    /// A log-length cap reserves bytes for in-flight writes. With a live-key
+    /// cap, operations that may change membership serialize; updates to
+    /// existing keys may share synchronization under a shared membership barrier.
     pub fn open_with_limits(
         path: impl AsRef<Path>,
         max_log_bytes: Option<u64>,
@@ -145,9 +148,10 @@ impl Store {
     /// cap is checked for every historical replay prefix, including each
     /// ordered operation inside an atomic batch. It is not persisted and must
     /// be supplied on every open. New-key puts, deletes and compound mutations
-    /// serialize. Existing-key updates may share synchronization if no log
-    /// length cap is set. This method uses full-log recovery; checkpoints do
-    /// not record the historical live-key byte peak required to enforce the cap.
+    /// serialize. Existing-key updates may share synchronization, reserving
+    /// log bytes first if a log cap is set. This method uses full-log recovery;
+    /// checkpoints do not record the historical live-key byte peak required to
+    /// enforce the cap.
     pub fn open_with_resource_limits(
         path: impl AsRef<Path>,
         max_log_bytes: Option<u64>,
@@ -175,12 +179,7 @@ impl Store {
         // Read errors must propagate; never treat an unknown file length as a
         // successful quota check.
         if let Some(max) = max_log_bytes {
-            if store.log.len()? > max {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "existing log exceeds configured limit",
-                ));
-            }
+            store.log_quota = Some(LogQuota::new(max, store.log.len()?)?);
         }
         if let Some(max) = max_live_keys {
             if store.read()?.index.len() > max {
@@ -204,7 +203,6 @@ impl Store {
             }
             store.live_key_bytes.store(bytes, Ordering::Relaxed);
         }
-        store.max_log_bytes = max_log_bytes;
         store.max_live_keys = max_live_keys;
         store.max_live_key_bytes = max_live_key_bytes;
         Ok(store)
@@ -239,7 +237,7 @@ impl Store {
             }),
             writes: RwLock::new(()),
             commits: Coordinator::new(),
-            max_log_bytes: None,
+            log_quota: None,
             max_live_keys: None,
             max_live_key_bytes: None,
             live_key_bytes: AtomicUsize::new(0),
@@ -519,28 +517,23 @@ impl Store {
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
         if operation == Operation::Put
-            && self.max_log_bytes.is_none()
             && (self.max_live_keys.is_some() || self.max_live_key_bytes.is_some())
         {
-            // With no log-length cap, updating a key that already exists does
-            // not change either live-key quota. Keep the shared barrier until
-            // acknowledgement: every operation that can change membership
-            // takes the exclusive side, so this observation remains valid.
+            // Updating a key that already exists does not change either
+            // live-key quota. Keep the shared barrier until acknowledgement:
+            // every operation that can change membership takes the exclusive
+            // side, so this observation remains valid. A log quota, if set,
+            // is reserved separately before entering the coordinator.
             let _writer = self
                 .writes
                 .read()
                 .map_err(|_| io::Error::other("write barrier poisoned"))?;
             let exists = self.read()?.index.contains_key(key);
             if exists {
-                return self
-                    .commits
-                    .commit(&self.log, &self.inner, operation, key, value);
+                return self.commit_with_log_quota(operation, key, value);
             }
         }
-        if self.max_log_bytes.is_some()
-            || self.max_live_keys.is_some()
-            || self.max_live_key_bytes.is_some()
-        {
+        if self.max_live_keys.is_some() || self.max_live_key_bytes.is_some() {
             let _writer = self
                 .writes
                 .write()
@@ -551,12 +544,11 @@ impl Store {
             .writes
             .read()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        self.commits
-            .commit(&self.log, &self.inner, operation, key, value)
+        self.commit_with_log_quota(operation, key, value)
     }
 
-    // Limited stores hold the exclusive write barrier through the check and
-    // append, preventing concurrent writes from oversubscribing the quota.
+    // Membership-changing and compound writes hold the exclusive barrier
+    // through the check and append, preventing key quota oversubscription.
     fn commit_limited(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -596,25 +588,41 @@ impl Store {
                 next_key_bytes = Some(next);
             }
         }
-        if let Some(max) = self.max_log_bytes {
-            let record_bytes =
-                (record::HEADER_SIZE + key.len() + value.len() + record::CHECKSUM_SIZE) as u64;
-            if self
-                .log
-                .len()?
-                .checked_add(record_bytes)
-                .is_none_or(|end| end > max)
-            {
-                return Err(io::Error::other(
-                    "configured log size limit would be exceeded",
-                ));
-            }
-        }
-        self.commits
-            .commit(&self.log, &self.inner, operation, key, value)?;
+        self.commit_with_log_quota(operation, key, value)?;
         if let Some(bytes) = next_key_bytes {
             self.live_key_bytes.store(bytes, Ordering::Relaxed);
         }
+        Ok(())
+    }
+
+    fn commit_with_log_quota(
+        &self,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+    ) -> io::Result<()> {
+        let Some(quota) = &self.log_quota else {
+            return self
+                .commits
+                .commit(&self.log, &self.inner, operation, key, value);
+        };
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        let bytes = (record::HEADER_SIZE + key.len() + value.len() + record::CHECKSUM_SIZE) as u64;
+        let mut reservation = quota.reserve(bytes).map_err(|error| {
+            if self.commits.failed() {
+                uncertain_error()
+            } else {
+                error
+            }
+        })?;
+        // A coordinator error after append poisons the store. Before-append
+        // errors release the reservation; uncertain outcomes cannot be retried
+        // on this open instance and are re-counted from the log after reopen.
+        self.commits
+            .commit(&self.log, &self.inner, operation, key, value)?;
+        reservation.committed();
         Ok(())
     }
 

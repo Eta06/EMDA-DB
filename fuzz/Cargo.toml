@@ -49,5 +49,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "log_limit"
+path = "fuzz_targets/log_limit.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]
