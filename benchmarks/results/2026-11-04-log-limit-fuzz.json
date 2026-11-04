@@ -1,0 +1,27 @@
+{
+  "revision": "868aee0de951424d1bcc5c7903521ad3649bda17",
+  "source_sha256": {
+    "src/store.rs": "bbee2ed63fd00fa8fcc9dd7668d5e2b14a285578136cae45b1c38320b52e3f9b",
+    "src/store/log_quota.rs": "a29e64c26e44d1997d56dbacf70ad96f03fc8a70795da4ac17305f595fedb89e",
+    "src/store/commit.rs": "626963e3d14a387b0452d19d2a229366ce647f9f48437f7e0ea9a8b6930498f7",
+    "src/store/atomic_batch.rs": "79a5c1d8de93fde29ce78a1a8eb98fb92d7b247b373c99b180d42eb74970aac7",
+    "fuzz/fuzz_targets/log_limit.rs": "2bba6760ef95c6af9e47611851e78af2145eb4b46d4136e6fd19f92cbba7dd1d"
+  },
+  "binary_sha256": "3d7054fd430889bf875a2788eee368a4adf0c1cc3e1a732483b3893f619c7537",
+  "seed_sha256": {
+    "fuzz/log-limit-seeds/batch": "827e5f01f7644061f16781c6caf959a8b22205f05a5cbc374b58601f104ef232",
+    "fuzz/log-limit-seeds/no_space": "71426d210d52fa91812d0a39251aa75ded92519c3d746b8ced4e5a02ec97960d",
+    "fuzz/log-limit-seeds/overwrite": "a559bc819183eee4bb94d5ce1c5e72fe998473c5e53a8a882b22445ef9465822"
+  },
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run log_limit CORPUS -- -max_total_time=30 -max_len=128 -timeout=10 -print_final_stats=1",
+  "scope": "Reference-model single writes, deletes and atomic batches under a per-open log-length cap, including record lengths, rejected-log preservation and repeated reopen.",
+  "initial_seeds": 3,
+  "seed": 2265839031,
+  "duration_seconds": 31,
+  "executions": 8498,
+  "coverage_counters_hit": 1152,
+  "features": 4968,
+  "result": "no model mismatch, crash or sanitizer finding",
+  "limitations": "One short single-threaded fuzz campaign; it does not cover concurrent reservation scheduling, actual power loss, total storage, or persistent project quotas."
+}
