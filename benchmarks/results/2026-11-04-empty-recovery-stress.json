@@ -1,0 +1,223 @@
+{
+  "source_revision": "41b375ec5f65faf206d109ea607e2d2275f3efd0",
+  "source_status": "",
+  "started_utc": "2026-11-04T23:40:03.502851+00:00",
+  "kernel": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "executables_sha256": {
+    "unit": "37715f4ac931e78cb1f10e8a7029d4f6dbff710e30d7878d70a253d210c70786",
+    "integration": "cd6a5110d75dc9b4003fd424776cdcfd793c24ba4c45f955d3fa3f6f782a2212"
+  },
+  "repetitions_per_case_and_filesystem": 5,
+  "runs": [
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "store::initialization_tests::killed_initialization_never_silently_reopens_as_legacy",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.035683,
+        0.05211,
+        0.042486,
+        0.060958,
+        0.03092
+      ]
+    },
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "backup::publication_tests::process_kill_at_each_empty_legacy_restore_boundary_preserves_the_backup",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.062776,
+        0.040646,
+        0.059827,
+        0.047834,
+        0.059623
+      ]
+    },
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "backup::publication_tests::process_kill_during_empty_legacy_restore_preserves_backup_and_recovers",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.022209,
+        0.017295,
+        0.019873,
+        0.028109,
+        0.015779
+      ]
+    },
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "backup::publication_tests::empty_legacy_restore_fails_before_publication_at_each_new_boundary",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.007582,
+        0.007868,
+        0.006972,
+        0.008781,
+        0.007536
+      ]
+    },
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "backup::publication_tests::empty_legacy_restore_header_handles_unsupported_and_failed_metadata",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.008364,
+        0.005399,
+        0.023016,
+        0.004139,
+        0.004254
+      ]
+    },
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "dangling_witness_entry_never_permits_creation_or_legacy_fallback",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.004973,
+        0.004801,
+        0.00426,
+        0.004177,
+        0.00898
+      ]
+    },
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "empty_legacy_upgrade_respects_the_existing_store_lock",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.005387,
+        0.007896,
+        0.006644,
+        0.005189,
+        0.004081
+      ]
+    },
+    {
+      "directory": "/tmp",
+      "mount": "/tmp tmpfs none",
+      "case": "every_incomplete_versioned_header_fails_closed_without_rewriting_it",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.037031,
+        0.020771,
+        0.02974,
+        0.017164,
+        0.028682
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "store::initialization_tests::killed_initialization_never_silently_reopens_as_legacy",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.065412,
+        0.061494,
+        0.066698,
+        0.062037,
+        0.07973
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "backup::publication_tests::process_kill_at_each_empty_legacy_restore_boundary_preserves_the_backup",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.143459,
+        0.098032,
+        0.134001,
+        0.125882,
+        0.117075
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "backup::publication_tests::process_kill_during_empty_legacy_restore_preserves_backup_and_recovers",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.052602,
+        0.042724,
+        0.0607,
+        0.035229,
+        0.035675
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "backup::publication_tests::empty_legacy_restore_fails_before_publication_at_each_new_boundary",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.063504,
+        0.078686,
+        0.067195,
+        0.068092,
+        0.075911
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "backup::publication_tests::empty_legacy_restore_header_handles_unsupported_and_failed_metadata",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.008255,
+        0.007216,
+        0.007678,
+        0.007788,
+        0.008764
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "dangling_witness_entry_never_permits_creation_or_legacy_fallback",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.021415,
+        0.0102,
+        0.010992,
+        0.009837,
+        0.012194
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "empty_legacy_upgrade_respects_the_existing_store_lock",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.010171,
+        0.010492,
+        0.011953,
+        0.027553,
+        0.012854
+      ]
+    },
+    {
+      "directory": "/workspace",
+      "mount": "/ overlay overlay",
+      "case": "every_incomplete_versioned_header_fails_closed_without_rewriting_it",
+      "repetitions": 5,
+      "elapsed_seconds": [
+        0.147503,
+        0.185438,
+        0.153171,
+        0.191268,
+        0.14281
+      ]
+    }
+  ],
+  "limits": "Process termination while the OS remains running is not physical power failure. The overlay backing storage is unknown. These tests do not constitute an off-host restore drill.",
+  "finished_utc": "2026-11-04T23:40:06.974598+00:00"
+}
