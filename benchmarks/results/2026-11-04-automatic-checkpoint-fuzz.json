@@ -1,0 +1,33 @@
+{
+  "revision": "6200c0f582bd7ceafd54a77f3668d299d6ee4180",
+  "source_sha256": {
+    "Cargo.lock": "a997cbe2b0911ebaa83db715f037a0b2f793796e765f2bf72317c581e0432057",
+    "Cargo.toml": "4d0adcdefef1ae59a0e4866ae259c2355ec7d52fce172cd81d8275d6b6791340",
+    "fuzz/Cargo.lock": "2bc124cdedb1bdecc296e7bae167f0dbed36b468562af488f07e115ecfdd6990",
+    "fuzz/Cargo.toml": "018e76758d759a59cab0813912aae3033f62788e0e9fc450220a4cd18cd53e38",
+    "fuzz/fuzz_targets/automatic_checkpoint.rs": "165d2b0b73612e4dc599cc1d0e118c521839450f18b5b4e24be1f5a44d33dc0e",
+    "fuzz/automatic-checkpoint-seeds/rollover": "15185b1a7977391ef528490aec670e7107fd4bb35abdfec6323368e5fcded0c1",
+    "src/checkpoint_store.rs": "709ecb7bdfab3e65cc8132f3d3f4c709b3856e39c6d66c4cfde85c120c1e8c1f",
+    "src/checkpoint_store/automatic.rs": "2c63bbacd1fa971615bfee331ee7527f713f37ce3cdb543cf1b3961e4c95960c",
+    "src/checkpoint_store/commit.rs": "adf219d87c9673ff475fbd933eb0c83fb84eb38c9b09dcf640876c4de2b41e87",
+    "src/checkpoint_store/transaction.rs": "a28fcfd851c2839e8aa1f5267724ff2e3e98b9929247a19c354e392636e3f0a0",
+    "src/checkpoint_store/selection.rs": "bebc08bd5ffb23f7782d60b208fe2a19f04be69121678b288b363670c66b21e7",
+    "src/checkpoint_store/rebuild.rs": "52e24332876be013f7f5a39ec96e5f8dec78892ee73af49950e47e69509b1adf",
+    "src/checkpoint_store/tests/automatic/basic.rs": "bfed5dd64a468d741a26c6423ecf60137d980c3d7f12b632dac5acf85bc9e3e6",
+    "src/checkpoint_store/tests/automatic/crash.rs": "fd8c1a925c063ab823bbdb608e3e63ce1a6cd669a4585d0b2900fc41c57448d0",
+    "src/checkpoint_store/tests/automatic/deadline.rs": "21998c5733947c8355a582569317f086d8e482ab98fac42f78235631a2917816",
+    "src/checkpoint_store/tests/automatic/faults.rs": "e80a1462ee9ffcffbcde9b5edeb2eb598b65c9ca5708c5711f2c3b4bbf57a35f"
+  },
+  "binary_sha256": "c96af1b9f4a15ebf9caa2138be67d82af0f40a64617c9c50dcd2ea5f04a28991",
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run automatic_checkpoint CORPUS -- -max_total_time=60 -max_len=128 -timeout=10",
+  "initial_seeds": 1,
+  "seed": 3145205783,
+  "duration_seconds": 61,
+  "executions": 3423,
+  "coverage_counters_hit": 3321,
+  "features": 13253,
+  "scope": "A reference map checks repeated put, delete, batch, snapshot, read-set transaction, reopen, manual rollover and persistent automatic configuration toggles against two-slot rollover under small suffix key limits.",
+  "result": "No model mismatch, crash or sanitizer finding.",
+  "limitations": "Short single-process campaign using small fixtures on a shared VM, concurrent with other local verification. Does not cover arbitrary power loss, off-host restore, all filesystem errors, adversarial modification, large data or total memory limits."
+}
