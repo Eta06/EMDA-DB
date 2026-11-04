@@ -22,7 +22,7 @@ pub(super) struct SnapshotBudget {
 }
 
 impl SnapshotBudget {
-    fn reserve(&mut self, keys: usize, key_bytes: usize) -> io::Result<()> {
+    pub(super) fn reserve(&mut self, keys: usize, key_bytes: usize) -> io::Result<()> {
         if self.active >= MAX_ACTIVE_SNAPSHOTS
             || keys > MAX_SNAPSHOT_TOTAL_KEYS - self.keys
             || key_bytes > MAX_SNAPSHOT_TOTAL_KEY_BYTES - self.key_bytes
@@ -35,7 +35,7 @@ impl SnapshotBudget {
         Ok(())
     }
 
-    fn release(&mut self, keys: usize, key_bytes: usize) {
+    pub(super) fn release(&mut self, keys: usize, key_bytes: usize) {
         self.active -= 1;
         self.keys -= keys;
         self.key_bytes -= key_bytes;

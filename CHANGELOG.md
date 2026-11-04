@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Standalone ordinary-store document reads avoid copying the full key index while preserving conservative conflict detection, value verification, uncertain-write handling and shared active-read admission.
+
 - The embedded document comparison can preload an indexed collection, verify it after reopening, and record process high-water RSS, store format and file sizes.
 
 - Recorded workspace-overlay document recovery checks and a selected-syscall diagnostic for the initial document comparison.

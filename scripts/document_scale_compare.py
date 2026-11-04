@@ -13,7 +13,6 @@ import time
 
 from benchmarks.telemetry import difference, quiet_window, read, snapshot
 
-BACKENDS = ("prototype", "sqlite")
 OPERATIONS = ("create", "read", "update", "indexed_query", "delete")
 
 
@@ -45,6 +44,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True)
     parser.add_argument("--binary", required=True)
+    parser.add_argument("--baseline-binary")
     parser.add_argument("--output", required=True)
     parser.add_argument("--sizes", default="0,100,1000,3000")
     parser.add_argument("--rounds", type=int, default=4)
@@ -56,6 +56,7 @@ def main():
         parser.error("sizes must be comma-separated integers")
     allowed = sorted(os.sched_getaffinity(0))
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
+            or (args.baseline_binary is not None and not Path(args.baseline_binary).is_file())
             or os.path.lexists(args.output) or len(allowed) < 2 or not sizes
             or len(set(sizes)) != len(sizes) or any(not 0 <= size <= 5000 for size in sizes)
             or not 2 <= args.rounds <= 50 or not 1 <= args.cycles <= 100000):
@@ -66,6 +67,7 @@ def main():
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
         "binary_sha256": sha256(args.binary), "script_sha256": sha256(__file__),
+        "baseline_binary_sha256": sha256(args.baseline_binary) if args.baseline_binary else None,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "platform": platform.platform(), "python": sys.version,
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
@@ -82,16 +84,21 @@ def main():
     def save():
         output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
+    targets = [("prototype", "prototype", args.binary), ("sqlite", "sqlite", args.binary)]
+    if args.baseline_binary:
+        targets = [("before", "prototype", args.baseline_binary),
+                   ("after", "prototype", args.binary), ("sqlite", "sqlite", args.binary)]
     for size_index, size in enumerate(sizes):
         for round_index in range(args.rounds):
-            order = BACKENDS if (size_index + round_index) % 2 == 0 else tuple(reversed(BACKENDS))
-            for backend in order:
-                entry = {"backend": backend, "preloaded_documents": size, "round": round_index + 1}
+            rotation = (size_index + round_index) % len(targets)
+            order = targets[rotation:] + targets[:rotation]
+            for variant, backend, binary in order:
+                entry = {"variant": variant, "backend": backend, "preloaded_documents": size, "round": round_index + 1}
                 try:
                     entry["pre_run_quiet"] = quiet_window(seconds=.25, attempts=3)
                     before = snapshot()
                     try:
-                        command = ["taskset", "-c", str(benchmark_cpu), args.binary, backend,
+                        command = ["taskset", "-c", str(benchmark_cpu), binary, backend,
                                    args.directory, str(args.cycles), str(size)]
                         completed = subprocess.run(command, capture_output=True, text=True, timeout=300)
                         if completed.returncode:
@@ -104,7 +111,7 @@ def main():
                         entry["noise"] = difference(before, snapshot())
                 except Exception as error:
                     entry["error"] = f"{type(error).__name__}: {error}"
-                    report["failures"].append({"backend": backend, "preloaded_documents": size,
+                    report["failures"].append({"variant": variant, "backend": backend, "preloaded_documents": size,
                                                "round": round_index + 1, "error": entry["error"]})
                 finally:
                     report["runs"].append(entry)

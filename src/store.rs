@@ -18,6 +18,7 @@ pub(crate) mod compact_exchange;
 mod compact_stream;
 mod log_quota;
 mod online;
+mod point_read;
 mod read_set;
 mod snapshot;
 mod transaction;

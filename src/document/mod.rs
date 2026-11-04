@@ -13,6 +13,9 @@ mod schema_migration;
 mod transaction;
 mod update;
 
+#[cfg(test)]
+mod point_read_tests;
+
 pub use aggregate::{AggregateGroup, AggregateRequest, AggregateResult, LookupEntry, LookupResult};
 pub use bulk::{BulkOperation, BulkResult};
 pub use filter::{
@@ -201,7 +204,33 @@ impl<'a> DocumentDatabase<'a> {
     }
 
     /// Reads a document by ID. Missing documents return `None`.
+    ///
+    /// On the ordinary store, this captures the metadata and document
+    /// locations together without copying the full index. It still conflicts
+    /// if any write intervenes, checks the store's health, verifies both
+    /// values, and shares the per-store snapshot admission count. Separate
+    /// calls do not form a snapshot. The checkpoint-backed path retains its
+    /// existing transaction behavior.
     pub fn get(&self, collection: &str, id: &str) -> io::Result<Option<Value>> {
+        if let Backend::Store(store) = self.backend {
+            let keys = key::collection(b'M', collection).and_then(|metadata| {
+                key::document(collection, id).map(|document| (metadata, document))
+            });
+            if let Ok((metadata, document)) = keys {
+                return store.read_two_consistent(
+                    &metadata,
+                    &document,
+                    |metadata, read_document| {
+                        let metadata = DocumentTransaction::decode_metadata(collection, metadata)?;
+                        read_document()?
+                            .map(|bytes| {
+                                DocumentTransaction::decode_document(&bytes, &metadata.schema)
+                            })
+                            .transpose()
+                    },
+                );
+            }
+        }
         self.transaction(|tx| tx.get(collection, id))
     }
 

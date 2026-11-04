@@ -136,8 +136,15 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
 
     pub(super) fn metadata(&self, collection: &str) -> io::Result<Metadata> {
         let key = key::collection(b'M', collection)?;
-        let bytes = self
-            .read(&key)?
+        let bytes = self.read(&key)?;
+        Self::decode_metadata(collection, bytes)
+    }
+
+    pub(super) fn decode_metadata(
+        collection: &str,
+        bytes: Option<Vec<u8>>,
+    ) -> io::Result<Metadata> {
+        let bytes = bytes
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "collection does not exist"))?;
         let metadata: Metadata = serde_json::from_slice(&bytes)
             .map_err(|_| invalid_data("invalid document metadata"))?;
