@@ -211,7 +211,9 @@ impl OnlineStore {
     /// Performs guarded online compaction and then removes the redundant
     /// previous store after the new directory handoff has been synchronized.
     /// This permanently discards old log history. The source directory and
-    /// parent must be trusted and accessed only by cooperating clients.
+    /// parent must be trusted and accessed only by cooperating clients. The
+    /// replacement's mutations wait until reclamation finishes; direct reads
+    /// that do not need the write barrier can continue.
     ///
     /// A compaction error has the same uncertainty rules as
     /// `compact_and_replace`. A reclamation error means the handoff succeeded;
@@ -399,6 +401,19 @@ impl OnlineStore {
             )
         })?;
         let candidate = Arc::new(candidate);
+        // Do not let a new mutation make the replacement uncertain while its
+        // last complete predecessor is being reclaimed. Acquire this before
+        // publishing the candidate; point reads can still use its index.
+        let _reclamation_writer = if reclaim_hook.is_some() {
+            Some(
+                candidate
+                    .writes
+                    .write()
+                    .map_err(|_| io::Error::other("replacement write barrier poisoned"))?,
+            )
+        } else {
+            None
+        };
         state.store = Arc::clone(&candidate);
         state.failed = false;
         drop(state);

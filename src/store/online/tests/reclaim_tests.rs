@@ -117,7 +117,7 @@ fn handoff_failure_never_starts_reclamation() {
 }
 
 #[test]
-fn callbacks_continue_after_handoff_and_a_new_previous_path_is_never_deleted() {
+fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());
     let store = Arc::new(OnlineStore::open(&source).unwrap());
@@ -146,17 +146,34 @@ fn callbacks_continue_after_handoff_and_a_new_previous_path_is_never_deleted() {
     let read_store = Arc::clone(&store);
     let reader = thread::spawn(move || {
         done_tx
-            .send(read_store.with_store(|db| db.put(b"live", b"still active")))
+            .send(read_store.with_store(|db| db.get(b"overwritten")))
             .unwrap()
     });
     let callback = done_rx.recv_timeout(WAIT);
+    let (started_tx, started_rx) = mpsc::channel();
+    let (write_tx, write_rx) = mpsc::channel();
+    let write_store = Arc::clone(&store);
+    let writer = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        write_tx
+            .send(write_store.with_store(|db| db.put(b"live", b"still active")))
+            .unwrap();
+    });
+    started_rx.recv_timeout(WAIT).unwrap();
+    let write_before_cleanup = write_rx.recv_timeout(Duration::from_millis(100));
     let replacement = Store::open(&previous).unwrap();
     replacement.put(b"new", b"independent").unwrap();
     drop(replacement);
     resume_tx.send(()).unwrap();
-    callback.unwrap().unwrap();
+    assert_eq!(callback.unwrap().unwrap(), Some(b"39".to_vec()));
+    assert!(matches!(
+        write_before_cleanup,
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
     reader.join().unwrap();
     worker.join().unwrap().unwrap();
+    write_rx.recv_timeout(WAIT).unwrap().unwrap();
+    writer.join().unwrap();
     let replacement = retry_lock(|| Store::open(&previous)).unwrap();
     assert_eq!(
         replacement.get(b"new").unwrap(),
