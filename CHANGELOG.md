@@ -10,6 +10,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 - In-flight log-byte reservations allow independent writes to share a sync under the per-open log-length cap without oversubscription.
 - The resource-limit comparison can measure the log-length cap as well as the live-key byte cap.
+- A paired overlay-filesystem comparison records throughput and latency tradeoffs for grouped writes under the log-length cap.
 - Grouped synchronization for existing-key updates under live-key count or byte caps; membership-changing operations remain serialized.
 - A paired overlay-filesystem benchmark recording the grouped capped path's throughput, tail latency and median-latency tradeoffs.
 - An optional per-open cap on live key bytes, enforced during serialized mutations and every historical recovery state, including ordered batch operations. It is a logical key-byte limit, not a process-memory or project quota.
