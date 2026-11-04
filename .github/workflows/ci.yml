@@ -55,6 +55,8 @@ jobs:
           python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/range_query_bench --index-name docs_number --output "$RUNNER_TEMP/range-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example compound_query_bench
           python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_query_bench --index-name docs_pair --output "$RUNNER_TEMP/compound-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          cargo +stable build --release --locked --example compound_membership_bench
+          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_membership_bench --index-name docs_pair --compound-membership --output "$RUNNER_TEMP/compound-membership-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example partial_query_bench
           python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/partial_query_bench --index-name docs_partial --output "$RUNNER_TEMP/partial-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example compound_range_query_bench
