@@ -361,7 +361,8 @@ impl<'a> DocumentDatabase<'a> {
     }
 
     /// Executes a bounded query using a qualifying equality tuple or single-field
-    /// range index, falling back to a collection scan. Index integrity is required.
+    /// range index, falling back to a collection scan. Partial indexes require
+    /// a provably implied filter. Index integrity is required.
     pub fn query_planned(
         &self,
         collection: &str,

@@ -198,3 +198,9 @@ path = "fuzz_targets/document_compound_planner.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "document_partial_planner"
+path = "fuzz_targets/document_partial_planner.rs"
+test = false
+doc = false
+bench = false

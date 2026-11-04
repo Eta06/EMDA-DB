@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Select partial indexes for complete equality tuples and single-field ranges only when required query predicates prove the partial condition.
+
 - Harden metadata fault-test fixture reopens against transient inherited locks during parallel process-kill tests.
 
 - Plan exact equality queries on complete compound index tuples without omitting documents missing unconstrained fields.

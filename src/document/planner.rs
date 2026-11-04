@@ -1,7 +1,7 @@
 //! Conservative equality and single-field range selection for bounded queries.
 use super::{
     filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
-    index::{IndexDefinition, IndexValue},
+    index::{IndexDefinition, IndexValue, PartialFilter},
     key,
     query::{IndexBound, IndexQuery},
     transaction::DocumentTransaction,
@@ -25,6 +25,12 @@ pub enum DocumentQueryAccess {
     CompoundEqualityIndex { index: String, fields: usize },
     /// Scan a non-partial single-field index over a required scalar range.
     RangeIndex { index: String },
+    /// Probe an implied partial unique index using equality on every field.
+    PartialUniqueEqualityIndex { index: String, fields: usize },
+    /// Scan an implied partial nonunique index using equality on every field.
+    PartialEqualityIndex { index: String, fields: usize },
+    /// Scan an implied partial single-field index over a required scalar range.
+    PartialRangeIndex { index: String },
 }
 
 /// Filtered query output, including the chosen access path and actual work.
@@ -52,6 +58,50 @@ fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexVa
         }
     }
     None
+}
+
+// A successful equality, comparison or array predicate requires the path to
+// exist. Explicit Exists is the only currently recognized proof of absence.
+// Children of Or/Not are never individually required by the whole filter.
+fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> bool {
+    let mut pending = vec![filter];
+    while let Some(filter) = pending.pop() {
+        match filter {
+            DocumentFilter::Exists {
+                path: field,
+                exists: actual,
+            } if field == path && *actual == exists => return true,
+            DocumentFilter::Equal { path: field, .. }
+            | DocumentFilter::Compare { path: field, .. }
+            | DocumentFilter::ArrayContains { path: field, .. }
+            | DocumentFilter::ArrayContainsAny { path: field, .. }
+            | DocumentFilter::ArrayContainsAll { path: field, .. }
+            | DocumentFilter::ArrayLength { path: field, .. }
+                if exists && field == path =>
+            {
+                return true;
+            }
+            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
+            _ => {}
+        }
+    }
+    false
+}
+
+fn partial_is_implied(filter: &DocumentFilter, partial: &PartialFilter) -> bool {
+    match partial {
+        PartialFilter::Exists { path, exists } => required_presence(filter, path, *exists),
+        PartialFilter::Equals { path, value } => {
+            required_equality(filter, path).as_ref() == Some(value)
+        }
+    }
+}
+
+fn eligible(index: &IndexDefinition, filter: &DocumentFilter) -> bool {
+    index
+        .partial
+        .as_ref()
+        .is_none_or(|partial| partial_is_implied(filter, partial))
 }
 
 #[derive(Clone)]
@@ -148,7 +198,7 @@ fn choose_index<'a>(
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
-        .filter(|index| index.partial.is_none())
+        .filter(|index| eligible(index, filter))
         .find_map(|index| {
             index
                 .fields
@@ -162,7 +212,7 @@ fn choose_index<'a>(
     }
     for index in indexes
         .iter()
-        .filter(|index| index.partial.is_none() && index.fields.len() == 1)
+        .filter(|index| eligible(index, filter) && index.fields.len() == 1)
     {
         if let Some(range) = required_range(filter, &index.fields[0])? {
             return Ok(Some((index, range)));
@@ -174,6 +224,7 @@ fn choose_index<'a>(
 impl DocumentTransaction<'_, '_> {
     /// Executes a bounded filtered query using a qualifying exact equality
     /// tuple or single-field range, or falls back to the collection scan.
+    /// A partial index is eligible only when the filter proves its condition.
     /// This opt-in path assumes declared indexes are maintained; corruption
     /// that removes index entries can cause omissions. It is not cost-based.
     pub fn query_planned(
@@ -251,7 +302,18 @@ impl DocumentTransaction<'_, '_> {
                 )
             })?);
         }
+        let partial = index.partial.is_some();
         let access = match selection {
+            Selection::Equality(values) if partial && index.unique => {
+                DocumentQueryAccess::PartialUniqueEqualityIndex {
+                    index: index.name.clone(),
+                    fields: values.len(),
+                }
+            }
+            Selection::Equality(values) if partial => DocumentQueryAccess::PartialEqualityIndex {
+                index: index.name.clone(),
+                fields: values.len(),
+            },
             Selection::Equality(values) if index.unique && values.len() > 1 => {
                 DocumentQueryAccess::UniqueCompoundEqualityIndex {
                     index: index.name.clone(),
@@ -274,8 +336,14 @@ impl DocumentTransaction<'_, '_> {
                 // Index ranges are ordered by value then ID; collection scans
                 // use ID order. Restore ID order before filtering and paging.
                 rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                DocumentQueryAccess::RangeIndex {
-                    index: index.name.clone(),
+                if partial {
+                    DocumentQueryAccess::PartialRangeIndex {
+                        index: index.name.clone(),
+                    }
+                } else {
+                    DocumentQueryAccess::RangeIndex {
+                        index: index.name.clone(),
+                    }
                 }
             }
         };
