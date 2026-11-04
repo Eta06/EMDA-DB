@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Defer scheduled reclamation on a proven pre-compaction maintenance-lock conflict and expose a deferral count; ambiguous I/O and cleanup failures still stop the worker.
+
 - Stream bounded collection-query filtering and retain only the requested window for unsorted results, while preserving full validation and error precedence. Record paired performance and fuzz evidence.
 
 - Add per-open checkpoint file and block-directory admission limits, preserved across writable-store rollover and blocking compaction handoffs.

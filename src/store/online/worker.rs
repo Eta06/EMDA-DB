@@ -61,6 +61,7 @@ pub struct OnlineReclamationWorkerStatus {
 struct WorkerState {
     stopping: bool,
     requested: bool,
+    busy_checks: u64,
     status: OnlineReclamationWorkerStatus,
 }
 
@@ -115,6 +116,12 @@ impl OnlineReclamationWorker {
     /// Returns a consistent snapshot of the worker's status.
     pub fn status(&self) -> OnlineReclamationWorkerStatus {
         self.control.lock().status.clone()
+    }
+
+    /// Returns the number of checks deferred because another maintenance
+    /// operation held the lock before this worker began compaction.
+    pub fn busy_checks(&self) -> u64 {
+        self.control.lock().busy_checks
     }
 
     fn shutdown(&mut self) -> io::Result<()> {
@@ -173,8 +180,10 @@ impl OnlineStore {
     /// observation and compaction; thresholds are scheduling hints, not caps.
     /// Intervals must be 1 ms through 24 hours, and both thresholds nonzero.
     ///
-    /// Any error, including a concurrent maintenance conflict, stops the
-    /// worker for inspection. It does not retry, delete crash leftovers,
+    /// A maintenance-lock conflict before compaction begins defers the check
+    /// until the next interval or explicit request. Other errors stop the
+    /// worker for inspection, including I/O errors with uncertain outcomes.
+    /// It does not retry those failures, delete crash leftovers,
     /// persist across reopen, bound disk/memory/recovery or pause time, provide
     /// secure erasure, or make power-loss guarantees. It holds an `Arc` to this
     /// store until stopped. Callers must avoid cross-thread dependency cycles.
@@ -260,6 +269,7 @@ struct Failure {
 
 enum Outcome {
     Skipped,
+    MaintenanceBusy,
     Reclaimed(OnlineCompactionReport, Observation),
     Failed(Failure),
 }
@@ -307,6 +317,9 @@ fn check_with(
     }
     let report = match compact() {
         Ok(report) => report,
+        Err(OnlineReclaimError::Compaction(error)) if super::is_maintenance_busy(&error) => {
+            return Outcome::MaintenanceBusy;
+        }
         Err(OnlineReclaimError::Compaction(error)) => {
             return Outcome::Failed(Failure {
                 stage: OnlineReclamationFailureStage::Compaction,
@@ -385,6 +398,9 @@ fn run_with(
         state.status.checks = state.status.checks.saturating_add(1);
         match outcome {
             Outcome::Skipped => {}
+            Outcome::MaintenanceBusy => {
+                state.busy_checks = state.busy_checks.saturating_add(1);
+            }
             Outcome::Reclaimed(report, observed) => {
                 state.status.handoffs = state.status.handoffs.saturating_add(1);
                 state.status.reclaimed = state.status.reclaimed.saturating_add(1);

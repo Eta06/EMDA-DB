@@ -16,6 +16,27 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 
+// This private error identifies a lock conflict before compaction has done
+// any work. An arbitrary WouldBlock from later I/O may have an uncertain
+// outcome and must never be treated as safely retryable.
+#[derive(Debug)]
+struct MaintenanceBusy;
+
+impl std::fmt::Display for MaintenanceBusy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("online compaction already running")
+    }
+}
+
+impl std::error::Error for MaintenanceBusy {}
+
+fn is_maintenance_busy(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        && error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<MaintenanceBusy>())
+}
+
 thread_local! { static ACTIVE_ACCESS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
 
 struct Access(usize);
@@ -303,10 +324,7 @@ impl OnlineStore {
         let _maintenance = match self.maintenance.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "online compaction already running",
-                ));
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, MaintenanceBusy));
             }
             Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
         };
