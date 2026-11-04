@@ -74,7 +74,7 @@ pub struct DocumentSort {
 }
 
 /// A bounded filtered query. `query` scans the complete collection;
-/// `query_planned` can instead use a qualifying single-field equality or range index.
+/// `query_planned` can instead use a qualifying equality tuple or single-field range index.
 /// Both fail rather than silently truncating when their work limits are exceeded.
 #[derive(Clone, Debug)]
 pub struct DocumentQuery {

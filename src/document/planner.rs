@@ -1,4 +1,4 @@
-//! Conservative single-field index selection for bounded document queries.
+//! Conservative equality and single-field range selection for bounded queries.
 use super::{
     filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
     index::{IndexDefinition, IndexValue},
@@ -19,6 +19,10 @@ pub enum DocumentQueryAccess {
     UniqueEqualityIndex { index: String },
     /// Scan a non-partial, nonunique single-field index for exact scalar equality.
     EqualityIndex { index: String },
+    /// Probe a non-partial unique compound index using equality on every field.
+    UniqueCompoundEqualityIndex { index: String, fields: usize },
+    /// Scan a non-partial nonunique compound index using equality on every field.
+    CompoundEqualityIndex { index: String, fields: usize },
     /// Scan a non-partial single-field index over a required scalar range.
     RangeIndex { index: String },
 }
@@ -52,7 +56,7 @@ fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexVa
 
 #[derive(Clone)]
 enum Selection {
-    Equality(IndexValue),
+    Equality(Vec<IndexValue>),
     Range {
         lower: Option<IndexBound>,
         upper: Option<IndexBound>,
@@ -137,22 +141,29 @@ fn choose_index<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
-    let eligible = |index: &&IndexDefinition| index.partial.is_none() && index.fields.len() == 1;
-    // Exact equality is at least as restrictive as a range on the same field.
-    // Prefer unique probes regardless of declaration order, then nonunique.
+    // A compound index omits rows missing any indexed field. It is eligible
+    // only if the filter requires equality on every field in its tuple.
+    // Prefer a unique exact tuple, then a nonunique one, regardless of range.
     if let Some(selected) = indexes
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
-        .filter(eligible)
+        .filter(|index| index.partial.is_none())
         .find_map(|index| {
-            required_equality(filter, &index.fields[0])
-                .map(|value| (index, Selection::Equality(value)))
+            index
+                .fields
+                .iter()
+                .map(|field| required_equality(filter, field))
+                .collect::<Option<Vec<_>>>()
+                .map(|tuple| (index, Selection::Equality(tuple)))
         })
     {
         return Ok(Some(selected));
     }
-    for index in indexes.iter().filter(eligible) {
+    for index in indexes
+        .iter()
+        .filter(|index| index.partial.is_none() && index.fields.len() == 1)
+    {
         if let Some(range) = required_range(filter, &index.fields[0])? {
             return Ok(Some((index, range)));
         }
@@ -161,8 +172,8 @@ fn choose_index<'a>(
 }
 
 impl DocumentTransaction<'_, '_> {
-    /// Executes a bounded filtered query using a qualifying single-field
-    /// equality or range index, or falls back to the complete collection scan.
+    /// Executes a bounded filtered query using a qualifying exact equality
+    /// tuple or single-field range, or falls back to the collection scan.
     /// This opt-in path assumes declared indexes are maintained; corruption
     /// that removes index entries can cause omissions. It is not cost-based.
     pub fn query_planned(
@@ -180,7 +191,7 @@ impl DocumentTransaction<'_, '_> {
         };
         let unique_equality = index.unique && matches!(selection, Selection::Equality(_));
         let (equal, lower, upper) = match &selection {
-            Selection::Equality(value) => (vec![value.clone()], None, None),
+            Selection::Equality(values) => (values.clone(), None, None),
             Selection::Range { lower, upper } => (Vec::new(), lower.clone(), upper.clone()),
         };
         let mut rows = Vec::new();
@@ -241,6 +252,18 @@ impl DocumentTransaction<'_, '_> {
             })?);
         }
         let access = match selection {
+            Selection::Equality(values) if index.unique && values.len() > 1 => {
+                DocumentQueryAccess::UniqueCompoundEqualityIndex {
+                    index: index.name.clone(),
+                    fields: values.len(),
+                }
+            }
+            Selection::Equality(values) if values.len() > 1 => {
+                DocumentQueryAccess::CompoundEqualityIndex {
+                    index: index.name.clone(),
+                    fields: values.len(),
+                }
+            }
             Selection::Equality(_) if index.unique => DocumentQueryAccess::UniqueEqualityIndex {
                 index: index.name.clone(),
             },

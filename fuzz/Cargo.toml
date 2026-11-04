@@ -192,3 +192,9 @@ path = "fuzz_targets/document_range_planner.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "document_compound_planner"
+path = "fuzz_targets/document_compound_planner.rs"
+test = false
+doc = false
+bench = false
