@@ -83,7 +83,7 @@ fuzz_target!(|data: &[u8]| {
         let first = key(bytes[1]);
         let second = key(bytes[2]);
         let value = vec![bytes[3]; usize::from(bytes[3] % 5)];
-        let kind = bytes[0] % 10;
+        let kind = bytes[0] % 11;
         if kind == 4 {
             check(&store, &model, &touched, tail);
             drop(store);
@@ -337,6 +337,61 @@ fuzz_target!(|data: &[u8]| {
                 }
                 peak = peak.max(model.len());
             }
+            assert_eq!(
+                std::fs::metadata(path.join("records.log"))
+                    .expect("log metadata")
+                    .len(),
+                total_log
+            );
+            check(&store, &model, &touched, tail);
+            continue;
+        }
+        if kind == 10 {
+            let before = model.clone();
+            let snapshot = store.snapshot().expect("snapshot");
+            let mut next_touched = touched.clone();
+            next_touched.insert(first.clone());
+            let encoded = (21 + first.len() + value.len()) as u64;
+            let allowed = tail + encoded <= max_tail
+                && next_touched.len() <= max_keys
+                && next_touched.iter().map(Vec::len).sum::<usize>() <= max_key_bytes
+                && max_log.is_none_or(|max| total_log + encoded <= max);
+            let result = store.put(&first, &value);
+            assert_eq!(result.is_ok(), allowed);
+            if allowed {
+                touched = next_touched;
+                tail += encoded;
+                total_log += encoded;
+                model.insert(first.clone(), value.clone());
+                peak = peak.max(model.len());
+            }
+            if bytes[3] & 1 != 0 {
+                generation += 1;
+                let next = dir.path().join(format!("checkpoint-{generation}"));
+                digest = store.rollover_to(&next).expect("rollover during snapshot");
+                checkpoint = next;
+                touched.clear();
+                tail = 0;
+            }
+            let expected = before
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                snapshot.scan(None, None, 100).expect("snapshot scan"),
+                expected
+            );
+            let keys_owned = (0..8).map(key).collect::<Vec<_>>();
+            let keys = keys_owned.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            let values = keys_owned
+                .iter()
+                .map(|key| before.get(key).cloned())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                snapshot.get_many(&keys).expect("snapshot bulk read"),
+                values
+            );
+            drop(snapshot);
             assert_eq!(
                 std::fs::metadata(path.join("records.log"))
                     .expect("log metadata")

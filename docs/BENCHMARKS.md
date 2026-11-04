@@ -344,6 +344,22 @@ The [baseline run](../benchmarks/results/2026-11-04-checkpoint-range-comparison.
 
 The checkpoint path's latency grew with the full observed range, despite returning one entry. SQLite's `BEGIN IMMEDIATE` serializes writers differently; this sample does not compare concurrent interference or establish equivalent complete durability behavior. Each p99 uses only 100 transactions per run. All quiet checks passed, no cgroup throttling or direct reclaim occurred, and individual VM steal samples reached 4% during setup, measurement and cleanup. Run ranges overlap in some cases.
 
+The [paired packed-range follow-up](../benchmarks/results/2026-11-04-checkpoint-range-packed-comparison.json) used the same benchmark harness with baseline `3d4c498`, packed implementation `69c3e5e`, SQLite 3.49.1 and five runs per case:
+
+| Requested range | Mode | Transactions/s | p50 | p99 |
+| ---: | --- | ---: | ---: | ---: |
+| 10 keys | Baseline | 3,040 | 0.291 ms | 0.760 ms |
+| 10 keys | Packed | 3,170 | 0.296 ms | 0.548 ms |
+| 10 keys | SQLite | 3,586 | 0.252 ms | 0.433 ms |
+| 1,000 keys | Baseline | 2,468 | 0.386 ms | 0.668 ms |
+| 1,000 keys | Packed | 2,914 | 0.327 ms | 0.502 ms |
+| 1,000 keys | SQLite | 3,523 | 0.259 ms | 0.487 ms |
+| 10,000 keys | Baseline | 851 | 1.145 ms | 1.516 ms |
+| 10,000 keys | Packed | 1,322 | 0.751 ms | 1.026 ms |
+| 10,000 keys | SQLite | 3,556 | 0.237 ms | 0.543 ms |
+
+For 10,000 keys, median latency fell about 34% and throughput rose about 55% in this sample. SQLite remained faster, and small-range run distributions overlap. Each p99 uses only 100 transactions per run. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.89% across setup, measurement and cleanup. These measurements exclude checkpoint creation and do not exercise concurrent range revalidation or physical power loss.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the ordinary store's transaction validators; `checkpoint` uses the checkpoint-backed store's conservative transactions and `checkpoint-fifo` queues its callbacks and commits in FIFO order. `checkpoint-readset` and `checkpoint-readset-fifo` enable checkpoint point read-set validation without or with FIFO admission. Each prototype mode explicitly retries conflicts. `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. Earlier recorded runs predate the checkpoint option.

@@ -23,7 +23,11 @@ mod test_support;
 mod transaction_budget;
 mod witness;
 
-pub use checkpoint_store::{CheckpointStore, CheckpointTransaction, CheckpointTransactionMode};
+pub use checkpoint_store::{
+    CheckpointSnapshot, CheckpointStore, CheckpointTransaction, CheckpointTransactionMode,
+    MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
+    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
+};
 pub use checkpoint_view::{
     CheckpointView, MAX_CHECKPOINT_VIEW_BLOCK_BYTES, MAX_CHECKPOINT_VIEW_BLOCKS,
 };

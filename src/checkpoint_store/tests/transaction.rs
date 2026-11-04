@@ -460,3 +460,33 @@ fn failed_range_capture_releases_partially_used_reservation_quanta() {
     assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
     store.put(b"later", b"ok").unwrap();
 }
+
+#[test]
+fn checkpoint_snapshot_rejects_reads_after_an_uncertain_commit() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap();
+    store.log.replace_io_for_test(Box::new(FaultLog {
+        file,
+        fault: LogFault::SyncBefore,
+    }));
+    let snapshot = store.snapshot().unwrap();
+    assert_eq!(
+        snapshot.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    assert!(store.put(b"new", b"unknown").is_err());
+    assert!(snapshot.get(b"base").is_err());
+    assert!(snapshot.scan(None, None, 1).is_err());
+    drop(snapshot);
+    drop(store);
+    let recovered = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        recovered.get(b"new").unwrap().as_deref(),
+        Some(&b"unknown"[..])
+    );
+}

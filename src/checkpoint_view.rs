@@ -9,6 +9,7 @@ use std::io;
 use std::ops::ControlFlow;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Maximum number of index blocks retained in one checkpoint view.
 pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 131_072;
@@ -18,6 +19,7 @@ const KEY_PREFIX_BYTES: usize = 16;
 const MAX_CHECKPOINT_VIEW_FILE_BYTES: u64 =
     MAX_CHECKPOINT_VIEW_BLOCKS as u64 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES as u64 + 100;
 
+#[derive(Clone)]
 struct Block {
     first_key_prefix: [u8; KEY_PREFIX_BYTES],
     first_key_len: usize,
@@ -66,7 +68,7 @@ impl BlockBuilder {
 /// after the checkpoint boundary, and therefore is not necessarily current.
 /// The trusted digest must be stored independently from the checkpoint file.
 pub struct CheckpointView {
-    pub(crate) log: Log,
+    pub(crate) log: Arc<Log>,
     checkpoint: File,
     blocks: Vec<Block>,
     prefix: u64,
@@ -75,7 +77,8 @@ pub struct CheckpointView {
     trusted_digest: [u8; 32],
     has_tail: bool,
     pub(crate) witnessed_boundary: u64,
-    _lock_file: File,
+    // Borrowed snapshots rely on their still-live store's lock instead.
+    _lock_file: Option<File>,
 }
 
 impl CheckpointView {
@@ -155,7 +158,7 @@ impl CheckpointView {
         }
         let has_tail = log.len()? > prefix;
         Ok(Self {
-            log,
+            log: Arc::new(log),
             checkpoint,
             blocks,
             prefix,
@@ -164,7 +167,7 @@ impl CheckpointView {
             trusted_digest: *trusted_digest,
             has_tail,
             witnessed_boundary: boundary,
-            _lock_file: lock_file,
+            _lock_file: Some(lock_file),
         })
     }
 
@@ -192,7 +195,27 @@ impl CheckpointView {
     // Duplicating the same open file description preserves the exclusive
     // advisory lock across a checkpoint-store view handoff.
     pub(crate) fn duplicate_store_lock(&self) -> io::Result<File> {
-        self._lock_file.try_clone()
+        self._lock_file
+            .as_ref()
+            .ok_or_else(|| io::Error::other("snapshot view does not own the store lock"))?
+            .try_clone()
+    }
+
+    // The caller's snapshot borrows the open store and thus relies on its
+    // exclusive lock; leaking a snapshot must not leak an extra lock descriptor.
+    pub(crate) fn duplicate_for_snapshot(&self) -> io::Result<Self> {
+        Ok(Self {
+            log: Arc::clone(&self.log),
+            checkpoint: self.checkpoint.try_clone()?,
+            blocks: self.blocks.clone(),
+            prefix: self.prefix,
+            keys: self.keys,
+            peak: self.peak,
+            trusted_digest: self.trusted_digest,
+            has_tail: self.has_tail,
+            witnessed_boundary: self.witnessed_boundary,
+            _lock_file: None,
+        })
     }
 
     // Revalidate the original trusted checkpoint and its covered log bytes

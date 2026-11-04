@@ -16,7 +16,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod read_set;
+mod snapshot;
 mod transaction;
+pub use snapshot::{
+    CheckpointSnapshot, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
+    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
+};
 pub use transaction::{CheckpointTransaction, CheckpointTransactionMode};
 
 struct State {
@@ -51,6 +56,7 @@ pub struct CheckpointStore {
     state: RwLock<State>,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: crate::store::TransactionQueue,
+    snapshot_budget: Mutex<snapshot::SnapshotBudget>,
     path: PathBuf,
     max_tail_bytes: u64,
     max_tail_keys: usize,
@@ -195,6 +201,7 @@ impl CheckpointStore {
             }),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: crate::store::TransactionQueue::new(),
+            snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
             path,
             max_tail_bytes,
             max_tail_keys,
