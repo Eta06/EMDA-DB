@@ -86,6 +86,16 @@ impl CheckpointView {
         let path = path.as_ref();
         let lock_file = File::open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_shared(&lock_file)?;
+        Self::open_locked(path, checkpoint.as_ref(), trusted_digest, lock_file)
+    }
+
+    // The caller owns a shared or exclusive lock for the entire view lifetime.
+    pub(crate) fn open_locked(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        lock_file: File,
+    ) -> io::Result<Self> {
         let (log, boundary) = Log::open_checkpoint_view(path)?;
         let checkpoint = File::open(checkpoint)?;
         if checkpoint.metadata()?.len() > MAX_CHECKPOINT_VIEW_FILE_BYTES {

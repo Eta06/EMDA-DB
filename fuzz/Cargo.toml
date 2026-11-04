@@ -63,5 +63,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "checkpoint_store"
+path = "fuzz_targets/checkpoint_store.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

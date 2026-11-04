@@ -7,6 +7,7 @@ compile_error!("this prototype currently supports Unix-like systems only");
 
 mod backup;
 mod checkpoint;
+mod checkpoint_store;
 mod checkpoint_view;
 mod directory;
 mod log;
@@ -17,8 +18,11 @@ mod recovered_view;
 mod recovery;
 mod staging;
 mod store;
+#[cfg(test)]
+mod test_support;
 mod witness;
 
+pub use checkpoint_store::CheckpointStore;
 pub use checkpoint_view::{
     CheckpointView, MAX_CHECKPOINT_VIEW_BLOCK_BYTES, MAX_CHECKPOINT_VIEW_BLOCKS,
 };

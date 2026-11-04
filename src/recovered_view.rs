@@ -25,9 +25,9 @@ pub const MAX_RECOVERED_VIEW_TAIL_KEY_BYTES: usize = 4 * 1024 * 1024;
 /// The independently trusted checkpoint digest and full prefix-hashing costs
 /// of `CheckpointView` still apply. This is not a writable disk-backed index.
 pub struct RecoveredCheckpointView {
-    base: CheckpointView,
-    overlay: BTreeMap<Vec<u8>, Option<ValueLocation>>,
-    tail_bytes: u64,
+    pub(crate) base: CheckpointView,
+    pub(crate) overlay: BTreeMap<Vec<u8>, Option<ValueLocation>>,
+    pub(crate) tail_bytes: u64,
 }
 
 impl RecoveredCheckpointView {
@@ -58,6 +58,16 @@ impl RecoveredCheckpointView {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
     ) -> io::Result<Self> {
+        Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
+        let base = CheckpointView::open(path, checkpoint, trusted_digest)?;
+        Self::from_base(base, max_tail_bytes, max_tail_keys, max_tail_key_bytes)
+    }
+
+    pub(crate) fn validate_limits(
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+    ) -> io::Result<()> {
         if max_tail_bytes > MAX_RECOVERED_VIEW_TAIL_BYTES
             || max_tail_keys > MAX_RECOVERED_VIEW_TAIL_KEYS
             || max_tail_key_bytes > MAX_RECOVERED_VIEW_TAIL_KEY_BYTES
@@ -67,7 +77,16 @@ impl RecoveredCheckpointView {
                 "recovered view limits exceed supported maximum",
             ));
         }
-        let base = CheckpointView::open(path, checkpoint, trusted_digest)?;
+        Ok(())
+    }
+
+    pub(crate) fn from_base(
+        base: CheckpointView,
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+    ) -> io::Result<Self> {
+        Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let boundary = base.witnessed_boundary;
         let length = base.log.len()?;
         if length != boundary {

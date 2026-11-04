@@ -67,6 +67,52 @@ pub(crate) struct Log {
 }
 
 impl Log {
+    /// Reopen an already validated, locked witnessed log for appends without
+    /// building a second in-memory index. No unacknowledged tail is adopted.
+    pub(crate) fn open_checkpoint_writer(path: &Path, expected: u64) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))?;
+        let (id, metadata) = log_identity(&file)?;
+        let id = id.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "checkpoint writer requires a witnessed store",
+            )
+        })?;
+        if !metadata && metadata_witness::is_present(&file)? {
+            return Err(record::invalid_data(
+                "metadata witness exists without its V3 log header",
+            ));
+        }
+        let (anchor, witness, boundary) = if metadata {
+            let (anchor, initial) = Witness::open(path, id)?;
+            if initial != LOG_HEADER_SIZE as u64 {
+                return Err(record::invalid_data("invalid metadata log identity anchor"));
+            }
+            let (witness, boundary) = metadata_witness::open(file.try_clone()?, id)?;
+            (Some(anchor), witness, boundary)
+        } else {
+            let (witness, boundary) = Witness::open(path, id)?;
+            (None, witness, boundary)
+        };
+        if boundary != expected || file.metadata()?.len() != boundary {
+            return Err(record::invalid_data(
+                "log or witness changed while opening checkpoint writer",
+            ));
+        }
+        // Match ordinary writable-open's persistence requirement for entries.
+        File::open(path)?.sync_all()?;
+        Ok(Self {
+            file: Box::new(file),
+            log_id: Some(id),
+            witness: Some(witness),
+            metadata,
+            anchor,
+        })
+    }
+
     /// Opens only the log and witness for an explicitly historical checkpoint
     /// view. The caller must hold a shared lock for the log's lifetime.
     pub(crate) fn open_checkpoint_view(path: &Path) -> io::Result<(Self, u64)> {
@@ -413,6 +459,11 @@ impl Log {
     #[cfg(test)]
     pub(crate) fn attach_test_witness(&mut self, witness: Witness) {
         self.witness = Some(witness);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_io_for_test(&mut self, file: Box<dyn LogIo>) {
+        self.file = file;
     }
 
     pub(crate) fn verify_witness(&self) -> io::Result<()> {

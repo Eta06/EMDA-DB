@@ -368,7 +368,9 @@ mod tests {
             child.wait().unwrap();
             reached.expect("checkpoint child did not reach boundary");
             assert_eq!(busy.unwrap_err().kind(), io::ErrorKind::WouldBlock);
-            let cleaned = cleanup_abandoned_staging(directory.path()).unwrap();
+            let cleaned =
+                crate::test_support::retry_lock(|| cleanup_abandoned_staging(directory.path()))
+                    .unwrap();
             assert_eq!(cleaned.removed_markers, 1);
             assert_eq!(cleaned.removed_payloads, usize::from(mode == "staged"));
             assert_eq!(
@@ -377,7 +379,7 @@ mod tests {
             );
             let digest = if mode == "staged" {
                 assert!(!checkpoint.exists());
-                let store = Store::open(&source_path).unwrap();
+                let store = crate::test_support::retry_lock(|| Store::open(&source_path)).unwrap();
                 store.checkpoint_to(&checkpoint).unwrap()
             } else {
                 // The digest is read from this fixture only to validate the
@@ -385,8 +387,10 @@ mod tests {
                 let bytes = std::fs::read(&checkpoint).unwrap();
                 bytes[bytes.len() - 32..].try_into().unwrap()
             };
-            let recovered =
-                Store::open_with_checkpoint(&source_path, &checkpoint, &digest).unwrap();
+            let recovered = crate::test_support::retry_lock(|| {
+                Store::open_with_checkpoint(&source_path, &checkpoint, &digest)
+            })
+            .unwrap();
             assert_eq!(
                 recovered.get(b"key").unwrap().as_deref(),
                 Some(&b"value"[..])
