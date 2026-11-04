@@ -516,7 +516,14 @@ Revision `e309ddd` compares the existing checkpoint-backed live rollover with th
 
 The timer includes validation, synchronization and switching, but excludes opening and post-operation verification. Unmanaged rollover requires the caller to persist and select the digest separately; that external work is not included, so these are not equivalent end-to-end durability workflows. Both repeat quiet checks passed, but VM-wide short-interval CPU steal reached 6.25% and 27.13% respectively, with one managed 50,000-key outlier. A separate [five-run comparison](../benchmarks/results/2026-11-04-managed-rollover-comparison.json) had a failed 50,000-key quiet check and up to 50% sampled steal. These are noisy single-machine measurements, not production or competitor rankings, and do not measure physical power-loss behavior. Further profiling should investigate handoff latency without weakening synchronization.
 
-Later revisions also synchronize destination directory ancestry for unmanaged checkpoints and other published artifacts. These historical measurements do not characterize that changed path; rerun the comparison before applying the numbers to current code.
+Revision `db6d25e` also synchronizes destination directory ancestry for unmanaged checkpoint publication. A [new comparison](../benchmarks/results/2026-11-04-publication-rollover-comparison.json) used the same fixture sizes and ten runs per method:
+
+| Base keys | Unmanaged median (range) | Managed median (range) |
+| ---: | ---: | ---: |
+| 10,000 | 12.81 ms (12.20–13.37 ms) | 14.68 ms (14.18–16.67 ms) |
+| 50,000 | 50.55 ms (49.71–52.47 ms) | 53.37 ms (52.37–57.00 ms) |
+
+Both quiet checks passed. The highest short-interval VM-wide steal samples were 7.69% and 2.56% for the respective sizes; the 10,000-key case also recorded up to 7.69% I/O wait. These single-VM results remain limited by short runs and do not include externally persisting the unmanaged digest.
 
 Reproduce with:
 
