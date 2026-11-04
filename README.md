@@ -42,6 +42,8 @@ A [compound equality-query comparison](docs/COMPOUND_QUERY_COMPARISON_2026_11_04
 
 A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.
 
+A [streaming scan comparison](docs/STREAM_SCAN_COMPARISON_2026_11_04.md) measures the filtered-query change against its prior implementation and SQLite, including a repeat and VM noise.
+
 A [rejected scan-exhaustion experiment](docs/SCAN_EXHAUSTION_EXPERIMENT_2026_11_04.md) records mixed results and retains its unmerged patches and raw samples.
 
 A [retired-log reclamation comparison](docs/ONLINE_RECLAMATION_COMPARISON_2026_11_04.md) records its extra cleanup time and lower named log lengths, along with the filesystem and workload limitations.

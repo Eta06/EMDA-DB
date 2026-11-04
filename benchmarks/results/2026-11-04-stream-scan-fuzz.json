@@ -1,0 +1,43 @@
+{
+  "revision": "56a438c5c1f643a3829883b79ce4a07d636e1d23",
+  "started_utc": "2026-11-04T18:21:42Z",
+  "ended_utc": "2026-11-04T18:26:12Z",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "runs": [
+    {
+      "target": "document_array_queries",
+      "seed": 1515113810,
+      "executions": 8951,
+      "duration_seconds": 121,
+      "binary_sha256": "9966e84759434a9bf079df0c6a83bb1d325ea355a93fde41cd3cc5ff4b860c2c",
+      "ending_coverage": 4268,
+      "ending_features": 12458,
+      "ending_corpus_entries": 315,
+      "initial_seeds": {
+        "checkpoint": "8165a181fabc3df8ece339b7fb118a03667a049789c0893e391acb88c89dcd32",
+        "ordinary": "3ba502397e4c148d25e188f7ff1b503b632e062ed330c054c85e963e01f24c5c"
+      },
+      "max_input_bytes": 96,
+      "result": "completed without a finding"
+    },
+    {
+      "target": "document_partial_planner",
+      "seed": 1161440688,
+      "executions": 8259,
+      "duration_seconds": 61,
+      "binary_sha256": "37749ab2308f7756511a90d6f80c0434356cb919dbc5463b7caed1c054ea5c17",
+      "ending_coverage": 4325,
+      "ending_features": 12491,
+      "ending_corpus_entries": 378,
+      "initial_seeds": {
+        "checkpoint": "dceb75885c245395bd26ca08d25664113e5961b0eab6ffd528daa603e20c571c",
+        "equals": "ccdeb900eae3c5457fa3196a587e143b643b402376fcbb62833c4622ce110cf0",
+        "ordinary": "7f2b85a8debaf4e2d51444a7242231980dcb8895861ccb39e65def5ff5c6536f"
+      },
+      "max_input_bytes": 96,
+      "result": "completed without a finding"
+    }
+  ],
+  "scope": "Serial-client generated mutations and queries on ordinary and checkpoint-backed stores compare against a simple array model or scan/index results. These short campaigns are not exhaustive and do not model arbitrary concurrency, physical power loss or off-host recovery."
+}

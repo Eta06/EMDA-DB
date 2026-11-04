@@ -512,3 +512,36 @@ impl DocumentTransaction<'_, '_> {
         collector.finish()
     }
 }
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unsorted_result_window_does_not_retain_other_matching_documents() {
+        let query = DocumentQuery {
+            offset: 80,
+            limit: 3,
+            ..Default::default()
+        };
+        let mut collector = QueryCollector::new(&query);
+        for index in 0..100 {
+            collector.push(format!("id{index:03}"), json!({"value":index}));
+        }
+        // The resource bound is independent of the complete match count.
+        assert_eq!(collector.matched.len(), 3);
+        let result = collector.finish().unwrap();
+        assert_eq!(result.plan.scanned, 100);
+        assert_eq!(result.plan.matched, 100);
+        assert_eq!(result.plan.returned, 3);
+        assert_eq!(
+            result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["id080", "id081", "id082"]
+        );
+    }
+}
