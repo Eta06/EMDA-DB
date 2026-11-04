@@ -64,3 +64,4 @@ pub use store::{
     OnlineReclamationWorker, OnlineReclamationWorkerStatus, OnlineStore, RetiredCleanupStatus,
     Snapshot, Store, TimedTransactionError, Transaction, TransactionMode,
 };
+pub use transaction_budget::TransactionBudgetStatus;

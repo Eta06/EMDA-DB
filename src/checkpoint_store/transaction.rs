@@ -271,6 +271,28 @@ impl ScanPage<'_> {
 }
 
 impl CheckpointStore {
+    /// Returns this open store's logical transaction reservation usage.
+    pub fn transaction_budget_status(&self) -> io::Result<crate::TransactionBudgetStatus> {
+        Ok(self
+            .transaction_budget
+            .lock()
+            .map_err(|_| io::Error::other("transaction budget poisoned"))?
+            .status())
+    }
+
+    /// Sets the aggregate reservation limit for staged records and retained
+    /// checkpoint read-set observations on this open store. Values above the
+    /// hard maximum are invalid; lowering it below active reservations returns
+    /// `WouldBlock` without changing it. Zero is allowed. Ordinary writes,
+    /// snapshots, allocator overhead and total process memory are not covered.
+    /// The setting is process-local and resets when the store is reopened.
+    pub fn set_transaction_staging_limit(&self, limit: usize) -> io::Result<()> {
+        self.transaction_budget
+            .lock()
+            .map_err(|_| io::Error::other("transaction budget poisoned"))?
+            .set_limit(limit)
+    }
+
     /// Runs a bounded optimistic serializable transaction.
     ///
     /// The callback runs without holding the store lock. Reads and the final

@@ -443,6 +443,8 @@ impl OnlineStore {
             original_key_limit,
             original_key_bytes,
         )?;
+        candidate
+            .set_transaction_staging_limit(current.transaction_budget_status()?.limit_bytes)?;
         crate::directory::verify_lock_identity(&source, &current._lock_file)?;
         compact_exchange::source_directory_is_owned(&source)?;
         fs::File::open(stage.path())?.sync_all()?;

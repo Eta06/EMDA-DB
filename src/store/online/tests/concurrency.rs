@@ -5,6 +5,48 @@ use std::thread;
 use std::time::Duration;
 
 #[test]
+fn handoff_keeps_a_transaction_limit_changed_during_copy() {
+    let root = tempfile::tempdir().unwrap();
+    let (source, previous) = paths(root.path());
+    let store = Arc::new(OnlineStore::open(&source).unwrap());
+    store
+        .with_store(|db| {
+            db.put(b"key", b"value")?;
+            db.set_transaction_staging_limit(512)
+        })
+        .unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = Arc::clone(&store);
+    let thread = thread::spawn(move || {
+        worker.compact_with_hooks(
+            &previous,
+            &Default::default(),
+            |point| {
+                if point == copy::Point::BeforeFinalBarrier {
+                    ready_tx.send(()).unwrap();
+                    release_rx.recv_timeout(WAIT).unwrap();
+                }
+                Ok(())
+            },
+            crate::directory::sync_existing,
+        )
+    });
+    ready_rx.recv_timeout(WAIT).unwrap();
+    store
+        .with_store(|db| db.set_transaction_staging_limit(128))
+        .unwrap();
+    release_tx.send(()).unwrap();
+    thread.join().unwrap().unwrap();
+    assert_eq!(
+        store
+            .with_store(|db| Ok(db.transaction_budget_status()?.limit_bytes))
+            .unwrap(),
+        128
+    );
+}
+
+#[test]
 fn catches_up_acknowledged_writes_and_retains_previous_store() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());
