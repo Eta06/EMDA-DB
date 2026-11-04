@@ -1,0 +1,27 @@
+{
+  "revision": "1720cae43b84aa5db0080e6c39899a26e41bbbc1",
+  "source_sha256": {
+    "src/log.rs": "f1f8e2a56ee31625e88b108d824fd4d8d69dab0b2ff2e6bed87c49325027598d",
+    "src/store.rs": "bdd6fb46b8bbc4ee2e49c0b710d91f3fac65630217064cc3b1eea21739c52d15",
+    "src/store/atomic_batch.rs": "79a5c1d8de93fde29ce78a1a8eb98fb92d7b247b373c99b180d42eb74970aac7",
+    "src/store/transaction.rs": "a0d40392364f2def825f3742f0786426f50582d75194adfe220a84601e588b5a",
+    "fuzz/fuzz_targets/key_byte_limit.rs": "b572057b5bd220403389840830438f95b9863f1f42354a4783f0d3de8bfd8c40"
+  },
+  "binary_sha256": "b23c853d40f411fb4812c40b4aa72bf661afa7f3df436cffac33f5fe2dbd36f3",
+  "seed_sha256": {
+    "fuzz/key-byte-limit-seeds/batch_peak": "b4688a85f8e3727e12aed285aa8d39502fcf4120f829e133f818078fe02cca18",
+    "fuzz/key-byte-limit-seeds/replace": "bc81981bab37f3c382b2ab7fbe12ac0151d0beac6fe0b49d6928e9e434a5fb76",
+    "fuzz/key-byte-limit-seeds/zero": "71426d210d52fa91812d0a39251aa75ded92519c3d746b8ced4e5a02ec97960d"
+  },
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run key_byte_limit CORPUS -- -max_total_time=45 -max_len=128 -timeout=10 -print_final_stats=1",
+  "scope": "Reference-model single writes, deletes and ordered batches under a per-open logical live-key byte cap, including rejected-log preservation and repeated reopen.",
+  "initial_seeds": 3,
+  "seed": 3266414864,
+  "duration_seconds": 46,
+  "executions": 12102,
+  "coverage_counters_hit": 1271,
+  "features": 5609,
+  "result": "no model mismatch, crash or sanitizer finding",
+  "limitations": "One short single-threaded fuzz campaign; it does not cover concurrent scheduling, actual power loss, total memory, or persistent project quotas."
+}
