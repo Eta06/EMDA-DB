@@ -1,0 +1,12 @@
+{
+  "engine_revision": "9edc4f75c146067175ee4308c443ab3301972ef5",
+  "test_source_sha256": "0e3d8856d7d3bebbcce24c881738db8d945c917177e5fa1fda19ad2996ae3c55",
+  "overlay_test_binary_sha256": "963f99b52b555b4ea0ec46b2baab5b4e3a74a54f09e8d757e58d7e7513911a43",
+  "command": "EMDA_DOCUMENT_MODEL_HISTORIES=1024 cargo test --locked --release --test document_transaction_model -- --nocapture",
+  "runs": [
+    {"temporary_filesystem": "tmpfs (/tmp)", "histories_per_backend": 1024, "backends": ["ordinary", "checkpoint-backed"], "elapsed_test_seconds": 8.74, "result": "passed"},
+    {"temporary_filesystem": "workspace overlay (backing device not independently verified)", "histories_per_backend": 1024, "backends": ["ordinary", "checkpoint-backed"], "elapsed_test_seconds": 11.36, "result": "passed"}
+  ],
+  "scope": "Six concurrent operations per history include conservative/read-set/FIFO document transactions, atomic raw-key updates, indexed reads and competing unique-index inserts. The checker requires a real-time-compatible serial history and validates recovered documents, raw mirror and index integrity after every iteration. Temporary directories are local; reopen is a process-level recovery check, not a physical power loss or independent off-host restore. Schedules and failure states are not exhaustive.",
+  "note": "The tmpfs test binary predates an additional checker self-test; the history workload and production engine code were unchanged. The recorded test and binary hashes refer to the overlay run."
+}

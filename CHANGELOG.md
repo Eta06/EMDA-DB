@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check concurrent document, index and raw-key transactions against real-time serial histories and recovery on both writable backends.
+
 - Publish paired document-scaling and concurrent shared-snapshot measurements, including SQLite, tail regressions and raw samples.
 
 - Ordinary-store snapshots share immutable index roots; writes copy a shared root when necessary, with generation and identity checks before publication. Logical snapshot budgets and storage guarantees remain in force.
