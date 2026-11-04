@@ -313,32 +313,40 @@ fn transaction_commit_metadata_failures_never_recover_partial_writes() {
         Fault::SyncAfter,
         Fault::Panic,
     ] {
-        let dir = tempfile::tempdir().unwrap();
-        let armed = Arc::new(AtomicBool::new(false));
-        let (entered, _) = mpsc::channel();
-        let (_, resume) = mpsc::channel();
-        let store = store(dir.path(), fault, Arc::clone(&armed), entered, resume);
-        store.put(b"a", b"old").unwrap();
-        store.put(b"b", b"old").unwrap();
-        armed.store(true, Ordering::Release);
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            store.transaction(|tx| {
-                tx.put(b"a", b"new")?;
-                tx.put(b"b", b"new")?;
-                Ok(())
-            })
-        }));
-        assert!(!matches!(outcome, Ok(Ok(()))));
-        assert!(store.get_many(&[b"a", b"b"]).is_err());
-        drop(store);
-        let pair = Store::open(dir.path())
-            .unwrap()
-            .get_many(&[b"a", b"b"])
-            .unwrap();
-        assert!(
-            pair == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
-                || pair == vec![Some(b"new".to_vec()), Some(b"new".to_vec())],
-            "partial transaction: {pair:?}"
-        );
+        for read_set in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let armed = Arc::new(AtomicBool::new(false));
+            let (entered, _) = mpsc::channel();
+            let (_, resume) = mpsc::channel();
+            let store = store(dir.path(), fault, Arc::clone(&armed), entered, resume);
+            store.put(b"a", b"old").unwrap();
+            store.put(b"b", b"old").unwrap();
+            armed.store(true, Ordering::Release);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let action = |tx: &mut Transaction<'_>| -> io::Result<()> {
+                    assert_eq!(tx.get(b"a")?.as_deref(), Some(&b"old"[..]));
+                    tx.put(b"a", b"new")?;
+                    tx.put(b"b", b"new")?;
+                    Ok(())
+                };
+                if read_set {
+                    store.transaction_with_read_set(action)
+                } else {
+                    store.transaction(action)
+                }
+            }));
+            assert!(!matches!(outcome, Ok(Ok(()))));
+            assert!(store.get_many(&[b"a", b"b"]).is_err());
+            drop(store);
+            let pair = Store::open(dir.path())
+                .unwrap()
+                .get_many(&[b"a", b"b"])
+                .unwrap();
+            assert!(
+                pair == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
+                    || pair == vec![Some(b"new".to_vec()), Some(b"new".to_vec())],
+                "partial transaction: {pair:?}"
+            );
+        }
     }
 }

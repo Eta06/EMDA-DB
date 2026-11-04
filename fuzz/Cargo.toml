@@ -35,5 +35,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "transaction_read_set"
+path = "fuzz_targets/transaction_read_set.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

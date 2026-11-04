@@ -1,0 +1,43 @@
+{
+  "base_revision": "ab07d50fd70b8a45894a0739af3f576303aa8526",
+  "source_state": "Read-set transaction changes uncommitted at build; source and binary hashes identify the tested code. A subsequent cargo-fuzz build did not change the binary hash.",
+  "source_sha256": {
+    "src/store/read_set.rs": "8762500ff2cdb4bea1d3d87f52e9e4bc69676581d527452489a5b9ddcf735e8a",
+    "src/store/transaction.rs": "3649b35827c1e468cc515d370313b8c7b5ab71e0b49d0e171d019c1929f360f8",
+    "src/store/snapshot.rs": "41918a2e4769553a0e08b20eae1907d3c989e201344cee7e034c26df90d096e4",
+    "src/store.rs": "a7990c130f3b3e49d97acafaba79cd046c434358a32c87a94346f58ab15ac539",
+    "src/log.rs": "4c48db522c43a20d4ed116226aee4ee2c2faeddb309a26e5f19eb93acf19029c",
+    "fuzz/fuzz_targets/transaction_read_set.rs": "8ae8a6c3b8ae55b7fd25475f7249d576f39547fe44a171f0843e82b0b7a9fe16"
+  },
+  "binary_sha256": "b6d0a3cf2fc7ceb055c9d49d450c983fa815e44301eb0270e72d0d3120259976",
+  "checked_in_seed_sha256": {
+    "fuzz/transaction-read-set-seeds/disjoint-write": "6e4745305080d7d7a725d6a90fc2250a7c07c7f5a916b7c6e0ff6df782620e34",
+    "fuzz/transaction-read-set-seeds/phantom-after-page": "cbdf4e89bbad35be03eab562d57b1c8fb4e0279a62cf44db6a5e52277633c22b",
+    "fuzz/transaction-read-set-seeds/point-conflict": "714caef24aa7cfa7ad6216ba0a615ec20bd2bb531167c807977777e315a7bf32",
+    "fuzz/transaction-read-set-seeds/restored-absence": "8789d2d12d58f8b215ec94774cb812894662733fc7b5bfb596f153dd21973a36",
+    "fuzz/transaction-read-set-seeds/staged-read": "791f34b586f3a27c58c5b75dc6ab7373721a07ac1f015effdee09f1a5241bda5"
+  },
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run transaction_read_set CORPUS -- -max_total_time=90 -max_len=256 -timeout=10 -print_final_stats=1",
+  "scope": "Reference-model comparison of staged reads/writes, independent writes/deletes, bounded range scans, serializable validation and reopen recovery for eight synthetic keys.",
+  "campaigns": [
+    {
+      "seed": 1429831214,
+      "initial_seeds": 5,
+      "duration_seconds": 91,
+      "executions": 33913,
+      "coverage_counters_hit": 2010,
+      "features": 6096
+    },
+    {
+      "seed": 46569876,
+      "initial_corpus_files": 541,
+      "duration_seconds": 91,
+      "executions": 33538,
+      "coverage_counters_hit": 2024,
+      "features": 7046
+    }
+  ],
+  "result": "no model mismatch, crash or sanitizer finding",
+  "limitations": "Two short local campaigns; the second began with the first campaign generated corpus, whose exact initial contents were not retained. The model is single-threaded with interleaved writes over eight keys and does not exercise the 65536-item validation limit, physical power loss or exhaustive concurrency."
+}

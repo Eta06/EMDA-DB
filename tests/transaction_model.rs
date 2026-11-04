@@ -1,13 +1,13 @@
 //! Concurrent transaction histories checked against a serial reference model.
-use database_engine::{BatchOperation, Store};
-use std::io::ErrorKind;
+use database_engine::{BatchOperation, Store, Transaction};
+use std::io::{self, ErrorKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Barrier, Mutex};
 use std::thread;
 
 #[derive(Clone, Copy, Debug)]
 enum Operation {
-    Transfer { from: usize },
+    Transfer { from: usize, read_set: bool },
     SetBoth([u8; 2]),
     Put { key: usize, value: u8 },
     ReadBoth,
@@ -45,7 +45,9 @@ fn explain(events: &[Event], used: u64, values: [u8; 2]) -> bool {
         let mut next = values;
         match (event.operation, event.outcome) {
             (Operation::Transfer { .. }, Outcome::Conflict) => {}
-            (Operation::Transfer { from }, Outcome::Committed(observed)) if observed == values => {
+            (Operation::Transfer { from, .. }, Outcome::Committed(observed))
+                if observed == values =>
+            {
                 let to = 1 - from;
                 if next[from] > 0 {
                     next[from] -= 1;
@@ -72,21 +74,27 @@ fn read_pair(store: &Store) -> [u8; 2] {
     ]
 }
 
+fn transfer(tx: &mut Transaction<'_>, from: usize) -> io::Result<[u8; 2]> {
+    let before = [tx.get(b"a")?.unwrap()[0], tx.get(b"b")?.unwrap()[0]];
+    thread::yield_now();
+    let to = 1 - from;
+    if before[from] > 0 {
+        let mut after = before;
+        after[from] -= 1;
+        after[to] += 1;
+        tx.put(b"a", &[after[0]])?;
+        tx.put(b"b", &[after[1]])?;
+    }
+    Ok(before)
+}
+
 fn execute(store: &Store, operation: Operation) -> Outcome {
     match operation {
-        Operation::Transfer { from } => match store.transaction(|tx| {
-            let before = [tx.get(b"a")?.unwrap()[0], tx.get(b"b")?.unwrap()[0]];
-            thread::yield_now();
-            let to = 1 - from;
-            if before[from] > 0 {
-                let mut after = before;
-                after[from] -= 1;
-                after[to] += 1;
-                tx.put(b"a", &[after[0]])?;
-                tx.put(b"b", &[after[1]])?;
-            }
-            Ok(before)
-        }) {
+        Operation::Transfer { from, read_set } => match if read_set {
+            store.transaction_with_read_set(|tx| transfer(tx, from))
+        } else {
+            store.transaction(|tx| transfer(tx, from))
+        } {
             Ok(before) => Outcome::Committed(before),
             Err(error) if error.kind() == ErrorKind::WouldBlock => Outcome::Conflict,
             Err(error) => panic!("unexpected transaction error: {error}"),
@@ -119,7 +127,10 @@ fn execute(store: &Store, operation: Operation) -> Outcome {
 #[test]
 fn reference_model_rejects_a_fractured_successful_transaction() {
     let history = [Event {
-        operation: Operation::Transfer { from: 0 },
+        operation: Operation::Transfer {
+            from: 0,
+            read_set: true,
+        },
         outcome: Outcome::Committed([3, 9]),
         started: 0,
         finished: 1,
@@ -130,15 +141,24 @@ fn reference_model_rejects_a_fractured_successful_transaction() {
 #[test]
 fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery() {
     let operations = [
-        Operation::Transfer { from: 0 },
-        Operation::Transfer { from: 1 },
-        Operation::Transfer { from: 0 },
+        Operation::Transfer {
+            from: 0,
+            read_set: false,
+        },
+        Operation::Transfer {
+            from: 1,
+            read_set: true,
+        },
+        Operation::Transfer {
+            from: 0,
+            read_set: true,
+        },
         Operation::SetBoth([5, 5]),
         Operation::Put { key: 0, value: 2 },
         Operation::ReadBoth,
         Operation::ReadBoth,
     ];
-    for iteration in 0..64 {
+    for iteration in 0..128 {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).unwrap();
         store.put(b"a", &[3]).unwrap();

@@ -75,13 +75,14 @@ impl Drop for PendingReservation<'_> {
 /// succeeds and commit validation completes; dropping it never commits.
 ///
 /// Reads see the initial snapshot plus the transaction's own writes. The
-/// engine validates a store-wide generation, so any concurrent successful
-/// mutation causes a conservative conflict, even on unrelated keys. There is
-/// no automatic retry, and external side effects are not rolled back.
+/// default mode conflicts on every intervening mutation; the opt-in read-set
+/// mode validates observed points and ranges instead. There is no automatic
+/// retry, and external side effects are not rolled back.
 pub struct Transaction<'a> {
     snapshot: Snapshot<'a>,
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     encoded_bytes: usize,
+    read_set: Option<Mutex<super::read_set::ReadSet>>,
 }
 
 impl Drop for Transaction<'_> {
@@ -107,6 +108,12 @@ impl Transaction<'_> {
         if let Some(value) = self.staged.get(key) {
             return Ok(value.clone());
         }
+        if let Some(read_set) = &self.read_set {
+            read_set
+                .lock()
+                .map_err(|_| io::Error::other("transaction read set poisoned"))?
+                .point(key)?;
+        }
         snapshot
             .index
             .get(key)
@@ -127,8 +134,8 @@ impl Transaction<'_> {
 
     /// Scans the initial snapshot merged with this transaction's staged writes.
     /// Bounds are exclusive. Returned pages have the same count and byte limits
-    /// as `Store::scan`; continue until empty. A later mutation by any writer
-    /// causes validation to conflict rather than allowing a phantom at commit.
+    /// as `Store::scan`; continue until empty. Read-set mode validates the
+    /// entire requested range, including entries beyond a limited page.
     pub fn scan(
         &self,
         after: Option<&[u8]>,
@@ -147,6 +154,12 @@ impl Transaction<'_> {
         let snapshot = self.snapshot.read_index()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
+        }
+        if let Some(read_set) = &self.read_set {
+            read_set
+                .lock()
+                .map_err(|_| io::Error::other("transaction read set poisoned"))?
+                .range(after, before)?;
         }
         let bounds = (
             after.map_or(Unbounded, Excluded),
@@ -262,11 +275,35 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
+        self.run_transaction(action, false)
+    }
+
+    /// Runs a serializable transaction validating its point and range reads.
+    ///
+    /// Unrelated intervening writes do not force a conflict. The validator
+    /// compares immutable record locations and the complete requested ranges
+    /// under the writer barrier. An absent key inserted and deleted before
+    /// validation may return to the same state without a conflict. Callbacks
+    /// are not retried and external side effects are not rolled back.
+    /// Read dependencies have per-transaction count and byte limits.
+    pub fn transaction_with_read_set<T>(
+        &self,
+        action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.run_transaction(action, true)
+    }
+
+    fn run_transaction<T>(
+        &self,
+        action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
+        track_reads: bool,
+    ) -> io::Result<T> {
         let snapshot = self.snapshot(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES)?;
         let mut txn = Transaction {
             snapshot,
             staged: BTreeMap::new(),
             encoded_bytes: 4,
+            read_set: track_reads.then(|| Mutex::new(super::read_set::ReadSet::default())),
         };
         let result = action(&mut txn)?;
         let _writer = self
@@ -276,11 +313,27 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        if self.read()?.generation != txn.snapshot.generation {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "transaction conflict: store changed since snapshot",
-            ));
+        {
+            let current = self.read()?;
+            let valid = if let Some(read_set) = &txn.read_set {
+                let read_set = read_set
+                    .lock()
+                    .map_err(|_| io::Error::other("transaction read set poisoned"))?;
+                if current.generation == txn.snapshot.generation {
+                    true
+                } else {
+                    let snapshot = txn.snapshot.read_index()?;
+                    read_set.matches(&snapshot.index, &current.index)?
+                }
+            } else {
+                current.generation == txn.snapshot.generation
+            };
+            if !valid {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "transaction conflict: observed state changed since snapshot",
+                ));
+            }
         }
         if !txn.staged.is_empty() {
             // Deletions first avoid a transient quota overshoot when a

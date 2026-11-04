@@ -13,9 +13,14 @@ use std::sync::{Mutex, RwLock, RwLockReadGuard};
 mod atomic_batch;
 mod commit;
 mod compact;
+mod read_set;
 mod snapshot;
 mod transaction;
 use commit::Coordinator;
+pub use read_set::{
+    MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
+    MAX_TRANSACTION_VALIDATION_ITEMS,
+};
 pub use snapshot::{
     MAX_ACTIVE_SNAPSHOTS, MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES,
     MAX_SNAPSHOT_TOTAL_KEYS, Snapshot,

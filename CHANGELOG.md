@@ -8,12 +8,13 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- An opt-in serializable read-set transaction mode that validates point reads and complete scan ranges, allowing unrelated writes to avoid conservative conflicts. Read dependencies and validation work are bounded; absent-key insert/delete cycles that restore absence need not conflict. Two short model-fuzz campaigns are recorded in `benchmarks/results/2026-11-03-read-set-fuzz.json`.
 - Upgrade staging and publication process-kill tests for V2 and V3 sources, plus injected parent-directory sync failure and a regression test for staging-lock release with duplicated descriptors.
 - Process-kill checks at backup and restore staging and publication boundaries, including successful retry or reopening on the running OS. Interrupted staging can leave private files or directories containing data; physical power loss is not tested.
 - Process-kill tests during synchronized compaction staging and immediately after publication but before parent-directory sync. The first can leave a private staging directory; the second sees a complete copy on the still-running OS. Neither is a physical power-loss test.
 - A per-open-store 64 MiB aggregate budget for encoded records staged by concurrent transactions, with admission before staging and reservation cleanup on replacement, completion and unwind. The budget excludes other allocations and is not a total-memory quota.
 - Explicit read-only snapshot cancellation and optional monotonic deadlines checked at creation and operation boundaries. Expired snapshots can be reclaimed on later snapshot admission or an explicit reaping call; no background timer runs and ongoing I/O is not interrupted. Transaction lifetimes are unaffected.
-- A sequential reference-model check for 64 short concurrent histories combining transactions, atomic batches, independent writes and bulk reads, with recovery checked after every history.
+- A sequential reference-model check for 128 short concurrent histories combining both transaction modes, atomic batches, independent writes and bulk reads, with recovery checked after every history.
 - Separate-process checkpoint-index memory and lookup benchmarks, including the substantial historical-view lookup penalty and the measured improvement from smaller verified blocks.
 - A paired separate-copy compaction comparison using independently built revisions, raw timings, content checks and VM-noise telemetry.
 - A shared-lock historical checkpoint reader that keeps a bounded block directory, verifies each index block on access, and reads values from the verified log prefix. It does not replay or validate the tail and is not a live writable index. A short 297,135-input fuzz run is recorded in `benchmarks/results/2026-11-03-checkpoint-view-fuzz.json`.
