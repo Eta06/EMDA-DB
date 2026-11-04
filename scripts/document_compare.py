@@ -26,11 +26,11 @@ WARMUP = 20
 
 
 def latency(values):
-    values = sorted(values)
+    ordered = sorted(values)
     def at(percent):
-        return values[math.ceil(len(values) * percent) - 1] / 1000
+        return ordered[math.ceil(len(ordered) * percent) - 1] / 1000
     return {"count": len(values), "p50_us": at(.5), "p95_us": at(.95),
-            "p99_us": at(.99), "max_us": values[-1] / 1000}
+            "p99_us": at(.99), "max_us": ordered[-1] / 1000, "samples_ns": values}
 
 
 def execute_cycles(cycles, create, get, update, lookup, delete):
@@ -181,6 +181,7 @@ def main():
               "binary_sha256": sha(args.binary), "script_sha256": sha(__file__),
               "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "platform": platform.platform(), "python": sys.version,
+              "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
               "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
               "controls": {"driver_cpus": sorted(driver), "server_cpus": sorted(servers),
                            "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "one_backend_at_a_time": True,

@@ -9,12 +9,13 @@ use std::{collections::BTreeMap, error::Error, path::Path, time::Instant};
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const WARMUP: usize = 20;
 
-fn samples(values: &mut [u128]) -> Value {
-    values.sort_unstable();
+fn samples(values: &[u128]) -> Value {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
     let at = |percent: usize| -> f64 {
-        values[(values.len() * percent).div_ceil(100) - 1] as f64 / 1000.0
+        sorted[(sorted.len() * percent).div_ceil(100) - 1] as f64 / 1000.0
     };
-    json!({"count":values.len(),"p50_us":at(50),"p95_us":at(95),"p99_us":at(99),"max_us":*values.last().unwrap() as f64/1000.0})
+    json!({"count":values.len(),"p50_us":at(50),"p95_us":at(95),"p99_us":at(99),"max_us":*sorted.last().unwrap() as f64/1000.0,"samples_ns":values})
 }
 fn timed<T>(
     latencies: &mut BTreeMap<&'static str, Vec<u128>>,
@@ -94,7 +95,7 @@ fn prototype(parent: &Path, iterations: usize) -> Result<Value> {
         return Err("prototype recovery verification failed".into());
     }
     let result = times
-        .iter_mut()
+        .iter()
         .map(|(name, values)| ((*name).to_owned(), samples(values)))
         .collect::<BTreeMap<_, _>>();
     Ok(
@@ -179,7 +180,7 @@ fn sqlite(parent: &Path, iterations: usize) -> Result<Value> {
         return Err("SQLite recovery verification failed".into());
     }
     let result = times
-        .iter_mut()
+        .iter()
         .map(|(name, values)| ((*name).to_owned(), samples(values)))
         .collect::<BTreeMap<_, _>>();
     Ok(

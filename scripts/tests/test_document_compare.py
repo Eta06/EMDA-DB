@@ -10,6 +10,7 @@ class DocumentComparisonTests(unittest.TestCase):
     def test_percentiles_use_nearest_rank(self):
         self.assertEqual(latency([9000, 1000, 3000, 5000])["p50_us"], 3.0)
         self.assertEqual(latency([9000, 1000, 3000, 5000])["p99_us"], 9.0)
+        self.assertEqual(latency([9000, 1000, 3000, 5000])["samples_ns"], [9000, 1000, 3000, 5000])
 
     def test_workload_verifies_each_result_and_leaves_no_documents(self):
         values = {}
