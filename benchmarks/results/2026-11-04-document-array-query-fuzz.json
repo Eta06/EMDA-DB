@@ -1,0 +1,34 @@
+{
+  "date_utc": "2026-11-04",
+  "production_revision": "0dc7a314ba8b96aa458320d69f2988672701c38e",
+  "target": "document_array_queries",
+  "platform": "Linux x86_64 cloud VM",
+  "filesystem": "/tmp tmpfs",
+  "initial_corpus": "For each run, a fresh directory populated only with the two files in fuzz/document-array-query-seeds",
+  "binary_sha256": "00c45e27d36aa9bce31c443e7c56275d047c1488381006ff0965e6d1eba5e650",
+  "runs": [
+    {
+      "seed": 92831111,
+      "executions": 8557,
+      "elapsed_seconds": 121,
+      "requested_seconds": 120,
+      "source_note": "A documentation comment and tests were edited during the initial build; the executed binary hash matched the subsequent clean run at the stated revision."
+    },
+    {
+      "seed": 92831113,
+      "executions": 5945,
+      "elapsed_seconds": 61,
+      "requested_seconds": 60,
+      "source_note": "Run from the stated committed revision."
+    }
+  ],
+  "configured_maximum_input_bytes": 96,
+  "final_generated_length_limit_bytes": 17,
+  "per_input_timeout_seconds": 10,
+  "result": "both runs completed without a reported finding",
+  "limitations": [
+    "These short coverage-guided runs are not exhaustive.",
+    "Generated operations use small documents and serial clients; separate tests cover work limits and concurrent phantom detection.",
+    "The runs do not simulate physical power loss or off-host restore."
+  ]
+}
