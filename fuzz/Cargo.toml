@@ -98,5 +98,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "automatic_checkpoint"
+path = "fuzz_targets/automatic_checkpoint.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

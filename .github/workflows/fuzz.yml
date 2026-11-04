@@ -12,7 +12,7 @@ jobs:
   recovery:
     name: Recovery parser and fail-closed behavior
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -80,6 +80,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/managed-checkpoint-corpus"
           cp fuzz/managed-checkpoint-seeds/* "$RUNNER_TEMP/managed-checkpoint-corpus/"
           cargo +nightly-2026-11-03 fuzz run managed_checkpoint "$RUNNER_TEMP/managed-checkpoint-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
+      - name: Run automatic checkpoint model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/automatic-checkpoint-corpus"
+          cp fuzz/automatic-checkpoint-seeds/* "$RUNNER_TEMP/automatic-checkpoint-corpus/"
+          cargo +nightly-2026-11-03 fuzz run automatic_checkpoint "$RUNNER_TEMP/automatic-checkpoint-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

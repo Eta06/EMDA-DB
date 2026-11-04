@@ -429,7 +429,14 @@ impl CheckpointStore {
                 .map(|operation| operation.fields().1)
                 .collect::<Vec<_>>();
             check_deadline(deadline)?;
-            self.commit(&mut state, Operation::Batch, &[0], &payload, &keys)?;
+            self.commit_until(
+                &mut state,
+                Operation::Batch,
+                &[0],
+                &payload,
+                &keys,
+                deadline,
+            )?;
         }
         Ok(result)
     }

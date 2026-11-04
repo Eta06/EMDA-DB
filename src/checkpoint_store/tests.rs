@@ -142,6 +142,7 @@ impl WitnessIo for FaultWitness {
     }
 }
 
+mod automatic;
 mod commit_faults;
 mod compaction;
 #[cfg(target_os = "linux")]

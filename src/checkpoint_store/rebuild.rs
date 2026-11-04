@@ -113,10 +113,13 @@ impl CheckpointStore {
                 .file_name()
                 .expect("parent_directory validates the name"),
         );
-        if destination == selection::path(&path) {
+        if destination == selection::path(&path)
+            || destination == super::automatic::root(&path)
+            || destination.starts_with(super::automatic::root(&path))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "checkpoint destination is the managed selection file",
+                "checkpoint destination uses the reserved managed checkpoint namespace",
             ));
         }
         selection::Selection::new(destination.clone(), [0; 32])?;

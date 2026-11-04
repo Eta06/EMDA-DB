@@ -80,7 +80,7 @@ pub(super) fn path(store: &Path) -> PathBuf {
 
 // Refuse symlinks and avoid blocking on a FIFO. The containing directory is
 // still required to be trusted; external path replacement is unsupported.
-fn open_regular(path: &Path) -> io::Result<File> {
+pub(super) fn open_regular(path: &Path) -> io::Result<File> {
     use rustix::fs::{Mode, OFlags, open};
     let fd = open(
         path,

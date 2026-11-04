@@ -27,6 +27,8 @@ Explicit index checkpoints use a separate `EMDAIDX1` file with a record-codec ve
 
 Managed checkpoint selection uses a separate `EMDASEL1` file, `checkpoint.selection`, containing a bounded absolute path, the expected checkpoint digest and a SHA-256 checksum. Unknown versions and corrupt files fail closed. This checksum is not authentication: protect the selection and its store directory as trusted metadata separately from checkpoint contents. It is not included in a full-log backup; restoration creates an ordinary store and requires a fresh selection. Checkpoint paths must remain available. Older engine revisions and the ordinary `Store` do not enforce managed selection, so they can leave its suffix beyond managed recovery limits. There is no stable selection-format compatibility or automatic migration promise.
 
+Automatic checkpointing adds an engine-owned `.emda-auto-checkpoints-v1` directory containing a versioned on/off ownership marker and two checkpoint slots. The managed selection continues to use `EMDASEL1`; the log format is unchanged. Older revisions do not enforce the automatic directory or maintain its slots. The directory and selection are trusted metadata, and there is no stable compatibility, downgrade or automatic migration promise. Full-log backups do not include these derived files.
+
 ## Recording changes
 
 Add user-relevant changes to `CHANGELOG.md` under `Unreleased` when making them. Use categories as needed: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`, and `Limitations`. Describe behavior and migration requirements, not only internal commit names. Keep README status and compatibility information current.

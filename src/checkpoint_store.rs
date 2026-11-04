@@ -1,6 +1,6 @@
 //! Experimental writable checkpoint index with a bounded log-suffix overlay.
 use crate::checkpoint_view::CheckpointView;
-use crate::log::{AppendRecord, BatchUpdate, Log, prepare_batch};
+use crate::log::Log;
 use crate::record::batch::{BatchOperation, encode_payload};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 use crate::recovered_view::{
@@ -8,13 +8,15 @@ use crate::recovered_view::{
     RecoveredCheckpointView,
 };
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+mod automatic;
+mod commit;
 mod read_set;
 mod rebuild;
 mod selection;
@@ -32,6 +34,7 @@ struct State {
     generation: u64,
     failed: bool,
     selection: Option<selection::Selection>,
+    automatic: bool,
 }
 
 enum OpenSource<'a> {
@@ -53,12 +56,11 @@ struct OpenLimits {
 /// bounded in-memory overlay records every distinct suffix key, including
 /// tombstones; opening still verifies the complete covered log prefix. Limits
 /// are not total process-memory quotas. This type excludes other cooperating
-/// stores/views, has no persistent snapshots, and does not automatically
-/// checkpoint, compact or reclaim space. If a limit fills, `rollover_to` can
-/// create and switch to a fresh checkpoint while retaining exclusive ownership.
-/// The optional managed selection must be protected as trusted metadata. A
-/// failed append/sync has an unknown outcome and poisons this instance until
-/// reopened.
+/// stores/views and has no persistent snapshots or automatic log compaction.
+/// Explicit rollover and opt-in on-demand automatic checkpoints can clear the
+/// suffix overlay without releasing ownership. Managed selection and automatic
+/// checkpoint metadata must be trusted. A failed append/sync has an unknown
+/// outcome and poisons this instance until reopened.
 pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
     log: Log,
@@ -283,6 +285,19 @@ impl CheckpointStore {
         if selection.is_some() {
             sync_selection(&path)?;
         }
+        let automatic_config = automatic::open_existing(&path)?;
+        if automatic_config.is_some() && selection.is_none() {
+            return Err(record::invalid_data(
+                "automatic checkpointing requires a managed selection",
+            ));
+        }
+        if automatic_config.is_some() {
+            // The durable selection was verified and stabilized above. Stale
+            // recognized stages cannot be the selected published checkpoint.
+            crate::cleanup_abandoned_staging(&path)?;
+            crate::cleanup_abandoned_staging(automatic::root(&path))?;
+        }
+        let automatic = automatic_config.unwrap_or(false);
         let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
         Ok(Self {
             log,
@@ -292,6 +307,7 @@ impl CheckpointStore {
                 generation: 0,
                 failed: false,
                 selection,
+                automatic,
             }),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: crate::store::TransactionQueue::new(),
@@ -467,10 +483,13 @@ impl CheckpointStore {
                 .file_name()
                 .expect("parent_directory validates the name"),
         );
-        if resolved == selection::path(&self.path) {
+        if resolved == selection::path(&self.path)
+            || resolved == automatic::root(&self.path)
+            || resolved.starts_with(automatic::root(&self.path))
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "destination is the reserved managed selection file",
+                "destination uses the reserved managed checkpoint namespace",
             ));
         }
         Ok(())
@@ -496,6 +515,7 @@ impl CheckpointStore {
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
+        self.check_selection_destination(destination)?;
         let mut state = self.write()?;
         let existing = selection::load(&self.path);
         if !matches!(&existing, Ok(found) if *found == state.selection) {
@@ -810,98 +830,12 @@ impl CheckpointStore {
         self.commit(&mut state, Operation::Batch, &[0], &payload, &keys)?;
         Ok(true)
     }
-
-    // The state write lock serializes admission, append, synchronization and
-    // publication. It also prevents readers seeing a partially applied batch.
-    fn commit(
-        &self,
-        state: &mut State,
-        operation: Operation,
-        key: &[u8],
-        value: &[u8],
-        touched: &[&[u8]],
-    ) -> io::Result<()> {
-        // Refuse a mutation before appending if a transaction generation can
-        // no longer advance; wrapping would let a stale transaction commit.
-        let next_generation = state
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("checkpoint transaction generation exhausted"))?;
-        let length = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
-        let next_tail = state
-            .view
-            .tail_bytes
-            .checked_add(length as u64)
-            .filter(|total| *total <= self.max_tail_bytes)
-            .ok_or_else(|| io::Error::other("checkpoint suffix byte limit would be exceeded"))?;
-        let next_log = state
-            .view
-            .base
-            .log_boundary()
-            .checked_add(next_tail)
-            .ok_or_else(|| io::Error::other("log length overflow"))?;
-        if self.max_log_bytes.is_some_and(|max| next_log > max) {
-            return Err(io::Error::other(
-                "configured log byte limit would be exceeded",
-            ));
-        }
-        let new_keys = touched
-            .iter()
-            .copied()
-            .filter(|key| !state.view.overlay.contains_key(*key))
-            .collect::<BTreeSet<_>>();
-        if state.view.overlay.len() + new_keys.len() > self.max_tail_keys {
-            return Err(io::Error::other(
-                "checkpoint suffix key limit would be exceeded",
-            ));
-        }
-        let new_key_bytes = new_keys
-            .iter()
-            .try_fold(state.overlay_key_bytes, |sum, key| {
-                sum.checked_add(key.len())
-                    .filter(|total| *total <= self.max_tail_key_bytes)
-                    .ok_or_else(|| {
-                        io::Error::other("checkpoint suffix key byte limit would be exceeded")
-                    })
-            })?;
-        // Prepare all input before append. Once append starts, even a failed
-        // verification or panic leaves the instance unusable until recovery.
-        let encoded = record::encode(operation, key, value)?;
-        let owned_key = (operation != Operation::Batch).then(|| key.to_vec());
-        state.failed = true;
-        let location = self
-            .log
-            .append_batch_unsynced(std::iter::once(AppendRecord {
-                encoded: &encoded,
-                key_len: key.len(),
-                value_len: value.len(),
-                checksum: crc32fast::hash(value),
-            }))?
-            .into_iter()
-            .next()
-            .expect("one appended record returns one location");
-        let updates = if operation == Operation::Batch {
-            prepare_batch(value, location)?
-        } else {
-            vec![BatchUpdate {
-                key: owned_key.expect("single record owns its key"),
-                location: (operation == Operation::Put).then_some(location),
-            }]
-        };
-        self.log.sync_data()?;
-        for update in updates {
-            state.view.overlay.insert(update.key, update.location);
-        }
-        state.view.tail_bytes = next_tail;
-        state.overlay_key_bytes = new_key_bytes;
-        state.generation = next_generation;
-        state.failed = false;
-        Ok(())
-    }
 }
 
 fn uncertain() -> io::Error {
-    io::Error::other("a previous write may have an uncertain outcome; reopen the store")
+    io::Error::other(
+        "a previous write or checkpoint publication may have an uncertain outcome; reopen the store",
+    )
 }
 
 #[cfg(test)]
