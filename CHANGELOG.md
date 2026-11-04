@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Record verified online compaction retention-versus-reclamation timings and named log lengths.
+
 - Harden checkpoint fault-test fixture reopens against transient inherited locks and extend reclamation cleanup-failure checks.
 
 - Hold the replacement store's write barrier while reclaiming its predecessor, preventing an uncertain concurrent write during cleanup.

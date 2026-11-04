@@ -1,0 +1,20 @@
+# Online reclamation comparison, 2026-11-04
+
+The experimental Linux `OnlineStore::compact_and_reclaim` can remove a redundant previous store after a verified and synchronized handoff. The old directory is moved into a private marked stage before unlinking; the replacement's write barrier remains held through cleanup. Direct reads that do not require that barrier can continue, but mutations wait. Cleanup errors are reported separately from handoff errors and can leave a partially removed or staged old copy. This operation permanently discards historical log data; it is not secure erasure or a substitute for an independent backup. See the [storage contract](STORAGE_TRANSACTION_CONTRACT.md) for the failure and synchronization assumptions.
+
+We compared the existing retain-previous handoff with explicit reclamation at revision `1a560c6c71123580d6c81559007880c5212ccbb3`. Each separate run created a fresh store of 64-byte values, overwrote half its keys, deleted one eighth, then performed verified online compaction. Eight rounds alternated the two modes for each size. The timed operation includes copying, verification, synchronization, handoff and, when requested, reclamation; fixture creation and full content checks after reopening are outside the timer. All 32 runs verified every remaining key and value and passed.
+
+| Source keys | Mode | Compaction median, range | Source log length | Named log lengths after handoff |
+| ---: | --- | ---: | ---: | ---: |
+| 200 | Retain | 6.15 ms, 5.26–8.92 ms | 28,731 B | 45,112 B |
+| 200 | Reclaim | 7.95 ms, 7.29–9.43 ms | 28,731 B | 16,381 B |
+| 5,000 | Retain | 39.20 ms, 34.12–47.90 ms | 716,095 B | 1,124,792 B |
+| 5,000 | Reclaim | 49.79 ms, 39.49–80.85 ms | 716,095 B | 408,697 B |
+
+At 5,000 keys the named log lengths were about 64% lower after reclamation in this fixture, while the median operation took about 10.59 ms longer. These are file lengths, not allocated blocks or total disk usage; open file handles, snapshots, filesystem snapshots and hard links can retain space. The sample is small and does not establish a latency or space guarantee.
+
+The tests separately cover all nine process-kill cleanup boundaries on the running OS, cleanup errors and panics, path replacement, readers and waiting writers, legacy/V2/V3 fixtures, document/index and raw-key data, and per-open limits. Twenty tmpfs and five workspace-overlay repetitions checked 6,400 acknowledged increments across 100 reclaimed handoffs. An earlier parallel release run exposed a transient inherited-lock conflict in a checkpoint test fixture; the fixture now retries that specific `WouldBlock` condition with a deadline while preserving strict lock-exclusion assertions. A subsequent complete optimized suite and three additional full-library repeats passed. A separate [short model fuzz run](../benchmarks/results/2026-11-04-online-reclamation-fuzz.json) exercised 5,070 generated cases without a reported finding; its target models serial operations rather than concurrent schedules. These tests do not simulate physical power loss or independently verify an off-host restore.
+
+The Linux VM used Intel Xeon Platinum 8573C CPUs, a four-CPU cgroup quota, a workspace overlay filesystem and separate pinned benchmark/driver CPUs. Thirty of 32 pre-run quiet checks passed; individual windows reached 5.36% VM steal and 18.18% I/O wait, with no recorded cgroup throttling or direct reclaim. These VM/cgroup-wide measurements include setup and checking and do not attribute resource use to one operation. The host, backing device and cache were not independently controlled. The workload is single-client and does not measure concurrent-client pause distributions, scheduling, total memory or total disk use.
+
+The [raw results](../benchmarks/results/2026-11-04-online-reclamation-comparison.json) contain all durations, lengths, hashes, run order, verification results and telemetry. Reproduce with the [online reclamation harness](BENCHMARKS.md#online-retired-log-reclamation-harness) at the stated revision.

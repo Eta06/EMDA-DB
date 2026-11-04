@@ -1,0 +1,21 @@
+{
+  "date_utc": "2026-11-04",
+  "revision": "1a560c6c71123580d6c81559007880c5212ccbb3",
+  "target": "online_compaction",
+  "platform": "Linux x86_64 cloud VM",
+  "filesystem": "/tmp tmpfs",
+  "seed": 92831053,
+  "seed_corpus": "fuzz/online-compaction-seeds (2 files)",
+  "executions": 5070,
+  "elapsed_seconds": 61,
+  "requested_seconds": 60,
+  "maximum_input_bytes": 96,
+  "per_input_timeout_seconds": 10,
+  "binary_sha256": "b17c81ac308321840bb391f136718e42c030765704a3baf06e1193009ef59314",
+  "result": "completed without a reported finding",
+  "limitations": [
+    "This short coverage-guided run is not exhaustive.",
+    "The target models serial operations, not concurrent schedules; separate tests exercise concurrent writers and reclamation.",
+    "The run does not model physical power loss, filesystem faults, or independent off-host restore."
+  ]
+}
