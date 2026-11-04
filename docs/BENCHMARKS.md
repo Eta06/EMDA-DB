@@ -647,3 +647,19 @@ python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem 
   --output /path/to/new-partial-result.json --cases 100:10,1000:10,1000:100 \
   --rounds 4 --cycles 50
 ```
+
+### Compound equality-prefix and range comparison
+
+[`compound_range_query_bench`](../examples/compound_range_query_bench.rs) compares an equality prefix plus a scalar range on a two-field nonunique index, with complete result and reopen checks. The SQLite expression-index and primary-table paths are explicitly selected; its complete explain plan is recorded. The [external comparison runner](../scripts/compound_range_external_compare.py) adds PostgreSQL JSONB and MongoDB documents using local disposable containers and pinned Python drivers. PostgreSQL disables sequential and ordinary index scans to obtain a checked bitmap path; MongoDB receives an index hint. Rust prototype/SQLite queries are in-process and interleaved, while PostgreSQL/MongoDB use Python drivers over loopback and are measured separately. Treat these differences, setup costs and durability settings as part of the result.
+
+Install the relevant pinned optional packages from `scripts/benchmark-requirements.txt` in a dedicated Python environment and make the recorded PostgreSQL and MongoDB Docker images available locally. The runner pulls no images and removes only its own labelled temporary containers and data directories. For example:
+
+```sh
+cargo build --release --locked --example compound_range_query_bench
+python3 scripts/compound_range_external_compare.py --directory /path/to/test-filesystem \
+  --binary target/release/examples/compound_range_query_bench \
+  --output /path/to/new-compound-range-result.json --cases 100:10,1000:10,1000:100 \
+  --driver-cpus 0 --server-cpus 1-3 --rounds 4 --cycles 50
+```
+
+Use CPU sets available in the current environment. Results do not cover concurrent clients, cold-cache behavior, independent restores or physical power loss.

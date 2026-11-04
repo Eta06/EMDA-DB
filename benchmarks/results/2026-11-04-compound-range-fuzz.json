@@ -1,0 +1,58 @@
+{
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "environment": "Local Linux VM; temp corpora and normal filesystem operations; no physical power-loss testing.",
+  "runs": [
+    {
+      "target": "document_compound_range",
+      "revision": "847ef0169ef6f5bc701a8f9079ecdb65059126fa",
+      "seed": 3564227928,
+      "executions": 6580,
+      "duration_seconds": 121,
+      "initial_seeds": {
+        "ordinary": "bdd5f03ffdfe6704043be796222bd3d1c5dbf91cdaef78254d52eb6bc8427c1d",
+        "checkpoint": "235c9b5f91e2a00a6c8fe705508a330527a510099ce28a58bfb60cc93ada31df",
+        "partial": "7fdefba1df1e0d178ebfab6bab4726e50ece5f8bdd8c29c647acd91f0eb97e2d",
+        "partial-checkpoint": "f9320e76df958db789e26abd7b2a6ed4ad8e5ed55a375c8f7060d87ce6b4aff6"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "15e5fdcbf248907dbbfc1154328a1dfd2e0ad6a5f2e7eb35cc4e869836e993ac",
+      "result": "completed without a finding",
+      "limitation": "The generator correlated active=true with a different tenant value, so its partial-index cases could not contain a matching target-tenant document. The subsequent run fixes this and seeds a nonempty matching case."
+    },
+    {
+      "target": "document_partial_planner",
+      "revision": "847ef0169ef6f5bc701a8f9079ecdb65059126fa",
+      "seed": 3482712661,
+      "executions": 3818,
+      "duration_seconds": 61,
+      "initial_seeds": {
+        "checkpoint": "dceb75885c245395bd26ca08d25664113e5961b0eab6ffd528daa603e20c571c",
+        "equals": "ccdeb900eae3c5457fa3196a587e143b643b402376fcbb62833c4622ce110cf0",
+        "ordinary": "7f2b85a8debaf4e2d51444a7242231980dcb8895861ccb39e65def5ff5c6536f"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "923cbce78d1423da1fe5fa9bfb5b9c52f776ab0e2e32b1a944fbde662c0ec75c",
+      "result": "completed without a finding",
+      "source_note": "During this run only the separate compound-range fuzz generator and seed files changed; the engine and this target were unchanged."
+    },
+    {
+      "target": "document_compound_range",
+      "revision": "31955a9d4b151e8eaf4ee1fe86fa643417132617",
+      "git_status": "clean",
+      "seed": 3307641783,
+      "executions": 6074,
+      "duration_seconds": 121,
+      "initial_seeds": {
+        "checkpoint": "ed760ab45961f45608c8ca79071d8e3cea0dfce6e11c758f5703a62c7403cdcc",
+        "ordinary": "39324493ae602e8fcddcd7d4656215921371fd6e54ba59210dc81e63043583a4",
+        "partial": "232c80bba64fa7a37de2248d8262f870a30314ef8501175169eaa0dcc60779e7",
+        "partial-checkpoint": "9e60c638ee567a0301272bb8dcc7f41b1142771c72af9451af9be617e22472a1"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "60e9e0b8ba84e4a4f3aacc1eeda399149473cce445bfb118774172198a46c7c9",
+      "result": "completed without a finding"
+    }
+  ],
+  "scope": "Generated serial-client mutations, planned queries and complete scans on ordinary and checkpoint-backed stores, including reopen, pagination, sorting, projection and partial-index guards. Short campaigns do not exhaust all inputs or concurrent histories and do not model physical power loss."
+}
