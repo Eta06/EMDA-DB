@@ -51,7 +51,13 @@ pub(super) fn retire(
     crate::directory::verify_lock_identity(source, &current._lock_file)?;
     crate::directory::verify_lock_identity(previous, &retired._lock_file)?;
     compact_exchange::source_directory_is_owned(previous)?;
-    let mut stage = crate::staging::Stage::directory(parent)?;
+    let replacement_id = current.log.id().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "retired cleanup requires a witnessed replacement",
+        )
+    })?;
+    let mut stage = crate::staging::Stage::retired_directory(parent, &replacement_id)?;
     let hidden = stage.path().join("retired");
     let mut moved = false;
     let result: io::Result<()> = (|| {

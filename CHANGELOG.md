@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in scoped cleanup for matching retired-store stages, with full current-log verification, lock and contents checks, restartable ordered removal, worker status and process-kill tests. Legacy generic stages and named previous paths still require inspection; no total quota or power-loss guarantee is implied.
+
 - Add cooperative cancellation and optional deadlines for key-value and document transactions on both writable stores. FIFO waiters can cancel while queued; cancellation reported before commit is distinct from an I/O error with an unknown outcome.
 
 - Add optional, stoppable expired-snapshot reapers for both writable stores, with busy-read protection and worker status and failure reporting.

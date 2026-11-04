@@ -327,6 +327,7 @@ fn unrelated_would_block_error_is_not_safely_retryable() {
         minimum_log_bytes: 1,
         minimum_growth_bytes: 1,
         options: Default::default(),
+        cleanup_control: None,
     };
     let outcome = check_with(&store, &schedule, None, || {
         Err(OnlineReclaimError::Compaction(io::Error::new(
@@ -356,6 +357,7 @@ fn would_block_during_handoff_stops_with_both_copies_preserved() {
             minimum_log_bytes: 1,
             minimum_growth_bytes: 1,
             options: Default::default(),
+            cleanup_control: None,
         };
         let outcome = check_with(&store, &schedule, None, || {
             store.compact_reclaim_with_hooks(
@@ -429,6 +431,7 @@ fn cleanup_error_is_reported_as_a_completed_handoff_and_old_data_is_preserved() 
         minimum_log_bytes: 1,
         minimum_growth_bytes: 1,
         options: Default::default(),
+        cleanup_control: None,
     };
     let result = check_with(&store, &schedule, None, || {
         store.compact_reclaim_with_hooks(
@@ -496,6 +499,7 @@ fn worker_status_distinguishes_incomplete_cleanup_and_panics() {
             minimum_log_bytes: 1,
             minimum_growth_bytes: 1,
             options: Default::default(),
+            cleanup_control: None,
         };
         let thread = thread::spawn(move || {
             guarded_run(&thread_control, || {
@@ -569,6 +573,7 @@ fn successful_cleanup_followed_by_observation_error_preserves_the_report() {
         minimum_log_bytes: 1,
         minimum_growth_bytes: 1,
         options: Default::default(),
+        cleanup_control: None,
     };
     let result = check_with(&store, &schedule, None, || {
         let report = store.compact_and_reclaim(&previous, &schedule.options)?;

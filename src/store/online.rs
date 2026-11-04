@@ -5,7 +5,7 @@ mod worker;
 
 pub use worker::{
     OnlineReclamationFailure, OnlineReclamationFailureStage, OnlineReclamationWorker,
-    OnlineReclamationWorkerStatus,
+    OnlineReclamationWorkerStatus, RetiredCleanupStatus,
 };
 
 use super::{LogQuota, Store, compact_exchange};
@@ -249,7 +249,7 @@ impl OnlineStore {
     /// A compaction error has the same uncertainty rules as
     /// `compact_and_replace`. A reclamation error means the handoff succeeded;
     /// the live handle stays usable, while the previous copy may be partial or
-    /// retained in an owned staging path. Inspect it or use explicit staging
+    /// retained in an owned staging path. Inspect it or use scoped retired
     /// cleanup later. A process crash or panic can leave such a path behind;
     /// a panic can poison a state or maintenance lock and require reopening.
     /// Reclamation is not secure erasure, a total disk quota, or a power-loss
@@ -266,6 +266,56 @@ impl OnlineStore {
             crate::directory::sync_existing,
             |_| Ok(()),
         )
+    }
+
+    /// Removes recognized abandoned retired stages tied to this store's
+    /// current log identity. Before deletion it verifies the entire current
+    /// log against a bounded snapshot while excluding mutations; active or
+    /// unexpected retired contents are skipped. Parent and store paths must
+    /// be trusted and used only by cooperating clients. Generic stages,
+    /// prior log identities and named previous-store paths are not removed.
+    /// Verification may be expensive or exceed the supplied snapshot limits;
+    /// this is not secure erasure or a total storage quota.
+    pub fn cleanup_retired_staging(
+        &self,
+        options: &OnlineCompactionOptions,
+    ) -> io::Result<crate::StagingCleanup> {
+        Access::check_not_active(self as *const Self as usize)?;
+        options.validate()?;
+        let _maintenance = match self.maintenance.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, MaintenanceBusy));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
+        };
+        let state = self.state.read().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        let current = &state.store;
+        let _writer = current
+            .writes
+            .write()
+            .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        let boundary = copy::boundary_locked(current)?;
+        crate::directory::verify_lock_identity(&self.path, &current._lock_file)?;
+        compact_exchange::source_directory_is_owned(&self.path)?;
+        let id = current.log.id().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "retired cleanup requires a witnessed store",
+            )
+        })?;
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| io::Error::other("store has no parent directory"))?;
+        crate::staging::cleanup_retired(parent, &id, || {
+            let snapshot =
+                current.snapshot(options.max_snapshot_keys, options.max_snapshot_key_bytes)?;
+            copy::verify_initial(current, &snapshot, boundary, options)
+        })
     }
 
     fn compact_reclaim_with_hooks(

@@ -34,16 +34,28 @@ fn start(
     store: &Arc<OnlineStore>,
     previous: &std::path::Path,
     growth: u64,
+    cleanup: bool,
 ) -> OnlineReclamationWorker {
-    store
-        .start_reclamation_worker(
+    let worker = if cleanup {
+        store.start_reclamation_worker_with_retired_cleanup(
             previous,
             Duration::from_secs(3600),
             1,
             growth,
             OnlineCompactionOptions::default(),
         )
-        .expect("worker")
+    } else {
+        store.start_reclamation_worker(
+            previous,
+            Duration::from_secs(3600),
+            1,
+            growth,
+            OnlineCompactionOptions::default(),
+        )
+    }
+    .expect("worker");
+    assert_eq!(worker.retired_cleanup_status().is_some(), cleanup);
+    worker
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -55,7 +67,8 @@ fuzz_target!(|data: &[u8]| {
     let previous = root.path().join("previous");
     let mut store = Arc::new(OnlineStore::open(&source).expect("open"));
     let growth = u64::from(data.first().copied().unwrap_or(0)) + 1;
-    let mut worker = start(&store, &previous, growth);
+    let cleanup = data.first().is_some_and(|byte| byte & 1 != 0);
+    let mut worker = start(&store, &previous, growth, cleanup);
     let mut model = BTreeMap::new();
     let mut old = Vec::new();
     for chunk in data.chunks_exact(3) {
@@ -89,13 +102,24 @@ fuzz_target!(|data: &[u8]| {
             3 | 4 => {
                 request(&worker);
                 assert!(!previous.exists());
+                if cleanup {
+                    let status = worker.retired_cleanup_status().expect("cleanup status");
+                    assert!(status.checks > 0 && status.skipped == 0 && status.deferred == 0);
+                    assert_eq!(
+                        store
+                            .cleanup_retired_staging(&Default::default())
+                            .expect("empty cleanup")
+                            .skipped,
+                        0
+                    );
+                }
             }
             5 => {
                 let status = worker.stop().expect("stop");
                 assert!(status.stopped && status.last_error.is_none());
                 drop(store);
                 store = Arc::new(OnlineStore::open(&source).expect("reopen"));
-                worker = start(&store, &previous, growth);
+                worker = start(&store, &previous, growth, cleanup);
             }
             _ => {
                 let path = root.path().join(format!("retained-{}", old.len()));

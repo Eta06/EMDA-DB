@@ -479,6 +479,10 @@ impl Log {
         self.log_id.is_none()
     }
 
+    pub(crate) fn id(&self) -> Option<LogId> {
+        self.log_id
+    }
+
     #[cfg(test)]
     pub(crate) fn attach_test_witness(&mut self, witness: Witness) {
         self.witness = Some(witness);

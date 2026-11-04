@@ -9,16 +9,19 @@ use std::path::{Component, Path, PathBuf};
 const RESERVED: &[u8] = b".emda-stage-v1-";
 const FILE_PREFIX: &str = ".emda-stage-v1-f-";
 const DIR_PREFIX: &str = ".emda-stage-v1-d-";
+const RETIRED_PREFIX: &str = ".emda-stage-v1-r-";
 const OWNER_SUFFIX: &str = ".owner";
 const PAYLOAD_SUFFIX: &str = ".data";
 const FILE_MARKER: &[u8] = b"EMDA-STAGING-V1-FILE\n";
 const DIR_MARKER: &[u8] = b"EMDA-STAGING-V1-DIRECTORY\n";
+const RETIRED_MARKER: &[u8] = b"EMDA-STAGING-V1-RETIRED\n";
 const RANDOM_LEN: usize = 16;
 
 #[derive(Clone, Copy)]
 enum Kind {
     File,
     Directory,
+    Retired,
 }
 
 impl Kind {
@@ -26,6 +29,7 @@ impl Kind {
         match self {
             Self::File => FILE_PREFIX,
             Self::Directory => DIR_PREFIX,
+            Self::Retired => RETIRED_PREFIX,
         }
     }
 
@@ -33,7 +37,12 @@ impl Kind {
         match self {
             Self::File => FILE_MARKER,
             Self::Directory => DIR_MARKER,
+            Self::Retired => RETIRED_MARKER,
         }
+    }
+
+    fn marker_len(self) -> usize {
+        self.marker().len() + if matches!(self, Self::Retired) { 20 } else { 0 }
     }
 }
 
@@ -41,6 +50,23 @@ impl Kind {
 // All new staging operations hold it shared until publication and parent sync
 // finish. Cleanup takes it exclusively. External processes must cooperate.
 struct ParentLock(File);
+
+// Only this specific pre-cleanup parent lock conflict is safely retryable.
+#[derive(Debug)]
+struct RetiredParentBusy;
+impl std::fmt::Display for RetiredParentBusy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("retired staging parent is busy")
+    }
+}
+impl std::error::Error for RetiredParentBusy {}
+
+pub(crate) fn is_retired_parent_busy(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        && error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<RetiredParentBusy>())
+}
 
 impl ParentLock {
     fn shared(parent: &Path) -> io::Result<Self> {
@@ -103,13 +129,23 @@ impl Stage {
         sync_marker: impl FnOnce(&File) -> io::Result<()>,
         sync_parent: impl FnOnce(&File) -> io::Result<()>,
     ) -> io::Result<Self> {
+        Self::new_with_marker(parent, kind, kind.marker(), sync_marker, sync_parent)
+    }
+
+    fn new_with_marker(
+        parent: &Path,
+        kind: Kind,
+        content: &[u8],
+        sync_marker: impl FnOnce(&File) -> io::Result<()>,
+        sync_parent: impl FnOnce(&File) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let parent_lock = ParentLock::shared(parent)?;
         let mut marker = tempfile::Builder::new()
             .prefix(kind.prefix())
             .suffix(OWNER_SUFFIX)
             .rand_bytes(RANDOM_LEN)
             .tempfile_in(parent)?;
-        marker.write_all(kind.marker())?;
+        marker.write_all(content)?;
         sync_marker(marker.as_file())?;
         // Make the ownership marker durable before creating a payload. If a
         // crash leaves payload data, cleanup can find the persisted marker.
@@ -139,6 +175,24 @@ impl Stage {
 
     pub(crate) fn directory(parent: &Path) -> io::Result<Self> {
         let mut stage = Self::new(parent, Kind::Directory)?;
+        fs::DirBuilder::new().mode(0o700).create(&stage.payload)?;
+        stage.created = true;
+        Ok(stage)
+    }
+
+    /// Marks a redundant retired-store stage with the verified replacement's
+    /// log identity. Called only after the replacement handoff is durable.
+    pub(crate) fn retired_directory(parent: &Path, replacement_id: &[u8; 16]) -> io::Result<Self> {
+        let mut content = RETIRED_MARKER.to_vec();
+        content.extend_from_slice(replacement_id);
+        content.extend_from_slice(&crc32fast::hash(&content).to_le_bytes());
+        let mut stage = Self::new_with_marker(
+            parent,
+            Kind::Retired,
+            &content,
+            File::sync_all,
+            File::sync_all,
+        )?;
         fs::DirBuilder::new().mode(0o700).create(&stage.payload)?;
         stage.created = true;
         Ok(stage)
@@ -176,6 +230,12 @@ impl Stage {
                 crate::backup::publish_directory(&self.payload, destination)?;
                 self.created = false;
             }
+            Kind::Retired => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "retired staging cannot be published",
+                ));
+            }
         }
         // tempfile can fall back to linking and unlinking for file publication;
         // its fallback ignores an unlink failure. Keep responsibility for the
@@ -195,7 +255,7 @@ impl Drop for Stage {
         let removed = if self.created {
             let result = match self.kind {
                 Kind::File => fs::remove_file(&self.payload),
-                Kind::Directory => fs::remove_dir_all(&self.payload),
+                Kind::Directory | Kind::Retired => fs::remove_dir_all(&self.payload),
             };
             result.is_ok() || result.is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
         } else {
@@ -230,8 +290,10 @@ fn marker_kind(name: &OsStr) -> Option<Kind> {
     let name = name.to_str()?;
     let (kind, remainder) = if let Some(rest) = name.strip_prefix(FILE_PREFIX) {
         (Kind::File, rest)
+    } else if let Some(rest) = name.strip_prefix(DIR_PREFIX) {
+        (Kind::Directory, rest)
     } else {
-        (Kind::Directory, name.strip_prefix(DIR_PREFIX)?)
+        (Kind::Retired, name.strip_prefix(RETIRED_PREFIX)?)
     };
     let random = remainder.strip_suffix(OWNER_SUFFIX)?;
     (random.len() == RANDOM_LEN && random.bytes().all(|byte| byte.is_ascii_alphanumeric()))
@@ -251,6 +313,8 @@ fn marker_kind(name: &OsStr) -> Option<Kind> {
 /// cleanup error may follow partial deletion; the directory is synchronized
 /// before return where possible, and callers may run cleanup again. This is not
 /// secure erasure, an automatic janitor, or a total disk-usage quota.
+/// Retired-store markers are skipped: their replacement must be verified with
+/// `OnlineStore::cleanup_retired_staging` before their contents are removed.
 ///
 /// A process killed before it finishes can leave a marker or payload behind.
 /// Published destinations are outside the reserved namespace and are untouched.
@@ -262,9 +326,45 @@ fn cleanup_with_sync(
     parent: &Path,
     sync: impl FnOnce(&File) -> io::Result<()>,
 ) -> io::Result<StagingCleanup> {
+    cleanup_selected_with_sync(parent, None, sync, || Ok(()))
+}
+
+/// Removes only marked retired copies belonging to one verified replacement.
+/// Caller must hold the replacement's writer barrier and verify its witness.
+pub(crate) fn cleanup_retired(
+    parent: &Path,
+    replacement_id: &[u8; 16],
+    verify: impl FnOnce() -> io::Result<()>,
+) -> io::Result<StagingCleanup> {
+    let mut verify = Some(verify);
+    cleanup_selected_with_sync(parent, Some(replacement_id), File::sync_all, || {
+        if let Some(verify) = verify.take() {
+            verify()?;
+        }
+        Ok(())
+    })
+}
+
+fn cleanup_selected_with_sync(
+    parent: &Path,
+    replacement_id: Option<&[u8; 16]>,
+    sync: impl FnOnce(&File) -> io::Result<()>,
+    before_remove: impl FnMut() -> io::Result<()>,
+) -> io::Result<StagingCleanup> {
     check_path(parent)?;
-    let guard = ParentLock::exclusive(parent)?;
-    let result = cleanup_locked(parent);
+    let guard = match ParentLock::exclusive(parent) {
+        Ok(guard) => guard,
+        Err(error) if replacement_id.is_some() && error.kind() == io::ErrorKind::WouldBlock => {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, RetiredParentBusy));
+        }
+        Err(error) => return Err(error),
+    };
+    let result = cleanup_locked(parent, replacement_id, before_remove);
+    if replacement_id.is_some()
+        && matches!(&result, Ok(report) if report.removed_payloads == 0 && report.removed_markers == 0)
+    {
+        return result;
+    }
     let synchronized = sync(&guard.0);
     match (result, synchronized) {
         (Err(error), _) => Err(error),
@@ -276,244 +376,185 @@ fn cleanup_with_sync(
     }
 }
 
-fn cleanup_locked(parent: &Path) -> io::Result<StagingCleanup> {
+fn cleanup_locked(
+    parent: &Path,
+    replacement_id: Option<&[u8; 16]>,
+    mut before_remove: impl FnMut() -> io::Result<()>,
+) -> io::Result<StagingCleanup> {
     let mut report = StagingCleanup::default();
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
         let Some(kind) = marker_kind(&entry.file_name()) else {
             continue;
         };
+        if replacement_id.is_none() && matches!(kind, Kind::Retired) {
+            report.skipped += 1;
+            continue;
+        }
+        if replacement_id.is_some() && !matches!(kind, Kind::Retired) {
+            continue;
+        }
         let marker = entry.path();
         let meta = fs::symlink_metadata(&marker)?;
-        if !meta.file_type().is_file() || meta.len() != kind.marker().len() as u64 {
+        if !meta.file_type().is_file() || meta.len() != kind.marker_len() as u64 {
             report.skipped += 1;
             continue;
         }
         let mut content = Vec::new();
         File::open(&marker)?
-            .take(kind.marker().len() as u64 + 1)
+            .take(kind.marker_len() as u64 + 1)
             .read_to_end(&mut content)?;
-        if content != kind.marker() {
+        let valid = if matches!(kind, Kind::Retired) {
+            let split = content.len().saturating_sub(4);
+            content.starts_with(RETIRED_MARKER)
+                && content.len() == kind.marker_len()
+                && crc32fast::hash(&content[..split])
+                    == u32::from_le_bytes(content[split..].try_into().expect("four checksum bytes"))
+        } else {
+            content == kind.marker()
+        };
+        if !valid {
             report.skipped += 1;
             continue;
+        }
+        if let Some(expected) = replacement_id {
+            if &content[RETIRED_MARKER.len()..RETIRED_MARKER.len() + 16] != expected {
+                continue;
+            }
         }
         let payload = payload_path(&marker);
         match fs::symlink_metadata(&payload) {
             Ok(meta) => {
                 let expected = match kind {
                     Kind::File => meta.file_type().is_file(),
-                    Kind::Directory => meta.file_type().is_dir(),
+                    Kind::Directory | Kind::Retired => meta.file_type().is_dir(),
                 };
                 if !expected {
                     report.skipped += 1;
                     continue;
                 }
+                // A selective cleanup must not remove unknown files or an
+                // actively owned retired store. Keep its lock through unlink.
+                let retired_lock = if replacement_id.is_some() {
+                    match lock_safe_retired_payload(&payload)? {
+                        Some(lock) => lock,
+                        None => {
+                            report.skipped += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+                before_remove()?;
                 match kind {
                     Kind::File => fs::remove_file(&payload)?,
                     Kind::Directory => fs::remove_dir_all(&payload)?,
+                    Kind::Retired if replacement_id.is_some() => {
+                        remove_retired_stage(&payload, |_| Ok(()))?;
+                    }
+                    Kind::Retired => unreachable!("generic cleanup skips retired stages"),
                 }
+                drop(retired_lock);
                 report.removed_payloads += 1;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+        before_remove()?;
         fs::remove_file(marker)?;
         report.removed_markers += 1;
     }
     Ok(report)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::symlink;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RetiredRemovalPoint {
+    Records,
+    Witness,
+    Lock,
+    RetiredSync,
+    RetiredDirectory,
+    StageSync,
+    StageDirectory,
+}
 
-    fn orphan(mut stage: Stage) -> PathBuf {
-        let path = stage.payload.clone();
-        stage.created = false;
-        stage.marker.take().unwrap().keep().unwrap();
-        drop(stage);
-        path
-    }
-
-    #[test]
-    fn active_operations_block_cleanup_and_orphans_can_be_removed() {
-        let directory = tempfile::tempdir().unwrap();
-        let (file_stage, mut file) = Stage::file(directory.path()).unwrap();
-        file.write_all(b"sensitive backup").unwrap();
-        let dir_stage = Stage::directory(directory.path()).unwrap();
-        fs::write(dir_stage.path().join("data"), b"sensitive store").unwrap();
-        assert_eq!(
-            cleanup_abandoned_staging(directory.path())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        let file_path = orphan(file_stage);
-        assert_eq!(
-            cleanup_abandoned_staging(directory.path())
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        assert!(file_path.exists());
-        let dir_path = orphan(dir_stage);
-        drop(file);
-        assert_eq!(
-            cleanup_abandoned_staging(directory.path()).unwrap(),
-            StagingCleanup {
-                removed_payloads: 2,
-                removed_markers: 2,
-                skipped: 0,
+// Keep the lock until the log and witness are unlinked. This makes cleanup
+// resumable after a process interruption while preserving unexpected entries.
+fn remove_retired_stage(
+    stage: &Path,
+    mut hook: impl FnMut(RetiredRemovalPoint) -> io::Result<()>,
+) -> io::Result<()> {
+    let retired = stage.join("retired");
+    if retired.exists() {
+        for (name, point) in [
+            ("records.log", RetiredRemovalPoint::Records),
+            ("commit.state", RetiredRemovalPoint::Witness),
+            ("store.lock", RetiredRemovalPoint::Lock),
+        ] {
+            match fs::remove_file(retired.join(name)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
-        );
-        assert!(!file_path.exists());
-        assert!(!dir_path.exists());
-        assert_eq!(
-            cleanup_abandoned_staging(directory.path()).unwrap(),
-            StagingCleanup::default()
-        );
+            hook(point)?;
+        }
+        File::open(&retired)?.sync_all()?;
+        hook(RetiredRemovalPoint::RetiredSync)?;
+        fs::remove_dir(&retired)?;
+        hook(RetiredRemovalPoint::RetiredDirectory)?;
     }
+    File::open(stage)?.sync_all()?;
+    hook(RetiredRemovalPoint::StageSync)?;
+    fs::remove_dir(stage)?;
+    hook(RetiredRemovalPoint::StageDirectory)?;
+    Ok(())
+}
 
-    #[test]
-    fn cleanup_preserves_unknown_legacy_and_symlink_entries() {
-        let directory = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("sentinel"), b"preserve").unwrap();
-        let legacy = directory.path().join(".db-backup-old");
-        fs::write(&legacy, b"old data").unwrap();
-        let bogus = directory
-            .path()
-            .join(".emda-stage-v1-f-1234567890123456.owner");
-        fs::write(&bogus, b"unknown").unwrap();
-        fs::write(payload_path(&bogus), b"unowned").unwrap();
-        let link_marker = directory
-            .path()
-            .join(".emda-stage-v1-d-1234567890123456.owner");
-        fs::write(&link_marker, DIR_MARKER).unwrap();
-        symlink(outside.path(), payload_path(&link_marker)).unwrap();
-        let marker_link = directory
-            .path()
-            .join(".emda-stage-v1-f-abcdefghijklmnop.owner");
-        symlink(&bogus, &marker_link).unwrap();
-        let report = cleanup_abandoned_staging(directory.path()).unwrap();
-        assert_eq!(report.removed_payloads, 0);
-        assert_eq!(report.removed_markers, 0);
-        assert_eq!(report.skipped, 3);
-        assert_eq!(fs::read(&legacy).unwrap(), b"old data");
-        assert_eq!(fs::read(payload_path(&bogus)).unwrap(), b"unowned");
-        assert_eq!(
-            fs::read(outside.path().join("sentinel")).unwrap(),
-            b"preserve"
-        );
-        assert!(link_marker.exists());
+// Outer Option: None means unexpected contents or a busy lock. Inner Option:
+// an empty stage or fully unlinked retired directory needs no lock descriptor.
+fn lock_safe_retired_payload(stage: &Path) -> io::Result<Option<Option<File>>> {
+    let mut retired = None;
+    for entry in fs::read_dir(stage)? {
+        let entry = entry?;
+        if entry.file_name() != "retired" || !entry.file_type()?.is_dir() || retired.is_some() {
+            return Ok(None);
+        }
+        retired = Some(entry.path());
     }
-
-    #[test]
-    fn cleanup_removes_orphan_marker_and_reports_sync_failure() {
-        let directory = tempfile::tempdir().unwrap();
-        let (stage, file) = Stage::file(directory.path()).unwrap();
-        let payload = orphan(stage);
-        drop(file);
-        fs::remove_file(payload).unwrap();
-        let error = cleanup_with_sync(directory.path(), |_| {
-            Err(io::Error::other(
-                "injected directory synchronization failure",
-            ))
-        })
-        .unwrap_err();
-        assert!(error.to_string().contains("may be incomplete"));
-        assert_eq!(
-            cleanup_abandoned_staging(directory.path()).unwrap(),
-            StagingCleanup::default()
-        );
-    }
-
-    #[test]
-    fn cleanup_never_follows_links_inside_a_staging_directory() {
-        let directory = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("sentinel"), b"preserve").unwrap();
-        let stage = Stage::directory(directory.path()).unwrap();
-        symlink(outside.path(), stage.path().join("link")).unwrap();
-        orphan(stage);
-        let report = cleanup_abandoned_staging(directory.path()).unwrap();
-        assert_eq!(report.removed_payloads, 1);
-        assert_eq!(
-            fs::read(outside.path().join("sentinel")).unwrap(),
-            b"preserve"
-        );
-    }
-
-    #[test]
-    fn cleanup_only_removes_the_staging_name_of_a_published_hard_link() {
-        let directory = tempfile::tempdir().unwrap();
-        let (stage, mut file) = Stage::file(directory.path()).unwrap();
-        file.write_all(b"published data").unwrap();
-        let published = directory.path().join("published");
-        fs::hard_link(stage.path(), &published).unwrap();
-        let payload = orphan(stage);
-        drop(file);
-        let report = cleanup_abandoned_staging(directory.path()).unwrap();
-        assert_eq!((report.removed_payloads, report.removed_markers), (1, 1));
-        assert!(!payload.exists());
-        assert_eq!(fs::read(published).unwrap(), b"published data");
-    }
-
-    #[test]
-    fn ownership_sync_failures_stop_before_any_payload_is_created() {
-        use std::cell::RefCell;
-        for fail_at in 0..2 {
-            let directory = tempfile::tempdir().unwrap();
-            let calls = RefCell::new(Vec::new());
-            let result = Stage::new_with_sync(
-                directory.path(),
-                Kind::File,
-                |file| {
-                    calls.borrow_mut().push("marker");
-                    if fail_at == 0 {
-                        Err(io::Error::other("injected marker sync failure"))
-                    } else {
-                        file.sync_all()
-                    }
-                },
-                |_| {
-                    calls.borrow_mut().push("parent");
-                    Err(io::Error::other("injected parent sync failure"))
-                },
-            );
-            assert!(result.is_err());
-            assert_eq!(
-                *calls.borrow(),
-                if fail_at == 0 {
-                    vec!["marker"]
-                } else {
-                    vec!["marker", "parent"]
-                }
-            );
-            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
-            assert_eq!(
-                cleanup_abandoned_staging(directory.path()).unwrap(),
-                StagingCleanup::default()
-            );
+    let Some(retired) = retired else {
+        return Ok(Some(None));
+    };
+    let mut has_lock = false;
+    let mut has_other = false;
+    for entry in fs::read_dir(&retired)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !["records.log", "commit.state", "store.lock"]
+            .iter()
+            .any(|known| name == *known)
+            || !entry.file_type()?.is_file()
+        {
+            return Ok(None);
+        }
+        if name == "store.lock" {
+            has_lock = true;
+        } else {
+            has_other = true;
         }
     }
-
-    #[test]
-    fn parent_lock_release_is_not_delayed_by_a_duplicate_descriptor() {
-        let directory = tempfile::tempdir().unwrap();
-        let guard = ParentLock::shared(directory.path()).unwrap();
-        let duplicate = guard.0.try_clone().unwrap();
-        assert_eq!(
-            ParentLock::exclusive(directory.path())
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        drop(guard);
-        let exclusive = ParentLock::exclusive(directory.path()).unwrap();
-        drop(duplicate);
-        drop(exclusive);
+    if !has_lock {
+        return Ok((!has_other).then_some(None));
     }
+    let lock = File::open(retired.join("store.lock"))?;
+    match fs2::FileExt::try_lock_exclusive(&lock) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+        Err(error) => return Err(error),
+    }
+    crate::directory::verify_lock_identity(&retired, &lock)?;
+    Ok(Some(Some(lock)))
 }
+
+#[cfg(test)]
+mod tests;

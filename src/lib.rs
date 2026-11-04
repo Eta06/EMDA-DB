@@ -60,6 +60,6 @@ pub use store::{
     MAX_TRANSACTION_READ_CONSTRAINTS, MAX_TRANSACTION_STAGED_TOTAL_BYTES,
     MAX_TRANSACTION_VALIDATION_ITEMS, OnlineCompactionOptions, OnlineCompactionReport,
     OnlineReclaimError, OnlineReclamationFailure, OnlineReclamationFailureStage,
-    OnlineReclamationWorker, OnlineReclamationWorkerStatus, OnlineStore, Snapshot, Store,
-    TimedTransactionError, Transaction, TransactionMode,
+    OnlineReclamationWorker, OnlineReclamationWorkerStatus, OnlineStore, RetiredCleanupStatus,
+    Snapshot, Store, TimedTransactionError, Transaction, TransactionMode,
 };

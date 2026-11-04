@@ -22,7 +22,7 @@ pub enum OnlineReclamationFailureStage {
     Observation,
     /// Compaction or publication failed; the handoff outcome may be uncertain.
     Compaction,
-    /// The handoff succeeded but removing the old copy did not complete.
+    /// Removing a retired copy from this or an earlier handoff did not complete.
     Reclamation,
     /// The worker panicked; the store or its locks may require reopening.
     Panic,
@@ -57,12 +57,29 @@ pub struct OnlineReclamationWorkerStatus {
     pub last_error: Option<OnlineReclamationFailure>,
 }
 
+/// Cumulative results of optional scoped retired-stage cleanup.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RetiredCleanupStatus {
+    /// Attempted cleanup checks, including deferred checks.
+    pub checks: u64,
+    /// Payload directories removed after verifying the current store.
+    pub removed_payloads: u64,
+    /// Ownership markers removed after verifying the current store.
+    pub removed_markers: u64,
+    /// Stages skipped because their marker, contents or lock was unsafe.
+    pub skipped: u64,
+    /// Checks deferred before cleanup because an appropriate lock was busy.
+    pub deferred: u64,
+}
+
 #[derive(Default)]
 struct WorkerState {
     stopping: bool,
     requested: bool,
     busy_checks: u64,
     status: OnlineReclamationWorkerStatus,
+    retired_cleanup: Option<RetiredCleanupStatus>,
 }
 
 #[derive(Default)]
@@ -125,6 +142,11 @@ impl OnlineReclamationWorker {
         self.control.lock().busy_checks
     }
 
+    /// Returns scoped cleanup counters when that option was enabled.
+    pub fn retired_cleanup_status(&self) -> Option<RetiredCleanupStatus> {
+        self.control.lock().retired_cleanup.clone()
+    }
+
     fn shutdown(&mut self) -> io::Result<()> {
         {
             let mut state = self.control.lock();
@@ -159,6 +181,7 @@ struct Schedule {
     minimum_log_bytes: u64,
     minimum_growth_bytes: u64,
     options: OnlineCompactionOptions,
+    cleanup_control: Option<Arc<Control>>,
 }
 
 struct Observation {
@@ -196,6 +219,52 @@ impl OnlineStore {
         minimum_growth_bytes: u64,
         options: OnlineCompactionOptions,
     ) -> io::Result<OnlineReclamationWorker> {
+        self.start_reclamation_worker_inner(
+            previous,
+            interval,
+            minimum_log_bytes,
+            minimum_growth_bytes,
+            options,
+            false,
+        )
+    }
+
+    /// Starts the reclamation worker with scoped cleanup of matching retired
+    /// stages enabled. Each check first verifies the current store before any
+    /// removal, skips unknown or locked contents, and does not compact while
+    /// such a stage is skipped. Generic stages, named previous copies and
+    /// stages for different log identities remain for explicit inspection.
+    /// A malformed retired marker in the parent can prevent compaction until
+    /// inspected, even if it belongs to another store. The supplied previous
+    /// path must be unused when starting the worker. Cleanup can be expensive
+    /// and stops on an ambiguous failure. The current log must be witnessed.
+    pub fn start_reclamation_worker_with_retired_cleanup(
+        self: &Arc<Self>,
+        previous: impl AsRef<Path>,
+        interval: Duration,
+        minimum_log_bytes: u64,
+        minimum_growth_bytes: u64,
+        options: OnlineCompactionOptions,
+    ) -> io::Result<OnlineReclamationWorker> {
+        self.start_reclamation_worker_inner(
+            previous,
+            interval,
+            minimum_log_bytes,
+            minimum_growth_bytes,
+            options,
+            true,
+        )
+    }
+
+    fn start_reclamation_worker_inner(
+        self: &Arc<Self>,
+        previous: impl AsRef<Path>,
+        interval: Duration,
+        minimum_log_bytes: u64,
+        minimum_growth_bytes: u64,
+        options: OnlineCompactionOptions,
+        cleanup_retired: bool,
+    ) -> io::Result<OnlineReclamationWorker> {
         if !cfg!(target_os = "linux") {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -226,6 +295,9 @@ impl OnlineStore {
         }
         let lease = WorkerLease(Arc::clone(self));
         let control = Arc::new(Control::default());
+        if cleanup_retired {
+            control.lock().retired_cleanup = Some(RetiredCleanupStatus::default());
+        }
         let thread_control = Arc::clone(&control);
         let schedule = Schedule {
             previous,
@@ -233,6 +305,7 @@ impl OnlineStore {
             minimum_log_bytes,
             minimum_growth_bytes,
             options,
+            cleanup_control: cleanup_retired.then(|| Arc::clone(&control)),
         };
         let thread = thread::Builder::new()
             .name("reclamation-worker".into())
@@ -276,6 +349,46 @@ enum Outcome {
 }
 
 fn check(store: &OnlineStore, schedule: &Schedule, baseline: Option<&Observation>) -> Outcome {
+    if let Some(control) = &schedule.cleanup_control {
+        let result = store.cleanup_retired_staging(&schedule.options);
+        let mut state = control.lock();
+        let metrics = state
+            .retired_cleanup
+            .as_mut()
+            .expect("enabled cleanup has metrics");
+        metrics.checks = metrics.checks.saturating_add(1);
+        match result {
+            Ok(report) => {
+                metrics.removed_payloads = metrics
+                    .removed_payloads
+                    .saturating_add(u64::try_from(report.removed_payloads).unwrap_or(u64::MAX));
+                metrics.removed_markers = metrics
+                    .removed_markers
+                    .saturating_add(u64::try_from(report.removed_markers).unwrap_or(u64::MAX));
+                metrics.skipped = metrics
+                    .skipped
+                    .saturating_add(u64::try_from(report.skipped).unwrap_or(u64::MAX));
+                if report.skipped > 0 {
+                    return Outcome::Skipped;
+                }
+            }
+            Err(error)
+                if super::is_maintenance_busy(&error)
+                    || crate::staging::is_retired_parent_busy(&error) =>
+            {
+                metrics.deferred = metrics.deferred.saturating_add(1);
+                return Outcome::MaintenanceBusy;
+            }
+            Err(error) => {
+                return Outcome::Failed(Failure {
+                    stage: OnlineReclamationFailureStage::Reclamation,
+                    error,
+                    report: None,
+                    reclaimed: false,
+                });
+            }
+        }
+    }
     check_with(store, schedule, baseline, || {
         store.compact_and_reclaim(&schedule.previous, &schedule.options)
     })

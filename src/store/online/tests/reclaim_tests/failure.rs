@@ -46,7 +46,7 @@ fn every_reclamation_failure_keeps_the_synchronized_live_store_usable() {
             Some(b"39".to_vec())
         );
         store.with_store(|db| db.put(b"after", b"safe")).unwrap();
-        let cleaned = crate::cleanup_abandoned_staging(root.path()).unwrap();
+        let cleaned = store.cleanup_retired_staging(&Default::default()).unwrap();
         if fail_at != reclaim::Point::BeforeMove {
             assert!(cleaned.removed_markers >= 1);
             if !matches!(

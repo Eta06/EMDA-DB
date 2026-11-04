@@ -32,7 +32,7 @@ use log_quota::LogQuota;
 pub use online::{
     OnlineCompactionOptions, OnlineCompactionReport, OnlineReclaimError, OnlineReclamationFailure,
     OnlineReclamationFailureStage, OnlineReclamationWorker, OnlineReclamationWorkerStatus,
-    OnlineStore,
+    OnlineStore, RetiredCleanupStatus,
 };
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
