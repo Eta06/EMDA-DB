@@ -21,6 +21,8 @@ fn expired_transactions_do_not_call_callbacks_and_unexpired_ones_commit() {
     for mode in [
         CheckpointTransactionMode::Conservative,
         CheckpointTransactionMode::Fifo,
+        CheckpointTransactionMode::ReadSet,
+        CheckpointTransactionMode::ReadSetFifo,
     ] {
         let called = Cell::new(false);
         let result = store.transaction_until(Instant::now(), mode, |_| {
@@ -51,6 +53,8 @@ fn expiry_in_callback_discards_staged_writes_and_forwarded_read_timeout_is_an_op
     for mode in [
         CheckpointTransactionMode::Conservative,
         CheckpointTransactionMode::Fifo,
+        CheckpointTransactionMode::ReadSet,
+        CheckpointTransactionMode::ReadSetFifo,
     ] {
         let deadline = Instant::now() + Duration::from_millis(50);
         let result = store.transaction_until(deadline, mode, |tx| {

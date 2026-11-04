@@ -116,17 +116,20 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                                 tx.put(b"y", &[next[1]])?;
                                 Ok([x, y])
                             };
-                            let result = match (operation, iteration % 2) {
-                                (0, 0) => store.transaction(action),
-                                (1, 0) => store.transaction_with_fifo(action),
-                                (operation, _) => store
+                            let result = match (iteration + operation) % 8 {
+                                0 => store.transaction(action),
+                                1 => store.transaction_with_fifo(action),
+                                2 => store.transaction_with_read_set(action),
+                                3 => store.transaction_with_read_set_fifo(action),
+                                mode => store
                                     .transaction_until(
                                         std::time::Instant::now()
                                             + std::time::Duration::from_secs(30),
-                                        if operation == 0 {
-                                            CheckpointTransactionMode::Conservative
-                                        } else {
-                                            CheckpointTransactionMode::Fifo
+                                        match mode {
+                                            4 => CheckpointTransactionMode::Conservative,
+                                            5 => CheckpointTransactionMode::Fifo,
+                                            6 => CheckpointTransactionMode::ReadSet,
+                                            _ => CheckpointTransactionMode::ReadSetFifo,
                                         },
                                         action,
                                     )

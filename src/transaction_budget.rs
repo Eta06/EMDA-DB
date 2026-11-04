@@ -4,6 +4,8 @@ use std::sync::Mutex;
 
 /// Maximum combined encoded staged-record bytes across transactions on one open store.
 /// This does not include allocator overhead, snapshots, returned values, or commit buffers.
+/// Checkpoint read-set transactions also reserve retained point keys and location metadata
+/// from this budget, so less space can be available for staged records.
 pub const MAX_TRANSACTION_STAGED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) struct TransactionBudget {

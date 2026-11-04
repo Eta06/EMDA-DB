@@ -15,6 +15,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+mod read_set;
 mod transaction;
 pub use transaction::{CheckpointTransaction, CheckpointTransactionMode};
 

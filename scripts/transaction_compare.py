@@ -12,7 +12,8 @@ import time
 
 from benchmarks.telemetry import difference, quiet_window, read, snapshot
 
-MODES = ("conservative", "readset", "readset-fifo", "checkpoint", "checkpoint-fifo", "sqlite")
+MODES = ("conservative", "readset", "readset-fifo", "checkpoint", "checkpoint-fifo",
+         "checkpoint-readset", "checkpoint-readset-fifo", "sqlite")
 
 
 def sha256(path):

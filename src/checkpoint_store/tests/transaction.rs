@@ -379,3 +379,35 @@ fn sync_timeout_is_an_unknown_operation_error_not_confirmed_expiry() {
         vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
     );
 }
+
+#[test]
+fn point_read_reservations_share_the_staged_budget_and_release_on_abort_and_panic() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let charge = b"missing-a".len() + std::mem::size_of::<Option<crate::log::ValueLocation>>();
+    store.transaction_budget.lock().unwrap().limit = charge * 2 - 1;
+    let result: io::Result<()> = store.transaction_with_read_set(|outer| {
+        assert_eq!(outer.get(b"missing-a")?, None);
+        assert_eq!(store.transaction_budget.lock().unwrap().used, charge);
+        let rejected = store.transaction_with_read_set(|inner| inner.get(b"missing-b"));
+        assert!(rejected.is_err());
+        assert_eq!(store.transaction_budget.lock().unwrap().used, charge);
+        Err(io::Error::other("abort outer transaction"))
+    });
+    assert!(result.is_err());
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: io::Result<()> = store.transaction_with_read_set(|tx| {
+            assert_eq!(tx.get(b"missing-a")?, None);
+            panic!("abort transaction callback")
+        });
+    }));
+    assert!(panic.is_err());
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    store
+        .transaction_with_read_set(|tx| {
+            assert_eq!(tx.get(b"missing-a")?, None);
+            Ok(())
+        })
+        .unwrap();
+}

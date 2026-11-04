@@ -1,4 +1,4 @@
-//! Conservative optimistic transactions over the checkpoint-backed store.
+//! Optimistic transactions over the checkpoint-backed store.
 use super::*;
 use crate::TimedTransactionError;
 use crate::log::ValueLocation;
@@ -14,19 +14,23 @@ pub enum CheckpointTransactionMode {
     Conservative,
     /// Admit participating callbacks and commits through the FIFO queue.
     Fifo,
+    /// Validate observed point versions; scans use conservative validation.
+    ReadSet,
+    /// Use point validation with FIFO admission.
+    ReadSetFifo,
 }
 
 /// A bounded, process-local transaction on a checkpoint-backed store.
 ///
-/// Reads and scans see staged changes. Every read checks that no write has
-/// committed since the transaction began; otherwise it returns `WouldBlock`.
-/// A successful callback is checked again before its changes are committed.
-/// Conflicts include unrelated writes and ABA changes. Callers must retry the
-/// entire callback themselves and manage any external side effects.
+/// Reads and scans see staged changes. The conservative modes conflict on any
+/// intervening write. Read-set modes validate observed point versions and use
+/// conservative validation after a scan. Callers must retry a conflicted
+/// callback themselves and manage any external side effects.
 pub struct CheckpointTransaction<'a> {
     store: &'a CheckpointStore,
     generation: u64,
     deadline: Option<Instant>,
+    read_set: Option<Mutex<super::read_set::ReadSet>>,
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     encoded_bytes: usize,
 }
@@ -34,12 +38,19 @@ pub struct CheckpointTransaction<'a> {
 impl Drop for CheckpointTransaction<'_> {
     fn drop(&mut self) {
         self.staged.clear();
-        if self.encoded_bytes > 4 {
+        let mut reserved = self.encoded_bytes - 4;
+        if let Some(read_set) = &mut self.read_set {
+            reserved += read_set
+                .get_mut()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clear();
+        }
+        if reserved > 0 {
             self.store
                 .transaction_budget
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
-                .release(self.encoded_bytes - 4);
+                .release(reserved);
         }
     }
 }
@@ -56,19 +67,35 @@ impl CheckpointTransaction<'_> {
             ));
         }
         let state = self.store.read()?;
-        if state.generation != self.generation {
+        if let Some(read_set) = &self.read_set {
+            read_set
+                .lock()
+                .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
+                .check_state(&state)?;
+        } else if state.generation != self.generation {
             return Err(conflict());
         }
         Ok(state)
     }
 
-    /// Reads the transaction's staged value or its consistent starting state.
+    /// Reads a staged value or a value validated at successful commit.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
         let state = self.state()?;
         match self.staged.get(key) {
             Some(value) => Ok(value.clone()),
-            None => state.view.get(key),
+            None => {
+                let location = state.view.location(key)?;
+                if let Some(read_set) = &self.read_set {
+                    read_set
+                        .lock()
+                        .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
+                        .record_point(self.store, key, location)?;
+                }
+                location
+                    .map(|location| state.view.base.log.read(location))
+                    .transpose()
+            }
         }
     }
 
@@ -82,7 +109,7 @@ impl CheckpointTransaction<'_> {
         self.stage(Operation::Delete, key, &[])
     }
 
-    /// Scans the consistent starting state merged with staged changes.
+    /// Scans a validated state merged with staged changes.
     /// Bounds are exclusive; pages have the same entry and byte caps as
     /// `CheckpointStore::scan`. Continue pagination until a page is empty.
     pub fn scan(
@@ -103,6 +130,12 @@ impl CheckpointTransaction<'_> {
         let state = self.state()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
+        }
+        if let Some(read_set) = &self.read_set {
+            read_set
+                .lock()
+                .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
+                .record_scan(state.generation);
         }
         let bounds = (
             after.map_or(Unbounded, Excluded),
@@ -251,7 +284,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, None)
+        self.run_transaction(action, false, false, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -266,11 +299,41 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, None)
+        self.run_transaction(action, false, true, None)
             .map_err(TimedTransactionError::into_io)
     }
 
-    /// Runs a conservative or FIFO transaction with an operation-boundary deadline.
+    /// Runs a transaction validating its observed point versions at commit.
+    ///
+    /// Unrelated writes can commit during the callback. A previously present
+    /// value changed and restored has a different log location and conflicts;
+    /// an absent key inserted and deleted may match absence again. A scan
+    /// switches to conservative validation from that scan onward, including
+    /// writes outside its bounds. Point dependencies are limited to 2,048
+    /// distinct keys and 2 MiB of key bytes. Their logical reservations share
+    /// the per-store staged-record budget; allocator overhead is excluded.
+    /// Reads through independent store methods are not tracked. Callbacks and
+    /// external effects are never retried or rolled back automatically.
+    pub fn transaction_with_read_set<T>(
+        &self,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.run_transaction(action, true, false, None)
+            .map_err(TimedTransactionError::into_io)
+    }
+
+    /// Runs a point read-set transaction with FIFO callback and commit admission.
+    /// FIFO has the same nesting, blocking and fairness limitations as
+    /// `transaction_with_fifo`; nonparticipating writes can still conflict.
+    pub fn transaction_with_read_set_fifo<T>(
+        &self,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.run_transaction(action, true, true, None)
+            .map_err(TimedTransactionError::into_io)
+    }
+
+    /// Runs a selected transaction mode with an operation-boundary deadline.
     ///
     /// `DeadlineExceeded` means this transaction's staged changes were not
     /// submitted for commit. `Operation` wraps callback and I/O errors; a
@@ -285,16 +348,21 @@ impl CheckpointStore {
         mode: CheckpointTransactionMode,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> Result<T, TimedTransactionError> {
-        self.run_transaction(
-            action,
-            matches!(mode, CheckpointTransactionMode::Fifo),
-            Some(deadline),
-        )
+        let read_set = matches!(
+            mode,
+            CheckpointTransactionMode::ReadSet | CheckpointTransactionMode::ReadSetFifo
+        );
+        let fifo = matches!(
+            mode,
+            CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
+        );
+        self.run_transaction(action, read_set, fifo, Some(deadline))
     }
 
     fn run_transaction<T>(
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+        track_points: bool,
         fifo: bool,
         deadline: Option<Instant>,
     ) -> Result<T, TimedTransactionError> {
@@ -323,6 +391,7 @@ impl CheckpointStore {
             store: self,
             generation,
             deadline,
+            read_set: track_points.then(|| Mutex::new(super::read_set::ReadSet::new(generation))),
             staged: BTreeMap::new(),
             encoded_bytes: 4,
         };
@@ -343,7 +412,15 @@ impl CheckpointStore {
         };
         let mut state = self.write()?;
         check_deadline(deadline)?;
-        if state.generation != generation {
+        let valid = if let Some(read_set) = &transaction.read_set {
+            read_set
+                .lock()
+                .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
+                .matches(&state)?
+        } else {
+            state.generation == generation
+        };
+        if !valid {
             return Err(conflict().into());
         }
         if let Some(payload) = payload {
@@ -366,7 +443,7 @@ fn check_deadline(deadline: Option<Instant>) -> Result<(), TimedTransactionError
     }
 }
 
-fn conflict() -> io::Error {
+pub(super) fn conflict() -> io::Error {
     io::Error::new(
         io::ErrorKind::WouldBlock,
         "checkpoint transaction conflict: a write committed since the transaction began",

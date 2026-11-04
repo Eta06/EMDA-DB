@@ -72,7 +72,7 @@ fn metadata_write_sync_failures_and_panics_fail_closed_for_mutations() {
         Fault::SyncAfter,
         Fault::SyncPanic,
     ] {
-        for mode in 0..3 {
+        for mode in 0..4 {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store");
             let checkpoint = dir.path().join("checkpoint");
@@ -116,8 +116,14 @@ fn metadata_write_sync_failures_and_panics_fail_closed_for_mutations() {
                     ])
                 } else if mode == 0 {
                     store.put(b"left", b"one")
-                } else {
+                } else if mode == 2 {
                     store.transaction(|tx| {
+                        tx.put(b"left", b"one")?;
+                        tx.put(b"right", b"two")
+                    })
+                } else {
+                    store.transaction_with_read_set(|tx| {
+                        assert_eq!(tx.get(b"base")?.as_deref(), Some(&b"acknowledged"[..]));
                         tx.put(b"left", b"one")?;
                         tx.put(b"right", b"two")
                     })

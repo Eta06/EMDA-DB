@@ -60,6 +60,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/checkpoint-store-corpus"
           cp fuzz/checkpoint-store-seeds/* "$RUNNER_TEMP/checkpoint-store-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_store "$RUNNER_TEMP/checkpoint-store-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
+      - name: Run checkpoint point read-set model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/checkpoint-read-set-corpus"
+          cp fuzz/checkpoint-read-set-seeds/* "$RUNNER_TEMP/checkpoint-read-set-corpus/"
+          cargo +nightly-2026-11-03 fuzz run checkpoint_read_set "$RUNNER_TEMP/checkpoint-read-set-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
       - name: Run writable checkpoint recovery fuzzing
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-recovery-corpus"

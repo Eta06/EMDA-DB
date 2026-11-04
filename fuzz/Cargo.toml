@@ -71,6 +71,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "checkpoint_read_set"
+path = "fuzz_targets/checkpoint_read_set.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "checkpoint_recovery"
 path = "fuzz_targets/checkpoint_recovery.rs"
 test = false

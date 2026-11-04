@@ -301,16 +301,19 @@ fuzz_target!(|data: &[u8]| {
                 }
                 Ok(())
             };
-            let succeeded = match (bytes[0] >> 4) & 3 {
+            let succeeded = match (bytes[0] >> 4) & 7 {
                 0 => store.transaction(action).is_ok(),
                 1 => store.transaction_with_fifo(action).is_ok(),
+                2 => store.transaction_with_read_set(action).is_ok(),
+                3 => store.transaction_with_read_set_fifo(action).is_ok(),
                 mode => store
                     .transaction_until(
                         std::time::Instant::now() + std::time::Duration::from_secs(60),
-                        if mode == 2 {
-                            CheckpointTransactionMode::Conservative
-                        } else {
-                            CheckpointTransactionMode::Fifo
+                        match mode {
+                            4 => CheckpointTransactionMode::Conservative,
+                            5 => CheckpointTransactionMode::Fifo,
+                            6 => CheckpointTransactionMode::ReadSet,
+                            _ => CheckpointTransactionMode::ReadSetFifo,
                         },
                         action,
                     )
