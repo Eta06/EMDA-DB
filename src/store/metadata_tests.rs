@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
+mod document_faults;
+
 const NAME: &str = "user.db.commit.v3";
 
 #[derive(Clone, Copy)]

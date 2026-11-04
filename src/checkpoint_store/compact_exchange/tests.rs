@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::retry_lock;
 use crate::{COMPACTED_CHECKPOINT_FILE, Store};
 use std::fs::File;
 use std::io::Write;
@@ -15,19 +16,21 @@ const LOG_LIMIT: u64 = 1_000_000;
 fn fixture(root: &Path, managed: bool, automatic: bool) -> CheckpointStore {
     let path = root.join("live");
     let checkpoint = root.join("base");
-    let store = Store::open(&path).unwrap();
+    let store = retry_lock(|| Store::open(&path)).unwrap();
     store.put(b"base", b"initial").unwrap();
     let digest = store.checkpoint_to(&checkpoint).unwrap();
     drop(store);
-    let cp = CheckpointStore::open_with_resource_limits(
-        &path,
-        &checkpoint,
-        &digest,
-        TAIL_BYTES,
-        TAIL_KEYS,
-        TAIL_KEY_BYTES,
-        Some(LOG_LIMIT),
-    )
+    let cp = retry_lock(|| {
+        CheckpointStore::open_with_resource_limits(
+            &path,
+            &checkpoint,
+            &digest,
+            TAIL_BYTES,
+            TAIL_KEYS,
+            TAIL_KEY_BYTES,
+            Some(LOG_LIMIT),
+        )
+    })
     .unwrap();
     if managed {
         cp.rollover_managed(root.join("managed")).unwrap();
@@ -41,7 +44,7 @@ fn fixture(root: &Path, managed: bool, automatic: bool) -> CheckpointStore {
     cp
 }
 fn verify_store(path: &Path) {
-    let store = Store::open(path).unwrap();
+    let store = retry_lock(|| Store::open(path)).unwrap();
     assert_eq!(store.get(b"base").unwrap(), Some(b"initial".to_vec()));
     assert_eq!(store.get(b"a").unwrap(), Some(b"latest".to_vec()));
     assert_eq!(store.get(b"b").unwrap(), Some(b"value".to_vec()));
@@ -61,15 +64,17 @@ fn unmanaged_compaction_preserves_live_data_and_clears_overlay() {
     verify_store(&previous);
     cp.put(b"c", b"new").unwrap();
     drop(cp);
-    let reopened = CheckpointStore::open_with_resource_limits(
-        &source,
-        source.join(COMPACTED_CHECKPOINT_FILE),
-        &digest,
-        TAIL_BYTES,
-        TAIL_KEYS,
-        TAIL_KEY_BYTES,
-        Some(LOG_LIMIT),
-    )
+    let reopened = retry_lock(|| {
+        CheckpointStore::open_with_resource_limits(
+            &source,
+            source.join(COMPACTED_CHECKPOINT_FILE),
+            &digest,
+            TAIL_BYTES,
+            TAIL_KEYS,
+            TAIL_KEY_BYTES,
+            Some(LOG_LIMIT),
+        )
+    })
     .unwrap();
     assert_eq!(reopened.get(b"a").unwrap(), Some(b"latest".to_vec()));
     assert_eq!(reopened.get(b"c").unwrap(), Some(b"new".to_vec()));
@@ -93,13 +98,15 @@ fn managed_auto_setting_survives_handoff_reopen_and_new_rollover() {
     cp.put(b"d", b"four").unwrap();
     cp.put(b"e", b"five").unwrap();
     drop(cp);
-    let cp = CheckpointStore::open_managed_with_resource_limits(
-        &source,
-        TAIL_BYTES,
-        TAIL_KEYS,
-        TAIL_KEY_BYTES,
-        Some(LOG_LIMIT),
-    )
+    let cp = retry_lock(|| {
+        CheckpointStore::open_managed_with_resource_limits(
+            &source,
+            TAIL_BYTES,
+            TAIL_KEYS,
+            TAIL_KEY_BYTES,
+            Some(LOG_LIMIT),
+        )
+    })
     .unwrap();
     assert!(cp.automatic_checkpoints_enabled().unwrap());
     assert_eq!(cp.get(b"a").unwrap(), Some(b"latest".to_vec()));
@@ -117,13 +124,15 @@ fn disabled_automatic_configuration_stays_disabled() {
         .unwrap();
     assert!(!cp.automatic_checkpoints_enabled().unwrap());
     drop(cp);
-    let cp = CheckpointStore::open_managed_with_resource_limits(
-        &source,
-        TAIL_BYTES,
-        TAIL_KEYS,
-        TAIL_KEY_BYTES,
-        Some(LOG_LIMIT),
-    )
+    let cp = retry_lock(|| {
+        CheckpointStore::open_managed_with_resource_limits(
+            &source,
+            TAIL_BYTES,
+            TAIL_KEYS,
+            TAIL_KEY_BYTES,
+            Some(LOG_LIMIT),
+        )
+    })
     .unwrap();
     assert!(!cp.automatic_checkpoints_enabled().unwrap());
     cp.enable_automatic_checkpoints().unwrap();
@@ -175,13 +184,15 @@ fn checkpoint_handoff_faults_leave_two_recoverable_logs_and_valid_source_selecti
         verify_store(&source);
         verify_store(&previous);
         crate::cleanup_abandoned_staging(&previous).unwrap();
-        let cp = CheckpointStore::open_managed_with_resource_limits(
-            &source,
-            TAIL_BYTES,
-            TAIL_KEYS,
-            TAIL_KEY_BYTES,
-            Some(LOG_LIMIT),
-        )
+        let cp = retry_lock(|| {
+            CheckpointStore::open_managed_with_resource_limits(
+                &source,
+                TAIL_BYTES,
+                TAIL_KEYS,
+                TAIL_KEY_BYTES,
+                Some(LOG_LIMIT),
+            )
+        })
         .unwrap();
         assert!(cp.automatic_checkpoints_enabled().unwrap());
         assert_eq!(cp.get(b"a").unwrap(), Some(b"latest".to_vec()));
@@ -211,13 +222,15 @@ fn checkpoint_exchange_kill_child() {
     let root = PathBuf::from(std::env::var_os("EMDA_CP_EXCHANGE_ROOT").unwrap());
     let source = root.join("live");
     let previous = root.join("previous");
-    let cp = CheckpointStore::open_managed_with_resource_limits(
-        &source,
-        TAIL_BYTES,
-        TAIL_KEYS,
-        TAIL_KEY_BYTES,
-        Some(LOG_LIMIT),
-    )
+    let cp = retry_lock(|| {
+        CheckpointStore::open_managed_with_resource_limits(
+            &source,
+            TAIL_BYTES,
+            TAIL_KEYS,
+            TAIL_KEY_BYTES,
+            Some(LOG_LIMIT),
+        )
+    })
     .unwrap();
     let selected = match point.as_str() {
         "selection_rename" => ExchangePoint::SelectionBeforeRename,
@@ -275,13 +288,15 @@ fn process_kills_preserve_managed_source_and_both_logs() {
         verify_store(&source);
         verify_store(&previous);
         crate::cleanup_abandoned_staging(&previous).unwrap();
-        let cp = CheckpointStore::open_managed_with_resource_limits(
-            &source,
-            TAIL_BYTES,
-            TAIL_KEYS,
-            TAIL_KEY_BYTES,
-            Some(LOG_LIMIT),
-        )
+        let cp = retry_lock(|| {
+            CheckpointStore::open_managed_with_resource_limits(
+                &source,
+                TAIL_BYTES,
+                TAIL_KEYS,
+                TAIL_KEY_BYTES,
+                Some(LOG_LIMIT),
+            )
+        })
         .unwrap();
         assert!(cp.automatic_checkpoints_enabled().unwrap());
         assert_eq!(cp.get(b"a").unwrap(), Some(b"latest".to_vec()));

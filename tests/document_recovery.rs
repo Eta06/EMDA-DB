@@ -11,6 +11,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Parallel process-kill tests can briefly retain an inherited lock after its
+// owner drops. Retry only that transient lock conflict for expected opens.
+fn retry_lock<T>(mut open: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match open() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(1))
+            }
+            result => return result,
+        }
+    }
+}
+
 fn setup(db: &DocumentDatabase<'_>) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
@@ -65,7 +81,7 @@ fn document_recovery_child() {
     let path = env::var_os("EMDA_DOCUMENT_PATH").unwrap();
     let signal = env::var_os("EMDA_DOCUMENT_SIGNAL").unwrap();
     if mode == "ordinary" {
-        let store = Store::open(path).unwrap();
+        let store = retry_lock(|| Store::open(&path)).unwrap();
         write(&DocumentDatabase::new(&store), Path::new(&signal));
     } else {
         let checkpoint = env::var_os("EMDA_DOCUMENT_CHECKPOINT").unwrap();
@@ -73,7 +89,7 @@ fn document_recovery_child() {
             .unwrap()
             .try_into()
             .unwrap();
-        let store = CheckpointStore::open(path, checkpoint, &digest).unwrap();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
         write(
             &DocumentDatabase::with_checkpoint_store(&store),
             Path::new(&signal),
@@ -89,7 +105,7 @@ fn acknowledged_document_and_index_survive_process_termination() {
         let checkpoint = root.path().join("checkpoint");
         let digest_file = root.path().join("digest");
         let signal = root.path().join("signal");
-        let ordinary = Store::open(&path).unwrap();
+        let ordinary = retry_lock(|| Store::open(&path)).unwrap();
         let digest = ordinary.checkpoint_to(&checkpoint).unwrap();
         fs::write(&digest_file, digest).unwrap();
         if mode == "ordinary" {
@@ -97,7 +113,7 @@ fn acknowledged_document_and_index_survive_process_termination() {
             drop(ordinary);
         } else {
             drop(ordinary);
-            let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
             setup(&DocumentDatabase::with_checkpoint_store(&store));
         }
         let mut child = Command::new(env::current_exe().unwrap())
@@ -126,10 +142,10 @@ fn acknowledged_document_and_index_survive_process_termination() {
         child.kill().unwrap();
         child.wait().unwrap();
         if mode == "ordinary" {
-            let store = Store::open(&path).unwrap();
+            let store = retry_lock(|| Store::open(&path)).unwrap();
             verify(&DocumentDatabase::new(&store));
         } else {
-            let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
             verify(&DocumentDatabase::with_checkpoint_store(&store));
         }
     }
@@ -140,18 +156,20 @@ fn document_indexes_survive_managed_checkpoint_compaction_and_reopen() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("live");
     let checkpoint = root.path().join("base");
-    let store = Store::open(&path).unwrap();
+    let store = retry_lock(|| Store::open(&path)).unwrap();
     let digest = store.checkpoint_to(&checkpoint).unwrap();
     drop(store);
-    let store = CheckpointStore::open_with_resource_limits(
-        &path,
-        &checkpoint,
-        &digest,
-        4096,
-        16,
-        4096,
-        None,
-    )
+    let store = retry_lock(|| {
+        CheckpointStore::open_with_resource_limits(
+            &path,
+            &checkpoint,
+            &digest,
+            4096,
+            16,
+            4096,
+            None,
+        )
+    })
     .unwrap();
     store.rollover_managed(root.path().join("managed")).unwrap();
     store.enable_automatic_checkpoints().unwrap();
@@ -168,9 +186,73 @@ fn document_indexes_survive_managed_checkpoint_compaction_and_reopen() {
     verify(&DocumentDatabase::with_checkpoint_store(&store));
     assert!(store.automatic_checkpoints_enabled().unwrap());
     drop(store);
-    let store =
-        CheckpointStore::open_managed_with_resource_limits(&path, 4096, 16, 4096, None).unwrap();
+    let store = retry_lock(|| {
+        CheckpointStore::open_managed_with_resource_limits(&path, 4096, 16, 4096, None)
+    })
+    .unwrap();
     let db = DocumentDatabase::with_checkpoint_store(&store);
     verify(&db);
     assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
+}
+
+#[test]
+fn document_backup_restore_captures_one_consistent_version_on_both_backends() {
+    for checkpoint_mode in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("live");
+        let backup = root.path().join("backup");
+        let restored = root.path().join("restored");
+        let ordinary = retry_lock(|| Store::open(&path)).unwrap();
+        if checkpoint_mode {
+            let checkpoint = root.path().join("base");
+            let digest = ordinary.checkpoint_to(&checkpoint).unwrap();
+            drop(ordinary);
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            let db = DocumentDatabase::with_checkpoint_store(&store);
+            setup(&db);
+            db.transaction(|tx| {
+                tx.insert("c", "acked", &json!({"n":7}))?;
+                tx.put_raw(b"receipt", b"acked")
+            })
+            .unwrap();
+            store.backup(&backup).unwrap();
+            db.replace("c", "acked", &json!({"n":8}), false).unwrap();
+        } else {
+            let db = DocumentDatabase::new(&ordinary);
+            setup(&db);
+            db.transaction(|tx| {
+                tx.insert("c", "acked", &json!({"n":7}))?;
+                tx.put_raw(b"receipt", b"acked")
+            })
+            .unwrap();
+            ordinary.backup(&backup).unwrap();
+            db.replace("c", "acked", &json!({"n":8}), false).unwrap();
+        }
+        Store::restore(&backup, &restored).unwrap();
+        let restored = retry_lock(|| Store::open(&restored)).unwrap();
+        let db = DocumentDatabase::new(&restored);
+        verify(&db);
+        assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
+    }
+}
+
+#[test]
+fn ordinary_compaction_preserves_document_and_unique_index_invariants() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("live");
+    let previous = root.path().join("previous");
+    let store = retry_lock(|| Store::open(&path)).unwrap();
+    let db = DocumentDatabase::new(&store);
+    setup(&db);
+    db.transaction(|tx| {
+        tx.insert("c", "acked", &json!({"n":7}))?;
+        tx.put_raw(b"receipt", b"acked")
+    })
+    .unwrap();
+    let store = store.compact_and_replace(&path, &previous).unwrap();
+    let db = DocumentDatabase::new(&store);
+    verify(&db);
+    assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
+    let old = retry_lock(|| Store::open(&previous)).unwrap();
+    verify(&DocumentDatabase::new(&old));
 }

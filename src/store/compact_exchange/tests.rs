@@ -1,5 +1,6 @@
 use super::*;
 use crate::log::Log;
+use crate::test_support::retry_lock;
 use std::fs::File;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -10,7 +11,7 @@ use std::time::{Duration, Instant};
 fn populated(root: &Path) -> (Store, PathBuf, PathBuf) {
     let source = root.join("live");
     let previous = root.join("previous");
-    let store = Store::open(&source).unwrap();
+    let store = retry_lock(|| Store::open(&source)).unwrap();
     store.put(b"key", b"obsolete").unwrap();
     store.put(b"key", b"latest").unwrap();
     store.put(b"removed", b"old").unwrap();
@@ -35,14 +36,17 @@ fn exchange_preserves_live_data_old_store_and_open_limits() {
     assert_eq!(store.get(b"a").unwrap(), Some(b"19".to_vec()));
     assert!(store.put(b"c", b"three").is_err());
     assert!(Store::open(&source).is_err());
-    let old = Store::open(&previous).unwrap();
+    let old = retry_lock(|| Store::open(&previous)).unwrap();
     assert_eq!(old.get(b"a").unwrap(), Some(b"19".to_vec()));
     store.put(b"a", b"new").unwrap();
     assert_eq!(old.get(b"a").unwrap(), Some(b"19".to_vec()));
     drop(old);
     drop(store);
     assert_eq!(
-        Store::open(&source).unwrap().get(b"a").unwrap(),
+        retry_lock(|| Store::open(&source))
+            .unwrap()
+            .get(b"a")
+            .unwrap(),
         Some(b"new".to_vec())
     );
 }
@@ -63,7 +67,7 @@ fn unknown_files_and_non_sibling_or_existing_destinations_are_rejected() {
     assert_eq!(fs::read(source.join("user-data")).unwrap(), b"keep");
     assert!(!previous.exists());
     fs::remove_file(source.join("user-data")).unwrap();
-    let store = Store::open(&source).unwrap();
+    let store = retry_lock(|| Store::open(&source)).unwrap();
     fs::create_dir(root.path().join("other")).unwrap();
     assert_eq!(
         store
@@ -73,7 +77,7 @@ fn unknown_files_and_non_sibling_or_existing_destinations_are_rejected() {
             .kind(),
         io::ErrorKind::InvalidInput
     );
-    let store = Store::open(&source).unwrap();
+    let store = retry_lock(|| Store::open(&source)).unwrap();
     fs::create_dir(&previous).unwrap();
     assert_eq!(
         store
@@ -84,7 +88,10 @@ fn unknown_files_and_non_sibling_or_existing_destinations_are_rejected() {
         io::ErrorKind::AlreadyExists
     );
     assert_eq!(
-        Store::open(&source).unwrap().get(b"key").unwrap(),
+        retry_lock(|| Store::open(&source))
+            .unwrap()
+            .get(b"key")
+            .unwrap(),
         Some(b"latest".to_vec())
     );
 }
@@ -111,8 +118,8 @@ fn injected_exchange_failures_preserve_both_complete_copies() {
             crate::directory::sync_existing,
         );
         assert!(result.is_err());
-        let live = Store::open(&source).unwrap();
-        let old = Store::open(&previous).unwrap();
+        let live = retry_lock(|| Store::open(&source)).unwrap();
+        let old = retry_lock(|| Store::open(&previous)).unwrap();
         for store in [&live, &old] {
             assert_eq!(store.get(b"key").unwrap(), Some(b"latest".to_vec()));
             assert_eq!(store.get(b"removed").unwrap(), None);
@@ -131,11 +138,17 @@ fn injected_exchange_failures_preserve_both_complete_copies() {
         .unwrap();
     assert!(error.to_string().contains("exchange may have occurred"));
     assert_eq!(
-        Store::open(&source).unwrap().get(b"key").unwrap(),
+        retry_lock(|| Store::open(&source))
+            .unwrap()
+            .get(b"key")
+            .unwrap(),
         Some(b"latest".to_vec())
     );
     assert_eq!(
-        Store::open(&previous).unwrap().get(b"key").unwrap(),
+        retry_lock(|| Store::open(&previous))
+            .unwrap()
+            .get(b"key")
+            .unwrap(),
         Some(b"latest".to_vec())
     );
 }
@@ -175,7 +188,7 @@ fn exchange_kill_child() {
     let root = PathBuf::from(std::env::var_os("EMDA_EXCHANGE_ROOT").unwrap());
     let source = root.join("live");
     let previous = root.join("previous");
-    let store = Store::open(&source).unwrap();
+    let store = retry_lock(|| Store::open(&source)).unwrap();
     let selected = if point == "copy" {
         ExchangePoint::CopyPublished
     } else {
@@ -228,8 +241,8 @@ fn process_kill_before_and_after_exchange_preserves_live_data() {
         }
         child.kill().unwrap();
         child.wait().unwrap();
-        let live = Store::open(&source).unwrap();
-        let old = Store::open(&previous).unwrap();
+        let live = retry_lock(|| Store::open(&source)).unwrap();
+        let old = retry_lock(|| Store::open(&previous)).unwrap();
         for store in [&live, &old] {
             assert_eq!(store.get(b"key").unwrap(), Some(b"latest".to_vec()));
             assert_eq!(store.get(b"removed").unwrap(), None);
