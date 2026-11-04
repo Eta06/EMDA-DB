@@ -1,0 +1,30 @@
+{
+  "revision": "ab890f62bddd545b04cf48f090bf1b41a15bcdaa",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "environment": "Local Linux VM, temporary corpus and ordinary filesystem calls. No physical power-loss test.",
+  "initial_attempt": {
+    "started_utc": "2026-11-04T18:15:53Z",
+    "result": "failed during Rust compilation: temporary filesystem full; no fuzz executions"
+  },
+  "rerun": {
+    "started_utc": "2026-11-04T18:17:23Z",
+    "ended_utc": "2026-11-04T18:20:16Z",
+    "duration_seconds": 121,
+    "target": "checkpoint_view_limits",
+    "seed": 1996360236,
+    "executions": 4028,
+    "initial_seeds": {
+      "basic": "054d0b1a546d6057bb8cfbe1bc1f669a379bab1673df0b0bf421e447c2eee8f9",
+      "blocks": "3f35f88ec1e96933750c5cf0422697143563862e2175b7ad72e46cb8b03334a6",
+      "tight": "fae39098798c61c7c84added92b675efd9f13773cb5e97fe1af83b60b1bb4b1a"
+    },
+    "max_input_bytes": 128,
+    "binary_sha256": "8de0aed0eb76634b2b22661aa9b769a1b76029b55d6308c31aa89fa853b05d09",
+    "ending_coverage": 3065,
+    "ending_features": 16035,
+    "ending_corpus_entries": 407,
+    "result": "completed without a finding"
+  },
+  "scope": "Generated serial puts, deletes, checkpoints and reopen operations compare the complete state with an independent sorted map; candidate admission is checked against modeled checkpoint file and block sizes. Does not model simultaneous clients, arbitrary I/O failures, physical power loss, off-host recovery or all possible operation sequences."
+}

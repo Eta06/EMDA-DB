@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add per-open checkpoint file and block-directory admission limits, preserved across writable-store rollover and blocking compaction handoffs.
+
 - Publish a partial-index comparison against verified SQLite plans, including raw results and an observed execution-order effect.
 
 - Select partial indexes for complete equality tuples and single-field ranges only when required query predicates prove the partial condition.

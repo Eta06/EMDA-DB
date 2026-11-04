@@ -276,3 +276,45 @@ fn compaction_handoff_preserves_checkpoint_view_limits() {
     );
     store.rollover_to(root.path().join("next-index")).unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn over_limit_compaction_candidate_does_not_replace_the_source() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("index");
+    let initial = Store::open(&path).unwrap();
+    initial.put(b"base", b"before").unwrap();
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    drop(initial);
+    let limits = CheckpointStoreLimits {
+        checkpoint_view: CheckpointViewLimits {
+            max_file_bytes: fs::metadata(&checkpoint).unwrap().len(),
+            max_blocks: 1,
+        },
+        ..Default::default()
+    };
+    let store =
+        retry_lock(|| CheckpointStore::open_with_options(&path, &checkpoint, &digest, limits))
+            .unwrap();
+    store.put(b"new", b"acknowledged").unwrap();
+    let before = fs::read(path.join("records.log")).unwrap();
+    let previous = root.path().join("previous");
+    let error = store
+        .compact_and_replace(&previous)
+        .err()
+        .expect("candidate must exceed its cap");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), before);
+    assert!(previous.exists());
+    let original = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        original.get(b"new").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    let candidate = retry_lock(|| Store::open(&previous)).unwrap();
+    assert_eq!(
+        candidate.get(b"new").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}
