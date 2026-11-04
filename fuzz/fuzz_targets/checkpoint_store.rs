@@ -67,7 +67,7 @@ fuzz_target!(|data: &[u8]| {
         let first = key(bytes[1]);
         let second = key(bytes[2]);
         let value = vec![bytes[3]; usize::from(bytes[3] % 5)];
-        let kind = bytes[0] % 6;
+        let kind = bytes[0] % 7;
         if kind == 4 {
             check(&store, &model, &touched, tail);
             drop(store);
@@ -130,6 +130,17 @@ fuzz_target!(|data: &[u8]| {
                 max_key_bytes,
             )
             .expect("reopen streamed checkpoint");
+            continue;
+        }
+        if kind == 6 {
+            check(&store, &model, &touched, tail);
+            generation += 1;
+            let next = dir.path().join(format!("checkpoint-{generation}"));
+            digest = store.rollover_to(&next).expect("live rollover");
+            checkpoint = next;
+            touched.clear();
+            tail = 0;
+            check(&store, &model, &touched, tail);
             continue;
         }
         let mut next_touched = touched.clone();

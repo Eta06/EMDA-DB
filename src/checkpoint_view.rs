@@ -189,6 +189,12 @@ impl CheckpointView {
         self.peak
     }
 
+    // Duplicating the same open file description preserves the exclusive
+    // advisory lock across a checkpoint-store view handoff.
+    pub(crate) fn duplicate_store_lock(&self) -> io::Result<File> {
+        self._lock_file.try_clone()
+    }
+
     // Revalidate the original trusted checkpoint and its covered log bytes
     // before deriving another checkpoint from this long-lived view.
     pub(crate) fn verify_for_rollover(&self) -> io::Result<()> {

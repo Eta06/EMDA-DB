@@ -201,3 +201,76 @@ fn rollover_merges_multiple_blocks_with_shared_key_prefixes() {
     }
     assert_eq!(actual, expected.into_iter().collect::<Vec<_>>());
 }
+
+#[test]
+fn live_rollover_clears_capacity_without_releasing_the_store_lock() {
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 1000, 1, 1).unwrap();
+    store.put(b"a", b"first").unwrap();
+    assert!(store.put(b"b", b"full").is_err());
+    let next = dir.path().join("live-next");
+    let next_digest = store.rollover_to(&next).unwrap();
+    assert_eq!(store.tail_bytes().unwrap(), 0);
+    assert_eq!(store.overlay_keys().unwrap(), 0);
+    assert_eq!(store.get(b"a").unwrap().as_deref(), Some(&b"first"[..]));
+    assert_eq!(
+        Store::open(&path).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    store.put(b"b", b"second").unwrap();
+    assert_eq!(store.get(b"b").unwrap().as_deref(), Some(&b"second"[..]));
+    drop(store);
+    let reopened =
+        CheckpointStore::open_with_limits(&path, &next, &next_digest, 1000, 1, 1).unwrap();
+    assert_eq!(reopened.get(b"a").unwrap().as_deref(), Some(&b"first"[..]));
+    assert_eq!(reopened.get(b"b").unwrap().as_deref(), Some(&b"second"[..]));
+    assert_eq!(reopened.overlay_keys().unwrap(), 1);
+}
+
+#[test]
+fn repeated_live_rollover_preserves_reads_during_handoff() {
+    use std::sync::{Arc, Barrier};
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = Arc::new(CheckpointStore::open(&path, &checkpoint, &digest).unwrap());
+    store.put(b"key", b"value").unwrap();
+    let start = Arc::new(Barrier::new(3));
+    std::thread::scope(|scope| {
+        let reader = Arc::clone(&store);
+        let ready = Arc::clone(&start);
+        scope.spawn(move || {
+            ready.wait();
+            for _ in 0..200 {
+                assert_eq!(reader.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+                assert!(
+                    reader
+                        .scan(None, None, 20)
+                        .unwrap()
+                        .iter()
+                        .any(|(k, v)| k == b"key" && v == b"value")
+                );
+            }
+        });
+        let rotator = Arc::clone(&store);
+        let ready = Arc::clone(&start);
+        let parent = dir.path();
+        scope.spawn(move || {
+            ready.wait();
+            for n in 0..8 {
+                rotator
+                    .rollover_to(parent.join(format!("generation-{n}")))
+                    .unwrap();
+                assert_eq!(rotator.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+            }
+        });
+        start.wait();
+    });
+    assert_eq!(
+        Store::open(&path).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(store);
+    assert_eq!(
+        Store::open(&path).unwrap().get(b"key").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+}

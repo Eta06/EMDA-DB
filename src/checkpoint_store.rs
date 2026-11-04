@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 struct State {
@@ -28,14 +28,15 @@ struct State {
 /// tombstones; opening still verifies the complete covered log prefix. Limits
 /// are not total process-memory quotas. This type excludes other cooperating
 /// stores/views, has no transactions or snapshots, and does not automatically
-/// checkpoint, compact or reclaim space. If a limit fills, explicitly create
-/// a fresh checkpoint and reopen this type with its independently trusted
-/// digest. A failed
-/// append/sync has an unknown outcome and poisons this instance until reopened.
+/// checkpoint, compact or reclaim space. If a limit fills, `rollover_to` can
+/// create and switch to a fresh checkpoint while retaining exclusive ownership.
+/// Its digest must be protected independently. A failed append/sync has an
+/// unknown outcome and poisons this instance until reopened.
 pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
     log: Log,
     state: RwLock<State>,
+    path: PathBuf,
     max_tail_bytes: u64,
     max_tail_keys: usize,
     max_tail_key_bytes: usize,
@@ -73,20 +74,20 @@ impl CheckpointStore {
             max_tail_keys,
             max_tail_key_bytes,
         )?;
-        let path = path.as_ref();
+        let path = std::fs::canonicalize(path.as_ref())?;
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
-        let base = CheckpointView::open_locked(path, checkpoint.as_ref(), trusted_digest, lock)?;
+        let base = CheckpointView::open_locked(&path, checkpoint.as_ref(), trusted_digest, lock)?;
         let view = RecoveredCheckpointView::from_base(
             base,
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
         )?;
-        let log = Log::open_checkpoint_writer(path, view.base.witnessed_boundary)?;
+        let log = Log::open_checkpoint_writer(&path, view.base.witnessed_boundary)?;
         let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
         Ok(Self {
             log,
@@ -95,6 +96,7 @@ impl CheckpointStore {
                 overlay_key_bytes,
                 failed: false,
             }),
+            path,
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
@@ -159,7 +161,61 @@ impl CheckpointStore {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
         let state = self.write()?;
-        let (count, peak) = self.verify_for_checkpoint(&state)?;
+        self.create_checkpoint(&state, destination, sync_parent)
+    }
+
+    /// Creates a checkpoint and switches the running instance to it under the
+    /// same exclusive lock, clearing the suffix overlay after verification.
+    /// The returned digest must be persisted separately by the caller. An
+    /// error after publication can leave the new checkpoint at its destination;
+    /// the instance continues using the previous checkpoint in that case.
+    pub fn rollover_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
+        self.rollover_to_with_sync(destination.as_ref(), |parent| {
+            std::fs::File::open(parent)?.sync_all()
+        })
+    }
+
+    fn rollover_to_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        let mut state = self.write()?;
+        let digest = self.create_checkpoint(&state, destination, sync_parent)?;
+        let next_view = (|| {
+            let lock = state.view.base.duplicate_store_lock()?;
+            let base = CheckpointView::open_locked(&self.path, destination, &digest, lock)?;
+            let view = RecoveredCheckpointView::from_base(
+                base,
+                self.max_tail_bytes,
+                self.max_tail_keys,
+                self.max_tail_key_bytes,
+            )?;
+            if view.tail_bytes != 0 || !view.overlay.is_empty() {
+                return Err(record::invalid_data(
+                    "new checkpoint has an unexpected suffix",
+                ));
+            }
+            Ok(view)
+        })()
+        .map_err(|error: io::Error| {
+            io::Error::new(
+                error.kind(),
+                format!("checkpoint was published but switching failed: {error}"),
+            )
+        })?;
+        state.view = next_view;
+        state.overlay_key_bytes = 0;
+        Ok(digest)
+    }
+
+    fn create_checkpoint(
+        &self,
+        state: &State,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        let (count, peak) = self.verify_for_checkpoint(state)?;
         crate::checkpoint::create_streaming_with_sync(
             &self.log,
             count,

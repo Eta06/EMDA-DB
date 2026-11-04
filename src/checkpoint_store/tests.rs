@@ -467,6 +467,47 @@ fn streamed_checkpoint_blocks_writes_until_verified_publication() {
     );
 }
 
+#[test]
+fn live_rollover_sync_and_switch_failures_leave_the_old_view_usable() {
+    for failure in ["sync", "switch"] {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| {
+            CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 1000, 1, 3)
+        })
+        .unwrap();
+        store.put(b"new", b"first").unwrap();
+        let original_tail = store.tail_bytes().unwrap();
+        let destination = dir.path().join("next");
+        let result = store.rollover_to_with_sync(&destination, |parent| {
+            if failure == "sync" {
+                Err(io::Error::other("injected directory sync error"))
+            } else {
+                fs::remove_file(&destination)?;
+                File::open(parent)?.sync_all()
+            }
+        });
+        let error = result.unwrap_err().to_string();
+        if failure == "sync" {
+            assert!(error.contains("checkpoint may exist"));
+            assert!(destination.exists());
+        } else {
+            assert!(error.contains("checkpoint was published but switching failed"));
+            assert!(!destination.exists());
+        }
+        assert_eq!(store.tail_bytes().unwrap(), original_tail);
+        assert_eq!(store.overlay_keys().unwrap(), 1);
+        assert_eq!(store.get(b"new").unwrap().as_deref(), Some(&b"first"[..]));
+        store.put(b"new", b"second").unwrap();
+        assert!(store.put(b"other", b"full").is_err());
+        drop(store);
+        let reopened = retry_lock(|| Store::open(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"new").unwrap().as_deref(),
+            Some(&b"second"[..])
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod metadata_faults {
     use super::*;

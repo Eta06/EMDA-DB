@@ -25,6 +25,9 @@ fn acknowledged_checkpoint_writes_survive_process_termination() {
                 },
             ])
             .unwrap();
+        let rotated = store.rollover_to(parent.join("rotated")).unwrap();
+        fs::write(parent.join("rotated.digest"), rotated).unwrap();
+        store.put(b"after-rollover", b"acknowledged").unwrap();
         println!("EMDA_CHECKPOINT_KILL_ACKNOWLEDGED");
         io::stdout().flush().unwrap();
         loop {
@@ -66,11 +69,19 @@ fn acknowledged_checkpoint_writes_survive_process_termination() {
     reader.join().unwrap();
     acknowledged.expect("child did not acknowledge writes before timeout");
 
-    let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    let rotated_digest = fs::read(dir.path().join("rotated.digest"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let store = CheckpointStore::open(&path, dir.path().join("rotated"), &rotated_digest).unwrap();
     assert_eq!(
         store.get(b"single").unwrap().as_deref(),
         Some(&b"acknowledged"[..])
     );
     assert_eq!(store.get(b"left").unwrap().as_deref(), Some(&b"one"[..]));
     assert_eq!(store.get(b"right").unwrap().as_deref(), Some(&b"two"[..]));
+    assert_eq!(
+        store.get(b"after-rollover").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
 }

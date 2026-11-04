@@ -255,6 +255,17 @@ The [recovered-view measurement](../benchmarks/results/2026-11-04-recovered-view
 
 For 200,000 base keys, median open times were 136.15 ms for the store and 106.10 ms for the recovered view; the latter retained 893 block summaries and 4,096 overlay keys. The store can write while both views are read-only and exclude cooperating writers. Base lookups in the views verify index blocks, whereas suffix lookups use the in-memory overlay. RSS is sampled after open, excludes page cache and is not peak or total memory. Both quiet checks passed; individual measurements recorded up to 14.29% VM steal in the 10,000-key case and 1.82% in the larger case, with no cgroup throttling or direct reclaim observed. The host and overlay backing remain uncontrolled. This small warm-cache sample is not a general speed, durability or memory guarantee.
 
+## Checkpoint creation and live rollover
+
+`scripts/checkpoint_rollover_compare.py` compares checkpoint creation by the ordinary writable store with live rollover by the checkpoint-backed writer. Both use the same fixture and each generated checkpoint must have the same digest; sampled values are checked before and after creation and again through a reopened recovered view. The timer includes validation and synchronization, plus the live view switch for `CheckpointStore`. The examples sample RSS before and after the operation and process high-water RSS while the store is open; these exclude the OS page cache and do not bound total project memory. The paths have different capabilities, and a warm-cache local test is not a competitor ranking.
+
+```sh
+cargo build --release --locked --example index_memory_bench --example checkpoint_rollover_bench
+python3 scripts/checkpoint_rollover_compare.py --directory /path/to/disk --output /tmp/checkpoint-rollover-results.json
+```
+
+The defaults use 10,000 and 200,000 base keys, a 4,096-key suffix, 128-byte keys, 64-byte values and five repetitions per mode. The driver rotates measured order and records VM/cgroup noise. Fixture creation, opens and validation reads are outside the timed operation but included in the noise samples. Use a real storage-backed directory, because `/tmp` can be memory-backed.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.
