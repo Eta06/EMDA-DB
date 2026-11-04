@@ -121,17 +121,15 @@ pub(super) fn synchronize(store: &Path) -> io::Result<()> {
 // A durable file name also depends on the directory entries naming all of
 // its ancestors. Call only with an absolute, resolved directory path.
 pub(super) fn sync_ancestors(directory: &Path) -> io::Result<()> {
-    sync_ancestors_with(directory, |path| File::open(path)?.sync_all())
+    crate::directory::sync_existing(directory)
 }
 
+#[cfg(test)]
 pub(super) fn sync_ancestors_with(
     directory: &Path,
-    mut sync: impl FnMut(&Path) -> io::Result<()>,
+    sync: impl FnMut(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    for ancestor in directory.ancestors() {
-        sync(ancestor)?;
-    }
-    Ok(())
+    crate::directory::sync_existing_with(directory, sync)
 }
 
 pub(super) fn synchronize_with(

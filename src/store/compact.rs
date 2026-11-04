@@ -75,9 +75,7 @@ impl Store {
     /// This operation currently requires memory for additional full indexes and
     /// is not a bounded-memory or online in-place compaction mechanism.
     pub fn compact_to(&self, destination: impl AsRef<Path>) -> io::Result<()> {
-        self.compact_to_with_sync(destination.as_ref(), |parent| {
-            File::open(parent)?.sync_all()
-        })
+        self.compact_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
     fn compact_to_with_sync(
@@ -569,5 +567,37 @@ mod tests {
         assert!(
             matches!(source.compact_to(&destination), Err(e) if e.kind() == io::ErrorKind::AlreadyExists)
         );
+    }
+    #[test]
+    fn every_compaction_ancestor_sync_failure_reports_uncertain_copy() {
+        let probe = tempfile::tempdir().unwrap();
+        let count = std::fs::canonicalize(probe.path())
+            .unwrap()
+            .ancestors()
+            .count();
+        drop(probe);
+        for fail_at in 0..count {
+            let dir = tempfile::tempdir().unwrap();
+            let source = Store::open(dir.path().join("source")).unwrap();
+            source.put(b"key", b"value").unwrap();
+            let destination = dir.path().join("copy");
+            let mut seen = 0;
+            let result = source.compact_to_with_sync(&destination, |parent| {
+                crate::directory::sync_existing_with(parent, |directory| {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        Err(io::Error::other("injected ancestor sync"))
+                    } else {
+                        File::open(directory)?.sync_all()
+                    }
+                })
+            });
+            assert!(result.unwrap_err().to_string().contains("may exist"));
+            assert_eq!(seen, fail_at + 1);
+            assert_eq!(source.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+            let copy = Store::open(&destination).unwrap();
+            assert_eq!(copy.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+        }
     }
 }

@@ -722,3 +722,43 @@ fn checkpoint_parent_sync_failure_reports_uncertain_publication() {
         Some(&b"value"[..])
     );
 }
+
+#[test]
+fn checkpoint_reports_uncertain_publication_for_each_ancestor_sync_failure() {
+    let probe = tempfile::tempdir().unwrap();
+    let count = std::fs::canonicalize(probe.path())
+        .unwrap()
+        .ancestors()
+        .count();
+    drop(probe);
+    for fail_at in 0..count {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let store = Store::open(&source).unwrap();
+        store.put(b"key", b"value").unwrap();
+        let checkpoint = dir.path().join("index");
+        let mut seen = 0;
+        let result = store.checkpoint_to_with_sync(&checkpoint, |parent| {
+            crate::directory::sync_existing_with(parent, |directory| {
+                let index = seen;
+                seen += 1;
+                if index == fail_at {
+                    Err(io::Error::other("injected ancestor sync"))
+                } else {
+                    File::open(directory)?.sync_all()
+                }
+            })
+        });
+        assert!(result.unwrap_err().to_string().contains("may exist"));
+        assert_eq!(seen, fail_at + 1);
+        assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+        drop(store);
+        let bytes = fs::read(&checkpoint).unwrap();
+        let token = bytes[bytes.len() - 32..].try_into().unwrap();
+        let reopened = Store::open_with_checkpoint(&source, &checkpoint, &token).unwrap();
+        assert_eq!(
+            reopened.get(b"key").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+    }
+}

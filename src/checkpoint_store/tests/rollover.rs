@@ -247,3 +247,52 @@ fn live_rollover_sync_and_switch_failures_leave_the_old_view_usable() {
         );
     }
 }
+
+#[test]
+fn every_streamed_checkpoint_ancestor_sync_failure_keeps_the_old_view() {
+    let (probe, _, _, _) = fixture();
+    let count = fs::canonicalize(probe.path()).unwrap().ancestors().count();
+    drop(probe);
+    for rollover in [false, true] {
+        for fail_at in 0..count {
+            let (dir, path, checkpoint, digest) = fixture();
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            store.put(b"before", b"value").unwrap();
+            let old_tail = store.tail_bytes().unwrap();
+            let next = dir.path().join("next");
+            let mut seen = 0;
+            let sync = |parent: &Path| {
+                crate::directory::sync_existing_with(parent, |directory| {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        Err(io::Error::other("injected ancestor sync"))
+                    } else {
+                        File::open(directory)?.sync_all()
+                    }
+                })
+            };
+            let result = if rollover {
+                store.rollover_to_with_sync(&next, sync)
+            } else {
+                store.checkpoint_to_with_sync(&next, sync)
+            };
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("checkpoint may exist")
+            );
+            assert_eq!(seen, fail_at + 1);
+            assert_eq!(store.tail_bytes().unwrap(), old_tail);
+            store.put(b"after", b"acknowledged").unwrap();
+            drop(store);
+            let reopened =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            assert_eq!(
+                reopened.get(b"after").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+        }
+    }
+}

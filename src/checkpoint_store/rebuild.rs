@@ -77,16 +77,7 @@ impl CheckpointStore {
         // Refuse to overwrite unknown, damaged, symlink or non-file metadata.
         // A valid but stale selection need not have an accessible checkpoint.
         selection::load(&path)?;
-        let digest = store.checkpoint_to(&destination)?;
-        let checkpoint_parent = destination
-            .parent()
-            .expect("resolved checkpoint destination has a parent");
-        sync_checkpoint_ancestors(checkpoint_parent).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("checkpoint was published but its directory ancestry sync failed: {error}"),
-            )
-        })?;
+        let digest = store.checkpoint_to_with_sync(&destination, sync_checkpoint_ancestors)?;
         let lock = store.duplicate_store_lock()?;
         let view =
             CheckpointView::open_locked(&path, &destination, &digest, lock).map_err(|error| {

@@ -335,3 +335,63 @@ fn upgrade_parent_sync_failure_reports_uncertain_publication() {
         matches!(upgrade_format(&log, &upgraded), Err(error) if error.kind() == io::ErrorKind::AlreadyExists)
     );
 }
+
+#[test]
+fn every_backup_restore_and_upgrade_ancestor_sync_failure_is_uncertain() {
+    let probe = tempfile::tempdir().unwrap();
+    let count = std::fs::canonicalize(probe.path())
+        .unwrap()
+        .ancestors()
+        .count();
+    drop(probe);
+    for mode in ["backup", "restore", "upgrade"] {
+        for fail_at in 0..count {
+            let dir = tempfile::tempdir().unwrap();
+            let source_path = dir.path().join("source");
+            let source = Store::open(&source_path).unwrap();
+            source.put(b"key", b"durable").unwrap();
+            let before = std::fs::read(source_path.join("records.log")).unwrap();
+            let backup = dir.path().join("backup");
+            if mode == "restore" {
+                source.backup(&backup).unwrap();
+            }
+            drop(source);
+            let (log, _) = Log::open(&source_path, false).unwrap();
+            let destination = dir.path().join("destination");
+            let mut seen = 0;
+            let sync = |parent: &Path| {
+                crate::directory::sync_existing_with(parent, |directory| {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        Err(io::Error::other("injected ancestor sync"))
+                    } else {
+                        File::open(directory)?.sync_all()
+                    }
+                })
+            };
+            let result = match mode {
+                "backup" => create_with_sync(&log, &destination, sync),
+                "restore" => restore_with_sync(&backup, &destination, sync),
+                "upgrade" => upgrade_format_with_hooks(&log, &destination, sync, || Ok(())),
+                _ => unreachable!(),
+            };
+            assert!(result.unwrap_err().to_string().contains("may exist"));
+            assert_eq!(seen, fail_at + 1);
+            assert!(destination.exists());
+            assert_eq!(
+                std::fs::read(source_path.join("records.log")).unwrap(),
+                before
+            );
+            let copy_path = if mode == "backup" {
+                let restored = dir.path().join("verify");
+                Store::restore(&destination, &restored).unwrap();
+                restored
+            } else {
+                destination
+            };
+            let copy = Store::open(&copy_path).unwrap();
+            assert_eq!(copy.get(b"key").unwrap().as_deref(), Some(&b"durable"[..]));
+        }
+    }
+}

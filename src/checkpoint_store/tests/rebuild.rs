@@ -314,7 +314,7 @@ fn rebuild_preserves_selection_if_any_checkpoint_ancestor_sync_fails() {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("ancestry sync failed")
+                .contains("checkpoint may exist")
         );
         assert_eq!(seen, fail_at + 1);
         assert_eq!(fs::read(selection).unwrap(), previous);

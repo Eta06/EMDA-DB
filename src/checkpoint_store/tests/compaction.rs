@@ -267,3 +267,57 @@ fn streamed_compaction_blocks_mutations_while_allowing_reads() {
         Some(&b"source-only"[..])
     );
 }
+
+#[test]
+fn every_streamed_compaction_ancestor_sync_failure_reports_uncertain_copy() {
+    let (probe, _, _, _) = fixture();
+    let count = fs::canonicalize(probe.path()).unwrap().ancestors().count();
+    drop(probe);
+    for fail_at in 0..count {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        store.put(b"key", b"value").unwrap();
+        let destination = dir.path().join("copy");
+        let state = store.read().unwrap();
+        let (count, _) = store.verify_for_checkpoint(&state).unwrap();
+        let mut seen = 0;
+        let result = crate::store::compact_checkpoint_with_hooks(
+            &store.log,
+            &state.view,
+            count,
+            &destination,
+            |parent| {
+                crate::directory::sync_existing_with(parent, |directory| {
+                    let index = seen;
+                    seen += 1;
+                    if index == fail_at {
+                        Err(io::Error::other("injected ancestor sync"))
+                    } else {
+                        File::open(directory)?.sync_all()
+                    }
+                })
+            },
+            || Ok(()),
+            |_| Ok(()),
+        );
+        assert!(result.unwrap_err().to_string().contains("may exist"));
+        assert_eq!(seen, fail_at + 1);
+        let bytes = fs::read(destination.join(crate::COMPACTED_CHECKPOINT_FILE)).unwrap();
+        let digest = bytes[bytes.len() - 32..].try_into().unwrap();
+        let copy = retry_lock(|| {
+            CheckpointStore::open(
+                &destination,
+                destination.join(crate::COMPACTED_CHECKPOINT_FILE),
+                &digest,
+            )
+        })
+        .unwrap();
+        assert_eq!(copy.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+        drop(state);
+        store.put(b"after", b"accepted").unwrap();
+        assert_eq!(
+            store.get(b"after").unwrap().as_deref(),
+            Some(&b"accepted"[..])
+        );
+    }
+}

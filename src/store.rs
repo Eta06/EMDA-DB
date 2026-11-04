@@ -462,12 +462,10 @@ impl Store {
     /// separately from the checkpoint. A directory sync failure after
     /// publication has an uncertain outcome. A witnessed store is required.
     pub fn checkpoint_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
-        self.checkpoint_to_with_sync(destination.as_ref(), |parent| {
-            File::open(parent)?.sync_all()
-        })
+        self.checkpoint_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
-    fn checkpoint_to_with_sync(
+    pub(crate) fn checkpoint_to_with_sync(
         &self,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,

@@ -58,7 +58,7 @@ impl Drop for StagingLock {
 }
 
 pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
-    create_with_sync(log, destination, |parent| File::open(parent)?.sync_all())
+    create_with_sync(log, destination, crate::directory::sync_existing)
 }
 
 fn create_with_sync(
@@ -103,7 +103,7 @@ pub(crate) fn create_with_hooks(
 }
 
 pub(crate) fn restore(source: &Path, destination: &Path) -> io::Result<()> {
-    restore_with_sync(source, destination, |parent| File::open(parent)?.sync_all())
+    restore_with_sync(source, destination, crate::directory::sync_existing)
 }
 
 fn restore_with_sync(
@@ -151,12 +151,9 @@ pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()>
 }
 
 pub(crate) fn upgrade_format(source: &Log, destination: &Path) -> io::Result<()> {
-    upgrade_format_with_hooks(
-        source,
-        destination,
-        |parent| File::open(parent)?.sync_all(),
-        || Ok(()),
-    )
+    upgrade_format_with_hooks(source, destination, crate::directory::sync_existing, || {
+        Ok(())
+    })
 }
 
 fn upgrade_format_with_hooks(

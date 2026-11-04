@@ -516,6 +516,8 @@ Revision `e309ddd` compares the existing checkpoint-backed live rollover with th
 
 The timer includes validation, synchronization and switching, but excludes opening and post-operation verification. Unmanaged rollover requires the caller to persist and select the digest separately; that external work is not included, so these are not equivalent end-to-end durability workflows. Both repeat quiet checks passed, but VM-wide short-interval CPU steal reached 6.25% and 27.13% respectively, with one managed 50,000-key outlier. A separate [five-run comparison](../benchmarks/results/2026-11-04-managed-rollover-comparison.json) had a failed 50,000-key quiet check and up to 50% sampled steal. These are noisy single-machine measurements, not production or competitor rankings, and do not measure physical power-loss behavior. Further profiling should investigate handoff latency without weakening synchronization.
 
+Later revisions also synchronize destination directory ancestry for unmanaged checkpoints and other published artifacts. These historical measurements do not characterize that changed path; rerun the comparison before applying the numbers to current code.
+
 Reproduce with:
 
 ```sh

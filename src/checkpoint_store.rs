@@ -416,9 +416,7 @@ impl CheckpointStore {
     /// using its original checkpoint; close it and reopen with the new one to
     /// clear the overlay. A publication sync error has an uncertain outcome.
     pub fn checkpoint_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
-        self.checkpoint_to_with_sync(destination.as_ref(), |parent| {
-            std::fs::File::open(parent)?.sync_all()
-        })
+        self.checkpoint_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
     fn checkpoint_to_with_sync(
@@ -437,9 +435,7 @@ impl CheckpointStore {
     /// error after publication can leave the new checkpoint at its destination;
     /// the instance continues using the previous checkpoint in that case.
     pub fn rollover_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
-        self.rollover_to_with_sync(destination.as_ref(), |parent| {
-            std::fs::File::open(parent)?.sync_all()
-        })
+        self.rollover_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
     fn rollover_to_with_sync(

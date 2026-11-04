@@ -101,7 +101,7 @@ pub(crate) fn compact_checkpoint(
         view,
         count,
         destination,
-        |parent| File::open(parent)?.sync_all(),
+        crate::directory::sync_existing,
         || Ok(()),
         |_| Ok(()),
     )
