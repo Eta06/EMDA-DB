@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Run the cross-engine smoke on the Ubuntu 22.04 hosted image while MongoDB 8.0 rejects the Linux 7.0.0 kernel observed on GitHub's Ubuntu 24.04 runner.
+
 - Capture bounded, password-redacted diagnostics when a disposable benchmark server exits or fails to become ready.
 
 - Record repeated compound-range comparisons with SQLite, PostgreSQL and MongoDB, and add a disposable cross-engine CI smoke workflow.

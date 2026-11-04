@@ -34,7 +34,10 @@ permissions:
 jobs:
   cross-engine:
     name: PostgreSQL, MongoDB and in-process adapters
-    runs-on: ubuntu-24.04
+    # MongoDB 8.0 rejects the 7.0.0 Azure kernel currently used by the 24.04
+    # hosted image (SERVER-121912). Use the older hosted image while supported;
+    # keep MongoDB's startup protection enabled and record the actual kernel.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - name: Check out repository
