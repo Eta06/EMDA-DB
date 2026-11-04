@@ -426,3 +426,50 @@ fn compound_union_survives_checkpoint_and_full_log_recovery() {
         access(2, false),
     );
 }
+
+#[test]
+fn four_field_compound_union_requires_every_field() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "four".into(),
+                fields: vec![path("a"), path("b"), path("c"), path("d")],
+                unique: false,
+                partial: None,
+            },
+        )
+        .unwrap();
+        for (id, doc) in [
+            ("a", json!({"a":1,"b":null,"c":"x","d":true})),
+            ("b", json!({"a":2,"b":null,"c":"y","d":true})),
+            ("c", json!({"a":1,"b":null,"c":"x"})),
+            ("d", json!({"a":1,"b":null,"c":"x","d":false})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        let filters = vec![
+            inside("a", vec![json!(1), json!(2)]),
+            eq("b", Value::Null),
+            inside("c", vec![json!("x"), json!("y")]),
+        ];
+        compare(
+            db,
+            &query(and(filters.clone())),
+            DocumentQueryAccess::CollectionScan,
+        );
+        let mut complete = filters;
+        complete.push(eq("d", json!(true)));
+        compare(
+            db,
+            &query(and(complete)),
+            DocumentQueryAccess::CompoundMembershipIndex {
+                index: "four".into(),
+                fields: 4,
+                probes: 4,
+            },
+        );
+    });
+}
