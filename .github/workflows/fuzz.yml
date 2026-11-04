@@ -12,9 +12,9 @@ jobs:
   recovery:
     name: Recovery parser and fail-closed behavior
     runs-on: ubuntu-24.04
-    # Thirty-eight sequential campaigns each run for a minute in addition to
+    # Thirty-nine sequential campaigns each run for a minute in addition to
     # toolchain installation and target compilation.
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -22,6 +22,11 @@ jobs:
         run: rustup toolchain install nightly-2026-11-03 --profile minimal
       - name: Install cargo-fuzz
         run: cargo +nightly-2026-11-03 install cargo-fuzz --version 0.13.2 --locked
+      - name: Run JSON string input-budget fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/json-string-budget-corpus"
+          cp fuzz/json-string-budget-seeds/* "$RUNNER_TEMP/json-string-budget-corpus/"
+          cargo +nightly-2026-11-03 fuzz run json_string_budget "$RUNNER_TEMP/json-string-budget-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run document update input budget fuzzing
         run: |
           mkdir -p "$RUNNER_TEMP/document-update-budget-corpus"
