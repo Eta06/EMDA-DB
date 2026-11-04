@@ -82,7 +82,7 @@ def main():
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "benchmark_cpu": benchmark_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "scope": "One client; read-only equality on a nonunique scalar JSON field. Prototype complete scan and planned equality-index range versus SQLite NOT INDEXED and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
+        "scope": "One client; read-only equality on a nonunique scalar JSON field. Prototype complete scan and planned equality-index range versus SQLite forced primary-table scan and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
         "cases": cases, "rounds": args.rounds, "cycles": args.cycles, "runs": [], "failures": [],
     }
     output = Path(args.output)

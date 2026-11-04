@@ -49,7 +49,7 @@ fn sqlite_rows(connection: &Connection, indexed: bool) -> Result<Vec<Row>> {
     let sql = if indexed {
         "SELECT id, body FROM docs WHERE json_extract(body, '$.group') = ?1 ORDER BY id"
     } else {
-        "SELECT id, body FROM docs NOT INDEXED WHERE json_extract(body, '$.group') = ?1 ORDER BY id"
+        "SELECT id, body FROM docs INDEXED BY sqlite_autoindex_docs_1 WHERE json_extract(body, '$.group') = ?1 ORDER BY id"
     };
     let mut statement = connection.prepare_cached(sql)?;
     let rows = statement.query_map(params!["target"], |row| {
@@ -118,7 +118,7 @@ fn main() -> Result<()> {
         return Err("SQLite did not select its group index".into());
     }
     let scan_plan: String = sqlite.query_row(
-        "EXPLAIN QUERY PLAN SELECT id,body FROM docs NOT INDEXED WHERE json_extract(body,'$.group')=?1 ORDER BY id",
+        "EXPLAIN QUERY PLAN SELECT id,body FROM docs INDEXED BY sqlite_autoindex_docs_1 WHERE json_extract(body,'$.group')=?1 ORDER BY id",
         ["target"],
         |row| row.get(3),
     )?;
