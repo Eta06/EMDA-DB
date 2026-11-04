@@ -50,6 +50,8 @@ A [transaction cancellation overhead comparison](docs/TRANSACTION_CANCELLATION_C
 
 An [admission comparison](docs/TRANSACTION_ADMISSION_COMPARISON_2026_11_04.md) records the cost of the active-transaction cap and a rejected atomic-counter experiment. The concurrent results varied considerably between runs.
 
+The [empty-log recovery report](docs/EMPTY_RECOVERY_COMPARISON_2026_11_04.md) records fail-closed initialization, fault and fuzz checks, and paired reopen measurements with observed VM noise.
+
 A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.
 
 A [streaming scan comparison](docs/STREAM_SCAN_COMPARISON_2026_11_04.md) measures the filtered-query change against its prior implementation and SQLite, including a repeat and VM noise.

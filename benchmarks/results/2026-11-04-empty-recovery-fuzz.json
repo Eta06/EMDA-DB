@@ -1,0 +1,94 @@
+{
+  "revision": "ddaae074bd569f6b4c7a4163a8f7a797e8647273",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "runs": [
+    {
+      "target": "recovery",
+      "duration_seconds": 121,
+      "executions": 152110,
+      "seed": 146979638,
+      "max_input_bytes": 8192,
+      "timeout_seconds": 10,
+      "binary_sha256": "9a1fd7a3f70d19d52f58290fc60b2ae37b9cb0dd1f3fc0e8242a270d40f0f413",
+      "ending_coverage": 753,
+      "ending_features": 1044,
+      "ending_corpus_entries": 39,
+      "initial_seeds": {
+        "atomic-batch": "02cd2d374838b4b03918a7dc07248fc0b8ac9d628569ec5c1cd8eef5d2f99af5",
+        "empty-unwitnessed": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+        "legacy": "b0f37de62232014cc51ea0b7d928fcd4045a85a8c3e7b59e2f24efa4eaccbfad",
+        "legacy-dangling-witness": "7e39b78411cd5edf81bb7b760686d28a4667c2caa189785166d0384d656d3e1f",
+        "metadata": "b769ac7af042d36dd6360f5c8ef06a625b9eb62c5c11562d54c5686789047880",
+        "metadata-record": "1039a69486721a47ea3afbc8fd87a1fe4286bb66397c828924e0171c571ac6af",
+        "witnessed": "cd735a131041a75f1a1b8d1c415c8e3135d9d588611b84348964a9c90ca60d8f"
+      }
+    },
+    {
+      "target": "backup_restore",
+      "duration_seconds": 121,
+      "executions": 42006,
+      "seed": 3518049689,
+      "max_input_bytes": 256,
+      "timeout_seconds": 10,
+      "binary_sha256": "9153e8f0c3659f7875404a725e2388eef9fe7cc9e8a46c3a3ca340813781c248",
+      "ending_coverage": 1925,
+      "ending_features": 3336,
+      "ending_corpus_entries": 31,
+      "initial_seeds": {
+        "corrupt": "1cb11f89b363853cf8890110b5e0c917165bfdd79a6f68fcc76d6e05b956a75e",
+        "corrupt-rehashed": "49bcfd85d4b87de7359f9911272810a3398b91ee3da0fa3d8fce95428a572943",
+        "empty-legacy-corrupt": "65ae2733f5e092877522a64200c1d04ee702ea833f930ef869b92fbe5af618eb",
+        "empty-legacy-trailing": "7d8e29fa389a36cca29bc0f07a7892dddd6f9070b9e33d12dce8ce3569f81810",
+        "empty-legacy-valid": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "extra": "f13fb7b5818db5a92b371aeb210c00130882c63171669216d38a46b2cc9db8c1",
+        "truncated": "d96a06e4cf1da0a1c60c0628b27dc64e67a21fbe68067f1904eda9b3d94145bd",
+        "upgrade-empty-destination": "13678f0805c4a657852af98a9f99927fcea730aaeede8067a3b058a32bb42183",
+        "upgrade-empty-missing": "e350bf3bb39002f9b50d58d63e4da671c150208b3046e1509eab4b5e7593c1b3",
+        "upgrade-empty-nonempty": "e5a7014df44e8bbf3e38920ccd5ccf3d820bf6e0b9e4033da4790e41c6702c01",
+        "upgrade-empty-valid": "8d71b3faab8201459ad37ef499beb336ba88bdcfa0f51ee6f0a46ec3192d750a",
+        "upgrade-empty-witness": "b3e0adaf40f19d19ae5846a499ef09653350f3f359d52424cec547a12789b1fe",
+        "valid": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+      }
+    },
+    {
+      "target": "checkpoint_recovery",
+      "duration_seconds": 61,
+      "executions": 15301,
+      "seed": 2407040715,
+      "max_input_bytes": 256,
+      "timeout_seconds": 10,
+      "binary_sha256": "52429811ababba6537647e482c83b309d38b668bec968989a2e9f264fa9420c8",
+      "ending_coverage": 1942,
+      "ending_features": 2951,
+      "ending_corpus_entries": 28,
+      "initial_seeds": {
+        "arbitrary-tail": "8ae6a971fb4a3075d0ffcde9c58d35257f48f579d689ea776fee522a2b128a20",
+        "corrupt": "08885d7fea0f91658b31ed743483e96388d8ffa41f13a6280e6100ea915315dd",
+        "limited": "a4b8ac2dd8d5202627525342e2304d177f9008dacd296283b611c194b9455555",
+        "truncated": "9f07a1d473ac7214c792fbad73557633daf7631c55752d48eaa4b62b2d5583b8",
+        "unacknowledged": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "v3-corrupt": "f75fdd96997d874a8440df05c9620c5f1ef13f151f0bef2c662044f7a86f7f52",
+        "v3-truncated": "151e3fbf18b93e762e64256c8719e1d031c76e58d99e4a0bf2fdad6b6c5cdfb4",
+        "v3-unacknowledged": "1fc3bd4778fdfdaea679fe9d9da2bf8a30ce49e7a9e477c602c0ae68da9f57b6",
+        "witnessed": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+      }
+    },
+    {
+      "target": "managed_checkpoint",
+      "duration_seconds": 61,
+      "executions": 3898,
+      "seed": 1357884019,
+      "max_input_bytes": 128,
+      "timeout_seconds": 10,
+      "binary_sha256": "bd8d92adef5afd92a06a4368bbd76b74e85cd5657a28f4d0eb65fd03e9352e26",
+      "ending_coverage": 2979,
+      "ending_features": 12332,
+      "ending_corpus_entries": 335,
+      "initial_seeds": {
+        "seed": "ddec4a165ebd1f4e8024bb17a5032271c7160b330314e310ad15f5d6f4cfa234"
+      }
+    }
+  ],
+  "scope": "Finite local campaigns; not exhaustive, physical power-loss testing, or an off-host restore drill."
+}
