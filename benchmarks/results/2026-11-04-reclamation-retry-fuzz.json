@@ -1,0 +1,23 @@
+{
+  "revision": "14c60a3552188043e4cc1a7c5474ca3518039d24",
+  "source_note": "During compilation a Rust documentation comment and separate stress-evidence files were changed; executable Rust statements were unchanged.",
+  "started_utc": "2026-11-04T18:40:23Z",
+  "ended_utc": "2026-11-04T18:44:08Z",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "target": "online_reclamation_worker",
+  "duration_seconds": 121,
+  "executions": 6716,
+  "seed": 3769802598,
+  "initial_seeds": {
+    "manual-handoff": "252b75e4d86252b8848269dd1f1739f3a094f711ca38085a896befe94c79d63f",
+    "writes-and-checks": "97d2dbb893e3807e9c82b26440bb3c84d3b841d454373a3af7d4438fc76c9dc6"
+  },
+  "max_input_bytes": 64,
+  "binary_sha256": "b1b170bf199600a24cc9d39f9a20b1d07d59a3df5d44873e27d8123a2a0de4b6",
+  "ending_coverage": 2351,
+  "ending_features": 9816,
+  "ending_corpus_entries": 245,
+  "result": "completed without a finding",
+  "scope": "Generated serial-client worker schedules, writes and recovery checks; it does not itself induce a maintenance-lock conflict or arbitrary concurrent schedules. Those conflicts are separately exercised by deterministic threaded tests. It does not model physical power loss or off-host recovery."
+}
