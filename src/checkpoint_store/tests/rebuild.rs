@@ -48,23 +48,40 @@ fn rebuild_rejects_untrusted_selection_existing_destinations_and_active_store() 
     let (dir, path, checkpoint, digest) = fixture();
     let active = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
     let destination = dir.path().join("new");
-    assert!(CheckpointStore::rebuild_managed_selection(&path, &destination).is_err());
+    assert_eq!(
+        CheckpointStore::rebuild_managed_selection(&path, &destination)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
     assert!(!destination.exists());
     drop(active);
     let selection = super::super::selection::path(&path);
     fs::write(&selection, b"unrelated").unwrap();
-    assert!(CheckpointStore::rebuild_managed_selection(&path, &destination).is_err());
+    assert_eq!(
+        retry_lock(|| CheckpointStore::rebuild_managed_selection(&path, &destination))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
     assert_eq!(fs::read(&selection).unwrap(), b"unrelated");
     assert!(!destination.exists());
     fs::remove_file(&selection).unwrap();
     let unrelated = dir.path().join("unrelated");
     fs::write(&unrelated, b"keep").unwrap();
     symlink(&unrelated, &selection).unwrap();
-    assert!(CheckpointStore::rebuild_managed_selection(&path, &destination).is_err());
+    assert!(
+        retry_lock(|| CheckpointStore::rebuild_managed_selection(&path, &destination)).is_err()
+    );
     assert_eq!(fs::read(&unrelated).unwrap(), b"keep");
     fs::remove_file(&selection).unwrap();
     assert!(CheckpointStore::rebuild_managed_selection(&path, &selection).is_err());
-    assert!(CheckpointStore::rebuild_managed_selection(&path, &unrelated).is_err());
+    assert_eq!(
+        retry_lock(|| CheckpointStore::rebuild_managed_selection(&path, &unrelated))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
     assert_eq!(fs::read(&unrelated).unwrap(), b"keep");
     assert!(
         CheckpointStore::rebuild_managed_selection(dir.path().join("missing-store"), &destination)

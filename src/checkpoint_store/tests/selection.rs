@@ -91,7 +91,10 @@ fn managed_selection_publication_failures_poison_the_writer_and_recover_visible_
                 retry_lock(|| CheckpointStore::open_managed(&path)).unwrap()
             } else {
                 assert_eq!(
-                    CheckpointStore::open_managed(&path).err().unwrap().kind(),
+                    retry_lock(|| CheckpointStore::open_managed(&path))
+                        .err()
+                        .unwrap()
+                        .kind(),
                     io::ErrorKind::NotFound
                 );
                 retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap()
@@ -110,7 +113,10 @@ fn managed_selection_publication_failures_poison_the_writer_and_recover_visible_
 fn managed_selection_missing_corrupt_symlink_and_wrong_store_fail_closed() {
     let (dir, path, checkpoint, digest) = fixture();
     assert_eq!(
-        CheckpointStore::open_managed(&path).err().unwrap().kind(),
+        retry_lock(|| CheckpointStore::open_managed(&path))
+            .err()
+            .unwrap()
+            .kind(),
         io::ErrorKind::NotFound
     );
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
@@ -612,30 +618,32 @@ fn managed_open_refuses_each_failed_selection_ancestor_sync() {
     let count = fs::canonicalize(&path).unwrap().ancestors().count();
     for fail_at in 0..count {
         let mut seen = 0;
-        let result = CheckpointStore::open_source_using(
-            &path,
-            OpenSource::Managed,
-            OpenLimits {
-                max_tail_bytes: MAX_RECOVERED_VIEW_TAIL_BYTES,
-                max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
-                max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
-                max_log_bytes: None,
-            },
-            Log::open_checkpoint_writer,
-            |store| {
-                super::super::selection::synchronize_with(store, File::sync_all, |parent| {
-                    super::super::selection::sync_ancestors_with(parent, |ancestor| {
-                        let index = seen;
-                        seen += 1;
-                        if index == fail_at {
-                            Err(io::Error::other("injected ancestor sync"))
-                        } else {
-                            File::open(ancestor)?.sync_all()
-                        }
+        let result = retry_lock(|| {
+            CheckpointStore::open_source_using(
+                &path,
+                OpenSource::Managed,
+                OpenLimits {
+                    max_tail_bytes: MAX_RECOVERED_VIEW_TAIL_BYTES,
+                    max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
+                    max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
+                    max_log_bytes: None,
+                },
+                Log::open_checkpoint_writer,
+                |store| {
+                    super::super::selection::synchronize_with(store, File::sync_all, |parent| {
+                        super::super::selection::sync_ancestors_with(parent, |ancestor| {
+                            let index = seen;
+                            seen += 1;
+                            if index == fail_at {
+                                Err(io::Error::other("injected ancestor sync"))
+                            } else {
+                                File::open(ancestor)?.sync_all()
+                            }
+                        })
                     })
-                })
-            },
-        );
+                },
+            )
+        });
         assert!(result.is_err());
         assert_eq!(seen, fail_at + 1);
         let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
