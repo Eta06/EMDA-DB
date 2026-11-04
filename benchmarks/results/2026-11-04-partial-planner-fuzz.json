@@ -1,0 +1,44 @@
+{
+  "revision": "5713d7b8a031f293e87a37a9d10aed5d50cda240",
+  "started_utc": "2026-11-04T18:04:30Z",
+  "ended_utc": "2026-11-04T18:07:37Z",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "environment": "Local Linux VM; temporary corpora on the current temporary filesystem; no physical power-loss testing.",
+  "runs": [
+    {
+      "target": "document_partial_planner",
+      "duration_seconds": 121,
+      "executions": 12665,
+      "seed": 2333340947,
+      "initial_seeds": {
+        "checkpoint": "dceb75885c245395bd26ca08d25664113e5961b0eab6ffd528daa603e20c571c",
+        "equals": "ccdeb900eae3c5457fa3196a587e143b643b402376fcbb62833c4622ce110cf0",
+        "ordinary": "7f2b85a8debaf4e2d51444a7242231980dcb8895861ccb39e65def5ff5c6536f"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "37e2d0fd8a54bc3b966be767221592ab7be5c1945237cc9c5692090c7dad41f9",
+      "ending_coverage": 4346,
+      "ending_features": 12792,
+      "ending_corpus_entries": 420,
+      "result": "completed without a finding"
+    },
+    {
+      "target": "document_compound_planner",
+      "duration_seconds": 61,
+      "executions": 3986,
+      "seed": 3511035929,
+      "initial_seeds": {
+        "checkpoint": "b23de828ac08309f7884f84df695f0359d1391363ce8b749a5573f9ecc9678a0",
+        "ordinary": "7f2b85a8debaf4e2d51444a7242231980dcb8895861ccb39e65def5ff5c6536f"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "ff09f982b32827872820ebd978c1f0d68507d2405a90c67b32250cceb17c4e4d",
+      "ending_coverage": 4286,
+      "ending_features": 11947,
+      "ending_corpus_entries": 353,
+      "result": "completed without a finding"
+    }
+  ],
+  "scope": "Generated serial-client operations compare planned results with full collection scans on ordinary and checkpoint-backed stores, including selected reopen cases. These short campaigns are not exhaustive and do not establish concurrent history, physical power-loss, off-host recovery, or production safety."
+}
