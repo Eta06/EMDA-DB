@@ -1,5 +1,6 @@
 //! Failure and publication checks through the real V3 coordinator path.
 use super::*;
+use crate::test_support::retry_lock;
 use crate::witness::{Witness, WitnessIo};
 use rustix::fs::{XattrFlags, fgetxattr, fsetxattr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -164,7 +165,7 @@ fn metadata_failures_and_panics_never_acknowledge_and_poison_the_store() {
         assert!(store.get(b"key").is_err());
         assert!(store.delete(b"key").is_err());
         drop(store);
-        let reopened = Store::open(dir.path()).unwrap();
+        let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
         let value = reopened.get(b"key").unwrap().unwrap();
         assert!(value == b"old" || value == b"new");
     }
@@ -241,7 +242,7 @@ fn transaction_deadline_during_fsync_does_not_report_an_aborted_commit() {
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
     drop(store);
     assert_eq!(
-        Store::open(dir.path())
+        retry_lock(|| Store::open(dir.path()))
             .unwrap()
             .get(b"key")
             .unwrap()
@@ -283,7 +284,7 @@ fn transaction_fsync_timeout_remains_an_unknown_operation_error() {
     }
     assert!(store.get(b"a").is_err());
     drop(store);
-    let reopened = Store::open(dir.path()).unwrap();
+    let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
     let values = reopened.get_many(&[b"a", b"b"]).unwrap();
     assert!(
         values == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
@@ -690,7 +691,7 @@ fn atomic_batch_metadata_failures_never_publish_a_partial_batch() {
         assert!(!matches!(outcome, Ok(Ok(()))));
         assert!(store.get_many(&[b"a", b"b"]).is_err());
         drop(store);
-        let reopened = Store::open(dir.path()).unwrap();
+        let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
         let pair = reopened.get_many(&[b"a", b"b"]).unwrap();
         assert!(
             pair == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
@@ -775,7 +776,7 @@ fn transaction_commit_metadata_failures_never_recover_partial_writes() {
             assert!(!matches!(outcome, Ok(Ok(()))));
             assert!(store.get_many(&[b"a", b"b"]).is_err());
             drop(store);
-            let pair = Store::open(dir.path())
+            let pair = retry_lock(|| Store::open(dir.path()))
                 .unwrap()
                 .get_many(&[b"a", b"b"])
                 .unwrap();
@@ -854,7 +855,7 @@ fn failed_fifo_transaction_wakes_waiter_and_preserves_atomic_recovery() {
         assert!(second_result.is_err());
         assert!(store.get(b"a").is_err());
         drop(store);
-        let reopened = Store::open(directory.path()).unwrap();
+        let reopened = retry_lock(|| Store::open(directory.path())).unwrap();
         let values = reopened.get_many(&[b"a", b"b", b"c"]).unwrap();
         assert!(
             values == vec![Some(b"old".to_vec()), Some(b"old".to_vec()), None]

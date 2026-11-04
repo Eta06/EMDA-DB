@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Harden metadata fault-test fixture reopens against transient inherited locks during parallel process-kill tests.
+
 - Plan exact equality queries on complete compound index tuples without omitting documents missing unconstrained fields.
 
 - Plan bounded single-field scalar range queries with intersected bounds and stable ID-order results.
