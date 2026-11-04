@@ -883,3 +883,87 @@ fn target_quota_failure_during_catchup_keeps_later_source_write() {
     assert!(!previous.exists());
     assert_eq!(store.with_store(|s| s.get(b"later")).unwrap(), Some(later));
 }
+
+#[test]
+fn concurrent_acknowledged_increments_survive_repeated_handoffs() {
+    use std::sync::Barrier;
+    const WRITERS: usize = 4;
+    const PER_WRITER: usize = 32;
+    for _ in 0..8 {
+        let root = tempfile::tempdir().unwrap();
+        let (source, previous) = paths(root.path());
+        let store = Arc::new(OnlineStore::open(&source).unwrap());
+        let start = Arc::new(Barrier::new(WRITERS + 1));
+        let (progress_tx, progress_rx) = mpsc::channel();
+        let mut writers = Vec::new();
+        for _ in 0..WRITERS {
+            let store = Arc::clone(&store);
+            let start = Arc::clone(&start);
+            let progress = progress_tx.clone();
+            writers.push(thread::spawn(move || {
+                start.wait();
+                let mut observed = Vec::new();
+                for index in 0..PER_WRITER {
+                    observed.push(
+                        store
+                            .with_store(|s| s.increment_i64(b"counter", 1))
+                            .unwrap(),
+                    );
+                    if index == 0 {
+                        progress.send(()).unwrap();
+                    }
+                }
+                observed
+            }));
+        }
+        let compactor = Arc::clone(&store);
+        let old_path = previous.clone();
+        let worker = thread::spawn(move || {
+            compactor.compact_with_hooks(
+                &old_path,
+                &Default::default(),
+                |point| {
+                    if point == copy::Point::InitialCopy {
+                        start.wait();
+                        for _ in 0..WRITERS {
+                            progress_rx.recv_timeout(WAIT).unwrap();
+                        }
+                    }
+                    Ok(())
+                },
+                crate::directory::sync_existing,
+            )
+        });
+        let report = worker.join().unwrap().unwrap();
+        assert!(report.concurrent_replay_bytes > 0);
+        let mut observed = writers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        observed.sort_unstable();
+        assert_eq!(
+            observed,
+            (1..=(WRITERS * PER_WRITER) as i64).collect::<Vec<_>>()
+        );
+        let expected = ((WRITERS * PER_WRITER) as i64).to_le_bytes().to_vec();
+        assert_eq!(
+            store.with_store(|s| s.get(b"counter")).unwrap(),
+            Some(expected.clone())
+        );
+        let old = retry_lock(|| Store::open(&previous)).unwrap();
+        let old_value: [u8; 8] = old.get(b"counter").unwrap().unwrap().try_into().unwrap();
+        assert!(
+            (WRITERS as i64..=(WRITERS * PER_WRITER) as i64)
+                .contains(&i64::from_le_bytes(old_value))
+        );
+        drop(old);
+        drop(store);
+        assert_eq!(
+            retry_lock(|| Store::open(&source))
+                .unwrap()
+                .get(b"counter")
+                .unwrap(),
+            Some(expected)
+        );
+    }
+}
