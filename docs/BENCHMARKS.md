@@ -248,7 +248,7 @@ At 200,000 keys this is roughly a 37-fold reduction for the view's sampled media
 
 ## Two-key transaction comparison
 
-`examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative` and `readset` modes use the prototype's respective transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair.
+`examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.
 
 On Linux, build and run with an existing fixture directory and a new output path:
 

@@ -14,6 +14,7 @@ type BenchResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 enum Mode {
     Conservative,
     ReadSet,
+    ReadSetFifo,
     Sqlite,
 }
 enum Worker {
@@ -97,11 +98,12 @@ fn sqlite_increment(conn: &mut Connection, first: &[u8], second: &[u8]) -> Bench
 fn main() -> BenchResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [backend, clients, operations, workload, parent] = args.as_slice() else {
-        return Err("usage: transaction_bench <conservative|readset|sqlite> <clients> <operations-per-client> <disjoint|shared> <existing-directory>".into());
+        return Err("usage: transaction_bench <conservative|readset|readset-fifo|sqlite> <clients> <operations-per-client> <disjoint|shared> <existing-directory>".into());
     };
     let mode = match backend.as_str() {
         "conservative" => Mode::Conservative,
         "readset" => Mode::ReadSet,
+        "readset-fifo" => Mode::ReadSetFifo,
         "sqlite" => Mode::Sqlite,
         _ => return Err("unknown backend".into()),
     };
@@ -179,6 +181,9 @@ fn main() -> BenchResult<()> {
                             Mode::ReadSet => {
                                 store.transaction_with_read_set(|tx| increment(tx, &first, &second))
                             }
+                            Mode::ReadSetFifo => store.transaction_with_read_set_fifo(|tx| {
+                                increment(tx, &first, &second)
+                            }),
                             Mode::Sqlite => unreachable!(),
                         };
                         match result {
