@@ -100,8 +100,27 @@ def main():
         "benchmark_cpu": bench_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
         "limitations": "One Linux VM, warm cache, sampled direct reads in separate fresh processes. Store-full replays the whole log; store uses a checkpoint but loads the live index; checkpoint-store is writable with a checkpoint base and bounded suffix. The historical view does not replay or validate the tail; the recovered view replays a bounded witnessed tail. Both views are read-only and exclude cooperating writers. Checkpoint paths hash the complete covered log prefix. RSS is Linux process RSS and excludes OS page cache; it is not a quota. Process I/O counters include opening, sampled reads and measurement overhead; rchar counts bytes returned by read-like syscalls, not physical disk I/O, and read_bytes is a kernel accounting estimate. VM/cgroup noise includes the workload. This is not a production or competitor comparison.",
+        "completed": False,
         "cases": [],
     }
+    output = Path(args.output)
+    with output.open("x", encoding="utf-8") as file:
+        json.dump(result, file, indent=2)
+        file.write("\n")
+
+    def save():
+        # Preserve a parseable partial report if a later case is interrupted.
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output.parent,
+                                         prefix=".index-memory-report-", delete=False) as file:
+            temporary = Path(file.name)
+            try:
+                json.dump(result, file, indent=2)
+                file.write("\n")
+                file.flush()
+                os.replace(temporary, output)
+            finally:
+                temporary.unlink(missing_ok=True)
+
     with tempfile.TemporaryDirectory(prefix=".index-memory-bench-", dir=args.directory) as root:
         for count in counts:
             parent = Path(root) / str(count)
@@ -117,6 +136,8 @@ def main():
                     "log_bytes": int(info["log_bytes"]), "checkpoint_bytes": int(info["checkpoint_bytes"]),
                     "fixture_identity": original,
                     "quiet_check": quiet_window(), "runs": []}
+            result["cases"].append(case)
+            save()
             modes = MODES
             for round_index in range(args.rounds):
                 offset = round_index % len(modes)
@@ -127,6 +148,7 @@ def main():
                     noise = difference(before, snapshot())
                     sample = validate_sample(measured.stdout, mode, args.tail_keys)
                     case["runs"].append({"round": round_index + 1, "mode": mode, **sample, "noise": noise})
+                    save()
             if identity(parent) != original:
                 raise RuntimeError("measurement changed the witnessed fixture")
             case["summary"] = {}
@@ -144,10 +166,10 @@ def main():
                 }
                 if args.tail_keys and mode != "view":
                     case["summary"][mode]["median_tail_lookup_ns"] = statistics.median(value for run in samples for value in run["tail_lookups_ns"])
-            result["cases"].append(case)
-    with open(args.output, "x", encoding="utf-8") as output:
-        json.dump(result, output, indent=2)
-        output.write("\n")
+            save()
+    result["completed"] = True
+    result["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    save()
     for case in result["cases"]:
         print(f"keys={case['keys']} summary={case['summary']}")
 
