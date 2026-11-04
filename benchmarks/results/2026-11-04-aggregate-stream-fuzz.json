@@ -1,0 +1,20 @@
+{
+  "revision": "3088fe607aacea6b0903970be52483e9d5525784",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "target": "document_aggregate_stats",
+  "duration_seconds": 121,
+  "executions": 19782,
+  "seed": 3692910672,
+  "initial_seeds": {
+    "checkpoint": "3f2ffae0871829916d26161db85337c37795056d1cedf1b617d4048c6e5e231c",
+    "ordinary": "d17c55d0c49405a886b47d66f3a37b83cf2f4fe0bbeec1cdacfd389dd5da4ba7"
+  },
+  "max_input_bytes": 96,
+  "binary_sha256": "eab0e7bd1a284480a6825f136b502ad9bba2ad21a57d233e3ab0d3255c6ec91d",
+  "ending_coverage": 3446,
+  "ending_features": 14870,
+  "ending_corpus_entries": 476,
+  "result": "completed without a finding",
+  "scope": "Generated serial document updates, deletes, filters including array contains, grouped integer statistics, and reopenings against an independent model on both backends. It does not exhaust concurrent schedules, corruption, storage faults, physical power loss or off-host restore."
+}

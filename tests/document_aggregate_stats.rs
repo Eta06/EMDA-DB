@@ -225,6 +225,55 @@ fn statistics_validate_work_bounds_types_and_rollback() {
 }
 
 #[test]
+fn statistics_prioritize_scan_and_filter_errors_over_early_aggregate_errors() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        let mut tags = vec![json!(0); 4_000];
+        *tags.last_mut().unwrap() = json!(1);
+        db.insert("c", "a", &json!({"n":"not an integer","tags":tags}))
+            .unwrap();
+        db.insert("c", "b", &json!({"n":2,"tags":tags})).unwrap();
+        let scan_error = db
+            .aggregate_stats(
+                "c",
+                &AggregateStatsRequest {
+                    max_scanned: 1,
+                    ..request()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            scan_error
+                .to_string()
+                .contains("document scan exceeds the operation limit")
+        );
+        let filter = DocumentFilter::And(
+            (0..126)
+                .map(|_| DocumentFilter::ArrayContains {
+                    path: path("tags"),
+                    value: json!(1),
+                })
+                .collect(),
+        );
+        let filter_error = db
+            .aggregate_stats(
+                "c",
+                &AggregateStatsRequest {
+                    filter,
+                    ..request()
+                },
+            )
+            .unwrap_err();
+        assert!(
+            filter_error
+                .to_string()
+                .contains("membership filter comparison limit exceeded")
+        );
+    });
+}
+
+#[test]
 fn statistics_accept_all_fields_and_documents_at_the_limits() {
     both_backends(|db| {
         db.create_collection("c", CollectionSchema::default())

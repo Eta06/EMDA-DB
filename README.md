@@ -42,7 +42,7 @@ A [compound equality-query comparison](docs/COMPOUND_QUERY_COMPARISON_2026_11_04
 
 A [membership union comparison](docs/MEMBERSHIP_UNION_COMPARISON_2026_11_04.md) measures two indexed scalar probes against scans and SQLite. The new path improved the sampled prototype queries; SQLite remained faster on the indexed cases.
 
-A [grouped statistics comparison](docs/AGGREGATE_STATS_COMPARISON_2026_11_04.md) measures full scans and records lower SQLite latency on the sampled workload, with explicit JSON-versus-normalized-column differences.
+A [grouped statistics comparison](docs/AGGREGATE_STATS_COMPARISON_2026_11_04.md) measures full scans and records lower SQLite latency on the sampled workload, with explicit JSON-versus-normalized-column differences. A [streaming follow-up](docs/AGGREGATE_STREAM_COMPARISON_2026_11_04.md) improved the sampled prototype median, while SQLite remained faster.
 
 A [transaction cancellation overhead comparison](docs/TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) measures the existing transaction APIs before and after cancellation support. Results varied across runs; the largest sampled slowdown did not repeat.
 

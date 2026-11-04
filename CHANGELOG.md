@@ -6,6 +6,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 - Allow each open store to set and inspect its transaction reservation limit, preserving it across guarded compaction while rejecting reductions below active reservations. The limit resets on reopen and is not a total-memory quota.
 
+- Stream grouped statistics during complete scans while preserving scan and filter error precedence.
+
 - Add opt-in scoped cleanup for matching retired-store stages, with full current-log verification, lock and contents checks, restartable ordered removal, worker status and process-kill tests. Legacy generic stages and named previous paths still require inspection; no total quota or power-loss guarantee is implied.
 
 - Add bounded grouped statistics for up to 16 signed integer fields, with exact 128-bit sums, counts, minima, maxima, approximate means and transaction snapshot validation.
