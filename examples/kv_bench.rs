@@ -32,7 +32,7 @@ impl Config {
 
     fn parse_args(args: &[String]) -> BenchResult<Self> {
         if !(6..=7).contains(&args.len()) {
-            return Err("usage: kv_bench <prototype|prototype-key-byte-limit|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory> [value-bytes]".into());
+            return Err("usage: kv_bench <prototype|prototype-key-byte-limit|prototype-log-limit|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory> [value-bytes]".into());
         }
         let result = Self {
             backend: args[0].clone(),
@@ -45,7 +45,7 @@ impl Config {
         };
         if !matches!(
             result.backend.as_str(),
-            "prototype" | "prototype-key-byte-limit" | "sqlite"
+            "prototype" | "prototype-key-byte-limit" | "prototype-log-limit" | "sqlite"
         ) || !(1..=64).contains(&result.clients)
             || !(1..=100_000).contains(&result.operations)
             || !(1..=1_000_000).contains(&result.keys)
@@ -59,15 +59,36 @@ impl Config {
     }
 }
 
+fn open_prototype(config: &Config, path: &Path) -> BenchResult<Store> {
+    match config.backend.as_str() {
+        "prototype-key-byte-limit" => Ok(Store::open_with_resource_limits(
+            path,
+            None,
+            None,
+            Some(config.keys * 8),
+        )?),
+        "prototype-log-limit" => {
+            // Reserve room for initialization and the worst case in which
+            // every measured operation writes an eight-byte key and value.
+            let records = (config.clients as u64)
+                .checked_mul(config.operations as u64)
+                .and_then(|count| count.checked_add(config.keys as u64))
+                .ok_or("benchmark log limit overflow")?;
+            let record_bytes = 17_u64 + 8 + config.value_size as u64 + 4;
+            let limit = records
+                .checked_mul(record_bytes)
+                .and_then(|bytes| bytes.checked_add(28))
+                .ok_or("benchmark log limit overflow")?;
+            Ok(Store::open_with_log_limit(path, limit)?)
+        }
+        _ => Ok(Store::open(path)?),
+    }
+}
+
 fn workers(config: &Config, directory: &Path) -> BenchResult<Vec<Worker>> {
     let initial_value = vec![0; config.value_size];
     if config.backend != "sqlite" {
-        let path = directory.join("store");
-        let store = Arc::new(if config.backend == "prototype-key-byte-limit" {
-            Store::open_with_resource_limits(path, None, None, Some(config.keys * 8))?
-        } else {
-            Store::open(path)?
-        });
+        let store = Arc::new(open_prototype(config, &directory.join("store"))?);
         let mut initializer = Worker::Prototype(Arc::clone(&store));
         for key in 0..config.keys {
             initializer.write(&(key as u64).to_be_bytes(), &initial_value)?;
@@ -245,11 +266,7 @@ fn main() -> BenchResult<()> {
     drop(held_workers);
     if config.backend != "sqlite" {
         let path = directory.path().join("store");
-        let reopened = if config.backend == "prototype-key-byte-limit" {
-            Store::open_with_resource_limits(path, None, None, Some(config.keys * 8))?
-        } else {
-            Store::open(path)?
-        };
+        let reopened = open_prototype(&config, &path)?;
         let mut reader = Worker::Prototype(Arc::new(reopened));
         for key in 0..config.keys.min(100) {
             reader.read(&(key as u64).to_be_bytes(), config.value_size)?;
@@ -276,6 +293,8 @@ mod tests {
         );
         let mut limited = args.clone();
         limited[0] = "prototype-key-byte-limit".into();
+        assert!(Config::parse_args(&limited).is_ok());
+        limited[0] = "prototype-log-limit".into();
         assert!(Config::parse_args(&limited).is_ok());
         let mut sized = args.clone();
         sized.push("4096".into());

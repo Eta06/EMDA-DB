@@ -45,6 +45,7 @@ jobs:
           cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
           cargo +stable run --release --locked --example kv_bench -- prototype-key-byte-limit 2 20 16 50 "$RUNNER_TEMP"
           python3 scripts/key_byte_limit_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/key-byte-limit-smoke.json" --rounds 2 --operations 20 --baseline-binary target/release/examples/kv_bench --baseline-revision HEAD
+          python3 scripts/key_byte_limit_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/log-limit-smoke.json" --rounds 2 --operations 20 --cap log --baseline-binary target/release/examples/kv_bench --baseline-revision HEAD
           cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP"
           cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP" 4096
           cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP" 4096

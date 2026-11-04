@@ -11,9 +11,6 @@ import time
 
 from benchmarks.telemetry import difference, quiet_window, read, snapshot
 
-MODES = ("prototype", "prototype-key-byte-limit")
-
-
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -29,6 +26,7 @@ def main():
     parser.add_argument("--binary", default="target/release/examples/kv_bench")
     parser.add_argument("--baseline-binary")
     parser.add_argument("--baseline-revision")
+    parser.add_argument("--cap", choices=("key-bytes", "log"), default="key-bytes")
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--operations", type=int, default=200)
     args = parser.parse_args()
@@ -56,17 +54,20 @@ def main():
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"),
         "allowed_cpus": allowed, "benchmark_cpus": benchmark_cpus, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "limitations": "One VM and filesystem, direct embedded APIs, warm cache, 16 pre-existing eight-byte keys and 64-byte values. The cap is exactly 128 live-key bytes; workloads update existing keys and do not measure insertion or rejection. Each acknowledged write synchronizes under the same prototype durability contract; capped mutations serialize while uncapped writes may share syncs. The example verifies sampled values after reopen. Latency percentiles are per-run summaries, not individual samples. VM/cgroup noise includes fixture setup, reopen and cleanup. No power-loss validation or general ranking.",
+        "limitations": "One VM and filesystem, direct embedded APIs, warm cache, 16 pre-existing eight-byte keys and 64-byte values. Workloads update existing keys and do not measure insertion or rejection. The key-byte cap is exactly 128 bytes; the log cap has space for initialization and the worst case where every measured operation writes. Each acknowledged write synchronizes under the same prototype durability contract. The example verifies sampled values after reopen. Latency percentiles are per-run summaries, not individual samples. VM/cgroup noise includes fixture setup, reopen and cleanup. No power-loss validation or general ranking.",
+        "cap": args.cap,
         "cases": [],
     }
-    variants = [(mode, args.binary, mode) for mode in MODES]
+    capped_backend = "prototype-key-byte-limit" if args.cap == "key-bytes" else "prototype-log-limit"
+    variants = [(mode, args.binary, mode) for mode in ("prototype", capped_backend)]
     if args.baseline_binary:
         report["baseline_revision"] = subprocess.check_output(
             ["git", "rev-parse", "--verify", args.baseline_revision + "^{commit}"], text=True
         ).strip()
         report["baseline_binary_sha256"] = sha256(args.baseline_binary)
-        report["binary_provenance"] = "Baseline revision is caller-supplied; binary hashes are recorded. Build each from its corresponding clean source."
-        variants.insert(0, ("baseline-key-byte-limit", args.baseline_binary, "prototype-key-byte-limit"))
+        report["binary_provenance"] = "Baseline revision is caller-supplied; binary hashes are recorded. Build against that source and use the same benchmark harness for both binaries."
+        label = "baseline-key-byte-limit" if args.cap == "key-bytes" else "baseline-log-limit"
+        variants.insert(0, (label, args.baseline_binary, capped_backend))
     cpus = ",".join(map(str, benchmark_cpus))
     for clients in (1, 4):
         for write_percent in (50, 100):
