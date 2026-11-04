@@ -11,10 +11,18 @@ use std::collections::BTreeMap;
 use std::io;
 use std::ops::ControlFlow;
 
+const RANGE_RESERVATION_QUANTUM: usize = 4 * 1024;
+
+pub(super) struct RangeEntry {
+    end: usize,
+    location: ValueLocation,
+}
+
 struct Range {
     after: Option<Vec<u8>>,
     before: Option<Vec<u8>>,
-    entries: Vec<(Vec<u8>, ValueLocation)>,
+    keys: Vec<u8>,
+    entries: Vec<RangeEntry>,
 }
 
 pub(super) struct ReadSet {
@@ -117,7 +125,9 @@ impl ReadSet {
         }
         let mut key_bytes = bounds_bytes;
         let mut charged = bounds_bytes;
+        let mut reserved = bounds_bytes;
         let mut reservation = PendingReservation::acquire(&store.transaction_budget, charged)?;
+        let mut keys = Vec::new();
         let mut entries = Vec::new();
         state.view.visit_entries(after, before, |key, location| {
             if self.items + entries.len() >= MAX_TRANSACTION_VALIDATION_ITEMS
@@ -127,17 +137,35 @@ impl ReadSet {
                     "checkpoint transaction range observation limit exceeded",
                 ));
             }
-            let charge = key.len() + std::mem::size_of::<ValueLocation>();
-            reservation.grow(charge)?;
-            charged += charge;
+            let charge = key.len() + std::mem::size_of::<RangeEntry>();
+            let needed = charged + charge;
+            if needed > reserved {
+                let deficit = needed - reserved;
+                let increment = deficit.max(RANGE_RESERVATION_QUANTUM);
+                if reservation.grow(increment).is_ok() {
+                    reserved += increment;
+                } else {
+                    // Near a tight shared limit, admit an exact reservation
+                    // instead of rejecting solely because of the quantum.
+                    reservation.grow(deficit)?;
+                    reserved += deficit;
+                }
+            }
+            charged = needed;
             key_bytes += key.len();
-            entries.push((key.to_vec(), location));
+            keys.extend_from_slice(key);
+            entries.push(RangeEntry {
+                end: keys.len(),
+                location,
+            });
             Ok(ControlFlow::Continue(()))
         })?;
         let items = entries.len();
+        reservation.shrink(reserved - charged);
         self.ranges.push(Range {
             after: after.map(<[u8]>::to_vec),
             before: before.map(<[u8]>::to_vec),
+            keys,
             entries,
         });
         self.key_bytes += key_bytes;
@@ -170,7 +198,7 @@ impl ReadSet {
                 range.after.as_deref(),
                 range.before.as_deref(),
                 |key, location| {
-                    let Some((previous_key, previous_location)) = range.entries.get(index) else {
+                    let Some(previous) = range.entries.get(index) else {
                         same = false;
                         return Ok(ControlFlow::Break(()));
                     };
@@ -180,7 +208,12 @@ impl ReadSet {
                             "checkpoint transaction validation work limit exceeded",
                         ));
                     }
-                    if previous_key.as_slice() != key || *previous_location != location {
+                    let start = if index == 0 {
+                        0
+                    } else {
+                        range.entries[index - 1].end
+                    };
+                    if &range.keys[start..previous.end] != key || previous.location != location {
                         same = false;
                         return Ok(ControlFlow::Break(()));
                     }

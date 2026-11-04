@@ -417,7 +417,7 @@ fn range_reservations_are_deduplicated_and_released_after_failed_capture() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
     store.put(b"other", b"value").unwrap();
-    let per_entry = std::mem::size_of::<crate::log::ValueLocation>();
+    let per_entry = std::mem::size_of::<crate::checkpoint_store::read_set::RangeEntry>();
     let charge = b"base".len() + b"other".len() + per_entry * 2;
     store.transaction_budget.lock().unwrap().limit = charge - 1;
     let failed = store.transaction_with_read_set(|tx| tx.scan(None, None, 10));
@@ -432,6 +432,31 @@ fn range_reservations_are_deduplicated_and_released_after_failed_capture() {
         Err(io::Error::other("abort after scan"))
     });
     assert!(aborted.is_err());
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    store.transaction_budget.lock().unwrap().limit = charge + 8192;
+    let aborted: io::Result<()> = store.transaction_with_read_set(|tx| {
+        assert_eq!(tx.scan(None, None, 10)?.len(), 2);
+        // Unused reservation quantum is returned before the page is exposed.
+        assert_eq!(store.transaction_budget.lock().unwrap().used, charge);
+        Err(io::Error::other("abort after scan"))
+    });
+    assert!(aborted.is_err());
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    store.put(b"later", b"ok").unwrap();
+}
+
+#[test]
+fn failed_range_capture_releases_partially_used_reservation_quanta() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    for index in 0..6_u8 {
+        let mut key = vec![b'x'; 1024];
+        key[0] = b'a' + index;
+        store.put(&key, b"value").unwrap();
+    }
+    store.transaction_budget.lock().unwrap().limit = 4096 + 100;
+    let result = store.transaction_with_read_set(|tx| tx.scan(None, None, 10));
+    assert!(result.is_err());
     assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
     store.put(b"later", b"ok").unwrap();
 }

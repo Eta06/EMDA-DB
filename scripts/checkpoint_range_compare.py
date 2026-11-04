@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--directory", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--binary", default="target/release/examples/checkpoint_range_bench")
+    parser.add_argument("--baseline-binary")
+    parser.add_argument("--baseline-revision")
     parser.add_argument("--widths", default="10,1000,10000")
     parser.add_argument("--total", type=int, default=20000)
     parser.add_argument("--operations", type=int, default=100)
@@ -44,6 +46,11 @@ def main():
         parser.error("invalid total, widths, operation count or rounds")
     if not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output):
         parser.error("existing fixture directory and binary, and a new output path, are required")
+    if bool(args.baseline_binary) != bool(args.baseline_revision):
+        parser.error("baseline binary and revision must be supplied together")
+    if args.baseline_binary and not Path(args.baseline_binary).is_file():
+        parser.error("baseline binary must exist")
+    modes = ("baseline", *MODES) if args.baseline_binary else MODES
     allowed = sorted(os.sched_getaffinity(0))
     if len(allowed) < 2:
         parser.error("at least two allowed CPUs are required")
@@ -56,29 +63,33 @@ def main():
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
         "source_sha256": {str(path): sha256(path) for path in source_paths},
         "binary_sha256": sha256(args.binary),
+        "baseline_revision": args.baseline_revision,
+        "baseline_binary_sha256": sha256(args.baseline_binary) if args.baseline_binary else None,
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "allowed_cpus": allowed,
         "benchmark_cpu": benchmark_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "limitations": "One VM, one client, warm-cache direct APIs and fresh fixtures. Each transaction returns the first item from a range and increments a separate counter with synchronized commit. Checkpoint read-set validation captures every key/location in the requested range; SQLite uses WAL, synchronous=FULL, BEGIN IMMEDIATE and application-level value checksums. Initialization, checkpoint creation and recovery verification occur outside operation timing. No concurrent writer, power-loss test, overall memory bound or general competitor ranking is established. VM/cgroup noise includes setup, verification and cleanup.",
+        "limitations": "One VM, one client, warm-cache direct APIs and fresh fixtures. Each transaction returns the first item from a range and increments a separate counter with synchronized commit. Checkpoint read-set validation captures every key/location in the requested range; SQLite uses WAL, synchronous=FULL, BEGIN IMMEDIATE and application-level value checksums. Initialization, checkpoint creation and recovery verification occur outside operation timing. A baseline revision, if supplied, is caller-declared and its executable is identified by hash. No concurrent writer, power-loss test, overall memory bound or general competitor ranking is established. VM/cgroup noise includes setup, verification and cleanup.",
         "cases": [],
     }
     for width in widths:
         case = {"width": width, "total_keys": args.total, "operations": args.operations,
                 "quiet_check": quiet_window(), "runs": []}
         for index in range(args.rounds):
-            order = MODES[index % 2:] + MODES[:index % 2]
+            order = modes[index % len(modes):] + modes[:index % len(modes)]
             for mode in order:
                 before = snapshot()
-                command = ["taskset", "-c", str(benchmark_cpu), args.binary, mode, str(args.total),
+                executable = args.baseline_binary if mode == "baseline" else args.binary
+                backend = "checkpoint" if mode == "baseline" else mode
+                command = ["taskset", "-c", str(benchmark_cpu), executable, backend, str(args.total),
                            str(width), str(args.operations), args.directory]
                 process = subprocess.run(command, capture_output=True, text=True, timeout=300)
                 noise = difference(before, snapshot())
                 if process.returncode:
                     raise RuntimeError(f"{mode} benchmark failed ({process.returncode}): {process.stderr.strip()}")
                 values = dict(part.split("=", 1) for part in process.stdout.strip().split())
-                if (values["backend"] != mode or int(values["total"]) != args.total
+                if (values["backend"] != backend or int(values["total"]) != args.total
                         or int(values["width"]) != width or int(values["operations"]) != args.operations):
                     raise RuntimeError("unexpected benchmark configuration")
                 samples = [int(value) for value in values["samples_ns"].split(",")]
@@ -91,7 +102,7 @@ def main():
                     "p95_ns": percentile(samples, .95), "p99_ns": percentile(samples, .99),
                     "max_ns": max(samples), "noise": noise})
         case["summary"] = {}
-        for mode in MODES:
+        for mode in modes:
             runs = [run for run in case["runs"] if run["mode"] == mode]
             case["summary"][mode] = {
                 "median_ops_per_second": statistics.median(run["operations_per_second"] for run in runs),

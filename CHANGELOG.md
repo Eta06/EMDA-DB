@@ -13,7 +13,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Optional checkpoint-backed transaction validation for observed point versions, allowing unrelated writes to proceed. Retained dependencies share the transaction reservation budget.
 - Operation-boundary deadlines for checkpoint-backed conservative and FIFO transactions, including timed queue admission and a distinct pre-commit expiry result. Commit I/O errors remain potentially uncertain.
 - Optional FIFO admission for checkpoint-backed transactions. The queue orders participating callbacks and commits; other transactions and writes remain outside it and can still cause conflicts.
-- Conservative optimistic transactions for the checkpoint-backed store, with staged point/range operations, shared staged-record reservations and atomic synchronized commits. Any intervening mutation conflicts; this path does not yet provide read-set validation, deadlines or snapshots.
+- Conservative optimistic transactions for the checkpoint-backed store, with staged point/range operations, shared staged-record reservations and atomic synchronized commits. Any intervening mutation conflicts; snapshots remain unavailable on this path.
 - Atomic conditional batches for the checkpoint-backed store, applying an ordered batch only when all bounded point-value conditions match. This does not detect ABA changes or validate ranges.
 - Verified separate-copy compaction for the checkpoint-backed store, streaming live keys and producing a separately trusted checkpoint for the copy without rebuilding full source or target indexes. Source mutations wait; switchover and log reclamation remain manual.
 - An optional per-open whole-log byte limit for the checkpoint-backed store, enforced before recovery adoption and serialized writes. Checkpoint rollover does not reclaim log space; the limit is not a persistent project quota.
@@ -113,6 +113,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Changed
 
+- Store captured checkpoint range keys in packed buffers and reserve their budget in bounded quanta. Limits and complete-range validation remain in force; unused reservations are released before the page is returned.
 - Restore and upgrade explicitly release private staging locks, preventing a duplicated descriptor from unnecessarily extending the staging lock after successful release. Long-lived store-lock fork/exec behavior remains to be specified.
 - Separate-copy compaction synchronizes bounded groups of ordinary `DB01` records, rebuilds the target index by reopening, and still verifies the copy before publication. Grouping does not make compaction online or bound its total memory.
 - Historical checkpoint views use smaller verified index blocks and bounded prefix summaries. Ambiguous prefixes require a verified block read before choosing a search branch. The on-disk checkpoint format and trusted-digest requirements are unchanged. A 171,991-input model-based search fuzz run is recorded in `benchmarks/results/2026-11-03-checkpoint-order-fuzz.json`.

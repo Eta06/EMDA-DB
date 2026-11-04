@@ -10,6 +10,10 @@ use std::time::{Duration, Instant};
 type Model = BTreeMap<u8, (u64, u8)>;
 type RangeObservation = (Option<u8>, Option<u8>, Model);
 
+fn physical_key(key: u8) -> Vec<u8> {
+    vec![key; usize::from(key % 3) + 1]
+}
+
 fn within(key: u8, after: Option<u8>, before: Option<u8>) -> bool {
     after.is_none_or(|bound| key > bound) && before.is_none_or(|bound| key < bound)
 }
@@ -40,7 +44,9 @@ fuzz_target!(|data: &[u8]| {
     let mut live = Model::new();
     let mut generation = 0_u64;
     for key in b'a'..=b'd' {
-        ordinary.put(&[key], &[key]).expect("initial write");
+        ordinary
+            .put(&physical_key(key), &[key])
+            .expect("initial write");
         generation += 1;
         live.insert(key, (generation, key));
     }
@@ -57,9 +63,9 @@ fuzz_target!(|data: &[u8]| {
             let kind = byte >> 5;
             if matches!(kind, 0 | 1 | 2 | 5 | 6 | 7) && !matches(&points, &ranges, &live) {
                 let result = match kind {
-                    0 | 6 => tx.get(&[key]).map(|_| ()),
-                    1 => tx.put(&[key], &[byte]),
-                    2 => tx.delete(&[key]),
+                    0 | 6 => tx.get(&physical_key(key)).map(|_| ()),
+                    1 => tx.put(&physical_key(key), &[byte]),
+                    2 => tx.delete(&physical_key(key)),
                     _ => tx.scan(None, None, 4).map(|_| ()),
                 };
                 let error = result.expect_err("stale observation must fail before a new result");
@@ -77,25 +83,25 @@ fuzz_target!(|data: &[u8]| {
                         observed.map(|entry| entry.1)
                     };
                     assert_eq!(
-                        tx.get(&[key])?.as_deref(),
+                        tx.get(&physical_key(key))?.as_deref(),
                         expected.as_ref().map(std::slice::from_ref)
                     );
                 }
                 1 => {
-                    tx.put(&[key], &[byte])?;
+                    tx.put(&physical_key(key), &[byte])?;
                     staged.insert(key, Some(byte));
                 }
                 2 => {
-                    tx.delete(&[key])?;
+                    tx.delete(&physical_key(key))?;
                     staged.insert(key, None);
                 }
                 3 => {
-                    store.put(&[key], &[byte])?;
+                    store.put(&physical_key(key), &[byte])?;
                     generation += 1;
                     live.insert(key, (generation, byte));
                 }
                 4 => {
-                    store.delete(&[key])?;
+                    store.delete(&physical_key(key))?;
                     generation += 1;
                     live.remove(&key);
                 }
@@ -124,11 +130,14 @@ fuzz_target!(|data: &[u8]| {
                                 && before.is_none_or(|bound| *k < bound)
                         })
                         .take(limit)
-                        .map(|(k, value)| (vec![k], vec![value]))
+                        .map(|(k, value)| (physical_key(k), vec![value]))
                         .collect::<Vec<_>>();
-                    let lower = after.as_ref().map(std::slice::from_ref);
-                    let upper = before.as_ref().map(std::slice::from_ref);
-                    assert_eq!(tx.scan(lower, upper, limit)?, expected);
+                    let lower = after.map(physical_key);
+                    let upper = before.map(physical_key);
+                    assert_eq!(
+                        tx.scan(lower.as_deref(), upper.as_deref(), limit)?,
+                        expected
+                    );
                     let observed = live
                         .iter()
                         .filter(|(key, _)| within(**key, after, before))
@@ -178,7 +187,7 @@ fuzz_target!(|data: &[u8]| {
     }
     for key in b'a'..=b'h' {
         assert_eq!(
-            store.get(&[key]).expect("live read").as_deref(),
+            store.get(&physical_key(key)).expect("live read").as_deref(),
             live.get(&key).map(|entry| std::slice::from_ref(&entry.1))
         );
     }
@@ -186,7 +195,10 @@ fuzz_target!(|data: &[u8]| {
     let recovered = Store::open(&path).expect("full recovery");
     for key in b'a'..=b'h' {
         assert_eq!(
-            recovered.get(&[key]).expect("recovered read").as_deref(),
+            recovered
+                .get(&physical_key(key))
+                .expect("recovered read")
+                .as_deref(),
             live.get(&key).map(|entry| std::slice::from_ref(&entry.1))
         );
     }

@@ -5,7 +5,7 @@ use std::sync::Mutex;
 /// Maximum combined encoded staged-record bytes across transactions on one open store.
 /// This does not include allocator overhead, snapshots, returned values, or commit buffers.
 /// Checkpoint read-set transactions also reserve retained point/range keys,
-/// bounds and location metadata, so less space can be available for staged records.
+/// bounds and fixed observation metadata, so less space can be available for staged records.
 pub const MAX_TRANSACTION_STAGED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) struct TransactionBudget {
@@ -72,6 +72,17 @@ impl<'a> PendingReservation<'a> {
         }
         self.bytes = total;
         Ok(())
+    }
+
+    pub(crate) fn shrink(&mut self, bytes: usize) {
+        assert!(bytes <= self.bytes, "reservation shrink exceeds its size");
+        if bytes > 0 {
+            self.budget
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .release(bytes);
+            self.bytes -= bytes;
+        }
     }
 }
 

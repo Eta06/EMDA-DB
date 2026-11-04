@@ -180,6 +180,33 @@ fn range_observations_survive_rollover_and_validate_later_writes() {
 }
 
 #[test]
+fn range_validation_preserves_variable_length_binary_key_boundaries() {
+    let (dir, store) = fixture();
+    for key in [b"a\0".as_slice(), b"aa", b"az", b"b", b"ba"] {
+        store.put(key, b"value").unwrap();
+    }
+    store
+        .rollover_to(dir.path().join("packed-key-base"))
+        .unwrap();
+    store
+        .transaction_with_read_set(|tx| {
+            let page = tx.scan(Some(b"a"), Some(b"c"), 2)?;
+            assert_eq!(page[0].0, b"a\0");
+            assert_eq!(page[1].0, b"aa");
+            store.put(b"outside", b"changed")?;
+            assert_eq!(tx.get(b"a")?.as_deref(), Some(&b"old"[..]));
+            Ok(())
+        })
+        .unwrap();
+    let result = store.transaction_with_read_set(|tx| {
+        tx.scan(Some(b"a"), Some(b"c"), 1)?;
+        store.put(b"ba", b"changed")?;
+        Ok(())
+    });
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+}
+
+#[test]
 fn point_dependency_limit_rejects_before_returning_an_untracked_read() {
     let (_dir, store) = fixture();
     let result = store.transaction_with_read_set(|tx| {

@@ -329,6 +329,21 @@ python3 scripts/checkpoint_range_compare.py --directory /workspace --output /tmp
 
 The driver alternates modes, pins the benchmark and driver to separate CPUs, records operation latencies and VM/cgroup noise, and verifies each process's results. Defaults use 20,000 keys, range widths of 10, 1,000 and 10,000 keys, 100 operations and five rounds. Fixture creation, checkpoint generation, warm-up and post-reopen verification are outside the operation timer. The results are synthetic warm-cache measurements, not a general performance or durability ranking.
 
+For a paired revision comparison, provide `--baseline-binary <path> --baseline-revision <commit>`; the driver rotates that binary with the current checkpoint and SQLite modes and records both executable hashes. The baseline revision is caller-declared and should be built with the same benchmark harness.
+
+The [baseline run](../benchmarks/results/2026-11-04-checkpoint-range-comparison.json) used revision `3d4c498`, SQLite 3.49.1 and five runs per case. The table shows medians of run-level results:
+
+| Requested range | Mode | Transactions/s | p50 | p99 |
+| ---: | --- | ---: | ---: | ---: |
+| 10 keys | Checkpoint | 2,993 | 0.31 ms | 0.63 ms |
+| 10 keys | SQLite | 4,060 | 0.22 ms | 0.55 ms |
+| 1,000 keys | Checkpoint | 2,495 | 0.36 ms | 0.56 ms |
+| 1,000 keys | SQLite | 3,684 | 0.24 ms | 0.57 ms |
+| 10,000 keys | Checkpoint | 804 | 1.20 ms | 1.57 ms |
+| 10,000 keys | SQLite | 3,863 | 0.24 ms | 0.62 ms |
+
+The checkpoint path's latency grew with the full observed range, despite returning one entry. SQLite's `BEGIN IMMEDIATE` serializes writers differently; this sample does not compare concurrent interference or establish equivalent complete durability behavior. Each p99 uses only 100 transactions per run. All quiet checks passed, no cgroup throttling or direct reclaim occurred, and individual VM steal samples reached 4% during setup, measurement and cleanup. Run ranges overlap in some cases.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the ordinary store's transaction validators; `checkpoint` uses the checkpoint-backed store's conservative transactions and `checkpoint-fifo` queues its callbacks and commits in FIFO order. `checkpoint-readset` and `checkpoint-readset-fifo` enable checkpoint point read-set validation without or with FIFO admission. Each prototype mode explicitly retries conflicts. `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. Earlier recorded runs predate the checkpoint option.
