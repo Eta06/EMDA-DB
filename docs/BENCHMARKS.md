@@ -611,3 +611,15 @@ python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem 
 ```
 
 The report retains every timing sample, run order, hashes, affinity, pre-run noise observations and post-run telemetry. At least two allowed CPUs and a new output path are required. `DOCUMENTS:MATCHES` cases are capped at 1,024 documents and 256 matches; the VM, caches and underlying storage still affect results.
+
+### Document scalar range-query comparison
+
+The [`range_query_bench`](../examples/range_query_bench.rs) uses the same comparison runner for a numeric greater-or-equal range. Index values are in reverse ID order, so the prototype planner must restore ID order and SQLite may sort the indexed result. SQLite's indexed comparison explicitly selects `docs_number`; the runner verifies that plan, forces and checks the primary-table scan, validates every returned ID and decoded JSON value, and reopens and verifies both data sets. The same single-client, hot-cache, resource and durability limitations apply.
+
+```sh
+cargo build --release --locked --example range_query_bench
+python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem \
+  --binary target/release/examples/range_query_bench --index-name docs_number \
+  --output /path/to/new-range-result.json --cases 100:10,1000:10,1000:100 \
+  --rounds 4 --cycles 50
+```

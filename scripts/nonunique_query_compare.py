@@ -32,11 +32,11 @@ def parse_cases(text):
     return cases
 
 
-def validate(result, documents, matches, cycles):
+def validate(result, documents, matches, cycles, index_name="docs_group"):
     if (result.get("documents") != documents or result.get("matches") != matches
             or result.get("cycles") != cycles or result.get("reopen_verified") is not True
             or result.get("sqlite_journal") != "wal" or result.get("sqlite_synchronous") != 2
-            or "USING INDEX docs_group" not in result.get("sqlite_query_plan", "")
+            or f"USING INDEX {index_name}" not in result.get("sqlite_query_plan", "")
             or "SCAN docs" not in result.get("sqlite_scan_plan", "")
             or "USING INDEX" in result.get("sqlite_scan_plan", "")
             or not result.get("sqlite_version")):
@@ -59,6 +59,7 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--cases", default="100:10,1000:10,1000:100")
+    parser.add_argument("--index-name", choices=("docs_group", "docs_number"), default="docs_group")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=50)
     args = parser.parse_args()
@@ -82,7 +83,8 @@ def main():
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "benchmark_cpu": benchmark_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "scope": "One client; read-only equality on a nonunique scalar JSON field. Prototype complete scan and planned equality-index range versus SQLite forced primary-table scan and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
+        "scope": "One client; read-only nonunique scalar JSON " + ("equality" if args.index_name == "docs_group" else "greater-or-equal range with index order reversed relative to ID") + ". Prototype complete scan and planned index range versus SQLite forced primary-table scan and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
+        "sqlite_index_name": args.index_name,
         "cases": cases, "rounds": args.rounds, "cycles": args.cycles, "runs": [], "failures": [],
     }
     output = Path(args.output)
@@ -107,7 +109,7 @@ def main():
                     if completed.returncode:
                         raise RuntimeError(f"benchmark exited {completed.returncode}: {completed.stderr[-4096:]}")
                     result = json.loads(completed.stdout)
-                    validate(result, documents, matches, args.cycles)
+                    validate(result, documents, matches, args.cycles, args.index_name)
                     entry["measurement"] = result
                     entry["command"] = command
                 finally:
