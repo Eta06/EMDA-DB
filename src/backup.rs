@@ -69,7 +69,7 @@ fn create_with_sync(
     create_with_hooks(log, destination, sync_parent, || Ok(()))
 }
 
-fn create_with_hooks(
+pub(crate) fn create_with_hooks(
     log: &Log,
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
@@ -204,7 +204,7 @@ fn upgrade_format_with_hooks(
         return Err(record::invalid_data("upgraded log checksum mismatch"));
     }
     // Validate every copied record before establishing the new boundary.
-    let (target, _) = Log::from_io(Box::new(target))?;
+    let target = Log::verify_io(Box::new(target))?;
     target.install_restore_witness(staging.path())?;
     lock.file.sync_all()?;
     File::open(staging.path())?.sync_all()?;
@@ -253,7 +253,7 @@ fn restore_into(backup: &File, info: &BackupInfo, destination: &Path) -> io::Res
         return Err(record::invalid_data("restored log checksum mismatch"));
     }
     // Revalidate the restored bytes, including every record checksum.
-    let (log, _) = Log::from_io(Box::new(log))?;
+    let log = Log::verify_io(Box::new(log))?;
     log.install_restore_witness(destination)?;
     File::open(destination)?.sync_all()?;
     lock.release()?;
@@ -294,7 +294,7 @@ fn validate(file: &File) -> io::Result<BackupInfo> {
         file: file.try_clone()?,
         log_len,
     };
-    let _ = Log::from_io(Box::new(reader))?;
+    let _ = Log::verify_io(Box::new(reader))?;
     Ok(BackupInfo { log_len, digest })
 }
 

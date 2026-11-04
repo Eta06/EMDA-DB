@@ -169,6 +169,22 @@ impl CheckpointStore {
         self.read()?.view.scan(after, before, limit)
     }
 
+    /// Creates a verified full-log backup at a new path. Mutations wait until
+    /// the copy is synchronized and published; concurrent readers may proceed.
+    /// A publication-directory sync error leaves the destination uncertain.
+    pub fn backup(&self, destination: impl AsRef<Path>) -> io::Result<()> {
+        self.backup_using(destination.as_ref(), crate::backup::create)
+    }
+
+    fn backup_using(
+        &self,
+        destination: &Path,
+        create: impl FnOnce(&Log, &Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let _state = self.read()?;
+        create(&self.log, destination)
+    }
+
     /// Number of distinct suffix keys held in memory, including tombstones.
     pub fn overlay_keys(&self) -> io::Result<usize> {
         Ok(self.read()?.view.overlay_keys())

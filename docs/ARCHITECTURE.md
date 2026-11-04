@@ -10,7 +10,7 @@ This document describes the current prototype, not a promised final design. The 
 - `backup`: checksummed full-log backup and validated, non-overwriting restore.
 - `checkpoint`: explicit persisted index snapshots bound to a separately trusted digest and witnessed log prefix; opening still hashes the full covered prefix.
 - `checkpoint_view`: a shared-lock, bounded-memory reader of a verified historical index; it does not validate or replay later log records and cannot coexist with a cooperating writable store.
-- `recovered_view` and `checkpoint_store`: merge a validated, bounded witnessed suffix with the verified checkpoint. The former is read-only; the latter takes an exclusive lock and serializes synchronized mutations, but has no transactions, snapshots, group commit or automatic checkpoint rollover.
+- `recovered_view` and `checkpoint_store`: merge a validated, bounded witnessed suffix with the verified checkpoint. The former is read-only; the latter takes an exclusive lock, serializes synchronized mutations and supports full-log backups, but has no transactions, snapshots, group commit or automatic checkpoint rollover.
 - `directory`: synchronization of created store paths and their ancestors.
 - `tests`: behavior across reopen, deterministic I/O failures, concurrent clients, corruption, backups, and process termination.
 

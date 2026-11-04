@@ -275,6 +275,18 @@ The [local comparison](../benchmarks/results/2026-11-04-live-rollover-comparison
 
 Each pair produced identical checkpoint digests. The checkpoint-backed path used substantially less sampled process memory but was slower in this experiment; unlike ordinary checkpoint creation, its timer includes switching and verifying the new live view. Its RSS excludes page cache, and its overlay, block-directory and buffer caps are not total process-memory limits. Both quiet checks passed; individual runs recorded up to 11.67% VM steal in the small case and 5.15% in the larger case, with no cgroup throttling or direct reclaim observed. The VM host and overlay backing were not controlled, and five warm-cache runs do not establish production performance.
 
+## Restore validation memory comparison
+
+`scripts/backup_validation_compare.py` compares two engine revisions restoring the same verified backup. The baseline binary should be built from the earlier revision with the current `examples/backup_validation_bench.rs` copied into its source tree; the report records the supplied revision, example and binary hashes. The timer covers backup validation, copying, synchronization and publication. The example samples process RSS and peak RSS before it hashes and reopens the restored log, then checks that the full restored log matches the source and verifies sampled values. Reopening the ordinary store is outside the timer and still builds its full index.
+
+```sh
+cargo build --release --locked --example index_memory_bench --example backup_validation_bench
+python3 scripts/backup_validation_compare.py --directory /path/to/disk --output /tmp/restore-results.json \
+  --baseline-binary /path/to/earlier/backup_validation_bench --baseline-revision <earlier-commit>
+```
+
+The defaults use 10,000 and 200,000 base keys plus a 4,096-key suffix, 128-byte keys, 64-byte values and five fresh processes per revision. The driver alternates order and records VM/cgroup noise. RSS excludes OS page cache, and a local restore is not an off-host drill or physical power-loss test.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.

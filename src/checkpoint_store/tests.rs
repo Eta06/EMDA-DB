@@ -84,6 +84,9 @@ fn failed_instance_rejects_all_operations(store: &CheckpointStore, path: &Path) 
     assert!(store.get(b"base").is_err());
     assert!(store.scan(None, None, 10).is_err());
     assert!(store.put(b"other", b"must-not-write").is_err());
+    let backup = path.parent().unwrap().join("must-not-backup");
+    assert!(store.backup(&backup).is_err());
+    assert!(!backup.exists());
     assert_eq!(
         fs::metadata(path.join("records.log")).unwrap().len(),
         before
@@ -716,6 +719,71 @@ fn streamed_checkpoint_blocks_writes_until_verified_publication() {
     assert_eq!(
         reopened.get(b"after").unwrap().as_deref(),
         Some(&b"value"[..])
+    );
+}
+
+#[test]
+fn checkpoint_backup_blocks_writes_but_allows_readers() {
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let (dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let destination = dir.path().join("backup");
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let backing = Arc::clone(&store);
+        let destination = &destination;
+        let backup = scope.spawn(move || {
+            backing
+                .backup_using(destination, |log, destination| {
+                    crate::backup::create_with_hooks(
+                        log,
+                        destination,
+                        |parent| File::open(parent)?.sync_all(),
+                        || {
+                            entered_tx.send(()).unwrap();
+                            resume_rx
+                                .recv_timeout(Duration::from_secs(10))
+                                .map_err(|_| io::Error::other("backup test release timed out"))?;
+                            Ok(())
+                        },
+                    )
+                })
+                .unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(
+            store.get(b"base").unwrap().as_deref(),
+            Some(&b"acknowledged"[..])
+        );
+        let writer = Arc::clone(&store);
+        let writer = scope.spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx.send(writer.put(b"base", b"later")).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let early = done_rx.recv_timeout(Duration::from_millis(50));
+        resume_tx.send(()).unwrap();
+        backup.join().unwrap();
+        writer.join().unwrap();
+        assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)));
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+    });
+    assert_eq!(store.get(b"base").unwrap().as_deref(), Some(&b"later"[..]));
+    drop(store);
+    let restored = dir.path().join("restored");
+    Store::restore(&destination, &restored).unwrap();
+    let copy = retry_lock(|| Store::open(&restored)).unwrap();
+    assert_eq!(
+        copy.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
     );
 }
 

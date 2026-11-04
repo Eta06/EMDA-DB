@@ -305,6 +305,23 @@ impl Log {
         Ok((log, index))
     }
 
+    /// Verify every record from a read-only log source without building an
+    /// index. Used for backup/restore verification; the returned log has no
+    /// witness and cannot acknowledge mutations.
+    pub(crate) fn verify_io(file: Box<dyn LogIo>) -> io::Result<Self> {
+        let (log_id, metadata) = log_identity(file.as_ref())?;
+        let log = Self {
+            file,
+            log_id,
+            witness: None,
+            metadata,
+            anchor: None,
+        };
+        log.visit_records(0, None, |_, _| Ok(()))?;
+        Ok(log)
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_io(
         file: Box<dyn LogIo>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
