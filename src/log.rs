@@ -66,6 +66,15 @@ pub(crate) struct Log {
     anchor: Option<Witness>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InitializationPoint {
+    LogCreated,
+    MetadataDecided,
+    HeaderWritten,
+    LogSynced,
+    WitnessCreated,
+}
+
 impl Log {
     /// Reopen an already validated, locked witnessed log for appends without
     /// building a second in-memory index. The caller must validate the whole
@@ -182,6 +191,7 @@ impl Log {
             max_log_bytes,
             max_live_key_bytes,
             None,
+            |_| Ok(()),
         )
     }
 
@@ -200,7 +210,17 @@ impl Log {
             max_log_bytes,
             None,
             Some((checkpoint, trusted_digest)),
+            |_| Ok(()),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_with_initialization_hook(
+        path: &Path,
+        may_initialize: bool,
+        hook: impl FnMut(InitializationPoint) -> io::Result<()>,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+        Self::open_configured(path, may_initialize, None, None, None, None, hook)
     }
 
     fn open_configured(
@@ -210,6 +230,7 @@ impl Log {
         max_log_bytes: Option<u64>,
         max_live_key_bytes: Option<usize>,
         checkpoint: Option<(&Path, &[u8; 32])>,
+        mut initialization_hook: impl FnMut(InitializationPoint) -> io::Result<()>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log_path = path.join("records.log");
         let witness_exists = witness::exists(path)?;
@@ -234,15 +255,28 @@ impl Log {
                 } else { error }
             })?, false)
         };
+        // An existing zero-byte log without a witness is indistinguishable
+        // from an interrupted initialization or lost log contents. Do not
+        // silently reopen it as a legacy store and acknowledge weaker writes.
+        if !created && file.metadata()?.len() == 0 {
+            return Err(record::invalid_data(
+                "existing empty log is ambiguous; inspect it before upgrading",
+            ));
+        }
         if created {
+            initialization_hook(InitializationPoint::LogCreated)?;
             let mut header = witness::new_header()?;
             let id = witness::parse_header(&header)?;
             if metadata_witness::initialize(&file, &id, LOG_HEADER_SIZE as u64)? {
                 metadata_witness::mark_header(&mut header);
             }
+            initialization_hook(InitializationPoint::MetadataDecided)?;
             (&file).write_all(&header)?;
+            initialization_hook(InitializationPoint::HeaderWritten)?;
             file.sync_all()?;
+            initialization_hook(InitializationPoint::LogSynced)?;
             let _ = Witness::create(path, id, LOG_HEADER_SIZE as u64)?;
+            initialization_hook(InitializationPoint::WitnessCreated)?;
         }
         // Persist directory entries before acknowledging future writes.
         File::open(path)?.sync_all()?;
@@ -303,6 +337,26 @@ impl Log {
             }
         }
         Ok((log, index))
+    }
+
+    // Only used by the explicit, non-mutating empty-legacy upgrade path. The
+    // caller holds the store lock and has independently accepted the ambiguity.
+    pub(crate) fn open_empty_legacy_for_upgrade(
+        path: &Path,
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+        let file = File::open(path.join("records.log"))?;
+        let info = file.metadata()?;
+        if !info.is_file()
+            || info.len() != 0
+            || witness::exists(path)?
+            || metadata_witness::is_present(&file)?
+        {
+            return Err(record::invalid_data(
+                "source is not an empty unwitnessed legacy log",
+            ));
+        }
+        let log = Self::verify_io(Box::new(file))?;
+        Ok((log, BTreeMap::new()))
     }
 
     /// Verify every record from a read-only log source without building an

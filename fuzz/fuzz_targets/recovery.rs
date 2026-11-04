@@ -4,8 +4,9 @@ use libfuzzer_sys::fuzz_target;
 use std::{fs, io};
 
 // First byte: bit 7 indicates an anchor/witness file; bit 6 indicates
-// metadata witness; low six bits give the external witness length. Metadata
-// is prefixed by its one-byte length after the external witness.
+// metadata witness; low six bits give the external witness length. If bit 7
+// is clear, bit 5 instead requests a dangling external witness symlink.
+// Metadata is prefixed by its one-byte length after the external witness.
 // Remaining bytes are the witness followed by the log. Rejected malformed
 // input must not change either file; an I/O failure during witness publication
 // can have an uncertain outcome, so it is not treated as a no-write guarantee.
@@ -15,6 +16,7 @@ fuzz_target!(|data: &[u8]| {
     }
     let has_witness = data[0] & 0x80 != 0;
     let has_metadata = data[0] & 0x40 != 0;
+    let dangling_witness = !has_witness && data[0] & 0x20 != 0;
     let witness_len = if has_witness {
         (data[0] & 0x3f) as usize
     } else {
@@ -47,6 +49,9 @@ fuzz_target!(|data: &[u8]| {
     fs::write(&log_path, log).expect("write fuzz log");
     if has_witness {
         fs::write(&witness_path, witness).expect("write fuzz witness");
+    } else if dangling_witness {
+        std::os::unix::fs::symlink("missing-witness", &witness_path)
+            .expect("write dangling witness");
     }
     if let Some(bytes) = metadata {
         rustix::fs::setxattr(
@@ -59,6 +64,14 @@ fuzz_target!(|data: &[u8]| {
     }
     match Store::open(directory.path()) {
         Ok(store) => {
+            assert!(
+                !log.is_empty(),
+                "an existing empty log must not open as legacy"
+            );
+            assert!(
+                !dangling_witness,
+                "a dangling witness must not permit fallback"
+            );
             let _ = store.get(b"probe");
         }
         Err(error)
@@ -78,6 +91,13 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(
                     fs::read(witness_path).expect("read rejected witness"),
                     witness
+                );
+            } else if dangling_witness {
+                assert!(
+                    fs::symlink_metadata(witness_path)
+                        .expect("read dangling witness")
+                        .file_type()
+                        .is_symlink()
                 );
             } else {
                 assert!(!witness_path.exists());

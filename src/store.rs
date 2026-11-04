@@ -509,10 +509,34 @@ impl Store {
     }
 
     /// Restores a validated backup into a new directory; existing paths are
-    /// never overwritten. A failed directory synchronization after publication
-    /// has an uncertain outcome and the destination must be inspected.
+    /// never overwritten. A validated zero-byte legacy log is restored as a
+    /// new witnessed empty store with a new identity. A failed directory sync
+    /// after publication has an uncertain outcome and must be inspected.
     pub fn restore(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
         backup::restore(source.as_ref(), destination.as_ref())
+    }
+
+    /// Copies an independently verified empty, unwitnessed legacy log into a
+    /// new witnessed store without changing the source log.
+    ///
+    /// An empty log may instead be the result of interruption or data loss;
+    /// this method cannot tell. Call it only after independently verifying the
+    /// source is intended to be empty. Lost data cannot be reconstructed. The
+    /// source directory may gain a lock file. The destination must not exist,
+    /// and a publication synchronization failure leaves its outcome uncertain.
+    pub fn upgrade_empty_legacy(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+    ) -> io::Result<()> {
+        let source = source.as_ref();
+        let metadata = std::fs::metadata(source.join("records.log"))?;
+        if !metadata.is_file() || metadata.len() != 0 {
+            return Err(record::invalid_data(
+                "source log is not an empty regular file",
+            ));
+        }
+        let store = Self::open_using(source, |path, _| Log::open_empty_legacy_for_upgrade(path))?;
+        store.upgrade_legacy(destination)
     }
 
     /// Copies a legacy store into a new directory with a commit witness.
@@ -685,6 +709,9 @@ mod fault_tests;
 
 #[cfg(test)]
 mod group_tests;
+
+#[cfg(test)]
+mod initialization_tests;
 
 #[cfg(test)]
 mod read_tests;
