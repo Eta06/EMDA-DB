@@ -32,6 +32,16 @@ fn equal(name: &str, value: Value) -> DocumentFilter {
         value,
     }
 }
+fn inside(name: &str, first: Value, second: Value) -> (DocumentFilter, usize) {
+    let distinct = if first == second { 1 } else { 2 };
+    (
+        DocumentFilter::In {
+            path: vec![name.into()],
+            values: vec![first, second],
+        },
+        distinct,
+    )
+}
 fn and(filters: Vec<DocumentFilter>) -> DocumentFilter {
     DocumentFilter::And(filters)
 }
@@ -126,7 +136,7 @@ fuzz_target!(|data: &[u8]| {
         let tenant = equal("tenant", value(bytes[2]));
         let category = equal("category", value(bytes[3]));
         let email = equal("email", json!(format!("id{id}")));
-        let (filter, expected_access) = match bytes[0] % 8 {
+        let (filter, expected_access) = match bytes[0] % 12 {
             0 => (
                 and(vec![tenant, category]),
                 DocumentQueryAccess::CompoundEqualityIndex {
@@ -174,7 +184,7 @@ fuzz_target!(|data: &[u8]| {
                     fields: 2,
                 },
             ),
-            _ => (
+            7 => (
                 and(vec![
                     tenant,
                     category,
@@ -185,6 +195,61 @@ fuzz_target!(|data: &[u8]| {
                     fields: 2,
                 },
             ),
+            8 => {
+                let (members, probes) =
+                    inside("tenant", value(bytes[2]), value(bytes[2].wrapping_add(1)));
+                (
+                    and(vec![members, category]),
+                    DocumentQueryAccess::CompoundMembershipIndex {
+                        index: "pair".into(),
+                        fields: 2,
+                        probes,
+                    },
+                )
+            }
+            9 => {
+                let (members, probes) =
+                    inside("category", value(bytes[3]), value(bytes[3].wrapping_add(1)));
+                (
+                    and(vec![tenant, members]),
+                    DocumentQueryAccess::CompoundMembershipIndex {
+                        index: "pair".into(),
+                        fields: 2,
+                        probes,
+                    },
+                )
+            }
+            10 => {
+                let (tenants, first) =
+                    inside("tenant", value(bytes[2]), value(bytes[2].wrapping_add(1)));
+                let (categories, second) =
+                    inside("category", value(bytes[3]), value(bytes[3].wrapping_add(1)));
+                (
+                    and(vec![tenants, categories]),
+                    DocumentQueryAccess::CompoundMembershipIndex {
+                        index: "pair".into(),
+                        fields: 2,
+                        probes: first * second,
+                    },
+                )
+            }
+            _ => {
+                let (tenants, first) =
+                    inside("tenant", value(bytes[2]), value(bytes[2].wrapping_add(1)));
+                let (emails, second) = inside(
+                    "email",
+                    json!(format!("id{id}")),
+                    json!(format!("id{}", id + 1)),
+                );
+                (
+                    and(vec![tenants, emails]),
+                    DocumentQueryAccess::CompoundMembershipIndex {
+                        index: "tenant_email".into(),
+                        fields: 2,
+                        probes: first * second,
+                    },
+                )
+            }
         };
         let request = DocumentQuery {
             filter,

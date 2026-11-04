@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan bounded unions of complete compound index tuples for required scalar equality and `In` predicates. At most 256 distinct tuples are probed; excess, unindexable or incomplete predicates fall back safely. This adds access-path variants but does not introduce array-element matching or general boolean union planning.
+
 - Limit each open store to 64 active transactions by default, with configurable lower limits and status reporting. New over-limit transaction calls now fail before their callbacks; the limit resets on reopen and does not bound total memory or direct writes.
 
 - Record paired transaction-admission measurements and retain an unmerged atomic-counter experiment with mixed results and its failure-handling regression.
