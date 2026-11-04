@@ -77,6 +77,8 @@ Interrupted backup, restore, upgrade, checkpoint or compaction operations can le
 
 `Store::open_with_limits` can also cap the number of live keys. Existing keys can be updated and deleting a key frees a slot. Recovery enforces the count on every historical log prefix, so an open can be rejected even when the final key count is smaller; a verified compacted copy can reduce that historical peak. The setting is not persisted and is not a process-memory limit; compaction can still use multiple indexes.
 
+`Store::open_with_resource_limits` additionally accepts a cap on the combined byte length of live keys. It checks each ordered batch operation and each replayed historical state, and reclaims the allowance when keys are deleted. It is reapplied on each open and serializes mutations. Values, index overhead, snapshots, other files and total process memory are outside the cap; it is not a project quota. This option uses full-log recovery because existing checkpoints do not store the historical key-byte peak.
+
 To try the experimental Rust library from another project:
 
 ```toml

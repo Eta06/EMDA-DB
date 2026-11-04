@@ -40,6 +40,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/transaction-read-set-corpus"
           cp fuzz/transaction-read-set-seeds/* "$RUNNER_TEMP/transaction-read-set-corpus/"
           cargo +nightly-2026-11-03 fuzz run transaction_read_set "$RUNNER_TEMP/transaction-read-set-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
+      - name: Run live-key byte limit model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/key-byte-limit-corpus"
+          cp fuzz/key-byte-limit-seeds/* "$RUNNER_TEMP/key-byte-limit-corpus/"
+          cargo +nightly-2026-11-03 fuzz run key_byte_limit "$RUNNER_TEMP/key-byte-limit-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

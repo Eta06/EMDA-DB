@@ -19,3 +19,10 @@ storage persistence, prove all input cases safe, or replace power-loss testing.
 The [recorded initial campaign](../benchmarks/results/2026-11-03-recovery-fuzz.json)
 ran 127,313 inputs in 61 seconds without a detected crash. A scheduled and
 manually triggerable GitHub Actions workflow repeats a short campaign.
+
+The `key_byte_limit` target compares single writes, deletions and ordered
+batches against a small reference model, checks rejected writes do not change
+the log, and repeatedly reopens with the same logical live-key byte cap. Its
+checked-in synthetic seeds are in `fuzz/key-byte-limit-seeds`. This tests the
+per-open key-byte accounting, not total memory, concurrent scheduling,
+physical power loss, or persistent project quotas.

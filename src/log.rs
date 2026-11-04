@@ -113,7 +113,7 @@ impl Log {
         path: &Path,
         may_initialize: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        Self::open_with_recovery_limit(path, may_initialize, None, None)
+        Self::open_with_recovery_limit(path, may_initialize, None, None, None)
     }
 
     pub(crate) fn open_with_recovery_limit(
@@ -121,8 +121,16 @@ impl Log {
         may_initialize: bool,
         max_live_keys: Option<usize>,
         max_log_bytes: Option<u64>,
+        max_live_key_bytes: Option<usize>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        Self::open_configured(path, may_initialize, max_live_keys, max_log_bytes, None)
+        Self::open_configured(
+            path,
+            may_initialize,
+            max_live_keys,
+            max_log_bytes,
+            max_live_key_bytes,
+            None,
+        )
     }
 
     pub(crate) fn open_with_checkpoint(
@@ -138,6 +146,7 @@ impl Log {
             may_initialize,
             max_live_keys,
             max_log_bytes,
+            None,
             Some((checkpoint, trusted_digest)),
         )
     }
@@ -147,6 +156,7 @@ impl Log {
         may_initialize: bool,
         max_live_keys: Option<usize>,
         max_log_bytes: Option<u64>,
+        max_live_key_bytes: Option<usize>,
         checkpoint: Option<(&Path, &[u8; 32])>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log_path = path.join("records.log");
@@ -228,7 +238,7 @@ impl Log {
             witness,
             boundary,
             metadata,
-            max_live_keys,
+            (max_live_keys, max_live_key_bytes),
             checkpoint,
         )?;
         log.anchor = anchor;
@@ -249,7 +259,7 @@ impl Log {
         let (id, metadata) = log_identity(file.as_ref())?;
         // Backup readers contain only the log bytes; their length and digest
         // are verified separately before a fresh witness is installed.
-        Self::from_parts(file, id, None, None, metadata, None, None)
+        Self::from_parts(file, id, None, None, metadata, (None, None), None)
     }
 
     fn from_parts(
@@ -258,7 +268,7 @@ impl Log {
         witness: Option<Witness>,
         boundary: Option<u64>,
         metadata: bool,
-        max_live_keys: Option<usize>,
+        limits: (Option<usize>, Option<usize>),
         checkpoint: Option<(&Path, &[u8; 32])>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log = Self {
@@ -268,7 +278,14 @@ impl Log {
             metadata,
             anchor: None,
         };
+        let (max_live_keys, max_live_key_bytes) = limits;
         let start = if let Some((path, trusted_digest)) = checkpoint {
+            if max_live_key_bytes.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "checkpoint does not track historical live key bytes",
+                ));
+            }
             let witnessed = boundary.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::Unsupported,
@@ -286,7 +303,13 @@ impl Log {
             None
         };
         let mut peak = start.as_ref().map_or(0, |checkpoint| checkpoint.peak);
-        let index = log.recover_from(boundary, max_live_keys, start, &mut peak)?;
+        let index = log.recover_from(
+            boundary,
+            max_live_keys,
+            max_live_key_bytes,
+            start,
+            &mut peak,
+        )?;
         Ok((log, index))
     }
 
@@ -413,7 +436,7 @@ impl Log {
     ) -> io::Result<usize> {
         self.verify_witness()?;
         let mut peak = 0;
-        if &self.recover_from(None, None, None, &mut peak)? != expected {
+        if &self.recover_from(None, None, None, None, &mut peak)? != expected {
             return Err(record::invalid_data(
                 "live index does not match verified log",
             ));
@@ -426,6 +449,7 @@ impl Log {
         &self,
         boundary: Option<u64>,
         max_live_keys: Option<usize>,
+        max_live_key_bytes: Option<usize>,
         start: Option<checkpoint::Loaded>,
         peak: &mut usize,
     ) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
@@ -434,6 +458,7 @@ impl Log {
             Some(checkpoint) => (checkpoint.index, checkpoint.prefix),
             None => (BTreeMap::new(), 0),
         };
+        let mut live_key_bytes = 0_usize;
         let mut reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
         if offset == 0 && self.log_id.is_some() {
             let mut header = [0_u8; LOG_HEADER_SIZE];
@@ -473,6 +498,12 @@ impl Log {
                             "recovery live key limit would be exceeded",
                         ));
                     }
+                    if let Some(max) = max_live_key_bytes {
+                        if !index.contains_key(&key) {
+                            live_key_bytes =
+                                add_recovery_key_bytes(live_key_bytes, key.len(), max)?;
+                        }
+                    }
                     index.insert(
                         key,
                         ValueLocation {
@@ -483,7 +514,9 @@ impl Log {
                     );
                 }
                 Operation::Delete => {
-                    index.remove(&key);
+                    if index.remove(&key).is_some() && max_live_key_bytes.is_some() {
+                        live_key_bytes -= key.len();
+                    }
                 }
                 Operation::Batch => {
                     if key != [0] {
@@ -505,10 +538,23 @@ impl Log {
                                         "recovery live key limit would be exceeded",
                                     ));
                                 }
+                                if let Some(max) = max_live_key_bytes {
+                                    if !index.contains_key(&update.key) {
+                                        live_key_bytes = add_recovery_key_bytes(
+                                            live_key_bytes,
+                                            update.key.len(),
+                                            max,
+                                        )?;
+                                    }
+                                }
                                 index.insert(update.key, location);
                             }
                             None => {
-                                index.remove(&update.key);
+                                if index.remove(&update.key).is_some()
+                                    && max_live_key_bytes.is_some()
+                                {
+                                    live_key_bytes -= update.key.len();
+                                }
                             }
                         }
                         *peak = (*peak).max(index.len());
@@ -528,6 +574,18 @@ impl Log {
         }
         Ok(index)
     }
+}
+
+fn add_recovery_key_bytes(current: usize, additional: usize, max: usize) -> io::Result<usize> {
+    current
+        .checked_add(additional)
+        .filter(|bytes| *bytes <= max)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovery live key byte limit would be exceeded",
+            )
+        })
 }
 
 fn log_identity(file: &dyn LogIo) -> io::Result<(Option<LogId>, bool)> {

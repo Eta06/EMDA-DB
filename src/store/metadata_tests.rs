@@ -273,6 +273,56 @@ fn transaction_fsync_timeout_remains_an_unknown_operation_error() {
 }
 
 #[test]
+fn limited_key_byte_accounting_is_rebuilt_after_uncertain_single_and_batch_writes() {
+    use crate::BatchOperation as Op;
+    for fault in [Fault::SyncBefore, Fault::SyncAfter, Fault::Panic] {
+        for batch in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let armed = Arc::new(AtomicBool::new(false));
+            let (entered_tx, _) = mpsc::channel();
+            let (_, resume_rx) = mpsc::channel();
+            let store = store(dir.path(), fault, Arc::clone(&armed), entered_tx, resume_rx);
+            store.put(b"a", b"old").unwrap();
+            let store = Store::set_open_limits(store, None, None, Some(5)).unwrap();
+            armed.store(true, Ordering::Release);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if batch {
+                    store.write_batch(&[
+                        Op::Put {
+                            key: b"bb",
+                            value: b"new",
+                        },
+                        Op::Put {
+                            key: b"cc",
+                            value: b"new",
+                        },
+                    ])
+                } else {
+                    store.put(b"long", b"new")
+                }
+            }));
+            assert!(!matches!(outcome, Ok(Ok(()))));
+            assert!(store.put(b"x", b"must-not-commit").is_err());
+            drop(store);
+            let recovered =
+                Store::open_with_resource_limits(dir.path(), None, None, Some(5)).unwrap();
+            let b = recovered.get(b"bb").unwrap();
+            let c = recovered.get(b"cc").unwrap();
+            assert_eq!(b.is_some(), c.is_some());
+            let original_write_survived = if batch {
+                b.is_some()
+            } else {
+                recovered.get(b"long").unwrap().is_some()
+            };
+            assert_eq!(
+                recovered.put(b"z", b"later").is_err(),
+                original_write_survived
+            );
+        }
+    }
+}
+
+#[test]
 fn atomic_batch_is_not_published_until_metadata_fsync_completes() {
     use crate::BatchOperation as Op;
     let dir = tempfile::tempdir().unwrap();

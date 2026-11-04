@@ -39,12 +39,14 @@ impl Store {
                 "atomic batches require a witnessed store; upgrade the legacy store first",
             ));
         }
-        if let Some(max) = self.max_live_keys {
+        let mut next_key_bytes = None;
+        if self.max_live_keys.is_some() || self.max_live_key_bytes.is_some() {
             // The configured limit applies to every ordered intermediate
             // state, matching recovery's historical-prefix enforcement.
             let inner = self.read()?;
             let mut present = BTreeMap::<&[u8], bool>::new();
             let mut count = inner.index.len();
+            let mut key_bytes = self.live_key_bytes.load(Ordering::Relaxed);
             for &operation in operations {
                 let (kind, key, _) = operation.fields();
                 let exists = present
@@ -53,23 +55,43 @@ impl Store {
                     .unwrap_or_else(|| inner.index.contains_key(key));
                 match kind {
                     Operation::Put if !exists => {
-                        if count >= max {
+                        if self.max_live_keys.is_some_and(|max| count >= max) {
                             return Err(io::Error::other(
                                 "configured live key limit would be exceeded",
                             ));
+                        }
+                        if let Some(max) = self.max_live_key_bytes {
+                            key_bytes = key_bytes
+                                .checked_add(key.len())
+                                .filter(|bytes| *bytes <= max)
+                                .ok_or_else(|| {
+                                    io::Error::other(
+                                        "configured live key byte limit would be exceeded",
+                                    )
+                                })?;
                         }
                         count += 1;
                         present.insert(key, true);
                     }
                     Operation::Delete if exists => {
                         count -= 1;
+                        if self.max_live_key_bytes.is_some() {
+                            key_bytes = key_bytes.checked_sub(key.len()).ok_or_else(|| {
+                                io::Error::other("live key byte accounting is inconsistent")
+                            })?;
+                        }
                         present.insert(key, false);
                     }
                     Operation::Put | Operation::Delete => {}
                     Operation::Batch => unreachable!("public operations cannot contain batches"),
                 }
             }
+            next_key_bytes = self.max_live_key_bytes.map(|_| key_bytes);
         }
-        self.commit_limited(Operation::Batch, &[0], payload)
+        self.commit_limited(Operation::Batch, &[0], payload)?;
+        if let Some(bytes) = next_key_bytes {
+            self.live_key_bytes.store(bytes, Ordering::Relaxed);
+        }
+        Ok(())
     }
 }

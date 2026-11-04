@@ -42,5 +42,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "key_byte_limit"
+path = "fuzz_targets/key_byte_limit.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

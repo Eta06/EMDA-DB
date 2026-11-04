@@ -8,6 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock, RwLockReadGuard};
 
 mod atomic_batch;
@@ -53,6 +54,10 @@ pub struct Store {
     commits: Coordinator,
     max_log_bytes: Option<u64>,
     max_live_keys: Option<usize>,
+    max_live_key_bytes: Option<usize>,
+    // With this limit enabled, the exclusive write barrier serializes every
+    // mutation and the counter update. It excludes allocator overhead.
+    live_key_bytes: AtomicUsize,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
     snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
     transaction_budget: Mutex<transaction::TransactionBudget>,
@@ -104,7 +109,7 @@ impl Store {
                 max_log_bytes,
             )
         })?;
-        Self::set_open_limits(store, max_log_bytes, max_live_keys)
+        Self::set_open_limits(store, max_log_bytes, max_live_keys, None)
     }
 
     /// Opens a store with an in-process limit on the log file's length.
@@ -128,16 +133,41 @@ impl Store {
         max_log_bytes: Option<u64>,
         max_live_keys: Option<usize>,
     ) -> io::Result<Self> {
+        Self::open_with_resource_limits(path, max_log_bytes, max_live_keys, None)
+    }
+
+    /// Opens with optional per-open log, live-key count and live-key byte caps.
+    ///
+    /// Live-key bytes count the lengths of currently present keys, not values,
+    /// allocator overhead, snapshots, other files or total process memory. The
+    /// cap is checked for every historical replay prefix, including each
+    /// ordered operation inside an atomic batch. It is not persisted and must
+    /// be supplied on every open. Limited stores serialize mutations. This
+    /// method uses full-log recovery; checkpoints do not record the historical
+    /// live-key byte peak required to enforce the cap.
+    pub fn open_with_resource_limits(
+        path: impl AsRef<Path>,
+        max_log_bytes: Option<u64>,
+        max_live_keys: Option<usize>,
+        max_live_key_bytes: Option<usize>,
+    ) -> io::Result<Self> {
         let store = Self::open_using(path.as_ref(), |path, initialize| {
-            Log::open_with_recovery_limit(path, initialize, max_live_keys, max_log_bytes)
+            Log::open_with_recovery_limit(
+                path,
+                initialize,
+                max_live_keys,
+                max_log_bytes,
+                max_live_key_bytes,
+            )
         })?;
-        Self::set_open_limits(store, max_log_bytes, max_live_keys)
+        Self::set_open_limits(store, max_log_bytes, max_live_keys, max_live_key_bytes)
     }
 
     fn set_open_limits(
         mut store: Self,
         max_log_bytes: Option<u64>,
         max_live_keys: Option<usize>,
+        max_live_key_bytes: Option<usize>,
     ) -> io::Result<Self> {
         // Read errors must propagate; never treat an unknown file length as a
         // successful quota check.
@@ -157,8 +187,23 @@ impl Store {
                 ));
             }
         }
+        if let Some(max) = max_live_key_bytes {
+            let bytes = store.read()?.index.keys().try_fold(0_usize, |total, key| {
+                total
+                    .checked_add(key.len())
+                    .ok_or_else(|| io::Error::other("live key byte count overflow"))
+            })?;
+            if bytes > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "existing live key bytes exceed configured limit",
+                ));
+            }
+            store.live_key_bytes.store(bytes, Ordering::Relaxed);
+        }
         store.max_log_bytes = max_log_bytes;
         store.max_live_keys = max_live_keys;
+        store.max_live_key_bytes = max_live_key_bytes;
         Ok(store)
     }
 
@@ -193,6 +238,8 @@ impl Store {
             commits: Coordinator::new(),
             max_log_bytes: None,
             max_live_keys: None,
+            max_live_key_bytes: None,
+            live_key_bytes: AtomicUsize::new(0),
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
             snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::default()),
             transaction_budget: Mutex::new(transaction::TransactionBudget::default()),
@@ -468,7 +515,10 @@ impl Store {
 
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
-        if self.max_log_bytes.is_some() || self.max_live_keys.is_some() {
+        if self.max_log_bytes.is_some()
+            || self.max_live_keys.is_some()
+            || self.max_live_key_bytes.is_some()
+        {
             let _writer = self
                 .writes
                 .write()
@@ -489,14 +539,39 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        if operation == Operation::Put {
-            if let Some(max) = self.max_live_keys {
-                let inner = self.read()?;
-                if !inner.index.contains_key(key) && inner.index.len() >= max {
-                    return Err(io::Error::other(
-                        "configured live key limit would be exceeded",
-                    ));
-                }
+        let mut next_key_bytes = None;
+        if matches!(operation, Operation::Put | Operation::Delete)
+            && (self.max_live_keys.is_some() || self.max_live_key_bytes.is_some())
+        {
+            let inner = self.read()?;
+            let exists = inner.index.contains_key(key);
+            if operation == Operation::Put
+                && !exists
+                && self
+                    .max_live_keys
+                    .is_some_and(|max| inner.index.len() >= max)
+            {
+                return Err(io::Error::other(
+                    "configured live key limit would be exceeded",
+                ));
+            }
+            if let Some(max) = self.max_live_key_bytes {
+                let current = self.live_key_bytes.load(Ordering::Relaxed);
+                let next = match (operation, exists) {
+                    (Operation::Put, false) => current
+                        .checked_add(key.len())
+                        .filter(|bytes| *bytes <= max)
+                        .ok_or_else(|| {
+                            io::Error::other("configured live key byte limit would be exceeded")
+                        })?,
+                    (Operation::Delete, true) => {
+                        current.checked_sub(key.len()).ok_or_else(|| {
+                            io::Error::other("live key byte accounting is inconsistent")
+                        })?
+                    }
+                    _ => current,
+                };
+                next_key_bytes = Some(next);
             }
         }
         if let Some(max) = self.max_log_bytes {
@@ -514,7 +589,11 @@ impl Store {
             }
         }
         self.commits
-            .commit(&self.log, &self.inner, operation, key, value)
+            .commit(&self.log, &self.inner, operation, key, value)?;
+        if let Some(bytes) = next_key_bytes {
+            self.live_key_bytes.store(bytes, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     fn read(&self) -> io::Result<RwLockReadGuard<'_, Inner>> {
