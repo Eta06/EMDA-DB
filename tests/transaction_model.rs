@@ -1,9 +1,10 @@
 //! Concurrent transaction histories checked against a serial reference model.
-use database_engine::{BatchOperation, Store, Transaction};
+use database_engine::{BatchOperation, Store, TimedTransactionError, Transaction, TransactionMode};
 use std::io::{self, ErrorKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Barrier, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug)]
 enum Operation {
@@ -11,6 +12,7 @@ enum Operation {
         from: usize,
         read_set: bool,
         fifo: bool,
+        timed: bool,
     },
     SetBoth([u8; 2]),
     Put {
@@ -101,7 +103,26 @@ fn execute(store: &Store, operation: Operation) -> Outcome {
             from,
             read_set,
             fifo,
-        } => match if fifo {
+            timed,
+        } => match if timed {
+            let mode = if fifo {
+                TransactionMode::ReadSetFifo
+            } else if read_set {
+                TransactionMode::ReadSet
+            } else {
+                TransactionMode::Conservative
+            };
+            store
+                .transaction_until(Instant::now() + Duration::from_secs(30), mode, |tx| {
+                    transfer(tx, from)
+                })
+                .map_err(|error| match error {
+                    TimedTransactionError::Operation(error) => error,
+                    TimedTransactionError::DeadlineExceeded => {
+                        panic!("model history exceeded its generous deadline")
+                    }
+                })
+        } else if fifo {
             store.transaction_with_read_set_fifo(|tx| transfer(tx, from))
         } else if read_set {
             store.transaction_with_read_set(|tx| transfer(tx, from))
@@ -144,6 +165,7 @@ fn reference_model_rejects_a_fractured_successful_transaction() {
             from: 0,
             read_set: true,
             fifo: false,
+            timed: false,
         },
         outcome: Outcome::Committed([3, 9]),
         started: 0,
@@ -159,23 +181,44 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
             from: 0,
             read_set: false,
             fifo: false,
+            timed: false,
         },
         Operation::Transfer {
             from: 1,
             read_set: true,
             fifo: false,
+            timed: false,
         },
         Operation::Transfer {
             from: 0,
             read_set: true,
             fifo: true,
+            timed: false,
+        },
+        Operation::Transfer {
+            from: 1,
+            read_set: false,
+            fifo: false,
+            timed: true,
+        },
+        Operation::Transfer {
+            from: 0,
+            read_set: true,
+            fifo: false,
+            timed: true,
+        },
+        Operation::Transfer {
+            from: 1,
+            read_set: true,
+            fifo: true,
+            timed: true,
         },
         Operation::SetBoth([5, 5]),
         Operation::Put { key: 0, value: 2 },
         Operation::ReadBoth,
         Operation::ReadBoth,
     ];
-    for iteration in 0..128 {
+    for iteration in 0..1024 {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).unwrap();
         store.put(b"a", &[3]).unwrap();
