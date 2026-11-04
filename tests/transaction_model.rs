@@ -7,9 +7,16 @@ use std::thread;
 
 #[derive(Clone, Copy, Debug)]
 enum Operation {
-    Transfer { from: usize, read_set: bool },
+    Transfer {
+        from: usize,
+        read_set: bool,
+        fifo: bool,
+    },
     SetBoth([u8; 2]),
-    Put { key: usize, value: u8 },
+    Put {
+        key: usize,
+        value: u8,
+    },
     ReadBoth,
 }
 
@@ -90,7 +97,13 @@ fn transfer(tx: &mut Transaction<'_>, from: usize) -> io::Result<[u8; 2]> {
 
 fn execute(store: &Store, operation: Operation) -> Outcome {
     match operation {
-        Operation::Transfer { from, read_set } => match if read_set {
+        Operation::Transfer {
+            from,
+            read_set,
+            fifo,
+        } => match if fifo {
+            store.transaction_with_read_set_fifo(|tx| transfer(tx, from))
+        } else if read_set {
             store.transaction_with_read_set(|tx| transfer(tx, from))
         } else {
             store.transaction(|tx| transfer(tx, from))
@@ -130,6 +143,7 @@ fn reference_model_rejects_a_fractured_successful_transaction() {
         operation: Operation::Transfer {
             from: 0,
             read_set: true,
+            fifo: false,
         },
         outcome: Outcome::Committed([3, 9]),
         started: 0,
@@ -144,14 +158,17 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         Operation::Transfer {
             from: 0,
             read_set: false,
+            fifo: false,
         },
         Operation::Transfer {
             from: 1,
             read_set: true,
+            fifo: false,
         },
         Operation::Transfer {
             from: 0,
             read_set: true,
+            fifo: true,
         },
         Operation::SetBoth([5, 5]),
         Operation::Put { key: 0, value: 2 },

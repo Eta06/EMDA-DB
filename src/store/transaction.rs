@@ -275,7 +275,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false)
+        self.run_transaction(action, false, false)
     }
 
     /// Runs a serializable transaction validating its point and range reads.
@@ -290,13 +290,28 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true)
+        self.run_transaction(action, true, false)
+    }
+
+    /// Runs a read-set transaction with FIFO admission among calls to this method.
+    ///
+    /// The callback completes before admission. Other store operations and
+    /// non-FIFO transactions do not enter this queue, and scheduling or I/O can
+    /// delay a turn without bound. FIFO can increase median latency and retries;
+    /// measure it for the actual workload. Isolation and commit rules are the
+    /// same as `transaction_with_read_set`.
+    pub fn transaction_with_read_set_fifo<T>(
+        &self,
+        action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.run_transaction(action, true, true)
     }
 
     fn run_transaction<T>(
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
         track_reads: bool,
+        fifo: bool,
     ) -> io::Result<T> {
         let snapshot = self.snapshot(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES)?;
         let mut txn = Transaction {
@@ -306,6 +321,13 @@ impl Store {
             read_set: track_reads.then(|| Mutex::new(super::read_set::ReadSet::default())),
         };
         let result = action(&mut txn)?;
+        // Opt-in FIFO admission does not replace the writer barrier protecting
+        // validation, publication and synchronization.
+        let _turn = if fifo {
+            Some(self.transaction_queue.enter()?)
+        } else {
+            None
+        };
         let _writer = self
             .writes
             .write()

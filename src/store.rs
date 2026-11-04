@@ -16,6 +16,7 @@ mod compact;
 mod read_set;
 mod snapshot;
 mod transaction;
+mod transaction_queue;
 use commit::Coordinator;
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
@@ -53,6 +54,7 @@ pub struct Store {
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
     snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
     transaction_budget: Mutex<transaction::TransactionBudget>,
+    transaction_queue: transaction_queue::TransactionQueue,
     // Held for the store lifetime. OS file locks are advisory.
     _lock_file: File,
 }
@@ -192,6 +194,7 @@ impl Store {
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
             snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::default()),
             transaction_budget: Mutex::new(transaction::TransactionBudget::default()),
+            transaction_queue: transaction_queue::TransactionQueue::new(),
             _lock_file: lock_file,
         })
     }

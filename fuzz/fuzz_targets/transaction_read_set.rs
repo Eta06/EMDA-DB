@@ -1,8 +1,8 @@
 #![no_main]
-use database_engine::Store;
+use database_engine::{Store, Transaction};
 use libfuzzer_sys::fuzz_target;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::ErrorKind;
+use std::io::{self, ErrorKind};
 
 type Model = BTreeMap<u8, (u64, u8)>;
 
@@ -27,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
     let mut staged = BTreeMap::<u8, Option<u8>>::new();
     let mut points = BTreeSet::new();
     let mut ranges = Vec::new();
-    let result = store.transaction_with_read_set(|tx| {
+    let action = |tx: &mut Transaction<'_>| -> io::Result<()> {
         for &byte in data {
             let key = b'a' + (byte & 7);
             match byte >> 5 {
@@ -94,7 +94,12 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         Ok(())
-    });
+    };
+    let result = if data[0] & 1 == 0 {
+        store.transaction_with_read_set(action)
+    } else {
+        store.transaction_with_read_set_fifo(action)
+    };
     let points_match = points.iter().all(|key| initial.get(key) == live.get(key));
     let ranges_match = ranges.iter().all(|&(after, before)| {
         initial

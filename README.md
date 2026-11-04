@@ -39,6 +39,8 @@ Transactions on one open store share a 64 MiB limit on encoded staged records, i
 
 `Store::transaction_with_read_set` offers an opt-in serializable validation mode that can commit despite unrelated writes. It validates each point read and the complete requested range of every scan under the writer barrier, including entries beyond a limited page. A present value changed and changed back still conflicts because its log location changed; a missing key inserted and deleted before validation may return to the same state and not conflict. The mode permits at most 2,048 distinct read constraints, 2 MiB of key and bound bytes, and 65,536 validation items per transaction; exceeding a limit returns an error without committing. It still copies the bounded snapshot, can hold the writer barrier while checking ranges, and never retries callbacks automatically. Use the transaction's own read methods; independent store reads and external side effects are outside its transaction.
 
+`Store::transaction_with_read_set_fifo` optionally admits its callers to validation in FIFO order after their callbacks finish. Other operations and non-FIFO transactions do not join that queue, and it offers no bounded waiting guarantee. FIFO can reduce some tail stalls but can also increase median latency and retries; measure the tradeoff for the workload.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

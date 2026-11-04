@@ -1,0 +1,31 @@
+{
+  "base_revision": "18e0959b9d13d0261637c5280ccf2dc2f9441a2c",
+  "source_state": "FIFO admission changes uncommitted at build; source and binary hashes identify the tested code. The queue source later gained only a cfg(test) inspection method.",
+  "source_sha256": {
+    "src/store/transaction.rs": "aea06b2321258c1d493e36a19dc2ccb7a9219e68dd9b5933d9f46601a163f63f",
+    "src/store/transaction_queue.rs": "3eee59335668842849850bbfe526c9b80ad0cbe9591ff1fee70cd206244951eb",
+    "src/store/read_set.rs": "8762500ff2cdb4bea1d3d87f52e9e4bc69676581d527452489a5b9ddcf735e8a",
+    "src/store/snapshot.rs": "41918a2e4769553a0e08b20eae1907d3c989e201344cee7e034c26df90d096e4",
+    "src/store.rs": "6a954a0e5da42ffdda18202b7bcea1225f430933b1e34011a81bb11c975110c6",
+    "fuzz/fuzz_targets/transaction_read_set.rs": "572da825c954e19a1cdfed5594b1d9fded53e9eb379e002f52dffc9e73eadaf9"
+  },
+  "binary_sha256": "f30b43c8207524db2f6e3de593264a245e3fba5b5ffbf7756a85a422631a26ca",
+  "seed_sha256": {
+    "fuzz/transaction-read-set-seeds/disjoint-write": "6e4745305080d7d7a725d6a90fc2250a7c07c7f5a916b7c6e0ff6df782620e34",
+    "fuzz/transaction-read-set-seeds/phantom-after-page": "cbdf4e89bbad35be03eab562d57b1c8fb4e0279a62cf44db6a5e52277633c22b",
+    "fuzz/transaction-read-set-seeds/point-conflict": "714caef24aa7cfa7ad6216ba0a615ec20bd2bb531167c807977777e315a7bf32",
+    "fuzz/transaction-read-set-seeds/restored-absence": "8789d2d12d58f8b215ec94774cb812894662733fc7b5bfb596f153dd21973a36",
+    "fuzz/transaction-read-set-seeds/staged-read": "791f34b586f3a27c58c5b75dc6ab7373721a07ac1f015effdee09f1a5241bda5"
+  },
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run transaction_read_set CORPUS -- -max_total_time=75 -max_len=256 -timeout=10 -print_final_stats=1",
+  "scope": "Reference-model transaction histories using either ordinary read-set validation or opt-in FIFO admission, followed by reopen verification.",
+  "initial_seeds": 5,
+  "seed": 272323527,
+  "duration_seconds": 76,
+  "executions": 23078,
+  "coverage_counters_hit": 2068,
+  "features": 5642,
+  "result": "no model mismatch, crash or sanitizer finding",
+  "limitations": "One short single-threaded fuzz campaign; it does not test concurrent queue scheduling, exhaustive histories, physical power loss or production durability."
+}
