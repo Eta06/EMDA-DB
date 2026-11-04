@@ -127,6 +127,49 @@ fn per_view_and_aggregate_limits_release_on_cancel_and_drop() {
 }
 
 #[test]
+fn concurrent_snapshot_admission_cannot_exceed_the_active_limit() {
+    let (_dir, _path, _checkpoint, store) = fixture();
+    let start = std::sync::Barrier::new(33);
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let mut releases = Vec::new();
+        for _ in 0..32 {
+            let send = send.clone();
+            let start = &start;
+            let store = &store;
+            let (release, wait) = std::sync::mpsc::channel();
+            releases.push(release);
+            scope.spawn(move || {
+                start.wait();
+                let snapshot = store.snapshot();
+                send.send(snapshot.is_ok()).unwrap();
+                let _ = wait.recv_timeout(Duration::from_secs(10));
+                drop(snapshot);
+            });
+        }
+        start.wait();
+        let mut admitted = 0;
+        let mut complete = true;
+        for _ in 0..32 {
+            match receive.recv_timeout(Duration::from_secs(10)) {
+                Ok(true) => admitted += 1,
+                Ok(false) => {}
+                Err(_) => {
+                    complete = false;
+                    break;
+                }
+            }
+        }
+        for release in releases {
+            let _ = release.send(());
+        }
+        assert!(complete, "snapshot workers did not finish admission");
+        assert_eq!(admitted, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS);
+    });
+    store.snapshot().unwrap();
+}
+
+#[test]
 fn expired_views_reject_new_reads_until_cancelled() {
     let (_dir, _path, _checkpoint, store) = fixture();
     assert_eq!(
@@ -149,6 +192,28 @@ fn expired_views_reject_new_reads_until_cancelled() {
     );
     snapshot.cancel();
     assert!(snapshot.get(b"a").is_err());
+}
+
+#[test]
+fn new_snapshot_reclaims_expired_idle_views() {
+    let (_dir, _path, _checkpoint, store) = fixture();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let snapshots = (0..MAX_CHECKPOINT_ACTIVE_SNAPSHOTS)
+        .map(|_| store.snapshot_until(deadline).unwrap())
+        .collect::<Vec<_>>();
+    assert!(store.snapshot().is_err());
+    std::thread::sleep(
+        deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(2),
+    );
+    let current = store.snapshot().unwrap();
+    assert_eq!(current.get(b"a").unwrap().as_deref(), Some(&b"old"[..]));
+    for snapshot in &snapshots {
+        assert_eq!(
+            snapshot.get(b"a").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+    assert_eq!(store.reap_expired_snapshots().unwrap(), 0);
 }
 
 #[test]

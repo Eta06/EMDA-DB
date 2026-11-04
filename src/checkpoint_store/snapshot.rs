@@ -1,6 +1,7 @@
 //! Bounded, process-local snapshots of a checkpoint and its suffix overlay.
 use super::*;
 use crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCKS;
+use std::sync::{Arc, TryLockError, Weak};
 use std::time::Instant;
 
 /// Maximum simultaneously active checkpoint snapshots per open store.
@@ -73,39 +74,75 @@ impl Drop for Reservation<'_> {
 /// because the live source log is append-only. Snapshots cannot outlive the
 /// store or survive reopening and do not provide write transactions. Limits
 /// cover logical copied entries, not allocator overhead or total process memory.
-/// An expired idle snapshot retains its reservation until cancellation or drop.
+/// Expired idle snapshots are reclaimed by a later snapshot request or an
+/// explicit reaping call; there is no background timer.
 pub struct CheckpointSnapshot<'a> {
     store: &'a CheckpointStore,
+    state: Arc<RwLock<SnapshotData>>,
+}
+
+pub(super) type SnapshotRegistry = Vec<Weak<RwLock<SnapshotData>>>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SnapshotStatus {
+    Active,
+    Expired,
+    Cancelled,
+}
+
+pub(super) struct SnapshotData {
     view: Option<RecoveredCheckpointView>,
     blocks: usize,
     keys: usize,
     key_bytes: usize,
     deadline: Option<Instant>,
+    status: SnapshotStatus,
+}
+
+impl SnapshotData {
+    fn release(&mut self, store: &CheckpointStore, status: SnapshotStatus) {
+        if self.status == SnapshotStatus::Active {
+            drop(self.view.take());
+            store
+                .snapshot_budget
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .release(self.blocks, self.keys, self.key_bytes);
+        }
+        self.status = status;
+    }
 }
 
 impl CheckpointSnapshot<'_> {
-    fn view(&self) -> io::Result<&RecoveredCheckpointView> {
-        let view = self
-            .view
-            .as_ref()
-            .ok_or_else(|| io::Error::other("checkpoint snapshot cancelled"))?;
-        if self
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
+    fn view(&self) -> io::Result<RwLockReadGuard<'_, SnapshotData>> {
+        let data = self
+            .state
+            .read()
+            .map_err(|_| io::Error::other("checkpoint snapshot state poisoned"))?;
+        if data.status == SnapshotStatus::Cancelled {
+            return Err(io::Error::other("checkpoint snapshot cancelled"));
+        }
+        if data.status == SnapshotStatus::Expired
+            || data
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
         {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "checkpoint snapshot expired",
             ));
         }
-        Ok(view)
+        Ok(data)
     }
 
     /// Reads one key from the captured state.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let view = self.view()?;
+        let data = self.view()?;
         let _healthy = self.store.read()?;
-        view.get(key)
+        data.view
+            .as_ref()
+            .expect("active snapshot has a view")
+            .get(key)
     }
 
     /// Reads up to 1,024 keys, preserving order and duplicates. The combined
@@ -120,8 +157,9 @@ impl CheckpointSnapshot<'_> {
         for key in keys {
             record::validate_key(key)?;
         }
-        let view = self.view()?;
+        let data = self.view()?;
         let _healthy = self.store.read()?;
+        let view = data.view.as_ref().expect("active snapshot has a view");
         let mut size = 0_usize;
         let mut locations = Vec::with_capacity(keys.len());
         for key in keys {
@@ -151,21 +189,20 @@ impl CheckpointSnapshot<'_> {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
-        let view = self.view()?;
+        let data = self.view()?;
         let _healthy = self.store.read()?;
-        view.scan(after, before, limit)
+        data.view
+            .as_ref()
+            .expect("active snapshot has a view")
+            .scan(after, before, limit)
     }
 
     /// Releases the captured view and its reservation. Repeated calls are safe.
     pub fn cancel(&mut self) {
-        if let Some(view) = self.view.take() {
-            drop(view);
-            self.store
-                .snapshot_budget
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .release(self.blocks, self.keys, self.key_bytes);
-        }
+        self.state
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .release(self.store, SnapshotStatus::Cancelled);
     }
 }
 
@@ -197,7 +234,8 @@ impl CheckpointStore {
 
     /// Captures a snapshot with an operation-boundary monotonic deadline.
     /// Reads begun after expiry fail; in-flight reads and I/O are not interrupted.
-    /// Expired snapshots retain reservations until cancellation or drop.
+    /// A later snapshot request or explicit reaping call reclaims an expired
+    /// view when it is not being read. There is no background timer.
     pub fn snapshot_until(&self, deadline: Instant) -> io::Result<CheckpointSnapshot<'_>> {
         self.snapshot_internal(
             MAX_CHECKPOINT_VIEW_BLOCKS,
@@ -242,6 +280,7 @@ impl CheckpointStore {
                 "checkpoint snapshot expired",
             ));
         }
+        self.reap_expired_snapshots()?;
         let state = self.read()?;
         let blocks = state.view.base.block_count();
         let keys = state.view.overlay.len();
@@ -269,11 +308,14 @@ impl CheckpointStore {
         };
         let snapshot = CheckpointSnapshot {
             store: self,
-            view: Some(view),
-            blocks,
-            keys,
-            key_bytes,
-            deadline,
+            state: Arc::new(RwLock::new(SnapshotData {
+                view: Some(view),
+                blocks,
+                keys,
+                key_bytes,
+                deadline,
+                status: SnapshotStatus::Active,
+            })),
         };
         reservation.active = false;
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -282,7 +324,64 @@ impl CheckpointStore {
                 "checkpoint snapshot expired",
             ));
         }
+        if deadline.is_some() {
+            let mut registry = self
+                .snapshot_registry
+                .lock()
+                .map_err(|_| io::Error::other("checkpoint snapshot registry poisoned"))?;
+            registry.retain(|weak| {
+                let Some(state) = weak.upgrade() else {
+                    return false;
+                };
+                match state.try_read() {
+                    Ok(data) => data.status == SnapshotStatus::Active,
+                    Err(TryLockError::WouldBlock) => true,
+                    Err(TryLockError::Poisoned(error)) => {
+                        error.into_inner().status == SnapshotStatus::Active
+                    }
+                }
+            });
+            if registry.len() >= MAX_CHECKPOINT_ACTIVE_SNAPSHOTS {
+                return Err(io::Error::other(
+                    "checkpoint snapshot deadline registry temporarily full",
+                ));
+            }
+            registry.push(Arc::downgrade(&snapshot.state));
+        }
         Ok(snapshot)
+    }
+
+    /// Reclaims expired snapshots not currently in use. Busy views are skipped;
+    /// call again later. This does not reclaim or compact the source log.
+    pub fn reap_expired_snapshots(&self) -> io::Result<usize> {
+        let mut registry = self
+            .snapshot_registry
+            .lock()
+            .map_err(|_| io::Error::other("checkpoint snapshot registry poisoned"))?;
+        let mut reaped = 0;
+        registry.retain(|weak| {
+            let Some(state) = weak.upgrade() else {
+                return false;
+            };
+            let mut data = match state.try_write() {
+                Ok(data) => data,
+                Err(TryLockError::WouldBlock) => return true,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            };
+            if data.status != SnapshotStatus::Active {
+                return false;
+            }
+            if data
+                .deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                data.release(self, SnapshotStatus::Expired);
+                reaped += 1;
+                return false;
+            }
+            true
+        });
+        Ok(reaped)
     }
 }
 
@@ -382,5 +481,27 @@ mod tests {
         );
         drop(budget);
         store.snapshot().unwrap();
+    }
+
+    #[test]
+    fn reaping_skips_busy_views_and_releases_them_after_reads_finish() {
+        use std::time::Duration;
+        let (_dir, store) = fixture();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let snapshot = store.snapshot_until(deadline).unwrap();
+        let busy = snapshot.state.read().unwrap();
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(2),
+        );
+        assert_eq!(store.reap_expired_snapshots().unwrap(), 0);
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 1);
+        drop(busy);
+        assert_eq!(store.reap_expired_snapshots().unwrap(), 1);
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+        assert_eq!(
+            snapshot.get(b"base").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(store.reap_expired_snapshots().unwrap(), 0);
     }
 }
