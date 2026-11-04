@@ -1,0 +1,572 @@
+{
+  "base_revision": "139f6b706c2e73b653ffb00c537a500bc353fbe2",
+  "binary_sha256": "92916528ecacc35a71ba265c85967b719e18cf7dcab50cdbe8b86e37005e8954",
+  "started_utc": "2026-11-04T20:38:24.758502+00:00",
+  "kernel": "6.18.57",
+  "caveat": "Process termination on a running VM, not physical power loss. Workspace overlay backing device was not independently verified. Fuzz and other tests ran concurrently.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.08532,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.411999,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.011925,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.018375,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.086555,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.277526,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.016633,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.013843,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.044599,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.32067,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.013967,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.011824,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.043785,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.259883,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.012659,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.010444,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.048998,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.226144,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.01099,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.014928,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.051724,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.244658,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.010778,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.009557,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.044491,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.260857,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.011959,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.011717,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.045079,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.261656,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.015195,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.013855,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.050959,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.241878,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.013271,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.01228,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.046816,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.238226,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.013156,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.013772,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.070089,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.93944,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.210062,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.207623,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.136871,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.857137,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.097607,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.152914,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.167733,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.870243,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.069708,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.10736,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.084269,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.180781,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.048049,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.066516,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.076061,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 0.980568,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.085008,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.10856,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.095626,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.935423,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.073151,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.132957,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.100756,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.968583,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.120018,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.143601,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.164705,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.769162,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.101732,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.137653,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.126631,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.994106,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.15036,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.178088,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary",
+      "seconds": 0.142644,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data",
+      "seconds": 1.823924,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked",
+      "seconds": 0.103942,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy",
+      "seconds": 0.129327,
+      "exit_code": 0
+    }
+  ],
+  "finished_utc": "2026-11-04T20:38:48.221737+00:00",
+  "revision": "bfff08712b586eacb2e16f2233b6d36452b6989e",
+  "source_note": "The stress binary was built before moving the unchanged staging test module to a separate file and adding a fuzz seed; executable test and production logic were unchanged."
+}

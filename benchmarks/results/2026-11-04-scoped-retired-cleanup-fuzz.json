@@ -1,0 +1,45 @@
+{
+  "revision": "bfff08712b586eacb2e16f2233b6d36452b6989e",
+  "source_note": "Campaign binaries were built before moving the unchanged staging test module to a separate file and adding the scoped-cleanup seed. The production source and tested behavior were unchanged.",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "runs": [
+    {
+      "target": "online_reclamation_worker",
+      "duration_seconds": 121,
+      "executions": 6074,
+      "seed": 2226554143,
+      "initial_seeds": {
+        "manual-handoff": "252b75e4d86252b8848269dd1f1739f3a094f711ca38085a896befe94c79d63f",
+        "writes-and-checks": "97d2dbb893e3807e9c82b26440bb3c84d3b841d454373a3af7d4438fc76c9dc6"
+      },
+      "max_input_bytes": 64,
+      "binary_sha256": "d7fa3c9d456412e070c2b3f523d75134ebf486e63d1c87e575866f79e9cce502",
+      "ending_coverage": 2461,
+      "ending_features": 10344,
+      "ending_corpus_entries": 261
+    },
+    {
+      "target": "online_compaction",
+      "duration_seconds": 61,
+      "executions": 3476,
+      "seed": 3074151915,
+      "initial_seeds": {
+        "mixed": "c9473d360bacf20fd5b169808d778c095c8e74d248213cae0b5f2b96f69ec519",
+        "reclaim": "f824abad0966eb30de6ef5cf3c95e64cacb96bc47924be7d2cb5530d18d128d2"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "f4c0d0f2f132d8bc399a040dd5dfd9bd23e9197698c783d9c202d2a29912e478",
+      "ending_coverage": 2072,
+      "ending_features": 9534,
+      "ending_corpus_entries": 219
+    }
+  ],
+  "additional_seed": {
+    "name": "scoped-cleanup",
+    "sha256": "bfbaa792734c8c92061620b476f66b59b4e3d9d605019f165e00868359d3dc52",
+    "result": "executed once successfully after the campaigns"
+  },
+  "result": "both campaigns completed without a finding",
+  "scope": "Serial generated operations exercise workers with and without scoped cleanup, handoffs, writes and reopenings. They do not create interrupted retired stages or simulate power loss; deterministic failure and process-kill tests cover interruption boundaries on the running OS."
+}
