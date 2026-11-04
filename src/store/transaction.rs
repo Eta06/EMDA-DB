@@ -532,6 +532,33 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn poisoned_transaction_budget_rejects_new_admissions() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = store.transaction_budget.lock().unwrap();
+            panic!("injected transaction budget panic");
+        }));
+        assert!(panic.is_err());
+        let called = std::cell::Cell::new(false);
+        let result = store.transaction(|_| {
+            called.set(true);
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        assert!(!called.get());
+        assert_eq!(
+            store.set_active_transaction_limit(1).unwrap_err().kind(),
+            io::ErrorKind::Other
+        );
+        store.put(b"direct", b"allowed").unwrap();
+        assert_eq!(
+            store.get(b"direct").unwrap().as_deref(),
+            Some(&b"allowed"[..])
+        );
+    }
+
+    #[test]
     fn cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(directory.path()).unwrap());

@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn poisoned_transaction_budget_rejects_new_admissions() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = store.transaction_budget.lock().unwrap();
+        panic!("injected transaction budget panic");
+    }));
+    assert!(panic.is_err());
+    let called = std::cell::Cell::new(false);
+    let result = store.transaction(|_| {
+        called.set(true);
+        Ok(())
+    });
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+    assert!(!called.get());
+    assert_eq!(
+        store.set_active_transaction_limit(1).unwrap_err().kind(),
+        io::ErrorKind::Other
+    );
+    store.put(b"direct", b"allowed").unwrap();
+    assert_eq!(
+        store.get(b"direct").unwrap().as_deref(),
+        Some(&b"allowed"[..])
+    );
+}
+
+#[test]
 fn staged_budget_is_shared_and_released_on_abort_and_panic() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
