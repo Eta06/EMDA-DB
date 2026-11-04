@@ -134,5 +134,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "document_online_index"
+path = "fuzz_targets/document_online_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "document_schema_migration"
+path = "fuzz_targets/document_schema_migration.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

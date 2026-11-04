@@ -2,7 +2,9 @@
 use super::{
     index::{self, IndexDefinition, Keys},
     key,
+    online_index::IndexJob,
     schema::CollectionSchema,
+    schema_migration::SchemaJob,
 };
 use crate::{CheckpointTransaction, Entry, Transaction};
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,10 @@ pub(super) struct Metadata {
     pub version: u32,
     pub schema: CollectionSchema,
     pub indexes: Vec<IndexDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<IndexJob>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_job: Option<SchemaJob>,
 }
 
 enum BackendTransaction<'a, 'store> {
@@ -136,13 +142,23 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         let metadata: Metadata = serde_json::from_slice(&bytes)
             .map_err(|_| invalid_data("invalid document metadata"))?;
         let mut names = BTreeSet::new();
-        if metadata.version != 1
+        if !matches!(metadata.version, 1 | 2)
+            || (metadata.version == 1
+                && (!metadata.jobs.is_empty() || metadata.schema_job.is_some()))
             || metadata.schema.validate_definition().is_err()
-            || metadata.indexes.len() > 16
+            || metadata
+                .schema_job
+                .as_ref()
+                .is_some_and(|job| job.validate().is_err())
+            || metadata.indexes.len() + metadata.jobs.len() > 16
             || metadata
                 .indexes
                 .iter()
-                .any(|index| index.validate().is_err() || !names.insert(&index.name))
+                .any(|index| index.validate().is_err() || !names.insert(index.name.as_str()))
+            || metadata
+                .jobs
+                .iter()
+                .any(|job| job.validate(collection).is_err() || !names.insert(job.name()))
         {
             return Err(invalid_data("unsupported or invalid document metadata"));
         }
@@ -179,6 +195,8 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                     version: 1,
                     schema,
                     indexes: Vec::new(),
+                    jobs: Vec::new(),
+                    schema_job: None,
                 },
             )
         })
@@ -213,18 +231,30 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         self.read_document(collection, id, &metadata.schema)
     }
 
-    fn check_old_index(&self, keys: &Keys, id: &str) -> io::Result<()> {
-        if self.read(&keys.entry)?.as_deref() != Some(&[][..]) {
-            return Err(invalid_data("document index entry is missing or invalid"));
-        }
-        if let Some(unique) = &keys.unique {
-            if self.read(unique)?.as_deref() != Some(id.as_bytes()) {
-                return Err(invalid_data(
-                    "document unique index entry is missing or invalid",
-                ));
+    fn check_old_index(&self, keys: &Keys, id: &str, allow_missing: bool) -> io::Result<bool> {
+        let entry = self.read(&keys.entry)?;
+        let unique = keys
+            .unique
+            .as_ref()
+            .map(|key| self.read(key))
+            .transpose()?
+            .flatten();
+        match entry {
+            Some(value) if value.is_empty() => {
+                if keys.unique.is_some() && unique.as_deref() != Some(id.as_bytes()) {
+                    return Err(invalid_data(
+                        "document unique index entry is missing or invalid",
+                    ));
+                }
+                Ok(true)
             }
+            Some(_) => Err(invalid_data("document index entry is invalid")),
+            None if !allow_missing => Err(invalid_data("document index entry is missing")),
+            None if unique.as_deref() == Some(id.as_bytes()) => {
+                Err(invalid_data("unique index entry has no document entry"))
+            }
+            None => Ok(false),
         }
-        Ok(())
     }
 
     fn update_indexes(
@@ -234,19 +264,26 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         indexes: &[IndexDefinition],
         old: Option<&Value>,
         new: Option<&Value>,
+        allow_missing: bool,
     ) -> io::Result<()> {
         let mut changes = Vec::with_capacity(indexes.len());
         for definition in indexes {
-            let previous = old
+            let mut previous = match old
                 .map(|value| index::keys(collection, definition, value, id))
-                .transpose()?
-                .flatten();
+                .transpose()
+            {
+                Ok(value) => value.flatten(),
+                Err(error) if allow_missing && error.kind() == io::ErrorKind::InvalidInput => None,
+                Err(error) => return Err(error),
+            };
             let next = new
                 .map(|value| index::keys(collection, definition, value, id))
                 .transpose()?
                 .flatten();
             if let Some(keys) = &previous {
-                self.check_old_index(keys, id)?;
+                if !self.check_old_index(keys, id, allow_missing)? {
+                    previous = None;
+                }
             }
             if let Some(keys) = &next {
                 let same_entry = previous.as_ref().is_some_and(|old| old.entry == keys.entry);
@@ -324,6 +361,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             ));
         }
         metadata.schema.validate_document(document)?;
+        if let Some(job) = &metadata.schema_job {
+            job.schema.validate_document(document)?;
+        }
         let bytes = serde_json::to_vec(document).map_err(io::Error::other)?;
         if bytes.len() > MAX_DOCUMENT_BYTES {
             return Err(key::invalid("document exceeds 1 MiB"));
@@ -334,6 +374,21 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             &metadata.indexes,
             existing.as_ref(),
             Some(document),
+            false,
+        )?;
+        let building = metadata
+            .jobs
+            .iter()
+            .filter_map(IndexJob::building_definition)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.update_indexes(
+            collection,
+            id,
+            &building,
+            existing.as_ref(),
+            Some(document),
+            true,
         )?;
         self.write(&key, &bytes)
     }
@@ -362,7 +417,21 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             let Some(existing) = this.read_document(collection, id, &metadata.schema)? else {
                 return Ok(false);
             };
-            this.update_indexes(collection, id, &metadata.indexes, Some(&existing), None)?;
+            this.update_indexes(
+                collection,
+                id,
+                &metadata.indexes,
+                Some(&existing),
+                None,
+                false,
+            )?;
+            let building = metadata
+                .jobs
+                .iter()
+                .filter_map(IndexJob::building_definition)
+                .cloned()
+                .collect::<Vec<_>>();
+            this.update_indexes(collection, id, &building, Some(&existing), None, true)?;
             this.remove(&key)?;
             Ok(true)
         })
@@ -420,13 +489,17 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 .indexes
                 .iter()
                 .any(|item| item.name == definition.name)
+                || metadata
+                    .jobs
+                    .iter()
+                    .any(|job| job.name() == definition.name)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "index already exists",
                 ));
             }
-            if metadata.indexes.len() >= 16 {
+            if metadata.indexes.len() + metadata.jobs.len() >= 16 {
                 return Err(key::invalid("collection exceeds 16 indexes"));
             }
             for kind in *b"IU" {

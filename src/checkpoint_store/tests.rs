@@ -148,9 +148,11 @@ mod compaction;
 mod document_faults;
 #[cfg(target_os = "linux")]
 mod metadata_faults;
+mod online_index_faults;
 mod rebuild;
 mod recovery;
 mod rollover;
+mod schema_migration_faults;
 mod selection;
 
 mod transaction;

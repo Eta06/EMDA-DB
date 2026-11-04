@@ -38,8 +38,9 @@ pub use document::{
     CollectionIntegrity, CollectionSchema, Comparison, DocumentDatabase, DocumentEntry,
     DocumentFilter, DocumentPage, DocumentQuery, DocumentQueryResult, DocumentSort,
     DocumentTransaction, DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule,
-    FieldType, IndexBound, IndexCursor, IndexDefinition, IndexQuery, IndexQueryPlan, IndexValue,
-    LookupEntry, LookupResult, PartialFilter, QueryPlan,
+    FieldType, IndexBound, IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus,
+    IndexQuery, IndexQueryPlan, IndexStep, IndexValue, LookupEntry, LookupResult, PartialFilter,
+    QueryPlan, SchemaMigrationStatus, SchemaStep,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{

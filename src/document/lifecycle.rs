@@ -13,6 +13,12 @@ impl DocumentTransaction<'_, '_> {
         self.mutate(|this| {
             schema.validate_definition()?;
             let mut metadata = this.metadata(collection)?;
+            if metadata.schema_job.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "a schema migration is in progress",
+                ));
+            }
             let documents = this.document_rows(
                 collection,
                 &metadata.schema,

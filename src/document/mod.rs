@@ -6,8 +6,10 @@ mod index;
 mod integrity;
 mod key;
 mod lifecycle;
+mod online_index;
 mod query;
 mod schema;
+mod schema_migration;
 mod transaction;
 mod update;
 
@@ -18,8 +20,10 @@ pub use filter::{
 };
 pub use index::{IndexDefinition, IndexValue, PartialFilter};
 pub use integrity::CollectionIntegrity;
+pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
 pub use schema::{CollectionSchema, FieldRule, FieldType};
+pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use transaction::DocumentTransaction;
 pub use update::{DocumentUpdate, FieldCondition};
 
@@ -153,6 +157,34 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.create_collection(collection, schema))
     }
 
+    /// Starts a durable incremental schema migration.
+    pub fn start_schema_migration(
+        &self,
+        collection: &str,
+        schema: CollectionSchema,
+    ) -> io::Result<()> {
+        self.transaction(|tx| tx.start_schema_migration(collection, schema))
+    }
+
+    /// Advances a schema migration by a bounded number of documents.
+    pub fn advance_schema_migration(
+        &self,
+        collection: &str,
+        limit: usize,
+    ) -> io::Result<SchemaStep> {
+        self.transaction(|tx| tx.advance_schema_migration(collection, limit))
+    }
+
+    /// Cancels a pending schema migration without changing the active schema.
+    pub fn cancel_schema_migration(&self, collection: &str) -> io::Result<()> {
+        self.transaction(|tx| tx.cancel_schema_migration(collection))
+    }
+
+    /// Inspects the pending schema migration, if any.
+    pub fn schema_migration(&self, collection: &str) -> io::Result<Option<SchemaMigrationStatus>> {
+        self.transaction(|tx| tx.schema_migration(collection))
+    }
+
     /// Validates existing documents and replaces a collection schema atomically.
     pub fn set_schema(&self, collection: &str, schema: CollectionSchema) -> io::Result<()> {
         self.transaction(|tx| tx.set_schema(collection, schema))
@@ -209,6 +241,50 @@ impl<'a> DocumentDatabase<'a> {
     /// Atomically rebuilds a bounded index from valid collection documents.
     pub fn rebuild_index(&self, collection: &str, name: &str) -> io::Result<()> {
         self.transaction(|tx| tx.rebuild_index(collection, name))
+    }
+
+    /// Starts a durable incremental index build.
+    pub fn start_index_build(
+        &self,
+        collection: &str,
+        definition: IndexDefinition,
+    ) -> io::Result<()> {
+        self.transaction(|tx| tx.start_index_build(collection, definition))
+    }
+
+    /// Advances an incremental index build by a bounded number of documents.
+    pub fn advance_index_build(
+        &self,
+        collection: &str,
+        name: &str,
+        limit: usize,
+    ) -> io::Result<IndexStep> {
+        self.transaction(|tx| tx.advance_index_build(collection, name, limit))
+    }
+
+    /// Cancels an incremental index build and starts cleanup.
+    pub fn cancel_index_build(&self, collection: &str, name: &str) -> io::Result<()> {
+        self.transaction(|tx| tx.cancel_index_build(collection, name))
+    }
+
+    /// Makes an index unavailable and starts incremental cleanup.
+    pub fn start_index_drop(&self, collection: &str, name: &str) -> io::Result<()> {
+        self.transaction(|tx| tx.start_index_drop(collection, name))
+    }
+
+    /// Advances an incremental index drop by a bounded number of keys.
+    pub fn advance_index_drop(
+        &self,
+        collection: &str,
+        name: &str,
+        limit: usize,
+    ) -> io::Result<IndexStep> {
+        self.transaction(|tx| tx.advance_index_drop(collection, name, limit))
+    }
+
+    /// Lists durable, resumable index builds and drops.
+    pub fn index_jobs(&self, collection: &str) -> io::Result<Vec<IndexJobStatus>> {
+        self.transaction(|tx| tx.index_jobs(collection))
     }
 
     /// Builds a secondary index atomically within the documented limits.

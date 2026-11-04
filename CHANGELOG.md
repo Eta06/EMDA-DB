@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Resumable document schema migrations validate bounded batches, persist progress and enforce both active and pending schemas on concurrent writes until publication.
+
+- Resumable incremental document index builds and drops persist bounded progress, coordinate with concurrent writers, and publish or remove indexes atomically. Collection metadata advances to version 2; see the document guide for uniqueness and recovery semantics.
+
 - An opt-in, stoppable background worker schedules managed checkpoint checks and reports errors without changing the underlying rollover or durability contract.
 
 - A blocking Linux checkpoint-store compact-and-replace handoff retains the prior log and preserves managed selection, automatic checkpoint settings and per-open limits. Its process tests do not establish power-loss behavior.

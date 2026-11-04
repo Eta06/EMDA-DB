@@ -105,6 +105,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/checkpoint-worker-corpus"
           cp fuzz/checkpoint-worker-seeds/* "$RUNNER_TEMP/checkpoint-worker-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_worker "$RUNNER_TEMP/checkpoint-worker-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
+      - name: Run resumable document index model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/document-online-index-corpus"
+          cp fuzz/document-online-index-seeds/* "$RUNNER_TEMP/document-online-index-corpus/"
+          cargo +nightly-2026-11-03 fuzz run document_online_index "$RUNNER_TEMP/document-online-index-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
+      - name: Run resumable document schema model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/document-schema-migration-corpus"
+          cp fuzz/document-schema-migration-seeds/* "$RUNNER_TEMP/document-schema-migration-corpus/"
+          cargo +nightly-2026-11-03 fuzz run document_schema_migration "$RUNNER_TEMP/document-schema-migration-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -8,6 +8,8 @@ use std::thread;
 use std::time::Duration;
 
 mod document_faults;
+mod online_index_faults;
+mod schema_migration_faults;
 
 const NAME: &str = "user.db.commit.v3";
 
