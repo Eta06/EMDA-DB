@@ -1,0 +1,28 @@
+{
+  "description": "Differential model comparing bounded planned queries with complete collection scans",
+  "runs": [
+    {
+      "source": "candidate worktree based on 64386cb; production planner preceded a non-exhaustive annotation",
+      "binary_sha256": "2ac065d69a07e752944b36cbbadba55c1ea9bee3d6bce13d6f766103c0a3c568",
+      "seed": 83604031,
+      "requested_seconds": 120,
+      "actual_seconds": 121,
+      "inputs_executed": 5594,
+      "result": "passed"
+    },
+    {
+      "source_revision": "c2796d9b39468a8c16f382fbb9d1805077359b3b",
+      "binary_sha256": "95f1e9b508ff7f48636159c0f9efd76eb9508f5660dcf7690b7806032d0b7625",
+      "seed": 83604033,
+      "requested_seconds": 60,
+      "actual_seconds": 61,
+      "inputs_executed": 4527,
+      "result": "passed"
+    }
+  ],
+  "toolchain": "nightly-2026-11-03 and cargo-fuzz",
+  "max_input_bytes": 96,
+  "timeout_seconds": 10,
+  "environment": "Linux cloud VM; local temporary corpus and stores",
+  "scope": "Generated equality, conjunction, disjunction, negation, null, non-indexable values, sorting, projection and offset queries compare planned output with complete scans across both writable backends, with intervening mutations and reopen. This is short serial differential testing, not exhaustive concurrent scheduling, physical power failure or off-host restoration."
+}

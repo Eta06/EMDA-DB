@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Record a paired scan, planned-query, explicit-index and SQLite document comparison, including raw samples and VM noise.
+
 - Add opt-in rule-based unique-equality index selection for bounded filtered document queries, with a scan fallback and access-path reporting.
 
 - Exercise atomic document-array, unique-index and raw-key commits under every V2/V3 append cut and selected synchronization and metadata failures.

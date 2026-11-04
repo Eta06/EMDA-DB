@@ -30,6 +30,8 @@ A [larger-collection read comparison](docs/DOCUMENT_POINT_READ_COMPARISON_2026_1
 
 A [shared-snapshot comparison](docs/SHARED_SNAPSHOT_COMPARISON_2026_11_04.md) measured 3,000-document indexed-query p50 falling from 2.33 ms to 23.65 µs; SQLite measured 3.81 µs with a different JSON adapter. A separate concurrent workload improved median writer throughput, while one sampled reader tail and some small-collection write tails worsened. Results include the full measurements and VM limitations.
 
+The [document planner comparison](docs/DOCUMENT_QUERY_PLANNER_COMPARISON_2026_11_04.md) measured median filtered-query latency at 1,000 baseline documents: 1,034.57 µs for a complete scan, 17.31 µs with the opt-in planner, and 3.75 µs for SQLite with a different JSON adapter. The report includes explicit-index results and VM limitations.
+
 The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
 
 ## Featured directions
