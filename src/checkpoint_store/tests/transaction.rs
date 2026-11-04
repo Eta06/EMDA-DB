@@ -411,3 +411,27 @@ fn point_read_reservations_share_the_staged_budget_and_release_on_abort_and_pani
         })
         .unwrap();
 }
+
+#[test]
+fn range_reservations_are_deduplicated_and_released_after_failed_capture() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.put(b"other", b"value").unwrap();
+    let per_entry = std::mem::size_of::<crate::log::ValueLocation>();
+    let charge = b"base".len() + b"other".len() + per_entry * 2;
+    store.transaction_budget.lock().unwrap().limit = charge - 1;
+    let failed = store.transaction_with_read_set(|tx| tx.scan(None, None, 10));
+    assert!(failed.is_err());
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    store.transaction_budget.lock().unwrap().limit = charge;
+    let aborted: io::Result<()> = store.transaction_with_read_set(|tx| {
+        assert_eq!(tx.scan(None, None, 10)?.len(), 2);
+        assert_eq!(store.transaction_budget.lock().unwrap().used, charge);
+        assert_eq!(tx.scan(None, None, 1)?.len(), 1);
+        assert_eq!(store.transaction_budget.lock().unwrap().used, charge);
+        Err(io::Error::other("abort after scan"))
+    });
+    assert!(aborted.is_err());
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    store.put(b"later", b"ok").unwrap();
+}

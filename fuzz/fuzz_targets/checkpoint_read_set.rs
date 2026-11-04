@@ -8,17 +8,25 @@ use std::io::{self, ErrorKind};
 use std::time::{Duration, Instant};
 
 type Model = BTreeMap<u8, (u64, u8)>;
+type RangeObservation = (Option<u8>, Option<u8>, Model);
+
+fn within(key: u8, after: Option<u8>, before: Option<u8>) -> bool {
+    after.is_none_or(|bound| key > bound) && before.is_none_or(|bound| key < bound)
+}
 
 fn matches(
     points: &BTreeMap<u8, Option<(u64, u8)>>,
-    scan_generation: Option<u64>,
+    ranges: &[RangeObservation],
     live: &Model,
-    generation: u64,
 ) -> bool {
-    scan_generation.is_none_or(|seen| seen == generation)
-        && points
-            .iter()
-            .all(|(key, observed)| *observed == live.get(key).copied())
+    points
+        .iter()
+        .all(|(key, observed)| *observed == live.get(key).copied())
+        && ranges.iter().all(|(after, before, observed)| {
+            observed.iter().eq(live
+                .iter()
+                .filter(|(key, _)| within(**key, *after, *before)))
+        })
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -41,15 +49,13 @@ fuzz_target!(|data: &[u8]| {
     let store = CheckpointStore::open(&path, &checkpoint, &digest).expect("checkpoint store");
     let mut staged = BTreeMap::<u8, Option<u8>>::new();
     let mut points = BTreeMap::<u8, Option<(u64, u8)>>::new();
-    let mut scan_generation = None;
+    let mut ranges = Vec::<RangeObservation>::new();
     let mut conflict = false;
     let action = |tx: &mut CheckpointTransaction<'_>| -> io::Result<()> {
         for &byte in data {
             let key = b'a' + (byte & 7);
             let kind = byte >> 5;
-            if matches!(kind, 0 | 1 | 2 | 5 | 6 | 7)
-                && !matches(&points, scan_generation, &live, generation)
-            {
+            if matches!(kind, 0 | 1 | 2 | 5 | 6 | 7) && !matches(&points, &ranges, &live) {
                 let result = match kind {
                     0 | 6 => tx.get(&[key]).map(|_| ()),
                     1 => tx.put(&[key], &[byte]),
@@ -123,7 +129,12 @@ fuzz_target!(|data: &[u8]| {
                     let lower = after.as_ref().map(std::slice::from_ref);
                     let upper = before.as_ref().map(std::slice::from_ref);
                     assert_eq!(tx.scan(lower, upper, limit)?, expected);
-                    scan_generation = Some(generation);
+                    let observed = live
+                        .iter()
+                        .filter(|(key, _)| within(**key, after, before))
+                        .map(|(&key, &value)| (key, value))
+                        .collect();
+                    ranges.push((after, before, observed));
                 }
                 _ => unreachable!(),
             }
@@ -150,7 +161,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }),
     };
-    if !conflict && matches(&points, scan_generation, &live, generation) {
+    if !conflict && matches(&points, &ranges, &live) {
         result.expect("matching observations must commit");
         for (key, value) in staged {
             match value {

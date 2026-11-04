@@ -4,8 +4,8 @@ use std::sync::Mutex;
 
 /// Maximum combined encoded staged-record bytes across transactions on one open store.
 /// This does not include allocator overhead, snapshots, returned values, or commit buffers.
-/// Checkpoint read-set transactions also reserve retained point keys and location metadata
-/// from this budget, so less space can be available for staged records.
+/// Checkpoint read-set transactions also reserve retained point/range keys,
+/// bounds and location metadata, so less space can be available for staged records.
 pub const MAX_TRANSACTION_STAGED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 pub(crate) struct TransactionBudget {
@@ -57,6 +57,21 @@ impl<'a> PendingReservation<'a> {
 
     pub(crate) fn finish(&mut self) {
         self.bytes = 0;
+    }
+
+    pub(crate) fn grow(&mut self, bytes: usize) -> io::Result<()> {
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| io::Error::other("transaction reservation overflow"))?;
+        if bytes > 0 {
+            self.budget
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .reserve(bytes)?;
+        }
+        self.bytes = total;
+        Ok(())
     }
 }
 

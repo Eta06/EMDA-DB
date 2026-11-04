@@ -105,8 +105,15 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                     let outcome = match operation {
                         0 | 1 => {
                             let action = |tx: &mut CheckpointTransaction<'_>| {
-                                let x = tx.get(b"x")?.unwrap()[0];
-                                let y = tx.get(b"y")?.unwrap()[0];
+                                let (x, y) = if operation == 0 {
+                                    (tx.get(b"x")?.unwrap()[0], tx.get(b"y")?.unwrap()[0])
+                                } else {
+                                    let range = tx.scan(Some(b"w"), Some(b"z"), 10)?;
+                                    assert_eq!(range.len(), 2);
+                                    assert_eq!(range[0].0, b"x");
+                                    assert_eq!(range[1].0, b"y");
+                                    (range[0].1[0], range[1].1[0])
+                                };
                                 let next = if operation == 0 {
                                     [x + 1, y + 1]
                                 } else {

@@ -14,18 +14,18 @@ pub enum CheckpointTransactionMode {
     Conservative,
     /// Admit participating callbacks and commits through the FIFO queue.
     Fifo,
-    /// Validate observed point versions; scans use conservative validation.
+    /// Validate observed point versions and complete requested scan ranges.
     ReadSet,
-    /// Use point validation with FIFO admission.
+    /// Validate point and range observations with FIFO admission.
     ReadSetFifo,
 }
 
 /// A bounded, process-local transaction on a checkpoint-backed store.
 ///
 /// Reads and scans see staged changes. The conservative modes conflict on any
-/// intervening write. Read-set modes validate observed point versions and use
-/// conservative validation after a scan. Callers must retry a conflicted
-/// callback themselves and manage any external side effects.
+/// intervening write. Read-set modes validate observed points and complete
+/// scan ranges. Callers must retry a conflicted callback themselves and manage
+/// any external side effects.
 pub struct CheckpointTransaction<'a> {
     store: &'a CheckpointStore,
     generation: u64,
@@ -135,7 +135,7 @@ impl CheckpointTransaction<'_> {
             read_set
                 .lock()
                 .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
-                .record_scan(state.generation);
+                .record_scan(self.store, &state, after, before)?;
         }
         let bounds = (
             after.map_or(Unbounded, Excluded),
@@ -303,15 +303,15 @@ impl CheckpointStore {
             .map_err(TimedTransactionError::into_io)
     }
 
-    /// Runs a transaction validating its observed point versions at commit.
+    /// Runs a transaction validating point versions and complete scan ranges.
     ///
     /// Unrelated writes can commit during the callback. A previously present
     /// value changed and restored has a different log location and conflicts;
     /// an absent key inserted and deleted may match absence again. A scan
-    /// switches to conservative validation from that scan onward, including
-    /// writes outside its bounds. Point dependencies are limited to 2,048
-    /// distinct keys and 2 MiB of key bytes. Their logical reservations share
-    /// the per-store staged-record budget; allocator overhead is excluded.
+    /// records its entire requested range, including entries beyond a limited
+    /// page. Dependencies are limited to 2,048 points and ranges, 2 MiB of
+    /// retained key and bound bytes, and 65,536 point/range items. Their logical
+    /// reservations share the staged-record budget; allocator overhead is excluded.
     /// Reads through independent store methods are not tracked. Callbacks and
     /// external effects are never retried or rolled back automatically.
     pub fn transaction_with_read_set<T>(
@@ -322,7 +322,7 @@ impl CheckpointStore {
             .map_err(TimedTransactionError::into_io)
     }
 
-    /// Runs a point read-set transaction with FIFO callback and commit admission.
+    /// Runs a read-set transaction with FIFO callback and commit admission.
     /// FIFO has the same nesting, blocking and fairness limitations as
     /// `transaction_with_fifo`; nonparticipating writes can still conflict.
     pub fn transaction_with_read_set_fifo<T>(
