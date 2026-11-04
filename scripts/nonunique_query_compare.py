@@ -59,7 +59,7 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--cases", default="100:10,1000:10,1000:100")
-    parser.add_argument("--index-name", choices=("docs_group", "docs_number"), default="docs_group")
+    parser.add_argument("--index-name", choices=("docs_group", "docs_number", "docs_pair"), default="docs_group")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=50)
     args = parser.parse_args()
@@ -74,6 +74,7 @@ def main():
         parser.error("invalid paths, CPU availability, rounds or cycle count")
     benchmark_cpu, driver_cpu = cpus[0], cpus[-1]
     os.sched_setaffinity(0, {driver_cpu})
+    workload = {"docs_group": "equality", "docs_number": "greater-or-equal range with index order reversed relative to ID", "docs_pair": "complete two-field equality"}[args.index_name]
     report = {
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
@@ -83,7 +84,7 @@ def main():
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "benchmark_cpu": benchmark_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "scope": "One client; read-only nonunique scalar JSON " + ("equality" if args.index_name == "docs_group" else "greater-or-equal range with index order reversed relative to ID") + ". Prototype complete scan and planned index range versus SQLite forced primary-table scan and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
+        "scope": "One client; read-only nonunique JSON " + workload + ". Prototype complete scan and planned index range versus SQLite forced primary-table scan and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
         "sqlite_index_name": args.index_name,
         "cases": cases, "rounds": args.rounds, "cycles": args.cycles, "runs": [], "failures": [],
     }

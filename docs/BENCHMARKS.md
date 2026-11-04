@@ -623,3 +623,15 @@ python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem 
   --output /path/to/new-range-result.json --cases 100:10,1000:10,1000:100 \
   --rounds 4 --cycles 50
 ```
+
+### Compound document equality-query comparison
+
+The [`compound_query_bench`](../examples/compound_query_bench.rs) uses the same comparison runner for equality on both fields of a two-field, nonunique index. The SQLite expression index and primary-table scan are explicitly selected and their plans verified. Both databases return and validate the same IDs and decoded JSON, then reopen and verify the full data sets. The same single-client, hot-cache, resource and durability limitations apply.
+
+```sh
+cargo build --release --locked --example compound_query_bench
+python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem \
+  --binary target/release/examples/compound_query_bench --index-name docs_pair \
+  --output /path/to/new-compound-result.json --cases 100:10,1000:10,1000:100 \
+  --rounds 4 --cycles 50
+```
