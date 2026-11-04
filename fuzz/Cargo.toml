@@ -127,5 +127,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "checkpoint_worker"
+path = "fuzz_targets/checkpoint_worker.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

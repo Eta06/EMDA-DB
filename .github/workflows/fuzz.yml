@@ -100,6 +100,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/checkpoint-exchange-corpus"
           cp fuzz/checkpoint-exchange-seeds/* "$RUNNER_TEMP/checkpoint-exchange-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_exchange "$RUNNER_TEMP/checkpoint-exchange-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
+      - name: Run background checkpoint worker model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/checkpoint-worker-corpus"
+          cp fuzz/checkpoint-worker-seeds/* "$RUNNER_TEMP/checkpoint-worker-corpus/"
+          cargo +nightly-2026-11-03 fuzz run checkpoint_worker "$RUNNER_TEMP/checkpoint-worker-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

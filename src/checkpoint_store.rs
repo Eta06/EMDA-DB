@@ -13,6 +13,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod automatic;
@@ -23,11 +24,13 @@ mod rebuild;
 mod selection;
 mod snapshot;
 mod transaction;
+mod worker;
 pub use snapshot::{
     CheckpointSnapshot, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
 };
 pub use transaction::{CheckpointTransaction, CheckpointTransactionMode};
+pub use worker::{CheckpointWorker, CheckpointWorkerStatus};
 
 struct State {
     view: RecoveredCheckpointView,
@@ -70,6 +73,7 @@ pub struct CheckpointStore {
     transaction_queue: crate::store::TransactionQueue,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
     snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
+    checkpoint_worker: AtomicBool,
     path: PathBuf,
     max_tail_bytes: u64,
     max_tail_keys: usize,
@@ -315,6 +319,7 @@ impl CheckpointStore {
             transaction_queue: crate::store::TransactionQueue::new(),
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
             snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::new()),
+            checkpoint_worker: AtomicBool::new(false),
             path,
             max_tail_bytes,
             max_tail_keys,

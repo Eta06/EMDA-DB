@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- An opt-in, stoppable background worker schedules managed checkpoint checks and reports errors without changing the underlying rollover or durability contract.
+
 - A blocking Linux checkpoint-store compact-and-replace handoff retains the prior log and preserves managed selection, automatic checkpoint settings and per-open limits. Its process tests do not establish power-loss behavior.
 
 - A blocking Linux compact-and-replace handoff uses a verified sibling and atomic directory exchange, retains the old copy, preserves per-open limits, and rejects stale lock descriptors. Failure and process-kill tests do not establish power-loss safety.
