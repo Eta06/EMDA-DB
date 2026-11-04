@@ -1,5 +1,6 @@
 //! Explicit, verified index checkpoints. The log remains the source of truth.
 use crate::backup;
+use crate::checkpoint_view::CheckpointViewLimits;
 use crate::log::{Log, ValueLocation};
 use crate::record;
 use sha2::{Digest, Sha256};
@@ -70,12 +71,21 @@ pub(crate) fn create_streaming_with_sync(
     destination: &Path,
     entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    limits: Option<CheckpointViewLimits>,
 ) -> io::Result<[u8; 32]> {
-    create_streaming_with_hooks(log, count, peak, destination, entries, sync_parent, || {
-        Ok(())
-    })
+    let parent = backup::parent_directory(destination)?;
+    create_streaming_in_directory(
+        log,
+        count,
+        peak,
+        (destination, parent, limits),
+        entries,
+        sync_parent,
+        || Ok(()),
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn create_streaming_with_hooks(
     log: &Log,
     count: u64,
@@ -90,7 +100,7 @@ pub(crate) fn create_streaming_with_hooks(
         log,
         count,
         peak,
-        (destination, parent),
+        (destination, parent, None),
         entries,
         sync_parent,
         before_publish,
@@ -104,6 +114,7 @@ pub(crate) fn create_streaming_in_private_stage(
     count: u64,
     peak: usize,
     directory: &Path,
+    limits: Option<CheckpointViewLimits>,
     entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
     let destination = directory.join(crate::store::COMPACTED_CHECKPOINT_FILE);
@@ -111,7 +122,7 @@ pub(crate) fn create_streaming_in_private_stage(
         log,
         count,
         peak,
-        (&destination, directory),
+        (&destination, directory, limits),
         entries,
         |parent| File::open(parent)?.sync_all(),
         || Ok(()),
@@ -122,12 +133,12 @@ fn create_streaming_in_directory(
     log: &Log,
     count: u64,
     peak: usize,
-    paths: (&Path, &Path),
+    paths: (&Path, &Path, Option<CheckpointViewLimits>),
     mut entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
-    let (destination, parent) = paths;
+    let (destination, parent, limits) = paths;
     if log.is_legacy() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -140,7 +151,16 @@ fn create_streaming_in_directory(
             "checkpoint peak is below its key count",
         ));
     }
+    let limits = limits.unwrap_or_default();
+    limits.validate()?;
     log.verify_witness()?;
+    let mut checkpoint_bytes = HEADER_BYTES + DIGEST_BYTES;
+    if checkpoint_bytes > limits.max_file_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checkpoint exceeds configured file size limit",
+        ));
+    }
     let prefix = log.len()?;
     let log_digest = hash_log(log, prefix)?;
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
@@ -170,6 +190,15 @@ fn create_streaming_in_directory(
             previous.clear();
             previous.extend_from_slice(key);
             let entry_bytes = key.len() + ENTRY_FIXED_BYTES as usize;
+            checkpoint_bytes = checkpoint_bytes
+                .checked_add(entry_bytes as u64)
+                .ok_or_else(|| io::Error::other("checkpoint size overflow"))?;
+            if checkpoint_bytes > limits.max_file_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "checkpoint exceeds configured file size limit",
+                ));
+            }
             if block_bytes != 0
                 && block_bytes + entry_bytes
                     > crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCK_BYTES
@@ -178,7 +207,7 @@ fn create_streaming_in_directory(
             }
             if block_bytes == 0 {
                 blocks += 1;
-                if blocks > crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCKS {
+                if blocks > limits.max_blocks {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "checkpoint has too many view blocks",
@@ -561,6 +590,7 @@ mod tests {
                     Ok(())
                 },
                 |parent| File::open(parent)?.sync_all(),
+                None,
             );
             assert!(result.is_err(), "{mode} stream was accepted");
             assert!(!destination.exists());
