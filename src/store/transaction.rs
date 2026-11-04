@@ -10,7 +10,7 @@ use crate::transaction_budget::TransactionBudget;
 use std::fmt;
 use std::time::Instant;
 
-/// Validation and admission rules for a deadline-limited transaction.
+/// Validation and admission rules for a controlled transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransactionMode {
     /// Conflict on any intervening mutation.

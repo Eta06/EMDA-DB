@@ -7,7 +7,7 @@ use crate::transaction_budget::PendingReservation;
 use std::ops::ControlFlow;
 use std::time::Instant;
 
-/// Admission mode for a deadline-limited checkpoint-backed transaction.
+/// Admission mode for a controlled checkpoint-backed transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckpointTransactionMode {
     /// Optimistic transaction without FIFO admission.

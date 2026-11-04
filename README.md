@@ -74,6 +74,8 @@ Transactions on one open store share a 64 MiB limit on encoded staged records, i
 
 `Store::transaction_until` adds an optional monotonic deadline for any of the three transaction modes. `TimedTransactionError::DeadlineExceeded` means the engine detected expiry before submitting that transaction's staged writes for commit. `TimedTransactionError::Operation` covers callback and I/O errors, including an I/O timeout whose commit outcome may be unknown. FIFO waiters can expire in their queue, but callbacks, writer-lock waits and I/O are not forcibly interrupted. A commit that has started can succeed after the deadline; callback side effects are not rolled back.
 
+`transaction_controlled` on either writable store or `DocumentDatabase` accepts a cloneable `CancellationToken`, an optional deadline and a transaction mode. Engine-reported cancellation or deadline expiry means that transaction did not submit its staged writes. FIFO waiters observe cancellation while queued; callbacks, normal lock waits and I/O are not forcibly interrupted. Cancellation can race with commit: a commit already in progress can succeed, or an I/O error can leave its outcome unknown. Callback side effects are not rolled back.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

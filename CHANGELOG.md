@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add cooperative cancellation and optional deadlines for key-value and document transactions on both writable stores. FIFO waiters can cancel while queued; cancellation reported before commit is distinct from an I/O error with an unknown outcome.
+
 - Add optional, stoppable expired-snapshot reapers for both writable stores, with busy-read protection and worker status and failure reporting.
 
 - Plan bounded unions of deduplicated scalar `In` probes on eligible single-field indexes, including safely implied partial indexes, while preserving aggregate scan limits and transaction read-set checks.
