@@ -19,6 +19,7 @@ enum Fault {
     Panic,
     Block,
     BlockThenSyncError,
+    BlockThenPanic,
 }
 
 struct Controlled {
@@ -65,6 +66,11 @@ impl WitnessIo for Controlled {
                     self.entered.send(()).unwrap();
                     self.resume.lock().unwrap().recv().unwrap();
                     return Err(io::Error::other("injected delayed fsync error"));
+                }
+                Fault::BlockThenPanic => {
+                    self.entered.send(()).unwrap();
+                    self.resume.lock().unwrap().recv().unwrap();
+                    panic!("injected delayed sync panic");
                 }
                 _ => {}
             }
@@ -360,64 +366,74 @@ fn transaction_commit_metadata_failures_never_recover_partial_writes() {
 #[test]
 fn failed_fifo_transaction_wakes_waiter_and_preserves_atomic_recovery() {
     use std::time::Instant;
-    let directory = tempfile::tempdir().unwrap();
-    let armed = Arc::new(AtomicBool::new(false));
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (resume_tx, resume_rx) = mpsc::channel();
-    let store = Arc::new(store(
-        directory.path(),
-        Fault::BlockThenSyncError,
-        Arc::clone(&armed),
-        entered_tx,
-        resume_rx,
-    ));
-    store.put(b"a", b"old").unwrap();
-    store.put(b"b", b"old").unwrap();
-    armed.store(true, Ordering::Release);
-    let first_store = Arc::clone(&store);
-    let first = thread::spawn(move || {
-        first_store.transaction_with_read_set_fifo(|tx| {
-            tx.put(b"a", b"new")?;
-            tx.put(b"b", b"new")
-        })
-    });
-    if entered_rx.recv_timeout(Duration::from_secs(10)).is_err() {
-        let _ = resume_tx.send(());
-        let _ = first.join();
-        panic!("first transaction did not reach the sync boundary");
+    for panic_on_sync in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let store = Arc::new(store(
+            directory.path(),
+            if panic_on_sync {
+                Fault::BlockThenPanic
+            } else {
+                Fault::BlockThenSyncError
+            },
+            Arc::clone(&armed),
+            entered_tx,
+            resume_rx,
+        ));
+        store.put(b"a", b"old").unwrap();
+        store.put(b"b", b"old").unwrap();
+        armed.store(true, Ordering::Release);
+        let first_store = Arc::clone(&store);
+        let first = thread::spawn(move || {
+            first_store.transaction_with_read_set_fifo(|tx| {
+                tx.put(b"a", b"new")?;
+                tx.put(b"b", b"new")
+            })
+        });
+        if entered_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+            let _ = resume_tx.send(());
+            let _ = first.join();
+            panic!("first transaction did not reach the sync boundary");
+        }
+        let (staged_tx, staged_rx) = mpsc::channel();
+        let second_store = Arc::clone(&store);
+        let second = thread::spawn(move || {
+            second_store.transaction_with_read_set_fifo(|tx| {
+                tx.put(b"c", b"should-not-commit")?;
+                staged_tx.send(()).map_err(io::Error::other)
+            })
+        });
+        let staged = staged_rx.recv_timeout(Duration::from_secs(10));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let queued = loop {
+            if store.transaction_queue.queued_for_test() == 2 {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                break false;
+            }
+            thread::yield_now();
+        };
+        resume_tx.send(()).unwrap();
+        let first_result = first.join();
+        let second_result = second.join().unwrap();
+        staged.expect("second transaction did not finish staging");
+        assert!(queued, "second transaction did not enter FIFO admission");
+        if panic_on_sync {
+            assert!(first_result.is_err());
+        } else {
+            assert!(first_result.unwrap().is_err());
+        }
+        assert!(second_result.is_err());
+        assert!(store.get(b"a").is_err());
+        drop(store);
+        let reopened = Store::open(directory.path()).unwrap();
+        let values = reopened.get_many(&[b"a", b"b", b"c"]).unwrap();
+        assert!(
+            values == vec![Some(b"old".to_vec()), Some(b"old".to_vec()), None]
+                || values == vec![Some(b"new".to_vec()), Some(b"new".to_vec()), None]
+        );
     }
-    let (staged_tx, staged_rx) = mpsc::channel();
-    let second_store = Arc::clone(&store);
-    let second = thread::spawn(move || {
-        second_store.transaction_with_read_set_fifo(|tx| {
-            tx.put(b"c", b"should-not-commit")?;
-            staged_tx.send(()).map_err(io::Error::other)
-        })
-    });
-    let staged = staged_rx.recv_timeout(Duration::from_secs(10));
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let queued = loop {
-        if store.transaction_queue.queued_for_test() == 2 {
-            break true;
-        }
-        if Instant::now() >= deadline {
-            break false;
-        }
-        thread::yield_now();
-    };
-    resume_tx.send(()).unwrap();
-    let first_result = first.join().unwrap();
-    let second_result = second.join().unwrap();
-    staged.expect("second transaction did not finish staging");
-    assert!(queued, "second transaction did not enter FIFO admission");
-    assert!(first_result.is_err());
-    assert!(second_result.is_err());
-    assert!(store.get(b"a").is_err());
-    drop(store);
-    let reopened = Store::open(directory.path()).unwrap();
-    let values = reopened.get_many(&[b"a", b"b", b"c"]).unwrap();
-    assert!(
-        values == vec![Some(b"old".to_vec()), Some(b"old".to_vec()), None]
-            || values == vec![Some(b"new".to_vec()), Some(b"new".to_vec()), None]
-    );
 }
