@@ -44,6 +44,8 @@ A [membership union comparison](docs/MEMBERSHIP_UNION_COMPARISON_2026_11_04.md) 
 
 A [grouped statistics comparison](docs/AGGREGATE_STATS_COMPARISON_2026_11_04.md) measures full scans and records lower SQLite latency on the sampled workload, with explicit JSON-versus-normalized-column differences. A [streaming follow-up](docs/AGGREGATE_STREAM_COMPARISON_2026_11_04.md) improved the sampled prototype median, while SQLite remained faster.
 
+An [update-input accounting comparison](docs/UPDATE_INPUT_COMPARISON_2026_11_04.md) records the substantial cost of enforcing the new input limit on large ignored values, and the measured improvement from exact optimized counting. Small inputs and the before-limit implementation are included for context.
+
 A [transaction cancellation overhead comparison](docs/TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) measures the existing transaction APIs before and after cancellation support. Results varied across runs; the largest sampled slowdown did not repeat.
 
 A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.

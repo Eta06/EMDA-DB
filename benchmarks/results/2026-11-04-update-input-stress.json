@@ -1,0 +1,220 @@
+{
+  "revision": "ba3cd96",
+  "binary_sha256": "4cc6857c053d57f983055b0ab71075c96cb8e73d5785c266f4a29649bf13ecc3",
+  "started_utc": "2026-11-04T21:41:16.769035+00:00",
+  "kernel": "6.18.57",
+  "caveat": "Local process tests on a VM; workspace overlay backing device was not independently verified. Other tests ran concurrently. This is not a total-memory quota, physical power-loss test or off-host restore.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 1.031792,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.571255,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.112362,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 0.870387,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.515145,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.169407,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 1.084624,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.591929,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.134735,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 0.88131,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.487001,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.120626,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 0.910588,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.580722,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.127497,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 0.809543,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.539179,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.144203,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 0.822394,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.503024,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.170518,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 1.244502,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.665336,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.155693,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 1.093533,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.750832,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.180706,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "mixed_condition_and_operator_inputs_share_one_exact_byte_budget",
+      "seconds": 0.90099,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "set_if_missing_inputs_respect_the_limit_even_when_no_value_changes",
+      "seconds": 0.581814,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "escaped_json_bytes_are_counted_instead_of_raw_string_length",
+      "seconds": 0.142837,
+      "exit_code": 0
+    }
+  ],
+  "finished_utc": "2026-11-04T21:41:33.664968+00:00"
+}
