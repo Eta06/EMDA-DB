@@ -51,8 +51,8 @@ fn scoped_cleanup_recovers_each_retired_stage_without_touching_live_data() {
         store
             .with_store(|db| db.put(b"after", b"acknowledged"))
             .unwrap();
-        let report = store.cleanup_retired_staging(&Default::default()).unwrap();
-        assert_eq!(report.removed_markers, 1, "{point:?}");
+        let report = retry_fixture_cleanup(&store).unwrap();
+        assert_eq!(report.removed_markers, 1, "{point:?}: {report:?}");
         assert_eq!(report.skipped, 0, "{point:?}");
         assert!(!previous.exists());
         assert_eq!(
@@ -113,13 +113,7 @@ fn scoped_cleanup_skips_a_locked_retired_store_until_it_is_released() {
         Some(&b"39"[..])
     );
     drop(held);
-    assert_eq!(
-        store
-            .cleanup_retired_staging(&Default::default())
-            .unwrap()
-            .removed_payloads,
-        1
-    );
+    assert_eq!(retry_fixture_cleanup(&store).unwrap().removed_payloads, 1);
     assert!(!retired.exists());
 }
 
@@ -146,7 +140,7 @@ fn scoped_cleanup_does_not_remove_a_different_stores_retired_copy() {
         .map(|entry| entry.unwrap().path().join("retired"))
         .find(|path| path.is_dir() && *path != first_retired)
         .unwrap();
-    let report = first.cleanup_retired_staging(&Default::default()).unwrap();
+    let report = retry_fixture_cleanup(&first).unwrap();
     assert_eq!(
         (
             report.removed_payloads,
@@ -164,13 +158,7 @@ fn scoped_cleanup_does_not_remove_a_different_stores_retired_copy() {
             .unwrap(),
         Some(b"39".to_vec())
     );
-    assert_eq!(
-        second
-            .cleanup_retired_staging(&Default::default())
-            .unwrap()
-            .removed_payloads,
-        1
-    );
+    assert_eq!(retry_fixture_cleanup(&second).unwrap().removed_payloads, 1);
     assert!(!second_retired.exists());
 }
 
@@ -226,13 +214,30 @@ fn scoped_cleanup_keeps_retired_copy_when_verification_limits_are_too_small() {
     };
     assert!(store.cleanup_retired_staging(&options).is_err());
     assert!(retired.exists());
-    assert_eq!(
-        store
-            .cleanup_retired_staging(&Default::default())
-            .unwrap()
-            .removed_payloads,
-        1
-    );
+    assert_eq!(retry_fixture_cleanup(&store).unwrap().removed_payloads, 1);
+}
+
+#[test]
+fn scoped_cleanup_skips_a_lock_only_retired_stage_until_release() {
+    let root = tempfile::tempdir().unwrap();
+    let (source, previous) = paths(root.path());
+    let store = OnlineStore::open(&source).unwrap();
+    insert_history(&store);
+    abandon(&store, &previous, reclaim::Point::AfterWitness);
+    let retired = retired_path(root.path());
+    let held = retry_lock(|| {
+        let file = fs::File::open(retired.join("store.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&file)?;
+        Ok(file)
+    })
+    .unwrap();
+    let report = store.cleanup_retired_staging(&Default::default()).unwrap();
+    assert_eq!((report.removed_payloads, report.skipped), (0, 1));
+    assert!(retired.exists());
+    drop(held);
+    let report = retry_fixture_cleanup(&store).unwrap();
+    assert_eq!((report.removed_payloads, report.removed_markers), (1, 1));
+    assert!(!retired.exists());
 }
 
 fn wait_for(
