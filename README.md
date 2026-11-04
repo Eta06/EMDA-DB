@@ -28,6 +28,8 @@ A separate [initial document comparison](docs/DOCUMENT_COMPARISON_2026_11_04.md)
 
 A [larger-collection read comparison](docs/DOCUMENT_POINT_READ_COMPARISON_2026_11_04.md) measured the ordinary-store standalone read at 3,000 live documents: prototype median fell from 2.35 ms to 17.62 µs in the first sample; SQLite measured 3.54 µs with a different JSON adapter. This comparison predates the shared-snapshot implementation; ordinary-store snapshots remain logically bounded and writes may copy the index. VM interference limits the comparison.
 
+A [shared-snapshot comparison](docs/SHARED_SNAPSHOT_COMPARISON_2026_11_04.md) measured 3,000-document indexed-query p50 falling from 2.33 ms to 23.65 µs; SQLite measured 3.81 µs with a different JSON adapter. A separate concurrent workload improved median writer throughput, while one sampled reader tail and some small-collection write tails worsened. Results include the full measurements and VM limitations.
+
 The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
 
 ## Featured directions

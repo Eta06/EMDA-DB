@@ -1,0 +1,15 @@
+{
+  "engine_revision": "90a389b762c7a0b12b90157101bea1fba603bd01",
+  "target": "shared_snapshot",
+  "toolchain": "nightly-2026-11-03 with cargo-fuzz",
+  "seed": 80338903,
+  "max_input_bytes": 96,
+  "timeout_seconds": 10,
+  "requested_seconds": 60,
+  "actual_seconds": 61,
+  "inputs_executed": 21135,
+  "binary_sha256": "16d8d17298769734898ace8077087494cba95dc411adfb2965d9a8ecc1c93e60",
+  "result": "passed, no finding reported",
+  "environment": "Linux cloud VM; temporary local fuzz corpus; no physical power-loss or off-host recovery simulation",
+  "scope": "Serial model of shared snapshots, key-byte/count admission, ordered mutations and batches, transactions and reopening. Does not exhaust concurrent schedules or all possible faults."
+}
