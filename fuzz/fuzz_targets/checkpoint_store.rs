@@ -80,7 +80,7 @@ fuzz_target!(|data: &[u8]| {
         let first = key(bytes[1]);
         let second = key(bytes[2]);
         let value = vec![bytes[3]; usize::from(bytes[3] % 5)];
-        let kind = bytes[0] % 8;
+        let kind = bytes[0] % 9;
         if kind == 4 {
             check(&store, &model, &touched, tail);
             drop(store);
@@ -212,6 +212,53 @@ fuzz_target!(|data: &[u8]| {
                     .len(),
                 total_log
             );
+            continue;
+        }
+        if kind == 8 {
+            let mut next_touched = touched.clone();
+            next_touched.insert(first.clone());
+            next_touched.insert(second.clone());
+            let encoded = (26 + (21 + first.len() + value.len()) + (21 + second.len())) as u64;
+            let allowed = tail + encoded <= max_tail
+                && next_touched.len() <= max_keys
+                && next_touched.iter().map(Vec::len).sum::<usize>() <= max_key_bytes
+                && max_log.is_none_or(|max| total_log + encoded <= max);
+            let expected = if bytes[3] & 1 == 0 {
+                model.get(&first).cloned()
+            } else {
+                Some(vec![0xff])
+            };
+            let matches = model.get(&first).map(Vec::as_slice) == expected.as_deref();
+            let result = store.compare_exchange_batch(
+                &[(&first, expected.as_deref())],
+                &[
+                    BatchOperation::Put {
+                        key: &first,
+                        value: &value,
+                    },
+                    BatchOperation::Delete { key: &second },
+                ],
+            );
+            if !matches {
+                assert!(!result.expect("condition mismatch"));
+            } else if !allowed {
+                assert!(result.is_err());
+            } else {
+                assert!(result.expect("conditional commit"));
+                touched = next_touched;
+                tail += encoded;
+                total_log += encoded;
+                model.insert(first, value);
+                peak = peak.max(model.len());
+                model.remove(&second);
+            }
+            assert_eq!(
+                std::fs::metadata(path.join("records.log"))
+                    .expect("log metadata")
+                    .len(),
+                total_log
+            );
+            check(&store, &model, &touched, tail);
             continue;
         }
         let mut next_touched = touched.clone();

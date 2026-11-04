@@ -550,6 +550,52 @@ impl CheckpointStore {
         self.commit(&mut state, Operation::Batch, &[0], &payload, &keys)
     }
 
+    /// Atomically applies a blind batch if all point-value conditions match.
+    /// `None` expects an absent key; duplicates are checked independently.
+    /// Conditions are limited to 1,024 entries and 32 MiB of combined key and
+    /// expected-value bytes. A mismatch returns `Ok(false)` without appending.
+    /// This does not detect ABA changes, validate ranges or run a transaction
+    /// callback; callers must include every point value their decision uses.
+    pub fn compare_exchange_batch(
+        &self,
+        conditions: &[(&[u8], Option<&[u8]>)],
+        operations: &[BatchOperation<'_>],
+    ) -> io::Result<bool> {
+        if conditions.len() > MAX_SCAN_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "too many batch conditions",
+            ));
+        }
+        let mut size = 0_usize;
+        for (key, expected) in conditions {
+            record::validate_key(key)?;
+            size = size
+                .checked_add(key.len())
+                .and_then(|sum| sum.checked_add(expected.map_or(0, |value| value.len())))
+                .filter(|sum| *sum <= MAX_SCAN_BYTES)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "batch conditions exceed 32 MiB",
+                    )
+                })?;
+        }
+        let mut state = self.write()?;
+        let payload = encode_payload(operations)?;
+        for (key, expected) in conditions {
+            if state.view.get(key)?.as_deref() != *expected {
+                return Ok(false);
+            }
+        }
+        let keys = operations
+            .iter()
+            .map(|operation| operation.fields().1)
+            .collect::<Vec<_>>();
+        self.commit(&mut state, Operation::Batch, &[0], &payload, &keys)?;
+        Ok(true)
+    }
+
     // The state write lock serializes admission, append, synchronization and
     // publication. It also prevents readers seeing a partially applied batch.
     fn commit(

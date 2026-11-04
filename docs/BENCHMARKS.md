@@ -307,6 +307,15 @@ python3 scripts/checkpoint_compaction_compare.py --directory /path/to/disk --out
 
 The defaults use 10,000 and 50,000 base keys, 4,096 touched suffix keys, 128-byte keys, 64-byte values and five fresh processes per mode. The driver alternates measured order and records VM/cgroup noise. These are separate-copy operations, not live in-place compaction, and the block and record limits are not total process-memory guarantees.
 
+The [paired local results](../benchmarks/results/2026-11-04-checkpoint-compaction-comparison.json) used those defaults on a virtualized overlay filesystem. Medians across five fresh processes per mode were:
+
+| Base keys | Ordinary compaction time | Checkpoint-backed time | Ordinary peak process RSS | Checkpoint-backed peak process RSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 67.66 ms | 78.13 ms | 5,872 KiB | 3,620 KiB |
+| 50,000 | 388.31 ms | 407.23 ms | 24,736 KiB | 3,656 KiB |
+
+Compacted record bytes matched in every run. The checkpoint-backed path also emitted a 7,001,092-byte checkpoint for the 50,000-key case, in addition to a 10,213,804-byte compacted log; the ordinary copy had the same log size and no checkpoint. Both quiet checks passed; individual runs recorded up to 2.22% VM steal in the smaller case and 0.94% in the larger, with no cgroup throttling or direct reclaim observed. The VM host and overlay backing were not controlled. RSS excludes page cache, and these warm-cache measurements do not establish production performance or total-memory bounds.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.

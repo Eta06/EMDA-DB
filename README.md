@@ -87,6 +87,8 @@ Interrupted backup, restore, upgrade, checkpoint or compaction operations can le
 
 `CheckpointStore::open_with_resource_limits` can also enforce an optional whole-log byte cap alongside its suffix limits. It rejects an oversized log before replay or adoption and rejects writes before append when they would exceed the cap. The cap counts the log header, replaced records and tombstones; checkpoint rollover does not free log bytes. It is reapplied on each open and excludes checkpoints, backups, memory and total project storage.
 
+`CheckpointStore::compare_exchange_batch` atomically applies a batch only if all supplied point values still match; `None` means the key must be absent. A mismatch makes no write. It permits at most 1,024 conditions and 32 MiB of condition keys and expected values. Callers must include every point read their decision depends on. This operation does not validate ranges, detect a value changed and changed back, or provide the ordinary store's transaction callback.
+
 To try the experimental Rust library from another project:
 
 ```toml

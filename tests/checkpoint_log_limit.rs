@@ -108,3 +108,27 @@ fn concurrent_writers_cannot_oversubscribe_the_log_limit() {
         Some(&b"new"[..])
     );
 }
+
+#[test]
+fn conditional_batch_mismatch_needs_no_log_space() {
+    use database_engine::BatchOperation;
+    let (_dir, path, checkpoint, digest, initial) = fixture();
+    let store = open(&path, &checkpoint, &digest, initial).unwrap();
+    let before = fs::read(path.join("records.log")).unwrap();
+    let operations = [BatchOperation::Put {
+        key: b"a",
+        value: b"new",
+    }];
+    assert!(
+        !store
+            .compare_exchange_batch(&[(b"a", Some(b"wrong"))], &operations)
+            .unwrap()
+    );
+    assert!(
+        store
+            .compare_exchange_batch(&[(b"a", Some(b"old"))], &operations)
+            .is_err()
+    );
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), before);
+    assert_eq!(store.get(b"a").unwrap().as_deref(), Some(&b"old"[..]));
+}
