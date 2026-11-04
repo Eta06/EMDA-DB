@@ -41,9 +41,40 @@ impl InputBudget {
     }
     pub(super) fn value(&mut self, value: &Value) -> io::Result<()> {
         schema::validate_tree(value)?;
+        self.json_value(value)
+    }
+
+    // The validated tree has depth at most 64. Count punctuation and keys
+    // in serializer order while delegating numeric formatting to serde_json.
+    fn json_value(&mut self, value: &Value) -> io::Result<()> {
         match value {
+            Value::Null => self.charge(4),
+            Value::Bool(false) => self.charge(5),
+            Value::Bool(true) => self.charge(4),
+            Value::Number(number) => self.count(number),
             Value::String(value) => self.string(value),
-            _ => self.count(value),
+            Value::Array(values) => {
+                self.charge(1)?;
+                for (index, value) in values.iter().enumerate() {
+                    if index != 0 {
+                        self.charge(1)?;
+                    }
+                    self.json_value(value)?;
+                }
+                self.charge(1)
+            }
+            Value::Object(values) => {
+                self.charge(1)?;
+                for (index, (key, value)) in values.iter().enumerate() {
+                    if index != 0 {
+                        self.charge(1)?;
+                    }
+                    self.string(key)?;
+                    self.charge(1)?;
+                    self.json_value(value)?;
+                }
+                self.charge(1)
+            }
         }
     }
     pub(super) fn scalar(&mut self, value: &IndexValue) -> io::Result<()> {

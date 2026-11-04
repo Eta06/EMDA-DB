@@ -31,7 +31,17 @@ fuzz_target!(|data: &[u8]| {
     if data.len() < 2 || data.len() > 128 {
         return;
     }
-    let value = Value::String(String::from_utf8_lossy(&data[1..]).into_owned());
+    let string = String::from_utf8_lossy(&data[1..]).into_owned();
+    let value = match (data[0] >> 1) & 3 {
+        0 => Value::String(string),
+        1 => json!({"key": string, "nested": [null, true, false, -1, 1.25]}),
+        2 => json!([string, {"escaped\"": "\0", "n": u64::MAX}]),
+        _ => {
+            let mut object = serde_json::Map::new();
+            object.insert(string.clone(), json!([string, {}, []]));
+            Value::Object(object)
+        }
+    };
     let encoded = serde_json::to_vec(&value).unwrap().len();
     assert!(encoded + 2 < 1024 * 1024);
     let full = Value::String("x".repeat(1024 * 1024 - 2));

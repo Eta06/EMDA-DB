@@ -27,6 +27,12 @@ fn open(source: &Path, checkpoint: &Path, digest: &[u8; 32], checkpoint_mode: bo
     }
 }
 fn value(byte: u8) -> Value {
+    match byte % 16 {
+        4 => return json!({"nested": ["\0", byte]}),
+        5 => return json!([byte, null, {"key": "é"}]),
+        6 => return json!({"": [], "\"": false}),
+        _ => {}
+    }
     let (length, character) = match byte % 16 {
         0 => (1024 * 1024 - 2, 'x'),
         1 => (174_763, '\0'),
