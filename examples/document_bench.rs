@@ -1,6 +1,7 @@
 //! Small single-client JSON document comparison; not a general database ranking.
 use database_engine::{
-    CollectionSchema, DocumentDatabase, IndexDefinition, IndexQuery, IndexValue, Store,
+    CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery, DocumentQueryAccess,
+    IndexDefinition, IndexQuery, IndexValue, Store,
 };
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -50,7 +51,19 @@ fn timed<T>(
     Ok(result)
 }
 
-fn prototype(parent: &Path, iterations: usize, preload: usize) -> Result<Value> {
+#[derive(Clone, Copy)]
+enum QueryMode {
+    ExplicitIndex,
+    Planned,
+    CollectionScan,
+}
+
+fn prototype(
+    parent: &Path,
+    iterations: usize,
+    preload: usize,
+    query_mode: QueryMode,
+) -> Result<Value> {
     let root = tempfile::tempdir_in(parent)?;
     let path = root.path().join("store");
     let store = Store::open(&path)?;
@@ -97,6 +110,14 @@ fn prototype(parent: &Path, iterations: usize, preload: usize) -> Result<Value> 
             ..Default::default()
         };
         let start = Instant::now();
+        let filter_query = DocumentQuery {
+            filter: DocumentFilter::Equal {
+                path: vec!["email".into()],
+                value: json!(email),
+            },
+            max_scanned: 1024,
+            ..Default::default()
+        };
         timed(&mut times, "create", record, || {
             Ok(db.insert("docs", &id, &first)?)
         })?;
@@ -108,12 +129,23 @@ fn prototype(parent: &Path, iterations: usize, preload: usize) -> Result<Value> 
             Ok(db.replace("docs", &id, &second, false)?)
         })?;
         let found = timed(&mut times, "indexed_query", record, || {
-            Ok(db.query_index("docs", "email", &query)?)
+            Ok(match query_mode {
+                QueryMode::ExplicitIndex => db.query_index("docs", "email", &query)?.documents,
+                QueryMode::CollectionScan => db.query("docs", &filter_query)?.documents,
+                QueryMode::Planned => {
+                    let planned = db.query_planned("docs", &filter_query)?;
+                    if planned.access
+                        != (DocumentQueryAccess::UniqueEqualityIndex {
+                            index: "email".into(),
+                        })
+                    {
+                        return Err("prototype planner did not select the unique index".into());
+                    }
+                    planned.result.documents
+                }
+            })
         })?;
-        if found.documents.len() != 1
-            || found.documents[0].id != id
-            || found.documents[0].document != second
-        {
+        if found.len() != 1 || found[0].id != id || found[0].document != second {
             return Err("prototype indexed query mismatch".into());
         }
         if !timed(&mut times, "delete", record, || Ok(db.delete("docs", &id)?))? {
@@ -160,7 +192,7 @@ fn prototype(parent: &Path, iterations: usize, preload: usize) -> Result<Value> 
         .map(|(name, values)| ((*name).to_owned(), samples(values)))
         .collect::<BTreeMap<_, _>>();
     Ok(
-        json!({"engine":"document-prototype","cycles":iterations,"warmup_cycles":WARMUP,"preloaded_documents":preload,"prepare_us":prepare_us,"peak_rss_kib":peak_rss_kib(),"log_bytes":log_bytes,"log_format":format,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"underlying witnessed store sync before acknowledgement","transport":"in-process Rust"}),
+        json!({"engine":"document-prototype","query_mode":match query_mode { QueryMode::ExplicitIndex => "index", QueryMode::Planned => "planned", QueryMode::CollectionScan => "scan" },"cycles":iterations,"warmup_cycles":WARMUP,"preloaded_documents":preload,"prepare_us":prepare_us,"peak_rss_kib":peak_rss_kib(),"log_bytes":log_bytes,"log_format":format,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"underlying witnessed store sync before acknowledgement","transport":"in-process Rust"}),
     )
 }
 
@@ -285,7 +317,7 @@ fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [engine, parent, iterations, rest @ ..] = args.as_slice() else {
         return Err(
-            "usage: document_bench <prototype|sqlite> <existing-directory> <cycles> [preloaded-documents]".into(),
+            "usage: document_bench <prototype|prototype-index|prototype-planned|prototype-scan|sqlite> <existing-directory> <cycles> [preloaded-documents]".into(),
         );
     };
     let parent = Path::new(parent);
@@ -308,7 +340,16 @@ fn main() -> Result<()> {
         return Err("preloaded documents must be at most 5000".into());
     }
     let result = match engine.as_str() {
-        "prototype" => prototype(parent, iterations, preload)?,
+        "prototype" | "prototype-index" => {
+            prototype(parent, iterations, preload, QueryMode::ExplicitIndex)?
+        }
+        "prototype-planned" => prototype(parent, iterations, preload, QueryMode::Planned)?,
+        "prototype-scan" if preload < 1024 => {
+            prototype(parent, iterations, preload, QueryMode::CollectionScan)?
+        }
+        "prototype-scan" => {
+            return Err("scan benchmark needs fewer than 1024 preloaded documents".into());
+        }
         "sqlite" => sqlite(parent, iterations, preload)?,
         _ => return Err("unknown engine".into()),
     };

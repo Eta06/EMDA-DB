@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::io;
 
-const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_INDEX_BUILD_DOCUMENTS: usize = 256;
 const MAX_INDEX_BUILD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INDEX_DROP_KEYS: usize = 768;

@@ -36,11 +36,11 @@ pub use checkpoint_view::{
 pub use document::{
     AggregateGroup, AggregateRequest, AggregateResult, BulkOperation, BulkResult,
     CollectionIntegrity, CollectionSchema, Comparison, DocumentDatabase, DocumentEntry,
-    DocumentFilter, DocumentPage, DocumentQuery, DocumentQueryResult, DocumentSort,
-    DocumentTransaction, DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule,
-    FieldType, IndexBound, IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus,
+    DocumentFilter, DocumentPage, DocumentQuery, DocumentQueryAccess, DocumentQueryResult,
+    DocumentSort, DocumentTransaction, DocumentTransactionMode, DocumentUpdate, FieldCondition,
+    FieldRule, FieldType, IndexBound, IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus,
     IndexQuery, IndexQueryPlan, IndexStep, IndexValue, LookupEntry, LookupResult, PartialFilter,
-    QueryPlan, SchemaMigrationStatus, SchemaStep,
+    PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus, SchemaStep,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{

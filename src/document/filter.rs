@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 use std::io;
 
 const MAX_SCAN_DOCUMENTS: usize = 1024;
-const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
+pub(super) const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
 
 /// A filter evaluated against object paths. Missing never equals null.
 #[derive(Clone, Debug, PartialEq)]
@@ -50,8 +50,9 @@ pub struct DocumentSort {
     pub descending: bool,
 }
 
-/// A bounded complete collection scan. Queries fail instead of silently
-/// truncating when the collection exceeds `max_scanned` or the byte budget.
+/// A bounded filtered query. `query` scans the complete collection;
+/// `query_planned` can instead probe a qualifying unique equality index.
+/// Both fail rather than silently truncating when their work limits are exceeded.
 #[derive(Clone, Debug)]
 pub struct DocumentQuery {
     /// Predicate applied before projection and pagination.
@@ -64,7 +65,7 @@ pub struct DocumentQuery {
     pub offset: usize,
     /// Maximum rows returned, between 1 and 256.
     pub limit: usize,
-    /// Maximum documents examined, between 1 and 1,024.
+    /// Maximum documents examined by the access path, between 1 and 1,024.
     pub max_scanned: usize,
 }
 
@@ -81,10 +82,10 @@ impl Default for DocumentQuery {
     }
 }
 
-/// Actual work performed by a collection-scan query.
+/// Actual work performed by a bounded document query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryPlan {
-    /// Documents examined by the complete collection scan.
+    /// Documents examined by the selected access path.
     pub scanned: usize,
     /// Documents matching before offset and limit.
     pub matched: usize,
@@ -99,7 +100,7 @@ pub struct QueryPlan {
 pub struct DocumentQueryResult {
     /// Results after filter, sort, offset, limit and projection.
     pub documents: Vec<DocumentEntry>,
-    /// Execution statistics; this initial plan always uses a collection scan.
+    /// Actual work performed by the selected access path.
     pub plan: QueryPlan,
 }
 
@@ -212,6 +213,86 @@ fn project(document: &Value, paths: &[Vec<String>]) -> io::Result<Value> {
     Ok(result)
 }
 
+pub(super) fn validate_query(query: &DocumentQuery) -> io::Result<()> {
+    if query.limit == 0
+        || query.limit > 256
+        || query.max_scanned == 0
+        || query.max_scanned > MAX_SCAN_DOCUMENTS
+        || query.offset > MAX_SCAN_DOCUMENTS
+    {
+        return Err(key::invalid("invalid query limit, offset or scan budget"));
+    }
+    validate_filter(&query.filter)?;
+    if let Some(sort) = &query.sort {
+        schema::validate_path(&sort.path)?;
+    }
+    if let Some(paths) = &query.projection {
+        if paths.len() > 64 {
+            return Err(key::invalid("projection exceeds 64 paths"));
+        }
+        for path in paths {
+            schema::validate_path(path)?;
+        }
+        for (position, path) in paths.iter().enumerate() {
+            if paths
+                .iter()
+                .skip(position + 1)
+                .any(|other| path.starts_with(other) || other.starts_with(path))
+            {
+                return Err(key::invalid("projection paths overlap"));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn finish_query(
+    rows: Vec<(String, Value)>,
+    query: &DocumentQuery,
+) -> io::Result<DocumentQueryResult> {
+    let scanned = rows.len();
+    let mut matched = Vec::new();
+    for (id, document) in rows {
+        if matches(&query.filter, &document)? {
+            let sort_key = match &query.sort {
+                None => None,
+                Some(sort) => match schema::field(&document, &sort.path) {
+                    None => Some(Vec::new()),
+                    Some(value) => Some(encoded(&IndexValue::from_json(value)?)?),
+                },
+            };
+            matched.push((sort_key, id, document));
+        }
+    }
+    let matched_count = matched.len();
+    if let Some(sort) = &query.sort {
+        matched.sort_by(|left, right| {
+            let order = left.0.cmp(&right.0);
+            (if sort.descending {
+                order.reverse()
+            } else {
+                order
+            })
+            .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
+        });
+    }
+    let mut documents = Vec::new();
+    for (_, id, document) in matched.into_iter().skip(query.offset).take(query.limit) {
+        let document = match &query.projection {
+            Some(paths) => project(&document, paths)?,
+            None => document,
+        };
+        documents.push(DocumentEntry { id, document });
+    }
+    let plan = QueryPlan {
+        scanned,
+        matched: matched_count,
+        sorted: query.sort.is_some(),
+        returned: documents.len(),
+    };
+    Ok(DocumentQueryResult { documents, plan })
+}
+
 impl DocumentTransaction<'_, '_> {
     /// Executes a complete bounded scan with filter, sort, pagination and
     /// optional projection. Statistics describe the work actually performed.
@@ -220,35 +301,7 @@ impl DocumentTransaction<'_, '_> {
         collection: &str,
         query: &DocumentQuery,
     ) -> io::Result<DocumentQueryResult> {
-        if query.limit == 0
-            || query.limit > 256
-            || query.max_scanned == 0
-            || query.max_scanned > MAX_SCAN_DOCUMENTS
-            || query.offset > MAX_SCAN_DOCUMENTS
-        {
-            return Err(key::invalid("invalid query limit, offset or scan budget"));
-        }
-        validate_filter(&query.filter)?;
-        if let Some(sort) = &query.sort {
-            schema::validate_path(&sort.path)?;
-        }
-        if let Some(paths) = &query.projection {
-            if paths.len() > 64 {
-                return Err(key::invalid("projection exceeds 64 paths"));
-            }
-            for path in paths {
-                schema::validate_path(path)?;
-            }
-            for (position, path) in paths.iter().enumerate() {
-                if paths
-                    .iter()
-                    .skip(position + 1)
-                    .any(|other| path.starts_with(other) || other.starts_with(path))
-                {
-                    return Err(key::invalid("projection paths overlap"));
-                }
-            }
-        }
+        validate_query(query)?;
         let metadata = self.metadata(collection)?;
         let rows = self.document_rows(
             collection,
@@ -256,46 +309,6 @@ impl DocumentTransaction<'_, '_> {
             query.max_scanned,
             MAX_SCAN_BYTES,
         )?;
-        let scanned = rows.len();
-        let mut matched = Vec::new();
-        for (id, document) in rows {
-            if matches(&query.filter, &document)? {
-                let sort_key = match &query.sort {
-                    None => None,
-                    Some(sort) => match schema::field(&document, &sort.path) {
-                        None => Some(Vec::new()),
-                        Some(value) => Some(encoded(&IndexValue::from_json(value)?)?),
-                    },
-                };
-                matched.push((sort_key, id, document));
-            }
-        }
-        let matched_count = matched.len();
-        if let Some(sort) = &query.sort {
-            matched.sort_by(|left, right| {
-                let order = left.0.cmp(&right.0);
-                (if sort.descending {
-                    order.reverse()
-                } else {
-                    order
-                })
-                .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
-            });
-        }
-        let mut documents = Vec::new();
-        for (_, id, document) in matched.into_iter().skip(query.offset).take(query.limit) {
-            let document = match &query.projection {
-                Some(paths) => project(&document, paths)?,
-                None => document,
-            };
-            documents.push(DocumentEntry { id, document });
-        }
-        let plan = QueryPlan {
-            scanned,
-            matched: matched_count,
-            sorted: query.sort.is_some(),
-            returned: documents.len(),
-        };
-        Ok(DocumentQueryResult { documents, plan })
+        finish_query(rows, query)
     }
 }

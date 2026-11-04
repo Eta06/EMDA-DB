@@ -7,6 +7,7 @@ mod integrity;
 mod key;
 mod lifecycle;
 mod online_index;
+mod planner;
 mod query;
 mod schema;
 mod schema_migration;
@@ -27,6 +28,7 @@ pub use filter::{
 pub use index::{IndexDefinition, IndexValue, PartialFilter};
 pub use integrity::CollectionIntegrity;
 pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
+pub use planner::{DocumentQueryAccess, PlannedDocumentQueryResult};
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
 pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
@@ -356,6 +358,16 @@ impl<'a> DocumentDatabase<'a> {
         query: &DocumentQuery,
     ) -> io::Result<DocumentQueryResult> {
         self.transaction(|tx| tx.query(collection, query))
+    }
+
+    /// Executes a bounded query using a qualifying unique equality index or
+    /// a collection scan. Declared index integrity is required for index use.
+    pub fn query_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+    ) -> io::Result<PlannedDocumentQueryResult> {
+        self.transaction(|tx| tx.query_planned(collection, query))
     }
 
     /// Reads a bounded page using a named secondary index.

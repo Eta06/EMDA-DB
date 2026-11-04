@@ -16,6 +16,15 @@ class ScaleComparisonTests(unittest.TestCase):
     def test_accepts_complete_validated_samples(self):
         validate_result(self.result(), "prototype", 100, 2)
 
+    def test_requires_requested_query_mode(self):
+        result = self.result()
+        result["query_mode"] = "planned"
+        validate_result(result, "prototype-planned", 100, 2)
+        with self.assertRaises(ValueError):
+            validate_result(result, "prototype-scan", 100, 2)
+        result["query_mode"] = "index"
+        validate_result(result, "prototype-index", 100, 2)
+
     def test_rejects_failed_reopen_or_missing_samples(self):
         for change in ("reopen", "samples", "size", "invalid_sample", "rate", "format"):
             result = self.result()

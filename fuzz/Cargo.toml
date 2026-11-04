@@ -168,3 +168,9 @@ path = "fuzz_targets/document_array_update.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "document_query_planner"
+path = "fuzz_targets/document_query_planner.rs"
+test = false
+doc = false
+bench = false

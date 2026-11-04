@@ -130,6 +130,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/document-array-update-corpus"
           cp fuzz/document-array-update-seeds/* "$RUNNER_TEMP/document-array-update-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_array_update "$RUNNER_TEMP/document-array-update-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
+      - name: Run document query planner differential fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/document-query-planner-corpus"
+          cp fuzz/document-query-planner-seeds/* "$RUNNER_TEMP/document-query-planner-corpus/"
+          cargo +nightly-2026-11-03 fuzz run document_query_planner "$RUNNER_TEMP/document-query-planner-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
