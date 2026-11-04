@@ -161,7 +161,7 @@ mod tests {
         let reopened = Store::open(directory.path()).unwrap();
         drop(inherited);
         assert!(Store::open(directory.path()).is_err());
-        drop(reopened);
+        close_private_store(reopened).unwrap();
         assert!(Store::open(directory.path()).is_ok());
     }
 
