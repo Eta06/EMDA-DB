@@ -1,0 +1,36 @@
+{
+  "date_utc": "2026-11-04",
+  "production_revision": "2cfc318ab028809e545b079e005606d8deb8c588",
+  "platform": "Linux x86_64 cloud VM",
+  "filesystem": "/tmp tmpfs",
+  "runs": [
+    {
+      "target": "document_range_planner",
+      "seed": 92831131,
+      "initial_corpus": "Fresh directory containing the two files in fuzz/document-range-planner-seeds",
+      "executions": 14660,
+      "elapsed_seconds": 121,
+      "requested_seconds": 120,
+      "final_generated_length_limit_bytes": 21,
+      "binary_sha256": "b9e6470ed1800b224ddd954ebbe25971a1a814fd9461d32aa978fba2e76f757a"
+    },
+    {
+      "target": "document_query_planner",
+      "seed": 92831133,
+      "initial_corpus": "Fresh directory containing fuzz/document-query-planner-seeds",
+      "executions": 3859,
+      "elapsed_seconds": 61,
+      "requested_seconds": 60,
+      "final_generated_length_limit_bytes": 39,
+      "binary_sha256": "6e1f2886ea5ca065660bc0d61d3e554f35859a7daccc37a2c1ef574a52fa1a75"
+    }
+  ],
+  "configured_maximum_input_bytes": 96,
+  "per_input_timeout_seconds": 10,
+  "result": "both runs completed without a reported finding",
+  "limitations": [
+    "These short coverage-guided differential runs are not exhaustive.",
+    "Generated operations use small collections and serial clients; independent targeted tests cover multi-page ranges, resource budgets, staged updates, corruption and concurrent phantoms.",
+    "Neither run models physical power loss or independent off-host restore."
+  ]
+}
