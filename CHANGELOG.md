@@ -9,6 +9,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 ### Added
 
 - Grouped synchronization for existing-key updates under live-key count or byte caps when no log-length cap is configured; membership-changing operations remain serialized.
+- A paired overlay-filesystem benchmark recording the grouped capped path's throughput, tail latency and median-latency tradeoffs.
 - An optional per-open cap on live key bytes, enforced during serialized mutations and every historical recovery state, including ordered batch operations. It is a logical key-byte limit, not a process-memory or project quota.
 - A paired workload for comparing uncapped writes with the live-key byte cap, including post-reopen verification and VM noise telemetry.
 - Optional transaction deadlines with typed pre-commit expiry, timed FIFO admission and tests that preserve unknown outcomes for commit I/O errors.
