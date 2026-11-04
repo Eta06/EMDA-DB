@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--keys", default="10000,200000")
     parser.add_argument("--key-bytes", type=int, default=128)
     parser.add_argument("--tail-keys", type=int, default=4096)
+    parser.add_argument("--managed", action="store_true", help="also measure managed selection publication")
     args = parser.parse_args()
     try:
         counts = [int(item) for item in args.keys.split(",")]
@@ -59,7 +60,7 @@ def main():
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "allowed_cpus": allowed,
         "benchmark_cpu": benchmark_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "limitations": "One Linux VM, one filesystem, warm cache and separate fresh processes. Ordinary Store creates a checkpoint after full-index recovery; CheckpointStore creates and switches to its streamed checkpoint. The timer includes each method's validation and synchronization, including switching only for CheckpointStore; opening and sampled value checks are outside the timer. Each checkpoint must have the same SHA-256 digest and is reopened and checked. RSS and peak RSS exclude OS page cache and do not represent total project memory. Noise counters include fixture setup and verification. This is not a competitor or production ranking.",
+        "limitations": "One Linux VM, one filesystem, warm cache and separate fresh processes. Ordinary Store creates a checkpoint after full-index recovery; CheckpointStore creates and switches to its streamed checkpoint. Managed rollover also publishes and synchronizes a trusted selection and its directory ancestors. The timer includes validation and synchronization, including switching only for CheckpointStore; opening and sampled value checks are outside the timer. Each checkpoint must have the same SHA-256 digest and is reopened and checked. The benchmark removes only its own newly created selection from a disposable fixture. RSS and peak RSS exclude OS page cache and do not represent total project memory. Noise counters include fixture setup and verification. This is not a competitor or production ranking.",
         "cases": [],
     }
     with tempfile.TemporaryDirectory(prefix=".checkpoint-rollover-bench-", dir=args.directory) as root:
@@ -75,8 +76,10 @@ def main():
                     "tail_bytes": int(info["tail_bytes"]), "log_bytes": int(info["log_bytes"]),
                     "quiet_check": quiet_window(), "runs": []}
             reference_digest = None
+            mode_names = ["store", "checkpoint", "managed"] if args.managed else ["store", "checkpoint"]
             for round_index in range(args.rounds):
-                modes = ("store", "checkpoint") if round_index % 2 == 0 else ("checkpoint", "store")
+                offset = round_index % len(mode_names)
+                modes = mode_names[offset:] + mode_names[:offset]
                 for mode in modes:
                     before = snapshot()
                     command = ["taskset", "-c", str(benchmark_cpu), args.binary, str(parent), str(count),
@@ -96,7 +99,7 @@ def main():
                     case["runs"].append({"round": round_index + 1, "mode": mode, **values, "noise": noise})
             case["checkpoint_digest"] = reference_digest
             case["summary"] = {}
-            for mode in ("store", "checkpoint"):
+            for mode in mode_names:
                 samples = [item for item in case["runs"] if item["mode"] == mode]
                 case["summary"][mode] = {"median_" + key: statistics.median(item[key] for item in samples)
                                          for key in ("elapsed_us", "before_rss_kib", "after_rss_kib", "peak_rss_kib")}

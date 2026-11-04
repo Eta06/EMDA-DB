@@ -11,13 +11,14 @@ const VALUE_BYTES: usize = 64;
 enum Backend {
     Store(Store),
     Checkpoint(CheckpointStore),
+    Managed(CheckpointStore),
 }
 
 impl Backend {
     fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         match self {
             Self::Store(store) => store.get(key),
-            Self::Checkpoint(store) => store.get(key),
+            Self::Checkpoint(store) | Self::Managed(store) => store.get(key),
         }
     }
 
@@ -25,6 +26,7 @@ impl Backend {
         match self {
             Self::Store(store) => store.checkpoint_to(destination),
             Self::Checkpoint(store) => store.rollover_to(destination),
+            Self::Managed(store) => store.rollover_managed(destination),
         }
     }
 }
@@ -85,7 +87,7 @@ fn memory_kib(field: &str) -> BenchResult<u64> {
 fn main() -> BenchResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [parent, keys, key_len, tail, mode, token] = args.as_slice() else {
-        return Err("usage: checkpoint_rollover_bench <fixture-parent> <base-keys> <key-bytes> <tail-keys> <store|checkpoint> <trusted-digest>".into());
+        return Err("usage: checkpoint_rollover_bench <fixture-parent> <base-keys> <key-bytes> <tail-keys> <store|checkpoint|managed> <trusted-digest>".into());
     };
     let count = parse(keys, 1, 1_000_000)?;
     let key_len = parse(key_len, 8, 1024)?;
@@ -98,9 +100,14 @@ fn main() -> BenchResult<()> {
     if std::fs::symlink_metadata(&output).is_ok() {
         return Err("output path already exists".into());
     }
+    let selection = path.join("checkpoint.selection");
+    if std::fs::symlink_metadata(&selection).is_ok() {
+        return Err("fixture already has managed checkpoint selection".into());
+    }
     let backend = match mode.as_str() {
         "store" => Backend::Store(Store::open_with_checkpoint(&path, &source, &token)?),
         "checkpoint" => Backend::Checkpoint(CheckpointStore::open(&path, &source, &token)?),
+        "managed" => Backend::Managed(CheckpointStore::open(&path, &source, &token)?),
         _ => return Err("unknown backend".into()),
     };
     verify(count + tail, key_len, |key| backend.get(key))?;
@@ -112,6 +119,14 @@ fn main() -> BenchResult<()> {
     let peak_rss = memory_kib("VmHWM:")?;
     verify(count + tail, key_len, |key| backend.get(key))?;
     drop(backend);
+    if mode == "managed" {
+        let reopened = CheckpointStore::open_managed(&path)?;
+        if reopened.tail_bytes()? != 0 || reopened.overlay_keys()? != 0 {
+            return Err("managed checkpoint did not cover the full log".into());
+        }
+        verify(count + tail, key_len, |key| reopened.get(key))?;
+        drop(reopened);
+    }
     let reopened = RecoveredCheckpointView::open(&path, &output, &new_digest)?;
     if reopened.tail_bytes() != 0 || reopened.overlay_keys() != 0 {
         return Err("generated checkpoint did not cover the full log".into());
@@ -119,6 +134,11 @@ fn main() -> BenchResult<()> {
     verify(count + tail, key_len, |key| reopened.get(key))?;
     drop(reopened);
     let file_bytes = std::fs::metadata(&output)?.len();
+    if mode == "managed" {
+        // The benchmark owns this disposable selection and refuses to start
+        // if one already exists. Never remove a production selection this way.
+        std::fs::remove_file(&selection)?;
+    }
     std::fs::remove_file(&output)?;
     print!(
         "mode={mode} elapsed_us={elapsed_us} before_rss_kib={before_rss} after_rss_kib={after_rss} peak_rss_kib={peak_rss} checkpoint_bytes={file_bytes} digest="
