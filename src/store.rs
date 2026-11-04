@@ -127,7 +127,9 @@ impl Store {
     /// The key limit is a count, not a process memory guarantee. It applies to
     /// every replayed prefix, including keys that are later deleted. The log
     /// length is checked before replay. Neither setting is persisted.
-    /// Stores using either limit serialize writes to prevent oversubscription.
+    /// A log-length cap serializes writes. With only a live-key cap, operations
+    /// that may change membership serialize; updates to existing keys may share
+    /// synchronization while they hold a shared membership barrier.
     pub fn open_with_limits(
         path: impl AsRef<Path>,
         max_log_bytes: Option<u64>,
@@ -142,9 +144,10 @@ impl Store {
     /// allocator overhead, snapshots, other files or total process memory. The
     /// cap is checked for every historical replay prefix, including each
     /// ordered operation inside an atomic batch. It is not persisted and must
-    /// be supplied on every open. Limited stores serialize mutations. This
-    /// method uses full-log recovery; checkpoints do not record the historical
-    /// live-key byte peak required to enforce the cap.
+    /// be supplied on every open. New-key puts, deletes and compound mutations
+    /// serialize. Existing-key updates may share synchronization if no log
+    /// length cap is set. This method uses full-log recovery; checkpoints do
+    /// not record the historical live-key byte peak required to enforce the cap.
     pub fn open_with_resource_limits(
         path: impl AsRef<Path>,
         max_log_bytes: Option<u64>,
@@ -515,6 +518,25 @@ impl Store {
 
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
+        if operation == Operation::Put
+            && self.max_log_bytes.is_none()
+            && (self.max_live_keys.is_some() || self.max_live_key_bytes.is_some())
+        {
+            // With no log-length cap, updating a key that already exists does
+            // not change either live-key quota. Keep the shared barrier until
+            // acknowledgement: every operation that can change membership
+            // takes the exclusive side, so this observation remains valid.
+            let _writer = self
+                .writes
+                .read()
+                .map_err(|_| io::Error::other("write barrier poisoned"))?;
+            let exists = self.read()?.index.contains_key(key);
+            if exists {
+                return self
+                    .commits
+                    .commit(&self.log, &self.inner, operation, key, value);
+            }
+        }
         if self.max_log_bytes.is_some()
             || self.max_live_keys.is_some()
             || self.max_live_key_bytes.is_some()

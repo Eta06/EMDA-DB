@@ -2,7 +2,7 @@
 use super::*;
 use crate::witness::{Witness, WitnessIo};
 use rustix::fs::{XattrFlags, fgetxattr, fsetxattr};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -21,6 +21,8 @@ enum Fault {
     Block,
     BlockThenSyncError,
     BlockThenPanic,
+    BlockThenGroupError,
+    BlockThenGroupPanic,
 }
 
 struct Controlled {
@@ -29,6 +31,7 @@ struct Controlled {
     fault: Fault,
     entered: mpsc::Sender<()>,
     resume: Mutex<mpsc::Receiver<()>>,
+    armed_syncs: AtomicUsize,
 }
 
 impl WitnessIo for Controlled {
@@ -79,6 +82,17 @@ impl WitnessIo for Controlled {
                     self.resume.lock().unwrap().recv().unwrap();
                     panic!("injected delayed sync panic");
                 }
+                Fault::BlockThenGroupError | Fault::BlockThenGroupPanic => {
+                    let count = self.armed_syncs.fetch_add(1, Ordering::SeqCst);
+                    self.entered.send(()).unwrap();
+                    self.resume.lock().unwrap().recv().unwrap();
+                    if count == 1 {
+                        if matches!(self.fault, Fault::BlockThenGroupPanic) {
+                            panic!("injected grouped sync panic");
+                        }
+                        return Err(io::Error::other("injected grouped sync error"));
+                    }
+                }
                 _ => {}
             }
         }
@@ -113,6 +127,7 @@ fn store(
                 fault,
                 entered,
                 resume: Mutex::new(resume),
+                armed_syncs: AtomicUsize::new(0),
             }),
             id,
         )?;
@@ -319,6 +334,253 @@ fn limited_key_byte_accounting_is_rebuilt_after_uncertain_single_and_batch_write
                 original_write_survived
             );
         }
+    }
+}
+
+#[test]
+fn capped_existing_key_updates_share_a_witness_sync_and_block_deletion() {
+    use std::time::Instant;
+    for (max_keys, max_bytes) in [(Some(4), None), (None, Some(4)), (Some(4), Some(4))] {
+        let dir = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let store = store(
+            dir.path(),
+            Fault::Block,
+            Arc::clone(&armed),
+            entered_tx,
+            resume_rx,
+        );
+        for key in [b"a", b"b", b"c", b"d"] {
+            store.put(key, b"old").unwrap();
+        }
+        let store = Arc::new(Store::set_open_limits(store, None, max_keys, max_bytes).unwrap());
+        armed.store(true, Ordering::Release);
+        let first_store = Arc::clone(&store);
+        let first = thread::spawn(move || first_store.put(b"a", b"new"));
+        let first_entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut writers = Vec::new();
+        for key in [b"b", b"c", b"d"] {
+            let store = Arc::clone(&store);
+            let done = done_tx.clone();
+            writers.push(thread::spawn(move || {
+                let result = store.put(key, b"new");
+                let _ = done.send(());
+                result
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while store.commits.queued_len() < 3 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let queued = store.commits.queued_len();
+        let deleting = Arc::clone(&store);
+        let (deleted_tx, deleted_rx) = mpsc::channel();
+        let delete = thread::spawn(move || {
+            let result = deleting.delete(b"d");
+            let _ = deleted_tx.send(());
+            result
+        });
+        let _ = resume_tx.send(());
+        let group_entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        let completed_early = done_rx.try_recv().is_ok();
+        let deleted_early = deleted_rx.try_recv().is_ok();
+        let before_group = store.get_many(&[b"b", b"c", b"d"]);
+        for _ in 0..8 {
+            let _ = resume_tx.send(());
+        }
+        let first_result = first.join().unwrap();
+        let results = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect::<Vec<_>>();
+        let delete_result = delete.join().unwrap();
+        first_entered.expect("first update did not start synchronization");
+        group_entered.expect("queued updates did not start synchronization");
+        assert_eq!(queued, 3, "existing-key updates did not share admission");
+        assert!(!completed_early);
+        assert!(!deleted_early);
+        assert_eq!(before_group.unwrap(), vec![Some(b"old".to_vec()); 3]);
+        first_result.unwrap();
+        for result in results {
+            result.unwrap();
+        }
+        delete_result.unwrap();
+        assert!(store.get(b"d").unwrap().is_none());
+        assert_eq!(store.get(b"b").unwrap().as_deref(), Some(&b"new"[..]));
+        // One extra synchronization belongs to the deletion; updates shared one.
+        assert_eq!(entered_rx.try_iter().count(), 1);
+        drop(store);
+        let recovered =
+            Store::open_with_resource_limits(dir.path(), None, max_keys, max_bytes).unwrap();
+        recovered.put(b"z", b"replacement").unwrap();
+        assert!(recovered.put(b"extra", b"over quota").is_err());
+    }
+}
+
+#[test]
+fn log_length_cap_keeps_existing_updates_serialized_and_cannot_be_oversubscribed() {
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = store(
+        dir.path(),
+        Fault::Block,
+        Arc::clone(&armed),
+        entered_tx,
+        resume_rx,
+    );
+    store.put(b"a", b"old").unwrap();
+    store.put(b"b", b"old").unwrap();
+    let cap = store.log.len().unwrap()
+        + record::encode(Operation::Put, b"a", b"new").unwrap().len() as u64;
+    let store = Arc::new(Store::set_open_limits(store, Some(cap), Some(2), Some(2)).unwrap());
+    armed.store(true, Ordering::Release);
+    let first_store = Arc::clone(&store);
+    let first = thread::spawn(move || first_store.put(b"a", b"new"));
+    let entered = entered_rx.recv_timeout(Duration::from_secs(10));
+    let second_store = Arc::clone(&store);
+    let (attempted_tx, attempted_rx) = mpsc::channel();
+    let second = thread::spawn(move || {
+        let _ = attempted_tx.send(());
+        second_store.put(b"b", b"new")
+    });
+    let attempted = attempted_rx.recv_timeout(Duration::from_secs(10));
+    for _ in 0..4 {
+        let _ = resume_tx.send(());
+    }
+    let first_result = first.join().unwrap();
+    let second_result = second.join().unwrap();
+    entered.expect("first update did not start synchronization");
+    attempted.expect("second update did not start");
+    first_result.unwrap();
+    assert!(second_result.is_err());
+    assert_eq!(store.log.len().unwrap(), cap);
+    assert_eq!(store.get(b"a").unwrap().as_deref(), Some(&b"new"[..]));
+    assert_eq!(store.get(b"b").unwrap().as_deref(), Some(&b"old"[..]));
+}
+
+#[test]
+fn failed_capped_group_leader_wakes_existing_key_waiters_and_requires_recovery() {
+    use std::time::Instant;
+    for fault in [Fault::BlockThenSyncError, Fault::BlockThenPanic] {
+        let dir = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let store = store(dir.path(), fault, Arc::clone(&armed), entered_tx, resume_rx);
+        for key in [b"a", b"b", b"c", b"d"] {
+            store.put(key, b"old").unwrap();
+        }
+        let store = Arc::new(Store::set_open_limits(store, None, Some(4), Some(4)).unwrap());
+        armed.store(true, Ordering::Release);
+        let first_store = Arc::clone(&store);
+        let first = thread::spawn(move || first_store.put(b"a", b"new"));
+        let entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        let mut writers = Vec::new();
+        for key in [b"b", b"c", b"d"] {
+            let store = Arc::clone(&store);
+            writers.push(thread::spawn(move || store.put(key, b"new")));
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while store.commits.queued_len() < 3 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let queued = store.commits.queued_len();
+        let _ = resume_tx.send(());
+        let first_result = first.join();
+        let results = writers
+            .into_iter()
+            .map(|writer| writer.join())
+            .collect::<Vec<_>>();
+        entered.expect("group leader did not reach synchronization");
+        assert_eq!(queued, 3);
+        assert!(!matches!(first_result, Ok(Ok(()))));
+        assert!(
+            results
+                .into_iter()
+                .all(|result| matches!(result, Ok(Err(_))))
+        );
+        assert!(store.get(b"a").is_err());
+        drop(store);
+        let recovered =
+            Store::open_with_resource_limits(dir.path(), None, Some(4), Some(4)).unwrap();
+        for key in [b"b", b"c", b"d"] {
+            assert_eq!(recovered.get(key).unwrap().as_deref(), Some(&b"old"[..]));
+        }
+        assert!(recovered.put(b"z", b"too-many").is_err());
+    }
+}
+
+#[test]
+fn failed_capped_group_sync_never_acknowledges_waiters_or_oversubscribes() {
+    use std::time::Instant;
+    for fault in [Fault::BlockThenGroupError, Fault::BlockThenGroupPanic] {
+        let dir = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let store = store(dir.path(), fault, Arc::clone(&armed), entered_tx, resume_rx);
+        for key in [b"a", b"b", b"c", b"d"] {
+            store.put(key, b"old").unwrap();
+        }
+        let store = Arc::new(Store::set_open_limits(store, None, Some(4), Some(4)).unwrap());
+        armed.store(true, Ordering::Release);
+        let first_store = Arc::clone(&store);
+        let first = thread::spawn(move || first_store.put(b"a", b"new"));
+        let first_entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut writers = Vec::new();
+        for key in [b"b", b"c", b"d"] {
+            let store = Arc::clone(&store);
+            let done = done_tx.clone();
+            writers.push(thread::spawn(move || {
+                let result = store.put(key, b"new");
+                let _ = done.send(());
+                result
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while store.commits.queued_len() < 3 && Instant::now() < deadline {
+            thread::yield_now();
+        }
+        let queued = store.commits.queued_len();
+        let _ = resume_tx.send(());
+        let group_entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        let completed_early = done_rx.try_recv().is_ok();
+        let before_group = store.get_many(&[b"b", b"c", b"d"]);
+        for _ in 0..8 {
+            let _ = resume_tx.send(());
+        }
+        let first_result = first.join();
+        let results = writers
+            .into_iter()
+            .map(|writer| writer.join())
+            .collect::<Vec<_>>();
+        first_entered.expect("first update did not reach synchronization");
+        group_entered.expect("grouped updates did not reach synchronization");
+        assert_eq!(queued, 3);
+        assert!(!completed_early);
+        assert_eq!(before_group.unwrap(), vec![Some(b"old".to_vec()); 3]);
+        first_result.unwrap().unwrap();
+        assert!(
+            results
+                .into_iter()
+                .all(|result| !matches!(result, Ok(Ok(()))))
+        );
+        assert!(store.get(b"a").is_err());
+        drop(store);
+        let recovered =
+            Store::open_with_resource_limits(dir.path(), None, Some(4), Some(4)).unwrap();
+        assert_eq!(recovered.get(b"a").unwrap().as_deref(), Some(&b"new"[..]));
+        for key in [b"b", b"c", b"d"] {
+            let value = recovered.get(key).unwrap().unwrap();
+            assert!(value == b"old" || value == b"new");
+        }
+        assert!(recovered.put(b"z", b"too-many").is_err());
     }
 }
 

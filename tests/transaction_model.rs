@@ -218,9 +218,17 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         Operation::ReadBoth,
         Operation::ReadBoth,
     ];
-    for iteration in 0..1024 {
+    for iteration in 0..2048 {
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path()).unwrap();
+        let capped = iteration % 2 == 0;
+        let open = || {
+            if capped {
+                Store::open_with_resource_limits(directory.path(), None, Some(2), Some(2))
+            } else {
+                Store::open(directory.path())
+            }
+        };
+        let store = open().unwrap();
         store.put(b"a", &[3]).unwrap();
         store.put(b"b", &[2]).unwrap();
         let clock = AtomicUsize::new(0);
@@ -255,6 +263,6 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         });
         assert!(explain(&events, 0, [3, 2]), "invalid history: {events:?}");
         drop(store);
-        assert_eq!(read_pair(&Store::open(directory.path()).unwrap()), expected);
+        assert_eq!(read_pair(&open().unwrap()), expected);
     }
 }
