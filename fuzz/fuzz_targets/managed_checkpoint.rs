@@ -30,13 +30,14 @@ fuzz_target!(|data: &[u8]| {
     drop(ordinary);
     let mut store = CheckpointStore::open(&path, &initial, &digest).expect("open");
     let mut generation = 0_usize;
+    let mut peak_keys = model.len();
     store
         .rollover_managed(root.path().join("managed-0"))
         .expect("first managed selection");
     let selection = path.join("checkpoint.selection");
     for bytes in data.chunks_exact(3) {
         let key = vec![b'a' + bytes[1] % 8];
-        match bytes[0] % 7 {
+        match bytes[0] % 8 {
             0 => {
                 let value = vec![bytes[2]; usize::from(bytes[2] % 5)];
                 store.put(&key, &value).expect("put");
@@ -82,7 +83,7 @@ fuzz_target!(|data: &[u8]| {
             5 => {
                 assert!(store.rollover_to(root.path().join("unmanaged")).is_err());
             }
-            _ => {
+            6 => {
                 check(&store, &model);
                 drop(store);
                 generation += 1;
@@ -94,7 +95,43 @@ fuzz_target!(|data: &[u8]| {
                 store = CheckpointStore::open_managed(&path).expect("reopen rebuilt selection");
                 assert_eq!(store.overlay_keys().expect("empty suffix"), 0);
             }
+            _ => {
+                check(&store, &model);
+                drop(store);
+                generation += 1;
+                let next = root.path().join(format!("managed-{generation}"));
+                let selection_before = std::fs::read(&selection).expect("selection");
+                let log_length = std::fs::metadata(path.join("records.log"))
+                    .expect("log metadata")
+                    .len();
+                let denied = bytes[2] & 1 != 0;
+                let cap = if denied { peak_keys - 1 } else { peak_keys };
+                // All generated keys have one byte, so the count and
+                // key-byte historical peaks are equal in this model.
+                let result = CheckpointStore::rebuild_managed_selection_with_limits(
+                    &path,
+                    &next,
+                    Some(log_length),
+                    Some(cap),
+                    Some(cap),
+                );
+                if denied {
+                    assert!(result.is_err());
+                    assert!(!next.exists());
+                    assert_eq!(
+                        std::fs::read(&selection).expect("selection"),
+                        selection_before
+                    );
+                } else {
+                    result.expect("limited rebuild");
+                }
+                store = CheckpointStore::open_managed(&path).expect("reopen after limited rebuild");
+                if !denied {
+                    assert_eq!(store.overlay_keys().expect("empty suffix"), 0);
+                }
+            }
         }
+        peak_keys = peak_keys.max(model.len());
         check(&store, &model);
     }
     drop(store);

@@ -28,6 +28,35 @@ impl CheckpointStore {
         )
     }
 
+    /// Rebuilds using optional full-log and live-key limits during recovery.
+    /// The log limit counts the whole file. Key count and key-byte limits
+    /// apply to every replayed historical state, not just the current state.
+    /// These are logical limits, not total process-memory limits, and they
+    /// are not persisted for subsequent opens.
+    pub fn rebuild_managed_selection_with_limits(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        max_log_bytes: Option<u64>,
+        max_live_keys: Option<usize>,
+        max_live_key_bytes: Option<usize>,
+    ) -> io::Result<[u8; 32]> {
+        Self::rebuild_managed_using(
+            path.as_ref(),
+            destination.as_ref(),
+            |path| {
+                crate::Store::open_with_resource_limits(
+                    path,
+                    max_log_bytes,
+                    max_live_keys,
+                    max_live_key_bytes,
+                )
+            },
+            selection::sync_ancestors,
+            || Ok(()),
+            selection::sync_ancestors,
+        )
+    }
+
     pub(super) fn rebuild_managed_with_hooks(
         path: &Path,
         destination: &Path,
@@ -46,6 +75,24 @@ impl CheckpointStore {
     pub(super) fn rebuild_managed_with_sync_hooks(
         path: &Path,
         destination: &Path,
+        sync_checkpoint_ancestors: impl FnOnce(&Path) -> io::Result<()>,
+        before_selection_rename: impl FnOnce() -> io::Result<()>,
+        sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        Self::rebuild_managed_using(
+            path,
+            destination,
+            |path| crate::Store::open(path),
+            sync_checkpoint_ancestors,
+            before_selection_rename,
+            sync_selection_parent,
+        )
+    }
+
+    fn rebuild_managed_using(
+        path: &Path,
+        destination: &Path,
+        open_store: impl FnOnce(&Path) -> io::Result<crate::Store>,
         sync_checkpoint_ancestors: impl FnOnce(&Path) -> io::Result<()>,
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
@@ -73,7 +120,7 @@ impl CheckpointStore {
             ));
         }
         selection::Selection::new(destination.clone(), [0; 32])?;
-        let store = crate::Store::open(&path)?;
+        let store = open_store(&path)?;
         // Refuse to overwrite unknown, damaged, symlink or non-file metadata.
         // A valid but stale selection need not have an accessible checkpoint.
         selection::load(&path)?;

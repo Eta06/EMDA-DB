@@ -6,7 +6,7 @@ fn rebuild_bootstraps_and_recovers_a_missing_checkpoint_or_oversized_suffix() {
     for missing in [false, true] {
         let (dir, path, _checkpoint, _digest) = fixture();
         let first = dir.path().join("first-managed");
-        CheckpointStore::rebuild_managed_selection(&path, &first).unwrap();
+        retry_lock(|| CheckpointStore::rebuild_managed_selection(&path, &first)).unwrap();
         let store = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
         store.put(b"one", b"value-1").unwrap();
         store.put(b"two", b"value-2").unwrap();
@@ -25,7 +25,7 @@ fn rebuild_bootstraps_and_recovers_a_missing_checkpoint_or_oversized_suffix() {
             .is_err()
         );
         let replacement = dir.path().join("rebuilt");
-        CheckpointStore::rebuild_managed_selection(&path, &replacement).unwrap();
+        retry_lock(|| CheckpointStore::rebuild_managed_selection(&path, &replacement)).unwrap();
         let recovered = retry_lock(|| {
             CheckpointStore::open_managed_with_resource_limits(&path, 64 * 1024, 1, 32, None)
         })
@@ -324,4 +324,60 @@ fn rebuild_preserves_selection_if_any_checkpoint_ancestor_sync_fails() {
             Some(&b"acknowledged"[..])
         );
     }
+}
+
+#[test]
+fn rebuild_logical_limits_cover_the_entire_log_and_each_historical_state() {
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.rollover_managed(dir.path().join("first")).unwrap();
+    store.put(b"a", b"one").unwrap();
+    store.put(b"b", b"two").unwrap();
+    store.delete(b"b").unwrap();
+    drop(store);
+    let selection = super::super::selection::path(&path);
+    let original_selection = fs::read(&selection).unwrap();
+    let original_log = fs::read(path.join("records.log")).unwrap();
+    let length = original_log.len() as u64;
+    let output = dir.path().join("rebuilt");
+    // The current state has two keys and five key bytes, but the history
+    // briefly contained three keys and six bytes before deleting "b".
+    for (max_log, max_keys, max_key_bytes) in [
+        (Some(length - 1), None, None),
+        (None, Some(2), None),
+        (None, None, Some(5)),
+    ] {
+        let error = retry_lock(|| {
+            CheckpointStore::rebuild_managed_selection_with_limits(
+                &path,
+                &output,
+                max_log,
+                max_keys,
+                max_key_bytes,
+            )
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!output.exists());
+        assert_eq!(fs::read(&selection).unwrap(), original_selection);
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), original_log);
+    }
+    retry_lock(|| {
+        CheckpointStore::rebuild_managed_selection_with_limits(
+            &path,
+            &output,
+            Some(length),
+            Some(3),
+            Some(6),
+        )
+    })
+    .unwrap();
+    let store = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+    assert_eq!(store.overlay_keys().unwrap(), 0);
+    assert_eq!(
+        store.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    assert_eq!(store.get(b"a").unwrap().as_deref(), Some(&b"one"[..]));
+    assert_eq!(store.get(b"b").unwrap(), None);
 }

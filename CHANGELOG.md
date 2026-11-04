@@ -8,6 +8,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Optional whole-log, historical live-key count and historical live-key byte limits during managed-selection rebuild. These are per-call logical limits, not total-memory or persistent project quotas.
+
 - Backup, restore, upgrade, checkpoint and separate-copy compaction synchronize destination directory ancestry before reporting success. An ancestor-sync error after publication reports an uncertain destination; injected failures cover each level.
 
 - A reproducible comparison of managed and unmanaged checkpoint rollover, including the cost of persisting selection and observed VM interference.
