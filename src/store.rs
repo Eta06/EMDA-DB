@@ -30,7 +30,9 @@ pub(crate) use compact_stream::compact_checkpoint;
 pub(crate) use compact_stream::compact_checkpoint_with_hooks;
 use log_quota::LogQuota;
 pub use online::{
-    OnlineCompactionOptions, OnlineCompactionReport, OnlineReclaimError, OnlineStore,
+    OnlineCompactionOptions, OnlineCompactionReport, OnlineReclaimError, OnlineReclamationFailure,
+    OnlineReclamationFailureStage, OnlineReclamationWorker, OnlineReclamationWorkerStatus,
+    OnlineStore,
 };
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,

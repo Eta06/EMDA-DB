@@ -174,3 +174,9 @@ path = "fuzz_targets/document_query_planner.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "online_reclamation_worker"
+path = "fuzz_targets/online_reclamation_worker.rs"
+test = false
+doc = false
+bench = false

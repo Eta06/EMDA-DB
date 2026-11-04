@@ -1,12 +1,19 @@
 //! A guarded store handle supporting bounded, concurrent compaction preparation.
 mod copy;
 mod reclaim;
+mod worker;
+
+pub use worker::{
+    OnlineReclamationFailure, OnlineReclamationFailureStage, OnlineReclamationWorker,
+    OnlineReclamationWorkerStatus,
+};
 
 use super::{LogQuota, Store, compact_exchange};
 use std::cell::RefCell;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 
 thread_local! { static ACTIVE_ACCESS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
@@ -57,6 +64,7 @@ pub struct OnlineStore {
     path: PathBuf,
     state: RwLock<State>,
     maintenance: Mutex<()>,
+    reclamation_worker: AtomicBool,
 }
 
 /// Logical limits for one online compaction attempt. These are not total
@@ -166,12 +174,14 @@ impl OnlineStore {
                 failed: false,
             }),
             maintenance: Mutex::new(()),
+            reclamation_worker: AtomicBool::new(false),
         })
     }
 
     /// Uses the current store for the duration of the callback. The callback
     /// must not re-enter this handle or wait for another thread that is trying
-    /// to compact it. Transactions and document operations can be run here.
+    /// to compact it, including stopping or dropping a reclamation worker.
+    /// Transactions and document operations can be run here.
     /// No borrowed store, transaction or snapshot may escape the callback.
     pub fn with_store<T>(&self, action: impl FnOnce(&Store) -> io::Result<T>) -> io::Result<T> {
         let _access = Access::enter(self as *const Self as usize)?;

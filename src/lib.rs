@@ -54,6 +54,7 @@ pub use store::{
     MAX_SNAPSHOT_TOTAL_KEYS, MAX_TRANSACTION_READ_CONSTRAINT_BYTES,
     MAX_TRANSACTION_READ_CONSTRAINTS, MAX_TRANSACTION_STAGED_TOTAL_BYTES,
     MAX_TRANSACTION_VALIDATION_ITEMS, OnlineCompactionOptions, OnlineCompactionReport,
-    OnlineReclaimError, OnlineStore, Snapshot, Store, TimedTransactionError, Transaction,
-    TransactionMode,
+    OnlineReclaimError, OnlineReclamationFailure, OnlineReclamationFailureStage,
+    OnlineReclamationWorker, OnlineReclamationWorkerStatus, OnlineStore, Snapshot, Store,
+    TimedTransactionError, Transaction, TransactionMode,
 };

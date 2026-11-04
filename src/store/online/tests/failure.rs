@@ -253,6 +253,7 @@ fn uncertain_source_commit_during_copy_never_publishes_a_compacted_store() {
                 failed: false,
             }),
             maintenance: Mutex::new(()),
+            reclamation_worker: std::sync::atomic::AtomicBool::new(false),
         };
         let result = online.compact_with_hooks(
             &previous,
@@ -306,6 +307,7 @@ fn partial_source_append_at_every_offset_aborts_handoff_without_truncation() {
                 failed: false,
             }),
             maintenance: Mutex::new(()),
+            reclamation_worker: std::sync::atomic::AtomicBool::new(false),
         };
         let result = online.compact_with_hooks(
             &previous,
@@ -378,6 +380,7 @@ fn partial_v2_and_v3_source_appends_abort_handoff_without_truncation() {
                     failed: false,
                 }),
                 maintenance: Mutex::new(()),
+                reclamation_worker: std::sync::atomic::AtomicBool::new(false),
             };
             let result = online.compact_with_hooks(
                 &previous,

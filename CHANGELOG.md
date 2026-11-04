@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an opt-in, stoppable ordinary-store reclamation worker with log-size and growth thresholds and explicit handoff/cleanup failure reporting.
+
 - Record verified online compaction retention-versus-reclamation timings and named log lengths.
 
 - Harden checkpoint fault-test fixture reopens against transient inherited locks and extend reclamation cleanup-failure checks.
