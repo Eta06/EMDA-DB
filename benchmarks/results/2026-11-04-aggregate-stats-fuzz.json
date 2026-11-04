@@ -1,0 +1,20 @@
+{
+  "revision": "8b2fe82f219f9a70b38706a3c0c4eea1b1117351",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "target": "document_aggregate_stats",
+  "duration_seconds": 121,
+  "executions": 23960,
+  "seed": 72505965,
+  "initial_seeds": {
+    "checkpoint": "3f2ffae0871829916d26161db85337c37795056d1cedf1b617d4048c6e5e231c",
+    "ordinary": "d17c55d0c49405a886b47d66f3a37b83cf2f4fe0bbeec1cdacfd389dd5da4ba7"
+  },
+  "max_input_bytes": 96,
+  "binary_sha256": "83058437c154e4d88998d449176102f77571e7f63cb7a7d345b2bb6a32384424",
+  "ending_coverage": 3413,
+  "ending_features": 14690,
+  "ending_corpus_entries": 459,
+  "result": "completed without a finding",
+  "scope": "Generated serial document writes, deletes, grouped and ungrouped integer summaries, filters and reopenings on both writable backends, checked against an independent in-memory model. It does not cover arbitrary concurrent schedules, storage faults, physical power loss or off-host restore."
+}
