@@ -65,7 +65,7 @@ fn document(id: u8, byte: u8) -> Value {
             json!(true)
         };
     }
-    match byte % 4 {
+    match (byte / 7) % 4 {
         0 => {}
         1 => doc["active"] = json!(true),
         2 => doc["active"] = json!(false),
@@ -228,7 +228,7 @@ fuzz_target!(|data: &[u8]| {
             filter: DocumentFilter::And(filters),
             max_scanned: 16,
             limit: 1 + usize::from(bytes[3] % 5),
-            offset: usize::from(bytes[2] % 3),
+            offset: usize::from(bytes[3] % 3),
             sort: (bytes[3] & 4 != 0).then(|| DocumentSort {
                 path: vec!["score".into()],
                 descending: bytes[3] & 8 != 0,
