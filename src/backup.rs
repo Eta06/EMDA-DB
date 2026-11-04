@@ -120,13 +120,33 @@ fn restore_with_hooks(
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
+    restore_with_empty_hooks(source, destination, sync_parent, before_publish, |_| Ok(()))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmptyRestorePoint {
+    BeforeMetadata,
+    AfterMetadata,
+    AfterHeaderWrite,
+    AfterHeaderSync,
+    AfterWitness,
+    AfterDirectorySync,
+}
+
+fn restore_with_empty_hooks(
+    source: &Path,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    before_publish: impl FnOnce() -> io::Result<()>,
+    mut empty_hook: impl FnMut(EmptyRestorePoint) -> io::Result<()>,
+) -> io::Result<()> {
     let backup = File::open(source)?;
     let info = validate(&backup)?;
     let parent = parent_directory(destination)?;
     // Build and verify a complete store in a private staging directory. Publish
     // it atomically without replacing a pre-existing destination.
     let mut staging = crate::staging::Stage::directory(parent)?;
-    restore_into(&backup, &info, staging.path())?;
+    restore_into(&backup, &info, staging.path(), &mut empty_hook)?;
     before_publish()?;
     staging.publish(destination)?;
     sync_parent(parent).map_err(|error| {
@@ -222,7 +242,12 @@ fn upgrade_format_with_hooks(
     synchronized.and(released)
 }
 
-fn restore_into(backup: &File, info: &BackupInfo, destination: &Path) -> io::Result<()> {
+fn restore_into(
+    backup: &File,
+    info: &BackupInfo,
+    destination: &Path,
+    empty_hook: &mut impl FnMut(EmptyRestorePoint) -> io::Result<()>,
+) -> io::Result<()> {
     let mut lock = StagingLock::create(destination)?;
     let mut log = OpenOptions::new()
         .read(true)
@@ -249,12 +274,42 @@ fn restore_into(backup: &File, info: &BackupInfo, destination: &Path) -> io::Res
     {
         return Err(record::invalid_data("restored log checksum mismatch"));
     }
+    // A validated zero-byte legacy backup has no witness. Restore it as an
+    // empty witnessed store so normal open cannot confuse it with an
+    // interrupted initialization or silently weaken later acknowledgements.
+    if info.log_len == 0 {
+        initialize_empty_restored_log(&mut log, empty_hook, metadata_witness::initialize)?;
+    }
     // Revalidate the restored bytes, including every record checksum.
     let log = Log::verify_io(Box::new(log))?;
     log.install_restore_witness(destination)?;
+    if info.log_len == 0 {
+        empty_hook(EmptyRestorePoint::AfterWitness)?;
+    }
     File::open(destination)?.sync_all()?;
+    if info.log_len == 0 {
+        empty_hook(EmptyRestorePoint::AfterDirectorySync)?;
+    }
     lock.release()?;
     Ok(())
+}
+
+fn initialize_empty_restored_log(
+    log: &mut File,
+    hook: &mut impl FnMut(EmptyRestorePoint) -> io::Result<()>,
+    initialize_metadata: impl FnOnce(&File, &witness::LogId, u64) -> io::Result<bool>,
+) -> io::Result<()> {
+    let mut header = witness::new_header()?;
+    let id = witness::parse_header(&header)?;
+    hook(EmptyRestorePoint::BeforeMetadata)?;
+    if initialize_metadata(log, &id, witness::LOG_HEADER_SIZE as u64)? {
+        metadata_witness::mark_header(&mut header);
+    }
+    hook(EmptyRestorePoint::AfterMetadata)?;
+    log.write_all(&header)?;
+    hook(EmptyRestorePoint::AfterHeaderWrite)?;
+    log.sync_all()?;
+    hook(EmptyRestorePoint::AfterHeaderSync)
 }
 
 fn validate(file: &File) -> io::Result<BackupInfo> {

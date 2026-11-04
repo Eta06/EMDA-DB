@@ -99,7 +99,14 @@ pub(crate) fn decode(bytes: &[u8; WITNESS_SIZE], id: &LogId) -> io::Result<u64> 
 }
 
 pub(crate) fn exists(directory: &Path) -> io::Result<bool> {
-    directory.join(NAME).try_exists()
+    // Treat a dangling symlink as an existing, invalid witness entry. Following
+    // it here would make a broken witness look absent and can permit a legacy
+    // fallback or creation where recovery must instead fail closed.
+    match std::fs::symlink_metadata(directory.join(NAME)) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) struct Witness {

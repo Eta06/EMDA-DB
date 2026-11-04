@@ -32,6 +32,26 @@ fn pause_at_boundary() -> io::Result<()> {
     }
 }
 
+fn empty_legacy_backup() -> Vec<u8> {
+    let mut bytes = b"DBBKP001".to_vec();
+    bytes.extend_from_slice(b"DBBEND01");
+    bytes.extend_from_slice(&0_u64.to_le_bytes());
+    bytes.extend_from_slice(&Sha256::digest([]));
+    bytes
+}
+
+fn empty_restore_point(mode: &str) -> Option<EmptyRestorePoint> {
+    match mode {
+        "empty-before-metadata" => Some(EmptyRestorePoint::BeforeMetadata),
+        "empty-after-metadata" => Some(EmptyRestorePoint::AfterMetadata),
+        "empty-after-header-write" => Some(EmptyRestorePoint::AfterHeaderWrite),
+        "empty-after-header-sync" => Some(EmptyRestorePoint::AfterHeaderSync),
+        "empty-after-witness" => Some(EmptyRestorePoint::AfterWitness),
+        "empty-after-directory-sync" => Some(EmptyRestorePoint::AfterDirectorySync),
+        _ => None,
+    }
+}
+
 #[test]
 fn publication_crash_child() {
     let Ok(parent) = std::env::var("EMDA_BACKUP_CRASH_PATH") else {
@@ -54,6 +74,22 @@ fn publication_crash_child() {
         }
         "restore-staged" => restore_with_hooks(&backup, &restored, |_| Ok(()), pause_at_boundary),
         "restore-published" => restore_with_sync(&backup, &restored, |_| pause_at_boundary()),
+        mode if empty_restore_point(mode).is_some() => {
+            let requested = empty_restore_point(mode).unwrap();
+            restore_with_empty_hooks(
+                &backup,
+                &restored,
+                |_| Ok(()),
+                || Ok(()),
+                |point| {
+                    if point == requested {
+                        pause_at_boundary()
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+        }
         "upgrade-staged" => {
             let (log, _) = Log::open(&source, false).unwrap();
             upgrade_format_with_hooks(&log, &upgraded, |_| Ok(()), pause_at_boundary)
@@ -189,6 +225,138 @@ fn process_kill_at_restore_publication_boundaries_preserves_backup() {
         let expected = vec![Some(b"one".to_vec()), Some(b"two".to_vec())];
         assert_eq!(source.get_many(&[b"a", b"b"]).unwrap(), expected);
         assert_eq!(copy.get_many(&[b"a", b"b"]).unwrap(), expected);
+    }
+}
+
+#[test]
+fn process_kill_during_empty_legacy_restore_preserves_backup_and_recovers() {
+    for mode in ["restore-staged", "restore-published"] {
+        let directory = tempfile::tempdir().unwrap();
+        let backup = directory.path().join("backup");
+        let restored = directory.path().join("restored");
+        let bytes = empty_legacy_backup();
+        std::fs::write(&backup, &bytes).unwrap();
+        kill_at_boundary(directory.path(), mode);
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+        if mode == "restore-staged" {
+            assert!(!restored.exists());
+            let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+            assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (1, 1));
+            Store::restore(&backup, &restored).unwrap();
+        } else {
+            let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+            assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (0, 1));
+        }
+        let copy = crate::test_support::retry_lock(|| Store::open(&restored)).unwrap();
+        assert_eq!(copy.get(b"key").unwrap(), None);
+        copy.transaction(|tx| tx.put(b"key", b"value")).unwrap();
+        drop(copy);
+        let reopened = crate::test_support::retry_lock(|| Store::open(&restored)).unwrap();
+        assert_eq!(
+            reopened.get(b"key").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+    }
+}
+
+#[test]
+fn empty_legacy_restore_fails_before_publication_at_each_new_boundary() {
+    for point in [
+        EmptyRestorePoint::BeforeMetadata,
+        EmptyRestorePoint::AfterMetadata,
+        EmptyRestorePoint::AfterHeaderWrite,
+        EmptyRestorePoint::AfterHeaderSync,
+        EmptyRestorePoint::AfterWitness,
+        EmptyRestorePoint::AfterDirectorySync,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let backup = directory.path().join("backup");
+        let restored = directory.path().join("restored");
+        let bytes = empty_legacy_backup();
+        std::fs::write(&backup, &bytes).unwrap();
+        let result = restore_with_empty_hooks(
+            &backup,
+            &restored,
+            |_| Ok(()),
+            || Ok(()),
+            |at| {
+                if at == point {
+                    Err(io::Error::other("injected empty restore failure"))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_err(), "{point:?}");
+        assert!(!restored.exists(), "{point:?}");
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+        Store::restore(&backup, &restored).unwrap();
+        let copy = crate::test_support::retry_lock(|| Store::open(&restored)).unwrap();
+        copy.transaction(|tx| tx.put(b"key", b"value")).unwrap();
+    }
+}
+
+#[test]
+fn empty_legacy_restore_header_handles_unsupported_and_failed_metadata() {
+    let directory = tempfile::tempdir().unwrap();
+    let log_path = directory.path().join("records.log");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&log_path)
+        .unwrap();
+    let error = initialize_empty_restored_log(&mut file, &mut |_| Ok(()), |_, _, _| {
+        Err(io::Error::other("injected metadata initialization failure"))
+    });
+    assert!(error.is_err());
+    assert_eq!(std::fs::read(&log_path).unwrap(), b"");
+    initialize_empty_restored_log(&mut file, &mut |_| Ok(()), |_, _, _| Ok(false)).unwrap();
+    assert!(std::fs::read(&log_path).unwrap().starts_with(b"EMDALOG2"));
+    let log = Log::verify_io(Box::new(file)).unwrap();
+    log.install_restore_witness(directory.path()).unwrap();
+    drop(log);
+    let store = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
+    store.transaction(|tx| tx.put(b"key", b"value")).unwrap();
+    drop(store);
+    let reopened = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
+    assert_eq!(
+        reopened.get(b"key").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+}
+
+#[test]
+fn process_kill_at_each_empty_legacy_restore_boundary_preserves_the_backup() {
+    for mode in [
+        "empty-before-metadata",
+        "empty-after-metadata",
+        "empty-after-header-write",
+        "empty-after-header-sync",
+        "empty-after-witness",
+        "empty-after-directory-sync",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let backup = directory.path().join("backup");
+        let restored = directory.path().join("restored");
+        let bytes = empty_legacy_backup();
+        std::fs::write(&backup, &bytes).unwrap();
+        kill_at_boundary(directory.path(), mode);
+        assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+        assert!(!restored.exists(), "{mode}");
+        let cleaned =
+            crate::test_support::retry_lock(|| crate::cleanup_abandoned_staging(directory.path()))
+                .unwrap();
+        assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (1, 1));
+        Store::restore(&backup, &restored).unwrap();
+        let copy = crate::test_support::retry_lock(|| Store::open(&restored)).unwrap();
+        copy.transaction(|tx| tx.put(b"key", b"value")).unwrap();
+        drop(copy);
+        let reopened = crate::test_support::retry_lock(|| Store::open(&restored)).unwrap();
+        assert_eq!(
+            reopened.get(b"key").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
     }
 }
 

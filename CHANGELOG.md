@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject existing zero-byte logs on ordinary open instead of silently treating an interrupted initialization as an unwitnessed legacy database. Explicitly verified empty legacy logs can be copied to a new witnessed store with `Store::upgrade_empty_legacy`; valid zero-byte legacy backups restore as new witnessed empty stores, changing their restored format and identity.
+
+- Treat a dangling commit-witness symlink as an existing invalid entry instead of allowing store creation or legacy fallback.
+
 - Limit each open store to 64 active transactions by default, with configurable lower limits and status reporting. New over-limit transaction calls now fail before their callbacks; the limit resets on reopen and does not bound total memory or direct writes.
 
 - Record paired transaction-admission measurements and retain an unmerged atomic-counter experiment with mixed results and its failure-handling regression.
