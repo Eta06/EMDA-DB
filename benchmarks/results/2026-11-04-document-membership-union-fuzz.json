@@ -1,0 +1,69 @@
+{
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "environment": "Local Linux VM; temporary corpora and normal filesystem operations.",
+  "runs": [
+    {
+      "target": "document_membership_union",
+      "revision": "e994b032ddcf95674ecadd4b43cfff8c5c466a6f",
+      "git_status": "clean",
+      "seed": 3972009803,
+      "executions": 15084,
+      "duration_seconds": 121,
+      "initial_seeds": {
+        "flags-0-guard-0": "198f13fb326564daa0274f3a9998e0f7e3cfb794fd05652b992a4febb2590ba4",
+        "flags-0-guard-1": "cd50fde02c5a6a3a9e2cfd013acb1fab460e42bcb0815f49dbc5cec32afa602b",
+        "flags-1-guard-0": "383bed46b75e1a1f321091df2124fb122e552221873a8b46ee393edace556a56",
+        "flags-1-guard-1": "12dc2e7a10ea1da7e229e1c997683b803ffe7ba6a050d5746c6577f0648ad1eb",
+        "flags-2-guard-0": "2a233eb53dcfa81cb1bb062136380a63ebe94452ee637329ab46eb344adb64ba",
+        "flags-2-guard-1": "dde5d7d94e41f93c0b73f5f3e3a223687bd2bf9bd97a688f561b70bb3cb53b72",
+        "flags-3-guard-0": "f05f34f20b838a453804e71cd8c112cb319103b420bf8483ad35d915d8470b34",
+        "flags-3-guard-1": "14d669caff19f65649b1a877a569c41fdb7e4f6518d0bf8cf57b63d114df3f1c",
+        "flags-4-guard-0": "39907b8d47ce1c1f2d68a10c01d871cb94f4b7d48f30fcdb88856e3a11d15471",
+        "flags-4-guard-1": "ec526e16b0bb32cc3c3b4964bf684ff9ebf1c4bdcaa8be9fceaeffa4aa059b57",
+        "flags-5-guard-0": "0ddb058f3c3eebb8ec28e3863d74edeae75b62ea7119b527aeee90bf5b44db83",
+        "flags-5-guard-1": "f7a2d3b66e889c022ea027c49b455065326b6a225df6fdfb5e24954ed260ff03",
+        "flags-6-guard-0": "a95a6484fb42939c54189826facd536d6f7cd853c1f43d783d538cfe93b164f5",
+        "flags-6-guard-1": "819eb7b8d0826ceaa0bffcb859869110388860a509f5b5f02fc7a15730efa38c",
+        "flags-7-guard-0": "8a53fe53e6fb2a4cc6c610a79e5abcb90a8c12dd68816f1445667917683091c5",
+        "flags-7-guard-1": "8508a4572f91bb8a8e76ddd73825bf2b596e8ee9115fdaa6f16b7b41a1f5037f"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "f8e477de7e6a67ef357e2c16fad5dd14feeb475d693d5ccf378c807fdc61dcd5",
+      "result": "completed without a finding"
+    },
+    {
+      "target": "document_membership",
+      "revision": "e994b032ddcf95674ecadd4b43cfff8c5c466a6f",
+      "git_status": "clean",
+      "seed": 1154326203,
+      "executions": 2384,
+      "duration_seconds": 61,
+      "initial_seeds": {
+        "checkpoint": "9abb8da60dc38893f3ec7c47e53e343dda12831ff6b098b4e81aaf395fb6f543",
+        "ordinary": "e9bbd36d1d21f1b0b710283f098be5059f3169adc7ba9a64d7202c4063aaf083"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "54522ef080c293e194f22f121ad82e695ba1817255a23a639cc45429518870d0",
+      "result": "completed without a finding"
+    },
+    {
+      "target": "document_compound_range",
+      "revision": "e994b032ddcf95674ecadd4b43cfff8c5c466a6f",
+      "git_status": "clean",
+      "seed": 3452465773,
+      "executions": 3792,
+      "duration_seconds": 61,
+      "initial_seeds": {
+        "checkpoint": "ed760ab45961f45608c8ca79071d8e3cea0dfce6e11c758f5703a62c7403cdcc",
+        "ordinary": "39324493ae602e8fcddcd7d4656215921371fd6e54ba59210dc81e63043583a4",
+        "partial": "232c80bba64fa7a37de2248d8262f870a30314ef8501175169eaa0dcc60779e7",
+        "partial-checkpoint": "9e60c638ee567a0301272bb8dcc7f41b1142771c72af9451af9be617e22472a1"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "5e59cc90e5d38c73ac52295c1df03dbf4e157cac017ba2d5f0c467c2d15cfa15",
+      "result": "completed without a finding"
+    }
+  ],
+  "scope": "Generated serial mutations, indexable and non-indexable lists, partial guards, unique and nonunique indexes, missing fields, reads and reopens on both writable backends; union results and access paths are checked against an independent model and collection scans. The other targets exercise existing membership and compound-range planning. Short campaigns do not exhaust concurrent histories, inputs, storage failures or physical power loss."
+}
