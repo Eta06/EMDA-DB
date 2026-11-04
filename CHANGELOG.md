@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add optional, stoppable expired-snapshot reapers for both writable stores, with busy-read protection and worker status and failure reporting.
+
 - Plan bounded unions of deduplicated scalar `In` probes on eligible single-field indexes, including safely implied partial indexes, while preserving aggregate scan limits and transaction read-set checks.
 
 - Add optional whole-log and checkpoint admission limits to read-only checkpoint recovery, checking log length before full-prefix verification and preserving suffix limits.

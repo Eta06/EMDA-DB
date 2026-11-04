@@ -17,6 +17,7 @@ mod metadata_witness;
 mod record;
 mod recovered_view;
 mod recovery;
+mod snapshot_reaper;
 mod staging;
 mod store;
 #[cfg(test)]
@@ -48,6 +49,7 @@ pub use recovered_view::{
     MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,
     RecoveredCheckpointView, RecoveredViewLimits,
 };
+pub use snapshot_reaper::{SnapshotReaper, SnapshotReaperStatus};
 pub use staging::{StagingCleanup, cleanup_abandoned_staging};
 pub use store::{
     COMPACTED_CHECKPOINT_FILE, Entry, MAX_ACTIVE_SNAPSHOTS, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES,

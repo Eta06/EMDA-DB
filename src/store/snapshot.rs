@@ -48,8 +48,9 @@ impl SnapshotBudget {
 /// survive reopening, and do not make independent writes transactional.
 /// Per-store snapshot count, total keys and key bytes are limited. These are
 /// not byte-accurate process memory limits and do not apply across stores.
-/// Expired snapshots can be reclaimed on later snapshot admission or an explicit
-/// reaping call. Expiry is checked at operation boundaries, not during I/O.
+/// Expired snapshots can be reclaimed on later snapshot admission, an explicit
+/// reaping call or an optionally started worker. Expiry is checked at
+/// operation boundaries, not during I/O.
 pub struct Snapshot<'a> {
     pub(super) store: &'a Store,
     pub(super) generation: u64,
@@ -208,8 +209,8 @@ impl Store {
     /// The deadline is process-local and monotonic. An operation started before
     /// expiry can finish afterwards; I/O and lock waits are not interrupted.
     /// Expired views are reclaimed on a later snapshot request or explicit
-    /// `reap_expired_snapshots` call when no read is using them. There is no
-    /// background timer, and ongoing reads are not interrupted.
+    /// `reap_expired_snapshots` call when no read is using them. An optional
+    /// snapshot reaper can also schedule checks; ongoing reads are not interrupted.
     pub fn snapshot_until(
         &self,
         max_keys: usize,
@@ -444,6 +445,81 @@ mod tests {
             io::ErrorKind::TimedOut
         );
         assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+    }
+
+    #[test]
+    fn background_reaper_skips_busy_expired_views_until_the_next_check() {
+        use std::time::{Duration, Instant};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        store.put(b"k", b"v").unwrap();
+        let snapshot = store
+            .snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+            .unwrap();
+        snapshot.state.write().unwrap().deadline = Some(Instant::now());
+        let active_read = snapshot.state.read().unwrap();
+        let worker = store
+            .start_snapshot_reaper(Duration::from_secs(3600))
+            .unwrap();
+        worker.request_check().unwrap();
+        let timeout = Instant::now() + Duration::from_secs(10);
+        while worker.status().checks < 1 {
+            assert!(Instant::now() < timeout);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(worker.status().reaped, 0);
+        assert_eq!(active_read.index.len(), 1);
+        drop(active_read);
+        worker.request_check().unwrap();
+        while worker.status().checks < 2 {
+            assert!(Instant::now() < timeout);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(worker.stop().unwrap().reaped, 1);
+        assert_eq!(
+            snapshot.get(b"k").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+    }
+
+    #[test]
+    fn background_reaper_races_with_cancellation_and_drop_without_leaking_budget() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        store.put(b"k", b"v").unwrap();
+        let worker = store
+            .start_snapshot_reaper(Duration::from_millis(1))
+            .unwrap();
+        let admitted = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let (store, admitted) = (&store, &admitted);
+                scope.spawn(move || {
+                    for i in 0..100 {
+                        if let Ok(mut snapshot) =
+                            store.snapshot_until(1, 1, Instant::now() + Duration::from_secs(60))
+                        {
+                            admitted.fetch_add(1, Ordering::Relaxed);
+                            snapshot.state.write().unwrap().deadline = Some(Instant::now());
+                            std::thread::yield_now();
+                            if i % 2 == 0 {
+                                snapshot.cancel();
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let status = worker.stop().unwrap();
+        assert!(status.last_error.is_none());
+        assert!(admitted.load(Ordering::Relaxed) > 0);
+        store.reap_expired_snapshots().unwrap();
+        let budget = store.snapshot_budget.lock().unwrap();
+        assert_eq!((budget.active, budget.keys, budget.key_bytes), (0, 0, 0));
+        assert!(store.snapshot_registry.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -74,8 +74,8 @@ impl Drop for Reservation<'_> {
 /// because the live source log is append-only. Snapshots cannot outlive the
 /// store or survive reopening and do not provide write transactions. Limits
 /// cover logical copied entries, not allocator overhead or total process memory.
-/// Expired idle snapshots are reclaimed by a later snapshot request or an
-/// explicit reaping call; there is no background timer.
+/// Expired idle snapshots are reclaimed by a later snapshot request, an
+/// explicit reaping call or an optionally started worker.
 pub struct CheckpointSnapshot<'a> {
     store: &'a CheckpointStore,
     state: Arc<RwLock<SnapshotData>>,
@@ -235,7 +235,7 @@ impl CheckpointStore {
     /// Captures a snapshot with an operation-boundary monotonic deadline.
     /// Reads begun after expiry fail; in-flight reads and I/O are not interrupted.
     /// A later snapshot request or explicit reaping call reclaims an expired
-    /// view when it is not being read. There is no background timer.
+    /// view when it is not being read. An optional worker can also schedule checks.
     pub fn snapshot_until(&self, deadline: Instant) -> io::Result<CheckpointSnapshot<'_>> {
         self.snapshot_internal(
             MAX_CHECKPOINT_VIEW_BLOCKS,
@@ -503,5 +503,82 @@ mod tests {
             io::ErrorKind::TimedOut
         );
         assert_eq!(store.reap_expired_snapshots().unwrap(), 0);
+    }
+    #[test]
+    fn background_reaper_skips_busy_expired_views_until_the_next_check() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        let (_dir, store) = fixture();
+        let store = Arc::new(store);
+        let snapshot = store
+            .snapshot_until(Instant::now() + Duration::from_secs(60))
+            .unwrap();
+        snapshot.state.write().unwrap().deadline = Some(Instant::now());
+        let active_read = snapshot.state.read().unwrap();
+        let worker = store
+            .start_snapshot_reaper(Duration::from_secs(3600))
+            .unwrap();
+        worker.request_check().unwrap();
+        let timeout = Instant::now() + Duration::from_secs(10);
+        while worker.status().checks < 1 {
+            assert!(Instant::now() < timeout);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(worker.status().reaped, 0);
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 1);
+        drop(active_read);
+        worker.request_check().unwrap();
+        while worker.status().checks < 2 {
+            assert!(Instant::now() < timeout);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(worker.stop().unwrap().reaped, 1);
+        assert_eq!(
+            snapshot.get(b"base").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
+    }
+
+    #[test]
+    fn background_reaper_races_with_cancellation_and_drop_without_leaking_budget() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+        let (_dir, store) = fixture();
+        let store = Arc::new(store);
+        let worker = store
+            .start_snapshot_reaper(Duration::from_millis(1))
+            .unwrap();
+        let admitted = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let (store, admitted) = (&store, &admitted);
+                scope.spawn(move || {
+                    for i in 0..100 {
+                        if let Ok(mut snapshot) =
+                            store.snapshot_until(Instant::now() + Duration::from_secs(60))
+                        {
+                            admitted.fetch_add(1, Ordering::Relaxed);
+                            snapshot.state.write().unwrap().deadline = Some(Instant::now());
+                            std::thread::yield_now();
+                            if i % 2 == 0 {
+                                snapshot.cancel();
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let status = worker.stop().unwrap();
+        assert!(status.last_error.is_none());
+        assert!(admitted.load(Ordering::Relaxed) > 0);
+        store.reap_expired_snapshots().unwrap();
+        let budget = store.snapshot_budget.lock().unwrap();
+        assert_eq!(
+            (budget.active, budget.blocks, budget.keys, budget.key_bytes),
+            (0, 0, 0, 0)
+        );
+        assert!(store.snapshot_registry.lock().unwrap().is_empty());
     }
 }

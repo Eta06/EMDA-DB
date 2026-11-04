@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 mod atomic_batch;
@@ -77,6 +77,7 @@ pub struct Store {
     live_key_bytes: AtomicUsize,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
     snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
+    pub(crate) snapshot_reaper_active: AtomicBool,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: transaction_queue::TransactionQueue,
     // Held for the store lifetime. OS file locks are advisory.
@@ -280,6 +281,7 @@ impl Store {
             live_key_bytes: AtomicUsize::new(0),
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
             snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::default()),
+            snapshot_reaper_active: AtomicBool::new(false),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: transaction_queue::TransactionQueue::new(),
             _lock_file: lock_file,
