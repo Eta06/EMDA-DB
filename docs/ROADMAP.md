@@ -36,6 +36,8 @@ Exit evidence: independent concurrent clients produce correct results, transacti
 
 ## Priority 2: document data and queries
 
+**Status: experimental prototype.** The [document interface](DOCUMENT_MODEL.md) and [follow-up checklist](DOCUMENT_FOLLOW_UP.md) describe the scope and remaining work. The interface implements a deliberately limited subset of the items below over the shared transaction engine. It includes atomic CRUD, conditional and bulk writes, schemas, bounded collection and indexed queries, compound/unique/partial indexes, basic aggregation and ID lookup. Large online index builds, richer query operators, broader concurrency/fault/recovery coverage, comparable document benchmarks and a query optimizer remain open. MongoDB compatibility is not claimed.
+
 - Collections, typed fields, nested values, schema validation, and explicit missing/null behavior.
 - Document create/read/update/delete, upsert, bulk operations, conditional updates, and atomic operators.
 - Filters, projection, sorting, pagination, and indexed equality and range queries.

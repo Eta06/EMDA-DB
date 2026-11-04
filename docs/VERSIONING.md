@@ -44,3 +44,7 @@ The current `0.1.0` package version is a prototype and has **not** been tagged o
 5. The release workflow validates the tag, package version, dated nonempty changelog section, and checks; it then creates a GitHub Release containing those notes. A tag with a prerelease suffix is marked as a prerelease. Existing releases are not overwritten.
 
 The workflow currently creates release notes, not binary packages or published crates. A failed workflow does not mean a release was published; inspect its result and correct the cause. Keep published tags immutable. This workflow has not yet been exercised with a real release tag.
+
+## Experimental document format
+
+The document interface reserves a versioned byte-key namespace and stores versioned collection metadata, JSON objects, and secondary index keys in the ordinary log. Its atomic transactions emit DB02 records, so revisions that cannot read DB02 cannot reopen logs containing document commits. Unknown collection metadata versions and fields are rejected on access. Older engines that can read the log do not protect or maintain document indexes and can corrupt the document model through raw writes. This unreleased version provides no stable document-format, migration or downgrade promise; back up data and use the same revision for recovery. See [document namespace and semantics](DOCUMENT_MODEL.md).

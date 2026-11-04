@@ -11,6 +11,7 @@ This document describes the current prototype, not a promised final design. The 
 - `checkpoint`: explicit persisted index snapshots bound to a separately trusted digest and witnessed log prefix; opening still hashes the full covered prefix.
 - `checkpoint_view`: a shared-lock, bounded-memory reader of a verified historical index; it does not validate or replay later log records and cannot coexist with a cooperating writable store.
 - `recovered_view` and `checkpoint_store`: merge a validated, bounded witnessed suffix with the verified checkpoint. The former is read-only; the latter takes an exclusive lock, serializes synchronized mutations and supports optimistic transactions, bounded process-local snapshots and full-log backups, but has no group commit or live log compaction. Opt-in automatic rollover clears its bounded suffix with two managed checkpoint slots.
+- `document`: experimental versioned JSON collections, schemas, indexes, bounded queries and aggregation, all using the shared transaction machinery. See [document semantics and limits](DOCUMENT_MODEL.md).
 - `directory`: synchronization of created store paths and their ancestors.
 - `tests`: behavior across reopen, deterministic I/O failures, concurrent clients, corruption, backups, and process termination.
 
@@ -28,6 +29,6 @@ Backups copy the full log while writes are blocked, include a SHA-256 digest and
 
 ## Next boundaries to design
 
-Expand transaction isolation and conflict testing, and design an on-disk index, live compaction, cache management, broader fault injection, and power-loss validation. A worker lifecycle for project sleep/wake and a network API would be separate components from this embedded engine. SQL, documents, and secondary indexes require explicit semantics; they are not implemented by exposing the current byte API.
+Expand transaction isolation and conflict testing, and design an on-disk index, live compaction, cache management, broader fault injection, and power-loss validation. A worker lifecycle for project sleep/wake and a network API would be separate components from this embedded engine. The bounded document interface is implemented above the shared transaction API; SQL, a general optimizer, broad index features and stronger resource controls remain to be designed.
 
 Consider Rust SIMD or assembly only after profiling shows an end-to-end benefit. Optimized paths must retain a portable implementation, detect CPU support safely, and pass the same correctness and corruption tests.

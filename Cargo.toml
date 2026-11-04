@@ -11,6 +11,8 @@ crc32fast = "1.5"
 fs2 = "0.4"
 rustix = { version = "1.1", features = ["fs"] }
 sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tempfile = "3.20"
 
 [dev-dependencies]

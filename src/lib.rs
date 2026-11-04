@@ -10,6 +10,7 @@ mod checkpoint;
 mod checkpoint_store;
 mod checkpoint_view;
 mod directory;
+mod document;
 mod log;
 mod log_io;
 mod metadata_witness;
@@ -30,6 +31,14 @@ pub use checkpoint_store::{
 };
 pub use checkpoint_view::{
     CheckpointView, MAX_CHECKPOINT_VIEW_BLOCK_BYTES, MAX_CHECKPOINT_VIEW_BLOCKS,
+};
+pub use document::{
+    AggregateGroup, AggregateRequest, AggregateResult, BulkOperation, BulkResult,
+    CollectionIntegrity, CollectionSchema, Comparison, DocumentDatabase, DocumentEntry,
+    DocumentFilter, DocumentPage, DocumentQuery, DocumentQueryResult, DocumentSort,
+    DocumentTransaction, DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule,
+    FieldType, IndexBound, IndexCursor, IndexDefinition, IndexQuery, IndexQueryPlan, IndexValue,
+    LookupEntry, LookupResult, PartialFilter, QueryPlan,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{

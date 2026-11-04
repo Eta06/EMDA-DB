@@ -12,7 +12,7 @@ jobs:
   recovery:
     name: Recovery parser and fail-closed behavior
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -90,6 +90,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/compact-exchange-corpus"
           cp fuzz/compact-exchange-seeds/* "$RUNNER_TEMP/compact-exchange-corpus/"
           cargo +nightly-2026-11-03 fuzz run compact_exchange "$RUNNER_TEMP/compact-exchange-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
+      - name: Run document transaction and index model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/document-model-corpus"
+          cp fuzz/document-model-seeds/* "$RUNNER_TEMP/document-model-corpus/"
+          cargo +nightly-2026-11-03 fuzz run document_model "$RUNNER_TEMP/document-model-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
