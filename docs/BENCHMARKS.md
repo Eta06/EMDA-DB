@@ -287,6 +287,15 @@ python3 scripts/backup_validation_compare.py --directory /path/to/disk --output 
 
 The defaults use 10,000 and 200,000 base keys plus a 4,096-key suffix, 128-byte keys, 64-byte values and five fresh processes per revision. The driver alternates order and records VM/cgroup noise. RSS excludes OS page cache, and a local restore is not an off-host drill or physical power-loss test.
 
+The [paired local results](../benchmarks/results/2026-11-04-streaming-restore-comparison.json) compare the full-index validator at `0b53c5e` with the streaming validator at `be4a0a8` on the same virtualized overlay filesystem. The baseline used the same benchmark example copied into its source tree. Medians across five fresh processes per version were:
+
+| Base keys | Previous restore time | Streaming restore time | Previous peak process RSS | Streaming peak process RSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 21.68 ms | 14.61 ms | 4,812 KiB | 1,712 KiB |
+| 200,000 | 300.26 ms | 190.73 ms | 49,468 KiB | 1,712 KiB |
+
+All runs produced the same restored-log digest for each fixture and passed sampled value checks after reopening. The measured restore excludes that subsequent ordinary-store reopen, which builds a full index. Peak RSS excludes page cache and does not bound total memory. Both quiet checks passed; individual runs recorded up to 6.67% VM steal in the small case and 0.98% in the larger case, with no cgroup throttling or direct reclaim observed. Storage backing and host interference were not controlled. These warm-cache measurements do not establish production latency or off-host restore safety.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.
