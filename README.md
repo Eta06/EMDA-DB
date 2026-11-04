@@ -40,6 +40,8 @@ A [scalar range-query comparison](docs/RANGE_QUERY_COMPARISON_2026_11_04.md) mea
 
 A [compound equality-query comparison](docs/COMPOUND_QUERY_COMPARISON_2026_11_04.md) measures a complete two-field tuple against full scans and SQLite, with raw samples and a repeat.
 
+A [compound membership comparison](docs/COMPOUND_MEMBERSHIP_COMPARISON_2026_11_04.md) measures four tuple probes against scans and SQLite. The planned path improved on our scan, while SQLite's indexed path was faster in these samples.
+
 A [membership union comparison](docs/MEMBERSHIP_UNION_COMPARISON_2026_11_04.md) measures two indexed scalar probes against scans and SQLite. The new path improved the sampled prototype queries; SQLite remained faster on the indexed cases.
 
 A [grouped statistics comparison](docs/AGGREGATE_STATS_COMPARISON_2026_11_04.md) measures full scans and records lower SQLite latency on the sampled workload, with explicit JSON-versus-normalized-column differences. A [streaming follow-up](docs/AGGREGATE_STREAM_COMPARISON_2026_11_04.md) improved the sampled prototype median, while SQLite remained faster.
