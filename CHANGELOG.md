@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- A reproducible process-RSS and creation-time comparison for ordinary and checkpoint-backed snapshots.
 - On-demand reclamation of expired, idle checkpoint-backed snapshots, skipping views with active reads.
 - Bounded process-local checkpoint-backed snapshots, with stable point and paginated reads across later writes and checkpoint rollover, explicit cancellation and optional operation-boundary deadlines.
 - A reproducible checkpoint range-width transaction benchmark with a SQLite comparison and post-reopen verification.

@@ -316,6 +316,17 @@ The [paired local results](../benchmarks/results/2026-11-04-checkpoint-compactio
 
 Compacted record bytes matched in every run. The checkpoint-backed path also emitted a 7,001,092-byte checkpoint for the 50,000-key case, in addition to a 10,213,804-byte compacted log; the ordinary copy had the same log size and no checkpoint. Both quiet checks passed; individual runs recorded up to 2.22% VM steal in the smaller case and 0.94% in the larger, with no cgroup throttling or direct reclaim observed. The VM host and overlay backing were not controlled. RSS excludes page cache, and these warm-cache measurements do not establish production performance or total-memory bounds.
 
+## Checkpoint snapshot memory comparison
+
+`examples/checkpoint_snapshot_bench.rs` opens a prepared store in a fresh Linux process, captures several snapshots, records creation times and process RSS, and checks sampled base and suffix values in each view. The ordinary mode loads and copies a bounded full index; the checkpoint mode loads a bounded suffix overlay and copies that overlay plus the checkpoint block directory. `scripts/checkpoint_snapshot_compare.py` prepares fixtures with `index_memory_bench`, alternates the supported modes, pins the benchmark and driver separately, and records source and binary hashes and VM/cgroup noise. Ordinary snapshots are omitted when their documented key or aggregate limits would reject the configuration.
+
+```sh
+cargo build --release --locked --example index_memory_bench --example checkpoint_snapshot_bench
+python3 scripts/checkpoint_snapshot_compare.py --directory /workspace --output /tmp/checkpoint-snapshot-results.json
+```
+
+Defaults use 12,000 and 200,000 checkpointed keys, 4,096 suffix keys, 128-byte keys, four snapshots and five rounds. Snapshot creation times exclude store opening and fixture preparation. Process RSS and high-water RSS exclude the OS page cache and are not total-memory quotas. The benchmark does not exercise concurrent writes, physical power loss or off-host recovery.
+
 ## Checkpoint transaction range comparison
 
 `examples/checkpoint_range_bench.rs` runs one-client transactions over a store of ordered keys. Each transaction reads a one-entry page from an exclusive bounded range and increments a separate counter; it verifies the first entry and checks the counter after reopening. The checkpoint read-set path captures the entire requested range before returning that page. SQLite uses a `WITHOUT ROWID` table, cached statements, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level checksums. The two engines have different isolation and locking implementations; the workload does not include a concurrent writer or measure range revalidation after an intervening write.
