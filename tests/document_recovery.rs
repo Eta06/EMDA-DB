@@ -134,3 +134,43 @@ fn acknowledged_document_and_index_survive_process_termination() {
         }
     }
 }
+
+#[test]
+fn document_indexes_survive_managed_checkpoint_compaction_and_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("live");
+    let checkpoint = root.path().join("base");
+    let store = Store::open(&path).unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let store = CheckpointStore::open_with_resource_limits(
+        &path,
+        &checkpoint,
+        &digest,
+        4096,
+        16,
+        4096,
+        None,
+    )
+    .unwrap();
+    store.rollover_managed(root.path().join("managed")).unwrap();
+    store.enable_automatic_checkpoints().unwrap();
+    let db = DocumentDatabase::with_checkpoint_store(&store);
+    setup(&db);
+    db.transaction(|tx| {
+        tx.insert("c", "acked", &json!({"n":7}))?;
+        tx.put_raw(b"receipt", b"acked")
+    })
+    .unwrap();
+    let (store, _) = store
+        .compact_and_replace(root.path().join("previous"))
+        .unwrap();
+    verify(&DocumentDatabase::with_checkpoint_store(&store));
+    assert!(store.automatic_checkpoints_enabled().unwrap());
+    drop(store);
+    let store =
+        CheckpointStore::open_managed_with_resource_limits(&path, 4096, 16, 4096, None).unwrap();
+    let db = DocumentDatabase::with_checkpoint_store(&store);
+    verify(&db);
+    assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
+}

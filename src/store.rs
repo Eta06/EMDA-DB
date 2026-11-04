@@ -14,7 +14,7 @@ use std::sync::{Mutex, RwLock, RwLockReadGuard};
 mod atomic_batch;
 mod commit;
 mod compact;
-mod compact_exchange;
+pub(crate) mod compact_exchange;
 mod compact_stream;
 mod log_quota;
 mod read_set;

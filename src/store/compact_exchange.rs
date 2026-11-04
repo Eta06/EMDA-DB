@@ -29,7 +29,7 @@ fn source_directory_is_owned(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn paths(source: &Path, previous: &Path) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
+pub(crate) fn paths(source: &Path, previous: &Path) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
     let source = fs::canonicalize(source)?;
     let parent = source
         .parent()
@@ -63,13 +63,13 @@ fn paths(source: &Path, previous: &Path) -> io::Result<(PathBuf, PathBuf, PathBu
 }
 
 #[cfg(target_os = "linux")]
-fn exchange(source: &Path, previous: &Path) -> io::Result<()> {
+pub(crate) fn exchange(source: &Path, previous: &Path) -> io::Result<()> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
     renameat_with(CWD, source, CWD, previous, RenameFlags::EXCHANGE).map_err(Into::into)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn exchange(_source: &Path, _previous: &Path) -> io::Result<()> {
+pub(crate) fn exchange(_source: &Path, _previous: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic directory exchange currently requires Linux",

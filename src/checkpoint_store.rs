@@ -17,6 +17,7 @@ use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod automatic;
 mod commit;
+mod compact_exchange;
 mod read_set;
 mod rebuild;
 mod selection;

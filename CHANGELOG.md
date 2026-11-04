@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- A blocking Linux checkpoint-store compact-and-replace handoff retains the prior log and preserves managed selection, automatic checkpoint settings and per-open limits. Its process tests do not establish power-loss behavior.
+
 - A blocking Linux compact-and-replace handoff uses a verified sibling and atomic directory exchange, retains the old copy, preserves per-open limits, and rejects stale lock descriptors. Failure and process-kill tests do not establish power-loss safety.
 - Experimental document collections, JSON schemas, atomic CRUD/bulk updates, conditional operators, compound/unique/partial indexes, bounded queries, index verification and repair, basic aggregation and ID lookup over the existing transaction engine. See the document guide for limits and compatibility.
 
