@@ -1,5 +1,5 @@
 //! Read-only checkpoint plus bounded, validated log-suffix replay.
-use crate::checkpoint_view::CheckpointView;
+use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits};
 use crate::log::ValueLocation;
 use crate::record;
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
@@ -15,6 +15,34 @@ pub const MAX_RECOVERED_VIEW_TAIL_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_RECOVERED_VIEW_TAIL_KEYS: usize = 16_384;
 /// Maximum combined key bytes recorded in one recovered checkpoint overlay.
 pub const MAX_RECOVERED_VIEW_TAIL_KEY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Per-open logical admission limits for a read-only recovered checkpoint.
+/// These do not cover all allocations, elapsed time or other project files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveredViewLimits {
+    /// Maximum raw bytes in the replayed suffix.
+    pub max_tail_bytes: u64,
+    /// Maximum distinct suffix keys, including tombstones.
+    pub max_tail_keys: usize,
+    /// Maximum combined bytes of suffix keys.
+    pub max_tail_key_bytes: usize,
+    /// Optional maximum length of the entire log, including old history.
+    pub max_log_bytes: Option<u64>,
+    /// Maximum checkpoint file length and retained block-directory entries.
+    pub checkpoint_view: CheckpointViewLimits,
+}
+
+impl Default for RecoveredViewLimits {
+    fn default() -> Self {
+        Self {
+            max_tail_bytes: MAX_RECOVERED_VIEW_TAIL_BYTES,
+            max_tail_keys: MAX_RECOVERED_VIEW_TAIL_KEYS,
+            max_tail_key_bytes: MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
+            max_log_bytes: None,
+            checkpoint_view: CheckpointViewLimits::default(),
+        }
+    }
+}
 
 /// A read-only checkpoint view with its witnessed log suffix replayed.
 ///
@@ -58,9 +86,46 @@ impl RecoveredCheckpointView {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
     ) -> io::Result<Self> {
-        Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
-        let base = CheckpointView::open(path, checkpoint, trusted_digest)?;
-        Self::from_base(base, max_tail_bytes, max_tail_keys, max_tail_key_bytes)
+        Self::open_with_options(
+            path,
+            checkpoint,
+            trusted_digest,
+            RecoveredViewLimits {
+                max_tail_bytes,
+                max_tail_keys,
+                max_tail_key_bytes,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Opens with suffix, checkpoint and optional whole-log admission limits.
+    /// Whole-log admission happens before checkpoint prefix hashing. Limits
+    /// must be reapplied on reopen and do not bound total time or memory.
+    pub fn open_with_options(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: RecoveredViewLimits,
+    ) -> io::Result<Self> {
+        Self::validate_limits(
+            limits.max_tail_bytes,
+            limits.max_tail_keys,
+            limits.max_tail_key_bytes,
+        )?;
+        let base = CheckpointView::open_with_recovery_limits(
+            path,
+            checkpoint,
+            trusted_digest,
+            limits.checkpoint_view,
+            limits.max_log_bytes,
+        )?;
+        Self::from_base(
+            base,
+            limits.max_tail_bytes,
+            limits.max_tail_keys,
+            limits.max_tail_key_bytes,
+        )
     }
 
     pub(crate) fn validate_limits(

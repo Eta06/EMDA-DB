@@ -46,7 +46,7 @@ pub use document::{
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{
     MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,
-    RecoveredCheckpointView,
+    RecoveredCheckpointView, RecoveredViewLimits,
 };
 pub use staging::{StagingCleanup, cleanup_abandoned_staging};
 pub use store::{

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add optional whole-log and checkpoint admission limits to read-only checkpoint recovery, checking log length before full-prefix verification and preserving suffix limits.
+
 - Add bounded document `In` and `NotIn` value-membership predicates, sharing input and comparison limits with array predicates. The planner treats a singleton indexable `In` as a required equality and may use presence implications. These new `DocumentFilter` variants require downstream exhaustive matches to be updated; array filter limit error text has changed.
 
 - Run the cross-engine smoke on the Ubuntu 22.04 hosted image while MongoDB 8.0 rejects the Linux 7.0.0 kernel observed on GitHub's Ubuntu 24.04 runner.

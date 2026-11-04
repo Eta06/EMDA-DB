@@ -12,7 +12,7 @@ jobs:
   recovery:
     name: Recovery parser and fail-closed behavior
     runs-on: ubuntu-24.04
-    # Thirty-one sequential campaigns each run for a minute in addition to
+    # Thirty-two sequential campaigns each run for a minute in addition to
     # toolchain installation and target compilation.
     timeout-minutes: 60
     steps:
@@ -62,6 +62,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/recovered-view-order-corpus"
           cp fuzz/checkpoint-order-seeds/* "$RUNNER_TEMP/recovered-view-order-corpus/"
           cargo +nightly-2026-11-03 fuzz run recovered_view_order "$RUNNER_TEMP/recovered-view-order-corpus" -- -max_total_time=60 -max_len=1025 -timeout=10
+      - name: Run read-only recovery limits model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/readonly-recovery-limits-corpus"
+          cp fuzz/readonly-recovery-limits-seeds/* "$RUNNER_TEMP/readonly-recovery-limits-corpus/"
+          cargo +nightly-2026-11-03 fuzz run readonly_recovery_limits "$RUNNER_TEMP/readonly-recovery-limits-corpus" -- -max_total_time=60 -max_len=16 -timeout=10
       - name: Run writable checkpoint model fuzzing
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-store-corpus"

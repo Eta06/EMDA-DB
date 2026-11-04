@@ -225,3 +225,10 @@ path = "fuzz_targets/document_membership.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "readonly_recovery_limits"
+path = "fuzz_targets/readonly_recovery_limits.rs"
+test = false
+doc = false
+bench = false

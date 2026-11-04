@@ -140,12 +140,34 @@ impl CheckpointView {
         trusted_digest: &[u8; 32],
         limits: CheckpointViewLimits,
     ) -> io::Result<Self> {
+        Self::open_with_recovery_limits(path, checkpoint, trusted_digest, limits, None)
+    }
+
+    /// Opens with an optional whole-log byte limit in addition to the view
+    /// limits. An oversized log is rejected before checkpoint verification
+    /// hashes its covered prefix. This cap includes any unacknowledged or
+    /// later suffix, is reapplied on each open, and is not a time, total
+    /// memory or project-disk quota.
+    pub fn open_with_recovery_limits(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointViewLimits,
+        max_log_bytes: Option<u64>,
+    ) -> io::Result<Self> {
         limits.validate()?;
         let path = path.as_ref();
         let lock_file = File::open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_shared(&lock_file)?;
         crate::directory::verify_lock_identity(path, &lock_file)?;
-        Self::open_locked_with_limits(path, checkpoint.as_ref(), trusted_digest, lock_file, limits)
+        Self::open_locked_with_recovery_limits(
+            path,
+            checkpoint.as_ref(),
+            trusted_digest,
+            lock_file,
+            limits,
+            max_log_bytes,
+        )
     }
 
     // The caller owns a shared or exclusive lock for the entire view lifetime.
@@ -171,8 +193,27 @@ impl CheckpointView {
         lock_file: File,
         limits: CheckpointViewLimits,
     ) -> io::Result<Self> {
+        Self::open_locked_with_recovery_limits(
+            path,
+            checkpoint,
+            trusted_digest,
+            lock_file,
+            limits,
+            None,
+        )
+    }
+
+    fn open_locked_with_recovery_limits(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        lock_file: File,
+        limits: CheckpointViewLimits,
+        max_log_bytes: Option<u64>,
+    ) -> io::Result<Self> {
         limits.validate()?;
         let (log, boundary) = Log::open_checkpoint_view(path)?;
+        Self::check_log_limit(&log, max_log_bytes)?;
         let checkpoint = File::open(checkpoint)?;
         let mut blocks = Vec::new();
         let mut current: Option<BlockBuilder> = None;
@@ -222,7 +263,7 @@ impl CheckpointView {
         if let Some(block) = current {
             blocks.push(block.finish());
         }
-        let has_tail = log.len()? > prefix;
+        let has_tail = Self::check_log_limit(&log, max_log_bytes)? > prefix;
         Ok(Self {
             log: Arc::new(log),
             checkpoint,
@@ -236,6 +277,17 @@ impl CheckpointView {
             witnessed_boundary: boundary,
             _lock_file: Some(lock_file),
         })
+    }
+
+    fn check_log_limit(log: &Log, max_log_bytes: Option<u64>) -> io::Result<u64> {
+        let length = log.len()?;
+        if max_log_bytes.is_some_and(|limit| length > limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint view whole-log byte limit exceeded",
+            ));
+        }
+        Ok(length)
     }
 
     /// Number of live keys in this historical checkpoint.
