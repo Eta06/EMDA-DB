@@ -15,6 +15,7 @@ enum Fault {
     WriteBefore,
     WriteAfter,
     SyncBefore,
+    SyncTimeout,
     SyncAfter,
     Panic,
     Block,
@@ -57,6 +58,12 @@ impl WitnessIo for Controlled {
         if armed {
             match self.fault {
                 Fault::SyncBefore => return Err(io::Error::other("injected fsync error")),
+                Fault::SyncTimeout => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "injected fsync timeout",
+                    ));
+                }
                 Fault::Panic => panic!("injected sync panic"),
                 Fault::Block => {
                     self.entered.send(()).unwrap();
@@ -177,6 +184,92 @@ fn metadata_fsync_must_complete_before_publication_or_acknowledgement() {
         Err(mpsc::TryRecvError::Empty)
     ));
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+}
+
+#[test]
+fn transaction_deadline_during_fsync_does_not_report_an_aborted_commit() {
+    use std::time::Instant;
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = Arc::new(store(
+        dir.path(),
+        Fault::Block,
+        Arc::clone(&armed),
+        entered_tx,
+        resume_rx,
+    ));
+    store.put(b"key", b"old").unwrap();
+    armed.store(true, Ordering::Release);
+    let writing = Arc::clone(&store);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let worker = thread::spawn(move || {
+        writing.transaction_until(deadline, TransactionMode::ReadSet, |tx| {
+            tx.put(b"key", b"new")
+        })
+    });
+    let entered = entered_rx.recv_timeout(Duration::from_secs(5));
+    if entered.is_ok() {
+        thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+        );
+    }
+    let _ = resume_tx.send(());
+    let result = worker.join().unwrap();
+    entered.expect("transaction did not enter metadata synchronization");
+    result.unwrap();
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+    drop(store);
+    assert_eq!(
+        Store::open(dir.path())
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"new"[..])
+    );
+}
+
+#[test]
+fn transaction_fsync_timeout_remains_an_unknown_operation_error() {
+    use std::time::Instant;
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, _) = mpsc::channel();
+    let (_, resume_rx) = mpsc::channel();
+    let store = store(
+        dir.path(),
+        Fault::SyncTimeout,
+        Arc::clone(&armed),
+        entered_tx,
+        resume_rx,
+    );
+    store.put(b"a", b"old").unwrap();
+    store.put(b"b", b"old").unwrap();
+    armed.store(true, Ordering::Release);
+    let result = store.transaction_until(
+        Instant::now() + Duration::from_secs(30),
+        TransactionMode::ReadSet,
+        |tx| {
+            tx.put(b"a", b"new")?;
+            tx.put(b"b", b"new")
+        },
+    );
+    match result {
+        Err(TimedTransactionError::Operation(error)) => {
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut)
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+    assert!(store.get(b"a").is_err());
+    drop(store);
+    let reopened = Store::open(dir.path()).unwrap();
+    let values = reopened.get_many(&[b"a", b"b"]).unwrap();
+    assert!(
+        values == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
+            || values == vec![Some(b"new".to_vec()), Some(b"new".to_vec())]
+    );
 }
 
 #[test]

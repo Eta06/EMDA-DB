@@ -26,7 +26,9 @@ pub use snapshot::{
     MAX_ACTIVE_SNAPSHOTS, MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES,
     MAX_SNAPSHOT_TOTAL_KEYS, Snapshot,
 };
-pub use transaction::{MAX_TRANSACTION_STAGED_TOTAL_BYTES, Transaction};
+pub use transaction::{
+    MAX_TRANSACTION_STAGED_TOTAL_BYTES, TimedTransactionError, Transaction, TransactionMode,
+};
 
 struct Inner {
     index: BTreeMap<Vec<u8>, ValueLocation>,

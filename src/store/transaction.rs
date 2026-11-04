@@ -3,10 +3,76 @@ use super::*;
 use crate::record::batch::{
     BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS, encode_payload,
 };
+use std::fmt;
+use std::time::Instant;
 
 /// Maximum combined encoded staged-record bytes across transactions on one open store.
 /// This does not include allocator overhead, snapshots, returned values, or commit buffers.
 pub const MAX_TRANSACTION_STAGED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+
+/// Validation and admission rules for a deadline-limited transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransactionMode {
+    /// Conflict on any intervening mutation.
+    Conservative,
+    /// Validate observed points and complete requested ranges.
+    ReadSet,
+    /// Read-set validation with FIFO admission among participating callers.
+    ReadSetFifo,
+}
+
+/// An engine-detected deadline expiry or another transaction error.
+#[derive(Debug)]
+pub enum TimedTransactionError {
+    /// The engine detected expiry before starting this transaction's commit.
+    DeadlineExceeded,
+    /// A callback, validation, admission, or I/O error. A commit I/O error can
+    /// have an unknown outcome, including an I/O error of kind `TimedOut`.
+    Operation(io::Error),
+}
+
+impl fmt::Display for TimedTransactionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeadlineExceeded => {
+                formatter.write_str("transaction deadline exceeded before commit")
+            }
+            Self::Operation(error) => write!(formatter, "transaction failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for TimedTransactionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DeadlineExceeded => None,
+            Self::Operation(error) => Some(error),
+        }
+    }
+}
+
+impl From<io::Error> for TimedTransactionError {
+    fn from(error: io::Error) -> Self {
+        Self::Operation(error)
+    }
+}
+
+impl TimedTransactionError {
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::DeadlineExceeded => io::Error::new(io::ErrorKind::TimedOut, self),
+            Self::Operation(error) => error,
+        }
+    }
+}
+
+fn check_deadline(deadline: Option<Instant>) -> Result<(), TimedTransactionError> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err(TimedTransactionError::DeadlineExceeded)
+    } else {
+        Ok(())
+    }
+}
 
 pub(super) struct TransactionBudget {
     used: usize,
@@ -275,7 +341,8 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, false)
+        self.run_transaction(action, false, false, None)
+            .map_err(TimedTransactionError::into_io)
     }
 
     /// Runs a serializable transaction validating its point and range reads.
@@ -290,7 +357,8 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, false)
+        self.run_transaction(action, true, false, None)
+            .map_err(TimedTransactionError::into_io)
     }
 
     /// Runs a read-set transaction with FIFO admission among calls to this method.
@@ -304,7 +372,35 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, true)
+        self.run_transaction(action, true, true, None)
+            .map_err(TimedTransactionError::into_io)
+    }
+
+    /// Runs a transaction with a monotonic, operation-boundary deadline.
+    ///
+    /// `DeadlineExceeded` means this transaction's staged changes were not
+    /// submitted for commit. A callback or commit can instead return an
+    /// `Operation` error, including an I/O timeout with an unknown outcome.
+    /// Callback side effects and independent store operations are not rolled
+    /// back. A callback that forwards an expired snapshot read returns that
+    /// read error as `Operation`, not `DeadlineExceeded`.
+    ///
+    /// FIFO admission can time out while waiting in its queue. Callback work,
+    /// ordinary lock waits and I/O are not forcibly interrupted. After commit
+    /// starts, synchronization runs to completion and can return success after
+    /// the deadline; an I/O failure must retain its unknown-outcome semantics.
+    pub fn transaction_until<T>(
+        &self,
+        deadline: Instant,
+        mode: TransactionMode,
+        action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
+    ) -> Result<T, TimedTransactionError> {
+        let (track_reads, fifo) = match mode {
+            TransactionMode::Conservative => (false, false),
+            TransactionMode::ReadSet => (true, false),
+            TransactionMode::ReadSetFifo => (true, true),
+        };
+        self.run_transaction(action, track_reads, fifo, Some(deadline))
     }
 
     fn run_transaction<T>(
@@ -312,8 +408,21 @@ impl Store {
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
         track_reads: bool,
         fifo: bool,
-    ) -> io::Result<T> {
-        let snapshot = self.snapshot(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES)?;
+        deadline: Option<Instant>,
+    ) -> Result<T, TimedTransactionError> {
+        check_deadline(deadline)?;
+        let snapshot = if let Some(deadline) = deadline {
+            self.snapshot_until(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES, deadline)
+                .map_err(|error| {
+                    if error.kind() == io::ErrorKind::TimedOut {
+                        TimedTransactionError::DeadlineExceeded
+                    } else {
+                        TimedTransactionError::Operation(error)
+                    }
+                })?
+        } else {
+            self.snapshot(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES)?
+        };
         let mut txn = Transaction {
             snapshot,
             staged: BTreeMap::new(),
@@ -321,10 +430,23 @@ impl Store {
             read_set: track_reads.then(|| Mutex::new(super::read_set::ReadSet::default())),
         };
         let result = action(&mut txn)?;
+        check_deadline(deadline)?;
         // Opt-in FIFO admission does not replace the writer barrier protecting
         // validation, publication and synchronization.
         let _turn = if fifo {
-            Some(self.transaction_queue.enter()?)
+            Some(if deadline.is_some() {
+                self.transaction_queue
+                    .enter_until(deadline)
+                    .map_err(|error| {
+                        if error.kind() == io::ErrorKind::TimedOut {
+                            TimedTransactionError::DeadlineExceeded
+                        } else {
+                            TimedTransactionError::Operation(error)
+                        }
+                    })?
+            } else {
+                self.transaction_queue.enter()?
+            })
         } else {
             None
         };
@@ -332,8 +454,9 @@ impl Store {
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        check_deadline(deadline)?;
         if self.commits.failed() {
-            return Err(uncertain_error());
+            return Err(uncertain_error().into());
         }
         {
             let current = self.read()?;
@@ -354,7 +477,8 @@ impl Store {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "transaction conflict: observed state changed since snapshot",
-                ));
+                )
+                .into());
             }
         }
         if !txn.staged.is_empty() {
@@ -372,7 +496,10 @@ impl Store {
                 }
             }
             let payload = encode_payload(&operations)?;
+            check_deadline(deadline)?;
             self.write_batch_locked(&operations, &payload)?;
+        } else {
+            check_deadline(deadline)?;
         }
         Ok(result)
     }
@@ -382,9 +509,45 @@ impl Store {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn a_deadline_passed_while_waiting_for_the_writer_aborts_before_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        let writer = store.writes.write().unwrap();
+        let waiting = Arc::clone(&store);
+        let (staged_tx, staged_rx) = mpsc::channel();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let worker = thread::spawn(move || {
+            waiting.transaction_until(deadline, TransactionMode::Conservative, |tx| {
+                tx.put(b"key", b"value")?;
+                staged_tx.send(()).map_err(io::Error::other)
+            })
+        });
+        let staged = staged_rx.recv_timeout(Duration::from_secs(5));
+        thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+        );
+        drop(writer);
+        let result = worker.join().unwrap();
+        staged.expect("transaction callback did not finish staging");
+        assert!(matches!(
+            result,
+            Err(TimedTransactionError::DeadlineExceeded)
+        ));
+        assert!(store.get(b"key").unwrap().is_none());
+        drop(store);
+        assert!(
+            Store::open(directory.path())
+                .unwrap()
+                .get(b"key")
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn pending_reservation_is_released_during_unwind() {

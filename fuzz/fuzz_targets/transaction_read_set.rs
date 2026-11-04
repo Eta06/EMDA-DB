@@ -1,8 +1,9 @@
 #![no_main]
-use database_engine::{Store, Transaction};
+use database_engine::{Store, TimedTransactionError, Transaction, TransactionMode};
 use libfuzzer_sys::fuzz_target;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, ErrorKind};
+use std::time::{Duration, Instant};
 
 type Model = BTreeMap<u8, (u64, u8)>;
 
@@ -95,10 +96,25 @@ fuzz_target!(|data: &[u8]| {
         }
         Ok(())
     };
-    let result = if data[0] & 1 == 0 {
-        store.transaction_with_read_set(action)
-    } else {
-        store.transaction_with_read_set_fifo(action)
+    let result = match data[0] & 3 {
+        0 => store.transaction_with_read_set(action),
+        1 => store.transaction_with_read_set_fifo(action),
+        mode => store
+            .transaction_until(
+                Instant::now() + Duration::from_secs(60),
+                if mode == 2 {
+                    TransactionMode::ReadSet
+                } else {
+                    TransactionMode::ReadSetFifo
+                },
+                action,
+            )
+            .map_err(|error| match error {
+                TimedTransactionError::Operation(error) => error,
+                TimedTransactionError::DeadlineExceeded => {
+                    panic!("generous fuzz deadline unexpectedly expired")
+                }
+            }),
     };
     let points_match = points.iter().all(|key| initial.get(key) == live.get(key));
     let ranges_match = ranges.iter().all(|&(after, before)| {

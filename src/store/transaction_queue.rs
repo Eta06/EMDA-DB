@@ -3,6 +3,7 @@ use super::MAX_ACTIVE_SNAPSHOTS;
 use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Instant;
 
 struct Waiter {
     wake: Condvar,
@@ -35,6 +36,10 @@ impl TransactionQueue {
     }
 
     pub(super) fn enter(&self) -> io::Result<Turn<'_>> {
+        self.enter_until(None)
+    }
+
+    pub(super) fn enter_until(&self, deadline: Option<Instant>) -> io::Result<Turn<'_>> {
         let waiter = Arc::new(Waiter {
             wake: Condvar::new(),
         });
@@ -50,6 +55,12 @@ impl TransactionQueue {
         if state.failed {
             return Err(io::Error::other("transaction admission queue failed"));
         }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "transaction admission expired",
+            ));
+        }
         if state.queue.len() >= MAX_ACTIVE_SNAPSHOTS {
             return Err(io::Error::other("transaction admission queue full"));
         }
@@ -64,6 +75,22 @@ impl TransactionQueue {
                 wake_all(&state);
                 return Err(io::Error::other("transaction admission queue failed"));
             }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                let was_first = state
+                    .queue
+                    .front()
+                    .is_some_and(|entry| Arc::ptr_eq(entry, &waiter));
+                state.queue.retain(|entry| !Arc::ptr_eq(entry, &waiter));
+                if was_first {
+                    if let Some(next) = state.queue.front() {
+                        next.wake.notify_one();
+                    }
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "transaction admission expired",
+                ));
+            }
             if state
                 .queue
                 .front()
@@ -74,10 +101,21 @@ impl TransactionQueue {
                     waiter,
                 });
             }
-            state = match waiter.wake.wait(state) {
+            let waited = if let Some(deadline) = deadline {
+                waiter
+                    .wake
+                    .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+                    .map(|(state, _)| state)
+                    .map_err(|poison| poison.into_inner().0)
+            } else {
+                waiter
+                    .wake
+                    .wait(state)
+                    .map_err(|poison| poison.into_inner())
+            };
+            state = match waited {
                 Ok(state) => state,
-                Err(poison) => {
-                    let mut state = poison.into_inner();
+                Err(mut state) => {
                     state.failed = true;
                     state.queue.retain(|entry| !Arc::ptr_eq(entry, &waiter));
                     wake_all(&state);
@@ -241,5 +279,41 @@ mod tests {
         drop(first);
         worker.join().unwrap().unwrap();
         assert_eq!(store.get(b"fifo").unwrap().as_deref(), Some(&b"ok"[..]));
+    }
+
+    #[test]
+    fn fifo_deadline_removes_a_waiter_without_blocking_followers() {
+        use crate::{TimedTransactionError, TransactionMode};
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::Store::open(directory.path()).unwrap());
+        let first = store.transaction_queue.enter().unwrap();
+        let waiting = Arc::clone(&store);
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let result = waiting.transaction_until(deadline, TransactionMode::ReadSetFifo, |tx| {
+                tx.put(b"expired", b"must-not-commit")
+            });
+            done_tx.send(result).unwrap();
+        });
+        wait_for_count(&store.transaction_queue, 2);
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Err(TimedTransactionError::DeadlineExceeded)
+        ));
+        worker.join().unwrap();
+        assert_eq!(store.transaction_queue.queued_for_test(), 1);
+        assert!(store.get(b"expired").unwrap().is_none());
+        let following = Arc::clone(&store);
+        let follower = thread::spawn(move || {
+            following.transaction_with_read_set_fifo(|tx| tx.put(b"following", b"ok"))
+        });
+        wait_for_count(&store.transaction_queue, 2);
+        drop(first);
+        follower.join().unwrap().unwrap();
+        assert_eq!(
+            store.get(b"following").unwrap().as_deref(),
+            Some(&b"ok"[..])
+        );
     }
 }
