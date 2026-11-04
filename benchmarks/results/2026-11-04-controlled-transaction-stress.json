@@ -1,0 +1,23 @@
+{
+  "revision": "de1d060817166c12f7bc4046c5e88b13f791a310",
+  "git_status": "clean",
+  "started_utc": "2026-11-04T20:13:01Z",
+  "ended_utc": "2026-11-04T20:13:14Z",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "lib_test_binary_sha256": "2ee691b7172b072c56b562a23766cb3a9c066a5798c892c119b4bba69f0c2158",
+  "integration_test_binary_sha256": "add261a7a74e6fa4946d8b2cfafc51d404c6edaa29baf95e4175560d4996f5e4",
+  "runs": [
+    {
+      "command": "cargo +stable test --locked --lib cancellation_ -- --test-threads=1",
+      "repetitions": 20,
+      "tests_per_repetition": 7
+    },
+    {
+      "command": "cargo +stable test --locked --test transaction_cancellation concurrent_cancelled_and_committed_documents_remain_atomic_after_recovery -- --test-threads=1",
+      "repetitions": 20,
+      "tests_per_repetition": 1
+    }
+  ],
+  "result": "40 test invocations passed",
+  "scope": "Local concurrency and fault-injection repetitions on both backends: queued followers, lock-held cancellation, automatic rollover, cancellation during successful or failed sync, and six-client document/index/raw-key atomicity across reopen. Tests do not exhaust interleavings, real power loss or off-host recovery."
+}
