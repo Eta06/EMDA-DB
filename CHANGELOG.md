@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- A reproducible checkpoint range-width transaction benchmark with a SQLite comparison and post-reopen verification.
 - Bounded complete-range validation for checkpoint-backed read-set transactions. Scans observe their entire requested range, allowing writes outside it while detecting phantoms and changes beyond a returned page.
 - Optional checkpoint-backed transaction validation for observed point versions, allowing unrelated writes to proceed. Retained dependencies share the transaction reservation budget.
 - Operation-boundary deadlines for checkpoint-backed conservative and FIFO transactions, including timed queue admission and a distinct pre-commit expiry result. Commit I/O errors remain potentially uncertain.

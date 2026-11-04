@@ -316,6 +316,19 @@ The [paired local results](../benchmarks/results/2026-11-04-checkpoint-compactio
 
 Compacted record bytes matched in every run. The checkpoint-backed path also emitted a 7,001,092-byte checkpoint for the 50,000-key case, in addition to a 10,213,804-byte compacted log; the ordinary copy had the same log size and no checkpoint. Both quiet checks passed; individual runs recorded up to 2.22% VM steal in the smaller case and 0.94% in the larger, with no cgroup throttling or direct reclaim observed. The VM host and overlay backing were not controlled. RSS excludes page cache, and these warm-cache measurements do not establish production performance or total-memory bounds.
 
+## Checkpoint transaction range comparison
+
+`examples/checkpoint_range_bench.rs` runs one-client transactions over a store of ordered keys. Each transaction reads a one-entry page from an exclusive bounded range and increments a separate counter; it verifies the first entry and checks the counter after reopening. The checkpoint read-set path captures the entire requested range before returning that page. SQLite uses a `WITHOUT ROWID` table, cached statements, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level checksums. The two engines have different isolation and locking implementations; the workload does not include a concurrent writer or measure range revalidation after an intervening write.
+
+Build the benchmark and run it on a Linux fixture filesystem:
+
+```sh
+cargo build --release --example checkpoint_range_bench --locked
+python3 scripts/checkpoint_range_compare.py --directory /workspace --output /tmp/checkpoint-range-results.json
+```
+
+The driver alternates modes, pins the benchmark and driver to separate CPUs, records operation latencies and VM/cgroup noise, and verifies each process's results. Defaults use 20,000 keys, range widths of 10, 1,000 and 10,000 keys, 100 operations and five rounds. Fixture creation, checkpoint generation, warm-up and post-reopen verification are outside the operation timer. The results are synthetic warm-cache measurements, not a general performance or durability ranking.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the ordinary store's transaction validators; `checkpoint` uses the checkpoint-backed store's conservative transactions and `checkpoint-fifo` queues its callbacks and commits in FIFO order. `checkpoint-readset` and `checkpoint-readset-fifo` enable checkpoint point read-set validation without or with FIFO admission. Each prototype mode explicitly retries conflicts. `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. Earlier recorded runs predate the checkpoint option.
