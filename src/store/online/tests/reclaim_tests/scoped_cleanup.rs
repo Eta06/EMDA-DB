@@ -188,7 +188,10 @@ fn scoped_cleanup_preserves_retired_copy_if_current_log_is_corrupt() {
         1
     );
     assert!(retired.exists());
-    assert!(store.cleanup_retired_staging(&Default::default()).is_err());
+    assert_eq!(
+        retry_fixture_cleanup(&store).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
     assert!(retired.exists());
     let predecessor = retry_lock(|| Store::open(&retired)).unwrap();
     assert_eq!(
@@ -212,7 +215,13 @@ fn scoped_cleanup_keeps_retired_copy_when_verification_limits_are_too_small() {
         max_snapshot_keys: 0,
         ..Default::default()
     };
-    assert!(store.cleanup_retired_staging(&options).is_err());
+    let error = retry_fixture_cleanup_with_options(&store, &options).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert!(
+        error
+            .to_string()
+            .contains("snapshot key count limit exceeded")
+    );
     assert!(retired.exists());
     assert_eq!(retry_fixture_cleanup(&store).unwrap().removed_payloads, 1);
 }
