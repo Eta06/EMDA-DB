@@ -35,6 +35,66 @@ fn invalid(dir: &Path) {
 }
 
 #[test]
+fn persistent_v3_mixed_fixture_opens_without_rewriting_and_supports_later_writes() {
+    let dir = tempdir().unwrap();
+    let log = include_bytes!("fixtures/v3-mixed-records.log");
+    let anchor = include_bytes!("fixtures/v3-mixed-commit.state");
+    let boundary = include_bytes!("fixtures/v3-mixed-metadata.state");
+    install(dir.path(), log, anchor, Some(boundary));
+    fs::write(dir.path().join("store.lock"), []).unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        store
+            .get_many(&[b"alpha", b"beta", b"gamma", b"delta", b"empty"])
+            .unwrap(),
+        vec![
+            Some(b"one".to_vec()),
+            None,
+            Some(b"three".to_vec()),
+            Some(b"four".to_vec()),
+            Some(Vec::new())
+        ]
+    );
+    assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(dir.path().join("commit.state")).unwrap(), anchor);
+    assert_eq!(marker(dir.path()), boundary);
+    store.put(b"later", b"write").unwrap();
+    drop(store);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened.get(b"gamma").unwrap().as_deref(),
+        Some(&b"three"[..])
+    );
+    assert_eq!(
+        reopened.get(b"later").unwrap().as_deref(),
+        Some(&b"write"[..])
+    );
+}
+
+#[test]
+fn persistent_v3_fixture_rejects_missing_and_corrupt_metadata_without_modification() {
+    let log = include_bytes!("fixtures/v3-mixed-records.log");
+    let anchor = include_bytes!("fixtures/v3-mixed-commit.state");
+    let boundary = include_bytes!("fixtures/v3-mixed-metadata.state");
+    let mut corrupt = boundary.to_vec();
+    corrupt[12] ^= 1;
+    for metadata in [None, Some(corrupt.as_slice())] {
+        let dir = tempdir().unwrap();
+        install(dir.path(), log, anchor, metadata);
+        fs::write(dir.path().join("store.lock"), []).unwrap();
+        invalid(dir.path());
+        assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
+        assert_eq!(fs::read(dir.path().join("commit.state")).unwrap(), anchor);
+        if let Some(expected) = metadata {
+            assert_eq!(marker(dir.path()), expected);
+        } else {
+            let mut bytes = [0_u8; 36];
+            assert!(getxattr(dir.path().join("records.log"), NAME, &mut bytes[..]).is_err());
+        }
+    }
+}
+
+#[test]
 fn new_stores_use_metadata_and_each_acknowledgement_advances_it() {
     let dir = tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();

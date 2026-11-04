@@ -10,6 +10,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 - Optional transaction deadlines with typed pre-commit expiry, timed FIFO admission and tests that preserve unknown outcomes for commit I/O errors.
 - Fork/exec lock-lifecycle tests and an explicit process-ownership policy for stores and historical checkpoint views.
+- A persistent V3 mixed-record compatibility fixture, including its separately stored metadata witness.
 - Explicit, cooperative cleanup of newly tracked backup, restore, upgrade, checkpoint and compaction staging data. It uses versioned ownership markers and parent-directory advisory locks, skips unrecognized entries, and leaves older unmarked staging paths for manual review.
 - Optional FIFO admission for read-set transaction commits, with bounded queue and failure/panic wake-up handling. It orders only participating transactions and can increase median latency or retries. A short model-fuzz run is recorded in `benchmarks/results/2026-11-04-read-set-fifo-fuzz.json`.
 - An opt-in serializable read-set transaction mode that validates point reads and complete scan ranges, allowing unrelated writes to avoid conservative conflicts. Read dependencies and validation work are bounded; absent-key insert/delete cycles that restore absence need not conflict. Two short model-fuzz campaigns are recorded in `benchmarks/results/2026-11-03-read-set-fuzz.json`.
