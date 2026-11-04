@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Bounded checkpoint-store recovery of a complete unacknowledged tail, validated and synchronized before adoption. Incomplete records and suffix-limit failures leave the log and witness unchanged; recovery synchronization errors remain uncertain.
 - Explicit live checkpoint rollover that verifies and switches the checkpoint-backed store without releasing its exclusive lock. Checkpoint selection and the independently trusted digest remain the caller's responsibility.
 - Explicit checkpoint rollover for the checkpoint-backed writer, streaming its verified base and bounded suffix into a new checkpoint while retaining the historical key-count peak. Reopening with the separately trusted digest clears the overlay; rollover is not automatic and still hashes the full log prefix.
 - An experimental writable checkpoint-backed store with a bounded suffix overlay, serialized synchronized key operations, conditional updates, increments and atomic blind batches. It requires manual checkpoint rollover and does not yet provide transactions, snapshots or total-memory limits.

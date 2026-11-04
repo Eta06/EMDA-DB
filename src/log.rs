@@ -68,8 +68,13 @@ pub(crate) struct Log {
 
 impl Log {
     /// Reopen an already validated, locked witnessed log for appends without
-    /// building a second in-memory index. No unacknowledged tail is adopted.
-    pub(crate) fn open_checkpoint_writer(path: &Path, expected: u64) -> io::Result<Self> {
+    /// building a second in-memory index. The caller must validate the whole
+    /// suffix and synchronize any complete unacknowledged tail before use.
+    pub(crate) fn open_checkpoint_writer(
+        path: &Path,
+        expected: u64,
+        expected_len: u64,
+    ) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .append(true)
@@ -97,7 +102,8 @@ impl Log {
             let (witness, boundary) = Witness::open(path, id)?;
             (None, witness, boundary)
         };
-        if boundary != expected || file.metadata()?.len() != boundary {
+        if boundary != expected || expected_len < boundary || file.metadata()?.len() != expected_len
+        {
             return Err(record::invalid_data(
                 "log or witness changed while opening checkpoint writer",
             ));

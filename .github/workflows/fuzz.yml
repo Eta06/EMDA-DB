@@ -60,6 +60,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/checkpoint-store-corpus"
           cp fuzz/checkpoint-store-seeds/* "$RUNNER_TEMP/checkpoint-store-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_store "$RUNNER_TEMP/checkpoint-store-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
+      - name: Run writable checkpoint recovery fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/checkpoint-recovery-corpus"
+          cp fuzz/checkpoint-recovery-seeds/* "$RUNNER_TEMP/checkpoint-recovery-corpus/"
+          cargo +nightly-2026-11-03 fuzz run checkpoint_recovery "$RUNNER_TEMP/checkpoint-recovery-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

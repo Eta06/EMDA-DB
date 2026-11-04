@@ -266,6 +266,15 @@ python3 scripts/checkpoint_rollover_compare.py --directory /path/to/disk --outpu
 
 The defaults use 10,000 and 200,000 base keys, a 4,096-key suffix, 128-byte keys, 64-byte values and five repetitions per mode. The driver rotates measured order and records VM/cgroup noise. Fixture creation, opens and validation reads are outside the timed operation but included in the noise samples. Use a real storage-backed directory, because `/tmp` can be memory-backed.
 
+The [local comparison](../benchmarks/results/2026-11-04-live-rollover-comparison.json) used those defaults on a virtualized overlay filesystem. Medians across five fresh processes per mode were:
+
+| Base keys | Ordinary checkpoint time | Live rollover time | Ordinary peak process RSS | Rollover peak process RSS |
+| ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 27.50 ms | 37.81 ms | 8,116 KiB | 3,580 KiB |
+| 200,000 | 364.99 ms | 471.23 ms | 97,340 KiB | 3,648 KiB |
+
+Each pair produced identical checkpoint digests. The checkpoint-backed path used substantially less sampled process memory but was slower in this experiment; unlike ordinary checkpoint creation, its timer includes switching and verifying the new live view. Its RSS excludes page cache, and its overlay, block-directory and buffer caps are not total process-memory limits. Both quiet checks passed; individual runs recorded up to 11.67% VM steal in the small case and 5.15% in the larger case, with no cgroup throttling or direct reclaim observed. The VM host and overlay backing were not controlled, and five warm-cache runs do not establish production performance.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.

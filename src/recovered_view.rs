@@ -21,7 +21,7 @@ pub const MAX_RECOVERED_VIEW_TAIL_KEY_BYTES: usize = 4 * 1024 * 1024;
 /// It keeps a bounded in-memory overlay of suffix keys, verifies every suffix
 /// record, and holds a shared advisory store lock. Cooperating writers cannot
 /// coexist with it. Opening rejects any bytes beyond the witnessed boundary;
-/// use ordinary `Store::open` to recover an unacknowledged complete tail first.
+/// use a writable store to recover an unacknowledged complete tail first.
 /// The independently trusted checkpoint digest and full prefix-hashing costs
 /// of `CheckpointView` still apply. This is not a writable disk-backed index.
 pub struct RecoveredCheckpointView {
@@ -86,15 +86,48 @@ impl RecoveredCheckpointView {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
     ) -> io::Result<Self> {
+        Self::from_base_mode(
+            base,
+            max_tail_bytes,
+            max_tail_keys,
+            max_tail_key_bytes,
+            false,
+        )
+    }
+
+    // Only an exclusive writer may adopt a complete unacknowledged tail,
+    // after this function validates it and before it publishes the view.
+    pub(crate) fn from_base_for_writer(
+        base: CheckpointView,
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+    ) -> io::Result<Self> {
+        Self::from_base_mode(
+            base,
+            max_tail_bytes,
+            max_tail_keys,
+            max_tail_key_bytes,
+            true,
+        )
+    }
+
+    fn from_base_mode(
+        base: CheckpointView,
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+        allow_unacknowledged: bool,
+    ) -> io::Result<Self> {
         Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let boundary = base.witnessed_boundary;
         let length = base.log.len()?;
-        if length != boundary {
+        if length < boundary || (!allow_unacknowledged && length != boundary) {
             return Err(record::invalid_data(
-                "log has an unacknowledged tail; recover it before opening a recovered view",
+                "log has an unacknowledged tail; open a writable store to recover it first",
             ));
         }
-        let tail_bytes = boundary
+        let tail_bytes = length
             .checked_sub(base.log_boundary())
             .ok_or_else(|| record::invalid_data("checkpoint is beyond the witnessed boundary"))?;
         if tail_bytes > max_tail_bytes {
@@ -127,7 +160,7 @@ impl RecoveredCheckpointView {
                 overlay.insert(key, location);
                 Ok(())
             })?;
-        if base.log.len()? != boundary {
+        if base.log.len()? != length {
             return Err(record::invalid_data(
                 "log length changed while opening recovered view",
             ));

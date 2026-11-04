@@ -60,7 +60,8 @@ impl CheckpointStore {
     }
 
     /// Opens with limits no greater than the recovered view's hard limits.
-    /// Complete but unacknowledged log tails are rejected, not adopted.
+    /// A complete unacknowledged tail is validated and synchronized before
+    /// it is adopted; incomplete or invalid tails fail without truncation.
     pub fn open_with_limits(
         path: impl AsRef<Path>,
         checkpoint: impl AsRef<Path>,
@@ -69,25 +70,59 @@ impl CheckpointStore {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
     ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            max_tail_bytes,
+            max_tail_keys,
+            max_tail_key_bytes,
+            Log::open_checkpoint_writer,
+        )
+    }
+
+    fn open_using(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+        open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
+    ) -> io::Result<Self> {
         RecoveredCheckpointView::validate_limits(
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
         )?;
-        let path = std::fs::canonicalize(path.as_ref())?;
+        let path = std::fs::canonicalize(path)?;
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
             .open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
-        let base = CheckpointView::open_locked(&path, checkpoint.as_ref(), trusted_digest, lock)?;
-        let view = RecoveredCheckpointView::from_base(
+        let base = CheckpointView::open_locked(&path, checkpoint, trusted_digest, lock)?;
+        let view = RecoveredCheckpointView::from_base_for_writer(
             base,
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
         )?;
-        let log = Log::open_checkpoint_writer(&path, view.base.witnessed_boundary)?;
+        let boundary = view.base.witnessed_boundary;
+        let length = view
+            .base
+            .log_boundary()
+            .checked_add(view.tail_bytes)
+            .ok_or_else(|| record::invalid_data("checkpoint suffix length overflow"))?;
+        let log = open_writer(&path, boundary, length)?;
+        if length > boundary {
+            log.sync_data().map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("failed to synchronize recovered tail; outcome is uncertain: {error}"),
+                )
+            })?;
+        }
         let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
         Ok(Self {
             log,
