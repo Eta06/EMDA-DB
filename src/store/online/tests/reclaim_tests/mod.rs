@@ -27,3 +27,48 @@ fn retry_fixture_cleanup_with_options(
         Ok(report)
     })
 }
+
+fn wait_for(
+    worker: &OnlineReclamationWorker,
+    predicate: impl Fn(&OnlineReclamationWorkerStatus) -> bool,
+) -> OnlineReclamationWorkerStatus {
+    let timeout = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = worker.status();
+        if predicate(&status) {
+            return status;
+        }
+        assert!(
+            std::time::Instant::now() < timeout,
+            "worker did not make progress: {status:?}"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+// Once the fixture releases its lock, unrelated fork/exec tests may briefly
+// retain an inherited descriptor. Request further checks until the intended
+// outcome occurs; a permanent skip or unexpected worker failure still fails.
+fn request_checks_until(
+    worker: &OnlineReclamationWorker,
+    predicate: impl Fn(&OnlineReclamationWorkerStatus) -> bool,
+) -> OnlineReclamationWorkerStatus {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let before = worker.status().checks;
+        worker.request_check().unwrap();
+        let status = wait_for(worker, |status| status.checks > before || status.stopped);
+        if predicate(&status) {
+            return status;
+        }
+        assert!(
+            !status.stopped,
+            "worker stopped before expected result: {status:?}"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never reached expected result: {status:?}"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}

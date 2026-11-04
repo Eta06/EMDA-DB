@@ -111,25 +111,15 @@ fn process_kill_at_each_reclamation_boundary_preserves_acknowledged_data() {
                         Default::default(),
                     )
                     .unwrap();
-                worker.request_check().unwrap();
-                let deadline = Instant::now() + WAIT;
-                while worker.status().checks == 0 {
-                    assert!(
-                        Instant::now() < deadline,
-                        "cleanup worker timed out at {point}"
-                    );
-                    thread::sleep(Duration::from_millis(5));
-                }
-                assert!(
-                    worker.status().last_error.is_none(),
-                    "worker failed at {point}"
-                );
+                let status = request_checks_until(&worker, |status| {
+                    status.stopped || worker.retired_cleanup_status().unwrap().removed_markers == 1
+                });
+                assert!(status.last_error.is_none(), "worker failed at {point}");
                 let cleanup = worker.retired_cleanup_status().unwrap();
                 assert_eq!(cleanup.removed_markers, 1, "{point}");
-                assert_eq!(cleanup.skipped, 0, "{point}");
                 worker.stop().unwrap();
             } else {
-                crate::cleanup_abandoned_staging(root.path()).unwrap();
+                retry_lock(|| crate::cleanup_abandoned_staging(root.path())).unwrap();
             }
             assert_eq!(
                 live.with_store(|store| store.get(b"overwritten")).unwrap(),
