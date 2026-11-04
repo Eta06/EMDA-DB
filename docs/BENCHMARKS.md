@@ -668,3 +668,7 @@ A [cross-engine smoke workflow](../.github/workflows/compound-range-smoke.yml) r
 ### Two-value membership union
 
 [`membership_union_bench`](../examples/membership_union_bench.rs) uses the shared nonunique-query harness to verify two populated scalar groups, comparing a prototype collection scan and index union with SQLite's primary-table scan and expression index. The [comparison report](MEMBERSHIP_UNION_COMPARISON_2026_11_04.md) records repeated results and limitations. For a new run, build the example in release mode and pass `--membership` to [`nonunique_query_compare.py`](../scripts/nonunique_query_compare.py); its workload-identity check rejects the equality benchmark when membership was requested. The ordinary equality benchmark and membership benchmark share setup and result verification.
+
+### Transaction cancellation overhead
+
+[`transaction_before_after.py`](../scripts/transaction_before_after.py) alternates separately built binaries for the same two-key transaction workload and verifies every run's recovered counters and samples. It rejects dirty source checkouts and identical binaries; callers must build from the declared revisions in isolated Cargo target directories. The [paired cancellation comparison](TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) includes primary and repeat results, VM noise and the limitations of this small in-process workload.

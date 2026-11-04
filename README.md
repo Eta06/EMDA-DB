@@ -42,6 +42,8 @@ A [compound equality-query comparison](docs/COMPOUND_QUERY_COMPARISON_2026_11_04
 
 A [membership union comparison](docs/MEMBERSHIP_UNION_COMPARISON_2026_11_04.md) measures two indexed scalar probes against scans and SQLite. The new path improved the sampled prototype queries; SQLite remained faster on the indexed cases.
 
+A [transaction cancellation overhead comparison](docs/TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) measures the existing transaction APIs before and after cancellation support. Results varied across runs; the largest sampled slowdown did not repeat.
+
 A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.
 
 A [streaming scan comparison](docs/STREAM_SCAN_COMPARISON_2026_11_04.md) measures the filtered-query change against its prior implementation and SQLite, including a repeat and VM noise.
