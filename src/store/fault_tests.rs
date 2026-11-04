@@ -26,7 +26,7 @@ fn duplicated_store_lock_retains_ownership_until_the_duplicate_closes() {
 }
 
 #[derive(Clone, Copy)]
-enum Fault {
+pub(super) enum Fault {
     PartialAppend(usize),
     PanicAfterAppend(usize),
     SyncBefore,
@@ -117,7 +117,10 @@ impl LogIo for FaultIo {
     }
 }
 
-fn open_fault_store(dir: &TempDir, fault: Arc<Mutex<Option<Fault>>>) -> io::Result<Store> {
+pub(super) fn open_fault_store(
+    dir: &TempDir,
+    fault: Arc<Mutex<Option<Fault>>>,
+) -> io::Result<Store> {
     Store::open_using(dir.path(), |path, _may_initialize| {
         let file = OpenOptions::new()
             .read(true)
@@ -126,6 +129,22 @@ fn open_fault_store(dir: &TempDir, fault: Arc<Mutex<Option<Fault>>>) -> io::Resu
             .open(path.join("records.log"))?;
         File::open(path)?.sync_all()?;
         Log::from_io(Box::new(FaultIo { file, fault }))
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn open_versioned_fault_store(
+    path: &Path,
+    fault: Arc<Mutex<Option<Fault>>>,
+) -> io::Result<Store> {
+    Store::open_using(path, |path, initialize| {
+        let (mut log, index) = Log::open(path, initialize)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))?;
+        log.replace_io_for_test(Box::new(FaultIo { file, fault }));
+        Ok((log, index))
     })
 }
 

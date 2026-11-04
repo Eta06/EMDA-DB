@@ -14,7 +14,7 @@ mod schema_migration_faults;
 const NAME: &str = "user.db.commit.v3";
 
 #[derive(Clone, Copy)]
-enum Fault {
+pub(super) enum Fault {
     Read,
     WriteBefore,
     WriteAfter,
@@ -108,7 +108,7 @@ impl WitnessIo for Controlled {
     }
 }
 
-fn store(
+pub(super) fn store(
     path: &Path,
     fault: Fault,
     armed: Arc<AtomicBool>,
