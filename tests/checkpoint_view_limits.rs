@@ -112,7 +112,14 @@ fn explicit_rollover_cannot_adopt_an_oversized_checkpoint() {
     let destination = root.path().join("too-large");
     let error = store.rollover_to(&destination).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
-    assert!(destination.exists());
+    assert!(!destination.exists());
+    assert!(!fs::read_dir(root.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".emda-stage-v1-")
+    }));
     assert_eq!(fs::read(path.join("records.log")).unwrap(), before);
     assert_eq!(
         store.get(b"new-key").unwrap().as_deref(),
@@ -174,7 +181,7 @@ fn rollover_cannot_adopt_an_index_exceeding_the_block_limit() {
         store.rollover_to(&destination).unwrap_err().kind(),
         ErrorKind::InvalidInput
     );
-    assert!(destination.exists());
+    assert!(!destination.exists());
     assert_eq!(fs::read(path.join("records.log")).unwrap(), before);
     assert_eq!(
         store
@@ -230,6 +237,16 @@ fn automatic_rollover_limit_rejection_keeps_selection_and_acknowledged_writes() 
         selection
     );
     assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+    let automatic = path.join(".emda-auto-checkpoints-v1");
+    assert!(!automatic.join("slot-0").exists());
+    assert!(!automatic.join("slot-1").exists());
+    assert!(!fs::read_dir(automatic).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".emda-stage-v1-")
+    }));
     assert_eq!(
         store.get(b"one").unwrap().as_deref(),
         Some(&b"acknowledged"[..])
@@ -315,6 +332,136 @@ fn over_limit_compaction_candidate_does_not_replace_the_source() {
     let candidate = retry_lock(|| Store::open(&previous)).unwrap();
     assert_eq!(
         candidate.get(b"new").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}
+
+#[test]
+fn rollover_accepts_the_exact_checkpoint_byte_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let base = root.path().join("base");
+    let expected = root.path().join("expected");
+    let initial = Store::open(&path).unwrap();
+    initial.put(b"base", b"before").unwrap();
+    let base_digest = initial.checkpoint_to(&base).unwrap();
+    initial.put(b"new-key", b"acknowledged").unwrap();
+    let expected_digest = initial.checkpoint_to(&expected).unwrap();
+    let expected_bytes = fs::read(&expected).unwrap();
+    drop(initial);
+    let limits = CheckpointStoreLimits {
+        checkpoint_view: CheckpointViewLimits {
+            max_file_bytes: expected_bytes.len() as u64,
+            max_blocks: 1,
+        },
+        ..Default::default()
+    };
+    let store =
+        retry_lock(|| CheckpointStore::open_with_options(&path, &base, &base_digest, limits))
+            .unwrap();
+    let next = root.path().join("next");
+    assert_eq!(store.rollover_to(&next).unwrap(), expected_digest);
+    assert_eq!(fs::read(&next).unwrap(), expected_bytes);
+    assert_eq!(
+        store.get(b"new-key").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    drop(store);
+    let reopened =
+        retry_lock(|| CheckpointStore::open_with_options(&path, &next, &expected_digest, limits))
+            .unwrap();
+    assert_eq!(
+        reopened.get(b"new-key").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}
+
+#[test]
+fn independent_checkpoint_can_still_exceed_the_active_view_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let base = root.path().join("base");
+    let initial = Store::open(&path).unwrap();
+    initial.put(b"base", b"before").unwrap();
+    let base_digest = initial.checkpoint_to(&base).unwrap();
+    let base_bytes = fs::metadata(&base).unwrap().len();
+    drop(initial);
+    let limits = CheckpointStoreLimits {
+        checkpoint_view: CheckpointViewLimits {
+            max_file_bytes: base_bytes,
+            max_blocks: 1,
+        },
+        ..Default::default()
+    };
+    let store =
+        retry_lock(|| CheckpointStore::open_with_options(&path, &base, &base_digest, limits))
+            .unwrap();
+    store.put(b"new-key", b"acknowledged").unwrap();
+    let copy = root.path().join("independent");
+    let copy_digest = store.checkpoint_to(&copy).unwrap();
+    assert!(fs::metadata(&copy).unwrap().len() > base_bytes);
+    let rejected = root.path().join("rejected");
+    assert_eq!(
+        store.rollover_to(&rejected).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
+    assert!(!rejected.exists());
+    assert_eq!(
+        store.get(b"new-key").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &copy, &copy_digest)).unwrap();
+    assert_eq!(
+        reopened.get(b"new-key").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}
+
+#[test]
+fn managed_rollover_rejects_oversize_before_publishing_the_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let base = root.path().join("base");
+    let initial = Store::open(&path).unwrap();
+    initial.put(b"base", b"before").unwrap();
+    let base_digest = initial.checkpoint_to(&base).unwrap();
+    let base_bytes = fs::metadata(&base).unwrap().len();
+    drop(initial);
+    let limits = CheckpointStoreLimits {
+        checkpoint_view: CheckpointViewLimits {
+            max_file_bytes: base_bytes,
+            max_blocks: 1,
+        },
+        ..Default::default()
+    };
+    let store =
+        retry_lock(|| CheckpointStore::open_with_options(&path, &base, &base_digest, limits))
+            .unwrap();
+    store.rollover_managed(root.path().join("managed")).unwrap();
+    store.put(b"new-key", b"acknowledged").unwrap();
+    let selection = fs::read(path.join("checkpoint.selection")).unwrap();
+    let log = fs::read(path.join("records.log")).unwrap();
+    let rejected = root.path().join("rejected-managed");
+    assert_eq!(
+        store.rollover_managed(&rejected).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
+    assert!(!rejected.exists());
+    assert_eq!(
+        fs::read(path.join("checkpoint.selection")).unwrap(),
+        selection
+    );
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+    assert_eq!(
+        store.get(b"new-key").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    drop(store);
+    let reopened =
+        retry_lock(|| CheckpointStore::open_managed_with_options(&path, limits)).unwrap();
+    assert_eq!(
+        reopened.get(b"new-key").unwrap().as_deref(),
         Some(&b"acknowledged"[..])
     );
 }

@@ -100,7 +100,7 @@ fuzz_target!(|data: &[u8]| {
                     Err(error) => {
                         assert!(!eligible, "unexpected rollover error: {error}");
                         assert_eq!(error.kind(), ErrorKind::InvalidInput);
-                        assert!(next.exists());
+                        assert!(!next.exists());
                     }
                 }
                 assert_eq!(std::fs::read(path.join("records.log")).unwrap(), before);

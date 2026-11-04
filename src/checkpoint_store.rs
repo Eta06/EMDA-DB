@@ -520,7 +520,9 @@ impl CheckpointStore {
     /// bounded suffix overlay while mutations are paused. The independently
     /// trusted digest must be retained separately. The current instance keeps
     /// using its original checkpoint; close it and reopen with the new one to
-    /// clear the overlay. A publication sync error has an uncertain outcome.
+    /// clear the overlay. This independent copy is not subject to the current
+    /// view's lower file-size or block limits. A publication sync error has an
+    /// uncertain outcome.
     pub fn checkpoint_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
         self.checkpoint_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
@@ -532,14 +534,16 @@ impl CheckpointStore {
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let state = self.write()?;
-        self.create_checkpoint(&state, destination, sync_parent)
+        self.create_checkpoint(&state, destination, sync_parent, false)
     }
 
     /// Creates a checkpoint and switches the running instance to it under the
     /// same exclusive lock, clearing the suffix overlay after verification.
     /// The returned digest must be persisted separately by the caller. An
     /// error after publication can leave the new checkpoint at its destination;
-    /// the instance continues using the previous checkpoint in that case.
+    /// the instance continues using the previous checkpoint in that case. The
+    /// configured view file-size and block limits are checked during creation;
+    /// exceeding either rejects the checkpoint before its publication.
     pub fn rollover_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
         self.rollover_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
@@ -557,7 +561,7 @@ impl CheckpointStore {
                 "managed stores require rollover_managed",
             ));
         }
-        let digest = self.create_checkpoint(&state, destination, sync_parent)?;
+        let digest = self.create_checkpoint(&state, destination, sync_parent, true)?;
         let next_view = self.rollover_view(&state, destination, &digest)?;
         state.view = next_view;
         state.overlay_key_bytes = 0;
@@ -630,10 +634,15 @@ impl CheckpointStore {
         }
         // Check path encoding and length before creating any checkpoint.
         selection::Selection::new(destination.clone(), [0; 32])?;
-        let digest = self.create_checkpoint(&state, &destination, |parent| {
-            sync_checkpoint_parent(parent)?;
-            selection::sync_ancestors(parent)
-        })?;
+        let digest = self.create_checkpoint(
+            &state,
+            &destination,
+            |parent| {
+                sync_checkpoint_parent(parent)?;
+                selection::sync_ancestors(parent)
+            },
+            true,
+        )?;
         let next_view = self.rollover_view(&state, &destination, &digest)?;
         let next = selection::Selection::new(destination, digest)?;
         if let Err(error) = selection::publish(
@@ -697,6 +706,7 @@ impl CheckpointStore {
         state: &State,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        for_rollover: bool,
     ) -> io::Result<[u8; 32]> {
         let (count, peak) = self.verify_for_checkpoint(state)?;
         crate::checkpoint::create_streaming_with_sync(
@@ -711,6 +721,7 @@ impl CheckpointStore {
                 })
             },
             sync_parent,
+            for_rollover.then_some(self.checkpoint_view_limits),
         )
     }
 

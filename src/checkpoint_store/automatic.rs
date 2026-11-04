@@ -278,6 +278,7 @@ impl CheckpointStore {
             count,
             peak,
             stage.path(),
+            Some(self.checkpoint_view_limits),
             |emit| {
                 state.view.visit_entries(None, None, |key, location| {
                     emit(key, location)?;

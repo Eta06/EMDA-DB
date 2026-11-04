@@ -167,6 +167,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
         target_count,
         peak,
         staging.path(),
+        None,
         |emit| {
             target.visit_records(0, Some(boundary), |key, location| {
                 let location = location
