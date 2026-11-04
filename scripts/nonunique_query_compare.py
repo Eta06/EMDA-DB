@@ -32,7 +32,7 @@ def parse_cases(text):
     return cases
 
 
-def validate(result, documents, matches, cycles, index_name="docs_group"):
+def validate(result, documents, matches, cycles, index_name="docs_group", membership=False):
     if (result.get("documents") != documents or result.get("matches") != matches
             or result.get("cycles") != cycles or result.get("reopen_verified") is not True
             or result.get("sqlite_journal") != "wal" or result.get("sqlite_synchronous") != 2
@@ -41,6 +41,8 @@ def validate(result, documents, matches, cycles, index_name="docs_group"):
             or "USING INDEX" in result.get("sqlite_scan_plan", "")
             or not result.get("sqlite_version")):
         raise ValueError("benchmark identity, configuration or recovery check failed")
+    if membership and result.get("predicate") != "membership":
+        raise ValueError("benchmark did not execute the requested membership predicate")
     for variant in VARIANTS:
         samples = result.get("samples_ns", {}).get(variant)
         if not isinstance(samples, list) or len(samples) != cycles:
@@ -60,6 +62,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--cases", default="100:10,1000:10,1000:100")
     parser.add_argument("--index-name", choices=("docs_group", "docs_number", "docs_pair", "docs_partial", "docs_tenant_number"), default="docs_group")
+    parser.add_argument("--membership", action="store_true", help="expect the two-value membership workload")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=50)
     args = parser.parse_args()
@@ -70,11 +73,14 @@ def main():
     cpus = sorted(os.sched_getaffinity(0))
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or os.path.lexists(args.output) or len(cpus) < 2
+            or (args.membership and args.index_name != "docs_group")
             or not 2 <= args.rounds <= 50 or not 1 <= args.cycles <= 100000):
         parser.error("invalid paths, CPU availability, rounds or cycle count")
     benchmark_cpu, driver_cpu = cpus[0], cpus[-1]
     os.sched_setaffinity(0, {driver_cpu})
     workload = {"docs_group": "equality", "docs_number": "greater-or-equal range with index order reversed relative to ID", "docs_pair": "complete two-field equality", "docs_partial": "partial equality guarded by a boolean predicate", "docs_tenant_number": "compound equality-prefix and scalar range"}[args.index_name]
+    if args.membership:
+        workload = "two-value membership across two populated groups"
     report = {
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
@@ -84,8 +90,9 @@ def main():
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "benchmark_cpu": benchmark_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "scope": "One client; read-only nonunique JSON " + workload + ". Prototype complete scan and planned index range versus SQLite forced primary-table scan and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
+        "scope": "One client; read-only nonunique JSON " + workload + ". Prototype complete scan and planned index access versus SQLite forced primary-table scan and expression-index access. Returned JSON is parsed and verified for every query on both systems. All four variants run in rotated order within one process after 10 warmup cycles. Setup and full reopen/content verification are outside timers but inside VM telemetry. Both datasets share a process; peak RSS is combined. No concurrency, write throughput, physical power loss, off-host recovery or universal ranking is measured.",
         "sqlite_index_name": args.index_name,
+        "membership": args.membership,
         "cases": cases, "rounds": args.rounds, "cycles": args.cycles, "runs": [], "failures": [],
     }
     output = Path(args.output)
@@ -110,7 +117,7 @@ def main():
                     if completed.returncode:
                         raise RuntimeError(f"benchmark exited {completed.returncode}: {completed.stderr[-4096:]}")
                     result = json.loads(completed.stdout)
-                    validate(result, documents, matches, args.cycles, args.index_name)
+                    validate(result, documents, matches, args.cycles, args.index_name, args.membership)
                     entry["measurement"] = result
                     entry["command"] = command
                 finally:

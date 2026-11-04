@@ -40,6 +40,16 @@ class NonuniqueQueryComparisonTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(result, 100, 10, 2, "docs_partial")
 
+    def test_membership_requires_the_requested_workload_identity(self):
+        result = self.result()
+        with self.assertRaises(ValueError):
+            validate(result, 100, 10, 2, membership=True)
+        result["predicate"] = "equality"
+        with self.assertRaises(ValueError):
+            validate(result, 100, 10, 2, membership=True)
+        result["predicate"] = "membership"
+        validate(result, 100, 10, 2, membership=True)
+
     def test_rejects_failed_verification_or_invalid_samples(self):
         for change in ("reopen", "journal", "synchronous", "plan", "scan_plan", "version", "missing", "boolean", "negative"):
             result = self.result()

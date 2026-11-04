@@ -7,6 +7,7 @@ use super::{
     transaction::DocumentTransaction,
 };
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::io;
 
 /// The access path selected for a planned document query.
@@ -41,6 +42,10 @@ pub enum DocumentQueryAccess {
         index: String,
         equality_fields: usize,
     },
+    /// Probe a single-field index for each distinct value of a required `In`.
+    MembershipIndex { index: String, probes: usize },
+    /// Probe an implied partial single-field index for required `In` values.
+    PartialMembershipIndex { index: String, probes: usize },
 }
 
 /// Filtered query output, including the chosen access path and actual work.
@@ -69,6 +74,42 @@ fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexVa
             } if field == path && values.len() == 1 => {
                 if let Ok(value) = IndexValue::from_json(&values[0]) {
                     return Some(value);
+                }
+            }
+            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
+            _ => {}
+        }
+    }
+    None
+}
+
+// Select one required, wholly indexable list. Deduplication uses the exact
+// scalar index encoding so repeated values cannot duplicate rows or work.
+// Non-indexable lists fall back rather than omitting potential matches.
+fn required_membership(filter: &DocumentFilter, path: &[String]) -> Option<Vec<IndexValue>> {
+    let mut pending = vec![filter];
+    while let Some(filter) = pending.pop() {
+        match filter {
+            DocumentFilter::In {
+                path: field,
+                values,
+            } if field == path && values.len() > 1 => {
+                let mut distinct = BTreeMap::new();
+                let mut usable = true;
+                for value in values {
+                    let Ok(value) = IndexValue::from_json(value) else {
+                        usable = false;
+                        break;
+                    };
+                    let mut encoded = Vec::new();
+                    if value.encode(&mut encoded).is_err() {
+                        usable = false;
+                        break;
+                    }
+                    distinct.entry(encoded).or_insert(value);
+                }
+                if usable {
+                    return Some(distinct.into_values().collect());
                 }
             }
             DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
@@ -126,6 +167,7 @@ fn eligible(index: &IndexDefinition, filter: &DocumentFilter) -> bool {
 #[derive(Clone)]
 enum Selection {
     Equality(Vec<IndexValue>),
+    Membership(Vec<IndexValue>),
     Range {
         equal: Vec<IndexValue>,
         lower: Option<IndexBound>,
@@ -268,6 +310,22 @@ fn choose_index<'a>(
             break;
         }
     }
+    // Preserve existing equality and range choices. A union is safe for a
+    // single field because every matching present scalar has exactly one
+    // index entry; a partial index additionally requires its guard to follow
+    // from the full filter.
+    if let Some(selected) = indexes
+        .iter()
+        .filter(|index| index.unique)
+        .chain(indexes.iter().filter(|index| !index.unique))
+        .filter(|index| index.fields.len() == 1 && eligible(index, filter))
+        .find_map(|index| {
+            required_membership(filter, &index.fields[0])
+                .map(|values| (index, Selection::Membership(values)))
+        })
+    {
+        return Ok(Some(selected));
+    }
     Ok(None)
 }
 
@@ -290,71 +348,78 @@ impl DocumentTransaction<'_, '_> {
                 access: DocumentQueryAccess::CollectionScan,
             });
         };
-        let unique_equality = index.unique && matches!(selection, Selection::Equality(_));
-        let (equal, lower, upper) = match &selection {
-            Selection::Equality(values) => (values.clone(), None, None),
+        let unique_equality = index.unique && !matches!(selection, Selection::Range { .. });
+        let probes = match &selection {
+            Selection::Equality(values) => vec![(values.clone(), None, None)],
+            Selection::Membership(values) => values
+                .iter()
+                .cloned()
+                .map(|value| (vec![value], None, None))
+                .collect(),
             Selection::Range {
                 equal,
                 lower,
                 upper,
-            } => (equal.clone(), lower.clone(), upper.clone()),
+            } => vec![(equal.clone(), lower.clone(), upper.clone())],
         };
         let mut rows = Vec::new();
         let mut bytes = 0_usize;
-        let mut after = None;
-        loop {
-            // Probe one entry beyond the candidate limit, never silently
-            // returning a prefix. Unique equality probes two to detect a
-            // corrupt duplicate rather than accepting it as one result.
-            let limit = if unique_equality {
-                2
-            } else {
-                (query.max_scanned - rows.len() + 1).min(256)
-            };
-            let indexed = self.query_index_with_metadata(
-                collection,
-                &index.name,
-                &IndexQuery {
-                    equal: equal.clone(),
-                    lower: lower.clone(),
-                    upper: upper.clone(),
-                    after,
-                    limit,
-                },
-                &metadata,
-            )?;
-            let page = indexed.page;
-            if unique_equality && page.documents.len() > 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unique index contains multiple matches",
-                ));
+        for (equal, lower, upper) in probes {
+            let mut after = None;
+            loop {
+                // Probe one entry beyond the candidate limit, never silently
+                // returning a prefix. Unique equality probes two to detect a
+                // corrupt duplicate rather than accepting it as one result.
+                let limit = if unique_equality {
+                    2
+                } else {
+                    (query.max_scanned - rows.len() + 1).min(256)
+                };
+                let indexed = self.query_index_with_metadata(
+                    collection,
+                    &index.name,
+                    &IndexQuery {
+                        equal: equal.clone(),
+                        lower: lower.clone(),
+                        upper: upper.clone(),
+                        after,
+                        limit,
+                    },
+                    &metadata,
+                )?;
+                let page = indexed.page;
+                if unique_equality && page.documents.len() > 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "unique index contains multiple matches",
+                    ));
+                }
+                bytes = bytes
+                    .checked_add(indexed.document_key_value_bytes)
+                    .ok_or_else(|| key::invalid("scan byte count overflow"))?;
+                if bytes > filter::MAX_SCAN_BYTES
+                    || page.documents.len() > query.max_scanned - rows.len()
+                {
+                    return Err(key::invalid("document scan exceeds the operation limit"));
+                }
+                if page.documents.is_empty() {
+                    break;
+                }
+                rows.extend(
+                    page.documents
+                        .into_iter()
+                        .map(|entry| (entry.id, entry.document)),
+                );
+                if unique_equality {
+                    break;
+                }
+                after = Some(page.next.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "index page lost its continuation cursor",
+                    )
+                })?);
             }
-            bytes = bytes
-                .checked_add(indexed.document_key_value_bytes)
-                .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-            if bytes > filter::MAX_SCAN_BYTES
-                || page.documents.len() > query.max_scanned - rows.len()
-            {
-                return Err(key::invalid("document scan exceeds the operation limit"));
-            }
-            if page.documents.is_empty() {
-                break;
-            }
-            rows.extend(
-                page.documents
-                    .into_iter()
-                    .map(|entry| (entry.id, entry.document)),
-            );
-            if unique_equality {
-                break;
-            }
-            after = Some(page.next.ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "index page lost its continuation cursor",
-                )
-            })?);
         }
         let partial = index.partial.is_some();
         let access = match selection {
@@ -386,6 +451,20 @@ impl DocumentTransaction<'_, '_> {
             Selection::Equality(_) => DocumentQueryAccess::EqualityIndex {
                 index: index.name.clone(),
             },
+            Selection::Membership(values) => {
+                rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+                if partial {
+                    DocumentQueryAccess::PartialMembershipIndex {
+                        index: index.name.clone(),
+                        probes: values.len(),
+                    }
+                } else {
+                    DocumentQueryAccess::MembershipIndex {
+                        index: index.name.clone(),
+                        probes: values.len(),
+                    }
+                }
+            }
             Selection::Range { equal, .. } => {
                 // Index ranges are ordered by value then ID; collection scans
                 // use ID order. Restore ID order before filtering and paging.

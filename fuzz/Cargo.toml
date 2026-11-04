@@ -232,3 +232,10 @@ path = "fuzz_targets/readonly_recovery_limits.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "document_membership_union"
+path = "fuzz_targets/document_membership_union.rs"
+test = false
+doc = false
+bench = false

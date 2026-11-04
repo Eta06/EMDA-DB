@@ -12,7 +12,7 @@ jobs:
   recovery:
     name: Recovery parser and fail-closed behavior
     runs-on: ubuntu-24.04
-    # Thirty-two sequential campaigns each run for a minute in addition to
+    # Thirty-three sequential campaigns each run for a minute in addition to
     # toolchain installation and target compilation.
     timeout-minutes: 60
     steps:
@@ -152,6 +152,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/document-array-query-corpus"
           cp fuzz/document-array-query-seeds/* "$RUNNER_TEMP/document-array-query-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_array_queries "$RUNNER_TEMP/document-array-query-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
+      - name: Run document membership index-union model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/document-membership-union-corpus"
+          cp fuzz/document-membership-union-seeds/* "$RUNNER_TEMP/document-membership-union-corpus/"
+          cargo +nightly-2026-11-03 fuzz run document_membership_union "$RUNNER_TEMP/document-membership-union-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document partial planner differential fuzzing
         run: |
           mkdir -p "$RUNNER_TEMP/document-partial-planner-corpus"

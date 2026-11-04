@@ -134,7 +134,10 @@ fn exercise(db: &DocumentDatabase<'_>) {
     compare(
         db,
         &query(in_values("handle", vec![json!("hc"), json!("hd")])),
-        DocumentQueryAccess::CollectionScan,
+        DocumentQueryAccess::MembershipIndex {
+            index: "handle".into(),
+            probes: 2,
+        },
     );
     compare(
         db,
