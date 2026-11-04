@@ -59,7 +59,7 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--cases", default="100:10,1000:10,1000:100")
-    parser.add_argument("--index-name", choices=("docs_group", "docs_number", "docs_pair"), default="docs_group")
+    parser.add_argument("--index-name", choices=("docs_group", "docs_number", "docs_pair", "docs_partial"), default="docs_group")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=50)
     args = parser.parse_args()
@@ -74,7 +74,7 @@ def main():
         parser.error("invalid paths, CPU availability, rounds or cycle count")
     benchmark_cpu, driver_cpu = cpus[0], cpus[-1]
     os.sched_setaffinity(0, {driver_cpu})
-    workload = {"docs_group": "equality", "docs_number": "greater-or-equal range with index order reversed relative to ID", "docs_pair": "complete two-field equality"}[args.index_name]
+    workload = {"docs_group": "equality", "docs_number": "greater-or-equal range with index order reversed relative to ID", "docs_pair": "complete two-field equality", "docs_partial": "partial equality guarded by a boolean predicate"}[args.index_name]
     report = {
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
