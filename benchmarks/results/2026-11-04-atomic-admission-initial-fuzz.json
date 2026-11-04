@@ -1,0 +1,65 @@
+{
+  "revision": "6b6ef8e85301d2b5cc2555accb09b4b6f608c244",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "runs": [
+    {
+      "target": "transaction_budget_limit",
+      "duration_seconds": 121,
+      "executions": 26377,
+      "seed": 2834568043,
+      "max_input_bytes": 96,
+      "timeout_seconds": 10,
+      "binary_sha256": "5e4886f6f0087a84aa28883dbe96b0613ff24aa2fa43e8790c02ffa5a1906b5d",
+      "ending_coverage": 2495,
+      "ending_features": 10486,
+      "ending_corpus_entries": 406,
+      "initial_seeds": {
+        "active-checkpoint": "26a81d9e6b559f4e33c4c21b561d7e99e2fce5b18c2466868a54141933ee47a4",
+        "active-ordinary": "e0fc3f9357820b724a7d847b8be909da269aca4eef2f9fc6d8c89d45fd514ffb",
+        "checkpoint": "4f0286404edb17ac0931a15fbe9036c5c8d01fa6647a76620e7344a97eb613fb",
+        "ordinary": "e566e1e7c7cdd85d732937fdf3016bc93915739747ef3bba4e9c0bf5ec02c8ca"
+      }
+    },
+    {
+      "target": "controlled_transactions",
+      "duration_seconds": 61,
+      "executions": 10129,
+      "seed": 3310060654,
+      "max_input_bytes": 96,
+      "timeout_seconds": 10,
+      "binary_sha256": "55e69d644b54d7930e15cd34bd0628f3dcb4a784d2c3da9032f3dedec22690ab",
+      "ending_coverage": 3936,
+      "ending_features": 11240,
+      "ending_corpus_entries": 201,
+      "initial_seeds": {
+        "backend-0-flags-000": "0e8007b38f0d3114b04cef80d9599da666047d73da54607653370f2121b41677",
+        "backend-0-flags-001": "608a329094f2e7d2fbc01cb5bd9de6dbe995f6fa6409b05f06f09f3e2da00e69",
+        "backend-0-flags-002": "7f2935e6913328b8cbd17833f30df67459874ecac376b61cdac88f0ab7dbfbc0",
+        "backend-0-flags-004": "efa81f2e605c4f94cbd2f05b2ef718dddef8581e6b3fada07ff4309992bddc95",
+        "backend-0-flags-012": "9ad4837df268c7b90a3e4f115197d3b7bb1795d3ff62563702ec783ed84aab2b",
+        "backend-0-flags-020": "2b38c9261509a5c66074162b0a9019d79e40bb751f75b1cc866f2c7a3725d2a2",
+        "backend-0-flags-032": "111c7c77358bdca0aa9c5b9c7266e6f2998efb1d8f71e3c7f6f457c9469f0c9e",
+        "backend-0-flags-036": "97a7c98d79ea10484ba795d65575ae43a6a729570c419af24fd7a8cb51515b88",
+        "backend-0-flags-064": "31f56555b3ade60751c715927ecb3af4124cac46a7e3a6690f5459cc897d1244",
+        "backend-0-flags-068": "498184c05146b4a825a96d7d052bbd4419f668410d61e007cb8a319386f54772",
+        "backend-0-flags-132": "208f00bd7e51e4664e0cb2f7c2cbe06df88aef0598bb8ae77e0986584472a6cd",
+        "backend-0-flags-164": "387d5bec41ebb3db4f710de42f1e0259505514ce50118b693889dfe075a10ceb",
+        "backend-1-flags-000": "3de504b14d6c8bcc227d7eaaace123f9e3ad8789ee45f67df29b05ad897b7833",
+        "backend-1-flags-001": "e8290b888af80e7734caf5245cf7722d38d13ba782ffb674fbfb889ee35d4517",
+        "backend-1-flags-002": "e01f36ca813f5c81f61ec0721fd99be47d15d0a9684e8f2df06f8d4dc7a9d0ee",
+        "backend-1-flags-004": "3183caecb4cdc7708a31d6c91a1774c17c8aa87b4693211341e0892186e4da43",
+        "backend-1-flags-012": "f5a1f7f0ed2b6762e7cc1f61f3b4dd46cba80653bef4d97f6e8fee2a18656686",
+        "backend-1-flags-020": "f3084b0cb38ad38a0dd44dc4cbef09ed0f36c426832a5c3d0664911f8d8d0862",
+        "backend-1-flags-032": "0571d71df85514ff89297a87a2caae5bca29b64f2dfa01f04535880698e44019",
+        "backend-1-flags-036": "d8e3142427987d62320c9bffbeaeac60c021a3b5da2692fb887e9587077abc3e",
+        "backend-1-flags-064": "2edc5a021b04ad0584624acf7c4db89fed4400ff5f06caec71e974e2e9d5ebaf",
+        "backend-1-flags-068": "75f297da24c5086443a74e007d8571548769b86e4ff0c3ac0c8c0bb92eb7d526",
+        "backend-1-flags-132": "fe91d64fec85a132a020a4ae9b08add809e44551d2439966198d8093fc09bed9",
+        "backend-1-flags-164": "8fbe0c3e34cf913028884a8f66b5611a959c2fa5b08e3ef74da9f40313fb29d8"
+      }
+    }
+  ],
+  "result": "all campaigns completed without a finding",
+  "scope": "Short serial model campaigns for atomic admission and controlled transaction regression. They do not cover poisoned budget locks, exhaust concurrency, prove total-memory bounds, physical power-loss safety or off-host restore."
+}

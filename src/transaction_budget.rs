@@ -8,7 +8,11 @@ use std::sync::Mutex;
 /// bounds and fixed observation metadata, so less space can be available for staged records.
 pub const MAX_TRANSACTION_STAGED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
-/// Current process-local transaction reservation limit and usage for one open store.
+/// Maximum admitted transactions for one open store, including queued calls.
+/// Independent writes and read-only snapshots do not use this allowance.
+pub const MAX_ACTIVE_TRANSACTIONS: usize = 64;
+
+/// Current process-local transaction byte and admission limits for one open store.
 ///
 /// The counters do not measure total memory or coordinate independent stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,11 +22,17 @@ pub struct TransactionBudgetStatus {
     pub limit_bytes: usize,
     /// Bytes currently reserved by transactions, including checkpoint read sets.
     pub reserved_bytes: usize,
+    /// Configured admission limit, no greater than the hard maximum.
+    pub active_limit: usize,
+    /// Admitted transactions, including callbacks, queued calls and commits.
+    pub active_transactions: usize,
 }
 
 pub(crate) struct TransactionBudget {
     pub(crate) used: usize,
     pub(crate) limit: usize,
+    active: usize,
+    active_limit: usize,
 }
 
 impl Default for TransactionBudget {
@@ -30,6 +40,8 @@ impl Default for TransactionBudget {
         Self {
             used: 0,
             limit: MAX_TRANSACTION_STAGED_TOTAL_BYTES,
+            active: 0,
+            active_limit: MAX_ACTIVE_TRANSACTIONS,
         }
     }
 }
@@ -39,6 +51,8 @@ impl TransactionBudget {
         TransactionBudgetStatus {
             limit_bytes: self.limit,
             reserved_bytes: self.used,
+            active_limit: self.active_limit,
+            active_transactions: self.active,
         }
     }
 
@@ -59,6 +73,23 @@ impl TransactionBudget {
         Ok(())
     }
 
+    pub(crate) fn set_active_limit(&mut self, limit: usize) -> io::Result<()> {
+        if limit > MAX_ACTIVE_TRANSACTIONS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "active transaction limit exceeds hard maximum",
+            ));
+        }
+        if limit < self.active {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "active transaction limit is below current admissions",
+            ));
+        }
+        self.active_limit = limit;
+        Ok(())
+    }
+
     fn reserve(&mut self, bytes: usize) -> io::Result<()> {
         if bytes > self.limit - self.used {
             return Err(io::Error::other(
@@ -71,6 +102,37 @@ impl TransactionBudget {
 
     pub(crate) fn release(&mut self, bytes: usize) {
         self.used -= bytes;
+    }
+}
+
+/// An admission covers the entire transaction, including waiting and unwind.
+pub(crate) struct ActiveTransaction<'a> {
+    budget: &'a Mutex<TransactionBudget>,
+}
+
+impl<'a> ActiveTransaction<'a> {
+    pub(crate) fn acquire(budget: &'a Mutex<TransactionBudget>) -> io::Result<Self> {
+        let mut state = budget
+            .lock()
+            .map_err(|_| io::Error::other("transaction budget poisoned"))?;
+        if state.active >= state.active_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "active transaction limit exceeded",
+            ));
+        }
+        state.active += 1;
+        Ok(Self { budget })
+    }
+}
+
+impl Drop for ActiveTransaction<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .budget
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.active -= 1;
     }
 }
 

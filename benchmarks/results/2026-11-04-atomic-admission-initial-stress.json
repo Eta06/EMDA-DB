@@ -1,0 +1,493 @@
+{
+  "revision": "6b6ef8e85301d2b5cc2555accb09b4b6f608c244",
+  "binary_sha256": {
+    "integration": "15694c3f3373899f9d9075c7da8adc00b29cd93ccbe349daf9883f6e2a0f2682",
+    "unit": "ac88281fc9b74e52251184993dc696fb58d354bb7fb410ec906c4cfbfa9d5c1b"
+  },
+  "started_utc": "2026-11-04T22:26:00.141360+00:00",
+  "kernel": "6.18.57",
+  "caveat": "Repeated tests on one VM; workspace overlay backing device was not independently verified. Other tests and fuzzing ran concurrently. These cases do not establish total memory limits, physical power-loss safety or off-host restore.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 0,
+      "seconds": 0.026194,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 1,
+      "seconds": 0.028426,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 2,
+      "seconds": 0.051261,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 3,
+      "seconds": 0.027749,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 4,
+      "seconds": 0.055948,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 0,
+      "seconds": 0.021141,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 1,
+      "seconds": 0.020342,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 2,
+      "seconds": 0.010493,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 3,
+      "seconds": 0.006272,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 4,
+      "seconds": 0.00771,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 0,
+      "seconds": 1.19392,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 1,
+      "seconds": 1.636354,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 2,
+      "seconds": 1.614629,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 3,
+      "seconds": 1.980578,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 4,
+      "seconds": 1.675145,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 0,
+      "seconds": 0.065093,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 1,
+      "seconds": 0.056907,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 2,
+      "seconds": 0.041914,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 3,
+      "seconds": 0.057184,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 4,
+      "seconds": 0.034412,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 0,
+      "seconds": 0.039883,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 1,
+      "seconds": 0.059886,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 2,
+      "seconds": 0.039998,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 3,
+      "seconds": 0.054683,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 4,
+      "seconds": 0.04108,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 0,
+      "seconds": 0.039367,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 1,
+      "seconds": 0.019928,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 2,
+      "seconds": 0.014397,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 3,
+      "seconds": 0.017793,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "tmpfs",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 4,
+      "seconds": 0.015733,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 0,
+      "seconds": 0.086261,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 1,
+      "seconds": 0.080784,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 2,
+      "seconds": 0.072233,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 3,
+      "seconds": 0.092909,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "concurrent_active_admissions_never_exceed_the_configured_limit",
+      "iteration": 4,
+      "seconds": 0.062217,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 0,
+      "seconds": 0.048791,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 1,
+      "seconds": 0.02996,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 2,
+      "seconds": 0.048432,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 3,
+      "seconds": 0.024225,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "active_admission_limits_callbacks_and_releases_on_every_exit",
+      "iteration": 4,
+      "seconds": 0.030247,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 0,
+      "seconds": 1.590916,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 1,
+      "seconds": 2.068513,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 2,
+      "seconds": 0.729144,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 3,
+      "seconds": 1.593715,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "transaction_admission::tests::concurrent_admissions_and_limit_changes_preserve_the_invariant",
+      "iteration": 4,
+      "seconds": 1.887615,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 0,
+      "seconds": 0.042662,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 1,
+      "seconds": 0.055881,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 2,
+      "seconds": 0.041761,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 3,
+      "seconds": 0.071291,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends",
+      "iteration": 4,
+      "seconds": 0.062914,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 0,
+      "seconds": 0.050118,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 1,
+      "seconds": 0.075878,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 2,
+      "seconds": 0.046037,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 3,
+      "seconds": 0.06139,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback",
+      "iteration": 4,
+      "seconds": 0.074181,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 0,
+      "seconds": 0.056444,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 1,
+      "seconds": 0.059139,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 2,
+      "seconds": 0.034739,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 3,
+      "seconds": 0.058833,
+      "exit_code": 0,
+      "one_test_passed": true
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 4,
+      "seconds": 0.034108,
+      "exit_code": 0,
+      "one_test_passed": true
+    }
+  ],
+  "finished_utc": "2026-11-04T22:26:18.376427+00:00"
+}

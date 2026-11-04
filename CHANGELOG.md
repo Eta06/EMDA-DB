@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Limit each open store to 64 active transactions by default, with configurable lower limits and status reporting. New over-limit transaction calls now fail before their callbacks; the limit resets on reopen and does not bound total memory or direct writes.
+
+- Record paired transaction-admission measurements and retain an unmerged atomic-counter experiment with mixed results and its failure-handling regression.
+
 - Bound combined encoded JSON inputs from update conditions, set and array values, and min/max operands to 4 MiB. Previously accepted larger combined inputs now fail, and array-input limit error text has changed.
 
 - Count encoded update inputs without producing a JSON buffer, using a portable exact string path and retaining `serde_json` number formatting. Record the large-input cost and paired optimization measurements.

@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn poisoned_transaction_budget_rejects_new_admissions() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = store.transaction_budget.lock().unwrap();
+        panic!("injected transaction budget panic");
+    }));
+    assert!(panic.is_err());
+    let called = std::cell::Cell::new(false);
+    let result = store.transaction(|_| {
+        called.set(true);
+        Ok(())
+    });
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+    assert!(!called.get());
+    assert_eq!(
+        store.set_active_transaction_limit(1).unwrap_err().kind(),
+        io::ErrorKind::Other
+    );
+    store.put(b"direct", b"allowed").unwrap();
+    assert_eq!(
+        store.get(b"direct").unwrap().as_deref(),
+        Some(&b"allowed"[..])
+    );
+    drop(store);
+    let recovered = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(
+        recovered.get(b"direct").unwrap().as_deref(),
+        Some(&b"allowed"[..])
+    );
+    recovered
+        .transaction(|tx| tx.put(b"after-reopen", b"ok"))
+        .unwrap();
+}
+
+#[test]
 fn staged_budget_is_shared_and_released_on_abort_and_panic() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
@@ -76,6 +112,7 @@ fn cancellation_removes_a_checkpoint_fifo_waiter_before_callback() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store =
         Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    store.set_active_transaction_limit(2).unwrap();
     let first = store.transaction_queue.enter().unwrap();
     let token = CancellationToken::new();
     let called = Arc::new(AtomicBool::new(false));
@@ -101,8 +138,28 @@ fn cancellation_removes_a_checkpoint_fifo_waiter_before_callback() {
         follower_store.transaction_with_fifo(|tx| tx.put(b"later", b"ok"))
     });
     wait_for_queue(&store, 3);
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        2
+    );
+    assert_eq!(
+        store.transaction(|_| Ok(())).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
     token.cancel();
     let early = done_rx.recv_timeout(Duration::from_secs(5));
+    if early.is_ok() {
+        assert_eq!(
+            store
+                .transaction_budget_status()
+                .unwrap()
+                .active_transactions,
+            1
+        );
+    }
     drop(first);
     let early_result = early.is_ok();
     let result = early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
@@ -115,6 +172,13 @@ fn cancellation_removes_a_checkpoint_fifo_waiter_before_callback() {
     assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
     assert!(!called.load(Ordering::Relaxed));
     assert_eq!(store.transaction_queue.queued_for_test(), 0);
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        0
+    );
     assert_eq!(store.get(b"key").unwrap(), None);
     assert_eq!(store.get(b"later").unwrap().as_deref(), Some(&b"ok"[..]));
 }
