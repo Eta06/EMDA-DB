@@ -190,10 +190,15 @@ impl RecoveredCheckpointView {
     /// Reads one key from the recovered checkpoint and suffix.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
+        self.location(key)?
+            .map(|location| self.base.log.read(location))
+            .transpose()
+    }
+
+    pub(crate) fn location(&self, key: &[u8]) -> io::Result<Option<ValueLocation>> {
         match self.overlay.get(key) {
-            Some(Some(location)) => self.base.log.read(*location).map(Some),
-            Some(None) => Ok(None),
-            None => self.base.get(key),
+            Some(location) => Ok(*location),
+            None => self.base.location(key),
         }
     }
 

@@ -214,6 +214,8 @@ fn concurrent_readers_never_observe_partial_batches() {
                 let page = reader.scan(Some(b"x"), Some(b"y"), 10).unwrap();
                 assert_eq!(page.len(), 2);
                 assert_eq!(page[0].1, page[1].1);
+                let values = reader.get_many(&[b"x1", b"x2"]).unwrap();
+                assert_eq!(values[0], values[1]);
             }
         });
         start.wait();
@@ -222,6 +224,50 @@ fn concurrent_readers_never_observe_partial_batches() {
     let reopened = Store::open(&path).unwrap();
     assert_eq!(reopened.get(b"x1").unwrap(), Some(vec![100]));
     assert_eq!(reopened.get(b"x2").unwrap(), Some(vec![100]));
+}
+
+#[test]
+fn bulk_reads_preserve_state_order_and_response_limits_across_rollover() {
+    use database_engine::MAX_SCAN_ENTRIES;
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    store.put(b"empty", b"").unwrap();
+    store.delete(b"c").unwrap();
+    let keys = [b"a".as_slice(), b"c", b"empty", b"a"];
+    let expected = vec![
+        Some(b"base-a".to_vec()),
+        None,
+        Some(Vec::new()),
+        Some(b"base-a".to_vec()),
+    ];
+    assert_eq!(store.get_many(&keys).unwrap(), expected);
+    assert!(store.get_many(&[]).unwrap().is_empty());
+    assert_eq!(
+        store.get_many(&[b""]).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        store
+            .get_many(&vec![b"a".as_slice(); MAX_SCAN_ENTRIES + 1])
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    store.rollover_to(dir.path().join("next")).unwrap();
+    assert_eq!(store.get_many(&keys).unwrap(), expected);
+    let value = vec![42; 12 * 1024 * 1024];
+    store.put(b"large", &value).unwrap();
+    assert_eq!(
+        store
+            .get_many(&[b"large", b"large", b"large"])
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        store.get_many(&[b"large", b"missing"]).unwrap(),
+        vec![Some(value), None]
+    );
 }
 
 #[test]

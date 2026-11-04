@@ -8,6 +8,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- An optional per-open whole-log byte limit for the checkpoint-backed store, enforced before recovery adoption and serialized writes. Checkpoint rollover does not reclaim log space; the limit is not a persistent project quota.
+- Bounded, consistent multi-key reads for the checkpoint-backed store, preserving order and duplicate keys while excluding concurrent mutations during each read.
 - Full-log backup for the checkpoint-backed store, and streaming record validation during backup, restore and format upgrade without materializing a full key index. The backup format and its independent verification requirements are unchanged.
 - Bounded checkpoint-store recovery of a complete unacknowledged tail, validated and synchronized before adoption. Incomplete records and suffix-limit failures leave the log and witness unchanged; recovery synchronization errors remain uncertain.
 - Explicit live checkpoint rollover that verifies and switches the checkpoint-backed store without releasing its exclusive lock. Checkpoint selection and the independently trusted digest remain the caller's responsibility.

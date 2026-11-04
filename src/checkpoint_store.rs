@@ -1,5 +1,4 @@
 //! Experimental writable checkpoint index with a bounded log-suffix overlay.
-use crate::Entry;
 use crate::checkpoint_view::CheckpointView;
 use crate::log::{AppendRecord, BatchUpdate, Log, prepare_batch};
 use crate::record::batch::{BatchOperation, encode_payload};
@@ -8,6 +7,7 @@ use crate::recovered_view::{
     MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,
     RecoveredCheckpointView,
 };
+use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io;
@@ -19,6 +19,14 @@ struct State {
     view: RecoveredCheckpointView,
     overlay_key_bytes: usize,
     failed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct OpenLimits {
+    max_tail_bytes: u64,
+    max_tail_keys: usize,
+    max_tail_key_bytes: usize,
+    max_log_bytes: Option<u64>,
 }
 
 /// An experimental writable store backed by a verified on-disk checkpoint.
@@ -40,6 +48,7 @@ pub struct CheckpointStore {
     max_tail_bytes: u64,
     max_tail_keys: usize,
     max_tail_key_bytes: usize,
+    max_log_bytes: Option<u64>,
 }
 
 impl CheckpointStore {
@@ -70,13 +79,40 @@ impl CheckpointStore {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
     ) -> io::Result<Self> {
-        Self::open_using(
-            path.as_ref(),
-            checkpoint.as_ref(),
+        Self::open_with_resource_limits(
+            path,
+            checkpoint,
             trusted_digest,
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
+            None,
+        )
+    }
+
+    /// Opens with bounded suffix limits and an optional whole-log byte cap.
+    /// The cap is reapplied on each open and covers log headers, old records
+    /// and tombstones, not other files or total project storage. Oversized
+    /// logs are rejected before replay or unacknowledged-tail adoption.
+    pub fn open_with_resource_limits(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+        max_log_bytes: Option<u64>,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            OpenLimits {
+                max_tail_bytes,
+                max_tail_keys,
+                max_tail_key_bytes,
+                max_log_bytes,
+            },
             Log::open_checkpoint_writer,
         )
     }
@@ -85,11 +121,15 @@ impl CheckpointStore {
         path: &Path,
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
-        max_tail_bytes: u64,
-        max_tail_keys: usize,
-        max_tail_key_bytes: usize,
+        limits: OpenLimits,
         open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
     ) -> io::Result<Self> {
+        let OpenLimits {
+            max_tail_bytes,
+            max_tail_keys,
+            max_tail_key_bytes,
+            max_log_bytes,
+        } = limits;
         RecoveredCheckpointView::validate_limits(
             max_tail_bytes,
             max_tail_keys,
@@ -101,6 +141,14 @@ impl CheckpointStore {
             .write(true)
             .open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
+        if let Some(max) = max_log_bytes {
+            if std::fs::metadata(path.join("records.log"))?.len() > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "existing log exceeds configured limit",
+                ));
+            }
+        }
         let base = CheckpointView::open_locked(&path, checkpoint, trusted_digest, lock)?;
         let view = RecoveredCheckpointView::from_base_for_writer(
             base,
@@ -114,6 +162,12 @@ impl CheckpointStore {
             .log_boundary()
             .checked_add(view.tail_bytes)
             .ok_or_else(|| record::invalid_data("checkpoint suffix length overflow"))?;
+        if max_log_bytes.is_some_and(|max| length > max) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "existing log exceeds configured limit",
+            ));
+        }
         let log = open_writer(&path, boundary, length)?;
         if length > boundary {
             log.sync_data().map_err(|error| {
@@ -135,6 +189,7 @@ impl CheckpointStore {
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
+            max_log_bytes,
         })
     }
 
@@ -157,6 +212,41 @@ impl CheckpointStore {
     /// Reads a key from the verified checkpoint and committed overlay.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         self.read()?.view.get(key)
+    }
+
+    /// Reads up to 1,024 keys from one captured state, preserving input order
+    /// and duplicates. The combined key and value bytes are limited to 32 MiB.
+    pub fn get_many(&self, keys: &[&[u8]]) -> io::Result<Vec<Option<Vec<u8>>>> {
+        if keys.len() > MAX_SCAN_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "too many keys in bulk read",
+            ));
+        }
+        for key in keys {
+            record::validate_key(key)?;
+        }
+        let state = self.read()?;
+        let mut size = 0_usize;
+        let mut locations = Vec::with_capacity(keys.len());
+        for key in keys {
+            let location = state.view.location(key)?;
+            size = size
+                .checked_add(key.len() + location.map_or(0, |entry| entry.length))
+                .filter(|bytes| *bytes <= MAX_SCAN_BYTES)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "bulk read exceeds 32 MiB")
+                })?;
+            locations.push(location);
+        }
+        locations
+            .into_iter()
+            .map(|location| {
+                location
+                    .map(|location| state.view.base.log.read(location))
+                    .transpose()
+            })
+            .collect()
     }
 
     /// Reads one ordered page. Separate calls do not form a snapshot.
@@ -466,6 +556,17 @@ impl CheckpointStore {
             .checked_add(length as u64)
             .filter(|total| *total <= self.max_tail_bytes)
             .ok_or_else(|| io::Error::other("checkpoint suffix byte limit would be exceeded"))?;
+        let next_log = state
+            .view
+            .base
+            .log_boundary()
+            .checked_add(next_tail)
+            .ok_or_else(|| io::Error::other("log length overflow"))?;
+        if self.max_log_bytes.is_some_and(|max| next_log > max) {
+            return Err(io::Error::other(
+                "configured log byte limit would be exceeded",
+            ));
+        }
         let new_keys = touched
             .iter()
             .copied()

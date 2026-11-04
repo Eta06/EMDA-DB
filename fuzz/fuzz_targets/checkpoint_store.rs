@@ -29,6 +29,14 @@ fn check(
             model.get(&key).cloned()
         );
     }
+    let mut owned = (0..8).map(key).collect::<Vec<_>>();
+    owned.push(key(0));
+    let keys = owned.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let values = owned
+        .iter()
+        .map(|key| model.get(key).cloned())
+        .collect::<Vec<_>>();
+    assert_eq!(store.get_many(&keys).expect("bulk read"), values);
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -50,13 +58,18 @@ fuzz_target!(|data: &[u8]| {
     }
     let mut digest = ordinary.checkpoint_to(&checkpoint).expect("checkpoint");
     drop(ordinary);
-    let mut store = CheckpointStore::open_with_limits(
+    let mut total_log = std::fs::metadata(path.join("records.log"))
+        .expect("log metadata")
+        .len();
+    let max_log = (data[2] & 128 != 0).then_some(total_log + u64::from(data[0]) * 2);
+    let mut store = CheckpointStore::open_with_resource_limits(
         &path,
         &checkpoint,
         &digest,
         max_tail,
         max_keys,
         max_key_bytes,
+        max_log,
     )
     .expect("open");
     let mut touched = BTreeSet::<Vec<u8>>::new();
@@ -71,13 +84,14 @@ fuzz_target!(|data: &[u8]| {
         if kind == 4 {
             check(&store, &model, &touched, tail);
             drop(store);
-            store = CheckpointStore::open_with_limits(
+            store = CheckpointStore::open_with_resource_limits(
                 &path,
                 &checkpoint,
                 &digest,
                 max_tail,
                 max_keys,
                 max_key_bytes,
+                max_log,
             )
             .expect("reopen");
             continue;
@@ -121,13 +135,14 @@ fuzz_target!(|data: &[u8]| {
             digest = next_digest;
             touched.clear();
             tail = 0;
-            store = CheckpointStore::open_with_limits(
+            store = CheckpointStore::open_with_resource_limits(
                 &path,
                 &checkpoint,
                 &digest,
                 max_tail,
                 max_keys,
                 max_key_bytes,
+                max_log,
             )
             .expect("reopen streamed checkpoint");
             continue;
@@ -156,7 +171,8 @@ fuzz_target!(|data: &[u8]| {
         } as u64;
         let allowed = tail + encoded <= max_tail
             && next_touched.len() <= max_keys
-            && next_touched.iter().map(Vec::len).sum::<usize>() <= max_key_bytes;
+            && next_touched.iter().map(Vec::len).sum::<usize>() <= max_key_bytes
+            && max_log.is_none_or(|max| total_log + encoded <= max);
         let result = match kind {
             0 => store.put(&first, &value),
             1 => store.delete(&first),
@@ -184,6 +200,7 @@ fuzz_target!(|data: &[u8]| {
         if allowed {
             touched = next_touched;
             tail += encoded;
+            total_log += encoded;
             match kind {
                 0 => {
                     model.insert(first, value);
@@ -203,6 +220,12 @@ fuzz_target!(|data: &[u8]| {
             }
             peak = peak.max(model.len());
         }
+        assert_eq!(
+            std::fs::metadata(path.join("records.log"))
+                .expect("log metadata")
+                .len(),
+            total_log
+        );
         check(&store, &model, &touched, tail);
     }
     drop(store);
