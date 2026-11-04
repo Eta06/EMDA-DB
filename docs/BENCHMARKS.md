@@ -246,6 +246,15 @@ A later [raw measurement](../benchmarks/results/2026-11-03-index-memory-smaller-
 
 At 200,000 keys this is roughly a 37-fold reduction for the view's sampled median, while the writable store remained faster at point lookups. The view held 893 block summaries, and RSS after its sampled lookups was 1,452 KiB. Both new quiet checks passed, no cgroup throttling or direct reclaim was recorded, and the largest VM steal sample was 1.82%. These keys differ within their first 16 bytes; longer common prefixes can require extra verified block reads. This is a warm-cache result on one VM, not a general latency, memory or competitor claim.
 
+The [recovered-view measurement](../benchmarks/results/2026-11-04-recovered-view-memory.json) adds 4,096 distinct keys in an 872,656-byte witnessed suffix after each checkpoint. Five fresh processes per mode used 128-byte keys and 64-byte values on the same virtualized overlay filesystem; all sampled values were checked. Medians are shown below:
+
+| Base keys | Writable store RSS | Recovered view RSS | Store base lookup | Recovered base lookup | Store tail lookup | Recovered tail lookup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10,000 | 4,948 KiB | 2,636 KiB | 1.40 µs | 29.66 µs | 0.89 µs | 1.04 µs |
+| 200,000 | 49,384 KiB | 2,688 KiB | 3.88 µs | 30.61 µs | 1.29 µs | 1.33 µs |
+
+For 200,000 base keys, median open times were 136.15 ms for the store and 106.10 ms for the recovered view; the latter retained 893 block summaries and 4,096 overlay keys. The store can write while both views are read-only and exclude cooperating writers. Base lookups in the views verify index blocks, whereas suffix lookups use the in-memory overlay. RSS is sampled after open, excludes page cache and is not peak or total memory. Both quiet checks passed; individual measurements recorded up to 14.29% VM steal in the 10,000-key case and 1.82% in the larger case, with no cgroup throttling or direct reclaim observed. The host and overlay backing remain uncontrolled. This small warm-cache sample is not a general speed, durability or memory guarantee.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.
