@@ -246,6 +246,19 @@ A later [raw measurement](../benchmarks/results/2026-11-03-index-memory-smaller-
 
 At 200,000 keys this is roughly a 37-fold reduction for the view's sampled median, while the writable store remained faster at point lookups. The view held 893 block summaries, and RSS after its sampled lookups was 1,452 KiB. Both new quiet checks passed, no cgroup throttling or direct reclaim was recorded, and the largest VM steal sample was 1.82%. These keys differ within their first 16 bytes; longer common prefixes can require extra verified block reads. This is a warm-cache result on one VM, not a general latency, memory or competitor claim.
 
+## Two-key transaction comparison
+
+`examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative` and `readset` modes use the prototype's respective transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair.
+
+On Linux, build and run with an existing fixture directory and a new output path:
+
+```sh
+cargo build --release --example transaction_bench --locked
+python3 scripts/transaction_compare.py --directory /workspace --output /tmp/transaction-results.json
+```
+
+The runner rotates backend order and records every successful operation's latency, per-client conflicts, total elapsed time, source and binary hashes, and VM/cgroup noise. Defaults are 1, 4 and 8 clients, 100 operations per client, five repetitions per mode and workload. These are synthetic closed-loop direct API measurements, not PostgreSQL or MongoDB transaction comparisons. The engines' implementation details and complete durability behavior differ, so results do not establish a general performance or reliability ranking.
+
 ## Separate-copy compaction comparison
 
 `examples/compaction_bench.rs` prepares a synthetic store with 64-byte values, overwrites half of its keys, deletes one eighth, times a verified `compact_to` operation and checks selected live and deleted values after reopening the copy. `scripts/compaction_compare.py` alternates two separately built binaries across fresh fixtures, records each run and VM/cgroup noise, and reports medians and ranges. This measures separate-copy compaction, which blocks source mutations; it does not measure online compaction or physical power-loss behavior.
