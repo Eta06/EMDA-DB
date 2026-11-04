@@ -18,3 +18,22 @@ pub(crate) fn retry_lock<T>(mut open: impl FnMut() -> io::Result<T>) -> io::Resu
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_transient_busy_without_masking_the_next_recovery_error() {
+        let mut attempts = 0;
+        let result: io::Result<()> = retry_lock(|| {
+            attempts += 1;
+            match attempts {
+                1 => Err(io::Error::from(io::ErrorKind::WouldBlock)),
+                _ => Err(io::Error::new(io::ErrorKind::InvalidData, "corrupt log")),
+            }
+        });
+        assert_eq!(attempts, 2);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+}

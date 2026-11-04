@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum GroupFault {
     None,
     PartialAppend(usize),
@@ -230,7 +230,7 @@ fn group_fault_case(fault: GroupFault) {
     drop(store);
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
-    let reopened = Store::open(dir.path());
+    let reopened = crate::test_support::retry_lock(|| Store::open(dir.path()));
     assert_eq!(fs::read(&path).unwrap(), before);
     let record_len = record::encode(Operation::Put, b"group-0", b"value")
         .unwrap()
@@ -247,7 +247,11 @@ fn group_fault_case(fault: GroupFault) {
     if matches!(fault, GroupFault::PartialAppend(offset) if offset > 0 && offset < record_len)
         || matches!(fault, GroupFault::PartialBatch(offset) if offset % record_len != 0)
     {
-        assert!(matches!(reopened, Err(ref e) if e.kind() == io::ErrorKind::InvalidData));
+        assert!(
+            matches!(reopened, Err(ref e) if e.kind() == io::ErrorKind::InvalidData),
+            "unexpected reopen result for {fault:?}: {:?}",
+            reopened.as_ref().err()
+        );
     } else {
         let reopened = reopened.unwrap();
         assert_eq!(
