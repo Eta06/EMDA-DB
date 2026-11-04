@@ -218,3 +218,10 @@ path = "fuzz_targets/document_compound_range.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "document_membership"
+path = "fuzz_targets/document_membership.rs"
+test = false
+doc = false
+bench = false

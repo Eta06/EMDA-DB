@@ -63,6 +63,14 @@ fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexVa
                     return Some(value);
                 }
             }
+            DocumentFilter::In {
+                path: field,
+                values,
+            } if field == path && values.len() == 1 => {
+                if let Ok(value) = IndexValue::from_json(&values[0]) {
+                    return Some(value);
+                }
+            }
             DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
             _ => {}
         }
@@ -82,6 +90,7 @@ fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> 
                 exists: actual,
             } if field == path && *actual == exists => return true,
             DocumentFilter::Equal { path: field, .. }
+            | DocumentFilter::In { path: field, .. }
             | DocumentFilter::Compare { path: field, .. }
             | DocumentFilter::ArrayContains { path: field, .. }
             | DocumentFilter::ArrayContainsAny { path: field, .. }

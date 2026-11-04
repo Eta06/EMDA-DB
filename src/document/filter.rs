@@ -8,15 +8,15 @@ use std::io::{self, Write};
 
 const MAX_SCAN_DOCUMENTS: usize = 1024;
 pub(super) const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
-const MAX_ARRAY_FILTER_VALUES: usize = 256;
-const MAX_ARRAY_FILTER_INPUT_BYTES: usize = 4 * 1024 * 1024;
-const MAX_ARRAY_FILTER_COMPARISONS: usize = 1_000_000;
+const MAX_FILTER_VALUES: usize = 256;
+const MAX_FILTER_INPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_FILTER_COMPARISONS: usize = 1_000_000;
 
 /// A filter evaluated against object paths. Missing never equals null. Paths
 /// traverse objects only. Array predicates match only an array at the path;
 /// values use exact `serde_json` equality, including nested values. Across one
-/// filter, array predicates accept at most 256 values and 4 MiB of their
-/// encoded JSON. A query fails after 1,000,000 array-element comparisons
+/// filter, membership and array predicates accept at most 256 values and 4 MiB
+/// of their encoded JSON. A query fails after 1,000,000 membership comparisons
 /// across its evaluated documents; these are not total memory or time bounds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DocumentFilter {
@@ -26,6 +26,16 @@ pub enum DocumentFilter {
     Exists { path: Vec<String>, exists: bool },
     /// Compare any JSON value with exact serde_json equality.
     Equal { path: Vec<String>, value: Value },
+    /// Match a present path equal to any listed JSON value. Empty never matches.
+    In {
+        path: Vec<String>,
+        values: Vec<Value>,
+    },
+    /// Negate `In`, including for missing paths. Empty matches every document.
+    NotIn {
+        path: Vec<String>,
+        values: Vec<Value>,
+    },
     /// Match an array containing an element equal to `value`.
     ArrayContains { path: Vec<String>, value: Value },
     /// Match an array containing at least one of `values`. An empty list never matches.
@@ -74,7 +84,7 @@ pub struct DocumentSort {
 }
 
 /// A bounded filtered query. `query` scans the complete collection;
-/// `query_planned` can instead use a qualifying equality tuple or single-field range index.
+/// `query_planned` can instead use a qualifying equality tuple or scalar range index.
 /// Both fail rather than silently truncating when their work limits are exceeded.
 #[derive(Clone, Debug)]
 pub struct DocumentQuery {
@@ -130,21 +140,20 @@ pub struct DocumentQueryResult {
 // These are logical work limits, not total memory or time bounds. Complex
 // equality comparisons can traverse nested JSON values.
 #[derive(Default)]
-struct ArrayFilterBudget {
+struct FilterValueBudget {
     values: usize,
     bytes: usize,
     comparisons: usize,
 }
 
-impl Write for ArrayFilterBudget {
+impl Write for FilterValueBudget {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.bytes = self
-            .bytes
-            .checked_add(bytes.len())
-            .ok_or_else(|| key::invalid("array filter inputs exceed the encoded byte limit"))?;
-        if self.bytes > MAX_ARRAY_FILTER_INPUT_BYTES {
+        self.bytes = self.bytes.checked_add(bytes.len()).ok_or_else(|| {
+            key::invalid("membership filter inputs exceed the encoded byte limit")
+        })?;
+        if self.bytes > MAX_FILTER_INPUT_BYTES {
             return Err(key::invalid(
-                "array filter inputs exceed the encoded byte limit",
+                "membership filter inputs exceed the encoded byte limit",
             ));
         }
         Ok(bytes.len())
@@ -155,20 +164,20 @@ impl Write for ArrayFilterBudget {
     }
 }
 
-impl ArrayFilterBudget {
+impl FilterValueBudget {
     fn add_values<'a>(&mut self, values: impl IntoIterator<Item = &'a Value>) -> io::Result<()> {
         for value in values {
             self.values = self
                 .values
                 .checked_add(1)
-                .ok_or_else(|| key::invalid("array filter exceeds the value limit"))?;
-            if self.values > MAX_ARRAY_FILTER_VALUES {
-                return Err(key::invalid("array filter exceeds the value limit"));
+                .ok_or_else(|| key::invalid("membership filter exceeds the value limit"))?;
+            if self.values > MAX_FILTER_VALUES {
+                return Err(key::invalid("membership filter exceeds the value limit"));
             }
             schema::validate_tree(value)?;
             serde_json::to_writer(&mut *self, value).map_err(|_| {
                 key::invalid(
-                    "array filter inputs exceed the encoded byte limit or cannot be encoded",
+                    "membership filter inputs exceed the encoded byte limit or cannot be encoded",
                 )
             })?;
         }
@@ -180,9 +189,9 @@ impl ArrayFilterBudget {
             self.comparisons = self
                 .comparisons
                 .checked_add(1)
-                .ok_or_else(|| key::invalid("array filter comparison limit exceeded"))?;
-            if self.comparisons > MAX_ARRAY_FILTER_COMPARISONS {
-                return Err(key::invalid("array filter comparison limit exceeded"));
+                .ok_or_else(|| key::invalid("membership filter comparison limit exceeded"))?;
+            if self.comparisons > MAX_FILTER_COMPARISONS {
+                return Err(key::invalid("membership filter comparison limit exceeded"));
             }
             if entry == value {
                 return Ok(true);
@@ -195,7 +204,7 @@ impl ArrayFilterBudget {
 pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
     let mut pending = vec![(filter, 0_usize)];
     let mut count = 0_usize;
-    let mut array_budget = ArrayFilterBudget::default();
+    let mut value_budget = FilterValueBudget::default();
     while let Some((filter, depth)) = pending.pop() {
         count += 1;
         if count > 128 || depth > 16 || pending.len() + count > 128 {
@@ -208,14 +217,18 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
                 schema::validate_path(path)?;
                 schema::validate_tree(value)?;
             }
+            DocumentFilter::In { path, values } | DocumentFilter::NotIn { path, values } => {
+                schema::validate_path(path)?;
+                value_budget.add_values(values)?;
+            }
             DocumentFilter::ArrayContains { path, value } => {
                 schema::validate_path(path)?;
-                array_budget.add_values(std::iter::once(value))?;
+                value_budget.add_values(std::iter::once(value))?;
             }
             DocumentFilter::ArrayContainsAny { path, values }
             | DocumentFilter::ArrayContainsAll { path, values } => {
                 schema::validate_path(path)?;
-                array_budget.add_values(values)?;
+                value_budget.add_values(values)?;
             }
             DocumentFilter::ArrayLength { path, .. } => schema::validate_path(path)?,
             DocumentFilter::Compare { path, value, .. } => {
@@ -243,7 +256,7 @@ fn encoded(value: &IndexValue) -> io::Result<Vec<u8>> {
 fn matches(
     filter: &DocumentFilter,
     document: &Value,
-    array_budget: &mut ArrayFilterBudget,
+    value_budget: &mut FilterValueBudget,
 ) -> io::Result<bool> {
     Ok(match filter {
         DocumentFilter::All => true,
@@ -251,9 +264,17 @@ fn matches(
             schema::field(document, path).is_some() == *exists
         }
         DocumentFilter::Equal { path, value } => schema::field(document, path) == Some(value),
+        DocumentFilter::In { path, values } => match schema::field(document, path) {
+            Some(value) => value_budget.contains(values, value)?,
+            None => false,
+        },
+        DocumentFilter::NotIn { path, values } => match schema::field(document, path) {
+            Some(value) => !value_budget.contains(values, value)?,
+            None => true,
+        },
         DocumentFilter::ArrayContains { path, value } => {
             match schema::field(document, path).and_then(Value::as_array) {
-                Some(array) => array_budget.contains(array, value)?,
+                Some(array) => value_budget.contains(array, value)?,
                 None => false,
             }
         }
@@ -261,7 +282,7 @@ fn matches(
             let mut found = false;
             if let Some(array) = schema::field(document, path).and_then(Value::as_array) {
                 for value in values {
-                    if array_budget.contains(array, value)? {
+                    if value_budget.contains(array, value)? {
                         found = true;
                         break;
                     }
@@ -274,7 +295,7 @@ fn matches(
                 Some(array) => {
                     let mut found = true;
                     for value in values {
-                        if !array_budget.contains(array, value)? {
+                        if !value_budget.contains(array, value)? {
                             found = false;
                             break;
                         }
@@ -310,7 +331,7 @@ fn matches(
         DocumentFilter::And(filters) => {
             let mut matched = true;
             for filter in filters {
-                if !matches(filter, document, array_budget)? {
+                if !matches(filter, document, value_budget)? {
                     matched = false;
                     break;
                 }
@@ -320,14 +341,14 @@ fn matches(
         DocumentFilter::Or(filters) => {
             let mut matched = false;
             for filter in filters {
-                if matches(filter, document, array_budget)? {
+                if matches(filter, document, value_budget)? {
                     matched = true;
                     break;
                 }
             }
             matched
         }
-        DocumentFilter::Not(filter) => !matches(filter, document, array_budget)?,
+        DocumentFilter::Not(filter) => !matches(filter, document, value_budget)?,
     })
 }
 
@@ -390,7 +411,7 @@ struct QueryCollector<'a> {
     scanned: usize,
     matched_count: usize,
     matched: Vec<(Option<Vec<u8>>, String, Value)>,
-    array_budget: ArrayFilterBudget,
+    value_budget: FilterValueBudget,
     error: Option<io::Error>,
 }
 
@@ -401,7 +422,7 @@ impl<'a> QueryCollector<'a> {
             scanned: 0,
             matched_count: 0,
             matched: Vec::new(),
-            array_budget: ArrayFilterBudget::default(),
+            value_budget: FilterValueBudget::default(),
             error: None,
         }
     }
@@ -414,7 +435,7 @@ impl<'a> QueryCollector<'a> {
         // Defer a filter/sort error until the complete scan has checked all
         // document records and limits, preserving their previous precedence.
         let result = (|| -> io::Result<()> {
-            if !matches(&self.query.filter, &document, &mut self.array_budget)? {
+            if !matches(&self.query.filter, &document, &mut self.value_budget)? {
                 return Ok(());
             }
             let position = self.matched_count;
