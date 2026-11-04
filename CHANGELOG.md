@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Harden checkpoint fault-test fixture reopens against transient inherited locks and extend reclamation cleanup-failure checks.
+
 - Hold the replacement store's write barrier while reclaiming its predecessor, preventing an uncertain concurrent write during cleanup.
 
 - Add opt-in guarded online compaction with post-handoff reclamation of the redundant previous store, explicit cleanup-error reporting, and preserved staging on failure or unwind.

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::log_io::LogIo;
+use crate::test_support::retry_lock;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::FileExt;
@@ -22,7 +23,7 @@ fn duplicated_store_lock_retains_ownership_until_the_duplicate_closes() {
         io::ErrorKind::WouldBlock
     );
     drop(inherited);
-    assert!(Store::open(directory.path()).is_ok());
+    assert!(retry_lock(|| Store::open(directory.path())).is_ok());
 }
 
 #[derive(Clone, Copy)]
@@ -166,7 +167,7 @@ fn disk_full_at_every_record_offset_fails_closed_and_preserves_bytes() {
         assert!(store.put(b"next", b"value").is_err());
         drop(store);
         let bytes_before = fs::read(&path).unwrap();
-        let reopened = Store::open(dir.path());
+        let reopened = retry_lock(|| Store::open(dir.path()));
         if offset == 0 {
             assert_eq!(
                 reopened.unwrap().get(b"safe").unwrap().as_deref(),
@@ -202,7 +203,7 @@ fn failed_sync_has_unknown_outcome_and_blocks_further_operations() {
         drop(store);
         // The complete failed write may still appear on reopen; callers must not
         // assume it was absent. This is not a simulated power failure.
-        let store = Store::open(dir.path()).unwrap();
+        let store = retry_lock(|| Store::open(dir.path())).unwrap();
         assert_eq!(
             store.get(b"safe").unwrap().as_deref(),
             Some(&b"committed"[..])
@@ -234,7 +235,7 @@ fn conditional_mismatch_does_not_write_and_failed_match_is_uncertain() {
     assert!(store.get(b"key").is_err());
     assert!(store.compare_exchange(b"key", Some(b"old"), None).is_err());
     drop(store);
-    let reopened = Store::open(dir.path()).unwrap();
+    let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
     assert_eq!(reopened.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
 }
 
@@ -255,7 +256,7 @@ fn increment_sync_failure_is_uncertain_and_requires_reopen() {
     assert!(store.increment_i64(b"counter", 1).is_err());
     drop(store);
     assert_eq!(
-        Store::open(dir.path())
+        retry_lock(|| Store::open(dir.path()))
             .unwrap()
             .get(b"counter")
             .unwrap()
@@ -293,7 +294,7 @@ fn limited_store_preserves_unknown_outcome_after_sync_error() {
     );
     drop(store);
     assert_eq!(
-        Store::open(dir.path())
+        retry_lock(|| Store::open(dir.path()))
             .unwrap()
             .get(b"key")
             .unwrap()
@@ -322,7 +323,8 @@ fn failed_preparation_releases_log_capacity_for_a_later_write() {
     store.put(b"key", b"value").unwrap();
     assert!(store.put(b"x", b"value").is_err());
     drop(store);
-    let recovered = Store::open_with_log_limit(directory.path(), length + record_len).unwrap();
+    let recovered =
+        retry_lock(|| Store::open_with_log_limit(directory.path(), length + record_len)).unwrap();
     assert_eq!(
         recovered.get(b"key").unwrap().as_deref(),
         Some(&b"value"[..])
@@ -340,7 +342,7 @@ fn generation_exhaustion_fails_closed_instead_of_wrapping() {
     assert!(error.to_string().contains("uncertain"));
     assert!(store.get(b"safe").is_err());
     drop(store);
-    let reopened = Store::open(dir.path()).unwrap();
+    let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
     assert_eq!(
         reopened.get(b"safe").unwrap().as_deref(),
         Some(&b"value"[..])
@@ -437,7 +439,7 @@ fn witness_write_and_sync_failures_never_acknowledge_and_poison_the_store() {
         drop(store);
         // The append completed before the injected witness failure; its
         // unacknowledged outcome may be visible after recovery.
-        let reopened = Store::open(dir.path()).unwrap();
+        let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
         assert_eq!(
             reopened.get(b"uncertain").unwrap().as_deref(),
             Some(&b"value"[..])
@@ -512,7 +514,7 @@ fn snapshot_refuses_reads_after_uncertain_write_and_propagates_read_errors() {
 fn short_read_during_recovery_preserves_the_log() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let store = Store::open(dir.path()).unwrap();
+        let store = retry_lock(|| Store::open(dir.path())).unwrap();
         store.put(b"key", b"value").unwrap();
     }
     let path = dir.path().join("records.log");
@@ -560,7 +562,11 @@ fn writer_panic_blocks_subsequent_reads_and_preserves_the_log() {
     drop(store);
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
-    assert!(Store::open(dir.path()).is_err());
+    let error = retry_lock(|| Store::open(dir.path())).err().unwrap();
+    assert!(matches!(
+        error.kind(),
+        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+    ));
     assert_eq!(fs::read(path).unwrap(), before);
 }
 
@@ -587,7 +593,11 @@ fn concurrent_writers_cannot_continue_after_an_uncertain_write() {
     drop(store);
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
-    assert!(Store::open(dir.path()).is_err());
+    let error = retry_lock(|| Store::open(dir.path())).err().unwrap();
+    assert!(matches!(
+        error.kind(),
+        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+    ));
     assert_eq!(fs::read(path).unwrap(), before);
 }
 
@@ -675,7 +685,7 @@ fn reads_observe_previous_value_while_a_write_is_syncing() {
 fn short_read_after_buffer_refill_fails_recovery_without_changing_log() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let store = Store::open(dir.path()).unwrap();
+        let store = retry_lock(|| Store::open(dir.path())).unwrap();
         for i in 0_u32..1500 {
             store.put(&i.to_be_bytes(), &[i as u8; 64]).unwrap();
         }
@@ -684,10 +694,10 @@ fn short_read_after_buffer_refill_fails_recovery_without_changing_log() {
     let before = fs::read(&path).unwrap();
     assert!(before.len() > 64 * 1024);
     let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(2, 11))));
-    let result = open_fault_store(&dir, fault);
+    let result = retry_lock(|| open_fault_store(&dir, Arc::clone(&fault)));
     assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::UnexpectedEof));
     assert_eq!(fs::read(&path).unwrap(), before);
-    let reopened = Store::open(dir.path()).unwrap();
+    let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
     assert_eq!(
         reopened.get(&1499_u32.to_be_bytes()).unwrap().as_deref(),
         Some(&[1499_u32 as u8; 64][..])
@@ -699,17 +709,20 @@ fn short_read_in_large_direct_payload_preserves_log() {
     let dir = tempfile::tempdir().unwrap();
     let value = vec![0xa7; 256 * 1024];
     {
-        let store = Store::open(dir.path()).unwrap();
+        let store = retry_lock(|| Store::open(dir.path())).unwrap();
         store.put(b"large", &value).unwrap();
     }
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
     let fault = Arc::new(Mutex::new(Some(Fault::ShortReadAfter(2, 11))));
-    let result = open_fault_store(&dir, fault);
+    let result = retry_lock(|| open_fault_store(&dir, Arc::clone(&fault)));
     assert!(matches!(result, Err(ref error) if error.kind() == io::ErrorKind::UnexpectedEof));
     assert_eq!(fs::read(&path).unwrap(), before);
     assert_eq!(
-        Store::open(dir.path()).unwrap().get(b"large").unwrap(),
+        retry_lock(|| Store::open(dir.path()))
+            .unwrap()
+            .get(b"large")
+            .unwrap(),
         Some(value)
     );
 }
@@ -733,7 +746,7 @@ fn checkpoint_parent_sync_failure_reports_uncertain_publication() {
     let bytes = std::fs::read(&checkpoint).unwrap();
     let token: [u8; 32] = bytes[bytes.len() - 32..].try_into().unwrap();
     assert_eq!(
-        Store::open_with_checkpoint(&source, &checkpoint, &token)
+        retry_lock(|| Store::open_with_checkpoint(&source, &checkpoint, &token))
             .unwrap()
             .get(b"key")
             .unwrap()
@@ -774,7 +787,8 @@ fn checkpoint_reports_uncertain_publication_for_each_ancestor_sync_failure() {
         drop(store);
         let bytes = fs::read(&checkpoint).unwrap();
         let token = bytes[bytes.len() - 32..].try_into().unwrap();
-        let reopened = Store::open_with_checkpoint(&source, &checkpoint, &token).unwrap();
+        let reopened =
+            retry_lock(|| Store::open_with_checkpoint(&source, &checkpoint, &token)).unwrap();
         assert_eq!(
             reopened.get(b"key").unwrap().as_deref(),
             Some(&b"value"[..])
