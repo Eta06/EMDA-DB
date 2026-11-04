@@ -1,6 +1,7 @@
 //! Conditional, ordered JSON updates staged in a single storage transaction.
 mod array;
-use super::{key, schema, transaction::DocumentTransaction};
+mod scalar;
+use super::{index::IndexValue, key, schema, transaction::DocumentTransaction};
 use serde_json::{Map, Value};
 use std::io;
 
@@ -15,13 +16,30 @@ pub struct FieldCondition {
 
 /// One update applied in order to a document object.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum DocumentUpdate {
     /// Set a value, creating missing intermediate objects.
     Set { path: Vec<String>, value: Value },
+    /// Set a missing field; an existing field, including null, is unchanged.
+    SetIfMissing { path: Vec<String>, value: Value },
     /// Remove a field; removing a missing field is a no-op.
     Unset { path: Vec<String> },
     /// Add to a signed 64-bit integer; a missing field starts at zero.
     Increment { path: Vec<String>, amount: i64 },
+    /// Multiply a signed integer by a signed factor; a missing field starts at zero.
+    Multiply { path: Vec<String>, factor: i64 },
+    /// Set a missing field or replace a larger indexable scalar.
+    Min {
+        path: Vec<String>,
+        value: IndexValue,
+    },
+    /// Set a missing field or replace a smaller indexable scalar.
+    Max {
+        path: Vec<String>,
+        value: IndexValue,
+    },
+    /// Move a present field to a non-overlapping path, replacing its destination.
+    Rename { from: Vec<String>, to: Vec<String> },
     /// Append one value, creating a missing array and intermediate objects.
     ArrayPush { path: Vec<String>, value: Value },
     /// Append one value only if no element has exact JSON equality with it.
@@ -83,6 +101,11 @@ fn apply(document: &mut Value, updates: &[DocumentUpdate]) -> io::Result<()> {
                     .ok_or_else(|| key::invalid("increment overflows a signed 64-bit integer"))?;
                 object.insert(name.clone(), Value::from(value));
             }
+            DocumentUpdate::SetIfMissing { .. }
+            | DocumentUpdate::Multiply { .. }
+            | DocumentUpdate::Min { .. }
+            | DocumentUpdate::Max { .. }
+            | DocumentUpdate::Rename { .. } => scalar::apply(document, update)?,
             DocumentUpdate::ArrayPush { .. }
             | DocumentUpdate::ArrayAddUnique { .. }
             | DocumentUpdate::ArrayRemove { .. }
@@ -119,16 +142,34 @@ impl DocumentTransaction<'_, '_> {
             for update in updates {
                 let path = match update {
                     DocumentUpdate::Set { path, .. }
+                    | DocumentUpdate::SetIfMissing { path, .. }
                     | DocumentUpdate::Unset { path }
                     | DocumentUpdate::Increment { path, .. }
+                    | DocumentUpdate::Multiply { path, .. }
+                    | DocumentUpdate::Min { path, .. }
+                    | DocumentUpdate::Max { path, .. }
                     | DocumentUpdate::ArrayPush { path, .. }
                     | DocumentUpdate::ArrayAddUnique { path, .. }
                     | DocumentUpdate::ArrayRemove { path, .. }
                     | DocumentUpdate::ArrayPop { path, .. } => path,
+                    DocumentUpdate::Rename { from, to } => {
+                        schema::validate_path(to)?;
+                        if from.starts_with(to) || to.starts_with(from) {
+                            return Err(key::invalid("rename paths must not overlap"));
+                        }
+                        from
+                    }
                 };
                 schema::validate_path(path)?;
-                if let DocumentUpdate::Set { value, .. } = update {
+                if let DocumentUpdate::Set { value, .. }
+                | DocumentUpdate::SetIfMissing { value, .. } = update
+                {
                     schema::validate_tree(value)?;
+                }
+                if let DocumentUpdate::Min { value, .. } | DocumentUpdate::Max { value, .. } =
+                    update
+                {
+                    value.encode(&mut Vec::new())?;
                 }
             }
             array::validate_inputs(updates)?;

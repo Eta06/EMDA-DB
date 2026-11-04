@@ -1,4 +1,4 @@
-//! Shared invariants for interrupted document-array commits.
+//! Shared invariants for interrupted document-array and scalar commits.
 use crate::{
     CollectionSchema, DocumentDatabase, DocumentUpdate, IndexDefinition, IndexQuery, IndexValue,
 };
@@ -32,9 +32,25 @@ pub(crate) fn update(db: &DocumentDatabase<'_>) -> io::Result<()> {
                     path: vec!["items".into()],
                     value: json!(2),
                 },
-                DocumentUpdate::Set {
+                DocumentUpdate::Multiply {
                     path: vec!["x".into()],
-                    value: json!(2),
+                    factor: 2,
+                },
+                DocumentUpdate::SetIfMissing {
+                    path: vec!["source".into()],
+                    value: json!("ready"),
+                },
+                DocumentUpdate::Rename {
+                    from: vec!["source".into()],
+                    to: vec!["moved".into()],
+                },
+                DocumentUpdate::Min {
+                    path: vec!["x".into()],
+                    value: IndexValue::Integer(2),
+                },
+                DocumentUpdate::Max {
+                    path: vec!["x".into()],
+                    value: IndexValue::Integer(2),
                 },
             ],
             false,
@@ -55,6 +71,12 @@ pub(crate) fn verify(db: &DocumentDatabase<'_>) {
             json!([1, 2])
         }
     );
+    assert!(document.get("source").is_none());
+    if version == 2 {
+        assert_eq!(document.get("moved"), Some(&json!("ready")));
+    } else {
+        assert!(document.get("moved").is_none());
+    }
     assert_eq!(
         db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(),
         (version == 2).then(|| b"new".to_vec())

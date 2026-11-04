@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add checked multiplication, set-if-missing, typed scalar minimum/maximum and non-overlapping field rename updates. `DocumentUpdate` is now non-exhaustive, so downstream matches must include a wildcard arm.
+
 - Allow each open store to set and inspect its transaction reservation limit, preserving it across guarded compaction while rejecting reductions below active reservations. The limit resets on reopen and is not a total-memory quota.
 
 - Stream grouped statistics during complete scans while preserving scan and filter error precedence.
