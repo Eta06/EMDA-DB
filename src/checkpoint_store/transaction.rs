@@ -293,6 +293,18 @@ impl CheckpointStore {
             .set_limit(limit)
     }
 
+    /// Sets the process-local active transaction limit for this open store.
+    /// Admissions include queued calls, callbacks and commits. Reducing the
+    /// limit below the active count returns `WouldBlock`; zero rejects all new
+    /// transactions. Independent writes and snapshots are unaffected. This is
+    /// not a total-memory or cross-store limit, and resets on reopen.
+    pub fn set_active_transaction_limit(&self, limit: usize) -> io::Result<()> {
+        self.transaction_budget
+            .lock()
+            .map_err(|_| io::Error::other("transaction budget poisoned"))?
+            .set_active_limit(limit)
+    }
+
     /// Runs a bounded optimistic serializable transaction.
     ///
     /// The callback runs without holding the store lock. Reads and the final
@@ -420,6 +432,8 @@ impl CheckpointStore {
     ) -> Result<T, TimedTransactionError> {
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
+        let _admission =
+            crate::transaction_budget::ActiveTransaction::acquire(&self.transaction_budget)?;
         // Admission covers both callback and commit. Release the write guard
         // and staged reservations before releasing the queue turn on unwind.
         let _turn = if fifo {

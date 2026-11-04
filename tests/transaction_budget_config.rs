@@ -1,7 +1,7 @@
 use database_engine::{
     COMPACTED_CHECKPOINT_FILE, CancellationToken, CheckpointStore, ControlledTransactionError,
-    DocumentDatabase, DocumentTransactionMode, MAX_TRANSACTION_STAGED_TOTAL_BYTES, OnlineStore,
-    Store, TransactionBudgetStatus,
+    DocumentDatabase, DocumentTransactionMode, MAX_ACTIVE_TRANSACTIONS,
+    MAX_TRANSACTION_STAGED_TOTAL_BYTES, OnlineStore, Store, TransactionBudgetStatus,
 };
 use std::{
     cell::Cell,
@@ -36,6 +36,12 @@ impl Backend {
         match self {
             Self::Ordinary(store) => store.transaction_budget_status(),
             Self::Checkpoint(store) => store.transaction_budget_status(),
+        }
+    }
+    fn set_active(&self, limit: usize) -> io::Result<()> {
+        match self {
+            Self::Ordinary(store) => store.set_active_transaction_limit(limit),
+            Self::Checkpoint(store) => store.set_active_transaction_limit(limit),
         }
     }
     fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
@@ -135,6 +141,149 @@ fn configurable_limits_are_atomic_with_active_reservations_on_both_backends() {
             Some(b"still allowed".to_vec())
         );
         backend.set(MAX_TRANSACTION_STAGED_TOTAL_BYTES).unwrap();
+    }
+}
+
+#[test]
+fn active_admission_limits_callbacks_and_releases_on_every_exit() {
+    for checkpoint_mode in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let backend = open(root.path(), checkpoint_mode);
+        assert_eq!(
+            backend.status().unwrap().active_limit,
+            MAX_ACTIVE_TRANSACTIONS
+        );
+        assert_eq!(backend.status().unwrap().active_transactions, 0);
+        assert_eq!(
+            backend
+                .set_active(MAX_ACTIVE_TRANSACTIONS + 1)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidInput
+        );
+        backend.set_active(0).unwrap();
+        let called = Cell::new(false);
+        assert_eq!(
+            backend
+                .db()
+                .transaction(|_| {
+                    called.set(true);
+                    Ok(())
+                })
+                .unwrap_err()
+                .kind(),
+            ErrorKind::WouldBlock
+        );
+        assert!(!called.get());
+        backend.put(b"independent", b"allowed").unwrap();
+        backend.set_active(1).unwrap();
+        backend
+            .db()
+            .transaction(|tx| {
+                assert_eq!(backend.status()?.active_transactions, 1);
+                assert_eq!(
+                    backend.set_active(0).unwrap_err().kind(),
+                    ErrorKind::WouldBlock
+                );
+                assert_eq!(
+                    backend.db().transaction(|_| Ok(())).unwrap_err().kind(),
+                    ErrorKind::WouldBlock
+                );
+                assert_eq!(tx.get_raw(b"independent")?, Some(b"allowed".to_vec()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(backend.status().unwrap().active_transactions, 0);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: io::Result<()> = backend.db().transaction(|tx| {
+                tx.put_raw(b"discard", b"value")?;
+                panic!("injected callback panic")
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(backend.status().unwrap().active_transactions, 0);
+        assert_eq!(
+            backend
+                .db()
+                .transaction(|tx| tx.get_raw(b"discard"))
+                .unwrap(),
+            None
+        );
+        backend.set_active(0).unwrap();
+    }
+}
+
+#[test]
+fn concurrent_active_admissions_never_exceed_the_configured_limit() {
+    for checkpoint_mode in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let backend = Arc::new(open(root.path(), checkpoint_mode));
+        backend.set_active(2).unwrap();
+        let start = Arc::new(Barrier::new(9));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (sender, receiver) = mpsc::channel();
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let (backend, start, release, sender) = (
+                Arc::clone(&backend),
+                Arc::clone(&start),
+                Arc::clone(&release),
+                sender.clone(),
+            );
+            workers.push(thread::spawn(move || {
+                start.wait();
+                let entered = Cell::new(false);
+                let result = backend.db().transaction(|_| {
+                    entered.set(true);
+                    sender.send(true).unwrap();
+                    let (lock, wake) = &*release;
+                    let mut done = lock.lock().unwrap();
+                    while !*done {
+                        done = wake.wait(done).unwrap();
+                    }
+                    Ok(())
+                });
+                if !entered.get() {
+                    sender.send(false).unwrap();
+                }
+                result
+            }));
+        }
+        drop(sender);
+        start.wait();
+        let announced = (0..8)
+            .map(|_| receiver.recv_timeout(Duration::from_secs(10)))
+            .collect::<Result<Vec<_>, _>>();
+        let status = backend.status().unwrap();
+        let below_active = backend.set_active(1).unwrap_err().kind();
+        {
+            let (lock, wake) = &*release;
+            *lock.lock().unwrap() = true;
+            wake.notify_all();
+        }
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            announced
+                .unwrap()
+                .into_iter()
+                .filter(|entered| *entered)
+                .count(),
+            2
+        );
+        assert_eq!(status.active_transactions, 2);
+        assert_eq!(below_active, ErrorKind::WouldBlock);
+        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 2);
+        assert!(
+            outcomes
+                .iter()
+                .filter_map(|result| result.as_ref().err())
+                .all(|error| error.kind() == ErrorKind::WouldBlock)
+        );
+        assert_eq!(backend.status().unwrap().active_transactions, 0);
+        backend.set_active(1).unwrap();
     }
 }
 
@@ -253,6 +402,7 @@ fn cancellation_releases_the_configured_budget_on_both_backends() {
         );
         assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
         assert_eq!(backend.status().unwrap().reserved_bytes, 0);
+        assert_eq!(backend.status().unwrap().active_transactions, 0);
         assert_eq!(
             backend
                 .db()
@@ -314,9 +464,11 @@ fn limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen() {
             let store =
                 retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
             store.set_transaction_staging_limit(512).unwrap();
+            store.set_active_transaction_limit(3).unwrap();
             store.put(b"key", b"value").unwrap();
             let (store, digest) = store.compact_and_replace(&previous).unwrap();
             assert_eq!(store.transaction_budget_status().unwrap().limit_bytes, 512);
+            assert_eq!(store.transaction_budget_status().unwrap().active_limit, 3);
             assert_eq!(store.get(b"key").unwrap(), Some(b"value".to_vec()));
             drop(store);
             let reopened = retry_lock(|| {
@@ -327,17 +479,27 @@ fn limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen() {
                 reopened.transaction_budget_status().unwrap().limit_bytes,
                 MAX_TRANSACTION_STAGED_TOTAL_BYTES
             );
+            assert_eq!(
+                reopened.transaction_budget_status().unwrap().active_limit,
+                MAX_ACTIVE_TRANSACTIONS
+            );
         } else {
             store.set_transaction_staging_limit(512).unwrap();
+            store.set_active_transaction_limit(3).unwrap();
             store.put(b"key", b"value").unwrap();
             let store = store.compact_and_replace(&source, &previous).unwrap();
             assert_eq!(store.transaction_budget_status().unwrap().limit_bytes, 512);
+            assert_eq!(store.transaction_budget_status().unwrap().active_limit, 3);
             assert_eq!(store.get(b"key").unwrap(), Some(b"value".to_vec()));
             drop(store);
             let reopened = retry_lock(|| Store::open(&source)).unwrap();
             assert_eq!(
                 reopened.transaction_budget_status().unwrap().limit_bytes,
                 MAX_TRANSACTION_STAGED_TOTAL_BYTES
+            );
+            assert_eq!(
+                reopened.transaction_budget_status().unwrap().active_limit,
+                MAX_ACTIVE_TRANSACTIONS
             );
         }
     }

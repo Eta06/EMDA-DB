@@ -76,6 +76,7 @@ fn cancellation_removes_a_checkpoint_fifo_waiter_before_callback() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store =
         Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    store.set_active_transaction_limit(2).unwrap();
     let first = store.transaction_queue.enter().unwrap();
     let token = CancellationToken::new();
     let called = Arc::new(AtomicBool::new(false));
@@ -101,8 +102,28 @@ fn cancellation_removes_a_checkpoint_fifo_waiter_before_callback() {
         follower_store.transaction_with_fifo(|tx| tx.put(b"later", b"ok"))
     });
     wait_for_queue(&store, 3);
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        2
+    );
+    assert_eq!(
+        store.transaction(|_| Ok(())).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
     token.cancel();
     let early = done_rx.recv_timeout(Duration::from_secs(5));
+    if early.is_ok() {
+        assert_eq!(
+            store
+                .transaction_budget_status()
+                .unwrap()
+                .active_transactions,
+            1
+        );
+    }
     drop(first);
     let early_result = early.is_ok();
     let result = early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
@@ -115,6 +136,13 @@ fn cancellation_removes_a_checkpoint_fifo_waiter_before_callback() {
     assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
     assert!(!called.load(Ordering::Relaxed));
     assert_eq!(store.transaction_queue.queued_for_test(), 0);
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        0
+    );
     assert_eq!(store.get(b"key").unwrap(), None);
     assert_eq!(store.get(b"later").unwrap().as_deref(), Some(&b"ok"[..]));
 }

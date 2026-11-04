@@ -284,6 +284,18 @@ impl Store {
             .set_limit(limit)
     }
 
+    /// Sets the process-local active transaction limit for this open store.
+    /// Admissions include queued calls, callbacks and commits. Reducing the
+    /// limit below the active count returns `WouldBlock`; zero rejects all new
+    /// transactions. Independent writes and snapshots are unaffected. This is
+    /// not a total-memory or cross-store limit, and resets on reopen.
+    pub fn set_active_transaction_limit(&self, limit: usize) -> io::Result<()> {
+        self.transaction_budget
+            .lock()
+            .map_err(|_| io::Error::other("transaction budget poisoned"))?
+            .set_active_limit(limit)
+    }
+
     /// Runs an optimistic serializable point transaction on this store.
     ///
     /// The callback runs without holding the writer barrier, on a bounded
@@ -399,6 +411,8 @@ impl Store {
     ) -> Result<T, TimedTransactionError> {
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
+        let _admission =
+            crate::transaction_budget::ActiveTransaction::acquire(&self.transaction_budget)?;
         let snapshot = if let Some(deadline) = deadline {
             self.snapshot_until(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES, deadline)
                 .map_err(|error| {
@@ -521,6 +535,7 @@ mod tests {
     fn cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(directory.path()).unwrap());
+        store.set_active_transaction_limit(2).unwrap();
         let first = store.transaction_queue.enter().unwrap();
         let token = crate::CancellationToken::new();
         let (done_tx, done_rx) = mpsc::channel();
@@ -548,8 +563,28 @@ mod tests {
             assert!(Instant::now() < timeout);
             thread::yield_now();
         }
+        assert_eq!(
+            store
+                .transaction_budget_status()
+                .unwrap()
+                .active_transactions,
+            2
+        );
+        assert_eq!(
+            store.transaction(|_| Ok(())).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
         token.cancel();
         let early = done_rx.recv_timeout(Duration::from_secs(5));
+        if early.is_ok() {
+            assert_eq!(
+                store
+                    .transaction_budget_status()
+                    .unwrap()
+                    .active_transactions,
+                1
+            );
+        }
         drop(first);
         let early_result = early.is_ok();
         let result =
@@ -565,6 +600,13 @@ mod tests {
             Err(crate::ControlledTransactionError::Cancelled)
         ));
         assert_eq!(store.transaction_queue.queued_for_test(), 0);
+        assert_eq!(
+            store
+                .transaction_budget_status()
+                .unwrap()
+                .active_transactions,
+            0
+        );
         assert_eq!(store.get(b"key").unwrap(), None);
         assert_eq!(store.get(b"later").unwrap().as_deref(), Some(&b"ok"[..]));
     }
@@ -638,10 +680,8 @@ mod tests {
 
     #[test]
     fn pending_reservation_is_released_during_unwind() {
-        let budget = Mutex::new(TransactionBudget {
-            used: 0,
-            limit: 128,
-        });
+        let budget = Mutex::new(TransactionBudget::default());
+        budget.lock().unwrap().limit = 128;
         let result = std::panic::catch_unwind(|| {
             let _reservation = PendingReservation::acquire(&budget, 100).unwrap();
             panic!("injected staging panic");

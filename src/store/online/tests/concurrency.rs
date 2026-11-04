@@ -12,7 +12,8 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
     store
         .with_store(|db| {
             db.put(b"key", b"value")?;
-            db.set_transaction_staging_limit(512)
+            db.set_transaction_staging_limit(512)?;
+            db.set_active_transaction_limit(8)
         })
         .unwrap();
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -34,7 +35,10 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
     });
     ready_rx.recv_timeout(WAIT).unwrap();
     store
-        .with_store(|db| db.set_transaction_staging_limit(128))
+        .with_store(|db| {
+            db.set_transaction_staging_limit(128)?;
+            db.set_active_transaction_limit(3)
+        })
         .unwrap();
     release_tx.send(()).unwrap();
     thread.join().unwrap().unwrap();
@@ -43,6 +47,12 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
             .with_store(|db| Ok(db.transaction_budget_status()?.limit_bytes))
             .unwrap(),
         128
+    );
+    assert_eq!(
+        store
+            .with_store(|db| Ok(db.transaction_budget_status()?.active_limit))
+            .unwrap(),
+        3
     );
 }
 

@@ -129,6 +129,7 @@ impl Store {
             self.max_live_key_bytes,
         )?;
         candidate.set_transaction_staging_limit(self.transaction_budget_status()?.limit_bytes)?;
+        candidate.set_active_transaction_limit(self.transaction_budget_status()?.active_limit)?;
         crate::directory::verify_lock_identity(&source, &self._lock_file)?;
         crate::directory::verify_lock_identity(&previous, &candidate._lock_file)?;
         hook(ExchangePoint::BeforeExchange)?;
