@@ -36,7 +36,10 @@ def validate(result, documents, matches, cycles):
     if (result.get("documents") != documents or result.get("matches") != matches
             or result.get("cycles") != cycles or result.get("reopen_verified") is not True
             or result.get("sqlite_journal") != "wal" or result.get("sqlite_synchronous") != 2
-            or "USING INDEX docs_group" not in result.get("sqlite_query_plan", "")):
+            or "USING INDEX docs_group" not in result.get("sqlite_query_plan", "")
+            or "SCAN docs" not in result.get("sqlite_scan_plan", "")
+            or "USING INDEX" in result.get("sqlite_scan_plan", "")
+            or not result.get("sqlite_version")):
         raise ValueError("benchmark identity, configuration or recovery check failed")
     for variant in VARIANTS:
         samples = result.get("samples_ns", {}).get(variant)

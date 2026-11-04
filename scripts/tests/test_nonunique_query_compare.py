@@ -11,6 +11,7 @@ class NonuniqueQueryComparisonTests(unittest.TestCase):
         return {"documents": 100, "matches": 10, "cycles": 2, "reopen_verified": True,
                 "sqlite_journal": "wal", "sqlite_synchronous": 2,
                 "sqlite_query_plan": "SEARCH docs USING INDEX docs_group (<expr>=?)",
+                "sqlite_scan_plan": "SCAN docs", "sqlite_version": "3.0",
                 "samples_ns": {variant: [10, 20] for variant in VARIANTS}}
 
     def test_accepts_only_bounded_distinct_cases(self):
@@ -23,7 +24,7 @@ class NonuniqueQueryComparisonTests(unittest.TestCase):
         validate(self.result(), 100, 10, 2)
 
     def test_rejects_failed_verification_or_invalid_samples(self):
-        for change in ("reopen", "journal", "synchronous", "plan", "missing", "boolean", "negative"):
+        for change in ("reopen", "journal", "synchronous", "plan", "scan_plan", "version", "missing", "boolean", "negative"):
             result = self.result()
             if change == "reopen":
                 result["reopen_verified"] = False
@@ -33,6 +34,10 @@ class NonuniqueQueryComparisonTests(unittest.TestCase):
                 result["sqlite_synchronous"] = 1
             elif change == "plan":
                 result["sqlite_query_plan"] = "SCAN docs"
+            elif change == "scan_plan":
+                result["sqlite_scan_plan"] = "SEARCH docs USING INDEX docs_group"
+            elif change == "version":
+                result["sqlite_version"] = ""
             elif change == "missing":
                 result["samples_ns"]["prototype_planned"].pop()
             elif change == "boolean":

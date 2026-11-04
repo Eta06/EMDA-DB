@@ -117,6 +117,16 @@ fn main() -> Result<()> {
     if !index_plan.contains("USING INDEX docs_group") {
         return Err("SQLite did not select its group index".into());
     }
+    let scan_plan: String = sqlite.query_row(
+        "EXPLAIN QUERY PLAN SELECT id,body FROM docs NOT INDEXED WHERE json_extract(body,'$.group')=?1 ORDER BY id",
+        ["target"],
+        |row| row.get(3),
+    )?;
+    if !scan_plan.contains("SCAN docs") || scan_plan.contains("USING INDEX") {
+        return Err("SQLite scan did not use the expected access path".into());
+    }
+    let sqlite_version: String =
+        sqlite.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
     let all = (0..documents)
         .map(|n| document(n, matches))
         .collect::<Vec<_>>();
@@ -216,7 +226,8 @@ fn main() -> Result<()> {
         "{}",
         json!({
             "documents":documents,"matches":matches,"cycles":cycles,"warmup_cycles":WARMUP,
-            "samples_ns":samples,"sqlite_query_plan":index_plan,"sqlite_journal":mode,
+        "samples_ns":samples,"sqlite_query_plan":index_plan,"sqlite_scan_plan":scan_plan,
+        "sqlite_version":sqlite_version,"sqlite_journal":mode,
             "sqlite_synchronous":synchronous,"peak_rss_kib":peak_rss_kib(),
             "reopen_verified":true,
         })
