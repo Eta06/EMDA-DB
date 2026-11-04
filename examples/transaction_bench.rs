@@ -1,5 +1,5 @@
 //! Disposable serializable two-key transaction benchmark.
-use database_engine::{Store, Transaction};
+use database_engine::{CheckpointStore, CheckpointTransaction, Store, Transaction};
 use rusqlite::{Connection, TransactionBehavior, params};
 use std::error::Error;
 use std::io::{self, ErrorKind};
@@ -15,11 +15,36 @@ enum Mode {
     Conservative,
     ReadSet,
     ReadSetFifo,
+    Checkpoint,
     Sqlite,
 }
 enum Worker {
     Engine(Arc<Store>),
+    Checkpoint(Arc<CheckpointStore>),
     Sqlite(Connection),
+}
+
+trait CounterTransaction {
+    fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>>;
+    fn put(&mut self, key: &[u8], value: &[u8]) -> io::Result<()>;
+}
+
+impl CounterTransaction for Transaction<'_> {
+    fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Transaction::get(self, key)
+    }
+    fn put(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        Transaction::put(self, key, value)
+    }
+}
+
+impl CounterTransaction for CheckpointTransaction<'_> {
+    fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        CheckpointTransaction::get(self, key)
+    }
+    fn put(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        CheckpointTransaction::put(self, key, value)
+    }
 }
 
 fn key(prefix: u8, id: usize) -> Vec<u8> {
@@ -35,7 +60,7 @@ fn decode(value: &[u8]) -> io::Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-fn increment(tx: &mut Transaction<'_>, first: &[u8], second: &[u8]) -> io::Result<()> {
+fn increment(tx: &mut impl CounterTransaction, first: &[u8], second: &[u8]) -> io::Result<()> {
     let left = tx
         .get(first)?
         .ok_or_else(|| io::Error::other("missing counter"))?;
@@ -52,6 +77,26 @@ fn increment(tx: &mut Transaction<'_>, first: &[u8], second: &[u8]) -> io::Resul
         .to_le_bytes();
     tx.put(first, &next)?;
     tx.put(second, &next)
+}
+
+fn retry(
+    mut action: impl FnMut() -> io::Result<()>,
+    conflicts: &mut usize,
+    operations: usize,
+) -> BenchResult<()> {
+    loop {
+        match action() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                *conflicts += 1;
+                if *conflicts > operations * 100_000 {
+                    return Err("retry limit exceeded".into());
+                }
+                thread::yield_now();
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn connection(path: &Path) -> BenchResult<Connection> {
@@ -98,12 +143,13 @@ fn sqlite_increment(conn: &mut Connection, first: &[u8], second: &[u8]) -> Bench
 fn main() -> BenchResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [backend, clients, operations, workload, parent] = args.as_slice() else {
-        return Err("usage: transaction_bench <conservative|readset|readset-fifo|sqlite> <clients> <operations-per-client> <disjoint|shared> <existing-directory>".into());
+        return Err("usage: transaction_bench <conservative|readset|readset-fifo|checkpoint|sqlite> <clients> <operations-per-client> <disjoint|shared> <existing-directory>".into());
     };
     let mode = match backend.as_str() {
         "conservative" => Mode::Conservative,
         "readset" => Mode::ReadSet,
         "readset-fifo" => Mode::ReadSetFifo,
+        "checkpoint" => Mode::Checkpoint,
         "sqlite" => Mode::Sqlite,
         _ => return Err("unknown backend".into()),
     };
@@ -123,6 +169,7 @@ fn main() -> BenchResult<()> {
     let sqlite_path = directory.path().join("sqlite.db");
     let pairs = if workload == "shared" { 1 } else { clients };
     let mut store = None;
+    let mut checkpoint_store = None;
     let mut sqlite_keeper = None;
     let mut workers = Vec::new();
     if matches!(mode, Mode::Sqlite) {
@@ -148,15 +195,27 @@ fn main() -> BenchResult<()> {
         }
         sqlite_keeper = Some(conn);
     } else {
-        let opened = Arc::new(Store::open(&path)?);
+        let opened = Store::open(&path)?;
         for id in 0..pairs {
             opened.put(&key(b'a', id), &0_u64.to_le_bytes())?;
             opened.put(&key(b'b', id), &0_u64.to_le_bytes())?;
         }
-        for _ in 0..clients {
-            workers.push(Worker::Engine(Arc::clone(&opened)));
+        if matches!(mode, Mode::Checkpoint) {
+            let checkpoint = directory.path().join("checkpoint");
+            let digest = opened.checkpoint_to(&checkpoint)?;
+            drop(opened);
+            let opened = Arc::new(CheckpointStore::open(&path, &checkpoint, &digest)?);
+            for _ in 0..clients {
+                workers.push(Worker::Checkpoint(Arc::clone(&opened)));
+            }
+            checkpoint_store = Some(opened);
+        } else {
+            let opened = Arc::new(opened);
+            for _ in 0..clients {
+                workers.push(Worker::Engine(Arc::clone(&opened)));
+            }
+            store = Some(opened);
         }
-        store = Some(opened);
     }
     let barrier = Arc::new(Barrier::new(clients + 1));
     let mut threads = Vec::new();
@@ -173,8 +232,8 @@ fn main() -> BenchResult<()> {
                 let started = Instant::now();
                 match &mut worker {
                     Worker::Sqlite(conn) => sqlite_increment(conn, &first, &second)?,
-                    Worker::Engine(store) => loop {
-                        let result = match mode {
+                    Worker::Engine(store) => retry(
+                        || match mode {
                             Mode::Conservative => {
                                 store.transaction(|tx| increment(tx, &first, &second))
                             }
@@ -184,20 +243,16 @@ fn main() -> BenchResult<()> {
                             Mode::ReadSetFifo => store.transaction_with_read_set_fifo(|tx| {
                                 increment(tx, &first, &second)
                             }),
-                            Mode::Sqlite => unreachable!(),
-                        };
-                        match result {
-                            Ok(()) => break,
-                            Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                                conflicts += 1;
-                                if conflicts > operations * 100_000 {
-                                    return Err("retry limit exceeded".into());
-                                }
-                                thread::yield_now();
-                            }
-                            Err(error) => return Err(error.into()),
-                        }
-                    },
+                            Mode::Checkpoint | Mode::Sqlite => unreachable!(),
+                        },
+                        &mut conflicts,
+                        operations,
+                    )?,
+                    Worker::Checkpoint(store) => retry(
+                        || store.transaction(|tx| increment(tx, &first, &second)),
+                        &mut conflicts,
+                        operations,
+                    )?,
                 }
                 times.push(started.elapsed().as_nanos());
             }
@@ -232,6 +287,7 @@ fn main() -> BenchResult<()> {
     }
     let elapsed = started.elapsed().as_nanos();
     drop(store);
+    drop(checkpoint_store);
     drop(sqlite_keeper);
     if matches!(mode, Mode::Sqlite) {
         let conn = connection(&sqlite_path)?;

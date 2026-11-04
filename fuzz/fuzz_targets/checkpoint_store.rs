@@ -80,7 +80,7 @@ fuzz_target!(|data: &[u8]| {
         let first = key(bytes[1]);
         let second = key(bytes[2]);
         let value = vec![bytes[3]; usize::from(bytes[3] % 5)];
-        let kind = bytes[0] % 9;
+        let kind = bytes[0] % 10;
         if kind == 4 {
             check(&store, &model, &touched, tail);
             drop(store);
@@ -251,6 +251,70 @@ fuzz_target!(|data: &[u8]| {
                 model.insert(first, value);
                 peak = peak.max(model.len());
                 model.remove(&second);
+            }
+            assert_eq!(
+                std::fs::metadata(path.join("records.log"))
+                    .expect("log metadata")
+                    .len(),
+                total_log
+            );
+            check(&store, &model, &touched, tail);
+            continue;
+        }
+        if kind == 9 {
+            let mut next_touched = touched.clone();
+            next_touched.insert(first.clone());
+            next_touched.insert(second.clone());
+            // Staging the same key twice keeps only its final deletion.
+            let encoded = if first == second {
+                26 + 21 + second.len()
+            } else {
+                26 + (21 + first.len() + value.len()) + (21 + second.len())
+            } as u64;
+            let allowed = tail + encoded <= max_tail
+                && next_touched.len() <= max_keys
+                && next_touched.iter().map(Vec::len).sum::<usize>() <= max_key_bytes
+                && max_log.is_none_or(|max| total_log + encoded <= max);
+            let abort = bytes[3] & 2 != 0;
+            let result = store.transaction(|transaction| {
+                assert_eq!(transaction.get(&first)?, model.get(&first).cloned());
+                let expected = model
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>();
+                assert_eq!(transaction.scan(None, None, 100)?, expected);
+                transaction.put(&first, &value)?;
+                transaction.delete(&second)?;
+                let mut staged = model.clone();
+                staged.insert(first.clone(), value.clone());
+                staged.remove(&second);
+                assert_eq!(transaction.get(&first)?, staged.get(&first).cloned());
+                assert_eq!(
+                    transaction.scan(None, None, 100)?,
+                    staged.into_iter().collect::<Vec<_>>()
+                );
+                if abort {
+                    return Err(std::io::Error::other("model abort"));
+                }
+                Ok(())
+            });
+            assert_eq!(result.is_ok(), allowed && !abort);
+            if allowed && !abort {
+                touched = next_touched;
+                tail += encoded;
+                total_log += encoded;
+                // The transaction emits its final writes in sorted key order.
+                if first < second {
+                    model.insert(first, value);
+                    peak = peak.max(model.len());
+                    model.remove(&second);
+                } else {
+                    model.remove(&second);
+                    if first != second {
+                        model.insert(first, value);
+                    }
+                }
+                peak = peak.max(model.len());
             }
             assert_eq!(
                 std::fs::metadata(path.join("records.log"))

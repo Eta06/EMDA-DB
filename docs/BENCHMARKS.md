@@ -318,7 +318,7 @@ Compacted record bytes matched in every run. The checkpoint-backed path also emi
 
 ## Two-key transaction comparison
 
-`examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.
+`examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the ordinary store's transaction validators; `checkpoint` uses the checkpoint-backed store's conservative transactions. Each prototype mode explicitly retries conflicts. `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. Earlier recorded runs predate the checkpoint option.
 
 On Linux, build and run with an existing fixture directory and a new output path:
 
@@ -327,7 +327,7 @@ cargo build --release --example transaction_bench --locked
 python3 scripts/transaction_compare.py --directory /workspace --output /tmp/transaction-results.json
 ```
 
-The runner rotates backend order and records every successful operation's latency, per-client conflicts, total elapsed time, source and binary hashes, and VM/cgroup noise. Defaults are 1, 4 and 8 clients, 100 operations per client, five repetitions per mode and workload. These are synthetic closed-loop direct API measurements, not PostgreSQL or MongoDB transaction comparisons. The engines' implementation details and complete durability behavior differ, so results do not establish a general performance or reliability ranking.
+The runner rotates backend order and records every successful operation's latency, per-client conflicts, total elapsed time, source and binary hashes, and VM/cgroup noise. Defaults are 1, 4 and 8 clients, 100 operations per client, five repetitions per mode and workload; `--modes checkpoint,conservative,sqlite` selects a subset. Checkpoint creation and backend initialization occur outside the timed workload. These are synthetic closed-loop direct API measurements, not PostgreSQL or MongoDB transaction comparisons. The engines' implementation details and complete durability behavior differ, so results do not establish a general performance or reliability ranking.
 
 The [recorded run](../benchmarks/results/2026-11-04-transaction-comparison.json) used revision `54f7afe`, SQLite 3.49.1 and five repetitions for each configuration. The table reports medians of run-level results; conflict counts include retries across all clients in one run.
 

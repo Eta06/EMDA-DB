@@ -13,11 +13,15 @@ use std::fs::OpenOptions;
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+mod transaction;
+pub use transaction::CheckpointTransaction;
 
 struct State {
     view: RecoveredCheckpointView,
     overlay_key_bytes: usize,
+    generation: u64,
     failed: bool,
 }
 
@@ -35,7 +39,7 @@ struct OpenLimits {
 /// bounded in-memory overlay records every distinct suffix key, including
 /// tombstones; opening still verifies the complete covered log prefix. Limits
 /// are not total process-memory quotas. This type excludes other cooperating
-/// stores/views, has no transactions or snapshots, and does not automatically
+/// stores/views, has no persistent snapshots, and does not automatically
 /// checkpoint, compact or reclaim space. If a limit fills, `rollover_to` can
 /// create and switch to a fresh checkpoint while retaining exclusive ownership.
 /// Its digest must be protected independently. A failed append/sync has an
@@ -44,6 +48,7 @@ pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
     log: Log,
     state: RwLock<State>,
+    transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     path: PathBuf,
     max_tail_bytes: u64,
     max_tail_keys: usize,
@@ -183,8 +188,10 @@ impl CheckpointStore {
             state: RwLock::new(State {
                 view,
                 overlay_key_bytes,
+                generation: 0,
                 failed: false,
             }),
+            transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             path,
             max_tail_bytes,
             max_tail_keys,
@@ -606,6 +613,12 @@ impl CheckpointStore {
         value: &[u8],
         touched: &[&[u8]],
     ) -> io::Result<()> {
+        // Refuse a mutation before appending if a transaction generation can
+        // no longer advance; wrapping would let a stale transaction commit.
+        let next_generation = state
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("checkpoint transaction generation exhausted"))?;
         let length = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
         let next_tail = state
             .view
@@ -673,6 +686,7 @@ impl CheckpointStore {
         }
         state.view.tail_bytes = next_tail;
         state.overlay_key_bytes = new_key_bytes;
+        state.generation = next_generation;
         state.failed = false;
         Ok(())
     }

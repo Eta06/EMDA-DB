@@ -28,6 +28,13 @@ fn acknowledged_checkpoint_writes_survive_process_termination() {
         let rotated = store.rollover_to(parent.join("rotated")).unwrap();
         fs::write(parent.join("rotated.digest"), rotated).unwrap();
         store.put(b"after-rollover", b"acknowledged").unwrap();
+        store
+            .transaction(|tx| {
+                assert_eq!(tx.get(b"left")?.as_deref(), Some(&b"one"[..]));
+                tx.put(b"tx-left", b"committed")?;
+                tx.put(b"tx-right", b"committed")
+            })
+            .unwrap();
         println!("EMDA_CHECKPOINT_KILL_ACKNOWLEDGED");
         io::stdout().flush().unwrap();
         loop {
@@ -80,6 +87,10 @@ fn acknowledged_checkpoint_writes_survive_process_termination() {
     );
     assert_eq!(store.get(b"left").unwrap().as_deref(), Some(&b"one"[..]));
     assert_eq!(store.get(b"right").unwrap().as_deref(), Some(&b"two"[..]));
+    assert_eq!(
+        store.get_many(&[b"tx-left", b"tx-right"]).unwrap(),
+        vec![Some(b"committed".to_vec()), Some(b"committed".to_vec())]
+    );
     assert_eq!(
         store.get(b"after-rollover").unwrap().as_deref(),
         Some(&b"acknowledged"[..])

@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Conservative optimistic transactions for the checkpoint-backed store, with staged point/range operations, shared staged-record reservations and atomic synchronized commits. Any intervening mutation conflicts; this path does not yet provide read-set validation, deadlines or snapshots.
 - Atomic conditional batches for the checkpoint-backed store, applying an ordered batch only when all bounded point-value conditions match. This does not detect ABA changes or validate ranges.
 - Verified separate-copy compaction for the checkpoint-backed store, streaming live keys and producing a separately trusted checkpoint for the copy without rebuilding full source or target indexes. Source mutations wait; switchover and log reclamation remain manual.
 - An optional per-open whole-log byte limit for the checkpoint-backed store, enforced before recovery adoption and serialized writes. Checkpoint rollover does not reclaim log space; the limit is not a persistent project quota.
@@ -16,7 +17,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 - Bounded checkpoint-store recovery of a complete unacknowledged tail, validated and synchronized before adoption. Incomplete records and suffix-limit failures leave the log and witness unchanged; recovery synchronization errors remain uncertain.
 - Explicit live checkpoint rollover that verifies and switches the checkpoint-backed store without releasing its exclusive lock. Checkpoint selection and the independently trusted digest remain the caller's responsibility.
 - Explicit checkpoint rollover for the checkpoint-backed writer, streaming its verified base and bounded suffix into a new checkpoint while retaining the historical key-count peak. Reopening with the separately trusted digest clears the overlay; rollover is not automatic and still hashes the full log prefix.
-- An experimental writable checkpoint-backed store with a bounded suffix overlay, serialized synchronized key operations, conditional updates, increments and atomic blind batches. It requires manual checkpoint rollover and does not yet provide transactions, snapshots or total-memory limits.
+- An experimental writable checkpoint-backed store with a bounded suffix overlay, serialized synchronized key operations, conditional updates, increments and atomic blind batches. It requires manual checkpoint rollover and does not yet provide snapshots or total-memory limits.
 - A read-only recovered checkpoint view that validates and replays a bounded witnessed suffix into an in-memory key overlay, with ordered scans and fail-closed handling of unacknowledged tails.
 - Explicit release of privately owned compaction staging locks before reopening or publication, preventing an inherited descriptor from delaying the handoff.
 - In-flight log-byte reservations allow independent writes to share a sync under the per-open log-length cap without oversubscription.

@@ -63,7 +63,7 @@ impl WitnessIo for Metadata {
 }
 
 #[test]
-fn metadata_write_sync_failures_and_panics_fail_closed_for_single_and_batch_writes() {
+fn metadata_write_sync_failures_and_panics_fail_closed_for_mutations() {
     for fault in [
         Fault::WriteBefore,
         Fault::WriteAfter,
@@ -72,7 +72,7 @@ fn metadata_write_sync_failures_and_panics_fail_closed_for_single_and_batch_writ
         Fault::SyncAfter,
         Fault::SyncPanic,
     ] {
-        for batch in [false, true] {
+        for mode in 0..3 {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store");
             let checkpoint = dir.path().join("checkpoint");
@@ -103,7 +103,7 @@ fn metadata_write_sync_failures_and_panics_fail_closed_for_single_and_batch_writ
                 header.len() as u64,
             ));
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if batch {
+                if mode == 1 {
                     store.write_batch(&[
                         BatchOperation::Put {
                             key: b"left",
@@ -114,8 +114,13 @@ fn metadata_write_sync_failures_and_panics_fail_closed_for_single_and_batch_writ
                             value: b"two",
                         },
                     ])
-                } else {
+                } else if mode == 0 {
                     store.put(b"left", b"one")
+                } else {
+                    store.transaction(|tx| {
+                        tx.put(b"left", b"one")?;
+                        tx.put(b"right", b"two")
+                    })
                 }
             }));
             assert!(outcome.is_err() || outcome.unwrap().is_err());
@@ -129,7 +134,7 @@ fn metadata_write_sync_failures_and_panics_fail_closed_for_single_and_batch_writ
             assert_eq!(reopened.get(b"left").unwrap().as_deref(), Some(&b"one"[..]));
             assert_eq!(
                 reopened.get(b"right").unwrap().as_deref(),
-                if batch { Some(&b"two"[..]) } else { None }
+                if mode != 0 { Some(&b"two"[..]) } else { None }
             );
         }
     }

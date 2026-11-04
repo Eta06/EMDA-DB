@@ -3,12 +3,12 @@ use super::*;
 use crate::record::batch::{
     BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS, encode_payload,
 };
+pub use crate::transaction_budget::MAX_TRANSACTION_STAGED_TOTAL_BYTES;
+use crate::transaction_budget::PendingReservation;
+#[cfg(test)]
+use crate::transaction_budget::TransactionBudget;
 use std::fmt;
 use std::time::Instant;
-
-/// Maximum combined encoded staged-record bytes across transactions on one open store.
-/// This does not include allocator overhead, snapshots, returned values, or commit buffers.
-pub const MAX_TRANSACTION_STAGED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 /// Validation and admission rules for a deadline-limited transaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,69 +71,6 @@ fn check_deadline(deadline: Option<Instant>) -> Result<(), TimedTransactionError
         Err(TimedTransactionError::DeadlineExceeded)
     } else {
         Ok(())
-    }
-}
-
-pub(super) struct TransactionBudget {
-    used: usize,
-    limit: usize,
-}
-
-impl Default for TransactionBudget {
-    fn default() -> Self {
-        Self {
-            used: 0,
-            limit: MAX_TRANSACTION_STAGED_TOTAL_BYTES,
-        }
-    }
-}
-
-impl TransactionBudget {
-    fn reserve(&mut self, bytes: usize) -> io::Result<()> {
-        if bytes > self.limit - self.used {
-            return Err(io::Error::other(
-                "aggregate transaction staged byte limit exceeded",
-            ));
-        }
-        self.used += bytes;
-        Ok(())
-    }
-
-    fn release(&mut self, bytes: usize) {
-        self.used -= bytes;
-    }
-}
-
-// Releases an incremental reservation if constructing a staged entry unwinds.
-struct PendingReservation<'a> {
-    budget: &'a Mutex<TransactionBudget>,
-    bytes: usize,
-}
-
-impl<'a> PendingReservation<'a> {
-    fn acquire(budget: &'a Mutex<TransactionBudget>, bytes: usize) -> io::Result<Self> {
-        if bytes > 0 {
-            budget
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .reserve(bytes)?;
-        }
-        Ok(Self { budget, bytes })
-    }
-
-    fn finish(&mut self) {
-        self.bytes = 0;
-    }
-}
-
-impl Drop for PendingReservation<'_> {
-    fn drop(&mut self) {
-        if self.bytes > 0 {
-            self.budget
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .release(self.bytes);
-        }
     }
 }
 

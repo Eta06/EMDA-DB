@@ -195,3 +195,44 @@ fn conditional_batch_commit_failure_poisoning_preserves_atomic_recovery() {
         }
     }
 }
+
+#[test]
+fn transaction_commit_failures_leave_all_or_no_recoverable_changes() {
+    for fault in [
+        LogFault::Partial(1),
+        LogFault::SyncBefore,
+        LogFault::SyncAfter,
+    ] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        store
+            .log
+            .replace_io_for_test(Box::new(FaultLog { file, fault }));
+        let result = store.transaction(|tx| {
+            assert_eq!(tx.get(b"base")?.as_deref(), Some(&b"acknowledged"[..]));
+            tx.put(b"left", b"one")?;
+            tx.put(b"right", b"two")
+        });
+        assert!(result.is_err());
+        failed_instance_rejects_all_operations(&store, &path);
+        drop(store);
+        let reopened = retry_lock(|| Store::open(&path));
+        if matches!(fault, LogFault::Partial(_)) {
+            assert!(matches!(
+                reopened.err().unwrap().kind(),
+                io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+            ));
+        } else {
+            let reopened = reopened.unwrap();
+            assert_eq!(
+                reopened.get_many(&[b"left", b"right"]).unwrap(),
+                vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+            );
+        }
+    }
+}
