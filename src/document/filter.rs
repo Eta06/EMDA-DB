@@ -513,6 +513,62 @@ pub(super) fn finish_query(
 }
 
 impl DocumentTransaction<'_, '_> {
+    // Stream all matches while retaining query error precedence: scan and
+    // record-validation errors come first, then filter errors, then the first
+    // callback error. A callback error must not hide a later filter error.
+    pub(super) fn visit_filtered_documents(
+        &self,
+        collection: &str,
+        filter: &DocumentFilter,
+        max_scanned: usize,
+        mut visit: impl FnMut(&Value) -> io::Result<()>,
+    ) -> io::Result<QueryPlan> {
+        if max_scanned == 0 || max_scanned > MAX_SCAN_DOCUMENTS {
+            return Err(key::invalid("query scan limit must be between 1 and 1024"));
+        }
+        validate_filter(filter)?;
+        let metadata = self.metadata(collection)?;
+        let mut budget = FilterValueBudget::default();
+        let mut scanned = 0;
+        let mut matched = 0;
+        let mut filter_error = None;
+        let mut callback_error = None;
+        self.visit_document_rows(
+            collection,
+            &metadata.schema,
+            max_scanned,
+            MAX_SCAN_BYTES,
+            |_, document| {
+                scanned += 1;
+                if filter_error.is_some() {
+                    return;
+                }
+                match matches(filter, &document, &mut budget) {
+                    Ok(true) => {
+                        matched += 1;
+                        if callback_error.is_none() {
+                            callback_error = visit(&document).err();
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => filter_error = Some(error),
+                }
+            },
+        )?;
+        if let Some(error) = filter_error {
+            return Err(error);
+        }
+        if let Some(error) = callback_error {
+            return Err(error);
+        }
+        Ok(QueryPlan {
+            scanned,
+            matched,
+            sorted: false,
+            returned: matched,
+        })
+    }
+
     /// Executes a complete bounded scan with filter, sort, pagination and
     /// optional projection. Statistics describe the work actually performed.
     pub fn query(

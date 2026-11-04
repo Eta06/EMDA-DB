@@ -1,6 +1,6 @@
 //! Bounded exact integer statistics over a transactional collection snapshot.
 use super::{
-    filter::{DocumentFilter, DocumentQuery, QueryPlan},
+    filter::{DocumentFilter, QueryPlan},
     index::IndexValue,
     key, schema,
     transaction::DocumentTransaction,
@@ -111,58 +111,54 @@ impl DocumentTransaction<'_, '_> {
         if let Some(path) = &request.group_by {
             schema::validate_path(path)?;
         }
-        super::filter::validate_filter(&request.filter)?;
-        let result = self.query(
+        let mut groups = BTreeMap::<Vec<u8>, AggregateStatsGroup>::new();
+        let plan = self.visit_filtered_documents(
             collection,
-            &DocumentQuery {
-                filter: request.filter.clone(),
-                limit: MAX_SCANNED,
-                max_scanned: request.max_scanned,
-                ..DocumentQuery::default()
+            &request.filter,
+            request.max_scanned,
+            |document| {
+                let value = request
+                    .group_by
+                    .as_ref()
+                    .and_then(|path| schema::field(document, path))
+                    .map(IndexValue::from_json)
+                    .transpose()?;
+                let mut encoded = Vec::new();
+                if let Some(value) = &value {
+                    value.encode(&mut encoded)?;
+                }
+                let group = groups
+                    .entry(encoded)
+                    .or_insert_with(|| new_group(value, request.fields.len()));
+                group.count += 1;
+                for (path, stats) in request.fields.iter().zip(&mut group.fields) {
+                    let Some(value) = schema::field(document, path) else {
+                        continue;
+                    };
+                    if value.is_null() {
+                        continue;
+                    }
+                    let value = value.as_i64().ok_or_else(|| {
+                        key::invalid("aggregate statistics require signed 64-bit integers")
+                    })?;
+                    stats.count += 1;
+                    stats.sum = stats
+                        .sum
+                        .checked_add(i128::from(value))
+                        .ok_or_else(|| key::invalid("aggregate statistics sum overflow"))?;
+                    stats.min = Some(stats.min.map_or(value, |previous| previous.min(value)));
+                    stats.max = Some(stats.max.map_or(value, |previous| previous.max(value)));
+                }
+                Ok(())
             },
         )?;
-        let mut groups = BTreeMap::<Vec<u8>, AggregateStatsGroup>::new();
-        for row in result.documents {
-            let value = request
-                .group_by
-                .as_ref()
-                .and_then(|path| schema::field(&row.document, path))
-                .map(IndexValue::from_json)
-                .transpose()?;
-            let mut encoded = Vec::new();
-            if let Some(value) = &value {
-                value.encode(&mut encoded)?;
-            }
-            let group = groups
-                .entry(encoded)
-                .or_insert_with(|| new_group(value, request.fields.len()));
-            group.count += 1;
-            for (path, stats) in request.fields.iter().zip(&mut group.fields) {
-                let Some(value) = schema::field(&row.document, path) else {
-                    continue;
-                };
-                if value.is_null() {
-                    continue;
-                }
-                let value = value.as_i64().ok_or_else(|| {
-                    key::invalid("aggregate statistics require signed 64-bit integers")
-                })?;
-                stats.count += 1;
-                stats.sum = stats
-                    .sum
-                    .checked_add(i128::from(value))
-                    .ok_or_else(|| key::invalid("aggregate statistics sum overflow"))?;
-                stats.min = Some(stats.min.map_or(value, |previous| previous.min(value)));
-                stats.max = Some(stats.max.map_or(value, |previous| previous.max(value)));
-            }
-        }
         if request.group_by.is_none() && groups.is_empty() {
             groups.insert(Vec::new(), new_group(None, request.fields.len()));
         }
         Ok(AggregateStatsResult {
             fields: request.fields.clone(),
             groups: groups.into_values().collect(),
-            plan: result.plan,
+            plan,
         })
     }
 }

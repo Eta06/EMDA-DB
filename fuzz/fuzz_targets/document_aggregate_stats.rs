@@ -78,6 +78,12 @@ fn document(group_byte: u8, n: u8, m: u8) -> Value {
     if let Some(value) = field(m) {
         document["m"] = value;
     }
+    match m % 4 {
+        0 => {}
+        1 => document["tags"] = Value::Null,
+        2 => document["tags"] = json!([0, 1]),
+        _ => document["tags"] = json!([0, 2]),
+    }
     document
 }
 
@@ -101,7 +107,7 @@ fn check(db: &DocumentDatabase<'_>, model: &BTreeMap<u8, Value>, flags: u8) {
         2 => Some(Group::A),
         _ => Some(Group::Missing),
     };
-    let filter = match selected {
+    let mut filter = match selected {
         None => DocumentFilter::All,
         Some(Group::Null) => DocumentFilter::Equal {
             path: vec!["g".into()],
@@ -117,6 +123,16 @@ fn check(db: &DocumentDatabase<'_>, model: &BTreeMap<u8, Value>, flags: u8) {
         },
         _ => unreachable!(),
     };
+    let require_tag = flags & 8 != 0;
+    if require_tag {
+        filter = DocumentFilter::And(vec![
+            filter,
+            DocumentFilter::ArrayContains {
+                path: vec!["tags".into()],
+                value: json!(1),
+            },
+        ]);
+    }
     let request = AggregateStatsRequest {
         filter,
         group_by: grouped.then(|| vec!["g".into()]),
@@ -130,6 +146,14 @@ fn check(db: &DocumentDatabase<'_>, model: &BTreeMap<u8, Value>, flags: u8) {
     for document in model.values() {
         let g = group(document);
         if selected.is_some_and(|wanted| wanted != g) {
+            continue;
+        }
+        if require_tag
+            && !document
+                .get("tags")
+                .and_then(Value::as_array)
+                .is_some_and(|tags| tags.contains(&json!(1)))
+        {
             continue;
         }
         matched += 1;
