@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--keys", default="10000,200000")
     parser.add_argument("--key-bytes", type=int, default=128)
+    parser.add_argument("--tail-keys", type=int, default=0, help="distinct keys added after the checkpoint (0–4096)")
     args = parser.parse_args()
     try:
         counts = [int(item) for item in args.keys.split(",")]
@@ -36,8 +37,8 @@ def main():
         parser.error("keys must be comma-separated integers")
     if not counts or len(set(counts)) != len(counts) or any(not 1 <= count <= 1_000_000 for count in counts):
         parser.error("key counts must be distinct and between 1 and 1000000")
-    if not 2 <= args.rounds <= 50 or not 8 <= args.key_bytes <= 1024:
-        parser.error("rounds or key size out of range")
+    if not 2 <= args.rounds <= 50 or not 8 <= args.key_bytes <= 1024 or not 0 <= args.tail_keys <= 4096:
+        parser.error("rounds, key size or tail key count out of range")
     if not Path(args.directory).is_dir() or not Path(args.binary).is_file():
         parser.error("an existing fixture directory and prebuilt binary are required")
     if os.path.lexists(args.output):
@@ -59,7 +60,7 @@ def main():
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "allowed_cpus": allowed,
         "benchmark_cpu": bench_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "limitations": "One Linux VM, warm cache, short direct in-process reads in separate fresh processes. The read-only historical view holds a shared lock and does not validate or replay the tail; the writable store does. The fixture has no tail. RSS is Linux process RSS and excludes OS page cache; it is not a memory quota. VM/cgroup noise includes the workload. This is not a production or competitor comparison.",
+        "limitations": "One Linux VM, warm cache, short direct in-process reads in separate fresh processes. The historical view does not replay or validate the tail; the recovered view replays a bounded witnessed tail. Both are read-only and hold a shared lock excluding writers; the store is writable. Each opening hashes the checkpoint-covered log prefix. RSS is Linux process RSS and excludes OS page cache; it is not a memory quota. VM/cgroup noise includes the workload. This is not a production or competitor comparison.",
         "cases": [],
     }
     with tempfile.TemporaryDirectory(prefix=".index-memory-bench-", dir=args.directory) as root:
@@ -67,18 +68,20 @@ def main():
             parent = Path(root) / str(count)
             parent.mkdir()
             base = ["taskset", "-c", str(bench_cpu), args.binary]
-            prepared = subprocess.run(base + ["prepare", str(parent), str(count), str(args.key_bytes)], check=True, text=True, capture_output=True, timeout=300)
+            prepared = subprocess.run(base + ["prepare", str(parent), str(count), str(args.key_bytes), str(args.tail_keys)], check=True, text=True, capture_output=True, timeout=300)
             info = fields(prepared.stdout)
-            if int(info["keys"]) != count or int(info["key_bytes"]) != args.key_bytes:
+            if int(info["keys"]) != count or int(info["key_bytes"]) != args.key_bytes or int(info["tail_keys"]) != args.tail_keys:
                 raise RuntimeError("unexpected fixture configuration")
             case = {"keys": count, "key_bytes": args.key_bytes,
+                    "tail_keys": args.tail_keys, "tail_bytes": int(info["tail_bytes"]),
                     "log_bytes": int(info["log_bytes"]), "checkpoint_bytes": int(info["checkpoint_bytes"]),
                     "quiet_check": quiet_window(), "runs": []}
+            modes = ("store", "view", "recovered")
             for round_index in range(args.rounds):
-                modes = ("store", "view") if round_index % 2 == 0 else ("view", "store")
-                for mode in modes:
+                offset = round_index % len(modes)
+                for mode in modes[offset:] + modes[:offset]:
                     before = snapshot()
-                    command = base + ["measure", str(parent), str(count), str(args.key_bytes), mode, info["token"]]
+                    command = base + ["measure", str(parent), str(count), str(args.key_bytes), mode, info["token"], str(args.tail_keys)]
                     measured = subprocess.run(command, check=True, text=True, capture_output=True, timeout=120)
                     noise = difference(before, snapshot())
                     sample = fields(measured.stdout)
@@ -87,12 +90,17 @@ def main():
                     lookups = [int(value) for value in sample["lookups_ns"].split(",")]
                     if len(lookups) != 16:
                         raise RuntimeError("incomplete lookup sample")
+                    tail_lookups = [] if sample["tail_lookups_ns"] == "none" else [int(value) for value in sample["tail_lookups_ns"].split(",")]
+                    expected_tail_samples = 16 if args.tail_keys and mode != "view" else 0
+                    if len(tail_lookups) != expected_tail_samples or int(sample["overlay_keys"]) != (args.tail_keys if mode == "recovered" else 0):
+                        raise RuntimeError("incomplete tail sample or unexpected overlay size")
                     case["runs"].append({"round": round_index + 1, "mode": mode,
                         "open_us": int(sample["open_us"]), "rss_kib": int(sample["rss_kib"]),
                         "after_rss_kib": int(sample["after_rss_kib"]), "blocks": int(sample["blocks"]),
-                        "lookups_ns": lookups, "noise": noise})
+                        "overlay_keys": int(sample["overlay_keys"]), "lookups_ns": lookups,
+                        "tail_lookups_ns": tail_lookups, "noise": noise})
             case["summary"] = {}
-            for mode in ("store", "view"):
+            for mode in modes:
                 samples = [run for run in case["runs"] if run["mode"] == mode]
                 case["summary"][mode] = {
                     "median_open_us": statistics.median(run["open_us"] for run in samples),
@@ -100,6 +108,8 @@ def main():
                     "median_after_rss_kib": statistics.median(run["after_rss_kib"] for run in samples),
                     "median_lookup_ns": statistics.median(value for run in samples for value in run["lookups_ns"]),
                 }
+                if args.tail_keys and mode != "view":
+                    case["summary"][mode]["median_tail_lookup_ns"] = statistics.median(value for run in samples for value in run["tail_lookups_ns"])
             result["cases"].append(case)
     with open(args.output, "x", encoding="utf-8") as output:
         json.dump(result, output, indent=2)

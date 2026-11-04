@@ -215,18 +215,18 @@ These are medians of run-level measurements on the same virtualized overlay envi
 
 A separate instrumented single-client run counted 981 futex calls before and three after, with exactly 489 `fdatasync` calls in both runs, including initialization. The optimization skips notifications when nobody is waiting; it does not skip synchronization. Tracing affects timings, which are not used in the table. Existing failure, queue-capacity, handoff, and concurrent-history tests exercise notification correctness.
 
-## Historical index memory and lookup measurement
+## Checkpoint reader memory and lookup measurement
 
-The Linux-only `index_memory_bench` and `scripts/index_memory_compare.py` compare the checkpoint-loaded writable store with the historical checkpoint view in separate fresh processes. They prepare a disposable fixture, alternate measured order, check every returned value, report each open and point-read time and Linux process RSS, and record VM/cgroup noise. The fixture has no log tail. The view holds a shared lock and does not replay or validate a tail, whereas the writable store does, so they have different semantics. RSS excludes the OS page cache and is not a memory quota. Both openings hash the full checkpoint prefix.
+The Linux-only `index_memory_bench` and `scripts/index_memory_compare.py` compare a checkpoint-loaded writable store, a historical view and a recovered view in separate fresh processes. They prepare a disposable fixture, rotate measured order, check every returned value, report each open and point-read time and Linux process RSS, and record VM/cgroup noise. An optional witnessed log suffix adds distinct keys after the checkpoint; the historical view checks that it cannot see those keys, while the other modes check their values. Both views hold a shared lock excluding cooperating writers, and only the recovered view validates and replays the bounded suffix. RSS excludes the OS page cache and is not a memory quota. Every opening hashes the full checkpoint prefix.
 
 For example, from the repository root, with an existing directory for temporary fixtures and a new output path:
 
 ```sh
 cargo build --release --example index_memory_bench --locked
-python3 scripts/index_memory_compare.py --directory /tmp --output /tmp/index-memory-results.json
+python3 scripts/index_memory_compare.py --directory /path/to/disk --output /tmp/index-memory-results.json --tail-keys 4096
 ```
 
-The default cases use 10,000 and 200,000 keys, 128-byte keys, 64-byte values, five repetitions per mode, and 16 point reads per repetition. These are warm-cache, direct API measurements on one VM, not a competitor or production comparison. `--keys`, `--key-bytes`, and `--rounds` change the workload; the two modes must not be described as offering identical recovery or concurrency behavior.
+The default cases use 10,000 and 200,000 keys, 128-byte keys, 64-byte values, no suffix, five repetitions per mode, and 16 base point reads per repetition. With a suffix, the writable store and recovered view each sample another 16 tail keys. These are warm-cache, direct API measurements on one VM, not a competitor or production comparison. `--keys`, `--key-bytes`, `--tail-keys` and `--rounds` change the workload; the modes do not offer identical recovery or concurrency behavior. Choose a real storage-backed fixture directory when measuring durable storage; `/tmp` may be memory-backed.
 
 An initial [raw measurement](../benchmarks/results/2026-11-03-index-memory.json) on the earlier 1 MiB-block reader shows the tradeoff, using medians across five separate processes per mode:
 

@@ -63,3 +63,5 @@ jobs:
           cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-large-smoke" 10 131072
           cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-large-smoke" 10 3 131072
           cargo +stable run --release --locked --example checkpoint_bench -- "$RUNNER_TEMP" 32 8 2
+          cargo +stable build --release --locked --example index_memory_bench
+          python3 scripts/index_memory_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/index-memory-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4

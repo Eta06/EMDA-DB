@@ -1,5 +1,5 @@
 //! Linux-only experimental memory/open/lookup measurement for checkpoint readers.
-use database_engine::{BatchOperation, CheckpointView, Store};
+use database_engine::{BatchOperation, CheckpointView, RecoveredCheckpointView, Store};
 use std::error::Error;
 use std::io;
 use std::path::Path;
@@ -23,7 +23,7 @@ fn parse_size(value: &str, min: usize, max: usize) -> BenchResult<usize> {
     Ok(parsed)
 }
 
-fn prepare(parent: &Path, count: usize, key_len: usize) -> BenchResult<()> {
+fn prepare(parent: &Path, count: usize, key_len: usize, tail_count: usize) -> BenchResult<()> {
     let path = parent.join("store");
     let checkpoint = parent.join("index");
     if !parent.is_dir() {
@@ -51,10 +51,28 @@ fn prepare(parent: &Path, count: usize, key_len: usize) -> BenchResult<()> {
         store.write_batch(&operations)?;
     }
     let token = store.checkpoint_to(&checkpoint)?;
+    let prefix_bytes = std::fs::metadata(path.join("records.log"))?.len();
+    for start in (0..tail_count).step_by(512) {
+        let end = (start + 512).min(tail_count);
+        let keys = (start..end)
+            .map(|n| key(count + n, key_len))
+            .collect::<Vec<_>>();
+        let values = (start..end)
+            .map(|n| vec![((count + n) % 251) as u8; VALUE_BYTES])
+            .collect::<Vec<_>>();
+        let operations = keys
+            .iter()
+            .zip(&values)
+            .map(|(key, value)| BatchOperation::Put { key, value })
+            .collect::<Vec<_>>();
+        store.write_batch(&operations)?;
+    }
     drop(store);
+    let log_bytes = std::fs::metadata(path.join("records.log"))?.len();
     print!(
-        "keys={count} key_bytes={key_len} log_bytes={} checkpoint_bytes={} token=",
-        std::fs::metadata(path.join("records.log"))?.len(),
+        "keys={count} key_bytes={key_len} tail_keys={tail_count} tail_bytes={} log_bytes={} checkpoint_bytes={} token=",
+        log_bytes - prefix_bytes,
+        log_bytes,
         std::fs::metadata(checkpoint)?.len(),
     );
     for byte in token {
@@ -89,13 +107,14 @@ fn memory_kib(field: &str) -> BenchResult<u64> {
 }
 
 fn lookups(
+    first: usize,
     count: usize,
     key_len: usize,
     mut get: impl FnMut(&[u8]) -> io::Result<Option<Vec<u8>>>,
 ) -> BenchResult<Vec<u128>> {
     let mut durations = Vec::with_capacity(LOOKUPS);
     for index in 0..LOOKUPS {
-        let number = index * (count - 1) / (LOOKUPS - 1);
+        let number = first + index * (count - 1) / (LOOKUPS - 1);
         let key = key(number, key_len);
         let start = Instant::now();
         let value = get(&key)?.ok_or("missing benchmark value")?;
@@ -113,37 +132,98 @@ fn measure(
     key_len: usize,
     mode: &str,
     token: &[u8; 32],
+    tail_count: usize,
 ) -> BenchResult<()> {
     let path = parent.join("store");
     let checkpoint = parent.join("index");
     let start = Instant::now();
-    let (open_us, rss_kib, after_rss_kib, blocks, lookup_ns) = match mode {
-        "store" => {
-            let store = Store::open_with_checkpoint(&path, &checkpoint, token)?;
-            let open_us = start.elapsed().as_micros();
-            let rss_kib = memory_kib("VmRSS:")?;
-            let lookup_ns = lookups(count, key_len, |key| store.get(key))?;
-            let after_rss_kib = memory_kib("VmRSS:")?;
-            (open_us, rss_kib, after_rss_kib, 0, lookup_ns)
-        }
-        "view" => {
-            let view = CheckpointView::open(&path, &checkpoint, token)?;
-            let open_us = start.elapsed().as_micros();
-            let rss_kib = memory_kib("VmRSS:")?;
-            let blocks = view.block_count();
-            let lookup_ns = lookups(count, key_len, |key| view.get(key))?;
-            let after_rss_kib = memory_kib("VmRSS:")?;
-            (open_us, rss_kib, after_rss_kib, blocks, lookup_ns)
-        }
-        _ => return Err("unknown measurement mode".into()),
-    };
+    let (open_us, rss_kib, after_rss_kib, blocks, overlay_keys, lookup_ns, tail_lookup_ns) =
+        match mode {
+            "store" => {
+                let store = Store::open_with_checkpoint(&path, &checkpoint, token)?;
+                let open_us = start.elapsed().as_micros();
+                let rss_kib = memory_kib("VmRSS:")?;
+                let lookup_ns = lookups(0, count, key_len, |key| store.get(key))?;
+                let tail_lookup_ns = if tail_count > 0 {
+                    lookups(count, tail_count, key_len, |key| store.get(key))?
+                } else {
+                    Vec::new()
+                };
+                let after_rss_kib = memory_kib("VmRSS:")?;
+                (
+                    open_us,
+                    rss_kib,
+                    after_rss_kib,
+                    0,
+                    0,
+                    lookup_ns,
+                    tail_lookup_ns,
+                )
+            }
+            "view" => {
+                let view = CheckpointView::open(&path, &checkpoint, token)?;
+                let open_us = start.elapsed().as_micros();
+                let rss_kib = memory_kib("VmRSS:")?;
+                let blocks = view.block_count();
+                let lookup_ns = lookups(0, count, key_len, |key| view.get(key))?;
+                if tail_count > 0 && view.get(&key(count, key_len))?.is_some() {
+                    return Err("historical view unexpectedly included a suffix key".into());
+                }
+                let after_rss_kib = memory_kib("VmRSS:")?;
+                (
+                    open_us,
+                    rss_kib,
+                    after_rss_kib,
+                    blocks,
+                    0,
+                    lookup_ns,
+                    Vec::new(),
+                )
+            }
+            "recovered" => {
+                let view = RecoveredCheckpointView::open(&path, &checkpoint, token)?;
+                let open_us = start.elapsed().as_micros();
+                let rss_kib = memory_kib("VmRSS:")?;
+                let blocks = view.checkpoint_block_count();
+                let overlay_keys = view.overlay_keys();
+                if overlay_keys != tail_count {
+                    return Err("unexpected recovered overlay count".into());
+                }
+                let lookup_ns = lookups(0, count, key_len, |key| view.get(key))?;
+                let tail_lookup_ns = if tail_count > 0 {
+                    lookups(count, tail_count, key_len, |key| view.get(key))?
+                } else {
+                    Vec::new()
+                };
+                let after_rss_kib = memory_kib("VmRSS:")?;
+                (
+                    open_us,
+                    rss_kib,
+                    after_rss_kib,
+                    blocks,
+                    overlay_keys,
+                    lookup_ns,
+                    tail_lookup_ns,
+                )
+            }
+            _ => return Err("unknown measurement mode".into()),
+        };
     let lookups = lookup_ns
         .iter()
         .map(u128::to_string)
         .collect::<Vec<_>>()
         .join(",");
+    let tail_lookups = if tail_lookup_ns.is_empty() {
+        "none".to_owned()
+    } else {
+        tail_lookup_ns
+            .iter()
+            .map(u128::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     println!(
-        "mode={mode} open_us={open_us} rss_kib={rss_kib} after_rss_kib={after_rss_kib} blocks={blocks} lookups_ns={lookups}"
+        "mode={mode} open_us={open_us} rss_kib={rss_kib} after_rss_kib={after_rss_kib} blocks={blocks} overlay_keys={overlay_keys} lookups_ns={lookups} tail_lookups_ns={tail_lookups}"
     );
     Ok(())
 }
@@ -155,6 +235,13 @@ fn main() -> BenchResult<()> {
             Path::new(parent),
             parse_size(count, 1, 1_000_000)?,
             parse_size(key_len, 8, 1024)?,
+            0,
+        ),
+        [command, parent, count, key_len, tail_count] if command == "prepare" => prepare(
+            Path::new(parent),
+            parse_size(count, 1, 1_000_000)?,
+            parse_size(key_len, 8, 1024)?,
+            parse_size(tail_count, 0, 4096)?,
         ),
         [command, parent, count, key_len, mode, token] if command == "measure" => measure(
             Path::new(parent),
@@ -162,7 +249,16 @@ fn main() -> BenchResult<()> {
             parse_size(key_len, 8, 1024)?,
             mode,
             &token_from_hex(token)?,
+            0,
         ),
-        _ => Err("usage: index_memory_bench prepare <empty-parent> <keys> <key-bytes> | measure <parent> <keys> <key-bytes> <store|view> <digest>".into()),
+        [command, parent, count, key_len, mode, token, tail_count] if command == "measure" => measure(
+            Path::new(parent),
+            parse_size(count, 1, 1_000_000)?,
+            parse_size(key_len, 8, 1024)?,
+            mode,
+            &token_from_hex(token)?,
+            parse_size(tail_count, 0, 4096)?,
+        ),
+        _ => Err("usage: index_memory_bench prepare <empty-parent> <keys> <key-bytes> [tail-keys] | measure <parent> <keys> <key-bytes> <store|view|recovered> <digest> [tail-keys]".into()),
     }
 }
