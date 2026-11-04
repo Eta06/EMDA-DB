@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod read_set;
+mod rebuild;
 mod selection;
 mod snapshot;
 mod transaction;

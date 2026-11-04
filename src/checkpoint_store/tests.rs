@@ -146,6 +146,7 @@ mod commit_faults;
 mod compaction;
 #[cfg(target_os = "linux")]
 mod metadata_faults;
+mod rebuild;
 mod recovery;
 mod rollover;
 mod selection;

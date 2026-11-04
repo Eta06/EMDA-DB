@@ -36,7 +36,7 @@ fuzz_target!(|data: &[u8]| {
     let selection = path.join("checkpoint.selection");
     for bytes in data.chunks_exact(3) {
         let key = vec![b'a' + bytes[1] % 8];
-        match bytes[0] % 6 {
+        match bytes[0] % 7 {
             0 => {
                 let value = vec![bytes[2]; usize::from(bytes[2] % 5)];
                 store.put(&key, &value).expect("put");
@@ -73,11 +73,26 @@ fuzz_target!(|data: &[u8]| {
                 std::fs::write(&selection, &corrupt).expect("corrupt selection");
                 assert!(CheckpointStore::open_managed(&path).is_err());
                 assert!(CheckpointStore::open(&path, &initial, &digest).is_err());
+                let rejected = root.path().join(format!("rejected-{generation}"));
+                assert!(CheckpointStore::rebuild_managed_selection(&path, &rejected).is_err());
+                assert!(!rejected.exists());
                 std::fs::write(&selection, original).expect("restore selection");
                 store = CheckpointStore::open_managed(&path).expect("reopen valid selection");
             }
-            _ => {
+            5 => {
                 assert!(store.rollover_to(root.path().join("unmanaged")).is_err());
+            }
+            _ => {
+                check(&store, &model);
+                drop(store);
+                generation += 1;
+                CheckpointStore::rebuild_managed_selection(
+                    &path,
+                    root.path().join(format!("managed-{generation}")),
+                )
+                .expect("rebuild selection");
+                store = CheckpointStore::open_managed(&path).expect("reopen rebuilt selection");
+                assert_eq!(store.overlay_keys().expect("empty suffix"), 0);
             }
         }
         check(&store, &model);

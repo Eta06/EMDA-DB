@@ -8,6 +8,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Explicit full-log rebuilding of managed checkpoint selections when the previous checkpoint is unavailable or its suffix exceeds managed limits. The operation holds the store lock and rejects malformed selection metadata, but its in-memory recovery is not resource-bounded.
+
 - Opt-in managed checkpoint selection with synchronized atomic replacement, fail-closed reopening, fault injection, and process-interruption checks. The selection file and its directory are trusted metadata; ordinary `Store` and older revisions do not enforce it. Automatic scheduling and physical power-loss validation remain open.
 
 - A reproducible process-RSS and creation-time comparison for ordinary and checkpoint-backed snapshots.

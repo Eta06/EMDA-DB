@@ -75,6 +75,12 @@ pub struct Store {
 }
 
 impl Store {
+    // A private, coordinated handoff can temporarily share this open file
+    // description without releasing the store's exclusive advisory lock.
+    pub(crate) fn duplicate_store_lock(&self) -> io::Result<File> {
+        self._lock_file.try_clone()
+    }
+
     /// Opens or creates a store. Only one store may hold its directory lock.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
         Self::open_using(path.as_ref(), Log::open)
