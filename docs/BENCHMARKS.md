@@ -598,3 +598,16 @@ python3 scripts/online_reclaim_compare.py \
 ```
 
 The timing includes verification, copying, synchronization, handoff and any reclamation. It excludes fixture setup and reopening checks, which are included in noise telemetry. Reported log file lengths are not allocated blocks or total disk use. This single-client, warm-cache fixture does not measure concurrent-client pause distributions, background scheduling, physical power loss or off-host recovery.
+
+### Nonunique document equality-query comparison
+
+The [`nonunique_query_bench`](../examples/nonunique_query_bench.rs) and [`nonunique_query_compare.py`](../scripts/nonunique_query_compare.py) harness compare an ordinary-store collection scan and the opt-in nonunique equality-index planner with SQLite JSON expression-index and `NOT INDEXED` queries. Each variant returns IDs and decoded JSON and is checked against the same expected rows on every iteration. The benchmark rotates variant order, reopens and verifies the full datasets, and verifies SQLite's WAL/FULL settings, integrity and index plan. Setup, verification and both datasets contribute to the recorded process high-water RSS and system telemetry but are outside the operation timers. This is a single-client, hot-read workload, not a concurrency, durability or universal-ranking claim.
+
+```sh
+cargo build --release --locked --example nonunique_query_bench
+python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem \
+  --binary target/release/examples/nonunique_query_bench --output /path/to/new-result.json \
+  --cases 100:10,1000:10,1000:100 --rounds 4 --cycles 50
+```
+
+The report retains every timing sample, run order, hashes, affinity, pre-run noise observations and post-run telemetry. At least two allowed CPUs and a new output path are required. `DOCUMENTS:MATCHES` cases are capped at 1,024 documents and 256 matches; the VM, caches and underlying storage still affect results.

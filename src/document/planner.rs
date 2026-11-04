@@ -4,7 +4,7 @@ use super::{
     index::{IndexDefinition, IndexValue},
     key,
     query::IndexQuery,
-    transaction::{DocumentTransaction, MAX_DOCUMENT_BYTES},
+    transaction::DocumentTransaction,
 };
 use std::io;
 
@@ -12,10 +12,12 @@ use std::io;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DocumentQueryAccess {
-    /// No eligible unique equality index was found; scan the complete collection.
+    /// No eligible equality index was found; scan the complete collection.
     CollectionScan,
     /// Probe a non-partial unique single-field index using exact scalar equality.
     UniqueEqualityIndex { index: String },
+    /// Scan a non-partial, nonunique single-field index for exact scalar equality.
+    EqualityIndex { index: String },
 }
 
 /// Filtered query output, including the chosen access path and actual work.
@@ -49,17 +51,23 @@ fn choose_index<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
 ) -> Option<(&'a IndexDefinition, IndexValue)> {
-    indexes.iter().find_map(|index| {
-        if !index.unique || index.partial.is_some() || index.fields.len() != 1 {
-            return None;
-        }
-        required_equality(filter, &index.fields[0]).map(|value| (index, value))
-    })
+    // A unique probe has at most one valid result. Prefer it regardless of
+    // declaration order, then consider a nonunique single-field index.
+    indexes
+        .iter()
+        .filter(|index| index.unique)
+        .chain(indexes.iter().filter(|index| !index.unique))
+        .find_map(|index| {
+            if index.partial.is_some() || index.fields.len() != 1 {
+                return None;
+            }
+            required_equality(filter, &index.fields[0]).map(|value| (index, value))
+        })
 }
 
 impl DocumentTransaction<'_, '_> {
-    /// Executes a bounded filtered query using a qualifying unique equality
-    /// index, or falls back to the complete collection scan. This opt-in path
+    /// Executes a bounded filtered query using a qualifying single-field
+    /// equality index, or falls back to the complete collection scan. This opt-in path
     /// assumes declared indexes are maintained; corruption that removes index
     /// entries can cause omissions. Neither path is a cost-based optimizer.
     pub fn query_planned(
@@ -75,43 +83,74 @@ impl DocumentTransaction<'_, '_> {
                 access: DocumentQueryAccess::CollectionScan,
             });
         };
-        // A valid unique index has at most one match. Fetch two so a corrupt
-        // duplicate cannot silently produce a truncated query result.
-        let page = self.query_index_with_metadata(
-            collection,
-            &index.name,
-            &IndexQuery {
-                equal: vec![value],
-                limit: 2,
-                ..Default::default()
-            },
-            &metadata,
-        )?;
-        if page.documents.len() > 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unique index contains multiple matches",
-            ));
-        }
-        let mut rows = Vec::with_capacity(page.documents.len());
-        for entry in page.documents {
-            // Indexed reads already reject stored documents over this bound.
-            // Conservatively check the maximum, avoiding an allocation and
-            // re-encoding while preserving the scan's logical byte limit.
-            let max_bytes = key::document(collection, &entry.id)?
-                .len()
-                .checked_add(MAX_DOCUMENT_BYTES)
+        let mut rows = Vec::new();
+        let mut bytes = 0_usize;
+        let mut after = None;
+        loop {
+            // Probe one entry beyond the candidate limit, never silently
+            // returning a prefix. Unique indexes probe two to catch a corrupt
+            // duplicate rather than accepting it as one result.
+            let limit = if index.unique {
+                2
+            } else {
+                (query.max_scanned - rows.len() + 1).min(256)
+            };
+            let indexed = self.query_index_with_metadata(
+                collection,
+                &index.name,
+                &IndexQuery {
+                    equal: vec![value.clone()],
+                    after,
+                    limit,
+                    ..Default::default()
+                },
+                &metadata,
+            )?;
+            let page = indexed.page;
+            if index.unique && page.documents.len() > 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unique index contains multiple matches",
+                ));
+            }
+            bytes = bytes
+                .checked_add(indexed.document_key_value_bytes)
                 .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-            if rows.len() >= query.max_scanned || max_bytes > filter::MAX_SCAN_BYTES {
+            if bytes > filter::MAX_SCAN_BYTES
+                || page.documents.len() > query.max_scanned - rows.len()
+            {
                 return Err(key::invalid("document scan exceeds the operation limit"));
             }
-            rows.push((entry.id, entry.document));
+            if page.documents.is_empty() {
+                break;
+            }
+            rows.extend(
+                page.documents
+                    .into_iter()
+                    .map(|entry| (entry.id, entry.document)),
+            );
+            if index.unique {
+                break;
+            }
+            after = Some(page.next.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "index page lost its continuation cursor",
+                )
+            })?);
         }
+        let access = if index.unique {
+            DocumentQueryAccess::UniqueEqualityIndex {
+                index: index.name.clone(),
+            }
+        } else {
+            DocumentQueryAccess::EqualityIndex {
+                index: index.name.clone(),
+            }
+        };
         Ok(PlannedDocumentQueryResult {
             result: filter::finish_query(rows, query)?,
-            access: DocumentQueryAccess::UniqueEqualityIndex {
-                index: index.name.clone(),
-            },
+            access,
         })
     }
 }

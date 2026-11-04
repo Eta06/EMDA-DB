@@ -88,6 +88,13 @@ pub struct DocumentPage {
     pub plan: IndexQueryPlan,
 }
 
+// The planner needs the original encoded document and key lengths to enforce
+// the collection scan's byte budget without serializing parsed JSON again.
+pub(super) struct IndexedPage {
+    pub page: DocumentPage,
+    pub document_key_value_bytes: usize,
+}
+
 fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -158,7 +165,9 @@ impl DocumentTransaction<'_, '_> {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
         let metadata = self.metadata(collection)?;
-        self.query_index_with_metadata(collection, name, query, &metadata)
+        Ok(self
+            .query_index_with_metadata(collection, name, query, &metadata)?
+            .page)
     }
 
     pub(super) fn query_index_with_metadata(
@@ -167,7 +176,7 @@ impl DocumentTransaction<'_, '_> {
         name: &str,
         query: &IndexQuery,
         metadata: &Metadata,
-    ) -> io::Result<DocumentPage> {
+    ) -> io::Result<IndexedPage> {
         if query.limit == 0 || query.limit > MAX_QUERY_DOCUMENTS {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
@@ -224,24 +233,29 @@ impl DocumentTransaction<'_, '_> {
             returned,
         };
         if after >= before {
-            return Ok(DocumentPage {
-                documents: Vec::new(),
-                next: None,
-                plan: plan(0, 0),
+            return Ok(IndexedPage {
+                page: DocumentPage {
+                    documents: Vec::new(),
+                    next: None,
+                    plan: plan(0, 0),
+                },
+                document_key_value_bytes: 0,
             });
         }
         let rows = self.scan(&after, &before, query.limit)?;
         let entries_read = rows.len();
         let mut documents = Vec::with_capacity(rows.len());
         let mut used = 0_usize;
+        let mut document_key_value_bytes = 0_usize;
         let mut cursor = None;
         for (entry, value) in rows {
             if !value.is_empty() {
                 return Err(invalid_data("invalid index entry value"));
             }
             let id = entry_id(&entry, &index_prefix, definition.fields.len())?;
+            let document_key = key::document(collection, id)?;
             let encoded = self
-                .read(&key::document(collection, id)?)?
+                .read(&document_key)?
                 .ok_or_else(|| invalid_data("index references a missing document"))?;
             // Reject corrupt oversized records before applying the page byte
             // limit. Otherwise a single 16 MiB value plus its ID produces an
@@ -256,6 +270,10 @@ impl DocumentTransaction<'_, '_> {
             if next_used > MAX_QUERY_BYTES {
                 break;
             }
+            document_key_value_bytes = document_key_value_bytes
+                .checked_add(document_key.len())
+                .and_then(|total| total.checked_add(encoded.len()))
+                .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
             let document = Self::decode_document(&encoded, &metadata.schema)?;
             let expected = index::keys(collection, definition, &document, id)
                 .map_err(|_| invalid_data("document cannot be represented by its index"))?
@@ -278,10 +296,13 @@ impl DocumentTransaction<'_, '_> {
             cursor = Some(IndexCursor(entry));
         }
         let plan = plan(entries_read, documents.len());
-        Ok(DocumentPage {
-            documents,
-            next: cursor,
-            plan,
+        Ok(IndexedPage {
+            page: DocumentPage {
+                documents,
+                next: cursor,
+                plan,
+            },
+            document_key_value_bytes,
         })
     }
 }

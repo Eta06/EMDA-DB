@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan nonunique single-field equality queries over complete index ranges, with candidate and byte budgets across pages.
+
 - Fail closed when an indexed document exceeds its size limit, even when it also exceeds the remaining page budget.
 
 - Add bounded array membership, any/all and exact-length document query predicates. These new `DocumentFilter` variants require downstream exhaustive matches to be updated.

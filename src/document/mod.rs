@@ -360,7 +360,7 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.query(collection, query))
     }
 
-    /// Executes a bounded query using a qualifying unique equality index or
+    /// Executes a bounded query using a qualifying single-field equality index or
     /// a collection scan. Declared index integrity is required for index use.
     pub fn query_planned(
         &self,

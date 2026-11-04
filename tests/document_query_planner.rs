@@ -128,7 +128,6 @@ fn exercise(db: &DocumentDatabase<'_>) {
                 exists: true,
             },
         ]),
-        equal("score", json!(2)),
         equal("group", json!("x")),
         equal("rank", json!(1)),
         equal("email", json!([1])),
@@ -143,6 +142,17 @@ fn exercise(db: &DocumentDatabase<'_>) {
             DocumentQueryAccess::CollectionScan,
         );
     }
+    compare(
+        db,
+        &DocumentQuery {
+            filter: equal("score", json!(2)),
+            max_scanned: 10,
+            ..Default::default()
+        },
+        DocumentQueryAccess::EqualityIndex {
+            index: "nonunique".into(),
+        },
+    );
     let bad = DocumentQuery {
         filter: equal("email", json!("a@example")),
         max_scanned: 0,

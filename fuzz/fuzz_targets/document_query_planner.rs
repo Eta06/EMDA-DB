@@ -157,6 +157,10 @@ fuzz_target!(|data: &[u8]| {
                 DocumentQueryAccess::UniqueEqualityIndex {
                     index: "email".into(),
                 }
+            } else if matches!(bytes[0] % 10, 7 | 8) {
+                DocumentQueryAccess::EqualityIndex {
+                    index: "score".into(),
+                }
             } else {
                 DocumentQueryAccess::CollectionScan
             }
