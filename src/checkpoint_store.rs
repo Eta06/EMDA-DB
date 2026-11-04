@@ -219,6 +219,7 @@ impl CheckpointStore {
             .write(true)
             .open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
+        crate::directory::verify_lock_identity(&path, &lock)?;
         let selection = selection::load(&path)?;
         let (checkpoint, digest, selection) = match source {
             OpenSource::Explicit(checkpoint, digest) => {

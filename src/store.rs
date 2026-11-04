@@ -14,6 +14,7 @@ use std::sync::{Mutex, RwLock, RwLockReadGuard};
 mod atomic_batch;
 mod commit;
 mod compact;
+mod compact_exchange;
 mod compact_stream;
 mod log_quota;
 mod read_set;
@@ -224,6 +225,14 @@ impl Store {
         path: &Path,
         open_log: impl FnOnce(&Path, bool) -> io::Result<(Log, BTreeMap<Vec<u8>, ValueLocation>)>,
     ) -> io::Result<Self> {
+        Self::open_using_with_hook(path, open_log, || Ok(()))
+    }
+
+    fn open_using_with_hook(
+        path: &Path,
+        open_log: impl FnOnce(&Path, bool) -> io::Result<(Log, BTreeMap<Vec<u8>, ValueLocation>)>,
+        after_lock_open: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<Self> {
         directory::create_and_sync(path)?;
         let lock_path = path.join("store.lock");
         let new_lock = OpenOptions::new()
@@ -239,7 +248,9 @@ impl Store {
             ),
             Err(error) => return Err(error),
         };
+        after_lock_open()?;
         fs2::FileExt::try_lock_exclusive(&lock_file)?;
+        directory::verify_lock_identity(path, &lock_file)?;
         let (log, index) = open_log(path, may_initialize)?;
         Ok(Self {
             log,

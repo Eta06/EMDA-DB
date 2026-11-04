@@ -105,5 +105,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "compact_exchange"
+path = "fuzz_targets/compact_exchange.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

@@ -4,7 +4,7 @@ This document describes the current prototype, not a promised final design. The 
 
 ## Boundaries
 
-- `store` and `store/commit`: public key/value API, exclusive process ownership, bounded group commit, synchronization, and outcome handling.
+- `store` and `store/commit`: public key/value API, exclusive process ownership, bounded group commit, synchronization, and outcome handling. `store/compact_exchange` provides an opt-in blocking Linux handoff to a verified compacted sibling, retaining the previous store.
 - `record`: versioned binary framing, length limits, encoding, and checksum verification.
 - `log`, `log_io`, `recovery`, and `witness`: append and sync, positional reads, bounded buffered replay, the checksummed commit boundary, the in-memory key-to-offset index, and testable I/O boundaries.
 - `backup`: checksummed full-log backup and validated, non-overwriting restore.

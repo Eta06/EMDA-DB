@@ -25,6 +25,10 @@ impl LogQuota {
         })
     }
 
+    pub(super) fn limit(&self) -> u64 {
+        self.max
+    }
+
     pub(super) fn reserve(&self, bytes: u64) -> io::Result<LogReservation<'_>> {
         if self.failed.load(Ordering::Acquire) {
             return Err(io::Error::other(

@@ -2,7 +2,24 @@
 
 use std::fs::{self, File};
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+
+/// After acquiring an advisory lock, ensure the path still names that inode.
+/// A cooperating directory handoff may have changed the path between opening
+/// the descriptor and taking the lock. Opening the log under a stale lock
+/// would otherwise permit two writers. Trusted directories are still required.
+pub(crate) fn verify_lock_identity(directory: &Path, lock: &File) -> io::Result<()> {
+    let opened = lock.metadata()?;
+    let current = fs::metadata(directory.join("store.lock"))?;
+    if opened.dev() != current.dev() || opened.ino() != current.ino() {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "store path changed while acquiring its lock",
+        ));
+    }
+    Ok(())
+}
 
 pub(crate) fn create_and_sync(path: &Path) -> io::Result<()> {
     create_and_sync_with(path, |directory| File::open(directory)?.sync_all())

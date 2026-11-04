@@ -85,6 +85,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/automatic-checkpoint-corpus"
           cp fuzz/automatic-checkpoint-seeds/* "$RUNNER_TEMP/automatic-checkpoint-corpus/"
           cargo +nightly-2026-11-03 fuzz run automatic_checkpoint "$RUNNER_TEMP/automatic-checkpoint-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
+      - name: Run compacted-store exchange model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/compact-exchange-corpus"
+          cp fuzz/compact-exchange-seeds/* "$RUNNER_TEMP/compact-exchange-corpus/"
+          cargo +nightly-2026-11-03 fuzz run compact_exchange "$RUNNER_TEMP/compact-exchange-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

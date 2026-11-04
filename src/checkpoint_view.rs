@@ -91,6 +91,7 @@ impl CheckpointView {
         let path = path.as_ref();
         let lock_file = File::open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_shared(&lock_file)?;
+        crate::directory::verify_lock_identity(path, &lock_file)?;
         Self::open_locked(path, checkpoint.as_ref(), trusted_digest, lock_file)
     }
 
