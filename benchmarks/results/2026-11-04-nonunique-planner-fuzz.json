@@ -1,0 +1,34 @@
+{
+  "date_utc": "2026-11-04",
+  "production_revision": "55f867bb93c4e22cb6b415926e0ca9999f2ce54e",
+  "platform": "Linux x86_64 cloud VM",
+  "filesystem": "/tmp tmpfs",
+  "runs": [
+    {
+      "target": "document_query_planner",
+      "seed": 92831121,
+      "initial_corpus": "Fresh directory with fuzz/document-query-planner-seeds",
+      "executions": 5628,
+      "elapsed_seconds": 91,
+      "requested_seconds": 90,
+      "binary_sha256": "ee6d3f2d752ca0bc178650c48f742f67d6fa6d3de0e10ecc0f86c493c047cc1d"
+    },
+    {
+      "target": "document_array_queries",
+      "seed": 92831123,
+      "initial_corpus": "Fresh directory with fuzz/document-array-query-seeds",
+      "executions": 6394,
+      "elapsed_seconds": 61,
+      "requested_seconds": 60,
+      "binary_sha256": "bfd51f418ee37a3c50211b0eb34bcbbbae88f01c4b2af2432d56da49e2e6928e"
+    }
+  ],
+  "configured_maximum_input_bytes": 96,
+  "per_input_timeout_seconds": 10,
+  "result": "both runs completed without a reported finding",
+  "limitations": [
+    "These short coverage-guided differential model runs are not exhaustive.",
+    "Generated client operations use small collections and serial schedules; independent targeted tests cover multi-page ranges, budget limits, concurrency and corruption.",
+    "Neither run simulates physical power loss or independent off-host restore."
+  ]
+}
