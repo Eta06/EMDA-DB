@@ -1,0 +1,23 @@
+{
+  "date_utc": "2026-11-04",
+  "revision": "cb247c69ca1e201ba39d0bd4f7d4eb303ab36b10",
+  "target": "online_reclamation_worker",
+  "platform": "Linux x86_64 cloud VM",
+  "filesystem": "/tmp tmpfs",
+  "seed": 92831103,
+  "initial_corpus": "A fresh directory populated only with the two files in fuzz/online-reclamation-worker-seeds",
+  "executions": 7085,
+  "elapsed_seconds": 91,
+  "requested_seconds": 90,
+  "configured_maximum_input_bytes": 64,
+  "final_generated_length_limit_bytes": 22,
+  "per_input_timeout_seconds": 10,
+  "binary_sha256": "344851a8ca4ae6ec439923e0ac67fb1933aa5f826070e9d78b9748a05d49c5c1",
+  "result": "completed without a reported finding",
+  "limitations": [
+    "This short coverage-guided run is not exhaustive.",
+    "The generated client operations are serial; independent tests exercise concurrent clients and shutdown behavior.",
+    "This run does not inject filesystem failures or simulate physical power loss or off-host restore."
+  ],
+  "exploratory_run": "An earlier 3,710-input run used a pre-existing local corpus of 234 files in addition to the checked-in seeds; that complete initial corpus was not retained and its run is not reproducible from the seeds alone."
+}
