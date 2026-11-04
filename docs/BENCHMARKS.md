@@ -322,7 +322,7 @@ The [document comparison report](DOCUMENT_COMPARISON_2026_11_04.md) records a fo
 
 ## Embedded document scaling harness
 
-`scripts/document_scale_compare.py` repeats the in-process prototype and SQLite document workload with a configurable nonempty indexed collection. The release example inserts the baseline in 32-document transactions, times create/read/replace/indexed-lookup/delete cycles for separate transient documents, then reopens and checks each baseline document through its index. The script rotates engine order, validates every sample count, retains raw results and failures, and records VM/cgroup noise. Prototype log format, process high-water RSS and file sizes are recorded; process RSS excludes page cache and is not a total-memory or project quota. Setup and verification are outside the individual operation timers but inside telemetry windows. Optionally provide `--baseline-binary /path/to/older/document_bench` to rotate an older prototype binary, the current prototype and SQLite for a before/after comparison. This is a single-client test of different document implementations, not a distributed-system comparison or physical power-loss test.
+`scripts/document_scale_compare.py` repeats the in-process prototype and SQLite document workload with a configurable nonempty indexed collection. The release example inserts the baseline in 32-document transactions, times create/read/replace/indexed-lookup/delete cycles for separate transient documents, then reopens and checks every baseline document; the prototype also traverses its email index, and SQLite runs `integrity_check`. The script rotates engine order, validates every sample count, retains raw results and failures, and records VM/cgroup noise. Prototype log format, process high-water RSS and file sizes are recorded; process RSS excludes page cache and is not a total-memory or project quota. Setup and verification are outside the individual operation timers but inside telemetry windows. Optionally provide `--baseline-binary /path/to/older/document_bench` to rotate an older prototype binary, the current prototype and SQLite for a before/after comparison. This is a single-client test of different document implementations, not a distributed-system comparison or physical power-loss test.
 
 ```sh
 cargo build --release --locked --example document_bench
@@ -330,6 +330,8 @@ python3 scripts/document_scale_compare.py --directory /path/on/test/filesystem \
   --binary target/release/examples/document_bench --output /tmp/document-scale.json \
   --sizes 0,100,1000,3000 --rounds 4 --cycles 100
 ```
+
+A [before/after document-read run](DOCUMENT_POINT_READ_COMPARISON_2026_11_04.md) uses this harness to compare the original and two-point ordinary-store read paths across four collection sizes. It includes a separate repeat and raw samples; other document operations still use full snapshots.
 
 ## Checkpoint snapshot memory comparison
 

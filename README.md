@@ -26,6 +26,8 @@ The latest [ten-engine comparison](docs/LOCAL_COMPARISON_2026_11_03.md) includes
 
 A separate [initial document comparison](docs/DOCUMENT_COMPARISON_2026_11_04.md) measures a small single-client CRUD/indexed-lookup cycle against SQLite, PostgreSQL and MongoDB. SQLite had lower median latency than the prototype on each sampled operation; the PostgreSQL and MongoDB adapters use different drivers and transport. The workload is not a general ranking.
 
+A [larger-collection read comparison](docs/DOCUMENT_POINT_READ_COMPARISON_2026_11_04.md) measured the ordinary-store standalone read at 3,000 live documents: prototype median fell from 2.35 ms to 17.62 µs in the first sample; SQLite measured 3.54 µs with a different JSON adapter. Ordinary-store indexed queries and transactional writes still copy bounded snapshots, and VM interference limits the comparison.
+
 The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
 
 ## Featured directions

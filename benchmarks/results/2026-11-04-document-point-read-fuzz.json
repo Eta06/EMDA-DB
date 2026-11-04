@@ -1,0 +1,22 @@
+{
+  "date_utc": "2026-11-04",
+  "production_revision": "3e4c88422cafed6bf06fbef453e0d5ac337bed0c",
+  "target": "document_model",
+  "seed": 1811445485,
+  "executions": 10399,
+  "seconds": 121,
+  "requested_seconds": 120,
+  "max_input_bytes": 64,
+  "per_input_timeout_seconds": 10,
+  "binary_sha256": "46c2582ddfe7c5c14076a7375898b5cca82127c28462372461534ef65d3aa226",
+  "rustc": "1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "0.13.2",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": "/tmp tmpfs",
+  "corpus_seed_directory": "fuzz/document-model-seeds",
+  "result": "completed without a reported finding",
+  "limitations": [
+    "The target alternates ordinary and checkpoint backends and validates document and index behavior against a model; not every input exercises every branch.",
+    "This short serial campaign does not prove concurrent correctness, physical power-loss safety or off-host recovery."
+  ]
+}
