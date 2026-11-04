@@ -1,5 +1,6 @@
 //! Experimental, transactional JSON documents over the shared storage engine.
 mod aggregate;
+mod aggregate_stats;
 mod bulk;
 mod filter;
 mod index;
@@ -21,6 +22,9 @@ pub(crate) mod array_fault_model;
 mod point_read_tests;
 
 pub use aggregate::{AggregateGroup, AggregateRequest, AggregateResult, LookupEntry, LookupResult};
+pub use aggregate_stats::{
+    AggregateStatsGroup, AggregateStatsRequest, AggregateStatsResult, NumericFieldStats,
+};
 pub use bulk::{BulkOperation, BulkResult};
 pub use filter::{
     Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult, DocumentSort, QueryPlan,
@@ -381,6 +385,15 @@ impl<'a> DocumentDatabase<'a> {
         request: &AggregateRequest,
     ) -> io::Result<AggregateResult> {
         self.transaction(|tx| tx.aggregate(collection, request))
+    }
+
+    /// Computes bounded grouped integer statistics over one collection scan.
+    pub fn aggregate_stats(
+        &self,
+        collection: &str,
+        request: &AggregateStatsRequest,
+    ) -> io::Result<AggregateStatsResult> {
+        self.transaction(|tx| tx.aggregate_stats(collection, request))
     }
 
     /// Follows string IDs from a bounded source query into another collection.

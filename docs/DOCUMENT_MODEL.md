@@ -80,6 +80,27 @@ The indexed path relies on the declared index being intact. It validates each en
 
 `aggregate` performs a bounded complete scan of at most 256 documents, with count, optional grouping by one scalar path and optional checked signed-integer sum. Missing and null sum values are skipped; non-integers and overflow fail. `lookup` follows a string document ID into another collection within the same transaction snapshot. Missing/null references and missing target IDs yield no related document. It limits related document bytes to 16 MiB and rejects a projected source query. These are narrow primitives, not MongoDB aggregation pipelines or general joins.
 
+`aggregate_stats` computes count, exact checked `i128` sum, minimum, maximum and an optional approximate floating-point mean for one to 16 distinct paths in a complete scan of at most 256 documents. Grouping uses the same typed scalar ordering and distinguishes missing from null; an empty ungrouped scan returns one zero-count group, while an empty grouped scan returns none. Each field skips missing and null independently; any present non-signed-integer value fails the operation. The result lists the requested paths once; every group returns statistics in that same order. The exact mean is the returned sum and field count as a rational; `mean()` is approximate. The method sees transaction-staged changes and shares the scan's serializable range validation and logical limits, but is not a general aggregation pipeline, indexed aggregation, total-memory quota, or MongoDB compatibility promise.
+
+For example, with an open `DocumentDatabase` named `db`:
+
+```rust
+use database_engine::{AggregateStatsRequest, DocumentFilter};
+
+let report = db.aggregate_stats("orders", &AggregateStatsRequest {
+    filter: DocumentFilter::All,
+    group_by: Some(vec!["region".into()]),
+    fields: vec![vec!["amount".into()], vec!["items".into()]],
+    max_scanned: 256,
+})?;
+for group in &report.groups {
+    for (path, stats) in report.fields.iter().zip(&group.fields) {
+        println!("{:?} {:?}: count={}, sum={}, mean={:?}",
+            group.key, path, stats.count, stats.sum, stats.mean());
+    }
+}
+```
+
 ## Namespace, integrity and compatibility
 
 The versioned byte prefix `00 65 6d 64 61 2d 64 6f 63 75 6d 65 6e 74 01` is reserved for document metadata, documents and indexes. The document transaction's raw methods reject this prefix. Direct raw `Store`/`CheckpointStore` access and older binaries do not enforce the reservation; applications must not use them to modify document-owned keys. The prefix is **not** a security or tenant-isolation boundary. Corrupt or unknown metadata and invalid documents fail when read, and queries check the entries they return; checksums and these checks do not repair corruption, authenticate data, or guarantee discovery of a missing index entry.

@@ -38,12 +38,13 @@ pub use checkpoint_view::{
     MAX_CHECKPOINT_VIEW_BLOCKS, MAX_CHECKPOINT_VIEW_FILE_BYTES,
 };
 pub use document::{
-    AggregateGroup, AggregateRequest, AggregateResult, BulkOperation, BulkResult,
-    CollectionIntegrity, CollectionSchema, Comparison, DocumentDatabase, DocumentEntry,
-    DocumentFilter, DocumentPage, DocumentQuery, DocumentQueryAccess, DocumentQueryResult,
-    DocumentSort, DocumentTransaction, DocumentTransactionMode, DocumentUpdate, FieldCondition,
-    FieldRule, FieldType, IndexBound, IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus,
-    IndexQuery, IndexQueryPlan, IndexStep, IndexValue, LookupEntry, LookupResult, PartialFilter,
+    AggregateGroup, AggregateRequest, AggregateResult, AggregateStatsGroup, AggregateStatsRequest,
+    AggregateStatsResult, BulkOperation, BulkResult, CollectionIntegrity, CollectionSchema,
+    Comparison, DocumentDatabase, DocumentEntry, DocumentFilter, DocumentPage, DocumentQuery,
+    DocumentQueryAccess, DocumentQueryResult, DocumentSort, DocumentTransaction,
+    DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule, FieldType, IndexBound,
+    IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus, IndexQuery, IndexQueryPlan,
+    IndexStep, IndexValue, LookupEntry, LookupResult, NumericFieldStats, PartialFilter,
     PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus, SchemaStep,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
