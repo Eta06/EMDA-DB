@@ -120,7 +120,7 @@ impl Store {
                 "compacted key count mismatch",
             ));
         }
-        for (key, &location) in &inner.index {
+        for (key, &location) in inner.index.iter() {
             if verified.get(key)?.as_deref() != Some(self.log.read(location)?.as_slice()) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,

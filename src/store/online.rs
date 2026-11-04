@@ -64,7 +64,7 @@ pub struct OnlineStore {
 pub struct OnlineCompactionOptions {
     /// Maximum keys captured in the initial index snapshot.
     pub max_snapshot_keys: usize,
-    /// Maximum copied key bytes in the initial snapshot and target live index.
+    /// Maximum logical key bytes in the initial snapshot and target live index.
     pub max_snapshot_key_bytes: usize,
     /// Maximum synchronized catch-up passes while normal operations continue.
     pub catchup_rounds: usize,

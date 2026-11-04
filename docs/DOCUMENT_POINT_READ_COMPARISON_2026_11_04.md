@@ -1,5 +1,7 @@
 # Standalone document-read comparison, 2026-11-04
 
+This report describes the revisions named below. Later revisions share ordinary-store snapshot roots; consult the current [storage contract](STORAGE_TRANSACTION_CONTRACT.md) for current behavior.
+
 The ordinary-store standalone document read previously copied the complete in-memory key index to obtain a transaction snapshot. The new path captures the collection-metadata and document locations together, checks the same stored values, and retains conservative generation validation and shared active-read admission. It changes no on-disk format or write synchronization. Explicit document transactions, indexed queries, writes, and the checkpoint-backed read still use their existing snapshot paths. See the [storage contract](STORAGE_TRANSACTION_CONTRACT.md) for the failure and conflict semantics.
 
 We compared the prototype at revision `1c443b26afeabc6a11f6fcb39ae4aa4443105ed4` (before), the prototype at revision `3e4c88422cafed6bf06fbef453e0d5ac337bed0c` (after), and SQLite 3.49.1. Each run preloads a persistent collection and a unique email index, performs 20 warm-up and 200 measured create/read/replace/indexed-lookup/delete cycles on separate transient documents, and reopens and checks the baseline documents. Five rounds rotate the order of all three binaries per collection size. Every content/reopen check passed.

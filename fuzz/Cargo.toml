@@ -156,3 +156,9 @@ path = "fuzz_targets/online_compaction.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "shared_snapshot"
+path = "fuzz_targets/shared_snapshot.rs"
+test = false
+doc = false
+bench = false

@@ -3,15 +3,15 @@ use super::*;
 use std::sync::{Arc, TryLockError, Weak};
 use std::time::Instant;
 
-/// Hard per-snapshot limit on the number of copied keys.
+/// Hard per-snapshot limit on the number of keys represented by a view.
 pub const MAX_SNAPSHOT_KEYS: usize = 16_384;
-/// Hard per-snapshot limit on the total number of copied key bytes.
+/// Hard per-snapshot limit on the logical bytes in keys represented by a view.
 pub const MAX_SNAPSHOT_KEY_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum simultaneously active snapshots per open store.
 pub const MAX_ACTIVE_SNAPSHOTS: usize = 16;
-/// Maximum combined copied keys across snapshots on one open store.
+/// Maximum combined logical keys across snapshots on one open store.
 pub const MAX_SNAPSHOT_TOTAL_KEYS: usize = 65_536;
-/// Maximum combined copied key bytes across snapshots on one open store.
+/// Maximum combined logical key bytes across snapshots on one open store.
 pub const MAX_SNAPSHOT_TOTAL_KEY_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Default)]
@@ -44,7 +44,7 @@ impl SnapshotBudget {
 
 /// A stable read-only index view borrowing the open store.
 ///
-/// Drop it to release its copied index. Snapshots are process-local, do not
+/// Drop it to release its retained index view. Snapshots are process-local, do not
 /// survive reopening, and do not make independent writes transactional.
 /// Per-store snapshot count, total keys and key bytes are limited. These are
 /// not byte-accurate process memory limits and do not apply across stores.
@@ -66,7 +66,7 @@ enum SnapshotStatus {
 }
 
 pub(super) struct SnapshotData {
-    pub(super) index: BTreeMap<Vec<u8>, ValueLocation>,
+    pub(super) index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
     reserved_keys: usize,
     reserved_key_bytes: usize,
     status: SnapshotStatus,
@@ -76,8 +76,8 @@ pub(super) struct SnapshotData {
 impl SnapshotData {
     fn release(&mut self, store: &Store, status: SnapshotStatus) {
         if self.status == SnapshotStatus::Active {
-            // Release the copied keys before capacity becomes available again.
-            self.index.clear();
+            // Release this view before capacity becomes available again.
+            self.index = Arc::new(BTreeMap::new());
             store
                 .snapshot_budget
                 .lock()
@@ -116,7 +116,8 @@ impl Drop for Snapshot<'_> {
 impl Store {
     /// Captures a stable index view, rejecting a store that exceeds either limit.
     /// Limits cannot exceed the public hard per-snapshot limits. The operation
-    /// copies keys and offsets, not values, and never returns a partial snapshot.
+    /// retains an immutable index view, not values, and never returns a partial
+    /// snapshot. Later writes may copy the index while a view is active.
     pub fn snapshot(&self, max_keys: usize, max_key_bytes: usize) -> io::Result<Snapshot<'_>> {
         self.snapshot_with_deadline(max_keys, max_key_bytes, None)
     }
@@ -144,12 +145,9 @@ impl Store {
         if inner.index.len() > max_keys {
             return Err(io::Error::other("snapshot key count limit exceeded"));
         }
-        let mut key_bytes = 0_usize;
-        for key in inner.index.keys() {
-            key_bytes += key.len();
-            if key_bytes > max_key_bytes {
-                return Err(io::Error::other("snapshot key byte limit exceeded"));
-            }
+        let key_bytes = inner.index_key_bytes;
+        if key_bytes > max_key_bytes {
+            return Err(io::Error::other("snapshot key byte limit exceeded"));
         }
         let key_count = inner.index.len();
         self.snapshot_budget
@@ -167,7 +165,7 @@ impl Store {
             store: self,
             generation: inner.generation,
             state: Arc::new(RwLock::new(SnapshotData {
-                index: BTreeMap::new(),
+                index: Arc::clone(&inner.index),
                 reserved_keys: key_count,
                 reserved_key_bytes: key_bytes,
                 status: SnapshotStatus::Active,
@@ -175,15 +173,6 @@ impl Store {
             })),
         };
         reservation.active = false;
-        {
-            let mut data = snapshot
-                .state
-                .write()
-                .map_err(|_| io::Error::other("snapshot state poisoned"))?;
-            for (key, &location) in &inner.index {
-                data.index.insert(key.clone(), location);
-            }
-        }
         snapshot.ensure_healthy()?;
         if deadline.is_some() {
             let mut registry = self
@@ -291,7 +280,7 @@ impl Snapshot<'_> {
         Ok(data)
     }
 
-    /// Cancels this snapshot and releases its copied index and reservations.
+    /// Cancels this snapshot and releases its index view and reservations.
     ///
     /// Cancellation is idempotent. Later reads return an error rather than an
     /// empty result. It has no effect on other snapshots or transactions.

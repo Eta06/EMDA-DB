@@ -4,9 +4,9 @@
 //! publishes their index updates before waking the callers. Grouping is not a
 //! multi-key transaction: a failed or interrupted group has unknown outcomes.
 use super::Inner;
-use crate::log::{AppendRecord, Log, prepare_batch};
+use crate::log::{AppendRecord, Log, ValueLocation, prepare_batch};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
@@ -18,6 +18,44 @@ const MAX_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BATCH_RECORDS: usize = 64;
 const MAX_BUFFERED_RECORDS: usize = 1024;
 const LEADER_RECHECK_INTERVAL: Duration = Duration::from_millis(10);
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SnapshotCopyPoint {
+    BeforeCopy,
+    AfterCopy,
+}
+
+#[cfg(test)]
+type SnapshotCopyHook = Arc<dyn Fn(SnapshotCopyPoint) + Send + Sync>;
+
+fn put_index(
+    index: &mut BTreeMap<Vec<u8>, ValueLocation>,
+    key: Vec<u8>,
+    location: ValueLocation,
+    key_bytes: &mut usize,
+) -> io::Result<()> {
+    let length = key.len();
+    if index.insert(key, location).is_none() {
+        *key_bytes = key_bytes
+            .checked_add(length)
+            .ok_or_else(|| io::Error::other("live index key byte count overflow"))?;
+    }
+    Ok(())
+}
+
+fn delete_index(
+    index: &mut BTreeMap<Vec<u8>, ValueLocation>,
+    key: &[u8],
+    key_bytes: &mut usize,
+) -> io::Result<()> {
+    if index.remove(key).is_some() {
+        *key_bytes = key_bytes
+            .checked_sub(key.len())
+            .ok_or_else(|| io::Error::other("live index key byte count is inconsistent"))?;
+    }
+    Ok(())
+}
 
 struct Entry {
     operation: Operation,
@@ -58,6 +96,8 @@ pub(super) struct Coordinator {
     failed: AtomicBool,
     max_bytes: usize,
     max_records: usize,
+    #[cfg(test)]
+    snapshot_copy_hook: Mutex<Option<SnapshotCopyHook>>,
 }
 
 impl Coordinator {
@@ -80,12 +120,27 @@ impl Coordinator {
             failed: AtomicBool::new(false),
             max_bytes,
             max_records,
+            #[cfg(test)]
+            snapshot_copy_hook: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub(super) fn for_test(max_bytes: usize, max_records: usize) -> Self {
         Self::with_limits(max_bytes, max_records)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_snapshot_copy_hook(&self, hook: Option<SnapshotCopyHook>) {
+        *self.snapshot_copy_hook.lock().unwrap() = hook;
+    }
+
+    #[cfg(test)]
+    fn snapshot_copy_point(&self, point: SnapshotCopyPoint) {
+        let hook = self.snapshot_copy_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(point);
+        }
     }
 
     #[cfg(test)]
@@ -362,33 +417,78 @@ impl Coordinator {
         }
         // Never publish an index update or complete a caller before sync.
         log.sync_data()?;
+        // The coordinator admits only one publishing leader. Clone a shared
+        // immutable root without holding the index write lock, so unrelated
+        // readers can continue while the copy is prepared. A new snapshot
+        // racing after this check falls back to copy-on-write under the lock.
+        let shared = {
+            let state = inner
+                .read()
+                .map_err(|_| io::Error::other("store lock poisoned"))?;
+            (Arc::strong_count(&state.index) > 1)
+                .then(|| (Arc::clone(&state.index), state.generation))
+        };
+        #[cfg(test)]
+        if shared.is_some() {
+            self.snapshot_copy_point(SnapshotCopyPoint::BeforeCopy);
+        }
+        let prepared = shared.map(|(root, generation)| {
+            let copy = Arc::new(root.as_ref().clone());
+            (root, generation, copy)
+        });
+        #[cfg(test)]
+        if prepared.is_some() {
+            self.snapshot_copy_point(SnapshotCopyPoint::AfterCopy);
+        }
         {
             let mut inner = inner
                 .write()
                 .map_err(|_| io::Error::other("store lock poisoned"))?;
+            if let Some((root, generation, copy)) = prepared {
+                if !Arc::ptr_eq(&inner.index, &root) || inner.generation != generation {
+                    self.failed.store(true, Ordering::Release);
+                    return Err(io::Error::other("index changed during commit preparation"));
+                }
+                inner.index = copy;
+            }
             let next_generation = inner
                 .generation
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("commit generation exhausted; reopen the store"))?;
-            for ((entry, location), updates) in batch.iter_mut().zip(locations).zip(batch_updates) {
-                match entry.operation {
-                    Operation::Put => {
-                        inner.index.insert(std::mem::take(&mut entry.key), location);
-                    }
-                    Operation::Delete => {
-                        inner.index.remove(&entry.key);
-                    }
-                    Operation::Batch => {
-                        for update in updates.expect("validated batch updates") {
-                            if let Some(location) = update.location {
-                                inner.index.insert(update.key, location);
-                            } else {
-                                inner.index.remove(&update.key);
+            let mut key_bytes = inner.index_key_bytes;
+            let index = Arc::make_mut(&mut inner.index);
+            let publication = (|| {
+                for ((entry, location), updates) in
+                    batch.iter_mut().zip(locations).zip(batch_updates)
+                {
+                    match entry.operation {
+                        Operation::Put => put_index(
+                            index,
+                            std::mem::take(&mut entry.key),
+                            location,
+                            &mut key_bytes,
+                        )?,
+                        Operation::Delete => delete_index(index, &entry.key, &mut key_bytes)?,
+                        Operation::Batch => {
+                            for update in updates.expect("validated batch updates") {
+                                if let Some(location) = update.location {
+                                    put_index(index, update.key, location, &mut key_bytes)?;
+                                } else {
+                                    delete_index(index, &update.key, &mut key_bytes)?;
+                                }
                             }
                         }
                     }
                 }
+                Ok::<(), io::Error>(())
+            })();
+            if let Err(error) = publication {
+                // Accounting can fail after an earlier update in the batch.
+                // Disable reads before releasing the index lock.
+                self.failed.store(true, Ordering::Release);
+                return Err(error);
             }
+            inner.index_key_bytes = key_bytes;
             inner.generation = next_generation;
         }
         let mut state = self.lock()?;

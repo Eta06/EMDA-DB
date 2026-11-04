@@ -9,7 +9,7 @@ use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 mod atomic_batch;
 mod commit;
@@ -44,7 +44,8 @@ pub use transaction::{
 pub(crate) use transaction_queue::TransactionQueue;
 
 struct Inner {
-    index: BTreeMap<Vec<u8>, ValueLocation>,
+    index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
+    index_key_bytes: usize,
     generation: u64,
 }
 
@@ -255,10 +256,16 @@ impl Store {
         fs2::FileExt::try_lock_exclusive(&lock_file)?;
         directory::verify_lock_identity(path, &lock_file)?;
         let (log, index) = open_log(path, may_initialize)?;
+        let index_key_bytes = index.keys().try_fold(0_usize, |total, key| {
+            total
+                .checked_add(key.len())
+                .ok_or_else(|| io::Error::other("live index key byte count overflow"))
+        })?;
         Ok(Self {
             log,
             inner: RwLock::new(Inner {
-                index,
+                index: Arc::new(index),
+                index_key_bytes,
                 generation: 0,
             }),
             writes: RwLock::new(()),
@@ -660,6 +667,9 @@ impl Store {
 fn uncertain_error() -> io::Error {
     io::Error::other("a previous write had an uncertain outcome; reopen the store")
 }
+
+#[cfg(test)]
+mod shared_snapshot_tests;
 
 #[cfg(test)]
 mod fault_tests;

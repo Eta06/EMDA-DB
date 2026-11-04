@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Ordinary-store snapshots share immutable index roots; writes copy a shared root when necessary, with generation and identity checks before publication. Logical snapshot budgets and storage guarantees remain in force.
+
 - A reproducible contention harness compares concurrent two-key transactions and point reads while retaining bounded reader-latency samples.
 
 - Recorded a rotated before/after document-read comparison and repeat across growing indexed collections, including raw latency samples and VM interference.

@@ -84,7 +84,7 @@ pub(super) fn verify_initial(
             }
             Ok(())
         })?;
-    if index != snapshot.read_index()?.index {
+    if &index != snapshot.read_index()?.index.as_ref() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "snapshot does not match verified log prefix",
@@ -153,7 +153,7 @@ pub(super) fn copy_snapshot(
 ) -> io::Result<()> {
     let index = snapshot.read_index()?;
     let mut writer = Writer::new(target);
-    for (key, location) in &index.index {
+    for (key, location) in index.index.iter() {
         writer.push(key.clone(), Some(source.log.read(*location)?))?;
     }
     writer.flush()
@@ -180,7 +180,7 @@ pub(super) fn verify_target(source: &Store, target: &Store) -> io::Result<()> {
             "compacted key count mismatch",
         ));
     }
-    for (key, location) in &source_index.index {
+    for (key, location) in source_index.index.iter() {
         let target_location = target_index
             .index
             .get(key)
