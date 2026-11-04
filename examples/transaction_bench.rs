@@ -16,6 +16,7 @@ enum Mode {
     ReadSet,
     ReadSetFifo,
     Checkpoint,
+    CheckpointFifo,
     Sqlite,
 }
 enum Worker {
@@ -143,13 +144,14 @@ fn sqlite_increment(conn: &mut Connection, first: &[u8], second: &[u8]) -> Bench
 fn main() -> BenchResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [backend, clients, operations, workload, parent] = args.as_slice() else {
-        return Err("usage: transaction_bench <conservative|readset|readset-fifo|checkpoint|sqlite> <clients> <operations-per-client> <disjoint|shared> <existing-directory>".into());
+        return Err("usage: transaction_bench <conservative|readset|readset-fifo|checkpoint|checkpoint-fifo|sqlite> <clients> <operations-per-client> <disjoint|shared> <existing-directory>".into());
     };
     let mode = match backend.as_str() {
         "conservative" => Mode::Conservative,
         "readset" => Mode::ReadSet,
         "readset-fifo" => Mode::ReadSetFifo,
         "checkpoint" => Mode::Checkpoint,
+        "checkpoint-fifo" => Mode::CheckpointFifo,
         "sqlite" => Mode::Sqlite,
         _ => return Err("unknown backend".into()),
     };
@@ -200,7 +202,7 @@ fn main() -> BenchResult<()> {
             opened.put(&key(b'a', id), &0_u64.to_le_bytes())?;
             opened.put(&key(b'b', id), &0_u64.to_le_bytes())?;
         }
-        if matches!(mode, Mode::Checkpoint) {
+        if matches!(mode, Mode::Checkpoint | Mode::CheckpointFifo) {
             let checkpoint = directory.path().join("checkpoint");
             let digest = opened.checkpoint_to(&checkpoint)?;
             drop(opened);
@@ -243,13 +245,23 @@ fn main() -> BenchResult<()> {
                             Mode::ReadSetFifo => store.transaction_with_read_set_fifo(|tx| {
                                 increment(tx, &first, &second)
                             }),
-                            Mode::Checkpoint | Mode::Sqlite => unreachable!(),
+                            Mode::Checkpoint | Mode::CheckpointFifo | Mode::Sqlite => {
+                                unreachable!()
+                            }
                         },
                         &mut conflicts,
                         operations,
                     )?,
                     Worker::Checkpoint(store) => retry(
-                        || store.transaction(|tx| increment(tx, &first, &second)),
+                        || match mode {
+                            Mode::Checkpoint => {
+                                store.transaction(|tx| increment(tx, &first, &second))
+                            }
+                            Mode::CheckpointFifo => {
+                                store.transaction_with_fifo(|tx| increment(tx, &first, &second))
+                            }
+                            _ => unreachable!(),
+                        },
                         &mut conflicts,
                         operations,
                     )?,

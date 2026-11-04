@@ -230,6 +230,35 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
+        self.run_transaction(action, false)
+    }
+
+    /// Runs a conservative transaction with FIFO admission.
+    ///
+    /// The bounded queue orders callbacks and commits for calls to this method.
+    /// Regular transactions and independent writes do not join it and can
+    /// still cause a conflict. A callback must not wait for another queued
+    /// transaction on this store; same-thread nested admission returns an error.
+    /// There is no bounded-wait guarantee, and queueing can increase latency.
+    pub fn transaction_with_fifo<T>(
+        &self,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.run_transaction(action, true)
+    }
+
+    fn run_transaction<T>(
+        &self,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+        fifo: bool,
+    ) -> io::Result<T> {
+        // Admission covers both callback and commit. Release the write guard
+        // and staged reservations before releasing the queue turn on unwind.
+        let _turn = if fifo {
+            Some(self.transaction_queue.enter()?)
+        } else {
+            None
+        };
         let generation = self.read()?.generation;
         let mut transaction = CheckpointTransaction {
             store: self,

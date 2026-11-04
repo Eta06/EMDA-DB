@@ -1,5 +1,5 @@
 //! Check short concurrent histories against a real-time serial reference model.
-use database_engine::{BatchOperation, CheckpointStore, Store};
+use database_engine::{BatchOperation, CheckpointStore, CheckpointTransaction, Store};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -101,7 +101,7 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                     let start = clock.fetch_add(1, Ordering::SeqCst);
                     let outcome = match operation {
                         0 | 1 => {
-                            let result = store.transaction(|tx| {
+                            let action = |tx: &mut CheckpointTransaction<'_>| {
                                 let x = tx.get(b"x")?.unwrap()[0];
                                 let y = tx.get(b"y")?.unwrap()[0];
                                 let next = if operation == 0 {
@@ -112,7 +112,12 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                                 tx.put(b"x", &[next[0]])?;
                                 tx.put(b"y", &[next[1]])?;
                                 Ok([x, y])
-                            });
+                            };
+                            let result = if operation == 0 {
+                                store.transaction(action)
+                            } else {
+                                store.transaction_with_fifo(action)
+                            };
                             match result {
                                 Ok(observed) => Outcome::Transaction(Some(observed)),
                                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {

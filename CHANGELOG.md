@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Optional FIFO admission for checkpoint-backed transactions. The queue orders participating callbacks and commits; other transactions and writes remain outside it and can still cause conflicts.
 - Conservative optimistic transactions for the checkpoint-backed store, with staged point/range operations, shared staged-record reservations and atomic synchronized commits. Any intervening mutation conflicts; this path does not yet provide read-set validation, deadlines or snapshots.
 - Atomic conditional batches for the checkpoint-backed store, applying an ordered batch only when all bounded point-value conditions match. This does not detect ABA changes or validate ranges.
 - Verified separate-copy compaction for the checkpoint-backed store, streaming live keys and producing a separately trusted checkpoint for the copy without rebuilding full source or target indexes. Source mutations wait; switchover and log reclamation remain manual.

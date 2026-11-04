@@ -37,6 +37,7 @@ pub use snapshot::{
 pub use transaction::{
     MAX_TRANSACTION_STAGED_TOTAL_BYTES, TimedTransactionError, Transaction, TransactionMode,
 };
+pub(crate) use transaction_queue::TransactionQueue;
 
 struct Inner {
     index: BTreeMap<Vec<u8>, ValueLocation>,

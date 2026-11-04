@@ -1,5 +1,7 @@
 #![no_main]
-use database_engine::{BatchOperation, COMPACTED_CHECKPOINT_FILE, CheckpointStore, Store};
+use database_engine::{
+    BatchOperation, COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointTransaction, Store,
+};
 use libfuzzer_sys::fuzz_target;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -276,7 +278,7 @@ fuzz_target!(|data: &[u8]| {
                 && next_touched.iter().map(Vec::len).sum::<usize>() <= max_key_bytes
                 && max_log.is_none_or(|max| total_log + encoded <= max);
             let abort = bytes[3] & 2 != 0;
-            let result = store.transaction(|transaction| {
+            let action = |transaction: &mut CheckpointTransaction<'_>| {
                 assert_eq!(transaction.get(&first)?, model.get(&first).cloned());
                 let expected = model
                     .iter()
@@ -297,7 +299,12 @@ fuzz_target!(|data: &[u8]| {
                     return Err(std::io::Error::other("model abort"));
                 }
                 Ok(())
-            });
+            };
+            let result = if bytes[0] & 16 == 0 {
+                store.transaction(action)
+            } else {
+                store.transaction_with_fifo(action)
+            };
             assert_eq!(result.is_ok(), allowed && !abort);
             if allowed && !abort {
                 touched = next_touched;

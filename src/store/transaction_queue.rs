@@ -7,6 +7,7 @@ use std::time::Instant;
 
 struct Waiter {
     wake: Condvar,
+    owner: std::thread::ThreadId,
 }
 
 #[derive(Default)]
@@ -15,19 +16,19 @@ struct State {
     failed: bool,
 }
 
-pub(super) struct TransactionQueue {
+pub(crate) struct TransactionQueue {
     state: Mutex<State>,
 }
 
 impl TransactionQueue {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new(State::default()),
         }
     }
 
     #[cfg(test)]
-    pub(super) fn queued_for_test(&self) -> usize {
+    pub(crate) fn queued_for_test(&self) -> usize {
         self.state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -35,13 +36,14 @@ impl TransactionQueue {
             .len()
     }
 
-    pub(super) fn enter(&self) -> io::Result<Turn<'_>> {
+    pub(crate) fn enter(&self) -> io::Result<Turn<'_>> {
         self.enter_until(None)
     }
 
     pub(super) fn enter_until(&self, deadline: Option<Instant>) -> io::Result<Turn<'_>> {
         let waiter = Arc::new(Waiter {
             wake: Condvar::new(),
+            owner: std::thread::current().id(),
         });
         let mut state = match self.state.lock() {
             Ok(state) => state,
@@ -54,6 +56,11 @@ impl TransactionQueue {
         };
         if state.failed {
             return Err(io::Error::other("transaction admission queue failed"));
+        }
+        if state.queue.iter().any(|entry| entry.owner == waiter.owner) {
+            return Err(io::Error::other(
+                "nested transaction admission on the same thread is unsupported",
+            ));
         }
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(io::Error::new(
@@ -132,7 +139,7 @@ fn wake_all(state: &State) {
     }
 }
 
-pub(super) struct Turn<'a> {
+pub(crate) struct Turn<'a> {
     queue: &'a TransactionQueue,
     waiter: Arc<Waiter>,
 }
@@ -254,12 +261,30 @@ mod tests {
             workers.push(thread::spawn(move || drop(waiting.enter().unwrap())));
             wait_for_count(&queue, index + 1);
         }
-        assert!(queue.enter().is_err());
+        let extra = Arc::clone(&queue);
+        assert!(
+            thread::spawn(move || extra.enter().is_err())
+                .join()
+                .unwrap()
+        );
         drop(first);
         for worker in workers {
             worker.join().unwrap();
         }
         assert!(queue.state.lock().unwrap().queue.is_empty());
+    }
+
+    #[test]
+    fn nested_admission_on_the_same_thread_returns_an_error() {
+        let queue = TransactionQueue::new();
+        let first = queue.enter().unwrap();
+        let error = match queue.enter() {
+            Ok(_) => panic!("nested queue entry should fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        drop(first);
+        drop(queue.enter().unwrap());
     }
 
     #[test]

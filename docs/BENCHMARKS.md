@@ -318,7 +318,7 @@ Compacted record bytes matched in every run. The checkpoint-backed path also emi
 
 ## Two-key transaction comparison
 
-`examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the ordinary store's transaction validators; `checkpoint` uses the checkpoint-backed store's conservative transactions. Each prototype mode explicitly retries conflicts. `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. Earlier recorded runs predate the checkpoint option.
+`examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the ordinary store's transaction validators; `checkpoint` uses the checkpoint-backed store's conservative transactions and `checkpoint-fifo` queues its callbacks and commits in FIFO order. Each prototype mode explicitly retries conflicts. `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. Earlier recorded runs predate the checkpoint option.
 
 On Linux, build and run with an existing fixture directory and a new output path:
 
@@ -359,6 +359,19 @@ An independent [follow-up run](../benchmarks/results/2026-11-04-transaction-fifo
 | Shared | SQLite | 1,699 | 0.34 ms | 3.08 ms | 430.9 ms | — |
 
 For disjoint keys, FIFO reduced the sampled p99 and maximum while raising median latency and lowering throughput. For shared keys it caused far more retries and lower throughput; it should not be assumed faster. The disjoint FIFO p99 ranged from 2.94 to 4.33 ms and SQLite's from 1.05 to 34.03 ms, so the small observed median difference is not evidence of a sustained advantage. Each p99 uses 800 operations per run. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 6.67% during setup, measurement and cleanup. As above, SQLite busy waits are not counted as conflicts, and these are one-VM measurements rather than a general ranking.
+
+A [checkpoint-backed transaction comparison](../benchmarks/results/2026-11-04-checkpoint-transaction-comparison.json) used revision `2e8e707`, SQLite 3.49.1 and five runs per case. The table shows eight clients and medians of run-level results:
+
+| Workload | Mode | Transactions/s | p50 | p99 | Conflicts |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Disjoint | Checkpoint | 3,573 | 0.72 ms | 19.13 ms | 57 |
+| Disjoint | Ordinary conservative | 3,499 | 0.24 ms | 35.27 ms | 136 |
+| Disjoint | SQLite | 1,707 | 0.32 ms | 2.40 ms | — |
+| Shared | Checkpoint | 3,621 | 0.76 ms | 27.52 ms | 64 |
+| Shared | Ordinary conservative | 3,617 | 0.24 ms | 28.95 ms | 130 |
+| Shared | SQLite | 1,747 | 0.24 ms | 1.19 ms | — |
+
+The checkpoint path's throughput was higher than SQLite's for this workload, but its sampled median and p99 latencies were higher. SQLite busy waits are included in latency but do not appear as conflict counts. The p99 is based on 800 completed transactions per run. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.62% across setup, measurement and cleanup. The result uses a small, warm-cache data set on one VM; it excludes checkpoint creation from timing and does not establish a general ranking or a durability guarantee.
 
 ## Live-key byte limit comparison
 
