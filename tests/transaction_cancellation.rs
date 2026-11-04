@@ -180,3 +180,117 @@ fn ordinary_controlled_transaction_can_commit_when_not_cancelled() {
         .unwrap();
     assert_eq!(store.get(b"x").unwrap().as_deref(), Some(&b"y"[..]));
 }
+
+fn concurrent_documents(db: &DocumentDatabase<'_>) {
+    use std::sync::mpsc;
+    db.create_collection("parallel", CollectionSchema::default())
+        .unwrap();
+    db.create_index(
+        "parallel",
+        IndexDefinition {
+            name: "unique".into(),
+            fields: vec![vec!["v".into()]],
+            unique: true,
+            partial: None,
+        },
+    )
+    .unwrap();
+    for round in 0..8 {
+        let (staged_tx, staged_rx) = mpsc::channel();
+        let tokens = (0..6).map(|_| CancellationToken::new()).collect::<Vec<_>>();
+        std::thread::scope(|scope| {
+            let mut releases = Vec::new();
+            let mut workers = Vec::new();
+            for (id, token) in tokens.iter().cloned().enumerate() {
+                let staged = staged_tx.clone();
+                let (release, resume) = mpsc::channel();
+                releases.push(release);
+                workers.push(scope.spawn(move || {
+                    let name = format!("r{round}-{id}");
+                    let raw_key = format!("raw-{name}");
+                    db.transaction_controlled(
+                        &token,
+                        None,
+                        DocumentTransactionMode::ReadSet,
+                        |tx| {
+                            let prepared = tx
+                                .insert("parallel", &name, &json!({"v":round * 6 + id}))
+                                .and_then(|()| tx.put_raw(raw_key.as_bytes(), b"committed"));
+                            staged.send(()).map_err(io::Error::other)?;
+                            prepared?;
+                            resume.recv().map_err(io::Error::other)
+                        },
+                    )
+                }));
+            }
+            for _ in 0..6 {
+                staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            for (id, token) in tokens.iter().enumerate() {
+                if id % 2 == 1 {
+                    token.cancel();
+                }
+            }
+            for release in releases {
+                let _ = release.send(());
+            }
+            for (id, worker) in workers.into_iter().enumerate() {
+                let result = worker.join().unwrap();
+                if id % 2 == 1 {
+                    assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
+                } else {
+                    result.unwrap();
+                }
+            }
+        });
+        for id in 0..6 {
+            let name = format!("r{round}-{id}");
+            let raw_key = format!("raw-{name}");
+            assert_eq!(
+                db.get("parallel", &name).unwrap(),
+                (id % 2 == 0).then(|| json!({"v":round * 6 + id}))
+            );
+            assert_eq!(
+                db.transaction(|tx| tx.get_raw(raw_key.as_bytes())).unwrap(),
+                (id % 2 == 0).then(|| b"committed".to_vec())
+            );
+        }
+        db.verify_collection("parallel").unwrap();
+    }
+}
+
+#[test]
+fn concurrent_cancelled_and_committed_documents_remain_atomic_after_recovery() {
+    for checkpoint_mode in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("checkpoint");
+        let initial = Store::open(&path).unwrap();
+        let digest = initial.checkpoint_to(&checkpoint).unwrap();
+        if checkpoint_mode {
+            drop(initial);
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            concurrent_documents(&DocumentDatabase::with_checkpoint_store(&store));
+        } else {
+            concurrent_documents(&DocumentDatabase::new(&initial));
+            drop(initial);
+        }
+        let recovered = retry_lock(|| Store::open(&path)).unwrap();
+        let db = DocumentDatabase::new(&recovered);
+        for round in 0..8 {
+            for id in 0..6 {
+                let name = format!("r{round}-{id}");
+                let raw_key = format!("raw-{name}");
+                assert_eq!(
+                    db.get("parallel", &name).unwrap(),
+                    (id % 2 == 0).then(|| json!({"v":round * 6 + id}))
+                );
+                assert_eq!(
+                    db.transaction(|tx| tx.get_raw(raw_key.as_bytes())).unwrap(),
+                    (id % 2 == 0).then(|| b"committed".to_vec())
+                );
+            }
+        }
+        db.verify_collection("parallel").unwrap();
+    }
+}
