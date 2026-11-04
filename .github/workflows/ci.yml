@@ -53,6 +53,8 @@ jobs:
           python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_query_bench --index-name docs_pair --output "$RUNNER_TEMP/compound-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example partial_query_bench
           python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/partial_query_bench --index-name docs_partial --output "$RUNNER_TEMP/partial-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          cargo +stable build --release --locked --example compound_range_query_bench
+          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_range_query_bench --index-name docs_tenant_number --output "$RUNNER_TEMP/compound-range-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           python3 scripts/online_reclaim_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/online_reclaim_bench --output "$RUNNER_TEMP/online-reclaim-smoke.json" --keys 16 --rounds 2
           python3 scripts/document_scale_compare.py --compare-plans --directory "$RUNNER_TEMP" --binary target/release/examples/document_bench --baseline-binary target/release/examples/document_bench --output "$RUNNER_TEMP/document-planner-smoke.json" --sizes 5 --rounds 2 --cycles 3
           cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"

@@ -35,6 +35,10 @@ class NonuniqueQueryComparisonTests(unittest.TestCase):
         validate(result, 100, 10, 2, "docs_partial")
         with self.assertRaises(ValueError):
             validate(result, 100, 10, 2, "docs_pair")
+        result["sqlite_query_plan"] = "SEARCH docs USING INDEX docs_tenant_number (<expr>=? AND <expr>>?)"
+        validate(result, 100, 10, 2, "docs_tenant_number")
+        with self.assertRaises(ValueError):
+            validate(result, 100, 10, 2, "docs_partial")
 
     def test_rejects_failed_verification_or_invalid_samples(self):
         for change in ("reopen", "journal", "synchronous", "plan", "scan_plan", "version", "missing", "boolean", "negative"):
