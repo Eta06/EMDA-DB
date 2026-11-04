@@ -80,7 +80,7 @@ def main():
     os.sched_setaffinity(0, {driver_cpu})
     workload = {"docs_group": "equality", "docs_number": "greater-or-equal range with index order reversed relative to ID", "docs_pair": "complete two-field equality", "docs_partial": "partial equality guarded by a boolean predicate", "docs_tenant_number": "compound equality-prefix and scalar range"}[args.index_name]
     if args.membership:
-        workload = "two-value membership across two populated groups"
+        workload = "two-value membership, with both requested groups populated when at least two rows match"
     report = {
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),

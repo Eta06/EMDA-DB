@@ -331,7 +331,8 @@ fn choose_index<'a>(
 
 impl DocumentTransaction<'_, '_> {
     /// Executes a bounded filtered query using a qualifying exact equality
-    /// tuple or qualifying scalar range, or falls back to the collection scan.
+    /// tuple, scalar range or single-field membership union, or falls back to
+    /// the collection scan.
     /// A partial index is eligible only when the filter proves its condition.
     /// This opt-in path assumes declared indexes are maintained; corruption
     /// that removes index entries can cause omissions. It is not cost-based.
