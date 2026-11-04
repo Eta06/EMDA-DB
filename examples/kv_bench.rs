@@ -32,7 +32,7 @@ impl Config {
 
     fn parse_args(args: &[String]) -> BenchResult<Self> {
         if !(6..=7).contains(&args.len()) {
-            return Err("usage: kv_bench <prototype|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory> [value-bytes]".into());
+            return Err("usage: kv_bench <prototype|prototype-key-byte-limit|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory> [value-bytes]".into());
         }
         let result = Self {
             backend: args[0].clone(),
@@ -43,8 +43,10 @@ impl Config {
             directory: PathBuf::from(&args[5]),
             value_size: args.get(6).map_or(Ok(DEFAULT_VALUE_SIZE), |s| s.parse())?,
         };
-        if !matches!(result.backend.as_str(), "prototype" | "sqlite")
-            || !(1..=64).contains(&result.clients)
+        if !matches!(
+            result.backend.as_str(),
+            "prototype" | "prototype-key-byte-limit" | "sqlite"
+        ) || !(1..=64).contains(&result.clients)
             || !(1..=100_000).contains(&result.operations)
             || !(1..=1_000_000).contains(&result.keys)
             || result.write_percent > 100
@@ -59,8 +61,13 @@ impl Config {
 
 fn workers(config: &Config, directory: &Path) -> BenchResult<Vec<Worker>> {
     let initial_value = vec![0; config.value_size];
-    if config.backend == "prototype" {
-        let store = Arc::new(Store::open(directory.join("store"))?);
+    if config.backend != "sqlite" {
+        let path = directory.join("store");
+        let store = Arc::new(if config.backend == "prototype-key-byte-limit" {
+            Store::open_with_resource_limits(path, None, None, Some(config.keys * 8))?
+        } else {
+            Store::open(path)?
+        });
         let mut initializer = Worker::Prototype(Arc::clone(&store));
         for key in 0..config.keys {
             initializer.write(&(key as u64).to_be_bytes(), &initial_value)?;
@@ -236,6 +243,20 @@ fn main() -> BenchResult<()> {
         );
     }
     drop(held_workers);
+    if config.backend != "sqlite" {
+        let path = directory.path().join("store");
+        let reopened = if config.backend == "prototype-key-byte-limit" {
+            Store::open_with_resource_limits(path, None, None, Some(config.keys * 8))?
+        } else {
+            Store::open(path)?
+        };
+        let mut reader = Worker::Prototype(Arc::new(reopened));
+        for key in 0..config.keys.min(100) {
+            reader.read(&(key as u64).to_be_bytes(), config.value_size)?;
+        }
+        reader.read(&((config.keys - 1) as u64).to_be_bytes(), config.value_size)?;
+        println!("verified_reopen=true");
+    }
     Ok(())
 }
 
@@ -253,6 +274,9 @@ mod tests {
             Config::parse_args(&args).unwrap().value_size,
             DEFAULT_VALUE_SIZE
         );
+        let mut limited = args.clone();
+        limited[0] = "prototype-key-byte-limit".into();
+        assert!(Config::parse_args(&limited).is_ok());
         let mut sized = args.clone();
         sized.push("4096".into());
         assert_eq!(Config::parse_args(&sized).unwrap().value_size, 4096);
