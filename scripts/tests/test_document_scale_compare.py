@@ -1,0 +1,35 @@
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from document_scale_compare import OPERATIONS, validate_result
+
+
+class ScaleComparisonTests(unittest.TestCase):
+    def result(self):
+        return {"engine": "document-prototype", "preloaded_documents": 100, "cycles": 2,
+                "reopen_verified": True, "wall_ops_per_sec": 1.0, "log_format": "V3",
+                "latency": {name: {"count": 2, "samples_ns": [1, 2]}
+                                                        for name in OPERATIONS}}
+
+    def test_accepts_complete_validated_samples(self):
+        validate_result(self.result(), "prototype", 100, 2)
+
+    def test_rejects_failed_reopen_or_missing_samples(self):
+        for change in ("reopen", "samples", "size", "invalid_sample", "rate", "format"):
+            result = self.result()
+            if change == "reopen":
+                result["reopen_verified"] = False
+            elif change == "samples":
+                result["latency"]["read"]["samples_ns"].pop()
+            elif change == "size":
+                result["preloaded_documents"] = 0
+            elif change == "invalid_sample":
+                result["latency"]["read"]["samples_ns"][0] = True
+            elif change == "rate":
+                result["wall_ops_per_sec"] = float("nan")
+            else:
+                result["log_format"] = "unknown"
+            with self.assertRaises(ValueError):
+                validate_result(result, "prototype", 100, 2)

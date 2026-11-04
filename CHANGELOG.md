@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- The embedded document comparison can preload an indexed collection, verify it after reopening, and record process high-water RSS, store format and file sizes.
+
 - Recorded workspace-overlay document recovery checks and a selected-syscall diagnostic for the initial document comparison.
 
 - Expanded online-compaction source-failure checks and recorded longer compaction, index and schema model-fuzz runs.

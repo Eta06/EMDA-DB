@@ -4,10 +4,28 @@ use database_engine::{
 };
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, error::Error, path::Path, time::Instant};
+use std::{collections::BTreeMap, error::Error, io::Read, path::Path, time::Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const WARMUP: usize = 20;
+
+fn base_document(number: usize) -> (String, Value) {
+    (
+        format!("base-{number:06}"),
+        json!({"email":format!("base-{number:06}@example.test"),"age":20,"active":true}),
+    )
+}
+
+fn peak_rss_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with("VmHWM:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
+}
 
 fn samples(values: &[u128]) -> Value {
     let mut sorted = values.to_vec();
@@ -32,7 +50,7 @@ fn timed<T>(
     Ok(result)
 }
 
-fn prototype(parent: &Path, iterations: usize) -> Result<Value> {
+fn prototype(parent: &Path, iterations: usize, preload: usize) -> Result<Value> {
     let root = tempfile::tempdir_in(parent)?;
     let path = root.path().join("store");
     let store = Store::open(&path)?;
@@ -47,6 +65,24 @@ fn prototype(parent: &Path, iterations: usize) -> Result<Value> {
             partial: None,
         },
     )?;
+    let mut header = [0_u8; 8];
+    std::fs::File::open(path.join("records.log"))?.read_exact(&mut header)?;
+    let format = match &header {
+        b"EMDALOG3" => "V3",
+        b"EMDALOG2" => "V2",
+        _ => return Err("unexpected newly created store format".into()),
+    };
+    let prepare_start = Instant::now();
+    for start in (0..preload).step_by(32) {
+        db.transaction(|tx| {
+            for number in start..(start + 32).min(preload) {
+                let (id, document) = base_document(number);
+                tx.insert("docs", &id, &document)?;
+            }
+            Ok(())
+        })?;
+    }
+    let prepare_us = prepare_start.elapsed().as_micros();
     let mut times = BTreeMap::new();
     let mut measured = 0_u128;
     for sequence in 0..iterations + WARMUP {
@@ -87,26 +123,51 @@ fn prototype(parent: &Path, iterations: usize) -> Result<Value> {
             measured += start.elapsed().as_nanos();
         }
     }
+    let log_bytes = std::fs::metadata(path.join("records.log"))?.len();
     drop(store);
     let reopened = Store::open(&path)?;
     let db = DocumentDatabase::new(&reopened);
-    let verified = db.verify_collection("docs")?;
-    if verified.documents != 0 || verified.index_keys != 0 {
+    let mut query = IndexQuery {
+        limit: 256,
+        ..Default::default()
+    };
+    let mut observed = 0;
+    loop {
+        let page = db.query_index("docs", "email", &query)?;
+        if page.documents.is_empty() {
+            break;
+        }
+        for document in page.documents {
+            let (id, value) = base_document(observed);
+            if document.id != id || document.document != value {
+                return Err("prototype recovered baseline mismatch".into());
+            }
+            observed += 1;
+        }
+        query.after = page.next;
+    }
+    if observed != preload {
         return Err("prototype recovery verification failed".into());
+    }
+    if preload <= 256 {
+        let verified = db.verify_collection("docs")?;
+        if verified.documents != preload {
+            return Err("prototype bounded index verification failed".into());
+        }
     }
     let result = times
         .iter()
         .map(|(name, values)| ((*name).to_owned(), samples(values)))
         .collect::<BTreeMap<_, _>>();
     Ok(
-        json!({"engine":"document-prototype","cycles":iterations,"warmup_cycles":WARMUP,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"underlying witnessed store sync before acknowledgement","transport":"in-process Rust"}),
+        json!({"engine":"document-prototype","cycles":iterations,"warmup_cycles":WARMUP,"preloaded_documents":preload,"prepare_us":prepare_us,"peak_rss_kib":peak_rss_kib(),"log_bytes":log_bytes,"log_format":format,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"underlying witnessed store sync before acknowledgement","transport":"in-process Rust"}),
     )
 }
 
-fn sqlite(parent: &Path, iterations: usize) -> Result<Value> {
+fn sqlite(parent: &Path, iterations: usize, preload: usize) -> Result<Value> {
     let root = tempfile::tempdir_in(parent)?;
     let path = root.path().join("sqlite.db");
-    let connection = Connection::open(&path)?;
+    let mut connection = Connection::open(&path)?;
     let mode: String = connection.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     let synchronous: i64 = connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
@@ -122,6 +183,20 @@ fn sqlite(parent: &Path, iterations: usize) -> Result<Value> {
     if !index_plan.contains("USING INDEX docs_email") {
         return Err("SQLite did not choose the email index".into());
     }
+    let prepare_start = Instant::now();
+    for start in (0..preload).step_by(32) {
+        let transaction = connection.transaction()?;
+        {
+            let mut insert =
+                transaction.prepare_cached("INSERT INTO docs(id,body) VALUES(?1,?2)")?;
+            for number in start..(start + 32).min(preload) {
+                let (id, document) = base_document(number);
+                insert.execute(params![id, document.to_string()])?;
+            }
+        }
+        transaction.commit()?;
+    }
+    let prepare_us = prepare_start.elapsed().as_micros();
     let mut times = BTreeMap::new();
     let mut measured = 0_u128;
     for sequence in 0..iterations + WARMUP {
@@ -172,27 +247,45 @@ fn sqlite(parent: &Path, iterations: usize) -> Result<Value> {
             measured += start.elapsed().as_nanos();
         }
     }
+    let database_bytes = std::fs::metadata(&path)?.len();
+    let wal_bytes = std::fs::metadata(path.with_extension("db-wal")).map_or(0, |meta| meta.len());
     drop(connection);
     let reopened = Connection::open(&path)?;
     let count: i64 = reopened.query_row("SELECT count(*) FROM docs", [], |row| row.get(0))?;
     let integrity: String = reopened.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-    if count != 0 || integrity != "ok" {
+    if count != preload as i64 || integrity != "ok" {
         return Err("SQLite recovery verification failed".into());
+    }
+    {
+        let mut statement = reopened.prepare("SELECT id,body FROM docs ORDER BY id")?;
+        let mut rows = statement.query([])?;
+        for number in 0..preload {
+            let row = rows.next()?.ok_or("SQLite baseline row missing")?;
+            let id: String = row.get(0)?;
+            let value: String = row.get(1)?;
+            let (expected_id, expected_value) = base_document(number);
+            if id != expected_id || serde_json::from_str::<Value>(&value)? != expected_value {
+                return Err("SQLite recovered baseline mismatch".into());
+            }
+        }
+        if rows.next()?.is_some() {
+            return Err("unexpected SQLite baseline row".into());
+        }
     }
     let result = times
         .iter()
         .map(|(name, values)| ((*name).to_owned(), samples(values)))
         .collect::<BTreeMap<_, _>>();
     Ok(
-        json!({"engine":"sqlite-json","version":rusqlite::version(),"query_plan":index_plan,"cycles":iterations,"warmup_cycles":WARMUP,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"WAL synchronous=FULL, autocommit","transport":"in-process Rust"}),
+        json!({"engine":"sqlite-json","version":rusqlite::version(),"query_plan":index_plan,"cycles":iterations,"warmup_cycles":WARMUP,"preloaded_documents":preload,"prepare_us":prepare_us,"peak_rss_kib":peak_rss_kib(),"database_bytes":database_bytes,"wal_bytes":wal_bytes,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"WAL synchronous=FULL, autocommit","transport":"in-process Rust"}),
     )
 }
 
 fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let [engine, parent, iterations] = args.as_slice() else {
+    let [engine, parent, iterations, rest @ ..] = args.as_slice() else {
         return Err(
-            "usage: document_bench <prototype|sqlite> <existing-directory> <cycles>".into(),
+            "usage: document_bench <prototype|sqlite> <existing-directory> <cycles> [preloaded-documents]".into(),
         );
     };
     let parent = Path::new(parent);
@@ -203,9 +296,20 @@ fn main() -> Result<()> {
     if iterations == 0 || iterations > 100_000 {
         return Err("cycles must be 1..=100000".into());
     }
+    if rest.len() > 1 {
+        return Err("too many benchmark arguments".into());
+    }
+    let preload = rest
+        .first()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(0);
+    if preload > 5_000 {
+        return Err("preloaded documents must be at most 5000".into());
+    }
     let result = match engine.as_str() {
-        "prototype" => prototype(parent, iterations)?,
-        "sqlite" => sqlite(parent, iterations)?,
+        "prototype" => prototype(parent, iterations, preload)?,
+        "sqlite" => sqlite(parent, iterations, preload)?,
         _ => return Err("unknown engine".into()),
     };
     println!("{}", serde_json::to_string(&result)?);
