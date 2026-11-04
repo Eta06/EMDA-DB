@@ -184,13 +184,30 @@ impl RecoveredCheckpointView {
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
         }
+        let mut result = Vec::new();
+        let mut bytes = 0_usize;
+        self.visit_entries(after, before, |key, location| {
+            if !push_entry(&self.base, &mut result, &mut bytes, limit, key, location)? {
+                return Ok(ControlFlow::Break(()));
+            }
+            Ok(ControlFlow::Continue(()))
+        })?;
+        Ok(result)
+    }
+
+    // Merge verified locations without loading values or materializing the
+    // complete base index. Callers validate public scan bounds beforehand.
+    pub(crate) fn visit_entries(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
+    ) -> io::Result<()> {
         let bounds = (
             after.map_or(Unbounded, Excluded),
             before.map_or(Unbounded, Excluded),
         );
         let mut updates = self.overlay.range::<[u8], _>(bounds).peekable();
-        let mut result = Vec::new();
-        let mut bytes = 0_usize;
         let mut stopped = false;
         self.base
             .visit_entries(after, before, |base_key, base_location| {
@@ -200,8 +217,7 @@ impl RecoveredCheckpointView {
                 {
                     let (key, location) = updates.next().expect("peeked overlay entry");
                     if let Some(location) = location {
-                        if !push_entry(&self.base, &mut result, &mut bytes, limit, key, *location)?
-                        {
+                        if visit(key, *location)?.is_break() {
                             stopped = true;
                             return Ok(ControlFlow::Break(()));
                         }
@@ -221,14 +237,7 @@ impl RecoveredCheckpointView {
                     Some(base_location)
                 };
                 if let Some(location) = chosen {
-                    if !push_entry(
-                        &self.base,
-                        &mut result,
-                        &mut bytes,
-                        limit,
-                        base_key,
-                        location,
-                    )? {
+                    if visit(base_key, location)?.is_break() {
                         stopped = true;
                         return Ok(ControlFlow::Break(()));
                     }
@@ -238,13 +247,13 @@ impl RecoveredCheckpointView {
         if !stopped {
             for (key, location) in updates {
                 if let Some(location) = location {
-                    if !push_entry(&self.base, &mut result, &mut bytes, limit, key, *location)? {
+                    if visit(key, *location)?.is_break() {
                         break;
                     }
                 }
             }
         }
-        Ok(result)
+        Ok(())
     }
 }
 

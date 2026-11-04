@@ -71,6 +71,8 @@ pub struct CheckpointView {
     blocks: Vec<Block>,
     prefix: u64,
     keys: u64,
+    peak: usize,
+    trusted_digest: [u8; 32],
     has_tail: bool,
     pub(crate) witnessed_boundary: u64,
     _lock_file: File,
@@ -107,7 +109,7 @@ impl CheckpointView {
         let mut blocks = Vec::new();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;
-        let (prefix, _) = checkpoint::visit_file(
+        let (prefix, peak) = checkpoint::visit_file(
             &checkpoint,
             &log,
             boundary,
@@ -158,6 +160,8 @@ impl CheckpointView {
             blocks,
             prefix,
             keys,
+            peak,
+            trusted_digest: *trusted_digest,
             has_tail,
             witnessed_boundary: boundary,
             _lock_file: lock_file,
@@ -179,6 +183,31 @@ impl CheckpointView {
     /// Byte boundary covered by this checkpoint in the source log.
     pub fn log_boundary(&self) -> u64 {
         self.prefix
+    }
+
+    pub(crate) fn historical_peak(&self) -> usize {
+        self.peak
+    }
+
+    // Revalidate the original trusted checkpoint and its covered log bytes
+    // before deriving another checkpoint from this long-lived view.
+    pub(crate) fn verify_for_rollover(&self) -> io::Result<()> {
+        let mut count = 0_u64;
+        let (prefix, peak) = checkpoint::visit_file(
+            &self.checkpoint,
+            &self.log,
+            self.witnessed_boundary,
+            None,
+            &self.trusted_digest,
+            |_, _, _, _, _| {
+                count += 1;
+                Ok(())
+            },
+        )?;
+        if prefix != self.prefix || peak != self.peak || count != self.keys {
+            return Err(record::invalid_data("checkpoint changed since opening"));
+        }
+        Ok(())
     }
     /// Whether the log contained bytes beyond the checkpoint at open time.
     /// Those bytes may include committed or unacknowledged records and are not read by this view.
@@ -230,6 +259,12 @@ impl CheckpointView {
     /// Reads one key from the historical checkpoint.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
+        self.location(key)?
+            .map(|location| self.log.read(location))
+            .transpose()
+    }
+
+    pub(crate) fn location(&self, key: &[u8]) -> io::Result<Option<ValueLocation>> {
         let Some(position) = self.preceding_block(key)? else {
             return Ok(None);
         };
@@ -237,7 +272,7 @@ impl CheckpointView {
         let mut cursor = BlockCursor::new(&bytes, self.prefix);
         while let Some((candidate, location)) = cursor.next()? {
             match candidate.cmp(key) {
-                std::cmp::Ordering::Equal => return self.log.read(location).map(Some),
+                std::cmp::Ordering::Equal => return Ok(Some(location)),
                 std::cmp::Ordering::Greater => return Ok(None),
                 std::cmp::Ordering::Less => {}
             }

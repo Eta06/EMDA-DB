@@ -8,9 +8,10 @@ use crate::recovered_view::{
     MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,
     RecoveredCheckpointView,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::path::Path;
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -27,8 +28,9 @@ struct State {
 /// tombstones; opening still verifies the complete covered log prefix. Limits
 /// are not total process-memory quotas. This type excludes other cooperating
 /// stores/views, has no transactions or snapshots, and does not automatically
-/// checkpoint, compact or reclaim space. If a limit fills, create a fresh
-/// checkpoint using the ordinary store before reopening this type. A failed
+/// checkpoint, compact or reclaim space. If a limit fills, explicitly create
+/// a fresh checkpoint and reopen this type with its independently trusted
+/// digest. A failed
 /// append/sync has an unknown outcome and poisons this instance until reopened.
 pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
@@ -138,6 +140,138 @@ impl CheckpointStore {
     /// Current byte length of the witnessed suffix since the checkpoint.
     pub fn tail_bytes(&self) -> io::Result<u64> {
         Ok(self.read()?.view.tail_bytes())
+    }
+
+    /// Creates a verified checkpoint by streaming the on-disk index and the
+    /// bounded suffix overlay while mutations are paused. The independently
+    /// trusted digest must be retained separately. The current instance keeps
+    /// using its original checkpoint; close it and reopen with the new one to
+    /// clear the overlay. A publication sync error has an uncertain outcome.
+    pub fn checkpoint_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
+        self.checkpoint_to_with_sync(destination.as_ref(), |parent| {
+            std::fs::File::open(parent)?.sync_all()
+        })
+    }
+
+    fn checkpoint_to_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        let state = self.write()?;
+        let (count, peak) = self.verify_for_checkpoint(&state)?;
+        crate::checkpoint::create_streaming_with_sync(
+            &self.log,
+            count,
+            peak,
+            destination,
+            |emit| {
+                state.view.visit_entries(None, None, |key, location| {
+                    emit(key, location)?;
+                    Ok(std::ops::ControlFlow::Continue(()))
+                })
+            },
+            sync_parent,
+        )
+    }
+
+    // Revalidate the separately trusted base and replay the entire bounded
+    // suffix, checking both the live overlay and the historical key peak.
+    fn verify_for_checkpoint(&self, state: &State) -> io::Result<(u64, usize)> {
+        self.log.verify_witness()?;
+        let view = &state.view;
+        view.base.verify_for_rollover()?;
+        let boundary = self.log.len()?;
+        if boundary.checked_sub(view.base.log_boundary()) != Some(view.tail_bytes) {
+            return Err(record::invalid_data("checkpoint suffix length changed"));
+        }
+        let mut current = usize::try_from(view.base.len())
+            .map_err(|_| record::invalid_data("checkpoint key count does not fit this platform"))?;
+        let mut peak = view.base.historical_peak();
+        let touched_bytes = view.overlay.keys().try_fold(0_usize, |sum, key| {
+            sum.checked_add(key.len())
+                .ok_or_else(|| record::invalid_data("checkpoint suffix key byte count overflow"))
+        })?;
+        if view.tail_bytes > self.max_tail_bytes
+            || view.overlay.len() > self.max_tail_keys
+            || touched_bytes > self.max_tail_key_bytes
+            || touched_bytes != state.overlay_key_bytes
+        {
+            return Err(record::invalid_data(
+                "checkpoint overlay exceeds its limits",
+            ));
+        }
+        // Resolve initial membership by merging the sorted touched keys with
+        // checkpoint blocks, instead of rereading an index block per key.
+        // The nested option distinguishes an unseen key from a tombstone.
+        let mut probes = view
+            .overlay
+            .keys()
+            .cloned()
+            .map(|key| (key, (false, None)))
+            .collect::<BTreeMap<_, (bool, Option<Option<crate::log::ValueLocation>>)>>();
+        if let Some(first) = probes.keys().next().cloned() {
+            probes.get_mut(&first).expect("first probe exists").0 =
+                view.base.location(&first)?.is_some();
+            let mut pending = probes
+                .range_mut::<[u8], _>((Excluded(first.as_slice()), Unbounded))
+                .peekable();
+            if pending.peek().is_some() {
+                view.base.visit_entries(Some(&first), None, |base_key, _| {
+                    while pending
+                        .peek()
+                        .is_some_and(|(key, _)| key.as_slice() < base_key)
+                    {
+                        pending.next();
+                    }
+                    if pending
+                        .peek()
+                        .is_some_and(|(key, _)| key.as_slice() == base_key)
+                    {
+                        pending.next().expect("peeked probe").1.0 = true;
+                    }
+                    if pending.peek().is_none() {
+                        Ok(std::ops::ControlFlow::Break(()))
+                    } else {
+                        Ok(std::ops::ControlFlow::Continue(()))
+                    }
+                })?;
+            }
+        }
+        self.log
+            .visit_records(view.base.log_boundary(), Some(boundary), |key, location| {
+                let probe = probes
+                    .get_mut(&key)
+                    .ok_or_else(|| record::invalid_data("verified suffix has an unexpected key"))?;
+                match (probe.0, location.is_some()) {
+                    (false, true) => {
+                        current = current.checked_add(1).ok_or_else(|| {
+                            record::invalid_data("checkpoint live key count overflow")
+                        })?
+                    }
+                    (true, false) => {
+                        current = current.checked_sub(1).ok_or_else(|| {
+                            record::invalid_data("checkpoint live key count underflow")
+                        })?
+                    }
+                    _ => {}
+                }
+                peak = peak.max(current);
+                probe.0 = location.is_some();
+                probe.1 = Some(location);
+                Ok(())
+            })?;
+        if view
+            .overlay
+            .iter()
+            .any(|(key, location)| probes.get(key).and_then(|probe| probe.1) != Some(*location))
+        {
+            return Err(record::invalid_data(
+                "checkpoint overlay does not match verified suffix",
+            ));
+        }
+        self.log.verify_witness()?;
+        Ok((current as u64, peak))
     }
 
     /// Replaces a key and synchronizes the mutation before returning.

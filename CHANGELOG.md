@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Explicit checkpoint rollover for the checkpoint-backed writer, streaming its verified base and bounded suffix into a new checkpoint while retaining the historical key-count peak. Reopening with the separately trusted digest clears the overlay; rollover is not automatic and still hashes the full log prefix.
 - An experimental writable checkpoint-backed store with a bounded suffix overlay, serialized synchronized key operations, conditional updates, increments and atomic blind batches. It requires manual checkpoint rollover and does not yet provide transactions, snapshots or total-memory limits.
 - A read-only recovered checkpoint view that validates and replays a bounded witnessed suffix into an in-memory key overlay, with ordered scans and fail-closed handling of unacknowledged tails.
 - Explicit release of privately owned compaction staging locks before reopening or publication, preventing an inherited descriptor from delaying the handoff.

@@ -60,6 +60,155 @@ pub(crate) fn create_with_sync(
     create_with_hooks(log, index, destination, sync_parent, || Ok(()))
 }
 
+/// Writes and verifies a checkpoint from a previously validated ordered
+/// index stream. The caller must hold the writer barrier and verify that the
+/// stream matches a trusted base plus the complete witnessed suffix first.
+pub(crate) fn create_streaming_with_sync(
+    log: &Log,
+    count: u64,
+    peak: usize,
+    destination: &Path,
+    entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
+    create_streaming_with_hooks(log, count, peak, destination, entries, sync_parent, || {
+        Ok(())
+    })
+}
+
+pub(crate) fn create_streaming_with_hooks(
+    log: &Log,
+    count: u64,
+    peak: usize,
+    destination: &Path,
+    mut entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    before_publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
+    if log.is_legacy() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "checkpoint requires a witnessed store",
+        ));
+    }
+    let peak = u64::try_from(peak).map_err(|_| io::Error::other("index peak overflow"))?;
+    if peak < count {
+        return Err(record::invalid_data(
+            "checkpoint peak is below its key count",
+        ));
+    }
+    log.verify_witness()?;
+    let prefix = log.len()?;
+    let log_digest = hash_log(log, prefix)?;
+    let parent = backup::parent_directory(destination)?;
+    let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
+    let checkpoint_digest: [u8; 32];
+    let entries_digest: [u8; 32];
+    {
+        let mut out = BufWriter::new(&mut temp);
+        let mut digest = Sha256::new();
+        let mut entry_hash = Sha256::new();
+        write_checked(&mut out, &mut digest, MAGIC)?;
+        write_checked(&mut out, &mut digest, &prefix.to_le_bytes())?;
+        write_checked(&mut out, &mut digest, &count.to_le_bytes())?;
+        write_checked(&mut out, &mut digest, &peak.to_le_bytes())?;
+        write_checked(&mut out, &mut digest, &RECORD_CODEC_VERSION.to_le_bytes())?;
+        write_checked(&mut out, &mut digest, &log_digest)?;
+        let mut previous = Vec::new();
+        let mut seen = 0_u64;
+        let mut blocks = 0_usize;
+        let mut block_bytes = 0_usize;
+        entries(&mut |key, location| {
+            record::validate_key(key)?;
+            if !previous.is_empty() && previous.as_slice() >= key {
+                return Err(record::invalid_data(
+                    "checkpoint stream is not strictly ordered",
+                ));
+            }
+            previous.clear();
+            previous.extend_from_slice(key);
+            let entry_bytes = key.len() + ENTRY_FIXED_BYTES as usize;
+            if block_bytes != 0
+                && block_bytes + entry_bytes
+                    > crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCK_BYTES
+            {
+                block_bytes = 0;
+            }
+            if block_bytes == 0 {
+                blocks += 1;
+                if blocks > crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCKS {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "checkpoint has too many view blocks",
+                    ));
+                }
+            }
+            block_bytes += entry_bytes;
+            let key_len = u16::try_from(key.len())
+                .map_err(|_| io::Error::other("index key too long"))?
+                .to_le_bytes();
+            let value_len = u32::try_from(location.length)
+                .map_err(|_| io::Error::other("index value too large"))?;
+            let mut tail = [0_u8; 16];
+            tail[..8].copy_from_slice(&location.offset.to_le_bytes());
+            tail[8..12].copy_from_slice(&value_len.to_le_bytes());
+            tail[12..].copy_from_slice(&location.checksum.to_le_bytes());
+            for part in [&key_len[..], key, &tail[..]] {
+                write_checked(&mut out, &mut digest, part)?;
+                entry_hash.update(part);
+            }
+            seen = seen
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("index count overflow"))?;
+            Ok(())
+        })?;
+        if seen != count {
+            return Err(record::invalid_data("checkpoint stream count mismatch"));
+        }
+        entries_digest = entry_hash.finalize().into();
+        checkpoint_digest = digest.finalize().into();
+        out.write_all(&checkpoint_digest)?;
+        out.flush()?;
+    }
+    temp.sync_all()?;
+    let mut verified_entries = Sha256::new();
+    let mut verified_count = 0_u64;
+    let (verified_prefix, verified_peak) = visit_file(
+        &temp,
+        log,
+        prefix,
+        None,
+        &checkpoint_digest,
+        |_, key_len, key, tail, _| {
+            verified_entries.update(key_len);
+            verified_entries.update(key);
+            verified_entries.update(tail);
+            verified_count += 1;
+            Ok(())
+        },
+    )?;
+    let verified_digest: [u8; 32] = verified_entries.finalize().into();
+    if verified_prefix != prefix
+        || verified_peak as u64 != peak
+        || verified_count != count
+        || verified_digest != entries_digest
+    {
+        return Err(record::invalid_data(
+            "streamed checkpoint verification mismatch",
+        ));
+    }
+    log.verify_witness()?;
+    before_publish()?;
+    staging.publish(destination)?;
+    sync_parent(parent).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("checkpoint may exist but directory synchronization failed: {error}"),
+        )
+    })?;
+    Ok(checkpoint_digest)
+}
+
 fn create_with_hooks(
     log: &Log,
     index: &BTreeMap<Vec<u8>, ValueLocation>,
@@ -326,6 +475,45 @@ mod tests {
             || if stage == "staged" { pause() } else { Ok(()) },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn streamed_writer_rejects_bad_counts_order_and_locations_before_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source");
+        let store = Store::open(&path).unwrap();
+        store.put(b"a", b"one").unwrap();
+        store.put(b"b", b"two").unwrap();
+        drop(store);
+        let (log, index) = Log::open(&path, false).unwrap();
+        for mode in ["count", "order", "location"] {
+            let destination = directory.path().join(mode);
+            let result = create_streaming_with_sync(
+                &log,
+                2,
+                2,
+                &destination,
+                |emit| {
+                    match mode {
+                        "count" => emit(b"a", index[b"a".as_slice()])?,
+                        "order" => {
+                            emit(b"b", index[b"b".as_slice()])?;
+                            emit(b"a", index[b"a".as_slice()])?;
+                        }
+                        _ => {
+                            let mut invalid = index[b"a".as_slice()];
+                            invalid.offset = log.len()? + 1;
+                            emit(b"a", invalid)?;
+                            emit(b"b", index[b"b".as_slice()])?;
+                        }
+                    }
+                    Ok(())
+                },
+                |parent| File::open(parent)?.sync_all(),
+            );
+            assert!(result.is_err(), "{mode} stream was accepted");
+            assert!(!destination.exists());
+        }
     }
 
     #[test]

@@ -40,7 +40,7 @@ fuzz_target!(|data: &[u8]| {
     let max_key_bytes = usize::from(data[2] % 25);
     let dir = tempfile::tempdir().expect("temporary directory");
     let path = dir.path().join("store");
-    let checkpoint = dir.path().join("checkpoint");
+    let mut checkpoint = dir.path().join("checkpoint");
     let ordinary = Store::open(&path).expect("create store");
     let mut model = BTreeMap::new();
     for index in 0..3 {
@@ -48,7 +48,7 @@ fuzz_target!(|data: &[u8]| {
         ordinary.put(&key, b"base").expect("base write");
         model.insert(key, b"base".to_vec());
     }
-    let digest = ordinary.checkpoint_to(&checkpoint).expect("checkpoint");
+    let mut digest = ordinary.checkpoint_to(&checkpoint).expect("checkpoint");
     drop(ordinary);
     let mut store = CheckpointStore::open_with_limits(
         &path,
@@ -61,11 +61,13 @@ fuzz_target!(|data: &[u8]| {
     .expect("open");
     let mut touched = BTreeSet::<Vec<u8>>::new();
     let mut tail = 0_u64;
+    let mut peak = model.len();
+    let mut generation = 0_usize;
     for bytes in data[3..].chunks_exact(4) {
         let first = key(bytes[1]);
         let second = key(bytes[2]);
         let value = vec![bytes[3]; usize::from(bytes[3] % 5)];
-        let kind = bytes[0] % 5;
+        let kind = bytes[0] % 6;
         if kind == 4 {
             check(&store, &model, &touched, tail);
             drop(store);
@@ -78,6 +80,56 @@ fuzz_target!(|data: &[u8]| {
                 max_key_bytes,
             )
             .expect("reopen");
+            continue;
+        }
+        if kind == 5 {
+            check(&store, &model, &touched, tail);
+            generation += 1;
+            let next = dir.path().join(format!("checkpoint-{generation}"));
+            let next_digest = store.checkpoint_to(&next).expect("stream checkpoint");
+            drop(store);
+            if peak > 0 {
+                assert!(
+                    Store::open_with_checkpoint_and_limits(
+                        &path,
+                        &next,
+                        &next_digest,
+                        None,
+                        Some(peak - 1)
+                    )
+                    .is_err()
+                );
+            }
+            let ordinary = Store::open_with_checkpoint_and_limits(
+                &path,
+                &next,
+                &next_digest,
+                None,
+                Some(peak),
+            )
+            .expect("checkpoint and historical peak");
+            let expected = model
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ordinary.scan(None, None, 100).expect("checkpoint scan"),
+                expected
+            );
+            drop(ordinary);
+            checkpoint = next;
+            digest = next_digest;
+            touched.clear();
+            tail = 0;
+            store = CheckpointStore::open_with_limits(
+                &path,
+                &checkpoint,
+                &digest,
+                max_tail,
+                max_keys,
+                max_key_bytes,
+            )
+            .expect("reopen streamed checkpoint");
             continue;
         }
         let mut next_touched = touched.clone();
@@ -130,6 +182,7 @@ fuzz_target!(|data: &[u8]| {
                 }
                 2 => {
                     model.insert(first, value);
+                    peak = peak.max(model.len());
                     model.remove(&second);
                 }
                 _ => {
@@ -137,6 +190,7 @@ fuzz_target!(|data: &[u8]| {
                     model.insert(second, value);
                 }
             }
+            peak = peak.max(model.len());
         }
         check(&store, &model, &touched, tail);
     }
