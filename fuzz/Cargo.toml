@@ -186,3 +186,9 @@ path = "fuzz_targets/document_array_queries.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "document_range_planner"
+path = "fuzz_targets/document_range_planner.rs"
+test = false
+doc = false
+bench = false

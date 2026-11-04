@@ -1,23 +1,26 @@
-//! Conservative equality-index selection for bounded document queries.
+//! Conservative single-field index selection for bounded document queries.
 use super::{
-    filter::{self, DocumentFilter, DocumentQuery, DocumentQueryResult},
+    filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
     index::{IndexDefinition, IndexValue},
     key,
-    query::IndexQuery,
+    query::{IndexBound, IndexQuery},
     transaction::DocumentTransaction,
 };
+use std::cmp::Ordering;
 use std::io;
 
 /// The access path selected for a planned document query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DocumentQueryAccess {
-    /// No eligible equality index was found; scan the complete collection.
+    /// No eligible index was found; scan the complete collection.
     CollectionScan,
     /// Probe a non-partial unique single-field index using exact scalar equality.
     UniqueEqualityIndex { index: String },
     /// Scan a non-partial, nonunique single-field index for exact scalar equality.
     EqualityIndex { index: String },
+    /// Scan a non-partial single-field index over a required scalar range.
+    RangeIndex { index: String },
 }
 
 /// Filtered query output, including the chosen access path and actual work.
@@ -29,8 +32,8 @@ pub struct PlannedDocumentQueryResult {
     pub access: DocumentQueryAccess,
 }
 
-// Only Equal nodes that are required by the entire filter are eligible. Never
-// descend into Or or Not: their children need not match every result.
+// Only predicates required by the entire filter are eligible. Never descend
+// into Or or Not: their children need not match every result.
 fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexValue> {
     let mut pending = vec![filter];
     while let Some(filter) = pending.pop() {
@@ -47,29 +50,121 @@ fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexVa
     None
 }
 
+#[derive(Clone)]
+enum Selection {
+    Equality(IndexValue),
+    Range {
+        lower: Option<IndexBound>,
+        upper: Option<IndexBound>,
+    },
+}
+
+// Keep the tighter bound in the index's actual encoded ordering. Equal bounds
+// are exclusive if any corresponding predicate is exclusive.
+fn tighten(
+    current: &mut Option<(IndexBound, Vec<u8>)>,
+    value: &IndexValue,
+    inclusive: bool,
+    lower: bool,
+) -> io::Result<()> {
+    let mut encoded = Vec::new();
+    value.encode(&mut encoded)?;
+    if let Some((bound, old)) = current {
+        match encoded.cmp(old) {
+            Ordering::Equal => bound.inclusive &= inclusive,
+            Ordering::Greater if lower => {
+                *current = Some((
+                    IndexBound {
+                        value: value.clone(),
+                        inclusive,
+                    },
+                    encoded,
+                ));
+            }
+            Ordering::Less if !lower => {
+                *current = Some((
+                    IndexBound {
+                        value: value.clone(),
+                        inclusive,
+                    },
+                    encoded,
+                ));
+            }
+            _ => {}
+        }
+    } else {
+        *current = Some((
+            IndexBound {
+                value: value.clone(),
+                inclusive,
+            },
+            encoded,
+        ));
+    }
+    Ok(())
+}
+
+fn required_range(filter: &DocumentFilter, path: &[String]) -> io::Result<Option<Selection>> {
+    let mut lower = None;
+    let mut upper = None;
+    let mut pending = vec![filter];
+    while let Some(filter) = pending.pop() {
+        match filter {
+            DocumentFilter::Compare {
+                path: field,
+                comparison,
+                value,
+            } if field == path => match comparison {
+                Comparison::Greater => tighten(&mut lower, value, false, true)?,
+                Comparison::GreaterOrEqual => tighten(&mut lower, value, true, true)?,
+                Comparison::Less => tighten(&mut upper, value, false, false)?,
+                Comparison::LessOrEqual => tighten(&mut upper, value, true, false)?,
+            },
+            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
+            _ => {}
+        }
+    }
+    if lower.is_none() && upper.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Selection::Range {
+        lower: lower.map(|(bound, _)| bound),
+        upper: upper.map(|(bound, _)| bound),
+    }))
+}
+
 fn choose_index<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
-) -> Option<(&'a IndexDefinition, IndexValue)> {
-    // A unique probe has at most one valid result. Prefer it regardless of
-    // declaration order, then consider a nonunique single-field index.
-    indexes
+) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
+    let eligible = |index: &&IndexDefinition| index.partial.is_none() && index.fields.len() == 1;
+    // Exact equality is at least as restrictive as a range on the same field.
+    // Prefer unique probes regardless of declaration order, then nonunique.
+    if let Some(selected) = indexes
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
+        .filter(eligible)
         .find_map(|index| {
-            if index.partial.is_some() || index.fields.len() != 1 {
-                return None;
-            }
-            required_equality(filter, &index.fields[0]).map(|value| (index, value))
+            required_equality(filter, &index.fields[0])
+                .map(|value| (index, Selection::Equality(value)))
         })
+    {
+        return Ok(Some(selected));
+    }
+    for index in indexes.iter().filter(eligible) {
+        if let Some(range) = required_range(filter, &index.fields[0])? {
+            return Ok(Some((index, range)));
+        }
+    }
+    Ok(None)
 }
 
 impl DocumentTransaction<'_, '_> {
     /// Executes a bounded filtered query using a qualifying single-field
-    /// equality index, or falls back to the complete collection scan. This opt-in path
-    /// assumes declared indexes are maintained; corruption that removes index
-    /// entries can cause omissions. Neither path is a cost-based optimizer.
+    /// equality or range index, or falls back to the complete collection scan.
+    /// This opt-in path assumes declared indexes are maintained; corruption
+    /// that removes index entries can cause omissions. It is not cost-based.
     pub fn query_planned(
         &self,
         collection: &str,
@@ -77,20 +172,25 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<PlannedDocumentQueryResult> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let Some((index, value)) = choose_index(&query.filter, &metadata.indexes) else {
+        let Some((index, selection)) = choose_index(&query.filter, &metadata.indexes)? else {
             return Ok(PlannedDocumentQueryResult {
                 result: self.query(collection, query)?,
                 access: DocumentQueryAccess::CollectionScan,
             });
+        };
+        let unique_equality = index.unique && matches!(selection, Selection::Equality(_));
+        let (equal, lower, upper) = match &selection {
+            Selection::Equality(value) => (vec![value.clone()], None, None),
+            Selection::Range { lower, upper } => (Vec::new(), lower.clone(), upper.clone()),
         };
         let mut rows = Vec::new();
         let mut bytes = 0_usize;
         let mut after = None;
         loop {
             // Probe one entry beyond the candidate limit, never silently
-            // returning a prefix. Unique indexes probe two to catch a corrupt
-            // duplicate rather than accepting it as one result.
-            let limit = if index.unique {
+            // returning a prefix. Unique equality probes two to detect a
+            // corrupt duplicate rather than accepting it as one result.
+            let limit = if unique_equality {
                 2
             } else {
                 (query.max_scanned - rows.len() + 1).min(256)
@@ -99,15 +199,16 @@ impl DocumentTransaction<'_, '_> {
                 collection,
                 &index.name,
                 &IndexQuery {
-                    equal: vec![value.clone()],
+                    equal: equal.clone(),
+                    lower: lower.clone(),
+                    upper: upper.clone(),
                     after,
                     limit,
-                    ..Default::default()
                 },
                 &metadata,
             )?;
             let page = indexed.page;
-            if index.unique && page.documents.len() > 1 {
+            if unique_equality && page.documents.len() > 1 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "unique index contains multiple matches",
@@ -129,7 +230,7 @@ impl DocumentTransaction<'_, '_> {
                     .into_iter()
                     .map(|entry| (entry.id, entry.document)),
             );
-            if index.unique {
+            if unique_equality {
                 break;
             }
             after = Some(page.next.ok_or_else(|| {
@@ -139,13 +240,20 @@ impl DocumentTransaction<'_, '_> {
                 )
             })?);
         }
-        let access = if index.unique {
-            DocumentQueryAccess::UniqueEqualityIndex {
+        let access = match selection {
+            Selection::Equality(_) if index.unique => DocumentQueryAccess::UniqueEqualityIndex {
                 index: index.name.clone(),
-            }
-        } else {
-            DocumentQueryAccess::EqualityIndex {
+            },
+            Selection::Equality(_) => DocumentQueryAccess::EqualityIndex {
                 index: index.name.clone(),
+            },
+            Selection::Range { .. } => {
+                // Index ranges are ordered by value then ID; collection scans
+                // use ID order. Restore ID order before filtering and paging.
+                rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+                DocumentQueryAccess::RangeIndex {
+                    index: index.name.clone(),
+                }
             }
         };
         Ok(PlannedDocumentQueryResult {

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan bounded single-field scalar range queries with intersected bounds and stable ID-order results.
+
 - Record and retain a rejected scan-exhaustion optimization after mixed before-and-after measurements.
 
 - Plan nonunique single-field equality queries over complete index ranges, with candidate and byte budgets across pages.
