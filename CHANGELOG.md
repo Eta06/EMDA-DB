@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Capture bounded, password-redacted diagnostics when a disposable benchmark server exits or fails to become ready.
+
 - Record repeated compound-range comparisons with SQLite, PostgreSQL and MongoDB, and add a disposable cross-engine CI smoke workflow.
 
 - Plan compound equality-prefix ranges only when required predicates also prove all later indexed fields are present.

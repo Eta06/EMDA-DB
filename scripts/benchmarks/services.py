@@ -21,6 +21,16 @@ def docker(*args, environment=None, timeout=120):
                                    env=env, text=True, stderr=subprocess.PIPE, timeout=timeout).strip()
 
 
+def docker_logs(name, timeout=10):
+    env = os.environ.copy()
+    for key in ("DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        env.pop(key, None)
+    completed = subprocess.run(["docker", "--host=unix:///var/run/docker.sock", "logs", "--tail", "30", name],
+                               env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=timeout, check=False)
+    return completed.stdout[-8192:]
+
+
 class LocalService:
     def __init__(self, backend, parent, cpus="1-3"):
         self.backend = backend
@@ -66,6 +76,24 @@ class LocalService:
             self.close()
             raise
 
+    def startup_diagnostics(self, state):
+        details = {key: state.get(key) for key in ("Status", "Running", "ExitCode", "Error")}
+        try:
+            logs = docker_logs(self.name)
+        except (OSError, subprocess.SubprocessError) as error:
+            logs = f"logs unavailable: {type(error).__name__}: {error}"
+        return self.redact(f"state={details}; recent logs={logs}")
+
+    def redact(self, message):
+        secret = self.env.get("EMDA_BENCH_PG_PASSWORD")
+        return message.replace(secret, "<redacted>") if secret else message
+
+    def container_state(self):
+        try:
+            return json.loads(docker("inspect", self.name))[0].get("State", {})
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            return {}
+
     def start(self):
         docker("start", self.name)
         if self.backend != "foundationdb":
@@ -81,8 +109,13 @@ class LocalService:
                 return
             except Exception as error:
                 last_error = error
+                state = self.container_state()
+                if state.get("Running") is False:
+                    raise RuntimeError(f"{self.backend} exited before ready: {self.startup_diagnostics(state)}") from None
                 time.sleep(0.25)
-        raise RuntimeError(f"{self.backend} did not become ready: {type(last_error).__name__}: {last_error}")
+        state = self.container_state()
+        message = f"{self.backend} did not become ready: {type(last_error).__name__}: {last_error}; {self.startup_diagnostics(state)}"
+        raise RuntimeError(self.redact(message)) from None
 
     def ready(self):
         if self.backend == "postgres":
