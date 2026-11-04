@@ -1,0 +1,895 @@
+{
+  "base_revision": "7c84244",
+  "binary_sha256": "fa51a4d09a167b037c4932b4178906f496f598d1cefdf035bded8bac55174de0",
+  "started_utc": "2026-11-04T21:12:03.411548+00:00",
+  "kernel": "6.18.57",
+  "caveat": "Local process tests on a VM. Workspace overlay backing device was not independently verified; this is not physical power-loss validation or a persistent project quota. Other local tests ran concurrently.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.008832,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.005208,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.009133,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.005715,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.008058,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.005534,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.01082,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.009049,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.007447,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.004495,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.017628,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.004755,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.005347,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.004628,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.010145,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.005435,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.005666,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.004798,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.009853,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.005307,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.005655,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.004264,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.007475,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.010049,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.005031,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.004378,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.008004,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.005025,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.005362,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.004539,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.011388,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.005257,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.008596,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.005884,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.010196,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.005793,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.005361,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.005687,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.01051,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.005603,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.03112,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.017814,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.042125,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.016726,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.01838,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.01685,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.03415,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.017068,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.019528,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.016058,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.050823,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.022359,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.023048,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.018843,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.064692,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.050796,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.035605,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.046771,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.058624,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.035309,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.03227,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.022957,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.049856,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.030483,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.031618,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.011709,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.056303,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.017192,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.047528,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.010063,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.037732,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.026019,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.041622,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.032377,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.028268,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.025985,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "configurable_limits_are_atomic_with_active_reservations_on_both_backends",
+      "seconds": 0.011873,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "cancellation_releases_the_configured_budget_on_both_backends",
+      "seconds": 0.010997,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen",
+      "seconds": 0.026081,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "online_handoff_preserves_the_latest_transaction_limit",
+      "seconds": 0.012254,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.009488,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.008238,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.013662,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.017127,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.005268,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.008111,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.00705,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.021568,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.005274,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.006723,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.014422,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.016306,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.016718,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.020459,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.030733,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.015018,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.016941,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.016144,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.017279,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "binary": "online_unit_binary",
+      "seconds": 0.030438,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.007671,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.006018,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.007057,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.007741,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.006545,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.008104,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.006513,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.006503,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.00639,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.006689,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.01698,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.017697,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.013521,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.014761,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.02093,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.013491,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.01432,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.016497,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.01779,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "many_concurrent_transactions_never_oversubscribe_the_limit",
+      "binary": "multi_client_binary",
+      "seconds": 0.01379,
+      "exit_code": 0
+    }
+  ],
+  "finished_utc": "2026-11-04T21:12:04.894359+00:00",
+  "online_unit_binary_sha256": "d95b5df364eccfb5db29d92a01cfdf3c55e865f2911f1e30ecd6f092be45a919",
+  "extended_finished_utc": "2026-11-04T21:15:51.292030+00:00",
+  "multi_client_binary_sha256": "03cfad794c5fee86d2e91b7c174b76ad2ba71e3600f847c9968d72afdf7f72f8",
+  "revision": "c3b59b0996beaabe58a05a937895c676e0dc1f74",
+  "source_note": "Initial integration and online-unit stress binaries were built before the final multi-client test and managed-compaction assertions; production code was unchanged. The multi-client binary includes its final test."
+}

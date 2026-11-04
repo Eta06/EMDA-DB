@@ -1,0 +1,21 @@
+{
+  "revision": "c3b59b0996beaabe58a05a937895c676e0dc1f74",
+  "source_note": "The campaign ran before additional managed-compaction and multi-client tests were added; production statements and fuzz target were unchanged.",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "target": "transaction_budget_limit",
+  "duration_seconds": 121,
+  "executions": 26466,
+  "seed": 1727464365,
+  "initial_seeds": {
+    "checkpoint": "4f0286404edb17ac0931a15fbe9036c5c8d01fa6647a76620e7344a97eb613fb",
+    "ordinary": "e566e1e7c7cdd85d732937fdf3016bc93915739747ef3bba4e9c0bf5ec02c8ca"
+  },
+  "max_input_bytes": 96,
+  "binary_sha256": "98394f808361558134d5bf29b84ef47ba79ecdc022b2ee16f3a30a68792fe86e",
+  "ending_coverage": 2367,
+  "ending_features": 9719,
+  "ending_corpus_entries": 398,
+  "result": "completed without a finding",
+  "scope": "Generated serial limit changes, staged and direct writes, deletes, cancellations and reopenings on both backends against a byte-key model. The campaign does not model arbitrary concurrency, storage faults, physical power loss, off-host recovery or a persistent project quota."
+}
