@@ -1,0 +1,15 @@
+{
+  "date_utc": "2026-11-04",
+  "purpose": "Inspect all SQLite plan rows for the benchmark's numeric range query before loading data",
+  "sqlite_version": "3.49.1",
+  "sqlite_binding": "bundled SQLite through the repository's rusqlite dependency",
+  "schema": "CREATE TABLE docs(id TEXT PRIMARY KEY, body TEXT NOT NULL CHECK(json_valid(body))) WITHOUT ROWID; CREATE INDEX docs_number ON docs(json_extract(body,'$.number'));",
+  "parameter": 10,
+  "unforced_query": "SELECT id,body FROM docs WHERE json_extract(body,'$.number')>=?1 ORDER BY id",
+  "unforced_plan": ["SCAN docs"],
+  "forced_query": "SELECT id,body FROM docs INDEXED BY docs_number WHERE json_extract(body,'$.number')>=?1 ORDER BY id",
+  "forced_plan": ["SEARCH docs USING INDEX docs_number (<expr>>?)", "USE TEMP B-TREE FOR ORDER BY"],
+  "unforced_binary_sha256": "d0ae5b3ae0f0fed1f3a168b018fcfdedd4da1f14b6f272f9a53a405ac3258eab",
+  "forced_binary_sha256": "a99131bc344683cf92d5f28bd669108c9614a0e707e751fb7ff3dedae4934a12",
+  "limitations": ["Plans were inspected on an empty in-memory database without ANALYZE, as in the benchmark's plan check; actual choices may differ with data and statistics."]
+}
