@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- A reproducible contention harness compares concurrent two-key transactions and point reads while retaining bounded reader-latency samples.
+
 - Recorded a rotated before/after document-read comparison and repeat across growing indexed collections, including raw latency samples and VM interference.
 
 - Standalone ordinary-store document reads avoid copying the full key index while preserving conservative conflict detection, value verification, uncertain-write handling and shared active-read admission.

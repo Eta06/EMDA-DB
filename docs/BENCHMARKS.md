@@ -333,6 +333,19 @@ python3 scripts/document_scale_compare.py --directory /path/on/test/filesystem \
 
 A [before/after document-read run](DOCUMENT_POINT_READ_COMPARISON_2026_11_04.md) uses this harness to compare the original and two-point ordinary-store read paths across four collection sizes. It includes a separate repeat and raw samples; other document operations still use full snapshots.
 
+## Snapshot contention harness
+
+`examples/snapshot_contention_bench.rs` preloads an ordinary store, then runs independent conservative two-key transaction writers alongside one continuously reading client. Transactions retry `WouldBlock` conflicts; the example checks every final counter and baseline value after reopening. `scripts/snapshot_contention_compare.py` rotates independently built before/after binaries, records every writer latency, and keeps a bounded reservoir of reader latencies plus the maximum across all reads. When the reservoir fills, reader percentiles are sample estimates. The compressed output records failures, order, binary hashes and VM/cgroup noise. This is a closed-loop microbenchmark, not an offered-load test, a total-memory bound, a physical power-loss test or a general database ranking.
+
+```sh
+cargo build --release --locked --example snapshot_contention_bench
+python3 scripts/snapshot_contention_compare.py --directory /path/on/test/filesystem \
+  --before-binary /path/to/older/snapshot_contention_bench \
+  --after-binary target/release/examples/snapshot_contention_bench \
+  --output /tmp/snapshot-contention.json.gz --base-keys 9000 \
+  --writers 4 --operations 100 --rounds 5
+```
+
 ## Checkpoint snapshot memory comparison
 
 `examples/checkpoint_snapshot_bench.rs` opens a prepared store in a fresh Linux process, captures several snapshots, records creation times and process RSS, and checks sampled base and suffix values in each view. The ordinary mode loads and copies a bounded full index; the checkpoint mode loads a bounded suffix overlay and copies that overlay plus the checkpoint block directory. `scripts/checkpoint_snapshot_compare.py` prepares fixtures with `index_memory_bench`, alternates the supported modes, pins the benchmark and driver separately, and records source and binary hashes and VM/cgroup noise. Ordinary snapshots are omitted when their documented key or aggregate limits would reject the configuration.
