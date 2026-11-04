@@ -1,5 +1,5 @@
 #![no_main]
-use database_engine::{BatchOperation, CheckpointStore, Store};
+use database_engine::{BatchOperation, COMPACTED_CHECKPOINT_FILE, CheckpointStore, Store};
 use libfuzzer_sys::fuzz_target;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,7 +80,7 @@ fuzz_target!(|data: &[u8]| {
         let first = key(bytes[1]);
         let second = key(bytes[2]);
         let value = vec![bytes[3]; usize::from(bytes[3] % 5)];
-        let kind = bytes[0] % 7;
+        let kind = bytes[0] % 8;
         if kind == 4 {
             check(&store, &model, &touched, tail);
             drop(store);
@@ -156,6 +156,62 @@ fuzz_target!(|data: &[u8]| {
             touched.clear();
             tail = 0;
             check(&store, &model, &touched, tail);
+            continue;
+        }
+        if kind == 7 {
+            check(&store, &model, &touched, tail);
+            generation += 1;
+            let destination = dir.path().join(format!("compact-{generation}"));
+            let compact_digest = store
+                .compact_to(&destination)
+                .expect("compact checkpoint store");
+            let compact_checkpoint = destination.join(COMPACTED_CHECKPOINT_FILE);
+            let compact = CheckpointStore::open_with_limits(
+                &destination,
+                &compact_checkpoint,
+                &compact_digest,
+                0,
+                0,
+                0,
+            )
+            .expect("open compacted checkpoint");
+            check(&compact, &model, &BTreeSet::new(), 0);
+            drop(compact);
+            if !model.is_empty() {
+                assert!(
+                    Store::open_with_checkpoint_and_limits(
+                        &destination,
+                        &compact_checkpoint,
+                        &compact_digest,
+                        None,
+                        Some(model.len() - 1)
+                    )
+                    .is_err()
+                );
+            }
+            let ordinary = Store::open_with_checkpoint_and_limits(
+                &destination,
+                &compact_checkpoint,
+                &compact_digest,
+                None,
+                Some(model.len()),
+            )
+            .expect("open compacted store");
+            let expected = model
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ordinary.scan(None, None, 100).expect("compacted scan"),
+                expected
+            );
+            drop(ordinary);
+            assert_eq!(
+                std::fs::metadata(path.join("records.log"))
+                    .expect("log metadata")
+                    .len(),
+                total_log
+            );
             continue;
         }
         let mut next_touched = touched.clone();

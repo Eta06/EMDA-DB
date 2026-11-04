@@ -296,6 +296,17 @@ The [paired local results](../benchmarks/results/2026-11-04-streaming-restore-co
 
 All runs produced the same restored-log digest for each fixture and passed sampled value checks after reopening. The measured restore excludes that subsequent ordinary-store reopen, which builds a full index. Peak RSS excludes page cache and does not bound total memory. Both quiet checks passed; individual runs recorded up to 6.67% VM steal in the small case and 0.98% in the larger case, with no cgroup throttling or direct reclaim observed. Storage backing and host interference were not controlled. These warm-cache measurements do not establish production latency or off-host restore safety.
 
+## Checkpoint-backed compaction comparison
+
+`scripts/checkpoint_compaction_compare.py` compares the ordinary and checkpoint-backed separate-copy compactors on the same fixture. It creates a base checkpoint and a suffix that updates half of its touched keys and deletes the other half. Both outputs must have identical compacted record bytes after their unique log headers, and sampled values are checked after reopening. The checkpoint-backed operation additionally creates and verifies a checkpoint for the copy; the ordinary operation does not. Timers include copying, validation, synchronization and publication, while source opens and later sample reads are excluded. Peak process RSS excludes the OS page cache.
+
+```sh
+cargo build --release --locked --example checkpoint_compaction_bench
+python3 scripts/checkpoint_compaction_compare.py --directory /path/to/disk --output /tmp/checkpoint-compaction-results.json
+```
+
+The defaults use 10,000 and 50,000 base keys, 4,096 touched suffix keys, 128-byte keys, 64-byte values and five fresh processes per mode. The driver alternates measured order and records VM/cgroup noise. These are separate-copy operations, not live in-place compaction, and the block and record limits are not total process-memory guarantees.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the prototype's transaction validators and explicitly retry conflicts; `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. The earlier recorded run predates the FIFO option.

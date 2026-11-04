@@ -81,10 +81,53 @@ pub(crate) fn create_streaming_with_hooks(
     count: u64,
     peak: usize,
     destination: &Path,
+    entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    before_publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
+    let parent = backup::parent_directory(destination)?;
+    create_streaming_in_directory(
+        log,
+        count,
+        peak,
+        (destination, parent),
+        entries,
+        sync_parent,
+        before_publish,
+    )
+}
+
+// The outer compaction stage already owns this private directory; public
+// destination checks intentionally reject paths inside the reserved namespace.
+pub(crate) fn create_streaming_in_private_stage(
+    log: &Log,
+    count: u64,
+    peak: usize,
+    directory: &Path,
+    entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
+    let destination = directory.join(crate::store::COMPACTED_CHECKPOINT_FILE);
+    create_streaming_in_directory(
+        log,
+        count,
+        peak,
+        (&destination, directory),
+        entries,
+        |parent| File::open(parent)?.sync_all(),
+        || Ok(()),
+    )
+}
+
+fn create_streaming_in_directory(
+    log: &Log,
+    count: u64,
+    peak: usize,
+    paths: (&Path, &Path),
     mut entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
+    let (destination, parent) = paths;
     if log.is_legacy() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -100,7 +143,6 @@ pub(crate) fn create_streaming_with_hooks(
     log.verify_witness()?;
     let prefix = log.len()?;
     let log_digest = hash_log(log, prefix)?;
-    let parent = backup::parent_directory(destination)?;
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     let checkpoint_digest: [u8; 32];
     let entries_digest: [u8; 32];

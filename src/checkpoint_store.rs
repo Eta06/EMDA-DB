@@ -266,6 +266,17 @@ impl CheckpointStore {
         self.backup_using(destination.as_ref(), crate::backup::create)
     }
 
+    /// Creates a verified, non-overwriting compacted copy with its checkpoint
+    /// at `COMPACTED_CHECKPOINT_FILE`. The returned digest must be protected
+    /// separately. Mutations wait for the copy; readers may continue. The
+    /// source remains unchanged and later source writes are not in the copy.
+    /// An error after publication can leave an uncertain destination.
+    pub fn compact_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
+        let state = self.read()?;
+        let (count, _) = self.verify_for_checkpoint(&state)?;
+        crate::store::compact_checkpoint(&self.log, &state.view, count, destination.as_ref())
+    }
+
     fn backup_using(
         &self,
         destination: &Path,

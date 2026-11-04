@@ -69,3 +69,5 @@ jobs:
           python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
           cargo +stable build --release --locked --example backup_validation_bench
           python3 scripts/backup_validation_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/backup-validation-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --baseline-binary target/release/examples/backup_validation_bench --baseline-revision HEAD
+          cargo +stable build --release --locked --example checkpoint_compaction_bench
+          python3 scripts/checkpoint_compaction_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-compaction-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4

@@ -8,6 +8,7 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Verified separate-copy compaction for the checkpoint-backed store, streaming live keys and producing a separately trusted checkpoint for the copy without rebuilding full source or target indexes. Source mutations wait; switchover and log reclamation remain manual.
 - An optional per-open whole-log byte limit for the checkpoint-backed store, enforced before recovery adoption and serialized writes. Checkpoint rollover does not reclaim log space; the limit is not a persistent project quota.
 - Bounded, consistent multi-key reads for the checkpoint-backed store, preserving order and duplicate keys while excluding concurrent mutations during each read.
 - Full-log backup for the checkpoint-backed store, and streaming record validation during backup, restore and format upgrade without materializing a full key index. The backup format and its independent verification requirements are unchanged.

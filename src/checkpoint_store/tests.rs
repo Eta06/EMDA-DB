@@ -138,6 +138,7 @@ impl WitnessIo for FaultWitness {
 }
 
 mod commit_faults;
+mod compaction;
 #[cfg(target_os = "linux")]
 mod metadata_faults;
 mod recovery;

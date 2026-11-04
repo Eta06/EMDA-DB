@@ -2,26 +2,26 @@
 use super::*;
 use crate::log::AppendRecord;
 
-const MAX_COPY_RECORDS: usize = 64;
-const MAX_COPY_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_COPY_RECORDS: usize = 64;
+pub(super) const MAX_COPY_BYTES: usize = 4 * 1024 * 1024;
 
-struct CopyRecord {
-    encoded: Vec<u8>,
-    key_len: usize,
-    value_len: usize,
-    checksum: u32,
+pub(super) struct CopyRecord {
+    pub(super) encoded: Vec<u8>,
+    pub(super) key_len: usize,
+    pub(super) value_len: usize,
+    pub(super) checksum: u32,
 }
 
 // These stores are owned solely by the private staging operation. Explicitly
 // unlock before dropping them so a child forked by another thread cannot keep
 // the staging lock alive through an inherited descriptor until exec.
-fn close_private_store(store: Store) -> io::Result<()> {
+pub(super) fn close_private_store(store: Store) -> io::Result<()> {
     fs2::FileExt::unlock(&store._lock_file)?;
     drop(store);
     Ok(())
 }
 
-fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
+pub(super) fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
     if records.is_empty() {
         return Ok(());
     }

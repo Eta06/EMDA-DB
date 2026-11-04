@@ -14,12 +14,17 @@ use std::sync::{Mutex, RwLock, RwLockReadGuard};
 mod atomic_batch;
 mod commit;
 mod compact;
+mod compact_stream;
 mod log_quota;
 mod read_set;
 mod snapshot;
 mod transaction;
 mod transaction_queue;
 use commit::Coordinator;
+pub use compact_stream::COMPACTED_CHECKPOINT_FILE;
+pub(crate) use compact_stream::compact_checkpoint;
+#[cfg(test)]
+pub(crate) use compact_stream::compact_checkpoint_with_hooks;
 use log_quota::LogQuota;
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
