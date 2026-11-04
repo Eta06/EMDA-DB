@@ -44,8 +44,9 @@ pub use document::{
     DocumentQueryAccess, DocumentQueryResult, DocumentSort, DocumentTransaction,
     DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule, FieldType, IndexBound,
     IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus, IndexQuery, IndexQueryPlan,
-    IndexStep, IndexValue, LookupEntry, LookupResult, NumericFieldStats, PartialFilter,
-    PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus, SchemaStep,
+    IndexStep, IndexValue, LookupEntry, LookupResult, MAX_DOCUMENT_UPDATE_INPUT_BYTES,
+    NumericFieldStats, PartialFilter, PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus,
+    SchemaStep,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{

@@ -37,7 +37,7 @@ pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery
 pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use transaction::DocumentTransaction;
-pub use update::{DocumentUpdate, FieldCondition};
+pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES};
 
 use crate::{
     CancellationToken, CheckpointStore, CheckpointTransactionMode, ControlledTransactionError,

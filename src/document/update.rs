@@ -1,7 +1,9 @@
 //! Conditional, ordered JSON updates staged in a single storage transaction.
 mod array;
+mod input;
 mod scalar;
 use super::{index::IndexValue, key, schema, transaction::DocumentTransaction};
+pub use input::MAX_DOCUMENT_UPDATE_INPUT_BYTES;
 use serde_json::{Map, Value};
 use std::io;
 
@@ -133,10 +135,11 @@ impl DocumentTransaction<'_, '_> {
                     "update requires 1 to 128 operators and at most 64 conditions",
                 ));
             }
+            let mut input_budget = input::InputBudget::default();
             for condition in conditions {
                 schema::validate_path(&condition.path)?;
                 if let Some(value) = &condition.expected {
-                    schema::validate_tree(value)?;
+                    input_budget.value(value)?;
                 }
             }
             for update in updates {
@@ -164,15 +167,16 @@ impl DocumentTransaction<'_, '_> {
                 if let DocumentUpdate::Set { value, .. }
                 | DocumentUpdate::SetIfMissing { value, .. } = update
                 {
-                    schema::validate_tree(value)?;
+                    input_budget.value(value)?;
                 }
                 if let DocumentUpdate::Min { value, .. } | DocumentUpdate::Max { value, .. } =
                     update
                 {
                     value.encode(&mut Vec::new())?;
+                    input_budget.scalar(value)?;
                 }
             }
-            array::validate_inputs(updates)?;
+            array::validate_inputs(updates, &mut input_budget)?;
             let Some(mut document) = this
                 .get(collection, id)?
                 .or_else(|| upsert.then(|| Value::Object(Map::new())))

@@ -2,32 +2,15 @@
 use super::{DocumentUpdate, parent_mut};
 use crate::document::key;
 use serde_json::{Map, Value};
-use std::io::{self, Write};
+use std::io;
 
 // Logical work, not a wall-time or total-memory bound. Equality comparisons
 // may inspect complex nested values, and each transaction has other work.
 const MAX_ARRAY_ENTRIES_EXAMINED: usize = 1_000_000;
-const MAX_ARRAY_INPUT_BYTES: usize = 4 * 1024 * 1024;
-
-struct InputBudget(usize);
-impl Write for InputBudget {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0 = self
-            .0
-            .checked_add(bytes.len())
-            .ok_or_else(|| key::invalid("array update input exceeds 4 MiB"))?;
-        if self.0 > MAX_ARRAY_INPUT_BYTES {
-            return Err(key::invalid("array update input exceeds 4 MiB"));
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-pub(super) fn validate_inputs(updates: &[DocumentUpdate]) -> io::Result<()> {
-    let mut budget = InputBudget(0);
+pub(super) fn validate_inputs(
+    updates: &[DocumentUpdate],
+    budget: &mut super::input::InputBudget,
+) -> io::Result<()> {
     for update in updates {
         let value = match update {
             DocumentUpdate::ArrayPush { value, .. }
@@ -35,9 +18,7 @@ pub(super) fn validate_inputs(updates: &[DocumentUpdate]) -> io::Result<()> {
             | DocumentUpdate::ArrayRemove { value, .. } => value,
             _ => continue,
         };
-        super::schema::validate_tree(value)?;
-        serde_json::to_writer(&mut budget, value)
-            .map_err(|_| key::invalid("array update input exceeds 4 MiB or cannot be encoded"))?;
+        budget.value(value)?;
     }
     Ok(())
 }
