@@ -239,3 +239,10 @@ path = "fuzz_targets/document_membership_union.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "controlled_transactions"
+path = "fuzz_targets/controlled_transactions.rs"
+test = false
+doc = false
+bench = false

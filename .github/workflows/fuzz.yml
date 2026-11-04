@@ -12,7 +12,7 @@ jobs:
   recovery:
     name: Recovery parser and fail-closed behavior
     runs-on: ubuntu-24.04
-    # Thirty-three sequential campaigns each run for a minute in addition to
+    # Thirty-four sequential campaigns each run for a minute in addition to
     # toolchain installation and target compilation.
     timeout-minutes: 60
     steps:
@@ -47,6 +47,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/transaction-read-set-corpus"
           cp fuzz/transaction-read-set-seeds/* "$RUNNER_TEMP/transaction-read-set-corpus/"
           cargo +nightly-2026-11-03 fuzz run transaction_read_set "$RUNNER_TEMP/transaction-read-set-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
+      - name: Run controlled transaction model fuzzing
+        run: |
+          mkdir -p "$RUNNER_TEMP/controlled-transaction-corpus"
+          cp fuzz/controlled-transaction-seeds/* "$RUNNER_TEMP/controlled-transaction-corpus/"
+          cargo +nightly-2026-11-03 fuzz run controlled_transactions "$RUNNER_TEMP/controlled-transaction-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run live-key byte limit model fuzzing
         run: |
           mkdir -p "$RUNNER_TEMP/key-byte-limit-corpus"

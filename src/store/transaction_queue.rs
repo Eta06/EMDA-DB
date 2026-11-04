@@ -3,7 +3,11 @@ use super::MAX_ACTIVE_SNAPSHOTS;
 use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+// Cooperative cancellation is checked while waiting; scheduling and lock
+// delays mean this polling interval is not a bounded-latency promise.
+const CANCELLATION_POLL: Duration = Duration::from_millis(10);
 
 struct Waiter {
     wake: Condvar,
@@ -41,6 +45,14 @@ impl TransactionQueue {
     }
 
     pub(crate) fn enter_until(&self, deadline: Option<Instant>) -> io::Result<Turn<'_>> {
+        self.enter_controlled(deadline, None)
+    }
+
+    pub(crate) fn enter_controlled(
+        &self,
+        deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+    ) -> io::Result<Turn<'_>> {
         let waiter = Arc::new(Waiter {
             wake: Condvar::new(),
             owner: std::thread::current().id(),
@@ -68,6 +80,7 @@ impl TransactionQueue {
                 "transaction admission expired",
             ));
         }
+        crate::cancellation::check(cancellation)?;
         if state.queue.len() >= MAX_ACTIVE_SNAPSHOTS {
             return Err(io::Error::other("transaction admission queue full"));
         }
@@ -98,6 +111,19 @@ impl TransactionQueue {
                     "transaction admission expired",
                 ));
             }
+            if let Err(error) = crate::cancellation::check(cancellation) {
+                let was_first = state
+                    .queue
+                    .front()
+                    .is_some_and(|entry| Arc::ptr_eq(entry, &waiter));
+                state.queue.retain(|entry| !Arc::ptr_eq(entry, &waiter));
+                if was_first {
+                    if let Some(next) = state.queue.front() {
+                        next.wake.notify_one();
+                    }
+                }
+                return Err(error);
+            }
             if state
                 .queue
                 .front()
@@ -108,10 +134,19 @@ impl TransactionQueue {
                     waiter,
                 });
             }
-            let waited = if let Some(deadline) = deadline {
+            let timeout =
+                deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            let timeout = if cancellation.is_some() {
+                Some(timeout.map_or(CANCELLATION_POLL, |remaining| {
+                    remaining.min(CANCELLATION_POLL)
+                }))
+            } else {
+                timeout
+            };
+            let waited = if let Some(timeout) = timeout {
                 waiter
                     .wake
-                    .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+                    .wait_timeout(state, timeout)
                     .map(|(state, _)| state)
                     .map_err(|poison| poison.into_inner().0)
             } else {

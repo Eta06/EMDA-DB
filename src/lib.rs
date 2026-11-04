@@ -6,6 +6,7 @@
 compile_error!("this prototype currently supports Unix-like systems only");
 
 mod backup;
+mod cancellation;
 mod checkpoint;
 mod checkpoint_store;
 mod checkpoint_view;
@@ -25,6 +26,7 @@ mod test_support;
 mod transaction_budget;
 mod witness;
 
+pub use cancellation::{CancellationToken, ControlledTransactionError};
 pub use checkpoint_store::{
     CheckpointSnapshot, CheckpointStore, CheckpointStoreLimits, CheckpointTransaction,
     CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,

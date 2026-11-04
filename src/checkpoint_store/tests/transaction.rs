@@ -65,6 +65,102 @@ fn wait_for_queue(store: &CheckpointStore, expected: usize) {
 }
 
 #[test]
+fn cancellation_removes_a_checkpoint_fifo_waiter_before_callback() {
+    use crate::{CancellationToken, CheckpointTransactionMode, ControlledTransactionError};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let first = store.transaction_queue.enter().unwrap();
+    let token = CancellationToken::new();
+    let called = Arc::new(AtomicBool::new(false));
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = Arc::clone(&store);
+    let worker_token = token.clone();
+    let worker_called = Arc::clone(&called);
+    let worker = std::thread::spawn(move || {
+        let result = writer.transaction_controlled(
+            &worker_token,
+            None,
+            CheckpointTransactionMode::Fifo,
+            |tx| {
+                worker_called.store(true, Ordering::Relaxed);
+                tx.put(b"key", b"value")
+            },
+        );
+        done_tx.send(result).unwrap();
+    });
+    wait_for_queue(&store, 2);
+    let follower_store = Arc::clone(&store);
+    let follower = std::thread::spawn(move || {
+        follower_store.transaction_with_fifo(|tx| tx.put(b"later", b"ok"))
+    });
+    wait_for_queue(&store, 3);
+    token.cancel();
+    let early = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(first);
+    let early_result = early.is_ok();
+    let result = early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
+    follower.join().unwrap().unwrap();
+    assert!(
+        early_result,
+        "cancelled FIFO admission did not finish until the prior turn ended"
+    );
+    assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
+    assert!(!called.load(Ordering::Relaxed));
+    assert_eq!(store.transaction_queue.queued_for_test(), 0);
+    assert_eq!(store.get(b"key").unwrap(), None);
+    assert_eq!(store.get(b"later").unwrap().as_deref(), Some(&b"ok"[..]));
+}
+
+#[test]
+fn cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append() {
+    use crate::{CancellationToken, CheckpointTransactionMode, ControlledTransactionError};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let token = CancellationToken::new();
+    let (staged_tx, staged_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let writer = Arc::clone(&store);
+    let worker_token = token.clone();
+    let worker = std::thread::spawn(move || {
+        writer.transaction_controlled(
+            &worker_token,
+            None,
+            CheckpointTransactionMode::Conservative,
+            |tx| {
+                tx.put(b"key", b"value")?;
+                staged_tx.send(()).map_err(io::Error::other)?;
+                resume_rx.recv().map_err(io::Error::other)?;
+                finished_tx.send(()).map_err(io::Error::other)
+            },
+        )
+    });
+    staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let guard = store.write().unwrap();
+    resume_tx.send(()).unwrap();
+    finished_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    token.cancel();
+    drop(guard);
+    assert!(matches!(
+        worker.join().unwrap(),
+        Err(ControlledTransactionError::Cancelled)
+    ));
+    assert_eq!(store.get(b"key").unwrap(), None);
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+}
+
+#[test]
 fn fifo_runs_callbacks_and_commits_in_admission_order() {
     use std::sync::{Arc, mpsc};
     let (_dir, path, checkpoint, digest) = fixture();
@@ -269,6 +365,7 @@ struct BlockingSyncLog {
     file: File,
     entered: std::sync::mpsc::Sender<()>,
     resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    failure: Option<io::ErrorKind>,
 }
 
 impl LogIo for BlockingSyncLog {
@@ -288,6 +385,9 @@ impl LogIo for BlockingSyncLog {
             .unwrap()
             .recv()
             .map_err(io::Error::other)?;
+        if let Some(kind) = self.failure {
+            return Err(io::Error::new(kind, "injected delayed sync failure"));
+        }
         self.file.sync_data()
     }
 }
@@ -310,6 +410,7 @@ fn deadline_passed_during_sync_does_not_report_a_successful_commit_as_aborted() 
         file,
         entered: entered_send,
         resume: Mutex::new(resume_receive),
+        failure: None,
     }));
     let store = Arc::new(store);
     let writing = Arc::clone(&store);
@@ -340,6 +441,76 @@ fn deadline_passed_during_sync_does_not_report_a_successful_commit_as_aborted() 
         recovered.get_many(&[b"left", b"right"]).unwrap(),
         vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
     );
+}
+
+#[test]
+fn cancellation_during_checkpoint_sync_preserves_success_or_unknown_io_outcome() {
+    use crate::{CancellationToken, CheckpointTransactionMode, ControlledTransactionError};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+    for failure in [
+        None,
+        Some(io::ErrorKind::Other),
+        Some(io::ErrorKind::Interrupted),
+    ] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        let (entered_send, entered_receive) = mpsc::channel();
+        let (resume_send, resume_receive) = mpsc::channel();
+        store.log.replace_io_for_test(Box::new(BlockingSyncLog {
+            file,
+            entered: entered_send,
+            resume: Mutex::new(resume_receive),
+            failure,
+        }));
+        let store = Arc::new(store);
+        let writing = Arc::clone(&store);
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let worker = std::thread::spawn(move || {
+            writing.transaction_controlled(
+                &worker_token,
+                None,
+                CheckpointTransactionMode::Fifo,
+                |tx| {
+                    tx.put(b"left", b"one")?;
+                    tx.put(b"right", b"two")
+                },
+            )
+        });
+        let entered = entered_receive.recv_timeout(Duration::from_secs(10));
+        token.cancel();
+        let _ = resume_send.send(());
+        let result = worker.join().unwrap();
+        entered.expect("transaction did not enter synchronization");
+        if let Some(kind) = failure {
+            assert!(
+                matches!(result, Err(ControlledTransactionError::Operation(error)) if error.kind() == kind)
+            );
+            failed_instance_rejects_all_operations(&store, &path);
+        } else {
+            result.unwrap();
+            assert_eq!(
+                store.get_many(&[b"left", b"right"]).unwrap(),
+                vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+            );
+        }
+        drop(store);
+        let recovered = retry_lock(|| Store::open(&path)).unwrap();
+        let values = recovered.get_many(&[b"left", b"right"]).unwrap();
+        assert!(
+            values == vec![None, None]
+                || values == vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+        );
+        if failure.is_none() {
+            assert_eq!(values, vec![Some(b"one".to_vec()), Some(b"two".to_vec())]);
+        }
+    }
 }
 
 #[test]

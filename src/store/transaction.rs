@@ -86,6 +86,7 @@ pub struct Transaction<'a> {
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     encoded_bytes: usize,
     read_set: Option<Mutex<super::read_set::ReadSet>>,
+    cancellation: Option<crate::CancellationToken>,
 }
 
 impl Drop for Transaction<'_> {
@@ -106,6 +107,7 @@ impl Drop for Transaction<'_> {
 impl Transaction<'_> {
     /// Reads from staged changes first, then from the initial snapshot.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        crate::cancellation::check(self.cancellation.as_ref())?;
         record::validate_key(key)?;
         let snapshot = self.snapshot.read_index()?;
         if let Some(value) = self.staged.get(key) {
@@ -145,6 +147,7 @@ impl Transaction<'_> {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        crate::cancellation::check(self.cancellation.as_ref())?;
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
         }
@@ -210,6 +213,7 @@ impl Transaction<'_> {
     }
 
     fn stage(&mut self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
+        crate::cancellation::check(self.cancellation.as_ref())?;
         record::validate(operation, key, value)?;
         self.snapshot.ensure_healthy()?;
         let previous = self.staged.get(key);
@@ -278,7 +282,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, false, None)
+        self.run_transaction(action, false, false, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -294,7 +298,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, false, None)
+        self.run_transaction(action, true, false, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -309,7 +313,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, true, None)
+        self.run_transaction(action, true, true, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -337,7 +341,30 @@ impl Store {
             TransactionMode::ReadSet => (true, false),
             TransactionMode::ReadSetFifo => (true, true),
         };
-        self.run_transaction(action, track_reads, fifo, Some(deadline))
+        self.run_transaction(action, track_reads, fifo, Some(deadline), None)
+    }
+
+    /// Runs a transaction with cooperative cancellation and an optional
+    /// monotonic deadline. `Cancelled` or `DeadlineExceeded` means staged
+    /// writes were not submitted for commit. Cancellation is checked at
+    /// operation boundaries and while waiting for FIFO admission; callbacks,
+    /// writer-lock waits and I/O are not forcibly interrupted. Once commit
+    /// begins, it may succeed after cancellation or return an operation error
+    /// with an unknown outcome. Callback side effects are not rolled back.
+    pub fn transaction_controlled<T>(
+        &self,
+        cancellation: &crate::CancellationToken,
+        deadline: Option<Instant>,
+        mode: TransactionMode,
+        action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
+    ) -> Result<T, crate::ControlledTransactionError> {
+        let (track_reads, fifo) = match mode {
+            TransactionMode::Conservative => (false, false),
+            TransactionMode::ReadSet => (true, false),
+            TransactionMode::ReadSetFifo => (true, true),
+        };
+        self.run_transaction(action, track_reads, fifo, deadline, Some(cancellation))
+            .map_err(crate::cancellation::classify)
     }
 
     fn run_transaction<T>(
@@ -346,8 +373,10 @@ impl Store {
         track_reads: bool,
         fifo: bool,
         deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
     ) -> Result<T, TimedTransactionError> {
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         let snapshot = if let Some(deadline) = deadline {
             self.snapshot_until(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES, deadline)
                 .map_err(|error| {
@@ -360,18 +389,31 @@ impl Store {
         } else {
             self.snapshot(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES)?
         };
+        crate::cancellation::check(cancellation)?;
         let mut txn = Transaction {
             snapshot,
             staged: BTreeMap::new(),
             encoded_bytes: 4,
             read_set: track_reads.then(|| Mutex::new(super::read_set::ReadSet::default())),
+            cancellation: cancellation.cloned(),
         };
         let result = action(&mut txn)?;
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         // Opt-in FIFO admission does not replace the writer barrier protecting
         // validation, publication and synchronization.
         let _turn = if fifo {
-            Some(if deadline.is_some() {
+            Some(if cancellation.is_some() {
+                self.transaction_queue
+                    .enter_controlled(deadline, cancellation)
+                    .map_err(|error| {
+                        if error.kind() == io::ErrorKind::TimedOut {
+                            TimedTransactionError::DeadlineExceeded
+                        } else {
+                            TimedTransactionError::Operation(error)
+                        }
+                    })?
+            } else if deadline.is_some() {
                 self.transaction_queue
                     .enter_until(deadline)
                     .map_err(|error| {
@@ -392,6 +434,7 @@ impl Store {
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         if self.commits.failed() {
             return Err(uncertain_error().into());
         }
@@ -434,9 +477,11 @@ impl Store {
             }
             let payload = encode_payload(&operations)?;
             check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
             self.write_batch_locked(&operations, &payload)?;
         } else {
             check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
         }
         Ok(result)
     }
@@ -449,6 +494,89 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        let first = store.transaction_queue.enter().unwrap();
+        let token = crate::CancellationToken::new();
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = Arc::clone(&store);
+        let worker_token = token.clone();
+        let worker = thread::spawn(move || {
+            let result = writer.transaction_controlled(
+                &worker_token,
+                None,
+                TransactionMode::ReadSetFifo,
+                |tx| tx.put(b"key", b"value"),
+            );
+            done_tx.send(result).unwrap();
+        });
+        let timeout = Instant::now() + Duration::from_secs(10);
+        while store.transaction_queue.queued_for_test() != 2 {
+            assert!(Instant::now() < timeout);
+            thread::yield_now();
+        }
+        let follower_store = Arc::clone(&store);
+        let follower = thread::spawn(move || {
+            follower_store.transaction_with_read_set_fifo(|tx| tx.put(b"later", b"ok"))
+        });
+        while store.transaction_queue.queued_for_test() != 3 {
+            assert!(Instant::now() < timeout);
+            thread::yield_now();
+        }
+        token.cancel();
+        let early = done_rx.recv_timeout(Duration::from_secs(5));
+        drop(first);
+        let early_result = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
+        follower.join().unwrap().unwrap();
+        assert!(
+            early_result,
+            "cancelled FIFO admission did not finish until the prior turn ended"
+        );
+        assert!(matches!(
+            result,
+            Err(crate::ControlledTransactionError::Cancelled)
+        ));
+        assert_eq!(store.transaction_queue.queued_for_test(), 0);
+        assert_eq!(store.get(b"key").unwrap(), None);
+        assert_eq!(store.get(b"later").unwrap().as_deref(), Some(&b"ok"[..]));
+    }
+
+    #[test]
+    fn cancellation_after_staging_with_writer_lock_held_aborts_before_append() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        let writer_guard = store.writes.write().unwrap();
+        let token = crate::CancellationToken::new();
+        let (staged_tx, staged_rx) = mpsc::channel();
+        let writer = Arc::clone(&store);
+        let worker_token = token.clone();
+        let worker = thread::spawn(move || {
+            writer.transaction_controlled(
+                &worker_token,
+                None,
+                TransactionMode::Conservative,
+                |tx| {
+                    tx.put(b"key", b"value")?;
+                    staged_tx.send(()).map_err(io::Error::other)
+                },
+            )
+        });
+        staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        token.cancel();
+        drop(writer_guard);
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(crate::ControlledTransactionError::Cancelled)
+        ));
+        assert_eq!(store.get(b"key").unwrap(), None);
+        assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    }
 
     #[test]
     fn a_deadline_passed_while_waiting_for_the_writer_aborts_before_commit() {

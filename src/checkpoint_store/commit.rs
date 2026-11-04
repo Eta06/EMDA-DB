@@ -14,7 +14,7 @@ impl CheckpointStore {
         value: &[u8],
         touched: &[&[u8]],
     ) -> io::Result<()> {
-        match self.commit_until(state, operation, key, value, touched, None) {
+        match self.commit_until(state, operation, key, value, touched, Default::default()) {
             Ok(()) => Ok(()),
             Err(crate::TimedTransactionError::Operation(error)) => Err(error),
             Err(crate::TimedTransactionError::DeadlineExceeded) => {
@@ -30,8 +30,12 @@ impl CheckpointStore {
         key: &[u8],
         value: &[u8],
         touched: &[&[u8]],
-        deadline: Option<std::time::Instant>,
+        control: crate::cancellation::CommitControl<'_>,
     ) -> Result<(), crate::TimedTransactionError> {
+        let crate::cancellation::CommitControl {
+            deadline,
+            cancellation,
+        } = control;
         // Refuse a mutation before appending if a transaction generation can
         // no longer advance; wrapping would let a stale transaction commit.
         let next_generation = state
@@ -71,6 +75,7 @@ impl CheckpointStore {
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err(crate::TimedTransactionError::DeadlineExceeded);
         }
+        crate::cancellation::check(cancellation)?;
         state.failed = true;
         let location = self
             .log

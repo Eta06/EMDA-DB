@@ -25,6 +25,7 @@ pub(super) enum Fault {
     Panic,
     Block,
     BlockThenSyncError,
+    BlockThenInterrupted,
     BlockThenPanic,
     BlockThenGroupError,
     BlockThenGroupPanic,
@@ -81,6 +82,14 @@ impl WitnessIo for Controlled {
                     self.entered.send(()).unwrap();
                     self.resume.lock().unwrap().recv().unwrap();
                     return Err(io::Error::other("injected delayed fsync error"));
+                }
+                Fault::BlockThenInterrupted => {
+                    self.entered.send(()).unwrap();
+                    self.resume.lock().unwrap().recv().unwrap();
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "injected delayed fsync interruption",
+                    ));
                 }
                 Fault::BlockThenPanic => {
                     self.entered.send(()).unwrap();
@@ -249,6 +258,76 @@ fn transaction_deadline_during_fsync_does_not_report_an_aborted_commit() {
             .as_deref(),
         Some(&b"new"[..])
     );
+}
+
+#[test]
+fn cancellation_during_fsync_preserves_success_or_unknown_io_outcome() {
+    use crate::{CancellationToken, ControlledTransactionError};
+    for fault in [
+        Fault::Block,
+        Fault::BlockThenSyncError,
+        Fault::BlockThenInterrupted,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let store = Arc::new(store(
+            dir.path(),
+            fault,
+            Arc::clone(&armed),
+            entered_tx,
+            resume_rx,
+        ));
+        store.put(b"a", b"old").unwrap();
+        store.put(b"b", b"old").unwrap();
+        armed.store(true, Ordering::Release);
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let writing = Arc::clone(&store);
+        let worker = thread::spawn(move || {
+            writing.transaction_controlled(&worker_token, None, TransactionMode::ReadSet, |tx| {
+                tx.put(b"a", b"new")?;
+                tx.put(b"b", b"new")
+            })
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        token.cancel();
+        let _ = resume_tx.send(());
+        let result = worker.join().unwrap();
+        entered.expect("transaction did not enter metadata synchronization");
+        match fault {
+            Fault::Block => {
+                result.unwrap();
+                assert_eq!(store.get(b"a").unwrap().as_deref(), Some(&b"new"[..]));
+            }
+            Fault::BlockThenSyncError | Fault::BlockThenInterrupted => {
+                match result {
+                    Err(ControlledTransactionError::Operation(error)) => {
+                        let expected = if matches!(fault, Fault::BlockThenInterrupted) {
+                            io::ErrorKind::Interrupted
+                        } else {
+                            io::ErrorKind::Other
+                        };
+                        assert_eq!(error.kind(), expected);
+                    }
+                    other => panic!("expected unknown I/O outcome, got {other:?}"),
+                }
+                assert!(store.get(b"a").is_err());
+            }
+            _ => unreachable!(),
+        }
+        drop(store);
+        let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
+        let values = reopened.get_many(&[b"a", b"b"]).unwrap();
+        assert!(
+            values == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
+                || values == vec![Some(b"new".to_vec()), Some(b"new".to_vec())]
+        );
+        if matches!(fault, Fault::Block) {
+            assert_eq!(values, vec![Some(b"new".to_vec()), Some(b"new".to_vec())]);
+        }
+    }
 }
 
 #[test]

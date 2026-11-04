@@ -30,6 +30,7 @@ pub struct CheckpointTransaction<'a> {
     store: &'a CheckpointStore,
     generation: u64,
     deadline: Option<Instant>,
+    cancellation: Option<crate::CancellationToken>,
     read_set: Option<Mutex<super::read_set::ReadSet>>,
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     encoded_bytes: usize,
@@ -57,6 +58,7 @@ impl Drop for CheckpointTransaction<'_> {
 
 impl CheckpointTransaction<'_> {
     fn state(&self) -> io::Result<RwLockReadGuard<'_, State>> {
+        crate::cancellation::check(self.cancellation.as_ref())?;
         if self
             .deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
@@ -67,6 +69,7 @@ impl CheckpointTransaction<'_> {
             ));
         }
         let state = self.store.read()?;
+        crate::cancellation::check(self.cancellation.as_ref())?;
         if let Some(read_set) = &self.read_set {
             read_set
                 .lock()
@@ -284,7 +287,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, false, None)
+        self.run_transaction(action, false, false, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -299,7 +302,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, true, None)
+        self.run_transaction(action, false, true, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -318,7 +321,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, false, None)
+        self.run_transaction(action, true, false, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -329,7 +332,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, true, None)
+        self.run_transaction(action, true, true, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -356,7 +359,33 @@ impl CheckpointStore {
             mode,
             CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
         );
-        self.run_transaction(action, read_set, fifo, Some(deadline))
+        self.run_transaction(action, read_set, fifo, Some(deadline), None)
+    }
+
+    /// Runs a selected mode with cooperative cancellation and an optional
+    /// deadline. Cancellation or deadline expiry reported by the engine means
+    /// staged writes were not submitted for commit. FIFO admission observes
+    /// cancellation while waiting; callbacks, state-lock waits and I/O are
+    /// not forcibly interrupted. Once append starts it may succeed after
+    /// cancellation or return an operation error with an unknown outcome.
+    /// Automatic checkpoint maintenance can complete before cancellation.
+    pub fn transaction_controlled<T>(
+        &self,
+        cancellation: &crate::CancellationToken,
+        deadline: Option<Instant>,
+        mode: CheckpointTransactionMode,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> Result<T, crate::ControlledTransactionError> {
+        let read_set = matches!(
+            mode,
+            CheckpointTransactionMode::ReadSet | CheckpointTransactionMode::ReadSetFifo
+        );
+        let fifo = matches!(
+            mode,
+            CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
+        );
+        self.run_transaction(action, read_set, fifo, deadline, Some(cancellation))
+            .map_err(crate::cancellation::classify)
     }
 
     fn run_transaction<T>(
@@ -365,14 +394,16 @@ impl CheckpointStore {
         track_points: bool,
         fifo: bool,
         deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
     ) -> Result<T, TimedTransactionError> {
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         // Admission covers both callback and commit. Release the write guard
         // and staged reservations before releasing the queue turn on unwind.
         let _turn = if fifo {
             Some(
                 self.transaction_queue
-                    .enter_until(deadline)
+                    .enter_controlled(deadline, cancellation)
                     .map_err(|error| {
                         if error.kind() == io::ErrorKind::TimedOut {
                             TimedTransactionError::DeadlineExceeded
@@ -385,18 +416,22 @@ impl CheckpointStore {
             None
         };
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         let generation = self.read()?.generation;
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         let mut transaction = CheckpointTransaction {
             store: self,
             generation,
             deadline,
+            cancellation: cancellation.cloned(),
             read_set: track_points.then(|| Mutex::new(super::read_set::ReadSet::new(generation))),
             staged: BTreeMap::new(),
             encoded_bytes: 4,
         };
         let result = action(&mut transaction)?;
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         let operations = transaction
             .staged
             .iter()
@@ -412,6 +447,7 @@ impl CheckpointStore {
         };
         let mut state = self.write()?;
         check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
         let valid = if let Some(read_set) = &transaction.read_set {
             read_set
                 .lock()
@@ -429,14 +465,21 @@ impl CheckpointStore {
                 .map(|operation| operation.fields().1)
                 .collect::<Vec<_>>();
             check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
             self.commit_until(
                 &mut state,
                 Operation::Batch,
                 &[0],
                 &payload,
                 &keys,
-                deadline,
+                crate::cancellation::CommitControl {
+                    deadline,
+                    cancellation,
+                },
             )?;
+        } else {
+            check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
         }
         Ok(result)
     }
