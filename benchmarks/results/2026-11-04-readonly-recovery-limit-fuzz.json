@@ -1,0 +1,31 @@
+{
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "environment": "Local Linux VM; temporary stores on tmpfs, no physical power-loss testing.",
+  "runs": [
+    {
+      "target": "readonly_recovery_limits",
+      "revision": "4107f3f4434797fdbb6fc9f7e4280874659c48b9",
+      "git_status": "clean",
+      "seed": 1722775535,
+      "executions": 34837,
+      "duration_seconds": 121,
+      "initial_seeds": {
+        "flags-000": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+        "flags-001": "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
+        "flags-002": "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+        "flags-004": "e52d9c508c502347344d8c07ad91cbd6068afc75ff6292f062a09ca381c89e71",
+        "flags-008": "beead77994cf573341ec17b58bbf7eb34d2711c993c1d976b128b3188dc1829a",
+        "flags-016": "c555eab45d08845ae9f10d452a99bfcb06f74a50b988fe7e48dd323789b88ee3",
+        "flags-032": "36a9e7f1c95b82ffb99743e0c5c4ce95d83c9a430aac59f84ef3cbfab6145068",
+        "flags-064": "c3641f8544d7c02f3580b07c0f9887f0c6a27ff5ab1d4a3e29caf197cfc299ae",
+        "flags-065": "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd",
+        "flags-127": "620bfdaa346b088fb49998d92f19a7eaf6bfc2fb0aee015753966da1028cb731"
+      },
+      "max_input_bytes": 16,
+      "binary_sha256": "4911b5a436e0c79251ab1f2b2b1d090df68f20f6dba2376c8543514eef9f508c",
+      "result": "completed without a finding"
+    }
+  ],
+  "scope": "Generated historical and recovered read-only views with changing data sizes, mutations and combinations of whole-log, checkpoint file/block and suffix limits, compared with independent in-memory expected rows. Rejected and accepted opens are checked against unchanged log and checkpoint bytes. This serial local campaign does not exhaust inputs, uncooperative concurrent filesystem modification, storage failure or power-loss behavior."
+}
