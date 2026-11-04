@@ -1,0 +1,35 @@
+{
+  "revision": "14c60a3552188043e4cc1a7c5474ca3518039d24",
+  "started_utc": "2026-11-04T18:40:23Z",
+  "ended_utc": "2026-11-04T18:40:31Z",
+  "toolchain": "stable Rust, unoptimized test profile with debug info disabled",
+  "environment": "Local Linux VM. /tmp was tmpfs and the workspace test directory was an overlay mount; the backing device was not independently verified.",
+  "cases": [
+    {
+      "test": "maintenance_contention_defers_then_reclaims_without_losing_writes",
+      "tmpfs_repetitions": 30,
+      "overlay_repetitions": 10,
+      "expected_busy_per_run": 3,
+      "handoffs_per_run": 1
+    },
+    {
+      "test": "deferred_worker_reobserves_store_after_a_concurrent_manual_handoff",
+      "tmpfs_repetitions": 20,
+      "overlay_repetitions": 5,
+      "expected_busy_per_run": 1,
+      "handoffs_per_run": 2
+    },
+    {
+      "test": "periodic_worker_retries_after_contention_clears",
+      "tmpfs_repetitions": 10,
+      "overlay_repetitions": 5,
+      "minimum_busy_per_run": 2,
+      "handoffs_per_run": 1
+    }
+  ],
+  "passed_test_invocations": 80,
+  "reopened_source_stores": 80,
+  "successful_handoffs": 105,
+  "minimum_confirmed_deferrals": 175,
+  "scope": "Deterministic threads hold the maintenance lock or pause a real competing handoff; tests check subsequent reclamation, acknowledged values and a reopened source. Counts derive from the test assertions. These repeated schedules are not exhaustive and do not establish physical power-loss behavior or an independent off-host restore."
+}

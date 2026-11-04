@@ -119,7 +119,8 @@ impl OnlineReclamationWorker {
     }
 
     /// Returns the number of checks deferred because another maintenance
-    /// operation held the lock before this worker began compaction.
+    /// operation held the lock before this worker began compaction. The count
+    /// saturates at `u64::MAX` and resets when a new worker is started.
     pub fn busy_checks(&self) -> u64 {
         self.control.lock().busy_checks
     }
