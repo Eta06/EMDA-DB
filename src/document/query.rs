@@ -2,7 +2,7 @@
 use super::{
     index::{self, IndexValue},
     key,
-    transaction::{DocumentTransaction, Metadata},
+    transaction::{DocumentTransaction, MAX_DOCUMENT_BYTES, Metadata},
 };
 use serde_json::Value;
 use std::io;
@@ -243,6 +243,12 @@ impl DocumentTransaction<'_, '_> {
             let encoded = self
                 .read(&key::document(collection, id)?)?
                 .ok_or_else(|| invalid_data("index references a missing document"))?;
+            // Reject corrupt oversized records before applying the page byte
+            // limit. Otherwise a single 16 MiB value plus its ID produces an
+            // empty page and no cursor, silently hiding the corrupt entry.
+            if encoded.len() > MAX_DOCUMENT_BYTES {
+                return Err(invalid_data("stored document exceeds size limit"));
+            }
             let next_used = used
                 .checked_add(id.len())
                 .and_then(|n| n.checked_add(encoded.len()))
