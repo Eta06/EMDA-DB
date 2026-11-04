@@ -1,0 +1,38 @@
+{
+  "revision": "10d32bcb2d74e5d29038050383e61b52e14a7e5c",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "runs": [
+    {
+      "target": "document_scalar_updates",
+      "duration_seconds": 121,
+      "executions": 13652,
+      "seed": 215744095,
+      "initial_seeds": {
+        "checkpoint": "1bb35168a8506cc72f83627f454e593200030f613d97a418c3e631828503e702",
+        "ordinary": "411eabbda9c821c0a0887ae5d1b21d34025c8307331c511bd2dd06f258043208"
+      },
+      "max_input_bytes": 128,
+      "binary_sha256": "e6a669aa84cb782f2eefb1d8500139176255d57982e1cbc3fbdffe8debe0d8bc",
+      "ending_coverage": 4034,
+      "ending_features": 15237,
+      "ending_corpus_entries": 423
+    },
+    {
+      "target": "document_array_update",
+      "duration_seconds": 61,
+      "executions": 4283,
+      "seed": 745383183,
+      "initial_seeds": {
+        "mixed": "63dad4ec0939ed36f7e3da23c36aa6cd2dbd8201cfad04d0ff01a90c1376c201"
+      },
+      "max_input_bytes": 96,
+      "binary_sha256": "a393421eb031753aac825a97bbc2427e082933eafc2c9caed8044ce9225a1e37",
+      "ending_coverage": 3949,
+      "ending_features": 17075,
+      "ending_corpus_entries": 401
+    }
+  ],
+  "result": "both campaigns completed without a finding",
+  "scope": "Generated serial scalar/rename and array operations, index checks, raw-key atomicity, and reopenings on both backends. Does not exhaust concurrency, storage faults, physical power loss or off-host restore."
+}

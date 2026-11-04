@@ -1,0 +1,363 @@
+{
+  "revision": "10d32bcb2d74e5d29038050383e61b52e14a7e5c",
+  "integration_binary_sha256": "100f69919b086e1b884d892a611f08c281b8bd04291f4e05a87528b99d49619f",
+  "unit_binary_sha256": "ad9e967cb3989213ecaa46d58e4360ce8748ea742261c6b15bfd755b3f72ea23",
+  "started_utc": "2026-11-04T21:29:56.025993+00:00",
+  "kernel": "6.18.57",
+  "caveat": "Fault injection and process tests on a VM. Workspace overlay backing device was not independently verified. Other local tests ran concurrently. This does not model physical power loss or off-host restore.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.016142,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.013937,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.01349,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.014846,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.013917,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 5,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.015544,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 6,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.016675,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 7,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.015018,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 8,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.015286,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 9,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.01624,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 0.622111,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 0.614448,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 0.614677,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 0.685486,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 0.482326,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 0.827855,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 0.663629,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 0.885627,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 0.846303,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 0.941386,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 0,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.016719,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 1,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.013236,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 2,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.012617,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 3,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.017198,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "tmpfs",
+      "iteration": 4,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.01667,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.065912,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.065012,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.069295,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.05991,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.060354,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 5,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.075105,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 6,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.066948,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 7,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.062014,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 8,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.058213,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 9,
+      "case": "concurrent_scalar_updates_retry_conflicts_without_lost_writes",
+      "seconds": 0.066623,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 1.948873,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 2.458879,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 2.045446,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 2.112462,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut",
+      "seconds": 1.507808,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 3.865168,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 4.179266,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 3.347662,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 4.086115,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut",
+      "seconds": 3.862887,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 0,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.041932,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 1,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.043302,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 2,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.041745,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 3,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.039879,
+      "exit_code": 0
+    },
+    {
+      "filesystem": "workspace-overlay",
+      "iteration": 4,
+      "case": "store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors",
+      "seconds": 0.039029,
+      "exit_code": 0
+    }
+  ],
+  "finished_utc": "2026-11-04T21:30:33.708305+00:00",
+  "append_cut_points_per_format_per_test": 351,
+  "source_note": "The retained test binaries use the same production and test logic as this revision."
+}
