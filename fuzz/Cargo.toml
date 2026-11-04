@@ -204,3 +204,10 @@ path = "fuzz_targets/document_partial_planner.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "checkpoint_view_limits"
+path = "fuzz_targets/checkpoint_view_limits.rs"
+test = false
+doc = false
+bench = false

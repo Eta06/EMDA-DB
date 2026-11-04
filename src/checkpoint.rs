@@ -221,6 +221,7 @@ fn create_streaming_in_directory(
         prefix,
         None,
         &checkpoint_digest,
+        None,
         |_, key_len, key, tail, _| {
             verified_entries.update(key_len);
             verified_entries.update(key);
@@ -341,6 +342,7 @@ fn load_file(
         witness_boundary,
         max_live_keys,
         trusted_digest,
+        None,
         |_, _, key, _, location| {
             index.insert(key.to_vec(), location);
             Ok(())
@@ -361,9 +363,16 @@ pub(crate) fn visit_file(
     witness_boundary: u64,
     max_live_keys: Option<usize>,
     trusted_digest: &[u8; 32],
+    max_file_bytes: Option<u64>,
     mut visit: impl FnMut(u64, &[u8; 2], &[u8], &[u8; 16], ValueLocation) -> io::Result<()>,
 ) -> io::Result<(u64, usize)> {
     let length = file.metadata()?.len();
+    if max_file_bytes.is_some_and(|max| length > max) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checkpoint exceeds configured file size limit",
+        ));
+    }
     if length < HEADER_BYTES + DIGEST_BYTES {
         return Err(record::invalid_data("incomplete index checkpoint"));
     }

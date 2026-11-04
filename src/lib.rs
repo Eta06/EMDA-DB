@@ -25,13 +25,14 @@ mod transaction_budget;
 mod witness;
 
 pub use checkpoint_store::{
-    CheckpointSnapshot, CheckpointStore, CheckpointTransaction, CheckpointTransactionMode,
-    CheckpointWorker, CheckpointWorkerStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS,
-    MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES,
-    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
+    CheckpointSnapshot, CheckpointStore, CheckpointStoreLimits, CheckpointTransaction,
+    CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,
+    MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
+    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
 };
 pub use checkpoint_view::{
-    CheckpointView, MAX_CHECKPOINT_VIEW_BLOCK_BYTES, MAX_CHECKPOINT_VIEW_BLOCKS,
+    CheckpointView, CheckpointViewLimits, MAX_CHECKPOINT_VIEW_BLOCK_BYTES,
+    MAX_CHECKPOINT_VIEW_BLOCKS, MAX_CHECKPOINT_VIEW_FILE_BYTES,
 };
 pub use document::{
     AggregateGroup, AggregateRequest, AggregateResult, BulkOperation, BulkResult,

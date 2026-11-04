@@ -16,8 +16,42 @@ pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 131_072;
 /// Maximum checkpoint index bytes read into memory for one block.
 pub const MAX_CHECKPOINT_VIEW_BLOCK_BYTES: usize = 32 * 1024;
 const KEY_PREFIX_BYTES: usize = 16;
-const MAX_CHECKPOINT_VIEW_FILE_BYTES: u64 =
+/// Largest checkpoint file accepted by the bounded view.
+pub const MAX_CHECKPOINT_VIEW_FILE_BYTES: u64 =
     MAX_CHECKPOINT_VIEW_BLOCKS as u64 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES as u64 + 100;
+
+/// Per-view admission limits for checkpoint verification and its block directory.
+/// These logical limits are not a total process-memory or disk quota.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CheckpointViewLimits {
+    /// Maximum verified checkpoint file length in bytes.
+    pub max_file_bytes: u64,
+    /// Maximum number of retained block-directory entries.
+    pub max_blocks: usize,
+}
+
+impl Default for CheckpointViewLimits {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: MAX_CHECKPOINT_VIEW_FILE_BYTES,
+            max_blocks: MAX_CHECKPOINT_VIEW_BLOCKS,
+        }
+    }
+}
+
+impl CheckpointViewLimits {
+    pub(crate) fn validate(self) -> io::Result<()> {
+        if self.max_file_bytes > MAX_CHECKPOINT_VIEW_FILE_BYTES
+            || self.max_blocks > MAX_CHECKPOINT_VIEW_BLOCKS
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint view limits exceed the supported maximum",
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 struct Block {
@@ -75,6 +109,7 @@ pub struct CheckpointView {
     keys: u64,
     peak: usize,
     trusted_digest: [u8; 32],
+    limits: CheckpointViewLimits,
     has_tail: bool,
     pub(crate) witnessed_boundary: u64,
     // Borrowed snapshots rely on their still-live store's lock instead.
@@ -88,11 +123,29 @@ impl CheckpointView {
         checkpoint: impl AsRef<Path>,
         trusted_digest: &[u8; 32],
     ) -> io::Result<Self> {
+        Self::open_with_limits(
+            path,
+            checkpoint,
+            trusted_digest,
+            CheckpointViewLimits::default(),
+        )
+    }
+
+    /// Opens a view with caller-selected checkpoint file and block-count caps.
+    /// Covered log bytes are still fully hashed; these are not total memory,
+    /// storage or elapsed-time limits. The caller must reapply limits on reopen.
+    pub fn open_with_limits(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointViewLimits,
+    ) -> io::Result<Self> {
+        limits.validate()?;
         let path = path.as_ref();
         let lock_file = File::open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_shared(&lock_file)?;
         crate::directory::verify_lock_identity(path, &lock_file)?;
-        Self::open_locked(path, checkpoint.as_ref(), trusted_digest, lock_file)
+        Self::open_locked_with_limits(path, checkpoint.as_ref(), trusted_digest, lock_file, limits)
     }
 
     // The caller owns a shared or exclusive lock for the entire view lifetime.
@@ -102,14 +155,25 @@ impl CheckpointView {
         trusted_digest: &[u8; 32],
         lock_file: File,
     ) -> io::Result<Self> {
+        Self::open_locked_with_limits(
+            path,
+            checkpoint,
+            trusted_digest,
+            lock_file,
+            CheckpointViewLimits::default(),
+        )
+    }
+
+    pub(crate) fn open_locked_with_limits(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        lock_file: File,
+        limits: CheckpointViewLimits,
+    ) -> io::Result<Self> {
+        limits.validate()?;
         let (log, boundary) = Log::open_checkpoint_view(path)?;
         let checkpoint = File::open(checkpoint)?;
-        if checkpoint.metadata()?.len() > MAX_CHECKPOINT_VIEW_FILE_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "checkpoint exceeds bounded view size",
-            ));
-        }
         let mut blocks = Vec::new();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;
@@ -119,6 +183,7 @@ impl CheckpointView {
             boundary,
             None,
             trusted_digest,
+            Some(limits.max_file_bytes),
             |offset, key_len, key, tail, _| {
                 let size = key_len.len() + key.len() + tail.len();
                 if current
@@ -128,7 +193,7 @@ impl CheckpointView {
                     blocks.push(current.take().expect("current block").finish());
                 }
                 if current.is_none() {
-                    if blocks.len() >= MAX_CHECKPOINT_VIEW_BLOCKS {
+                    if blocks.len() >= limits.max_blocks {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
                             "checkpoint has too many view blocks",
@@ -166,6 +231,7 @@ impl CheckpointView {
             keys,
             peak,
             trusted_digest: *trusted_digest,
+            limits,
             has_tail,
             witnessed_boundary: boundary,
             _lock_file: Some(lock_file),
@@ -213,6 +279,7 @@ impl CheckpointView {
             keys: self.keys,
             peak: self.peak,
             trusted_digest: self.trusted_digest,
+            limits: self.limits,
             has_tail: self.has_tail,
             witnessed_boundary: self.witnessed_boundary,
             _lock_file: None,
@@ -229,6 +296,7 @@ impl CheckpointView {
             self.witnessed_boundary,
             None,
             &self.trusted_digest,
+            Some(self.limits.max_file_bytes),
             |_, _, _, _, _| {
                 count += 1;
                 Ok(())
