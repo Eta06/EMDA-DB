@@ -275,6 +275,21 @@ The [recorded run](../benchmarks/results/2026-11-04-transaction-comparison.json)
 
 Read-set validation removed the observed disjoint-key conflicts, but did not improve eight-client throughput or tail latency in this sample. Both prototype modes had substantially higher p99 than SQLite, while SQLite's worst observed operation in each run was longer. SQLite's busy waits are not counted as conflicts. The p99 for eight clients is based on 800 operations per run, and the run-level ranges are wide: disjoint read-set p99 ranged from 23.6 to 83.9 ms. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.91% during setup, measurement and cleanup. This points to a need to investigate writer admission and fairness; it does not prove the cause or establish a general ranking.
 
+An independent [follow-up run](../benchmarks/results/2026-11-04-transaction-fifo-comparison.json) includes the opt-in FIFO mode alongside the unchanged transaction modes and SQLite. The table shows eight clients and medians of five runs per mode:
+
+| Workload | Mode | Transactions/s | p50 | p99 | Maximum | Conflicts |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Disjoint | Conservative | 3,562 | 0.25 ms | 45.18 ms | 188.2 ms | 171 |
+| Disjoint | Read set | 3,554 | 0.28 ms | 31.64 ms | 98.8 ms | 0 |
+| Disjoint | Read set + FIFO | 3,313 | 2.34 ms | 3.60 ms | 4.3 ms | 0 |
+| Disjoint | SQLite | 1,722 | 0.31 ms | 3.88 ms | 430.5 ms | — |
+| Shared | Conservative | 3,578 | 0.25 ms | 36.03 ms | 187.4 ms | 128 |
+| Shared | Read set | 3,610 | 0.25 ms | 32.31 ms | 190.3 ms | 117 |
+| Shared | Read set + FIFO | 2,790 | 0.34 ms | 30.69 ms | 255.4 ms | 2,935 |
+| Shared | SQLite | 1,699 | 0.34 ms | 3.08 ms | 430.9 ms | — |
+
+For disjoint keys, FIFO reduced the sampled p99 and maximum while raising median latency and lowering throughput. For shared keys it caused far more retries and lower throughput; it should not be assumed faster. The disjoint FIFO p99 ranged from 2.94 to 4.33 ms and SQLite's from 1.05 to 34.03 ms, so the small observed median difference is not evidence of a sustained advantage. Each p99 uses 800 operations per run. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 6.67% during setup, measurement and cleanup. As above, SQLite busy waits are not counted as conflicts, and these are one-VM measurements rather than a general ranking.
+
 ## Separate-copy compaction comparison
 
 `examples/compaction_bench.rs` prepares a synthetic store with 64-byte values, overwrites half of its keys, deletes one eighth, times a verified `compact_to` operation and checks selected live and deleted values after reopening the copy. `scripts/compaction_compare.py` alternates two separately built binaries across fresh fixtures, records each run and VM/cgroup noise, and reports medians and ranges. This measures separate-copy compaction, which blocks source mutations; it does not measure online compaction or physical power-loss behavior.
