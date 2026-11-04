@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add bounded array membership, any/all and exact-length document query predicates. These new `DocumentFilter` variants require downstream exhaustive matches to be updated.
+
 - Add an opt-in, stoppable ordinary-store reclamation worker with log-size and growth thresholds and explicit handoff/cleanup failure reporting.
 
 - Record verified online compaction retention-versus-reclamation timings and named log lengths.

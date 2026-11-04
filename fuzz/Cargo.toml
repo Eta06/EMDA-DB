@@ -180,3 +180,9 @@ path = "fuzz_targets/online_reclamation_worker.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "document_array_queries"
+path = "fuzz_targets/document_array_queries.rs"
+test = false
+doc = false
+bench = false
