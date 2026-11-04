@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse transaction-scoped collection metadata when a planned query probes its selected index.
+
 - Record a paired scan, planned-query, explicit-index and SQLite document comparison, including raw samples and VM noise.
 
 - Add opt-in rule-based unique-equality index selection for bounded filtered document queries, with a scan fallback and access-path reporting.

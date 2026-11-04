@@ -77,7 +77,7 @@ impl DocumentTransaction<'_, '_> {
         };
         // A valid unique index has at most one match. Fetch two so a corrupt
         // duplicate cannot silently produce a truncated query result.
-        let page = self.query_index(
+        let page = self.query_index_with_metadata(
             collection,
             &index.name,
             &IndexQuery {
@@ -85,6 +85,7 @@ impl DocumentTransaction<'_, '_> {
                 limit: 2,
                 ..Default::default()
             },
+            &metadata,
         )?;
         if page.documents.len() > 1 {
             return Err(io::Error::new(

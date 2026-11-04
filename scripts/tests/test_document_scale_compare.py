@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from document_scale_compare import OPERATIONS, validate_result
+from document_scale_compare import OPERATIONS, targets_for_size, validate_result
 
 
 class ScaleComparisonTests(unittest.TestCase):
@@ -24,6 +24,14 @@ class ScaleComparisonTests(unittest.TestCase):
             validate_result(result, "prototype-scan", 100, 2)
         result["query_mode"] = "index"
         validate_result(result, "prototype-index", 100, 2)
+
+    def test_plan_comparison_uses_old_planned_binary_and_omits_oversized_scan(self):
+        small = targets_for_size(100, "new", "old", True)
+        large = targets_for_size(3000, "new", "old", True)
+        self.assertEqual(small[0], ("scan", "prototype-scan", "new"))
+        self.assertIn(("before-planned", "prototype-planned", "old"), small)
+        self.assertIn(("before-planned", "prototype-planned", "old"), large)
+        self.assertFalse(any(entry[0] == "scan" for entry in large))
 
     def test_rejects_failed_reopen_or_missing_samples(self):
         for change in ("reopen", "samples", "size", "invalid_sample", "rate", "format"):

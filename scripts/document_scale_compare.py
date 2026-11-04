@@ -45,12 +45,27 @@ def validate_result(result, backend, size, cycles):
             raise ValueError(f"invalid {operation} sample")
 
 
+def targets_for_size(size, binary, baseline_binary, compare_plans):
+    if compare_plans:
+        targets = [("planned", "prototype-planned", binary),
+                   ("explicit", "prototype-index", binary), ("sqlite", "sqlite", binary)]
+        if baseline_binary is not None:
+            targets.insert(0, ("before-planned", "prototype-planned", baseline_binary))
+        if size < 1024:
+            targets.insert(0, ("scan", "prototype-scan", binary))
+        return targets
+    if baseline_binary is not None:
+        return [("before", "prototype", baseline_binary),
+                ("after", "prototype", binary), ("sqlite", "sqlite", binary)]
+    return [("prototype", "prototype", binary), ("sqlite", "sqlite", binary)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True)
     parser.add_argument("--binary", required=True)
     parser.add_argument("--baseline-binary")
-    parser.add_argument("--compare-plans", action="store_true", help="compare complete scans, planned unique-index queries, and SQLite")
+    parser.add_argument("--compare-plans", action="store_true", help="compare scans, planned and explicit-index queries, and SQLite")
     parser.add_argument("--output", required=True)
     parser.add_argument("--sizes", default="0,100,1000,3000")
     parser.add_argument("--rounds", type=int, default=4)
@@ -63,7 +78,6 @@ def main():
     allowed = sorted(os.sched_getaffinity(0))
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or (args.baseline_binary is not None and not Path(args.baseline_binary).is_file())
-            or (args.compare_plans and args.baseline_binary is not None)
             or os.path.lexists(args.output) or len(allowed) < 2 or not sizes
             or len(set(sizes)) != len(sizes) or any(not 0 <= size <= 5000 for size in sizes)
             or not 2 <= args.rounds <= 50 or not 1 <= args.cycles <= 100000):
@@ -84,7 +98,7 @@ def main():
         "sizes": sizes, "rounds": args.rounds, "cycles": args.cycles, "runs": [], "failures": [],
     }
     if args.compare_plans:
-        report["scope"] = "Single client; prototype complete scan, rule-based unique-equality plan, explicit index lookup, and SQLite expression-index lookup. SQLite returns JSON text; the prototype decodes and validates JSON. Scan runs are omitted when the collection exceeds the 1024-document limit. Preparation and recovery verification are outside operation timers but included in telemetry. Not a concurrency, power-loss or universal ranking."
+        report["scope"] = "Single client; prototype complete scan, rule-based unique-equality plan, optional previous planned binary, explicit index lookup, and SQLite expression-index lookup. SQLite returns JSON text; the prototype decodes and validates JSON. Scan runs are omitted when the collection exceeds the 1024-document limit. Preparation and recovery verification are outside operation timers but included in telemetry. Not a concurrency, power-loss or universal ranking."
     output = Path(args.output)
     with output.open("x", encoding="utf-8") as file:
         json.dump(report, file, indent=2)
@@ -93,15 +107,8 @@ def main():
     def save():
         output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
-    targets = [("prototype", "prototype", args.binary), ("sqlite", "sqlite", args.binary)]
-    if args.baseline_binary:
-        targets = [("before", "prototype", args.baseline_binary),
-                   ("after", "prototype", args.binary), ("sqlite", "sqlite", args.binary)]
     for size_index, size in enumerate(sizes):
-        if args.compare_plans:
-            targets = [("planned", "prototype-planned", args.binary), ("explicit", "prototype-index", args.binary), ("sqlite", "sqlite", args.binary)]
-            if size < 1024:
-                targets.insert(0, ("scan", "prototype-scan", args.binary))
+        targets = targets_for_size(size, args.binary, args.baseline_binary, args.compare_plans)
         for round_index in range(args.rounds):
             rotation = (size_index + round_index) % len(targets)
             order = targets[rotation:] + targets[:rotation]

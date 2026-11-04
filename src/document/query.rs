@@ -2,7 +2,7 @@
 use super::{
     index::{self, IndexValue},
     key,
-    transaction::DocumentTransaction,
+    transaction::{DocumentTransaction, Metadata},
 };
 use serde_json::Value;
 use std::io;
@@ -158,6 +158,19 @@ impl DocumentTransaction<'_, '_> {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
         let metadata = self.metadata(collection)?;
+        self.query_index_with_metadata(collection, name, query, &metadata)
+    }
+
+    pub(super) fn query_index_with_metadata(
+        &self,
+        collection: &str,
+        name: &str,
+        query: &IndexQuery,
+        metadata: &Metadata,
+    ) -> io::Result<DocumentPage> {
+        if query.limit == 0 || query.limit > MAX_QUERY_DOCUMENTS {
+            return Err(key::invalid("query limit must be between 1 and 256"));
+        }
         let definition = metadata
             .indexes
             .iter()

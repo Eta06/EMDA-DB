@@ -375,3 +375,68 @@ fn missing_index_entries_require_integrity_verification() {
         ErrorKind::InvalidData
     );
 }
+
+fn changed_index_definition_conflicts(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index("c", index("email", &["email"], true, None))
+        .unwrap();
+    db.insert("c", "id", &json!({"email":"value"})).unwrap();
+    let read = Barrier::new(2);
+    let changed = Barrier::new(2);
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            read.wait();
+            db.drop_index("c", "email").unwrap();
+            changed.wait();
+        });
+        let outcome = db.transaction_with_read_set(|tx| {
+            let query = DocumentQuery {
+                filter: equal("email", json!("value")),
+                ..Default::default()
+            };
+            let result = tx.query_planned("c", &query)?;
+            assert_eq!(result.result.documents.len(), 1);
+            read.wait();
+            changed.wait();
+            tx.put_raw(b"changed-index", b"must roll back")?;
+            Ok(())
+        });
+        assert_eq!(outcome.unwrap_err().kind(), ErrorKind::WouldBlock);
+        writer.join().unwrap();
+    });
+    assert_eq!(
+        db.transaction(|tx| tx.get_raw(b"changed-index")).unwrap(),
+        None
+    );
+    assert_eq!(
+        db.query_planned(
+            "c",
+            &DocumentQuery {
+                filter: equal("email", json!("value")),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .access,
+        DocumentQueryAccess::CollectionScan
+    );
+}
+
+#[test]
+fn planned_query_conflicts_when_its_index_is_dropped_concurrently() {
+    for checkpoint_mode in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("checkpoint");
+        let store = Store::open(&path).unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        if checkpoint_mode {
+            drop(store);
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            changed_index_definition_conflicts(&DocumentDatabase::with_checkpoint_store(&store));
+        } else {
+            changed_index_definition_conflicts(&DocumentDatabase::new(&store));
+        }
+    }
+}
