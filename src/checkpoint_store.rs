@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod transaction;
-pub use transaction::CheckpointTransaction;
+pub use transaction::{CheckpointTransaction, CheckpointTransactionMode};
 
 struct State {
     view: RecoveredCheckpointView,

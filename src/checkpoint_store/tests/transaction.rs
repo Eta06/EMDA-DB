@@ -190,3 +190,192 @@ fn fifo_other_writes_still_conflict_and_callback_panic_releases_turn() {
         .transaction_with_fifo(|tx| tx.put(b"later", b"committed"))
         .unwrap();
 }
+
+#[test]
+fn fifo_deadline_expires_in_queue_without_running_callback_or_stranding_followers() {
+    use crate::{CheckpointTransactionMode, TimedTransactionError};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let turn = store.transaction_queue.enter().unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let waiting = Arc::clone(&store);
+    let was_called = Arc::clone(&called);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let worker = std::thread::spawn(move || {
+        waiting.transaction_until(deadline, CheckpointTransactionMode::Fifo, |_| {
+            was_called.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+    });
+    wait_for_queue(&store, 2);
+    assert!(matches!(
+        worker.join().unwrap(),
+        Err(TimedTransactionError::DeadlineExceeded)
+    ));
+    assert!(!called.load(Ordering::SeqCst));
+    assert_eq!(store.transaction_queue.queued_for_test(), 1);
+    drop(turn);
+    store
+        .transaction_with_fifo(|tx| tx.put(b"later", b"ok"))
+        .unwrap();
+}
+
+#[test]
+fn expiry_waiting_for_state_lock_aborts_before_commit() {
+    use crate::{CheckpointTransactionMode, TimedTransactionError};
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, Instant};
+    for mode in [
+        CheckpointTransactionMode::Conservative,
+        CheckpointTransactionMode::Fifo,
+    ] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let store =
+            Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+        let (staged_send, staged_receive) = mpsc::channel();
+        let (resume_send, resume_receive) = mpsc::channel();
+        let waiting = Arc::clone(&store);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let worker = std::thread::spawn(move || {
+            waiting.transaction_until(deadline, mode, |tx| {
+                tx.put(b"staged", b"discarded")?;
+                staged_send.send(()).unwrap();
+                resume_receive.recv().unwrap();
+                Ok(())
+            })
+        });
+        staged_receive
+            .recv_timeout(Duration::from_secs(5))
+            .expect("callback did not stage");
+        let state = store.write().unwrap();
+        resume_send.send(()).unwrap();
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+        );
+        drop(state);
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(TimedTransactionError::DeadlineExceeded)
+        ));
+        assert_eq!(store.get(b"staged").unwrap(), None);
+    }
+}
+
+struct BlockingSyncLog {
+    file: File,
+    entered: std::sync::mpsc::Sender<()>,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl LogIo for BlockingSyncLog {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len())
+    }
+    fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        FileExt::read_exact_at(&self.file, bytes, offset)
+    }
+    fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
+        (&self.file).write_all(bytes)
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.entered.send(()).map_err(io::Error::other)?;
+        self.resume
+            .lock()
+            .unwrap()
+            .recv()
+            .map_err(io::Error::other)?;
+        self.file.sync_data()
+    }
+}
+
+#[test]
+fn deadline_passed_during_sync_does_not_report_a_successful_commit_as_aborted() {
+    use crate::CheckpointTransactionMode;
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::{Duration, Instant};
+    let (_dir, path, checkpoint, digest) = fixture();
+    let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap();
+    let (entered_send, entered_receive) = mpsc::channel();
+    let (resume_send, resume_receive) = mpsc::channel();
+    store.log.replace_io_for_test(Box::new(BlockingSyncLog {
+        file,
+        entered: entered_send,
+        resume: Mutex::new(resume_receive),
+    }));
+    let store = Arc::new(store);
+    let writing = Arc::clone(&store);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let worker = std::thread::spawn(move || {
+        writing.transaction_until(deadline, CheckpointTransactionMode::Fifo, |tx| {
+            tx.put(b"left", b"one")?;
+            tx.put(b"right", b"two")
+        })
+    });
+    let entered = entered_receive.recv_timeout(Duration::from_secs(5));
+    if entered.is_ok() {
+        std::thread::sleep(
+            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+        );
+    }
+    let _ = resume_send.send(());
+    let result = worker.join().unwrap();
+    entered.expect("transaction did not reach log synchronization");
+    result.unwrap();
+    assert_eq!(
+        store.get_many(&[b"left", b"right"]).unwrap(),
+        vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+    );
+    drop(store);
+    let recovered = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        recovered.get_many(&[b"left", b"right"]).unwrap(),
+        vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+    );
+}
+
+#[test]
+fn sync_timeout_is_an_unknown_operation_error_not_confirmed_expiry() {
+    use crate::{CheckpointTransactionMode, TimedTransactionError};
+    use std::time::{Duration, Instant};
+    let (_dir, path, checkpoint, digest) = fixture();
+    let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap();
+    store.log.replace_io_for_test(Box::new(FaultLog {
+        file,
+        fault: LogFault::SyncTimeout,
+    }));
+    let result = store.transaction_until(
+        Instant::now() + Duration::from_secs(30),
+        CheckpointTransactionMode::Fifo,
+        |tx| {
+            tx.put(b"left", b"one")?;
+            tx.put(b"right", b"two")
+        },
+    );
+    match result {
+        Err(TimedTransactionError::Operation(error)) => {
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut)
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+    failed_instance_rejects_all_operations(&store, &path);
+    drop(store);
+    let recovered = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        recovered.get_many(&[b"left", b"right"]).unwrap(),
+        vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+    );
+}

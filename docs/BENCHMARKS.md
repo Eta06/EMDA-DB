@@ -373,6 +373,19 @@ A [checkpoint-backed transaction comparison](../benchmarks/results/2026-11-04-ch
 
 The checkpoint path's throughput was higher than SQLite's for this workload, but its sampled median and p99 latencies were higher. SQLite busy waits are included in latency but do not appear as conflict counts. The p99 is based on 800 completed transactions per run. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.62% across setup, measurement and cleanup. The result uses a small, warm-cache data set on one VM; it excludes checkpoint creation from timing and does not establish a general ranking or a durability guarantee.
 
+The [FIFO follow-up](../benchmarks/results/2026-11-04-checkpoint-fifo-comparison.json) used revision `9b8d379`, SQLite 3.49.1 and five runs per case. It compares the default checkpoint transaction with the optional queue, which serializes participating callbacks and commits. Eight-client medians were:
+
+| Workload | Mode | Transactions/s | p50 | p99 | Conflicts |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Disjoint | Checkpoint | 3,462 | 0.77 ms | 26.51 ms | 110 |
+| Disjoint | Checkpoint FIFO | 3,305 | 2.34 ms | 4.62 ms | 0 |
+| Disjoint | SQLite | 1,707 | 0.33 ms | 1.53 ms | — |
+| Shared | Checkpoint | 3,646 | 0.72 ms | 25.75 ms | 84 |
+| Shared | Checkpoint FIFO | 3,496 | 2.20 ms | 4.66 ms | 0 |
+| Shared | SQLite | 1,746 | 0.24 ms | 1.72 ms | — |
+
+FIFO reduced sampled p99 and retries at the cost of higher median latency and slightly lower throughput. Its queue contains only participating transactions; a slow callback delays other participants and nonparticipating writes can still cause conflicts. SQLite's busy waits are included in latency, not conflict counts. Each p99 uses 800 operations per run. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.89% across setup, measurement and cleanup. These synthetic results are limited to one VM, small warm-cache data, and the specified transaction workload.
+
 ## Live-key byte limit comparison
 
 `scripts/key_byte_limit_compare.py` alternates the uncapped engine and the per-open live-key byte cap with one and four clients, using mixed and write-only workloads against 16 existing eight-byte keys. An optional baseline binary and revision add a third, rotated comparison. Each run uses the same synchronized write path, and the benchmark checks sampled values after reopening. The cap covers exactly the existing keys; it does not measure insertion or quota rejection. Runs report per-run latency percentiles and VM/cgroup noise. The filesystem and device determine what synchronization means in practice.

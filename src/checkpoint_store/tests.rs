@@ -41,6 +41,7 @@ enum LogFault {
     Panic(usize),
     SyncBefore,
     SyncAfter,
+    SyncTimeout,
 }
 
 struct FaultLog {
@@ -70,6 +71,10 @@ impl LogIo for FaultLog {
     fn sync_data(&self) -> io::Result<()> {
         match self.fault {
             LogFault::SyncBefore => Err(io::Error::other("injected log sync failure")),
+            LogFault::SyncTimeout => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "injected log sync timeout",
+            )),
             LogFault::SyncAfter => {
                 self.file.sync_data()?;
                 Err(io::Error::other("injected post-sync failure"))

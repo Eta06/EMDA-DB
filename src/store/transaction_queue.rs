@@ -40,7 +40,7 @@ impl TransactionQueue {
         self.enter_until(None)
     }
 
-    pub(super) fn enter_until(&self, deadline: Option<Instant>) -> io::Result<Turn<'_>> {
+    pub(crate) fn enter_until(&self, deadline: Option<Instant>) -> io::Result<Turn<'_>> {
         let waiter = Arc::new(Waiter {
             wake: Condvar::new(),
             owner: std::thread::current().id(),

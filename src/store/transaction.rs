@@ -58,7 +58,7 @@ impl From<io::Error> for TimedTransactionError {
 }
 
 impl TimedTransactionError {
-    fn into_io(self) -> io::Error {
+    pub(crate) fn into_io(self) -> io::Error {
         match self {
             Self::DeadlineExceeded => io::Error::new(io::ErrorKind::TimedOut, self),
             Self::Operation(error) => error,

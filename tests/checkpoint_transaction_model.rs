@@ -1,5 +1,8 @@
 //! Check short concurrent histories against a real-time serial reference model.
-use database_engine::{BatchOperation, CheckpointStore, CheckpointTransaction, Store};
+use database_engine::{
+    BatchOperation, CheckpointStore, CheckpointTransaction, CheckpointTransactionMode, Store,
+    TimedTransactionError,
+};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
@@ -113,10 +116,28 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                                 tx.put(b"y", &[next[1]])?;
                                 Ok([x, y])
                             };
-                            let result = if operation == 0 {
-                                store.transaction(action)
-                            } else {
-                                store.transaction_with_fifo(action)
+                            let result = match (operation, iteration % 2) {
+                                (0, 0) => store.transaction(action),
+                                (1, 0) => store.transaction_with_fifo(action),
+                                (operation, _) => store
+                                    .transaction_until(
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_secs(30),
+                                        if operation == 0 {
+                                            CheckpointTransactionMode::Conservative
+                                        } else {
+                                            CheckpointTransactionMode::Fifo
+                                        },
+                                        action,
+                                    )
+                                    .map_err(|error| match error {
+                                        TimedTransactionError::Operation(error) => error,
+                                        TimedTransactionError::DeadlineExceeded => {
+                                            panic!(
+                                                "model transaction exceeded its unexpired deadline"
+                                            )
+                                        }
+                                    }),
                             };
                             match result {
                                 Ok(observed) => Outcome::Transaction(Some(observed)),

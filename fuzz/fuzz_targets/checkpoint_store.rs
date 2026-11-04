@@ -1,6 +1,7 @@
 #![no_main]
 use database_engine::{
-    BatchOperation, COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointTransaction, Store,
+    BatchOperation, COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointTransaction,
+    CheckpointTransactionMode, Store,
 };
 use libfuzzer_sys::fuzz_target;
 use std::collections::{BTreeMap, BTreeSet};
@@ -300,12 +301,22 @@ fuzz_target!(|data: &[u8]| {
                 }
                 Ok(())
             };
-            let result = if bytes[0] & 16 == 0 {
-                store.transaction(action)
-            } else {
-                store.transaction_with_fifo(action)
+            let succeeded = match (bytes[0] >> 4) & 3 {
+                0 => store.transaction(action).is_ok(),
+                1 => store.transaction_with_fifo(action).is_ok(),
+                mode => store
+                    .transaction_until(
+                        std::time::Instant::now() + std::time::Duration::from_secs(60),
+                        if mode == 2 {
+                            CheckpointTransactionMode::Conservative
+                        } else {
+                            CheckpointTransactionMode::Fifo
+                        },
+                        action,
+                    )
+                    .is_ok(),
             };
-            assert_eq!(result.is_ok(), allowed && !abort);
+            assert_eq!(succeeded, allowed && !abort);
             if allowed && !abort {
                 touched = next_touched;
                 tail += encoded;

@@ -27,7 +27,7 @@ fn every_partial_append_and_sync_failure_poison_until_reopen() {
         drop(store);
         let complete = match fault {
             LogFault::Partial(n) | LogFault::Panic(n) => n == 0 || n >= length,
-            LogFault::SyncBefore | LogFault::SyncAfter => true,
+            LogFault::SyncBefore | LogFault::SyncAfter | LogFault::SyncTimeout => true,
         };
         let reopened = retry_lock(|| Store::open(&path));
         if complete {

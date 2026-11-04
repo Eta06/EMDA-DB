@@ -1,9 +1,20 @@
 //! Conservative optimistic transactions over the checkpoint-backed store.
 use super::*;
+use crate::TimedTransactionError;
 use crate::log::ValueLocation;
 use crate::record::batch::{MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 use crate::transaction_budget::PendingReservation;
 use std::ops::ControlFlow;
+use std::time::Instant;
+
+/// Admission mode for a deadline-limited checkpoint-backed transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckpointTransactionMode {
+    /// Optimistic transaction without FIFO admission.
+    Conservative,
+    /// Admit participating callbacks and commits through the FIFO queue.
+    Fifo,
+}
 
 /// A bounded, process-local transaction on a checkpoint-backed store.
 ///
@@ -15,6 +26,7 @@ use std::ops::ControlFlow;
 pub struct CheckpointTransaction<'a> {
     store: &'a CheckpointStore,
     generation: u64,
+    deadline: Option<Instant>,
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     encoded_bytes: usize,
 }
@@ -34,6 +46,15 @@ impl Drop for CheckpointTransaction<'_> {
 
 impl CheckpointTransaction<'_> {
     fn state(&self) -> io::Result<RwLockReadGuard<'_, State>> {
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "transaction deadline exceeded",
+            ));
+        }
         let state = self.store.read()?;
         if state.generation != self.generation {
             return Err(conflict());
@@ -230,7 +251,8 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false)
+        self.run_transaction(action, false, None)
+            .map_err(TimedTransactionError::into_io)
     }
 
     /// Runs a conservative transaction with FIFO admission.
@@ -244,29 +266,68 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true)
+        self.run_transaction(action, true, None)
+            .map_err(TimedTransactionError::into_io)
+    }
+
+    /// Runs a conservative or FIFO transaction with an operation-boundary deadline.
+    ///
+    /// `DeadlineExceeded` means this transaction's staged changes were not
+    /// submitted for commit. `Operation` wraps callback and I/O errors; a
+    /// commit I/O timeout may have an unknown outcome. A callback that forwards
+    /// a timed-out read returns `Operation`. FIFO waiters can expire in the
+    /// queue; callbacks, state-lock waits and I/O are not interrupted. A commit
+    /// that has started can succeed after its deadline. External callback
+    /// effects are never rolled back.
+    pub fn transaction_until<T>(
+        &self,
+        deadline: Instant,
+        mode: CheckpointTransactionMode,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> Result<T, TimedTransactionError> {
+        self.run_transaction(
+            action,
+            matches!(mode, CheckpointTransactionMode::Fifo),
+            Some(deadline),
+        )
     }
 
     fn run_transaction<T>(
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
         fifo: bool,
-    ) -> io::Result<T> {
+        deadline: Option<Instant>,
+    ) -> Result<T, TimedTransactionError> {
+        check_deadline(deadline)?;
         // Admission covers both callback and commit. Release the write guard
         // and staged reservations before releasing the queue turn on unwind.
         let _turn = if fifo {
-            Some(self.transaction_queue.enter()?)
+            Some(
+                self.transaction_queue
+                    .enter_until(deadline)
+                    .map_err(|error| {
+                        if error.kind() == io::ErrorKind::TimedOut {
+                            TimedTransactionError::DeadlineExceeded
+                        } else {
+                            TimedTransactionError::Operation(error)
+                        }
+                    })?,
+            )
         } else {
             None
         };
+        check_deadline(deadline)?;
         let generation = self.read()?.generation;
+        check_deadline(deadline)?;
         let mut transaction = CheckpointTransaction {
             store: self,
             generation,
+            deadline,
             staged: BTreeMap::new(),
             encoded_bytes: 4,
         };
         let result = action(&mut transaction)?;
+        check_deadline(deadline)?;
         let operations = transaction
             .staged
             .iter()
@@ -281,17 +342,27 @@ impl CheckpointStore {
             Some(encode_payload(&operations)?)
         };
         let mut state = self.write()?;
+        check_deadline(deadline)?;
         if state.generation != generation {
-            return Err(conflict());
+            return Err(conflict().into());
         }
         if let Some(payload) = payload {
             let keys = operations
                 .iter()
                 .map(|operation| operation.fields().1)
                 .collect::<Vec<_>>();
+            check_deadline(deadline)?;
             self.commit(&mut state, Operation::Batch, &[0], &payload, &keys)?;
         }
         Ok(result)
+    }
+}
+
+fn check_deadline(deadline: Option<Instant>) -> Result<(), TimedTransactionError> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err(TimedTransactionError::DeadlineExceeded)
+    } else {
+        Ok(())
     }
 }
 
