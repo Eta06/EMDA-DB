@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Publish a partial-index comparison against verified SQLite plans, including raw results and an observed execution-order effect.
+
 - Select partial indexes for complete equality tuples and single-field ranges only when required query predicates prove the partial condition.
 
 - Harden metadata fault-test fixture reopens against transient inherited locks during parallel process-kill tests.

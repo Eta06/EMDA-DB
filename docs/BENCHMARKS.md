@@ -635,3 +635,15 @@ python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem 
   --output /path/to/new-compound-result.json --cases 100:10,1000:10,1000:100 \
   --rounds 4 --cycles 50
 ```
+
+### Partial document equality-query comparison
+
+The [`partial_query_bench`](../examples/partial_query_bench.rs) compares a nonunique partial index with collection and SQLite scans. Some inactive rows share the indexed value. SQLite plans are explicitly selected and checked; each result and the complete reopened data sets are verified. See the [report](PARTIAL_QUERY_COMPARISON_2026_11_04.md) for the observed execution-order effect and limitations.
+
+```sh
+cargo build --release --locked --example partial_query_bench
+python3 scripts/nonunique_query_compare.py --directory /path/to/test-filesystem \
+  --binary target/release/examples/partial_query_bench --index-name docs_partial \
+  --output /path/to/new-partial-result.json --cases 100:10,1000:10,1000:100 \
+  --rounds 4 --cycles 50
+```

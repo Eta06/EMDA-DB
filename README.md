@@ -40,6 +40,8 @@ A [scalar range-query comparison](docs/RANGE_QUERY_COMPARISON_2026_11_04.md) mea
 
 A [compound equality-query comparison](docs/COMPOUND_QUERY_COMPARISON_2026_11_04.md) measures a complete two-field tuple against full scans and SQLite, with raw samples and a repeat.
 
+A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.
+
 A [rejected scan-exhaustion experiment](docs/SCAN_EXHAUSTION_EXPERIMENT_2026_11_04.md) records mixed results and retains its unmerged patches and raw samples.
 
 A [retired-log reclamation comparison](docs/ONLINE_RECLAMATION_COMPARISON_2026_11_04.md) records its extra cleanup time and lower named log lengths, along with the filesystem and workload limitations.
