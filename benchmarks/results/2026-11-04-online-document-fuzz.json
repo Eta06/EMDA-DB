@@ -1,0 +1,49 @@
+{
+  "date_utc": "2026-11-04",
+  "production_revision": "ad0fe2ad336bcf1c4908f0e3ab5bb573befa44a4",
+  "revision_note": "Fuzz binaries use the production code at this revision; only test-only source changed after the fuzz runs began.",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": "/tmp tmpfs",
+  "runs": [
+    {
+      "target": "online_compaction",
+      "seed": 3070221679,
+      "executions": 7841,
+      "seconds": 181,
+      "max_input_bytes": 96,
+      "binary_sha256": "88e941c9881919856edd8219ae938574e051842094c2ebac3f1d6b28868f4b61",
+      "corpus_seed_directory": "fuzz/online-compaction-seeds",
+      "result": "completed without a reported finding"
+    },
+    {
+      "target": "document_online_index",
+      "seed": 2999537861,
+      "executions": 14802,
+      "seconds": 181,
+      "max_input_bytes": 64,
+      "binary_sha256": "1e2a6b3dd400f92426d2dc784ccfc3f5fea2546258610e232f0b72d52bad8609",
+      "corpus_seed_directory": "fuzz/document-online-index-seeds",
+      "result": "completed without a reported finding"
+    },
+    {
+      "target": "document_schema_migration",
+      "seed": 2988718865,
+      "executions": 16292,
+      "seconds": 181,
+      "max_input_bytes": 64,
+      "binary_sha256": "8881ebaf3cf3d07d6e98fad00e96aae80de4842eed3742f14c4a429c675efaf2",
+      "corpus_seed_directory": "fuzz/document-schema-migration-seeds",
+      "result": "completed without a reported finding"
+    }
+  ],
+  "limitations": [
+    "Short coverage-guided model campaigns are not exhaustive.",
+    "The fuzz targets do not model physical power loss or off-host recovery.",
+    "The compaction target models serial operations; separate deterministic tests exercise concurrency."
+  ],
+  "rustc": "1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "0.13.2",
+  "requested_seconds_per_target": 180,
+  "per_input_timeout_seconds": 10,
+  "concurrency": "three target processes ran concurrently on the same VM"
+}

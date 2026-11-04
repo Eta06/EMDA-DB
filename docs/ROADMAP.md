@@ -4,6 +4,12 @@ The product name is a placeholder. This roadmap describes intended work, not imp
 
 See [foundation and storage follow-up](FOUNDATION_FOLLOW_UP.md) for deferred validation and the current priority 0/1 checklist.
 
+## Step numbering and current status
+
+In the implementation discussion, **step 1** refers to priority 0 below (correctness), **step 2** to priority 1 (durable core), **step 3** to priority 2 (document model), and **step 4** to priority 3 (SQL). Steps 1–3 are still in progress; the checklists below and in the linked follow-up documents identify completed and remaining work. An experimental feature or a passing short test campaign is not the same as its full exit criteria.
+
+The physical power-loss test and independent off-host restore drill remain specifically deferred for later sessions. They are separate from the still-testable work: bounded writable-index and memory management, automatic safe log reclamation and bounded recovery, broader overload/resource controls, richer document queries and operators, and more representative concurrency, fault and performance evidence. See [foundation follow-up](FOUNDATION_FOLLOW_UP.md) and [document follow-up](DOCUMENT_FOLLOW_UP.md) for details.
+
 ## Current baseline
 
 The prototype provides byte-key operations, a checksummed append log, fail-closed handling of incomplete records, concurrent readers and bounded group commit, experimental backup/restore, separate-copy compaction, and an advisory ownership lock. It is not production-ready. The in-memory key index is unbounded, live-store compaction is an opt-in ordinary-store prototype, multi-key transactions are an early bounded prototype, and some durability and corruption cases remain unresolved. See [architecture and limitations](ARCHITECTURE.md).

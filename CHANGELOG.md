@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Recorded workspace-overlay document recovery checks and a selected-syscall diagnostic for the initial document comparison.
+
+- Expanded online-compaction source-failure checks and recorded longer compaction, index and schema model-fuzz runs.
+
 - Concurrent increment histories verify acknowledged writes across repeated guarded compaction handoffs and reopen.
 
 - An initial single-client JSON-document comparison records raw SQLite, PostgreSQL and MongoDB results and the limits of the workload and adapters.

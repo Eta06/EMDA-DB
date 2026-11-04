@@ -1,0 +1,55 @@
+{
+  "date_utc": "2026-11-04",
+  "test_revision": "b50c1fd614c7c699538506777e0d16fca7d90040",
+  "filesystem": "workspace overlay; backing device not independently verified",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "rust_profile": "release",
+  "suites": [
+    {
+      "suite": "document_online_index",
+      "passed": 12,
+      "failed": 0,
+      "log_sha256": "b1ff2ff643c63af79ac2cb4da8570105a7a46513dff890077d11e40c27209000"
+    },
+    {
+      "suite": "document_schema_migration",
+      "passed": 8,
+      "failed": 0,
+      "log_sha256": "59d727f59b8c6e824c9ee1604e3adfa7b0b3f53aa529aa9c69d21b1fa6ecf3ab"
+    },
+    {
+      "suite": "document_recovery",
+      "passed": 5,
+      "failed": 0,
+      "log_sha256": "81bcbd30aa954be97d83c91f7aea4f9182bc7a531dca4dfe349ac72918046a3b"
+    },
+    {
+      "suite": "metadata_document_faults",
+      "passed": 1,
+      "failed": 0,
+      "log_sha256": "5869354cad5f5f54ef13a21e71b15eb8726167a6b87cbf7c711e6c2ac0c25eba"
+    },
+    {
+      "suite": "metadata_index_faults",
+      "passed": 1,
+      "failed": 0,
+      "log_sha256": "418803571dcbcfc8ac5fd6bf5c7d6f9da98e9d650e662b6d2f2c8b0378cdf5ae"
+    },
+    {
+      "suite": "metadata_schema_faults",
+      "passed": 1,
+      "failed": 0,
+      "log_sha256": "268eb5a22982c7ea49a841bfe448461f22793f7b3b320d73699a262c99a74e31"
+    },
+    {
+      "suite": "online_compaction",
+      "passed": 21,
+      "failed": 0,
+      "log_sha256": "565171298dd83b9eab2913158730e84976c1371426ef35b1afe1018cd4151359"
+    }
+  ],
+  "limitations": [
+    "Tests simulate process termination and injected failures on a running OS.",
+    "These are not physical power-loss, off-host restore, or hardware-failure tests."
+  ]
+}

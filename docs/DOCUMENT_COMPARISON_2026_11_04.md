@@ -13,6 +13,12 @@ Each round performs 20 warm-up cycles and 300 measured cycles. A cycle creates a
 
 SQLite had the lower median on every operation in this run. Tail latency varied: PostgreSQL's four round rates ranged from approximately 1,205 to 3,678 operations/s, and its slowest observed replacement took 108 ms. The prototype's slowest delete took 3.33 ms. See the raw samples and individual rounds rather than treating pooled percentiles as a production forecast.
 
+## Selected system-call diagnostic
+
+A separate `strace -c` run used the same release binary and local overlay, with 20 warm-up and 20 measured cycles per engine. It traced only selected read, write, synchronization and extended-attribute calls and included setup and reopen. The prototype emitted 614 `pread64`, 137 `fsync`, 246 `fgetxattr` and 123 `fsetxattr` calls; SQLite emitted 15 `pread64` and 130 `fsync` calls. The prototype's xattr calls identify the V3 witness path in this diagnostic run. See the [prototype](../benchmarks/results/2026-11-04-document-prototype-strace.txt) and [SQLite](../benchmarks/results/2026-11-04-document-sqlite-strace.txt) trace summaries.
+
+Tracing changes timings and the implementations use different caches, data representations and verification paths. The counts identify read amplification as a candidate for further profiling; they do not establish which calls caused the benchmark differences. Any caching or I/O change must preserve the existing synchronization, corruption-detection and recovery behavior.
+
 ## Workload and important differences
 
 - The prototype and SQLite run in-process from the same Rust release binary. PostgreSQL and MongoDB run in separate disposable containers and use Python `psycopg` and `pymongo` over a loopback TCP connection, so their measurements include different client and network overhead. Container servers were pinned to CPUs 1–3; the driver and in-process backends used CPU 0. The VM had a four-CPU cgroup quota, an Intel Xeon Platinum 8573C CPU, and an overlay filesystem.
