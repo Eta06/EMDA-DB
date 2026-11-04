@@ -56,5 +56,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "recovered_view_order"
+path = "fuzz_targets/recovered_view_order.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

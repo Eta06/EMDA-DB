@@ -6,6 +6,7 @@ use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io;
+use std::ops::ControlFlow;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
@@ -65,12 +66,13 @@ impl BlockBuilder {
 /// after the checkpoint boundary, and therefore is not necessarily current.
 /// The trusted digest must be stored independently from the checkpoint file.
 pub struct CheckpointView {
-    log: Log,
+    pub(crate) log: Log,
     checkpoint: File,
     blocks: Vec<Block>,
     prefix: u64,
     keys: u64,
     has_tail: bool,
+    pub(crate) witnessed_boundary: u64,
     _lock_file: File,
 }
 
@@ -147,6 +149,7 @@ impl CheckpointView {
             prefix,
             keys,
             has_tail,
+            witnessed_boundary: boundary,
             _lock_file: lock_file,
         })
     }
@@ -252,12 +255,31 @@ impl CheckpointView {
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
         }
+        let mut result = Vec::new();
+        let mut size = 0_usize;
+        self.visit_entries(after, before, |key, location| {
+            if result.len() == limit || size + key.len() + location.length > MAX_SCAN_BYTES {
+                return Ok(ControlFlow::Break(()));
+            }
+            size += key.len() + location.length;
+            result.push((key.to_vec(), self.log.read(location)?));
+            Ok(ControlFlow::Continue(()))
+        })?;
+        Ok(result)
+    }
+
+    /// Visit verified checkpoint entries without reading their values.
+    /// Each borrowed key remains valid only for the duration of the callback.
+    pub(crate) fn visit_entries(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
+    ) -> io::Result<()> {
         let start = match after {
             Some(key) => self.preceding_block(key)?.unwrap_or(0),
             None => 0,
         };
-        let mut result = Vec::new();
-        let mut size = 0_usize;
         for block in self.blocks.iter().skip(start) {
             let bytes = self.read_block(block)?;
             let mut cursor = BlockCursor::new(&bytes, self.prefix);
@@ -266,16 +288,14 @@ impl CheckpointView {
                     continue;
                 }
                 if before.is_some_and(|bound| key >= bound) {
-                    return Ok(result);
+                    return Ok(());
                 }
-                if result.len() == limit || size + key.len() + location.length > MAX_SCAN_BYTES {
-                    return Ok(result);
+                if visit(key, location)?.is_break() {
+                    return Ok(());
                 }
-                size += key.len() + location.length;
-                result.push((key.to_vec(), self.log.read(location)?));
             }
         }
-        Ok(result)
+        Ok(())
     }
 }
 

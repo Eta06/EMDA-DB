@@ -11,6 +11,7 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 
 - [ ] Expand interruption and failure injection across initialization, commit, backup, restore, upgrade and every directory-sync boundary. Record which persistence states the model covers and does not cover.
 - [x] Exercise process termination during synchronized compaction staging and after publication before parent-directory sync. The latter establishes only what remains visible on the running OS, not what survives a physical power failure.
+- [x] Explicitly release privately owned compaction staging-store locks before reopening or publication; a duplicated descriptor regression test and repeated release-suite runs cover the handoff.
 - [x] Exercise process termination after backup and restore staging is synchronized and immediately after their publication. Verify the source/backup and the resulting copy or retry on the still-running OS; physical power failure remains untested.
 - [x] Exercise process termination at upgrade staging and publication for persistent V2 and V3 sources, and inject parent-directory sync failure. These process-level tests do not establish power-loss safety.
 - [x] Exercise process termination at checkpoint staging and publication, including cooperative cleanup while the operation is active and after it exits. This is not a physical power-loss test.
@@ -25,6 +26,7 @@ This is the handoff for work remaining from roadmap priorities 0 and 1. It is a 
 
 - [x] Add an explicit on-disk index checkpoint verified against a separately trusted digest and suffix replay, with historical peak accounting and fail-closed corruption/format checks. The checkpoint is a derived plaintext file, not a backup or a security boundary when its digest is attacker-controlled.
 - [x] Add a bounded-memory historical checkpoint reader with per-block integrity checks and a shared store lock. It does not validate or replay the later log tail and is not a live writable index.
+- [x] Add a read-only recovered checkpoint view that validates a bounded witnessed suffix and merges its key overlay with checkpoint point reads and scans. It rejects unacknowledged tails and holds a shared lock excluding cooperating writers; prefix hashing and total process memory remain unbounded.
 - [ ] Implement a live disk-backed index and bounded memory/cache management; opening a checkpoint still loads the full key index into memory and hashes the complete covered log prefix.
 - [x] Add verified, non-overwriting compaction into a separate store while keeping the source intact and blocking concurrent mutations during the copy. Bounded groups of ordinary records synchronize before verification and publication; append, sync and pre-publication failure paths are tested.
 - [ ] Design and implement automatic checkpoints, live/online compaction, garbage collection and bounded recovery. Explicit index checkpoints still hash the full covered prefix. Protect readers and snapshots during reclamation. Separate-copy compaction currently needs multiple in-memory indexes, requires manual switchover and does not include later source writes.

@@ -8,6 +8,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- A read-only recovered checkpoint view that validates and replays a bounded witnessed suffix into an in-memory key overlay, with ordered scans and fail-closed handling of unacknowledged tails.
+- Explicit release of privately owned compaction staging locks before reopening or publication, preventing an inherited descriptor from delaying the handoff.
 - In-flight log-byte reservations allow independent writes to share a sync under the per-open log-length cap without oversubscription.
 - The resource-limit comparison can measure the log-length cap as well as the live-key byte cap.
 - A paired overlay-filesystem comparison records throughput and latency tradeoffs for grouped writes under the log-length cap.

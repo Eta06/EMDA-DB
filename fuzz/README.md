@@ -31,3 +31,7 @@ The `log_limit` target models encoded record lengths and key/value state under
 a per-open log-length cap, including atomic batches, rejected writes and
 reopening. Its seeds are in `fuzz/log-limit-seeds`. It is single-threaded and
 does not replace concurrent reservation, I/O fault or power-loss tests.
+
+The `recovered_view_order` target compares point reads and bounded ordered scans
+against a reference map spanning a multi-block checkpoint and a mixed suffix.
+It exercises merged ordering, not concurrent writers or power-loss behavior.

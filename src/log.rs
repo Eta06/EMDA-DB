@@ -453,12 +453,51 @@ impl Log {
         start: Option<checkpoint::Loaded>,
         peak: &mut usize,
     ) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
-        let total = self.file.len()?;
-        let (mut index, mut offset) = match start {
+        let (mut index, offset) = match start {
             Some(checkpoint) => (checkpoint.index, checkpoint.prefix),
             None => (BTreeMap::new(), 0),
         };
         let mut live_key_bytes = 0_usize;
+        self.visit_records(offset, boundary, |key, location| {
+            match location {
+                Some(location) => {
+                    if max_live_keys
+                        .is_some_and(|max| index.len() >= max && !index.contains_key(&key))
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "recovery live key limit would be exceeded",
+                        ));
+                    }
+                    if let Some(max) = max_live_key_bytes {
+                        if !index.contains_key(&key) {
+                            live_key_bytes =
+                                add_recovery_key_bytes(live_key_bytes, key.len(), max)?;
+                        }
+                    }
+                    index.insert(key, location);
+                }
+                None => {
+                    if index.remove(&key).is_some() && max_live_key_bytes.is_some() {
+                        live_key_bytes -= key.len();
+                    }
+                }
+            }
+            *peak = (*peak).max(index.len());
+            Ok(())
+        })?;
+        Ok(index)
+    }
+
+    /// Visits fully verified log mutations without materializing the full index.
+    /// Callers must keep visitor results private until the complete replay succeeds.
+    pub(crate) fn visit_records(
+        &self,
+        mut offset: u64,
+        boundary: Option<u64>,
+        mut visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let total = self.file.len()?;
         let mut reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
         if offset == 0 && self.log_id.is_some() {
             let mut header = [0_u8; LOG_HEADER_SIZE];
@@ -490,33 +529,17 @@ impl Log {
             let key = payload[..header.key_len].to_vec();
             match header.operation {
                 Operation::Put => {
-                    if max_live_keys
-                        .is_some_and(|max| index.len() >= max && !index.contains_key(&key))
-                    {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "recovery live key limit would be exceeded",
-                        ));
-                    }
-                    if let Some(max) = max_live_key_bytes {
-                        if !index.contains_key(&key) {
-                            live_key_bytes =
-                                add_recovery_key_bytes(live_key_bytes, key.len(), max)?;
-                        }
-                    }
-                    index.insert(
+                    visit(
                         key,
-                        ValueLocation {
+                        Some(ValueLocation {
                             offset: offset + HEADER_SIZE as u64 + header.key_len as u64,
                             length: header.value_len,
                             checksum: crc32fast::hash(&payload[header.key_len..]),
-                        },
-                    );
+                        }),
+                    )?;
                 }
                 Operation::Delete => {
-                    if index.remove(&key).is_some() && max_live_key_bytes.is_some() {
-                        live_key_bytes -= key.len();
-                    }
+                    visit(key, None)?;
                 }
                 Operation::Batch => {
                     if key != [0] {
@@ -528,40 +551,10 @@ impl Log {
                         checksum: crc32fast::hash(&payload[header.key_len..]),
                     };
                     for update in prepare_batch(&payload[header.key_len..], outer)? {
-                        match update.location {
-                            Some(location) => {
-                                if max_live_keys.is_some_and(|max| {
-                                    index.len() >= max && !index.contains_key(&update.key)
-                                }) {
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::InvalidInput,
-                                        "recovery live key limit would be exceeded",
-                                    ));
-                                }
-                                if let Some(max) = max_live_key_bytes {
-                                    if !index.contains_key(&update.key) {
-                                        live_key_bytes = add_recovery_key_bytes(
-                                            live_key_bytes,
-                                            update.key.len(),
-                                            max,
-                                        )?;
-                                    }
-                                }
-                                index.insert(update.key, location);
-                            }
-                            None => {
-                                if index.remove(&update.key).is_some()
-                                    && max_live_key_bytes.is_some()
-                                {
-                                    live_key_bytes -= update.key.len();
-                                }
-                            }
-                        }
-                        *peak = (*peak).max(index.len());
+                        visit(update.key, update.location)?;
                     }
                 }
             }
-            *peak = (*peak).max(index.len());
             offset += record_len;
             if boundary == Some(offset) {
                 saw_boundary = true;
@@ -572,7 +565,7 @@ impl Log {
                 "log does not contain its acknowledged commit boundary",
             ));
         }
-        Ok(index)
+        Ok(())
     }
 }
 
