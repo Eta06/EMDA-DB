@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Measure warm checkpoint opens, sampled RSS and checked point reads on Linux."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -12,13 +13,51 @@ import time
 
 from benchmarks.telemetry import difference, quiet_window, read, snapshot
 
+MODES = ("store-full", "store", "checkpoint-store", "view", "recovered")
+
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def fields(output):
-    return dict(part.split("=", 1) for part in output.strip().split())
+    result = {}
+    for part in output.strip().split():
+        key, value = part.split("=", 1)
+        if key in result:
+            raise ValueError("duplicate benchmark output field")
+        result[key] = value
+    return result
+
+
+def identity(parent):
+    log = parent / "store" / "records.log"
+    try:
+        metadata = hashlib.sha256(os.getxattr(log, "user.db.commit.v3")).hexdigest()
+    except OSError as error:
+        if error.errno not in {errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP}:
+            raise
+        metadata = None
+    return {"log_sha256": digest(log), "witness_sha256": digest(parent / "store" / "commit.state"),
+            "checkpoint_sha256": digest(parent / "index"), "metadata_sha256": metadata}
+
+
+def validate_sample(output, mode, tail_keys):
+    sample = fields(output)
+    if sample["mode"] != mode or mode not in MODES:
+        raise ValueError("unexpected measurement mode")
+    lookups = [int(value) for value in sample["lookups_ns"].split(",")]
+    tail_lookups = [] if sample["tail_lookups_ns"] == "none" else [int(value) for value in sample["tail_lookups_ns"].split(",")]
+    expected_tail = 16 if tail_keys and mode != "view" else 0
+    if (len(lookups) != 16 or len(tail_lookups) != expected_tail
+            or any(value < 0 for value in lookups + tail_lookups)):
+        raise ValueError("invalid or incomplete point-read samples")
+    metrics = {key: int(sample[key]) for key in ("open_us", "rss_kib", "after_rss_kib",
+               "peak_rss_kib", "read_chars", "disk_read_bytes", "read_calls", "blocks", "overlay_keys")}
+    expected_overlay = tail_keys if mode in {"recovered", "checkpoint-store"} else 0
+    if any(value < 0 for value in metrics.values()) or metrics["overlay_keys"] != expected_overlay:
+        raise ValueError("invalid resource sample or unexpected overlay size")
+    return {**metrics, "lookups_ns": lookups, "tail_lookups_ns": tail_lookups}
 
 
 def main():
@@ -60,9 +99,28 @@ def main():
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "allowed_cpus": allowed,
         "benchmark_cpu": bench_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "limitations": "One Linux VM, warm cache, short direct in-process reads in separate fresh processes. The historical view does not replay or validate the tail; the recovered view replays a bounded witnessed tail. Both are read-only and hold a shared lock excluding writers; the store is writable. Each opening hashes the checkpoint-covered log prefix. RSS is Linux process RSS and excludes OS page cache; it is not a memory quota. VM/cgroup noise includes the workload. This is not a production or competitor comparison.",
+        "limitations": "One Linux VM, warm cache, sampled direct reads in separate fresh processes. Store-full replays the whole log; store uses a checkpoint but loads the live index; checkpoint-store is writable with a checkpoint base and bounded suffix. The historical view does not replay or validate the tail; the recovered view replays a bounded witnessed tail. Both views are read-only and exclude cooperating writers. Checkpoint paths hash the complete covered log prefix. RSS is Linux process RSS and excludes OS page cache; it is not a quota. Process I/O counters include opening, sampled reads and measurement overhead; rchar counts bytes returned by read-like syscalls, not physical disk I/O, and read_bytes is a kernel accounting estimate. VM/cgroup noise includes the workload. This is not a production or competitor comparison.",
+        "completed": False,
         "cases": [],
     }
+    output = Path(args.output)
+    with output.open("x", encoding="utf-8") as file:
+        json.dump(result, file, indent=2)
+        file.write("\n")
+
+    def save():
+        # Preserve a parseable partial report if a later case is interrupted.
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output.parent,
+                                         prefix=".index-memory-report-", delete=False) as file:
+            temporary = Path(file.name)
+            try:
+                json.dump(result, file, indent=2)
+                file.write("\n")
+                file.flush()
+                os.replace(temporary, output)
+            finally:
+                temporary.unlink(missing_ok=True)
+
     with tempfile.TemporaryDirectory(prefix=".index-memory-bench-", dir=args.directory) as root:
         for count in counts:
             parent = Path(root) / str(count)
@@ -72,11 +130,15 @@ def main():
             info = fields(prepared.stdout)
             if int(info["keys"]) != count or int(info["key_bytes"]) != args.key_bytes or int(info["tail_keys"]) != args.tail_keys:
                 raise RuntimeError("unexpected fixture configuration")
+            original = identity(parent)
             case = {"keys": count, "key_bytes": args.key_bytes,
                     "tail_keys": args.tail_keys, "tail_bytes": int(info["tail_bytes"]),
                     "log_bytes": int(info["log_bytes"]), "checkpoint_bytes": int(info["checkpoint_bytes"]),
+                    "fixture_identity": original,
                     "quiet_check": quiet_window(), "runs": []}
-            modes = ("store", "view", "recovered")
+            result["cases"].append(case)
+            save()
+            modes = MODES
             for round_index in range(args.rounds):
                 offset = round_index % len(modes)
                 for mode in modes[offset:] + modes[:offset]:
@@ -84,21 +146,11 @@ def main():
                     command = base + ["measure", str(parent), str(count), str(args.key_bytes), mode, info["token"], str(args.tail_keys)]
                     measured = subprocess.run(command, check=True, text=True, capture_output=True, timeout=120)
                     noise = difference(before, snapshot())
-                    sample = fields(measured.stdout)
-                    if sample["mode"] != mode:
-                        raise RuntimeError("unexpected measurement mode")
-                    lookups = [int(value) for value in sample["lookups_ns"].split(",")]
-                    if len(lookups) != 16:
-                        raise RuntimeError("incomplete lookup sample")
-                    tail_lookups = [] if sample["tail_lookups_ns"] == "none" else [int(value) for value in sample["tail_lookups_ns"].split(",")]
-                    expected_tail_samples = 16 if args.tail_keys and mode != "view" else 0
-                    if len(tail_lookups) != expected_tail_samples or int(sample["overlay_keys"]) != (args.tail_keys if mode == "recovered" else 0):
-                        raise RuntimeError("incomplete tail sample or unexpected overlay size")
-                    case["runs"].append({"round": round_index + 1, "mode": mode,
-                        "open_us": int(sample["open_us"]), "rss_kib": int(sample["rss_kib"]),
-                        "after_rss_kib": int(sample["after_rss_kib"]), "blocks": int(sample["blocks"]),
-                        "overlay_keys": int(sample["overlay_keys"]), "lookups_ns": lookups,
-                        "tail_lookups_ns": tail_lookups, "noise": noise})
+                    sample = validate_sample(measured.stdout, mode, args.tail_keys)
+                    case["runs"].append({"round": round_index + 1, "mode": mode, **sample, "noise": noise})
+                    save()
+            if identity(parent) != original:
+                raise RuntimeError("measurement changed the witnessed fixture")
             case["summary"] = {}
             for mode in modes:
                 samples = [run for run in case["runs"] if run["mode"] == mode]
@@ -106,14 +158,18 @@ def main():
                     "median_open_us": statistics.median(run["open_us"] for run in samples),
                     "median_rss_kib": statistics.median(run["rss_kib"] for run in samples),
                     "median_after_rss_kib": statistics.median(run["after_rss_kib"] for run in samples),
+                    "median_peak_rss_kib": statistics.median(run["peak_rss_kib"] for run in samples),
+                    "median_read_chars": statistics.median(run["read_chars"] for run in samples),
+                    "median_disk_read_bytes": statistics.median(run["disk_read_bytes"] for run in samples),
+                    "median_read_calls": statistics.median(run["read_calls"] for run in samples),
                     "median_lookup_ns": statistics.median(value for run in samples for value in run["lookups_ns"]),
                 }
                 if args.tail_keys and mode != "view":
                     case["summary"][mode]["median_tail_lookup_ns"] = statistics.median(value for run in samples for value in run["tail_lookups_ns"])
-            result["cases"].append(case)
-    with open(args.output, "x", encoding="utf-8") as output:
-        json.dump(result, output, indent=2)
-        output.write("\n")
+            save()
+    result["completed"] = True
+    result["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    save()
     for case in result["cases"]:
         print(f"keys={case['keys']} summary={case['summary']}")
 

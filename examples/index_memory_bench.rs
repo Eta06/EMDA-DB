@@ -1,5 +1,7 @@
 //! Linux-only experimental memory/open/lookup measurement for checkpoint readers.
-use database_engine::{BatchOperation, CheckpointView, RecoveredCheckpointView, Store};
+use database_engine::{
+    BatchOperation, CheckpointStore, CheckpointView, RecoveredCheckpointView, Store,
+};
 use std::error::Error;
 use std::io;
 use std::path::Path;
@@ -106,6 +108,19 @@ fn memory_kib(field: &str) -> BenchResult<u64> {
         .parse()?)
 }
 
+fn io_counter(field: &str) -> BenchResult<u64> {
+    let status = std::fs::read_to_string("/proc/self/io")?;
+    let line = status
+        .lines()
+        .find(|line| line.starts_with(field))
+        .ok_or("I/O field unavailable")?;
+    Ok(line
+        .split_whitespace()
+        .nth(1)
+        .ok_or("invalid I/O field")?
+        .parse()?)
+}
+
 fn lookups(
     first: usize,
     count: usize,
@@ -136,11 +151,18 @@ fn measure(
 ) -> BenchResult<()> {
     let path = parent.join("store");
     let checkpoint = parent.join("index");
+    let rchar_before = io_counter("rchar:")?;
+    let disk_read_before = io_counter("read_bytes:")?;
+    let read_calls_before = io_counter("syscr:")?;
     let start = Instant::now();
     let (open_us, rss_kib, after_rss_kib, blocks, overlay_keys, lookup_ns, tail_lookup_ns) =
         match mode {
-            "store" => {
-                let store = Store::open_with_checkpoint(&path, &checkpoint, token)?;
+            "store" | "store-full" => {
+                let store = if mode == "store" {
+                    Store::open_with_checkpoint(&path, &checkpoint, token)?
+                } else {
+                    Store::open(&path)?
+                };
                 let open_us = start.elapsed().as_micros();
                 let rss_kib = memory_kib("VmRSS:")?;
                 let lookup_ns = lookups(0, count, key_len, |key| store.get(key))?;
@@ -156,6 +178,31 @@ fn measure(
                     after_rss_kib,
                     0,
                     0,
+                    lookup_ns,
+                    tail_lookup_ns,
+                )
+            }
+            "checkpoint-store" => {
+                let store = CheckpointStore::open(&path, &checkpoint, token)?;
+                let open_us = start.elapsed().as_micros();
+                let rss_kib = memory_kib("VmRSS:")?;
+                let overlay_keys = store.overlay_keys()?;
+                if overlay_keys != tail_count {
+                    return Err("unexpected writable checkpoint overlay count".into());
+                }
+                let lookup_ns = lookups(0, count, key_len, |key| store.get(key))?;
+                let tail_lookup_ns = if tail_count > 0 {
+                    lookups(count, tail_count, key_len, |key| store.get(key))?
+                } else {
+                    Vec::new()
+                };
+                let after_rss_kib = memory_kib("VmRSS:")?;
+                (
+                    open_us,
+                    rss_kib,
+                    after_rss_kib,
+                    0,
+                    overlay_keys,
                     lookup_ns,
                     tail_lookup_ns,
                 )
@@ -222,8 +269,12 @@ fn measure(
             .collect::<Vec<_>>()
             .join(",")
     };
+    let peak_rss_kib = memory_kib("VmHWM:")?;
+    let read_chars = io_counter("rchar:")?.saturating_sub(rchar_before);
+    let disk_read_bytes = io_counter("read_bytes:")?.saturating_sub(disk_read_before);
+    let read_calls = io_counter("syscr:")?.saturating_sub(read_calls_before);
     println!(
-        "mode={mode} open_us={open_us} rss_kib={rss_kib} after_rss_kib={after_rss_kib} blocks={blocks} overlay_keys={overlay_keys} lookups_ns={lookups} tail_lookups_ns={tail_lookups}"
+        "mode={mode} open_us={open_us} rss_kib={rss_kib} after_rss_kib={after_rss_kib} peak_rss_kib={peak_rss_kib} read_chars={read_chars} disk_read_bytes={disk_read_bytes} read_calls={read_calls} blocks={blocks} overlay_keys={overlay_keys} lookups_ns={lookups} tail_lookups_ns={tail_lookups}"
     );
     Ok(())
 }
@@ -259,6 +310,6 @@ fn main() -> BenchResult<()> {
             &token_from_hex(token)?,
             parse_size(tail_count, 0, 4096)?,
         ),
-        _ => Err("usage: index_memory_bench prepare <empty-parent> <keys> <key-bytes> [tail-keys] | measure <parent> <keys> <key-bytes> <store|view|recovered> <digest> [tail-keys]".into()),
+        _ => Err("usage: index_memory_bench prepare <empty-parent> <keys> <key-bytes> [tail-keys] | measure <parent> <keys> <key-bytes> <store-full|store|checkpoint-store|view|recovered> <digest> [tail-keys]".into()),
     }
 }
