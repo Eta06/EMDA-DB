@@ -211,3 +211,10 @@ path = "fuzz_targets/checkpoint_view_limits.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "document_compound_range"
+path = "fuzz_targets/document_compound_range.rs"
+test = false
+doc = false
+bench = false

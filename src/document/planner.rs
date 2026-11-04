@@ -1,4 +1,4 @@
-//! Conservative equality and single-field range selection for bounded queries.
+//! Conservative equality and scalar range selection for bounded queries.
 use super::{
     filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
     index::{IndexDefinition, IndexValue, PartialFilter},
@@ -25,12 +25,22 @@ pub enum DocumentQueryAccess {
     CompoundEqualityIndex { index: String, fields: usize },
     /// Scan a non-partial single-field index over a required scalar range.
     RangeIndex { index: String },
+    /// Scan a compound index with equality on a prefix and a range on the next field.
+    CompoundRangeIndex {
+        index: String,
+        equality_fields: usize,
+    },
     /// Probe an implied partial unique index using equality on every field.
     PartialUniqueEqualityIndex { index: String, fields: usize },
     /// Scan an implied partial nonunique index using equality on every field.
     PartialEqualityIndex { index: String, fields: usize },
     /// Scan an implied partial single-field index over a required scalar range.
     PartialRangeIndex { index: String },
+    /// Scan an implied partial compound index with a prefix and scalar range.
+    PartialCompoundRangeIndex {
+        index: String,
+        equality_fields: usize,
+    },
 }
 
 /// Filtered query output, including the chosen access path and actual work.
@@ -108,6 +118,7 @@ fn eligible(index: &IndexDefinition, filter: &DocumentFilter) -> bool {
 enum Selection {
     Equality(Vec<IndexValue>),
     Range {
+        equal: Vec<IndexValue>,
         lower: Option<IndexBound>,
         upper: Option<IndexBound>,
     },
@@ -158,7 +169,10 @@ fn tighten(
     Ok(())
 }
 
-fn required_range(filter: &DocumentFilter, path: &[String]) -> io::Result<Option<Selection>> {
+fn required_range(
+    filter: &DocumentFilter,
+    path: &[String],
+) -> io::Result<Option<(Option<IndexBound>, Option<IndexBound>)>> {
     let mut lower = None;
     let mut upper = None;
     let mut pending = vec![filter];
@@ -181,19 +195,19 @@ fn required_range(filter: &DocumentFilter, path: &[String]) -> io::Result<Option
     if lower.is_none() && upper.is_none() {
         return Ok(None);
     }
-    Ok(Some(Selection::Range {
-        lower: lower.map(|(bound, _)| bound),
-        upper: upper.map(|(bound, _)| bound),
-    }))
+    Ok(Some((
+        lower.map(|(bound, _)| bound),
+        upper.map(|(bound, _)| bound),
+    )))
 }
 
 fn choose_index<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
-    // A compound index omits rows missing any indexed field. It is eligible
-    // only if the filter requires equality on every field in its tuple.
     // Prefer a unique exact tuple, then a nonunique one, regardless of range.
+    // Complete tuples require equality on every field, so omitted missing
+    // fields cannot produce an incorrect result.
     if let Some(selected) = indexes
         .iter()
         .filter(|index| index.unique)
@@ -210,12 +224,39 @@ fn choose_index<'a>(
     {
         return Ok(Some(selected));
     }
+    // Keep the existing single-field range preference so adding compound
+    // planning does not displace an already eligible single-field range.
     for index in indexes
         .iter()
-        .filter(|index| eligible(index, filter) && index.fields.len() == 1)
+        .filter(|index| index.fields.len() == 1)
+        .chain(indexes.iter().filter(|index| index.fields.len() > 1))
+        .filter(|index| eligible(index, filter))
     {
-        if let Some(range) = required_range(filter, &index.fields[0])? {
-            return Ok(Some((index, range)));
+        let mut equal = Vec::new();
+        for (position, field) in index.fields.iter().enumerate() {
+            if let Some(value) = required_equality(filter, field) {
+                equal.push(value);
+                continue;
+            }
+            // Compound entries omit a document if any indexed field is
+            // missing. The required range proves this field is present;
+            // every later field must be independently required as well.
+            if index.fields[position + 1..]
+                .iter()
+                .all(|later| required_presence(filter, later, true))
+            {
+                if let Some((lower, upper)) = required_range(filter, field)? {
+                    return Ok(Some((
+                        index,
+                        Selection::Range {
+                            equal,
+                            lower,
+                            upper,
+                        },
+                    )));
+                }
+            }
+            break;
         }
     }
     Ok(None)
@@ -223,7 +264,7 @@ fn choose_index<'a>(
 
 impl DocumentTransaction<'_, '_> {
     /// Executes a bounded filtered query using a qualifying exact equality
-    /// tuple or single-field range, or falls back to the collection scan.
+    /// tuple or qualifying scalar range, or falls back to the collection scan.
     /// A partial index is eligible only when the filter proves its condition.
     /// This opt-in path assumes declared indexes are maintained; corruption
     /// that removes index entries can cause omissions. It is not cost-based.
@@ -243,7 +284,11 @@ impl DocumentTransaction<'_, '_> {
         let unique_equality = index.unique && matches!(selection, Selection::Equality(_));
         let (equal, lower, upper) = match &selection {
             Selection::Equality(values) => (values.clone(), None, None),
-            Selection::Range { lower, upper } => (Vec::new(), lower.clone(), upper.clone()),
+            Selection::Range {
+                equal,
+                lower,
+                upper,
+            } => (equal.clone(), lower.clone(), upper.clone()),
         };
         let mut rows = Vec::new();
         let mut bytes = 0_usize;
@@ -332,13 +377,23 @@ impl DocumentTransaction<'_, '_> {
             Selection::Equality(_) => DocumentQueryAccess::EqualityIndex {
                 index: index.name.clone(),
             },
-            Selection::Range { .. } => {
+            Selection::Range { equal, .. } => {
                 // Index ranges are ordered by value then ID; collection scans
                 // use ID order. Restore ID order before filtering and paging.
                 rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                if partial {
+                if partial && index.fields.len() > 1 {
+                    DocumentQueryAccess::PartialCompoundRangeIndex {
+                        index: index.name.clone(),
+                        equality_fields: equal.len(),
+                    }
+                } else if partial {
                     DocumentQueryAccess::PartialRangeIndex {
                         index: index.name.clone(),
+                    }
+                } else if index.fields.len() > 1 {
+                    DocumentQueryAccess::CompoundRangeIndex {
+                        index: index.name.clone(),
+                        equality_fields: equal.len(),
                     }
                 } else {
                     DocumentQueryAccess::RangeIndex {

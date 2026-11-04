@@ -360,7 +360,7 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.query(collection, query))
     }
 
-    /// Executes a bounded query using a qualifying equality tuple or single-field
+    /// Executes a bounded query using a qualifying equality tuple or scalar
     /// range index, falling back to a collection scan. Partial indexes require
     /// a provably implied filter. Index integrity is required.
     pub fn query_planned(

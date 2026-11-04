@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan compound equality-prefix ranges only when required predicates also prove all later indexed fields are present.
+
 - Defer scheduled reclamation on a proven pre-compaction maintenance-lock conflict and expose a deferral count; ambiguous I/O and cleanup failures still stop the worker.
 
 - Stream bounded collection-query filtering and retain only the requested window for unsorted results, while preserving full validation and error precedence. Record paired performance and fuzz evidence.
