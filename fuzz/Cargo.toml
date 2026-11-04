@@ -162,3 +162,9 @@ path = "fuzz_targets/shared_snapshot.rs"
 test = false
 doc = false
 bench = false
+[[bin]]
+name = "document_array_update"
+path = "fuzz_targets/document_array_update.rs"
+test = false
+doc = false
+bench = false

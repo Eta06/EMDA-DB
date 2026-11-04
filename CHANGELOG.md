@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add atomic bounded JSON array push, add-unique, remove and first/last pop updates to both document backends. These new `DocumentUpdate` variants require downstream exhaustive matches to be updated.
+
 - Check concurrent document, index and raw-key transactions against real-time serial histories and recovery on both writable backends.
 
 - Publish paired document-scaling and concurrent shared-snapshot measurements, including SQLite, tail regressions and raw samples.
