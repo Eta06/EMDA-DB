@@ -77,26 +77,23 @@ fn create_with_hooks(
 ) -> io::Result<()> {
     log.verify_witness()?;
     let parent = parent_directory(destination)?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".db-backup-")
-        .tempfile_in(parent)?;
+    let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     let log_len = log.len()?;
     temp.write_all(HEADER)?;
     let digest = copy_data(
         log_len,
         |buffer, offset| log.read_bytes(buffer, offset),
-        temp.as_file_mut(),
+        &mut temp,
     )?;
     temp.write_all(FOOTER)?;
     temp.write_all(&log_len.to_le_bytes())?;
     temp.write_all(&digest)?;
-    temp.as_file().sync_all()?;
-    validate(temp.as_file())?;
+    temp.sync_all()?;
+    validate(&temp)?;
     before_publish()?;
     // The temp file is on the destination filesystem. Publish only a complete,
     // verified file, and never replace an existing destination.
-    temp.persist_noclobber(destination)
-        .map_err(|error| error.error)?;
+    staging.publish(destination)?;
     sync_parent(parent).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -128,14 +125,10 @@ fn restore_with_hooks(
     let parent = parent_directory(destination)?;
     // Build and verify a complete store in a private staging directory. Publish
     // it atomically without replacing a pre-existing destination.
-    let staging = tempfile::Builder::new()
-        .prefix(".db-restore-")
-        .tempdir_in(parent)?;
+    let mut staging = crate::staging::Stage::directory(parent)?;
     restore_into(&backup, &info, staging.path())?;
     before_publish()?;
-    publish_directory(staging.path(), destination)?;
-    // The directory moved; prevent TempDir from trying to clean the old path.
-    let _ = staging.keep();
+    staging.publish(destination)?;
     sync_parent(parent).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -174,9 +167,7 @@ fn upgrade_format_with_hooks(
 ) -> io::Result<()> {
     source.verify_witness()?;
     let parent = parent_directory(destination)?;
-    let staging = tempfile::Builder::new()
-        .prefix(".db-upgrade-")
-        .tempdir_in(parent)?;
+    let mut staging = crate::staging::Stage::directory(parent)?;
     let mut lock = StagingLock::create(staging.path())?;
     let mut target = OpenOptions::new()
         .read(true)
@@ -218,8 +209,7 @@ fn upgrade_format_with_hooks(
     lock.file.sync_all()?;
     File::open(staging.path())?.sync_all()?;
     before_publish()?;
-    publish_directory(staging.path(), destination)?;
-    let _ = staging.keep();
+    staging.publish(destination)?;
     let synchronized = sync_parent(parent).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -379,12 +369,13 @@ fn hash_data(
 }
 
 pub(crate) fn parent_directory(path: &Path) -> io::Result<&Path> {
-    if path.file_name().is_none() {
-        return Err(io::Error::new(
+    path.file_name().ok_or_else(|| {
+        io::Error::new(
             io::ErrorKind::InvalidInput,
             "a destination name is required",
-        ));
-    }
+        )
+    })?;
+    crate::staging::check_path(path)?;
     Ok(path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

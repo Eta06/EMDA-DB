@@ -311,7 +311,7 @@ fn simultaneous_restores_to_same_path_publish_exactly_one_valid_store() {
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".db-restore-")
+            .starts_with(".emda-stage-v1-")
     }));
 }
 

@@ -97,9 +97,7 @@ impl Store {
         // reads alone would not detect a damaged historical record or key.
         self.log.verify_index(&inner.index)?;
         let parent = backup::parent_directory(destination)?;
-        let staging = tempfile::Builder::new()
-            .prefix(".db-compact-")
-            .tempdir_in(parent)?;
+        let mut staging = crate::staging::Stage::directory(parent)?;
         let target = Store::open(staging.path())?;
         // This store is private to the staging directory. Copy the existing
         // DB01 records in bounded groups and synchronize each group; the target
@@ -125,8 +123,7 @@ impl Store {
         }
         drop(verified);
         File::open(staging.path())?.sync_all()?;
-        backup::publish_directory(staging.path(), destination)?;
-        let _ = staging.keep();
+        staging.publish(destination)?;
         sync_parent(parent).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -387,7 +384,7 @@ mod tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".db-compact-")
+                .starts_with(".emda-stage-v1-")
         }));
     }
 
@@ -458,9 +455,11 @@ mod tests {
             }
         });
         let copied = receiver.recv_timeout(Duration::from_secs(20));
+        let busy = crate::cleanup_abandoned_staging(parent);
         child.kill().unwrap();
         child.wait().unwrap();
         copied.expect("compaction process did not reach the requested boundary");
+        assert_eq!(busy.unwrap_err().kind(), io::ErrorKind::WouldBlock);
     }
 
     #[test]
@@ -489,8 +488,14 @@ mod tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .starts_with(".db-compact-")
+                .starts_with(".emda-stage-v1-d-")
         }));
+        let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+        assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (1, 1));
+        assert_eq!(
+            recovered.get(b"after").unwrap().as_deref(),
+            Some(&b"ok"[..])
+        );
     }
 
     #[test]
@@ -504,6 +509,8 @@ mod tests {
         let before = std::fs::read(source_path.join("records.log")).unwrap();
         drop(source);
         kill_child_at_compaction_boundary(directory.path(), "published");
+        let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+        assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (0, 1));
         assert_eq!(
             std::fs::read(source_path.join("records.log")).unwrap(),
             before

@@ -57,6 +57,16 @@ pub(crate) fn create_with_sync(
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
+    create_with_hooks(log, index, destination, sync_parent, || Ok(()))
+}
+
+fn create_with_hooks(
+    log: &Log,
+    index: &BTreeMap<Vec<u8>, ValueLocation>,
+    destination: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    before_publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
     if log.is_legacy() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -69,12 +79,10 @@ pub(crate) fn create_with_sync(
     let prefix = log.len()?;
     let log_digest = hash_log(log, prefix)?;
     let parent = backup::parent_directory(destination)?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".db-index-")
-        .tempfile_in(parent)?;
+    let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     let checkpoint_digest: [u8; 32];
     {
-        let mut out = BufWriter::new(temp.as_file_mut());
+        let mut out = BufWriter::new(&mut temp);
         let mut digest = Sha256::new();
         write_checked(&mut out, &mut digest, MAGIC)?;
         write_checked(&mut out, &mut digest, &prefix.to_le_bytes())?;
@@ -101,13 +109,13 @@ pub(crate) fn create_with_sync(
         out.write_all(&checkpoint_digest)?;
         out.flush()?;
     }
-    temp.as_file().sync_all()?;
-    let verified = load_file(temp.as_file(), log, prefix, None, &checkpoint_digest)?;
+    temp.sync_all()?;
+    let verified = load_file(&temp, log, prefix, None, &checkpoint_digest)?;
     if verified.prefix != prefix || verified.peak != peak || &verified.index != index {
         return Err(record::invalid_data("checkpoint verification mismatch"));
     }
-    temp.persist_noclobber(destination)
-        .map_err(|error| error.error)?;
+    before_publish()?;
+    staging.publish(destination)?;
     sync_parent(parent).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -277,4 +285,112 @@ pub(crate) fn visit_file(
         return Err(record::invalid_data("checkpoint does not match log prefix"));
     }
     Ok((prefix, peak))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Store, cleanup_abandoned_staging};
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn pause() -> io::Result<()> {
+        println!("CHECKPOINT_CRASH_BOUNDARY_REACHED");
+        std::io::stdout().flush()?;
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[test]
+    fn checkpoint_crash_child() {
+        let Ok(parent) = std::env::var("EMDA_CHECKPOINT_CRASH_PATH") else {
+            return;
+        };
+        let parent = Path::new(&parent);
+        let stage = std::env::var("EMDA_CHECKPOINT_CRASH_STAGE").unwrap();
+        let (log, index) = Log::open(&parent.join("source"), false).unwrap();
+        create_with_hooks(
+            &log,
+            &index,
+            &parent.join("checkpoint"),
+            |_| {
+                if stage == "published" {
+                    pause()
+                } else {
+                    Ok(())
+                }
+            },
+            || if stage == "staged" { pause() } else { Ok(()) },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn interrupted_checkpoint_staging_and_publication_are_reclaimable() {
+        for mode in ["staged", "published"] {
+            let directory = tempfile::tempdir().unwrap();
+            let source_path = directory.path().join("source");
+            let checkpoint = directory.path().join("checkpoint");
+            let store = Store::open(&source_path).unwrap();
+            store.put(b"key", b"value").unwrap();
+            let original_log = std::fs::read(source_path.join("records.log")).unwrap();
+            drop(store);
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "checkpoint::tests::checkpoint_crash_child",
+                    "--nocapture",
+                ])
+                .env("EMDA_CHECKPOINT_CRASH_PATH", directory.path())
+                .env("EMDA_CHECKPOINT_CRASH_STAGE", mode)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let output = child.stdout.take().unwrap();
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(output)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    if line.contains("CHECKPOINT_CRASH_BOUNDARY_REACHED") {
+                        let _ = sender.send(());
+                        break;
+                    }
+                }
+            });
+            let reached = receiver.recv_timeout(Duration::from_secs(20));
+            let busy = cleanup_abandoned_staging(directory.path());
+            child.kill().unwrap();
+            child.wait().unwrap();
+            reached.expect("checkpoint child did not reach boundary");
+            assert_eq!(busy.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            let cleaned = cleanup_abandoned_staging(directory.path()).unwrap();
+            assert_eq!(cleaned.removed_markers, 1);
+            assert_eq!(cleaned.removed_payloads, usize::from(mode == "staged"));
+            assert_eq!(
+                std::fs::read(source_path.join("records.log")).unwrap(),
+                original_log
+            );
+            let digest = if mode == "staged" {
+                assert!(!checkpoint.exists());
+                let store = Store::open(&source_path).unwrap();
+                store.checkpoint_to(&checkpoint).unwrap()
+            } else {
+                // The digest is read from this fixture only to validate the
+                // published bytes; real callers must protect it separately.
+                let bytes = std::fs::read(&checkpoint).unwrap();
+                bytes[bytes.len() - 32..].try_into().unwrap()
+            };
+            let recovered =
+                Store::open_with_checkpoint(&source_path, &checkpoint, &digest).unwrap();
+            assert_eq!(
+                recovered.get(b"key").unwrap().as_deref(),
+                Some(&b"value"[..])
+            );
+        }
+    }
 }

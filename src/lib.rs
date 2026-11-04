@@ -14,6 +14,7 @@ mod log_io;
 mod metadata_witness;
 mod record;
 mod recovery;
+mod staging;
 mod store;
 mod witness;
 
@@ -21,6 +22,7 @@ pub use checkpoint_view::{
     CheckpointView, MAX_CHECKPOINT_VIEW_BLOCK_BYTES, MAX_CHECKPOINT_VIEW_BLOCKS,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
+pub use staging::{StagingCleanup, cleanup_abandoned_staging};
 pub use store::{
     Entry, MAX_ACTIVE_SNAPSHOTS, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES, MAX_SNAPSHOT_KEY_BYTES,
     MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES, MAX_SNAPSHOT_TOTAL_KEYS,

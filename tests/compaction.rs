@@ -86,7 +86,7 @@ fn compaction_never_overwrites_existing_destination() {
         !e.unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".db-compact-")
+            .starts_with(".emda-stage-v1-")
     }));
 }
 

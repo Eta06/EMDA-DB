@@ -98,9 +98,11 @@ fn kill_at_boundary(parent: &Path, mode: &str) {
         }
     });
     let reached = receiver.recv_timeout(Duration::from_secs(20));
+    let busy = crate::cleanup_abandoned_staging(parent);
     child.kill().unwrap();
     child.wait().unwrap();
     reached.expect("child did not reach the requested backup or restore boundary");
+    assert_eq!(busy.unwrap_err().kind(), io::ErrorKind::WouldBlock);
 }
 
 #[test]
@@ -127,11 +129,15 @@ fn process_kill_at_backup_publication_boundaries_preserves_source() {
                     .unwrap()
                     .file_name()
                     .to_string_lossy()
-                    .starts_with(".db-backup-")
+                    .starts_with(".emda-stage-v1-f-")
             }));
+            let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+            assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (1, 1));
             source.backup(&backup).unwrap();
         } else {
             assert!(backup.is_file());
+            let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+            assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (0, 1));
         }
         let restored = directory.path().join("restored");
         Store::restore(&backup, &restored).unwrap();
@@ -169,9 +175,14 @@ fn process_kill_at_restore_publication_boundaries_preserves_backup() {
                     .unwrap()
                     .file_name()
                     .to_string_lossy()
-                    .starts_with(".db-restore-")
+                    .starts_with(".emda-stage-v1-d-")
             }));
+            let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+            assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (1, 1));
             Store::restore(&backup, &restored).unwrap();
+        } else {
+            let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+            assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (0, 1));
         }
         let source = Store::open(&source_path).unwrap();
         let copy = Store::open(&restored).unwrap();
@@ -225,9 +236,14 @@ fn process_kill_at_upgrade_publication_boundaries_preserves_v2_and_v3_sources() 
                         .unwrap()
                         .file_name()
                         .to_string_lossy()
-                        .starts_with(".db-upgrade-")
+                        .starts_with(".emda-stage-v1-d-")
                 }));
+                let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+                assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (1, 1));
                 source.upgrade_format(&upgraded).unwrap();
+            } else {
+                let cleaned = crate::cleanup_abandoned_staging(directory.path()).unwrap();
+                assert_eq!((cleaned.removed_payloads, cleaned.removed_markers), (0, 1));
             }
             let copy = Store::open(&upgraded).unwrap();
             let expected = vec![Some(b"one".to_vec()), Some(b"two".to_vec())];
