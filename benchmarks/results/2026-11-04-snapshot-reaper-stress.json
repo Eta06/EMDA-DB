@@ -1,0 +1,22 @@
+{
+  "revision": "de0191ee4182fbe72c11ad32263652d7ad738fac",
+  "git_status": "clean",
+  "started_utc": "2026-11-04T20:00:28Z",
+  "ended_utc": "2026-11-04T20:00:31Z",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "binary_sha256": "1540ab0d2f57619f0bdd5682194b9b40999bae1beb270d5b72cd54ee735c4c68",
+  "runs": [
+    {
+      "command": "cargo +stable test --locked --lib background_reaper -- --test-threads=1",
+      "repetitions": 20,
+      "tests_per_repetition": 4
+    },
+    {
+      "command": "cargo +stable test --locked --lib concurrent_start_admits_one_worker -- --test-threads=1",
+      "repetitions": 20,
+      "tests_per_repetition": 1
+    }
+  ],
+  "result": "40 test invocations passed",
+  "scope": "Local process/thread stress on the ordinary and checkpoint-backed stores, including busy views, cancellation and drop races, and concurrent worker admission. This short run does not exhaust interleavings, injected operating system faults, process failures or physical power loss."
+}
