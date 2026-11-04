@@ -451,10 +451,27 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         max: usize,
         max_bytes: usize,
     ) -> io::Result<Vec<(String, Value)>> {
+        let mut rows = Vec::new();
+        self.visit_document_rows(collection, schema, max, max_bytes, |id, document| {
+            rows.push((id, document));
+        })?;
+        Ok(rows)
+    }
+
+    // Visit every document in the same order and with the same scan and byte
+    // limits as document_rows, without retaining all decoded documents.
+    pub(super) fn visit_document_rows(
+        &self,
+        collection: &str,
+        schema: &CollectionSchema,
+        max: usize,
+        max_bytes: usize,
+        mut visit: impl FnMut(String, Value),
+    ) -> io::Result<()> {
         let prefix = key::collection(b'D', collection)?;
         let end = key::end(&prefix);
         let mut cursor = prefix.clone();
-        let mut rows = Vec::new();
+        let mut count = 0_usize;
         let mut bytes = 0_usize;
         loop {
             let page = self.scan(&cursor, &end, 32)?;
@@ -466,7 +483,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                     .checked_add(key.len())
                     .and_then(|n| n.checked_add(value.len()))
                     .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-                if rows.len() >= max || bytes > max_bytes {
+                if count >= max || bytes > max_bytes {
                     return Err(key::invalid("document scan exceeds the operation limit"));
                 }
                 let id = std::str::from_utf8(
@@ -475,11 +492,12 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 )
                 .map_err(|_| invalid_data("invalid document ID"))?;
                 key::id(id).map_err(|_| invalid_data("invalid document ID"))?;
-                rows.push((id.to_owned(), Self::decode_document(&value, schema)?));
+                visit(id.to_owned(), Self::decode_document(&value, schema)?);
+                count += 1;
                 cursor = key;
             }
         }
-        Ok(rows)
+        Ok(())
     }
 
     /// Builds a complete index atomically, subject to the documented small

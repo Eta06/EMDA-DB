@@ -385,52 +385,110 @@ pub(super) fn validate_query(query: &DocumentQuery) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn finish_query(
-    rows: Vec<(String, Value)>,
-    query: &DocumentQuery,
-) -> io::Result<DocumentQueryResult> {
-    let scanned = rows.len();
-    let mut matched = Vec::new();
-    let mut array_budget = ArrayFilterBudget::default();
-    for (id, document) in rows {
-        if matches(&query.filter, &document, &mut array_budget)? {
-            let sort_key = match &query.sort {
+struct QueryCollector<'a> {
+    query: &'a DocumentQuery,
+    scanned: usize,
+    matched_count: usize,
+    matched: Vec<(Option<Vec<u8>>, String, Value)>,
+    array_budget: ArrayFilterBudget,
+    error: Option<io::Error>,
+}
+
+impl<'a> QueryCollector<'a> {
+    fn new(query: &'a DocumentQuery) -> Self {
+        Self {
+            query,
+            scanned: 0,
+            matched_count: 0,
+            matched: Vec::new(),
+            array_budget: ArrayFilterBudget::default(),
+            error: None,
+        }
+    }
+
+    fn push(&mut self, id: String, document: Value) {
+        self.scanned += 1;
+        if self.error.is_some() {
+            return;
+        }
+        // Defer a filter/sort error until the complete scan has checked all
+        // document records and limits, preserving their previous precedence.
+        let result = (|| -> io::Result<()> {
+            if !matches(&self.query.filter, &document, &mut self.array_budget)? {
+                return Ok(());
+            }
+            let position = self.matched_count;
+            self.matched_count += 1;
+            if self.query.sort.is_none()
+                && (position < self.query.offset
+                    || position - self.query.offset >= self.query.limit)
+            {
+                // Continue checking every document and predicate, but keep
+                // only the requested window when ID order needs no sorting.
+                return Ok(());
+            }
+            let sort_key = match &self.query.sort {
                 None => None,
                 Some(sort) => match schema::field(&document, &sort.path) {
                     None => Some(Vec::new()),
                     Some(value) => Some(encoded(&IndexValue::from_json(value)?)?),
                 },
             };
-            matched.push((sort_key, id, document));
+            self.matched.push((sort_key, id, document));
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.error = Some(error);
         }
     }
-    let matched_count = matched.len();
-    if let Some(sort) = &query.sort {
-        matched.sort_by(|left, right| {
-            let order = left.0.cmp(&right.0);
-            (if sort.descending {
-                order.reverse()
-            } else {
-                order
-            })
-            .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
-        });
-    }
-    let mut documents = Vec::new();
-    for (_, id, document) in matched.into_iter().skip(query.offset).take(query.limit) {
-        let document = match &query.projection {
-            Some(paths) => project(&document, paths)?,
-            None => document,
+
+    fn finish(mut self) -> io::Result<DocumentQueryResult> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        if let Some(sort) = &self.query.sort {
+            self.matched.sort_by(|left, right| {
+                let order = left.0.cmp(&right.0);
+                (if sort.descending {
+                    order.reverse()
+                } else {
+                    order
+                })
+                .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
+            });
+        }
+        let mut documents = Vec::new();
+        let skip = if self.query.sort.is_some() {
+            self.query.offset
+        } else {
+            0
         };
-        documents.push(DocumentEntry { id, document });
+        for (_, id, document) in self.matched.into_iter().skip(skip).take(self.query.limit) {
+            let document = match &self.query.projection {
+                Some(paths) => project(&document, paths)?,
+                None => document,
+            };
+            documents.push(DocumentEntry { id, document });
+        }
+        let plan = QueryPlan {
+            scanned: self.scanned,
+            matched: self.matched_count,
+            sorted: self.query.sort.is_some(),
+            returned: documents.len(),
+        };
+        Ok(DocumentQueryResult { documents, plan })
     }
-    let plan = QueryPlan {
-        scanned,
-        matched: matched_count,
-        sorted: query.sort.is_some(),
-        returned: documents.len(),
-    };
-    Ok(DocumentQueryResult { documents, plan })
+}
+
+pub(super) fn finish_query(
+    rows: Vec<(String, Value)>,
+    query: &DocumentQuery,
+) -> io::Result<DocumentQueryResult> {
+    let mut collector = QueryCollector::new(query);
+    for (id, document) in rows {
+        collector.push(id, document);
+    }
+    collector.finish()
 }
 
 impl DocumentTransaction<'_, '_> {
@@ -443,12 +501,14 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<DocumentQueryResult> {
         validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let rows = self.document_rows(
+        let mut collector = QueryCollector::new(query);
+        self.visit_document_rows(
             collection,
             &metadata.schema,
             query.max_scanned,
             MAX_SCAN_BYTES,
+            |id, document| collector.push(id, document),
         )?;
-        finish_query(rows, query)
+        collector.finish()
     }
 }
