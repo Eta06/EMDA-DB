@@ -1,0 +1,88 @@
+{
+  "revision": "f70c3b50b247b74f4f6be5da4743de95fda1e6ec",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "runs": [
+    {
+      "target": "checkpoint_view_limits",
+      "duration_seconds": 121,
+      "requested_max_seconds": 120,
+      "executions": 5875,
+      "seed": 690921518,
+      "max_input_bytes": 128,
+      "timeout_seconds": 10,
+      "binary_sha256": "3f93e59cad55c6fc3f8b58414d3bdb7c38e8b2c256065145fd46ccb5a114d5b8",
+      "ending_coverage": 3121,
+      "ending_features": 16120,
+      "ending_corpus_entries": 446,
+      "initial_seeds": {
+        "basic": "054d0b1a546d6057bb8cfbe1bc1f669a379bab1673df0b0bf421e447c2eee8f9",
+        "blocks": "3f35f88ec1e96933750c5cf0422697143563862e2175b7ad72e46cb8b03334a6",
+        "exact-file-boundary": "8f85b9074af20fac6e356582c693641d4a967409aeb6981f7bf000bef3d39b33",
+        "reject-before-publish": "7b4ffb26f56e0eda04e83a64084924adebac68be5146cb3fa6de00930ab62d12",
+        "tight": "fae39098798c61c7c84added92b675efd9f13773cb5e97fe1af83b60b1bb4b1a"
+      }
+    },
+    {
+      "target": "automatic_checkpoint",
+      "duration_seconds": 61,
+      "requested_max_seconds": 60,
+      "executions": 4599,
+      "seed": 1592991443,
+      "max_input_bytes": 128,
+      "timeout_seconds": 10,
+      "binary_sha256": "43b580f74737299f70fb828e6b6bd89e7903a99ae41fd4278f94c7da6f84d488",
+      "ending_coverage": 3419,
+      "ending_features": 13622,
+      "ending_corpus_entries": 355,
+      "initial_seeds": {
+        "rollover": "15185b1a7977391ef528490aec670e7107fd4bb35abdfec6323368e5fcded0c1"
+      }
+    },
+    {
+      "target": "managed_checkpoint",
+      "duration_seconds": 61,
+      "requested_max_seconds": 60,
+      "executions": 3701,
+      "seed": 3152208606,
+      "max_input_bytes": 128,
+      "timeout_seconds": 10,
+      "binary_sha256": "d7ee1b449f42567dfeb72e83ed1c74b327913af4d9feafa4496599558cde81c5",
+      "ending_coverage": 2991,
+      "ending_features": 12416,
+      "ending_corpus_entries": 323,
+      "initial_seeds": {
+        "seed": "ddec4a165ebd1f4e8024bb17a5032271c7160b330314e310ad15f5d6f4cfa234"
+      }
+    },
+    {
+      "target": "checkpoint_store",
+      "duration_seconds": 61,
+      "requested_max_seconds": 60,
+      "executions": 9040,
+      "seed": 1072001765,
+      "max_input_bytes": 128,
+      "timeout_seconds": 10,
+      "binary_sha256": "97409b6e83a9931ec59bc7456ac7ea44eb47116ed16c42818ec2eefd9bca00d2",
+      "ending_coverage": 4347,
+      "ending_features": 16163,
+      "ending_corpus_entries": 473,
+      "initial_seeds": {
+        "batch-reopen": "62a7f67e38769d6e102f15bf5465cade3db5ae8187f25719330878829dab60dd",
+        "compaction": "7d9036e0e1f0271bdc194501f33c2523e7d53bb41a83388c656124cc103e42aa",
+        "conditional-batch": "e4b71ea911bf5f22a240ae58e36595c85d975cd2c713354274656c2d84b84b3d",
+        "duplicate": "1a3d02ba18a6f7668f7a0d2fde5cae1c764db48704eb1912544a8f29e56f317d",
+        "live-rollover": "1d37544f16540db83b9bf4e5db9d2f28db72e4c7c48efbc997da8642fdac40b7",
+        "log-cap": "6dad8532767b0b046c728028418380f490e87f294637173bb61b43b7ca292e01",
+        "quota": "d621fee9c61e6cba49ea8e63641d9baa80b4900157eb328cef16efaced6d9222",
+        "rollover": "1cb6945505b3f2ebc8fdaa1e4b48aa821c0b085bddaaf6aa2841b5c26807f51a",
+        "snapshot-rollover": "56b03bef62e4e637bf97136dd35721e83e90763be0a75bd5df31768d5667e310",
+        "transaction": "7b0e6c4ec2ae2ea10f9e5b2f1a34191543304601b8f070505988250b509e6a2e",
+        "transaction-deadline": "b2c0d9c15d3d1c59ca36baeea0145f19845b64c9101d9e4806a1a22ace2292fd",
+        "transaction-fifo": "5828a248b8e3becec2d86f321e3a0766abce21a37e6132327d7d59a4fe354f2c",
+        "transaction-read-set": "643f7bc548ffb339ad12c13241820d957f070ce4db1c18aefa65d0a57324adee"
+      }
+    }
+  ],
+  "scope": "Finite local model campaigns; not exhaustive or a physical power-loss test."
+}
