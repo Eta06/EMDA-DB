@@ -10,6 +10,9 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::io;
 
+// Bound the Cartesian product before allocating tuple probes.
+const MAX_COMPOUND_MEMBERSHIP_PROBES: usize = 256;
+
 /// The access path selected for a planned document query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -46,6 +49,18 @@ pub enum DocumentQueryAccess {
     MembershipIndex { index: String, probes: usize },
     /// Probe an implied partial single-field index for required `In` values.
     PartialMembershipIndex { index: String, probes: usize },
+    /// Probe a compound index for complete required equality/membership tuples.
+    CompoundMembershipIndex {
+        index: String,
+        fields: usize,
+        probes: usize,
+    },
+    /// Probe an implied partial compound index for complete required tuples.
+    PartialCompoundMembershipIndex {
+        index: String,
+        fields: usize,
+        probes: usize,
+    },
 }
 
 /// Filtered query output, including the chosen access path and actual work.
@@ -168,11 +183,54 @@ fn eligible(index: &IndexDefinition, filter: &DocumentFilter) -> bool {
 enum Selection {
     Equality(Vec<IndexValue>),
     Membership(Vec<IndexValue>),
+    CompoundMembership(Vec<Vec<IndexValue>>),
     Range {
         equal: Vec<IndexValue>,
         lower: Option<IndexBound>,
         upper: Option<IndexBound>,
     },
+}
+
+// A compound entry omits any document missing one of its fields. Require an
+// indexable equality or membership predicate for every field; never infer one
+// from Or or Not. Distinct values make tuple probes disjoint. Reject an
+// excessive product before building it, then let the caller use a safe scan.
+fn compound_membership(
+    filter: &DocumentFilter,
+    index: &IndexDefinition,
+) -> Option<Vec<Vec<IndexValue>>> {
+    let mut choices = Vec::with_capacity(index.fields.len());
+    let mut probe_count = 1_usize;
+    let mut has_membership = false;
+    for field in &index.fields {
+        let values = if let Some(value) = required_equality(filter, field) {
+            vec![value]
+        } else {
+            has_membership = true;
+            required_membership(filter, field)?
+        };
+        probe_count = probe_count.checked_mul(values.len())?;
+        if probe_count > MAX_COMPOUND_MEMBERSHIP_PROBES {
+            return None;
+        }
+        choices.push(values);
+    }
+    if !has_membership {
+        return None;
+    }
+    let mut tuples = vec![Vec::new()];
+    for values in choices {
+        let mut next = Vec::with_capacity(tuples.len() * values.len());
+        for tuple in tuples {
+            for value in &values {
+                let mut next_tuple = tuple.clone();
+                next_tuple.push(value.clone());
+                next.push(next_tuple);
+            }
+        }
+        tuples = next;
+    }
+    Some(tuples)
 }
 
 // Keep the tighter bound in the index's actual encoded ordering. Equal bounds
@@ -326,12 +384,26 @@ fn choose_index<'a>(
     {
         return Ok(Some(selected));
     }
+    // Complete compound tuples can also be probed as a bounded union. Keep
+    // existing exact, range and single-field membership choices first.
+    if let Some(selected) = indexes
+        .iter()
+        .filter(|index| index.unique)
+        .chain(indexes.iter().filter(|index| !index.unique))
+        .filter(|index| index.fields.len() > 1 && eligible(index, filter))
+        .find_map(|index| {
+            compound_membership(filter, index)
+                .map(|tuples| (index, Selection::CompoundMembership(tuples)))
+        })
+    {
+        return Ok(Some(selected));
+    }
     Ok(None)
 }
 
 impl DocumentTransaction<'_, '_> {
     /// Executes a bounded filtered query using a qualifying exact equality
-    /// tuple, scalar range or single-field membership union, or falls back to
+    /// tuple, scalar range or bounded membership union, or falls back to
     /// the collection scan.
     /// A partial index is eligible only when the filter proves its condition.
     /// This opt-in path assumes declared indexes are maintained; corruption
@@ -356,6 +428,11 @@ impl DocumentTransaction<'_, '_> {
                 .iter()
                 .cloned()
                 .map(|value| (vec![value], None, None))
+                .collect(),
+            Selection::CompoundMembership(tuples) => tuples
+                .iter()
+                .cloned()
+                .map(|tuple| (tuple, None, None))
                 .collect(),
             Selection::Range {
                 equal,
@@ -463,6 +540,22 @@ impl DocumentTransaction<'_, '_> {
                     DocumentQueryAccess::MembershipIndex {
                         index: index.name.clone(),
                         probes: values.len(),
+                    }
+                }
+            }
+            Selection::CompoundMembership(tuples) => {
+                rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
+                if partial {
+                    DocumentQueryAccess::PartialCompoundMembershipIndex {
+                        index: index.name.clone(),
+                        fields: index.fields.len(),
+                        probes: tuples.len(),
+                    }
+                } else {
+                    DocumentQueryAccess::CompoundMembershipIndex {
+                        index: index.name.clone(),
+                        fields: index.fields.len(),
+                        probes: tuples.len(),
                     }
                 }
             }

@@ -50,6 +50,18 @@ class NonuniqueQueryComparisonTests(unittest.TestCase):
         result["predicate"] = "membership"
         validate(result, 100, 10, 2, membership=True)
 
+    def test_compound_membership_requires_its_own_identity_and_plan(self):
+        result = self.result()
+        result["sqlite_query_plan"] = "SEARCH docs USING INDEX docs_pair (<expr>=? AND <expr>=?)"
+        for predicate in (None, "membership", "compound-equality"):
+            result["predicate"] = predicate
+            with self.assertRaises(ValueError):
+                validate(result, 100, 10, 2, index_name="docs_pair", compound_membership=True)
+        result["predicate"] = "compound-membership"
+        validate(result, 100, 10, 2, index_name="docs_pair", compound_membership=True)
+        with self.assertRaises(ValueError):
+            validate(result, 100, 10, 2, index_name="docs_group", compound_membership=True)
+
     def test_rejects_failed_verification_or_invalid_samples(self):
         for change in ("reopen", "journal", "synchronous", "plan", "scan_plan", "version", "missing", "boolean", "negative"):
             result = self.result()
