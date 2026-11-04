@@ -1,0 +1,30 @@
+{
+  "revision": "54b424cb05caed434b5fe3cf6fa6af8ccfda91e3",
+  "source_sha256": {
+    "src/store/transaction.rs": "a0d40392364f2def825f3742f0786426f50582d75194adfe220a84601e588b5a",
+    "src/store/transaction_queue.rs": "59a8fd1bf42a291988c47b40a3463500e0b01e0a3f5ff6dc4f112f6628489fc0",
+    "src/store/read_set.rs": "8762500ff2cdb4bea1d3d87f52e9e4bc69676581d527452489a5b9ddcf735e8a",
+    "src/store/snapshot.rs": "41918a2e4769553a0e08b20eae1907d3c989e201344cee7e034c26df90d096e4",
+    "src/store.rs": "ab615307bd26bfe9759c2c25796e4b8f97e325d3ecd7bfab49d23c4ac09ee667",
+    "fuzz/fuzz_targets/transaction_read_set.rs": "edd9c26042da3beef436743c0612eb4965cec0b554352cd2165d5f948f616efe"
+  },
+  "binary_sha256": "11ebd6f737232e19ddacb61869e9d7cb3a86f3a33a751a32fbb25ad2356f6333",
+  "seed_sha256": {
+    "fuzz/transaction-read-set-seeds/disjoint-write": "6e4745305080d7d7a725d6a90fc2250a7c07c7f5a916b7c6e0ff6df782620e34",
+    "fuzz/transaction-read-set-seeds/phantom-after-page": "cbdf4e89bbad35be03eab562d57b1c8fb4e0279a62cf44db6a5e52277633c22b",
+    "fuzz/transaction-read-set-seeds/point-conflict": "714caef24aa7cfa7ad6216ba0a615ec20bd2bb531167c807977777e315a7bf32",
+    "fuzz/transaction-read-set-seeds/restored-absence": "8789d2d12d58f8b215ec94774cb812894662733fc7b5bfb596f153dd21973a36",
+    "fuzz/transaction-read-set-seeds/staged-read": "791f34b586f3a27c58c5b75dc6ab7373721a07ac1f015effdee09f1a5241bda5"
+  },
+  "toolchain": "nightly-2026-11-03",
+  "command": "cargo +nightly-2026-11-03 fuzz run transaction_read_set CORPUS -- -max_total_time=45 -max_len=256 -timeout=10 -print_final_stats=1",
+  "scope": "Reference-model histories using ordinary and deadline-enabled read-set transactions, with and without FIFO admission, followed by reopen verification. Generous deadlines exercise the non-expiry path.",
+  "initial_seeds": 5,
+  "seed": 856130059,
+  "duration_seconds": 46,
+  "executions": 18084,
+  "coverage_counters_hit": 2134,
+  "features": 5491,
+  "result": "no model mismatch, crash or sanitizer finding",
+  "limitations": "One short single-threaded fuzz campaign; it does not model deadline races, concurrent queue scheduling, exhaustive histories, physical power loss or production durability."
+}
