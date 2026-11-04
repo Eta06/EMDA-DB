@@ -12,6 +12,15 @@ struct CopyRecord {
     checksum: u32,
 }
 
+// These stores are owned solely by the private staging operation. Explicitly
+// unlock before dropping them so a child forked by another thread cannot keep
+// the staging lock alive through an inherited descriptor until exec.
+fn close_private_store(store: Store) -> io::Result<()> {
+    fs2::FileExt::unlock(&store._lock_file)?;
+    drop(store);
+    Ok(())
+}
+
 fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
     if records.is_empty() {
         return Ok(());
@@ -103,7 +112,7 @@ impl Store {
         // DB01 records in bounded groups and synchronize each group; the target
         // index is rebuilt and checked by reopening before publication.
         copy(&self.log, &inner.index, &target.log)?;
-        drop(target);
+        close_private_store(target)?;
         // Reopen to exercise durable recovery, validate every record, and
         // compare actual values and key count before publishing the directory.
         let verified = Store::open(staging.path())?;
@@ -121,7 +130,7 @@ impl Store {
                 ));
             }
         }
-        drop(verified);
+        close_private_store(verified)?;
         File::open(staging.path())?.sync_all()?;
         staging.publish(destination)?;
         sync_parent(parent).map_err(|error| {
@@ -141,6 +150,20 @@ mod tests {
     use std::os::unix::fs::FileExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn private_store_lock_release_is_not_delayed_by_a_duplicate_descriptor() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let inherited = store._lock_file.try_clone().unwrap();
+        assert!(Store::open(directory.path()).is_err());
+        close_private_store(store).unwrap();
+        let reopened = Store::open(directory.path()).unwrap();
+        drop(inherited);
+        assert!(Store::open(directory.path()).is_err());
+        drop(reopened);
+        assert!(Store::open(directory.path()).is_ok());
+    }
 
     #[derive(Clone, Copy)]
     enum Fault {
