@@ -102,25 +102,27 @@ fn rebuild_publication_errors_and_panics_leave_a_recoverable_visible_selection()
             let selection = super::super::selection::path(&path);
             let previous = fs::read(&selection).unwrap();
             let outcome = std::panic::catch_unwind(|| {
-                CheckpointStore::rebuild_managed_with_hooks(
-                    &path,
-                    &dir.path().join("rebuilt"),
-                    || {
-                        if !after_rename {
-                            if panic {
-                                panic!("injected before rename");
+                retry_lock(|| {
+                    CheckpointStore::rebuild_managed_with_hooks(
+                        &path,
+                        &dir.path().join("rebuilt"),
+                        || {
+                            if !after_rename {
+                                if panic {
+                                    panic!("injected before rename");
+                                }
+                                return Err(io::Error::other("injected before rename"));
                             }
-                            return Err(io::Error::other("injected before rename"));
-                        }
-                        Ok(())
-                    },
-                    |_| {
-                        if panic {
-                            panic!("injected after rename");
-                        }
-                        Err(io::Error::other("injected after rename"))
-                    },
-                )
+                            Ok(())
+                        },
+                        |_| {
+                            if panic {
+                                panic!("injected after rename");
+                            }
+                            Err(io::Error::other("injected after rename"))
+                        },
+                    )
+                })
             });
             if panic {
                 assert!(outcome.is_err());
@@ -162,7 +164,11 @@ fn rebuild_rejects_corrupt_log_without_replacing_the_selection() {
     let mut byte = [0];
     FileExt::read_exact_at(&log, &mut byte, 28).unwrap();
     FileExt::write_all_at(&log, &[byte[0] ^ 1], 28).unwrap();
-    assert!(CheckpointStore::rebuild_managed_selection(&path, dir.path().join("rebuilt")).is_err());
+    let error = retry_lock(|| {
+        CheckpointStore::rebuild_managed_selection(&path, dir.path().join("rebuilt"))
+    })
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(fs::read(selection).unwrap(), previous);
     assert!(!dir.path().join("rebuilt").exists());
 }
@@ -178,22 +184,27 @@ fn rebuild_holds_the_store_lock_through_selection_synchronization() {
         let path = &path;
         let destination = dir.path().join("rebuilt");
         let rebuilding = scope.spawn(move || {
-            CheckpointStore::rebuild_managed_with_hooks(
-                path,
-                &destination,
-                || Ok(()),
-                |parent| {
-                    ready_tx.send(()).unwrap();
-                    resume_rx
-                        .recv_timeout(Duration::from_secs(10))
-                        .map_err(|_| io::Error::other("release timed out"))?;
-                    File::open(parent)?.sync_all()
-                },
-            )
+            retry_lock(|| {
+                CheckpointStore::rebuild_managed_with_hooks(
+                    path,
+                    &destination,
+                    || Ok(()),
+                    |parent| {
+                        ready_tx.send(()).unwrap();
+                        resume_rx
+                            .recv_timeout(Duration::from_secs(10))
+                            .map_err(|_| io::Error::other("release timed out"))?;
+                        File::open(parent)?.sync_all()
+                    },
+                )
+            })
             .unwrap()
         });
         ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(Store::open(path).is_err());
+        assert_eq!(
+            Store::open(path).err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
         assert_eq!(
             crate::cleanup_abandoned_staging(path).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
@@ -219,24 +230,26 @@ fn managed_rebuild_crash_child() {
     };
     let parent = Path::new(&parent);
     let mode = std::env::var("EMDA_REBUILD_CRASH_STAGE").unwrap();
-    CheckpointStore::rebuild_managed_with_hooks(
-        &parent.join("store"),
-        &parent.join("rebuilt"),
-        || {
-            if mode == "staged" {
-                pause_rebuild()
-            } else {
-                Ok(())
-            }
-        },
-        |directory| {
-            if mode == "published" {
-                pause_rebuild()
-            } else {
-                File::open(directory)?.sync_all()
-            }
-        },
-    )
+    retry_lock(|| {
+        CheckpointStore::rebuild_managed_with_hooks(
+            &parent.join("store"),
+            &parent.join("rebuilt"),
+            || {
+                if mode == "staged" {
+                    pause_rebuild()
+                } else {
+                    Ok(())
+                }
+            },
+            |directory| {
+                if mode == "published" {
+                    pause_rebuild()
+                } else {
+                    File::open(directory)?.sync_all()
+                }
+            },
+        )
+    })
     .unwrap();
 }
 
@@ -310,23 +323,25 @@ fn rebuild_preserves_selection_if_any_checkpoint_ancestor_sync_fails() {
         let selection = super::super::selection::path(&path);
         let previous = fs::read(&selection).unwrap();
         let mut seen = 0;
-        let result = CheckpointStore::rebuild_managed_with_sync_hooks(
-            &path,
-            &dir.path().join("rebuilt"),
-            |parent| {
-                super::super::selection::sync_ancestors_with(parent, |ancestor| {
-                    let index = seen;
-                    seen += 1;
-                    if index == fail_at {
-                        Err(io::Error::other("injected ancestor sync"))
-                    } else {
-                        File::open(ancestor)?.sync_all()
-                    }
-                })
-            },
-            || panic!("selection publication must not begin"),
-            |_| panic!("selection publication must not begin"),
-        );
+        let result = retry_lock(|| {
+            CheckpointStore::rebuild_managed_with_sync_hooks(
+                &path,
+                &dir.path().join("rebuilt"),
+                |parent| {
+                    super::super::selection::sync_ancestors_with(parent, |ancestor| {
+                        let index = seen;
+                        seen += 1;
+                        if index == fail_at {
+                            Err(io::Error::other("injected ancestor sync"))
+                        } else {
+                            File::open(ancestor)?.sync_all()
+                        }
+                    })
+                },
+                || panic!("selection publication must not begin"),
+                |_| panic!("selection publication must not begin"),
+            )
+        });
         assert!(
             result
                 .unwrap_err()
