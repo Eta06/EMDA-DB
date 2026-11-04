@@ -91,5 +91,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "managed_checkpoint"
+path = "fuzz_targets/managed_checkpoint.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

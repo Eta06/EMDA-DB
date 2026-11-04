@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 mod read_set;
+mod selection;
 mod snapshot;
 mod transaction;
 pub use snapshot::{
@@ -29,6 +30,12 @@ struct State {
     overlay_key_bytes: usize,
     generation: u64,
     failed: bool,
+    selection: Option<selection::Selection>,
+}
+
+enum OpenSource<'a> {
+    Explicit(&'a Path, &'a [u8; 32]),
+    Managed,
 }
 
 #[derive(Clone, Copy)]
@@ -48,8 +55,9 @@ struct OpenLimits {
 /// stores/views, has no persistent snapshots, and does not automatically
 /// checkpoint, compact or reclaim space. If a limit fills, `rollover_to` can
 /// create and switch to a fresh checkpoint while retaining exclusive ownership.
-/// Its digest must be protected independently. A failed append/sync has an
-/// unknown outcome and poisons this instance until reopened.
+/// The optional managed selection must be protected as trusted metadata. A
+/// failed append/sync has an unknown outcome and poisons this instance until
+/// reopened.
 pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
     log: Log,
@@ -67,6 +75,7 @@ pub struct CheckpointStore {
 
 impl CheckpointStore {
     /// Opens an existing witnessed store and checkpoint with the hard caps.
+    /// A managed selection must instead be opened with `open_managed`.
     pub fn open(
         path: impl AsRef<Path>,
         checkpoint: impl AsRef<Path>,
@@ -131,12 +140,64 @@ impl CheckpointStore {
         )
     }
 
+    /// Opens the checkpoint recorded by a prior managed rollover. The store
+    /// directory and selection file must be trusted and protected against
+    /// modification. A missing, corrupt or unknown selection fails closed.
+    /// The selected checkpoint must remain accessible at its recorded path.
+    pub fn open_managed(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::open_managed_with_resource_limits(
+            path,
+            MAX_RECOVERED_VIEW_TAIL_BYTES,
+            MAX_RECOVERED_VIEW_TAIL_KEYS,
+            MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
+            None,
+        )
+    }
+
+    /// Opens a managed selection with bounded suffix and optional log limits.
+    pub fn open_managed_with_resource_limits(
+        path: impl AsRef<Path>,
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+        max_log_bytes: Option<u64>,
+    ) -> io::Result<Self> {
+        Self::open_source_using(
+            path.as_ref(),
+            OpenSource::Managed,
+            OpenLimits {
+                max_tail_bytes,
+                max_tail_keys,
+                max_tail_key_bytes,
+                max_log_bytes,
+            },
+            Log::open_checkpoint_writer,
+            selection::synchronize,
+        )
+    }
+
     fn open_using(
         path: &Path,
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
         limits: OpenLimits,
         open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
+    ) -> io::Result<Self> {
+        Self::open_source_using(
+            path,
+            OpenSource::Explicit(checkpoint, trusted_digest),
+            limits,
+            open_writer,
+            selection::synchronize,
+        )
+    }
+
+    fn open_source_using(
+        path: &Path,
+        source: OpenSource<'_>,
+        limits: OpenLimits,
+        open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
+        sync_selection: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<Self> {
         let OpenLimits {
             max_tail_bytes,
@@ -155,6 +216,31 @@ impl CheckpointStore {
             .write(true)
             .open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock)?;
+        let selection = selection::load(&path)?;
+        let (checkpoint, digest, selection) = match source {
+            OpenSource::Explicit(checkpoint, digest) => {
+                if selection.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "managed checkpoint selection exists; use open_managed",
+                    ));
+                }
+                (checkpoint.to_path_buf(), *digest, None)
+            }
+            OpenSource::Managed => {
+                let selection = selection.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "managed checkpoint selection missing",
+                    )
+                })?;
+                (
+                    selection.checkpoint.clone(),
+                    selection.digest,
+                    Some(selection),
+                )
+            }
+        };
         if let Some(max) = max_log_bytes {
             if std::fs::metadata(path.join("records.log"))?.len() > max {
                 return Err(io::Error::new(
@@ -163,7 +249,7 @@ impl CheckpointStore {
                 ));
             }
         }
-        let base = CheckpointView::open_locked(&path, checkpoint, trusted_digest, lock)?;
+        let base = CheckpointView::open_locked(&path, &checkpoint, &digest, lock)?;
         let view = RecoveredCheckpointView::from_base_for_writer(
             base,
             max_tail_bytes,
@@ -191,6 +277,11 @@ impl CheckpointStore {
                 )
             })?;
         }
+        // A previous selection rename may have succeeded even if its directory
+        // sync failed. Stabilize the currently visible selection before writes.
+        if selection.is_some() {
+            sync_selection(&path)?;
+        }
         let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
         Ok(Self {
             log,
@@ -199,6 +290,7 @@ impl CheckpointStore {
                 overlay_key_bytes,
                 generation: 0,
                 failed: false,
+                selection,
             }),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: crate::store::TransactionQueue::new(),
@@ -291,6 +383,7 @@ impl CheckpointStore {
     /// source remains unchanged and later source writes are not in the copy.
     /// An error after publication can leave an uncertain destination.
     pub fn compact_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
+        self.check_selection_destination(destination.as_ref())?;
         let state = self.read()?;
         let (count, _) = self.verify_for_checkpoint(&state)?;
         crate::store::compact_checkpoint(&self.log, &state.view, count, destination.as_ref())
@@ -301,6 +394,7 @@ impl CheckpointStore {
         destination: &Path,
         create: impl FnOnce(&Log, &Path) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.check_selection_destination(destination)?;
         let _state = self.read()?;
         create(&self.log, destination)
     }
@@ -331,6 +425,7 @@ impl CheckpointStore {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
+        self.check_selection_destination(destination)?;
         let state = self.write()?;
         self.create_checkpoint(&state, destination, sync_parent)
     }
@@ -351,11 +446,115 @@ impl CheckpointStore {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
+        self.check_selection_destination(destination)?;
         let mut state = self.write()?;
+        if state.selection.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "managed stores require rollover_managed",
+            ));
+        }
         let digest = self.create_checkpoint(&state, destination, sync_parent)?;
-        let next_view = (|| {
+        let next_view = self.rollover_view(&state, destination, &digest)?;
+        state.view = next_view;
+        state.overlay_key_bytes = 0;
+        Ok(digest)
+    }
+
+    // Prevent other publication APIs from creating an unrelated file at the
+    // reserved selection path, even before the store opts into management.
+    fn check_selection_destination(&self, destination: &Path) -> io::Result<()> {
+        let parent = crate::backup::parent_directory(destination)?;
+        let resolved = std::fs::canonicalize(parent)?.join(
+            destination
+                .file_name()
+                .expect("parent_directory validates the name"),
+        );
+        if resolved == selection::path(&self.path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "destination is the reserved managed selection file",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Creates a checkpoint and atomically records its selection before
+    /// allowing more writes. Protect the store's selection file as trusted
+    /// metadata. A publication error poisons this instance; reopen it using
+    /// the visible managed selection, or recover explicitly if none exists.
+    pub fn rollover_managed(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
+        self.rollover_managed_with_hooks(
+            destination.as_ref(),
+            |parent| std::fs::File::open(parent)?.sync_all(),
+            || Ok(()),
+            |parent| std::fs::File::open(parent)?.sync_all(),
+        )
+    }
+
+    fn rollover_managed_with_hooks(
+        &self,
+        destination: &Path,
+        sync_checkpoint_parent: impl FnOnce(&Path) -> io::Result<()>,
+        before_selection_rename: impl FnOnce() -> io::Result<()>,
+        sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        let mut state = self.write()?;
+        let existing = selection::load(&self.path);
+        if !matches!(&existing, Ok(found) if *found == state.selection) {
+            if state.selection.is_some() {
+                state.failed = true;
+            }
+            return Err(io::Error::other(
+                "managed checkpoint selection is missing, invalid or changed",
+            ));
+        }
+        let parent = crate::backup::parent_directory(destination)?;
+        let destination = std::fs::canonicalize(parent)?.join(
+            destination
+                .file_name()
+                .expect("parent_directory validates the name"),
+        );
+        if destination == selection::path(&self.path) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint destination is the managed selection file",
+            ));
+        }
+        // Check path encoding and length before creating any checkpoint.
+        selection::Selection::new(destination.clone(), [0; 32])?;
+        let digest = self.create_checkpoint(&state, &destination, sync_checkpoint_parent)?;
+        let next_view = self.rollover_view(&state, &destination, &digest)?;
+        let next = selection::Selection::new(destination, digest)?;
+        if let Err(error) = selection::publish(
+            &self.path,
+            &next,
+            before_selection_rename,
+            sync_selection_parent,
+        ) {
+            state.failed = true;
+            return Err(io::Error::new(
+                error.kind(),
+                format!(
+                    "managed selection publication may have occurred; reopen required: {error}"
+                ),
+            ));
+        }
+        state.view = next_view;
+        state.overlay_key_bytes = 0;
+        state.selection = Some(next);
+        Ok(digest)
+    }
+
+    fn rollover_view(
+        &self,
+        state: &State,
+        destination: &Path,
+        digest: &[u8; 32],
+    ) -> io::Result<RecoveredCheckpointView> {
+        (|| {
             let lock = state.view.base.duplicate_store_lock()?;
-            let base = CheckpointView::open_locked(&self.path, destination, &digest, lock)?;
+            let base = CheckpointView::open_locked(&self.path, destination, digest, lock)?;
             let view = RecoveredCheckpointView::from_base(
                 base,
                 self.max_tail_bytes,
@@ -374,10 +573,7 @@ impl CheckpointStore {
                 error.kind(),
                 format!("checkpoint was published but switching failed: {error}"),
             )
-        })?;
-        state.view = next_view;
-        state.overlay_key_bytes = 0;
-        Ok(digest)
+        })
     }
 
     fn create_checkpoint(

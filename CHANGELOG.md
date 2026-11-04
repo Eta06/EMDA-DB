@@ -8,6 +8,8 @@ The package version is currently `0.1.0`, but no version has been tagged or publ
 
 ### Added
 
+- Opt-in managed checkpoint selection with synchronized atomic replacement, fail-closed reopening, fault injection, and process-interruption checks. The selection file and its directory are trusted metadata; ordinary `Store` and older revisions do not enforce it. Automatic scheduling and physical power-loss validation remain open.
+
 - A reproducible process-RSS and creation-time comparison for ordinary and checkpoint-backed snapshots.
 - On-demand reclamation of expired, idle checkpoint-backed snapshots, skipping views with active reads.
 - Bounded process-local checkpoint-backed snapshots, with stable point and paginated reads across later writes and checkpoint rollover, explicit cancellation and optional operation-boundary deadlines.

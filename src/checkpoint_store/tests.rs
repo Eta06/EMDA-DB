@@ -148,5 +148,6 @@ mod compaction;
 mod metadata_faults;
 mod recovery;
 mod rollover;
+mod selection;
 
 mod transaction;
