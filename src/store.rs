@@ -29,7 +29,9 @@ pub(crate) use compact_stream::compact_checkpoint;
 #[cfg(test)]
 pub(crate) use compact_stream::compact_checkpoint_with_hooks;
 use log_quota::LogQuota;
-pub use online::{OnlineCompactionOptions, OnlineCompactionReport, OnlineStore};
+pub use online::{
+    OnlineCompactionOptions, OnlineCompactionReport, OnlineReclaimError, OnlineStore,
+};
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
     MAX_TRANSACTION_VALIDATION_ITEMS,

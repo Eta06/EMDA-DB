@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in guarded online compaction with post-handoff reclamation of the redundant previous store, explicit cleanup-error reporting, and preserved staging on failure or unwind.
+
 - Publish paired planner metadata-reuse results and repeat, including observed tail regressions. Exercise the planner comparison harness in CI.
 
 - Reuse transaction-scoped collection metadata when a planned query probes its selected index.

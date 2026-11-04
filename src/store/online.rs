@@ -1,5 +1,6 @@
 //! A guarded store handle supporting bounded, concurrent compaction preparation.
 mod copy;
+mod reclaim;
 
 use super::{LogQuota, Store, compact_exchange};
 use std::cell::RefCell;
@@ -101,6 +102,42 @@ pub struct OnlineCompactionReport {
     pub compacted_log_bytes: u64,
 }
 
+/// Distinguishes a failed handoff from a successful handoff followed by an
+/// incomplete attempt to remove the retired copy.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum OnlineReclaimError {
+    /// The handoff failed; existing compaction uncertainty rules apply.
+    Compaction(io::Error),
+    /// The handoff succeeded, but retired-store cleanup did not complete.
+    Reclamation {
+        /// Counters from the successful handoff.
+        report: OnlineCompactionReport,
+        /// The cleanup failure. The old copy may be partially removed.
+        error: io::Error,
+    },
+}
+
+impl std::fmt::Display for OnlineReclaimError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Compaction(error) => write!(formatter, "online compaction failed: {error}"),
+            Self::Reclamation { error, .. } => write!(
+                formatter,
+                "online compaction succeeded but retired-store reclamation failed: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OnlineReclaimError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Compaction(error) | Self::Reclamation { error, .. } => Some(error),
+        }
+    }
+}
+
 impl OnlineStore {
     /// Opens an ordinary store through the guarded handle.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -171,13 +208,79 @@ impl OnlineStore {
         )
     }
 
+    /// Performs guarded online compaction and then removes the redundant
+    /// previous store after the new directory handoff has been synchronized.
+    /// This permanently discards old log history. The source directory and
+    /// parent must be trusted and accessed only by cooperating clients.
+    ///
+    /// A compaction error has the same uncertainty rules as
+    /// `compact_and_replace`. A reclamation error means the handoff succeeded;
+    /// the live handle stays usable, while the previous copy may be partial or
+    /// retained in an owned staging path. Inspect it or use explicit staging
+    /// cleanup later. A process crash or panic can leave such a path behind;
+    /// a panic can poison a state or maintenance lock and require reopening.
+    /// Reclamation is not secure erasure, a total disk quota, or a power-loss
+    /// guarantee.
+    pub fn compact_and_reclaim(
+        &self,
+        previous: impl AsRef<Path>,
+        options: &OnlineCompactionOptions,
+    ) -> Result<OnlineCompactionReport, OnlineReclaimError> {
+        self.compact_reclaim_with_hooks(
+            previous.as_ref(),
+            options,
+            |_| Ok(()),
+            crate::directory::sync_existing,
+            |_| Ok(()),
+        )
+    }
+
+    fn compact_reclaim_with_hooks(
+        &self,
+        previous: &Path,
+        options: &OnlineCompactionOptions,
+        hook: impl FnMut(copy::Point) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        reclaim_hook: impl FnMut(reclaim::Point) -> io::Result<()>,
+    ) -> Result<OnlineCompactionReport, OnlineReclaimError> {
+        let (report, reclamation) = self
+            .compact_internal(previous, options, hook, sync_parent, Some(reclaim_hook))
+            .map_err(OnlineReclaimError::Compaction)?;
+        match reclamation {
+            Some(Ok(())) => Ok(report),
+            Some(Err(error)) => Err(OnlineReclaimError::Reclamation { report, error }),
+            None => Err(OnlineReclaimError::Reclamation {
+                report,
+                error: io::Error::other("retired-store reclamation was not performed"),
+            }),
+        }
+    }
+
     fn compact_with_hooks(
+        &self,
+        previous: &Path,
+        options: &OnlineCompactionOptions,
+        hook: impl FnMut(copy::Point) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<OnlineCompactionReport> {
+        self.compact_internal(
+            previous,
+            options,
+            hook,
+            sync_parent,
+            None::<fn(reclaim::Point) -> io::Result<()>>,
+        )
+        .map(|(report, _)| report)
+    }
+
+    fn compact_internal(
         &self,
         previous: &Path,
         options: &OnlineCompactionOptions,
         mut hook: impl FnMut(copy::Point) -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
-    ) -> io::Result<OnlineCompactionReport> {
+        reclaim_hook: Option<impl FnMut(reclaim::Point) -> io::Result<()>>,
+    ) -> io::Result<(OnlineCompactionReport, Option<io::Result<()>>)> {
         if !cfg!(target_os = "linux") {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -295,15 +398,21 @@ impl OnlineStore {
                 ),
             )
         })?;
-        state.store = Arc::new(candidate);
+        let candidate = Arc::new(candidate);
+        state.store = Arc::clone(&candidate);
         state.failed = false;
-        Ok(OnlineCompactionReport {
+        drop(state);
+        drop(snapshot);
+        let report = OnlineCompactionReport {
             initial_log_bytes: initial,
             final_log_bytes: final_boundary,
             concurrent_replay_bytes,
             final_replay_bytes,
             compacted_log_bytes: target_length,
-        })
+        };
+        let reclamation = reclaim_hook
+            .map(|hook| reclaim::retire(&source, &previous, &parent, &candidate, &current, hook));
+        Ok((report, reclamation))
     }
 }
 

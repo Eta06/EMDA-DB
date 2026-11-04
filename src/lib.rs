@@ -53,6 +53,7 @@ pub use store::{
     MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES,
     MAX_SNAPSHOT_TOTAL_KEYS, MAX_TRANSACTION_READ_CONSTRAINT_BYTES,
     MAX_TRANSACTION_READ_CONSTRAINTS, MAX_TRANSACTION_STAGED_TOTAL_BYTES,
-    MAX_TRANSACTION_VALIDATION_ITEMS, OnlineCompactionOptions, OnlineCompactionReport, OnlineStore,
-    Snapshot, Store, TimedTransactionError, Transaction, TransactionMode,
+    MAX_TRANSACTION_VALIDATION_ITEMS, OnlineCompactionOptions, OnlineCompactionReport,
+    OnlineReclaimError, OnlineStore, Snapshot, Store, TimedTransactionError, Transaction,
+    TransactionMode,
 };

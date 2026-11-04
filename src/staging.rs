@@ -89,6 +89,7 @@ pub(crate) struct Stage {
     payload: PathBuf,
     kind: Kind,
     created: bool,
+    preserve_on_drop: bool,
 }
 
 impl Stage {
@@ -120,6 +121,7 @@ impl Stage {
             payload,
             kind,
             created: false,
+            preserve_on_drop: false,
         })
     }
 
@@ -140,6 +142,25 @@ impl Stage {
         fs::DirBuilder::new().mode(0o700).create(&stage.payload)?;
         stage.created = true;
         Ok(stage)
+    }
+
+    /// Avoid automatic deletion if unwinding while a retired store is staged.
+    pub(crate) fn preserve_payload_on_drop(&mut self) {
+        self.preserve_on_drop = true;
+    }
+
+    /// Return to normal marker cleanup after the retired payload was removed.
+    pub(crate) fn finish_retained_cleanup(&mut self) {
+        self.preserve_on_drop = false;
+    }
+
+    /// Keep a staged payload and its marker for later explicit inspection or cleanup.
+    pub(crate) fn retain_payload(mut self) -> io::Result<()> {
+        self.created = false;
+        if let Some(marker) = self.marker.take() {
+            marker.keep().map_err(|error| error.error)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -165,6 +186,12 @@ impl Stage {
 
 impl Drop for Stage {
     fn drop(&mut self) {
+        if self.preserve_on_drop {
+            if let Some(marker) = self.marker.take() {
+                let _ = marker.keep();
+            }
+            return;
+        }
         let removed = if self.created {
             let result = match self.kind {
                 Kind::File => fs::remove_file(&self.payload),

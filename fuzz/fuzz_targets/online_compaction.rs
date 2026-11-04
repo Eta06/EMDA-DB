@@ -20,10 +20,10 @@ fuzz_target!(|data: &[u8]| {
     let mut store = OnlineStore::open(&source).expect("open");
     let mut model = BTreeMap::new();
     let mut old = Vec::new();
-    for chunk in data.chunks_exact(3) {
+    for (iteration, chunk) in data.chunks_exact(3).enumerate() {
         let key = vec![b'a' + chunk[1] % 8];
         let value = vec![chunk[2]; usize::from(chunk[2] % 8)];
-        match chunk[0] % 6 {
+        match chunk[0] % 7 {
             0 => {
                 store.with_store(|s| s.put(&key, &value)).expect("put");
                 model.insert(key, value);
@@ -60,7 +60,7 @@ fuzz_target!(|data: &[u8]| {
                 drop(store);
                 store = OnlineStore::open(&source).expect("reopen");
             }
-            _ => {
+            5 => {
                 store
                     .with_store(|s| {
                         let snapshot = s.snapshot(100, 1024)?;
@@ -70,6 +70,14 @@ fuzz_target!(|data: &[u8]| {
                         Ok(())
                     })
                     .expect("snapshot");
+            }
+            _ => {
+                let path = root.path().join(format!("reclaimed-{iteration}"));
+                store
+                    .compact_and_reclaim(&path, &OnlineCompactionOptions::default())
+                    .expect("compact and reclaim");
+                assert!(!path.exists());
+                database_engine::cleanup_abandoned_staging(root.path()).expect("cleanup");
             }
         }
         store

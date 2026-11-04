@@ -584,3 +584,17 @@ Record code revision, engine versions, compiler settings, hardware, filesystem, 
 Build each source checkout with a fresh, empty `CARGO_TARGET_DIR`; sharing or copying build directories across checkouts can reuse artifacts from the wrong source. Package-only cleanup may leave example binaries behind. Record the clean source revision and resulting binary hash for each comparison, and use the same benchmark harness and workload in each build.
 
 Publish the benchmark code, commands, raw results, and analysis. CI should check benchmark tooling for correctness, not enforce noisy shared-runner performance thresholds. Hardware-specific optimizations require a portable fallback and equivalent behavior tests.
+
+## Online retired-log reclamation harness
+
+`examples/online_reclaim_bench.rs` builds a disposable store containing 64-byte values, overwrites half its keys and deletes one eighth, then performs guarded online compaction while either retaining or explicitly reclaiming the previous store. It checks every remaining value, deleted keys, log lengths, staging cleanup and recovery after reopening. `scripts/online_reclaim_compare.py` alternates the modes, pins the benchmark and driver to separate CPUs, and records VM/cgroup noise, source revision and binary hash.
+
+```sh
+cargo build --locked --release --example online_reclaim_bench
+python3 scripts/online_reclaim_compare.py \
+  --directory /path/to/disposable-parent \
+  --binary target/release/examples/online_reclaim_bench \
+  --output results.json --keys 200,5000 --rounds 5
+```
+
+The timing includes verification, copying, synchronization, handoff and any reclamation. It excludes fixture setup and reopening checks, which are included in noise telemetry. Reported log file lengths are not allocated blocks or total disk use. This single-client, warm-cache fixture does not measure concurrent-client pause distributions, background scheduling, physical power loss or off-host recovery.
