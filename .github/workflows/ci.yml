@@ -44,6 +44,7 @@ jobs:
         run: |
           cargo +stable run --release --locked --example document_bench -- prototype "$RUNNER_TEMP" 5
           cargo +stable run --release --locked --example document_bench -- sqlite "$RUNNER_TEMP" 5
+          python3 scripts/document_scale_compare.py --compare-plans --directory "$RUNNER_TEMP" --binary target/release/examples/document_bench --baseline-binary target/release/examples/document_bench --output "$RUNNER_TEMP/document-planner-smoke.json" --sizes 5 --rounds 2 --cycles 3
           cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
           cargo +stable run --release --locked --example kv_bench -- prototype-key-byte-limit 2 20 16 50 "$RUNNER_TEMP"
           python3 scripts/key_byte_limit_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/key-byte-limit-smoke.json" --rounds 2 --operations 20 --baseline-binary target/release/examples/kv_bench --baseline-revision HEAD

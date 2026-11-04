@@ -32,6 +32,8 @@ A [shared-snapshot comparison](docs/SHARED_SNAPSHOT_COMPARISON_2026_11_04.md) me
 
 The [document planner comparison](docs/DOCUMENT_QUERY_PLANNER_COMPARISON_2026_11_04.md) measured median filtered-query latency at 1,000 baseline documents: 1,034.57 µs for a complete scan, 17.31 µs with the opt-in planner, and 3.75 µs for SQLite with a different JSON adapter. The report includes explicit-index results and VM limitations.
 
+A [paired metadata-reuse comparison](docs/PLANNER_METADATA_COMPARISON_2026_11_04.md) records small median gains and mixed p99 results, including a repeat and the earlier exploratory sample.
+
 The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
 
 ## Featured directions

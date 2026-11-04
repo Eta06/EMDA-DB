@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Publish paired planner metadata-reuse results and repeat, including observed tail regressions. Exercise the planner comparison harness in CI.
+
 - Reuse transaction-scoped collection metadata when a planned query probes its selected index.
 
 - Record a paired scan, planned-query, explicit-index and SQLite document comparison, including raw samples and VM noise.

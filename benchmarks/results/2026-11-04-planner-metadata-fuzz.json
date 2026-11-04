@@ -1,0 +1,14 @@
+{
+  "source": "candidate production code matching revision 22ef505a81414df6ef645def83c115cf870fe6e7",
+  "target": "document_query_planner",
+  "binary_sha256": "1cc700a8d6e87bff3d9a1edfa958294c2a815e23c3b86123810b8d7047d10e54",
+  "toolchain": "nightly-2026-11-03 and cargo-fuzz",
+  "seed": 83604037,
+  "requested_seconds": 60,
+  "actual_seconds": 61,
+  "max_input_bytes": 96,
+  "timeout_seconds": 10,
+  "inputs_executed": 2819,
+  "result": "passed",
+  "scope": "Serial differential query model across ordinary and checkpoint-backed stores with mutations and reopen. It does not exhaust concurrency, faults, physical power loss or independent off-host recovery."
+}
