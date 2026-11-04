@@ -11,21 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-// Parallel process-kill tests can briefly retain an inherited lock after its
-// owner drops. Retry only that transient lock conflict for expected opens.
-fn retry_lock<T>(mut open: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match open() {
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(1))
-            }
-            result => return result,
-        }
-    }
-}
+mod support;
+use support::retry_lock;
 
 fn setup(db: &DocumentDatabase<'_>) {
     db.create_collection("c", CollectionSchema::default())
