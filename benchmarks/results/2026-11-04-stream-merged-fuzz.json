@@ -1,0 +1,44 @@
+{
+  "revision": "1957ad632db82b9a11d1b65f3af0dfa68d398e02",
+  "started_utc": "2026-11-04T18:28:15Z",
+  "ended_utc": "2026-11-04T18:32:23Z",
+  "toolchain": "nightly-2026-11-03",
+  "tool": "cargo-fuzz / libFuzzer",
+  "runs": [
+    {
+      "target": "document_partial_planner",
+      "seed": 2955257579,
+      "executions": 6097,
+      "duration_seconds": 61,
+      "max_input_bytes": 96,
+      "binary_sha256": "3677b9e1c9222fab14063fb7e813a2cba90d252a46c14139c235f5bd271446a9",
+      "ending_coverage": 4368,
+      "ending_features": 12705,
+      "ending_corpus_entries": 356,
+      "initial_seeds": {
+        "checkpoint": "dceb75885c245395bd26ca08d25664113e5961b0eab6ffd528daa603e20c571c",
+        "equals": "ccdeb900eae3c5457fa3196a587e143b643b402376fcbb62833c4622ce110cf0",
+        "ordinary": "7f2b85a8debaf4e2d51444a7242231980dcb8895861ccb39e65def5ff5c6536f"
+      },
+      "result": "completed without a finding"
+    },
+    {
+      "target": "checkpoint_view_limits",
+      "seed": 3243712393,
+      "executions": 2801,
+      "duration_seconds": 61,
+      "max_input_bytes": 128,
+      "binary_sha256": "405fef5ec512124bf35284024d41dc7784806aa902a70b06dab20128a46805ef",
+      "ending_coverage": 3020,
+      "ending_features": 15330,
+      "ending_corpus_entries": 365,
+      "initial_seeds": {
+        "basic": "054d0b1a546d6057bb8cfbe1bc1f669a379bab1673df0b0bf421e447c2eee8f9",
+        "blocks": "3f35f88ec1e96933750c5cf0422697143563862e2175b7ad72e46cb8b03334a6",
+        "tight": "fae39098798c61c7c84added92b675efd9f13773cb5e97fe1af83b60b1bb4b1a"
+      },
+      "result": "completed without a finding"
+    }
+  ],
+  "scope": "Generated serial-client query and checkpoint admission/recovery models on the combined scan and storage changes. These short campaigns are not exhaustive and do not model arbitrary concurrent schedules or physical power loss."
+}
