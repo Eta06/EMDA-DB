@@ -316,6 +316,10 @@ The [paired local results](../benchmarks/results/2026-11-04-checkpoint-compactio
 
 Compacted record bytes matched in every run. The checkpoint-backed path also emitted a 7,001,092-byte checkpoint for the 50,000-key case, in addition to a 10,213,804-byte compacted log; the ordinary copy had the same log size and no checkpoint. Both quiet checks passed; individual runs recorded up to 2.22% VM steal in the smaller case and 0.94% in the larger, with no cgroup throttling or direct reclaim observed. The VM host and overlay backing were not controlled. RSS excludes page cache, and these warm-cache measurements do not establish production performance or total-memory bounds.
 
+## Initial JSON-document comparison
+
+The [document comparison report](DOCUMENT_COMPARISON_2026_11_04.md) records a four-round single-client baseline for the prototype, SQLite, PostgreSQL and MongoDB, including raw samples, versioned configurations and differences in adapters and guarantees. It is a small hot dataset and does not establish broader performance or reliability.
+
 ## Checkpoint snapshot memory comparison
 
 `examples/checkpoint_snapshot_bench.rs` opens a prepared store in a fresh Linux process, captures several snapshots, records creation times and process RSS, and checks sampled base and suffix values in each view. The ordinary mode loads and copies a bounded full index; the checkpoint mode loads a bounded suffix overlay and copies that overlay plus the checkpoint block directory. `scripts/checkpoint_snapshot_compare.py` prepares fixtures with `index_memory_bench`, alternates the supported modes, pins the benchmark and driver separately, and records source and binary hashes and VM/cgroup noise. Ordinary snapshots are omitted when their documented key or aggregate limits would reject the configuration.

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- An initial single-client JSON-document comparison records raw SQLite, PostgreSQL and MongoDB results and the limits of the workload and adapters.
+
 - Experimental opt-in Linux ordinary-store compaction can prepare and catch up a copy while guarded callbacks continue, then pauses callbacks for verification and atomic exchange. The previous store is retained; logical caps, error boundaries and format implications are documented.
 
 - Resumable document schema migrations validate bounded batches, persist progress and enforce both active and pending schemas on concurrent writes until publication.

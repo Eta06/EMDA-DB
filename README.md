@@ -24,6 +24,8 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 
 The latest [ten-engine comparison](docs/LOCAL_COMPARISON_2026_11_03.md) includes SQLite, PostgreSQL, Redis, MongoDB, Turso, RocksDB, LMDB, DuckDB and FoundationDB. In the four-client mixed workload, the prototype delivered **10,397 operations/s versus SQLite's 4,514**, while SQLite had faster median writes: **288 µs versus 628 µs**. SQLite also won write-only p99 latency. All 300 performance runs and eleven process-restart checks passed. The report includes run ranges, adapter differences and remaining VM interference; these are small local workloads, not a universal ranking.
 
+A separate [initial document comparison](docs/DOCUMENT_COMPARISON_2026_11_04.md) measures a small single-client CRUD/indexed-lookup cycle against SQLite, PostgreSQL and MongoDB. SQLite had lower median latency than the prototype on each sampled operation; the PostgreSQL and MongoDB adapters use different drivers and transport. The workload is not a general ranking.
+
 The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
 
 ## Featured directions
