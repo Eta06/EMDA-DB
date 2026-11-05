@@ -297,3 +297,10 @@ path = "fuzz_targets/direct_write_admission.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "snapshot_budget_controls"
+path = "fuzz_targets/snapshot_budget_controls.rs"
+test = false
+doc = false
+bench = false

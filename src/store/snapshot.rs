@@ -14,18 +14,86 @@ pub const MAX_SNAPSHOT_TOTAL_KEYS: usize = 65_536;
 /// Maximum combined logical key bytes across snapshots on one open store.
 pub const MAX_SNAPSHOT_TOTAL_KEY_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Default)]
+/// Per-open logical limits and reservations for ordinary-store snapshots.
+/// Transactions and optimized standalone document reads also reserve an active
+/// slot. These counters are not total memory or cross-store quotas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SnapshotBudgetStatus {
+    /// Maximum concurrent reservations.
+    pub active_limit: usize,
+    /// Current reservations, including transaction snapshots and point reads.
+    pub active: usize,
+    /// Maximum combined logical keys represented by reservations.
+    pub key_limit: usize,
+    /// Combined logical keys currently reserved.
+    pub keys: usize,
+    /// Maximum combined logical key bytes represented by reservations.
+    pub key_byte_limit: usize,
+    /// Combined logical key bytes currently reserved.
+    pub key_bytes: usize,
+}
+
 pub(super) struct SnapshotBudget {
     active: usize,
     keys: usize,
     key_bytes: usize,
+    active_limit: usize,
+    key_limit: usize,
+    key_byte_limit: usize,
+}
+
+impl Default for SnapshotBudget {
+    fn default() -> Self {
+        Self {
+            active: 0,
+            keys: 0,
+            key_bytes: 0,
+            active_limit: MAX_ACTIVE_SNAPSHOTS,
+            key_limit: MAX_SNAPSHOT_TOTAL_KEYS,
+            key_byte_limit: MAX_SNAPSHOT_TOTAL_KEY_BYTES,
+        }
+    }
 }
 
 impl SnapshotBudget {
+    fn status(&self) -> SnapshotBudgetStatus {
+        SnapshotBudgetStatus {
+            active_limit: self.active_limit,
+            active: self.active,
+            key_limit: self.key_limit,
+            keys: self.keys,
+            key_byte_limit: self.key_byte_limit,
+            key_bytes: self.key_bytes,
+        }
+    }
+
+    fn set_limits(&mut self, active: usize, keys: usize, key_bytes: usize) -> io::Result<()> {
+        if active > MAX_ACTIVE_SNAPSHOTS
+            || keys > MAX_SNAPSHOT_TOTAL_KEYS
+            || key_bytes > MAX_SNAPSHOT_TOTAL_KEY_BYTES
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "snapshot budget exceeds hard maximum",
+            ));
+        }
+        if active < self.active || keys < self.keys || key_bytes < self.key_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "snapshot budget is below current reservations",
+            ));
+        }
+        self.active_limit = active;
+        self.key_limit = keys;
+        self.key_byte_limit = key_bytes;
+        Ok(())
+    }
+
     pub(super) fn reserve(&mut self, keys: usize, key_bytes: usize) -> io::Result<()> {
-        if self.active >= MAX_ACTIVE_SNAPSHOTS
-            || keys > MAX_SNAPSHOT_TOTAL_KEYS - self.keys
-            || key_bytes > MAX_SNAPSHOT_TOTAL_KEY_BYTES - self.key_bytes
+        if self.active >= self.active_limit
+            || keys > self.key_limit - self.keys
+            || key_bytes > self.key_byte_limit - self.key_bytes
         {
             return Err(io::Error::other("aggregate snapshot limit exceeded"));
         }
@@ -115,6 +183,33 @@ impl Drop for Snapshot<'_> {
 }
 
 impl Store {
+    /// Reports per-open logical snapshot reservation limits and usage.
+    /// Expired views may remain reserved until reaped, cancelled or dropped.
+    pub fn snapshot_budget_status(&self) -> io::Result<SnapshotBudgetStatus> {
+        Ok(self
+            .snapshot_budget
+            .lock()
+            .map_err(|_| io::Error::other("snapshot budget poisoned"))?
+            .status())
+    }
+
+    /// Sets aggregate active, key-count and key-byte reservation limits.
+    /// Reductions below existing reservations return `WouldBlock` unchanged.
+    /// Transactions, standalone document point reads and online-compaction
+    /// snapshots also use these slots. Zero can reject those operations. The
+    /// limits reset on reopen and do not bound total memory or project usage.
+    pub fn set_snapshot_budget_limits(
+        &self,
+        active: usize,
+        keys: usize,
+        key_bytes: usize,
+    ) -> io::Result<()> {
+        self.snapshot_budget
+            .lock()
+            .map_err(|_| io::Error::other("snapshot budget poisoned"))?
+            .set_limits(active, keys, key_bytes)
+    }
+
     /// Captures a stable index view, rejecting a store that exceeds either limit.
     /// Limits cannot exceed the public hard per-snapshot limits. The operation
     /// retains an immutable index view, not values, and never returns a partial

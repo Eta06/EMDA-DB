@@ -202,6 +202,16 @@ mod tests {
             .collect::<Vec<_>>();
         store
             .read_two_consistent(b"first", b"second", |_, _| {
+                assert_eq!(store.snapshot_budget_status()?.active, 16);
+                let before = store.snapshot_budget_status()?;
+                assert_eq!(
+                    store
+                        .set_snapshot_budget_limits(15, before.key_limit, before.key_byte_limit)
+                        .unwrap_err()
+                        .kind(),
+                    io::ErrorKind::WouldBlock
+                );
+                assert_eq!(store.snapshot_budget_status()?, before);
                 assert!(store.snapshot(1, 100).is_err());
                 assert!(
                     store
@@ -215,7 +225,9 @@ mod tests {
             let _ = store.read_two_consistent::<()>(b"first", b"second", |_, _| panic!("injected"));
         }));
         assert!(unwind.is_err());
+        assert_eq!(store.snapshot_budget_status().unwrap().active, 15);
         drop(store.snapshot(1, 100).unwrap());
         drop(snapshots);
+        assert_eq!(store.snapshot_budget_status().unwrap().active, 0);
     }
 }

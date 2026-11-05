@@ -278,6 +278,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/direct-write-admission-corpus"
           cp fuzz/direct-write-admission-seeds/* "$RUNNER_TEMP/direct-write-admission-corpus/"
           cargo +nightly-2026-11-03 fuzz run direct_write_admission "$RUNNER_TEMP/direct-write-admission-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
+      - name: Run snapshot reservation budget model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/snapshot-budget-corpus"
+          cp fuzz/snapshot-budget-seeds/* "$RUNNER_TEMP/snapshot-budget-corpus/"
+          cargo +nightly-2026-11-03 fuzz run snapshot_budget_controls "$RUNNER_TEMP/snapshot-budget-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
