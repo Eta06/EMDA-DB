@@ -172,6 +172,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         let mut names = BTreeSet::new();
         if !matches!(metadata.version, 1..=3)
             || ((metadata.version == 3) != metadata.dropping)
+            || (metadata.dropping && (!metadata.jobs.is_empty() || metadata.schema_job.is_some()))
             || (metadata.version == 1
                 && (!metadata.jobs.is_empty() || metadata.schema_job.is_some()))
             || metadata.schema.validate_definition().is_err()

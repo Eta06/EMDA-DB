@@ -64,6 +64,19 @@ fn dropping_metadata_is_rejected_for_normal_reads_and_invalid_versions_fail_clos
             std::io::ErrorKind::InvalidData
         );
     }
+    value["version"] = json!(3);
+    value["dropping"] = json!(true);
+    value["schema_job"] = json!({"schema": CollectionSchema::default(), "after": null});
+    assert_eq!(
+        transaction::DocumentTransaction::decode_metadata(
+            "c",
+            Some(serde_json::to_vec(&value).unwrap())
+        )
+        .err()
+        .unwrap()
+        .kind(),
+        std::io::ErrorKind::InvalidData
+    );
 }
 
 #[test]
