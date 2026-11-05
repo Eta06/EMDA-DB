@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Include equality predicates in the shared 256-value, 4 MiB encoded-input and 1,000,000-comparison document-filter budgets. Filters that exceed the combined limits now fail even when an oversized branch would short-circuit; this changes previously accepted queries.
+
+- Make pre-commit writer-barrier and checkpoint transaction state-lock waits observe cancellation and deadlines. Callback work, other lock waits and I/O remain cooperative and do not have a completion-time bound; a started commit retains its success or unknown-outcome semantics.
+
 - Add sparse in-memory checkpoint lookup offsets while continuing to verify the complete SHA-256 block before every point read. [Paired measurements](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) record modest median improvements, mixed tails and additional per-block memory.
 
 - Document the conservative lifecycle for unmarked legacy staging paths; cleanup continues to retain them unless an operator separately establishes their role and redundancy.

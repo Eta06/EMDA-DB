@@ -276,3 +276,10 @@ path = "fuzz_targets/controlled_transactions.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "document_filter_budget"
+path = "fuzz_targets/document_filter_budget.rs"
+test = false
+doc = false
+bench = false

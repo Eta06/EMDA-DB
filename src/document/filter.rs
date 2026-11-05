@@ -15,8 +15,8 @@ const MAX_FILTER_COMPARISONS: usize = 1_000_000;
 /// A filter evaluated against object paths. Missing never equals null. Paths
 /// traverse objects only. Array predicates match only an array at the path;
 /// values use exact `serde_json` equality, including nested values. Across one
-/// filter, membership and array predicates accept at most 256 values and 4 MiB
-/// of their encoded JSON. A query fails after 1,000,000 membership comparisons
+/// filter, equality, membership and array predicates accept at most 256 values
+/// and 4 MiB of their encoded JSON. A query fails after 1,000,000 comparisons
 /// across its evaluated documents; these are not total memory or time bounds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DocumentFilter {
@@ -184,16 +184,20 @@ impl FilterValueBudget {
         Ok(())
     }
 
+    fn equals(&mut self, left: &Value, right: &Value) -> io::Result<bool> {
+        self.comparisons = self
+            .comparisons
+            .checked_add(1)
+            .ok_or_else(|| key::invalid("membership filter comparison limit exceeded"))?;
+        if self.comparisons > MAX_FILTER_COMPARISONS {
+            return Err(key::invalid("membership filter comparison limit exceeded"));
+        }
+        Ok(left == right)
+    }
+
     fn contains(&mut self, array: &[Value], value: &Value) -> io::Result<bool> {
         for entry in array {
-            self.comparisons = self
-                .comparisons
-                .checked_add(1)
-                .ok_or_else(|| key::invalid("membership filter comparison limit exceeded"))?;
-            if self.comparisons > MAX_FILTER_COMPARISONS {
-                return Err(key::invalid("membership filter comparison limit exceeded"));
-            }
-            if entry == value {
+            if self.equals(entry, value)? {
                 return Ok(true);
             }
         }
@@ -215,7 +219,7 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
             DocumentFilter::Exists { path, .. } => schema::validate_path(path)?,
             DocumentFilter::Equal { path, value } => {
                 schema::validate_path(path)?;
-                schema::validate_tree(value)?;
+                value_budget.add_values(std::iter::once(value))?;
             }
             DocumentFilter::In { path, values } | DocumentFilter::NotIn { path, values } => {
                 schema::validate_path(path)?;
@@ -263,7 +267,10 @@ fn matches(
         DocumentFilter::Exists { path, exists } => {
             schema::field(document, path).is_some() == *exists
         }
-        DocumentFilter::Equal { path, value } => schema::field(document, path) == Some(value),
+        DocumentFilter::Equal { path, value } => match schema::field(document, path) {
+            Some(actual) => value_budget.equals(actual, value)?,
+            None => false,
+        },
         DocumentFilter::In { path, values } => match schema::field(document, path) {
             Some(value) => value_budget.contains(values, value)?,
             None => false,
