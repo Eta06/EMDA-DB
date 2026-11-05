@@ -2,6 +2,7 @@
 use super::{key, schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::io;
 
@@ -72,6 +73,32 @@ impl IndexDefinition {
 }
 
 impl IndexValue {
+    // Compare an indexable JSON value to this validated scalar in exactly the
+    // same order as `encode`, without allocating encoded byte buffers.
+    pub(super) fn compare_json(&self, actual: &Value) -> Option<Ordering> {
+        match actual {
+            Value::Null => Some(match self {
+                Self::Null => Ordering::Equal,
+                _ => Ordering::Less,
+            }),
+            Value::Bool(actual) => Some(match self {
+                Self::Null => Ordering::Greater,
+                Self::Boolean(expected) => actual.cmp(expected),
+                _ => Ordering::Less,
+            }),
+            Value::Number(actual) => actual.as_i64().map(|actual| match self {
+                Self::Null | Self::Boolean(_) => Ordering::Greater,
+                Self::Integer(expected) => actual.cmp(expected),
+                Self::String(_) => Ordering::Less,
+            }),
+            Value::String(actual) if actual.len() <= 256 => Some(match self {
+                Self::String(expected) => actual.as_bytes().cmp(expected.as_bytes()),
+                _ => Ordering::Greater,
+            }),
+            _ => None,
+        }
+    }
+
     pub(super) fn from_json(value: &Value) -> io::Result<Self> {
         match value {
             Value::Null => Ok(Self::Null),
@@ -167,4 +194,84 @@ pub(super) fn keys(
         None
     };
     Ok(Some(Keys { entry, unique }))
+}
+
+#[cfg(test)]
+mod scalar_order_tests {
+    use super::IndexValue;
+    use serde_json::{Value, json};
+
+    fn json_value(value: &IndexValue) -> Value {
+        match value {
+            IndexValue::Null => Value::Null,
+            IndexValue::Boolean(value) => json!(value),
+            IndexValue::Integer(value) => json!(value),
+            IndexValue::String(value) => json!(value),
+        }
+    }
+
+    #[test]
+    fn borrowed_comparisons_match_complete_scalar_encoding_order() {
+        let mut values = vec![
+            IndexValue::Null,
+            IndexValue::Boolean(false),
+            IndexValue::Boolean(true),
+        ];
+        values.extend(
+            [
+                i64::MIN,
+                i64::MIN + 1,
+                -100,
+                -1,
+                0,
+                1,
+                100,
+                i64::MAX - 1,
+                i64::MAX,
+            ]
+            .into_iter()
+            .map(IndexValue::Integer),
+        );
+        values.extend(
+            [
+                "", "\0", "\0\0", "\0a", "a", "a\0", "a\0a", "aa", "é", "😀", "z", "a\u{7f}",
+            ]
+            .into_iter()
+            .map(|s| IndexValue::String(s.into())),
+        );
+        let alphabet = ['\0', 'a', 'z', 'é', '😀'];
+        for a in alphabet {
+            for b in alphabet {
+                for c in alphabet {
+                    values.push(IndexValue::String([a, b, c].into_iter().collect()));
+                }
+            }
+        }
+        values.push(IndexValue::String("a".repeat(256)));
+        for actual in &values {
+            let mut left = Vec::new();
+            actual.encode(&mut left).unwrap();
+            let json = json_value(actual);
+            for expected in &values {
+                let mut right = Vec::new();
+                expected.encode(&mut right).unwrap();
+                assert_eq!(
+                    expected.compare_json(&json),
+                    Some(left.cmp(&right)),
+                    "actual={actual:?} expected={expected:?}"
+                );
+            }
+        }
+        for invalid in [
+            json!(1.0),
+            json!(u64::MAX),
+            json!({}),
+            json!([]),
+            json!("a".repeat(257)),
+        ] {
+            for expected in &values {
+                assert_eq!(expected.compare_json(&invalid), None);
+            }
+        }
+    }
 }

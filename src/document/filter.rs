@@ -359,19 +359,15 @@ fn matches(
             comparison,
             value,
         } => {
-            let actual =
-                schema::field(document, path).and_then(|value| IndexValue::from_json(value).ok());
-            match actual {
+            let order = schema::field(document, path).and_then(|actual| value.compare_json(actual));
+            match order {
                 None => false,
-                Some(actual) => {
-                    let order = encoded(&actual)?.cmp(&encoded(value)?);
-                    match comparison {
-                        Comparison::Less => order == Ordering::Less,
-                        Comparison::LessOrEqual => order != Ordering::Greater,
-                        Comparison::Greater => order == Ordering::Greater,
-                        Comparison::GreaterOrEqual => order != Ordering::Less,
-                    }
-                }
+                Some(order) => match comparison {
+                    Comparison::Less => order == Ordering::Less,
+                    Comparison::LessOrEqual => order != Ordering::Greater,
+                    Comparison::Greater => order == Ordering::Greater,
+                    Comparison::GreaterOrEqual => order != Ordering::Less,
+                },
             }
         }
         DocumentFilter::And(filters) => {
