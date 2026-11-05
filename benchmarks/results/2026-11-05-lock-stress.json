@@ -1,0 +1,2465 @@
+{
+  "revision": "85562b4",
+  "repetitions_per_test_per_filesystem": 25,
+  "tests": [
+    "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+    "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+    "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+    "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+    "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+    "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+    "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery"
+  ],
+  "runs": [
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 0,
+      "elapsed_ms": 44.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 1,
+      "elapsed_ms": 14.87,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 2,
+      "elapsed_ms": 36.94,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 3,
+      "elapsed_ms": 18.59,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 4,
+      "elapsed_ms": 11.27,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 5,
+      "elapsed_ms": 11.07,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 6,
+      "elapsed_ms": 11.19,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 7,
+      "elapsed_ms": 11.47,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 8,
+      "elapsed_ms": 11.28,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 9,
+      "elapsed_ms": 41.63,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 10,
+      "elapsed_ms": 15.04,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 11,
+      "elapsed_ms": 11.62,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 12,
+      "elapsed_ms": 11.82,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 13,
+      "elapsed_ms": 12.16,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 14,
+      "elapsed_ms": 31.98,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 15,
+      "elapsed_ms": 15.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 16,
+      "elapsed_ms": 11.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 17,
+      "elapsed_ms": 13.19,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 18,
+      "elapsed_ms": 14.18,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 19,
+      "elapsed_ms": 17.11,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 20,
+      "elapsed_ms": 29.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 21,
+      "elapsed_ms": 16.93,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 22,
+      "elapsed_ms": 16.02,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 23,
+      "elapsed_ms": 11.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 24,
+      "elapsed_ms": 11.91,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 0,
+      "elapsed_ms": 18.24,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 1,
+      "elapsed_ms": 17.32,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 2,
+      "elapsed_ms": 15.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 3,
+      "elapsed_ms": 13.19,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 4,
+      "elapsed_ms": 14.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 5,
+      "elapsed_ms": 16.47,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 6,
+      "elapsed_ms": 11.46,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 7,
+      "elapsed_ms": 22.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 8,
+      "elapsed_ms": 11.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 9,
+      "elapsed_ms": 10.72,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 10,
+      "elapsed_ms": 15.48,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 11,
+      "elapsed_ms": 11.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 12,
+      "elapsed_ms": 17.89,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 13,
+      "elapsed_ms": 12.17,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 14,
+      "elapsed_ms": 20.58,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 15,
+      "elapsed_ms": 6.34,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 16,
+      "elapsed_ms": 12.28,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 17,
+      "elapsed_ms": 24.03,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 18,
+      "elapsed_ms": 19.95,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 19,
+      "elapsed_ms": 13.47,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 20,
+      "elapsed_ms": 33.02,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 21,
+      "elapsed_ms": 14.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 22,
+      "elapsed_ms": 15.74,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 23,
+      "elapsed_ms": 18.67,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 24,
+      "elapsed_ms": 11.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 0,
+      "elapsed_ms": 10.71,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 1,
+      "elapsed_ms": 32.28,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 2,
+      "elapsed_ms": 4.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 3,
+      "elapsed_ms": 4.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 4,
+      "elapsed_ms": 5.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 5,
+      "elapsed_ms": 4.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 6,
+      "elapsed_ms": 8.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 7,
+      "elapsed_ms": 5.09,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 8,
+      "elapsed_ms": 4.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 9,
+      "elapsed_ms": 4.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 10,
+      "elapsed_ms": 4.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 11,
+      "elapsed_ms": 11.39,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 12,
+      "elapsed_ms": 12.46,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 13,
+      "elapsed_ms": 28.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 14,
+      "elapsed_ms": 4.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 15,
+      "elapsed_ms": 6.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 16,
+      "elapsed_ms": 4.62,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 17,
+      "elapsed_ms": 5.06,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 18,
+      "elapsed_ms": 4.68,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 19,
+      "elapsed_ms": 4.88,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 20,
+      "elapsed_ms": 4.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 21,
+      "elapsed_ms": 4.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 22,
+      "elapsed_ms": 4.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 23,
+      "elapsed_ms": 4.51,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 24,
+      "elapsed_ms": 4.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 0,
+      "elapsed_ms": 6.07,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 1,
+      "elapsed_ms": 24.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 2,
+      "elapsed_ms": 6.31,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 3,
+      "elapsed_ms": 5.58,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 4,
+      "elapsed_ms": 5.67,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 5,
+      "elapsed_ms": 5.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 6,
+      "elapsed_ms": 6.43,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 7,
+      "elapsed_ms": 6.3,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 8,
+      "elapsed_ms": 10.54,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 9,
+      "elapsed_ms": 5.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 10,
+      "elapsed_ms": 6.01,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 11,
+      "elapsed_ms": 5.94,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 12,
+      "elapsed_ms": 5.75,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 13,
+      "elapsed_ms": 5.71,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 14,
+      "elapsed_ms": 6.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 15,
+      "elapsed_ms": 23.4,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 16,
+      "elapsed_ms": 7.46,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 17,
+      "elapsed_ms": 5.58,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 18,
+      "elapsed_ms": 5.77,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 19,
+      "elapsed_ms": 5.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 20,
+      "elapsed_ms": 5.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 21,
+      "elapsed_ms": 6.89,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 22,
+      "elapsed_ms": 6.62,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 23,
+      "elapsed_ms": 6.29,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 24,
+      "elapsed_ms": 4.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 0,
+      "elapsed_ms": 5.63,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 1,
+      "elapsed_ms": 5.43,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 2,
+      "elapsed_ms": 2.66,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 3,
+      "elapsed_ms": 2.71,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 4,
+      "elapsed_ms": 22.34,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 5,
+      "elapsed_ms": 2.39,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 6,
+      "elapsed_ms": 2.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 7,
+      "elapsed_ms": 3.97,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 8,
+      "elapsed_ms": 2.86,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 9,
+      "elapsed_ms": 3.79,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 10,
+      "elapsed_ms": 2.96,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 11,
+      "elapsed_ms": 4.05,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 12,
+      "elapsed_ms": 3.03,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 13,
+      "elapsed_ms": 4.28,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 14,
+      "elapsed_ms": 2.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 15,
+      "elapsed_ms": 2.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 16,
+      "elapsed_ms": 4.01,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 17,
+      "elapsed_ms": 4.1,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 18,
+      "elapsed_ms": 4.01,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 19,
+      "elapsed_ms": 3.23,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 20,
+      "elapsed_ms": 3.83,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 21,
+      "elapsed_ms": 3.61,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 22,
+      "elapsed_ms": 3.51,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 23,
+      "elapsed_ms": 3.44,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 24,
+      "elapsed_ms": 3.67,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 0,
+      "elapsed_ms": 5.85,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 1,
+      "elapsed_ms": 27.01,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 2,
+      "elapsed_ms": 5.09,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 3,
+      "elapsed_ms": 5.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 4,
+      "elapsed_ms": 20.68,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 5,
+      "elapsed_ms": 5.92,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 6,
+      "elapsed_ms": 8.43,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 7,
+      "elapsed_ms": 5.53,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 8,
+      "elapsed_ms": 5.16,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 9,
+      "elapsed_ms": 5.27,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 10,
+      "elapsed_ms": 5.27,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 11,
+      "elapsed_ms": 5.0,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 12,
+      "elapsed_ms": 27.66,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 13,
+      "elapsed_ms": 5.04,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 14,
+      "elapsed_ms": 5.22,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 15,
+      "elapsed_ms": 5.05,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 16,
+      "elapsed_ms": 6.66,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 17,
+      "elapsed_ms": 5.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 18,
+      "elapsed_ms": 4.94,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 19,
+      "elapsed_ms": 5.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 20,
+      "elapsed_ms": 5.02,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 21,
+      "elapsed_ms": 5.57,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 22,
+      "elapsed_ms": 5.51,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 23,
+      "elapsed_ms": 5.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 24,
+      "elapsed_ms": 5.11,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 0,
+      "elapsed_ms": 7.17,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 1,
+      "elapsed_ms": 5.88,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 2,
+      "elapsed_ms": 25.72,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 3,
+      "elapsed_ms": 5.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 4,
+      "elapsed_ms": 5.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 5,
+      "elapsed_ms": 5.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 6,
+      "elapsed_ms": 6.71,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 7,
+      "elapsed_ms": 5.98,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 8,
+      "elapsed_ms": 6.11,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 9,
+      "elapsed_ms": 6.15,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 10,
+      "elapsed_ms": 6.89,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 11,
+      "elapsed_ms": 6.02,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 12,
+      "elapsed_ms": 7.02,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 13,
+      "elapsed_ms": 7.86,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 14,
+      "elapsed_ms": 23.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 15,
+      "elapsed_ms": 5.95,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 16,
+      "elapsed_ms": 6.0,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 17,
+      "elapsed_ms": 11.35,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 18,
+      "elapsed_ms": 9.59,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 19,
+      "elapsed_ms": 7.63,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 20,
+      "elapsed_ms": 8.9,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 21,
+      "elapsed_ms": 11.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 22,
+      "elapsed_ms": 5.33,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 23,
+      "elapsed_ms": 5.87,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 24,
+      "elapsed_ms": 29.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 0,
+      "elapsed_ms": 17.24,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 1,
+      "elapsed_ms": 19.42,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 2,
+      "elapsed_ms": 26.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 3,
+      "elapsed_ms": 30.67,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 4,
+      "elapsed_ms": 22.48,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 5,
+      "elapsed_ms": 28.14,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 6,
+      "elapsed_ms": 15.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 7,
+      "elapsed_ms": 29.46,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 8,
+      "elapsed_ms": 39.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 9,
+      "elapsed_ms": 26.63,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 10,
+      "elapsed_ms": 33.58,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 11,
+      "elapsed_ms": 15.96,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 12,
+      "elapsed_ms": 25.74,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 13,
+      "elapsed_ms": 25.47,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 14,
+      "elapsed_ms": 19.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 15,
+      "elapsed_ms": 31.79,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 16,
+      "elapsed_ms": 19.0,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 17,
+      "elapsed_ms": 17.06,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 18,
+      "elapsed_ms": 18.37,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 19,
+      "elapsed_ms": 23.67,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 20,
+      "elapsed_ms": 21.51,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 21,
+      "elapsed_ms": 16.73,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 22,
+      "elapsed_ms": 18.14,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 23,
+      "elapsed_ms": 19.9,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks",
+      "iteration": 24,
+      "elapsed_ms": 28.93,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 0,
+      "elapsed_ms": 23.51,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 1,
+      "elapsed_ms": 21.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 2,
+      "elapsed_ms": 20.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 3,
+      "elapsed_ms": 34.49,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 4,
+      "elapsed_ms": 22.92,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 5,
+      "elapsed_ms": 22.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 6,
+      "elapsed_ms": 21.09,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 7,
+      "elapsed_ms": 26.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 8,
+      "elapsed_ms": 20.35,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 9,
+      "elapsed_ms": 20.02,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 10,
+      "elapsed_ms": 32.9,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 11,
+      "elapsed_ms": 44.49,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 12,
+      "elapsed_ms": 22.19,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 13,
+      "elapsed_ms": 23.4,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 14,
+      "elapsed_ms": 35.86,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 15,
+      "elapsed_ms": 21.02,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 16,
+      "elapsed_ms": 19.93,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 17,
+      "elapsed_ms": 22.48,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 18,
+      "elapsed_ms": 20.63,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 19,
+      "elapsed_ms": 32.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 20,
+      "elapsed_ms": 25.63,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 21,
+      "elapsed_ms": 20.48,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 22,
+      "elapsed_ms": 14.67,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 23,
+      "elapsed_ms": 37.96,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks",
+      "iteration": 24,
+      "elapsed_ms": 23.42,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 0,
+      "elapsed_ms": 7.54,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 1,
+      "elapsed_ms": 7.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 2,
+      "elapsed_ms": 8.27,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 3,
+      "elapsed_ms": 7.46,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 4,
+      "elapsed_ms": 26.03,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 5,
+      "elapsed_ms": 8.33,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 6,
+      "elapsed_ms": 8.95,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 7,
+      "elapsed_ms": 8.89,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 8,
+      "elapsed_ms": 9.74,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 9,
+      "elapsed_ms": 8.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 10,
+      "elapsed_ms": 7.64,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 11,
+      "elapsed_ms": 7.3,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 12,
+      "elapsed_ms": 7.79,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 13,
+      "elapsed_ms": 8.17,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 14,
+      "elapsed_ms": 43.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 15,
+      "elapsed_ms": 15.8,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 16,
+      "elapsed_ms": 11.17,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 17,
+      "elapsed_ms": 8.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 18,
+      "elapsed_ms": 11.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 19,
+      "elapsed_ms": 7.82,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 20,
+      "elapsed_ms": 7.77,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 21,
+      "elapsed_ms": 7.8,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 22,
+      "elapsed_ms": 15.8,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 23,
+      "elapsed_ms": 7.61,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append",
+      "iteration": 24,
+      "elapsed_ms": 16.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 0,
+      "elapsed_ms": 13.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 1,
+      "elapsed_ms": 14.07,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 2,
+      "elapsed_ms": 11.12,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 3,
+      "elapsed_ms": 27.67,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 4,
+      "elapsed_ms": 13.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 5,
+      "elapsed_ms": 15.92,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 6,
+      "elapsed_ms": 22.37,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 7,
+      "elapsed_ms": 14.97,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 8,
+      "elapsed_ms": 13.44,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 9,
+      "elapsed_ms": 22.7,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 10,
+      "elapsed_ms": 16.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 11,
+      "elapsed_ms": 18.28,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 12,
+      "elapsed_ms": 12.36,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 13,
+      "elapsed_ms": 12.25,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 14,
+      "elapsed_ms": 32.66,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 15,
+      "elapsed_ms": 14.28,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 16,
+      "elapsed_ms": 12.03,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 17,
+      "elapsed_ms": 17.54,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 18,
+      "elapsed_ms": 11.2,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 19,
+      "elapsed_ms": 32.88,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 20,
+      "elapsed_ms": 21.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 21,
+      "elapsed_ms": 14.27,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 22,
+      "elapsed_ms": 12.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 23,
+      "elapsed_ms": 11.46,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append",
+      "iteration": 24,
+      "elapsed_ms": 11.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 0,
+      "elapsed_ms": 6.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 1,
+      "elapsed_ms": 3.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 2,
+      "elapsed_ms": 4.88,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 3,
+      "elapsed_ms": 20.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 4,
+      "elapsed_ms": 3.56,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 5,
+      "elapsed_ms": 3.65,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 6,
+      "elapsed_ms": 3.5,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 7,
+      "elapsed_ms": 4.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 8,
+      "elapsed_ms": 4.59,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 9,
+      "elapsed_ms": 3.54,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 10,
+      "elapsed_ms": 3.54,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 11,
+      "elapsed_ms": 3.74,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 12,
+      "elapsed_ms": 3.9,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 13,
+      "elapsed_ms": 3.73,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 14,
+      "elapsed_ms": 5.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 15,
+      "elapsed_ms": 3.42,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 16,
+      "elapsed_ms": 3.48,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 17,
+      "elapsed_ms": 3.53,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 18,
+      "elapsed_ms": 3.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 19,
+      "elapsed_ms": 3.63,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 20,
+      "elapsed_ms": 3.67,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 21,
+      "elapsed_ms": 3.49,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 22,
+      "elapsed_ms": 3.48,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 23,
+      "elapsed_ms": 3.79,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths",
+      "iteration": 24,
+      "elapsed_ms": 21.91,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 0,
+      "elapsed_ms": 9.71,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 1,
+      "elapsed_ms": 8.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 2,
+      "elapsed_ms": 8.55,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 3,
+      "elapsed_ms": 8.38,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 4,
+      "elapsed_ms": 10.32,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 5,
+      "elapsed_ms": 9.26,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 6,
+      "elapsed_ms": 10.85,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 7,
+      "elapsed_ms": 9.66,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 8,
+      "elapsed_ms": 32.4,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 9,
+      "elapsed_ms": 14.91,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 10,
+      "elapsed_ms": 9.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 11,
+      "elapsed_ms": 9.4,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 12,
+      "elapsed_ms": 10.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 13,
+      "elapsed_ms": 12.03,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 14,
+      "elapsed_ms": 9.96,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 15,
+      "elapsed_ms": 8.85,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 16,
+      "elapsed_ms": 23.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 17,
+      "elapsed_ms": 8.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 18,
+      "elapsed_ms": 10.24,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 19,
+      "elapsed_ms": 11.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 20,
+      "elapsed_ms": 12.13,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 21,
+      "elapsed_ms": 11.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 22,
+      "elapsed_ms": 10.11,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 23,
+      "elapsed_ms": 31.93,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery",
+      "iteration": 24,
+      "elapsed_ms": 23.85,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 0,
+      "elapsed_ms": 16.36,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 1,
+      "elapsed_ms": 15.81,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 2,
+      "elapsed_ms": 19.95,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 3,
+      "elapsed_ms": 24.28,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 4,
+      "elapsed_ms": 14.26,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 5,
+      "elapsed_ms": 30.87,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 6,
+      "elapsed_ms": 15.08,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 7,
+      "elapsed_ms": 31.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 8,
+      "elapsed_ms": 12.35,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 9,
+      "elapsed_ms": 16.15,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 10,
+      "elapsed_ms": 12.17,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 11,
+      "elapsed_ms": 12.37,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 12,
+      "elapsed_ms": 14.83,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 13,
+      "elapsed_ms": 33.69,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 14,
+      "elapsed_ms": 14.23,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 15,
+      "elapsed_ms": 12.64,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 16,
+      "elapsed_ms": 13.04,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 17,
+      "elapsed_ms": 16.42,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 18,
+      "elapsed_ms": 13.31,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 19,
+      "elapsed_ms": 25.82,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 20,
+      "elapsed_ms": 16.77,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 21,
+      "elapsed_ms": 12.1,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 22,
+      "elapsed_ms": 17.02,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 23,
+      "elapsed_ms": 12.85,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery",
+      "iteration": 24,
+      "elapsed_ms": 13.07,
+      "ok": true
+    }
+  ]
+}

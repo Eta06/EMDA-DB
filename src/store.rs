@@ -67,7 +67,7 @@ pub struct Store {
     inner: RwLock<Inner>,
     // A backup excludes all in-flight writes and holds this barrier until the
     // snapshot is complete; writers share it while the coordinator batches.
-    writes: RwLock<()>,
+    writes: crate::controlled_lock::ControlledRwLock<()>,
     commits: Coordinator,
     log_quota: Option<LogQuota>,
     max_live_keys: Option<usize>,
@@ -273,7 +273,7 @@ impl Store {
                 index_key_bytes,
                 generation: 0,
             }),
-            writes: RwLock::new(()),
+            writes: crate::controlled_lock::ControlledRwLock::new(()),
             commits: Coordinator::new(),
             log_quota: None,
             max_live_keys: None,

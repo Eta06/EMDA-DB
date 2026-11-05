@@ -1,5 +1,8 @@
 //! Experimental writable checkpoint index with a bounded log-suffix overlay.
 use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits};
+use crate::controlled_lock::{
+    ControlledRwLock, ReadGuard as ControlledReadGuard, WriteGuard as ControlledWriteGuard,
+};
 use crate::log::Log;
 use crate::record::batch::{BatchOperation, encode_payload};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
@@ -14,7 +17,7 @@ use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, RwLock, RwLockReadGuard};
 
 mod automatic;
 mod commit;
@@ -91,7 +94,7 @@ type OpenLimits = CheckpointStoreLimits;
 pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
     log: Log,
-    state: RwLock<State>,
+    state: ControlledRwLock<State>,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: crate::store::TransactionQueue,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
@@ -388,7 +391,7 @@ impl CheckpointStore {
         let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
         Ok(Self {
             log,
-            state: RwLock::new(State {
+            state: ControlledRwLock::new(State {
                 view,
                 overlay_key_bytes,
                 generation: 0,
@@ -411,7 +414,7 @@ impl CheckpointStore {
         })
     }
 
-    fn read(&self) -> io::Result<RwLockReadGuard<'_, State>> {
+    fn read(&self) -> io::Result<ControlledReadGuard<'_, State>> {
         let state = self.state.read().map_err(|_| uncertain())?;
         if state.failed {
             return Err(uncertain());
@@ -419,7 +422,7 @@ impl CheckpointStore {
         Ok(state)
     }
 
-    fn write(&self) -> io::Result<RwLockWriteGuard<'_, State>> {
+    fn write(&self) -> io::Result<ControlledWriteGuard<'_, State>> {
         let state = self.state.write().map_err(|_| uncertain())?;
         if state.failed {
             return Err(uncertain());

@@ -57,7 +57,7 @@ impl Drop for CheckpointTransaction<'_> {
 }
 
 impl CheckpointTransaction<'_> {
-    fn state(&self) -> io::Result<RwLockReadGuard<'_, State>> {
+    fn state(&self) -> io::Result<ControlledReadGuard<'_, State>> {
         crate::cancellation::check(self.cancellation.as_ref())?;
         if self
             .deadline
@@ -68,8 +68,26 @@ impl CheckpointTransaction<'_> {
                 "transaction deadline exceeded",
             ));
         }
-        let state = self.store.read()?;
+        let state = crate::cancellation::read_lock(
+            &self.store.state,
+            self.deadline,
+            self.cancellation.as_ref(),
+            uncertain,
+        )
+        .map_err(TimedTransactionError::into_io)?;
+        if state.failed {
+            return Err(uncertain());
+        }
         crate::cancellation::check(self.cancellation.as_ref())?;
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "transaction deadline exceeded",
+            ));
+        }
         if let Some(read_set) = &self.read_set {
             read_set
                 .lock()
@@ -376,9 +394,10 @@ impl CheckpointStore {
     /// submitted for commit. `Operation` wraps callback and I/O errors; a
     /// commit I/O timeout may have an unknown outcome. A callback that forwards
     /// a timed-out read returns `Operation`. FIFO waiters can expire in the
-    /// queue; callbacks, state-lock waits and I/O are not interrupted. A commit
-    /// that has started can succeed after its deadline. External callback
-    /// effects are never rolled back.
+    /// queue; transaction state-lock admission also observes expiry while
+    /// waiting. Callbacks, other lock waits and I/O are not interrupted, and
+    /// completion time is not bounded. A commit that has started can succeed
+    /// after its deadline. External callback effects are never rolled back.
     pub fn transaction_until<T>(
         &self,
         deadline: Instant,
@@ -398,9 +417,10 @@ impl CheckpointStore {
 
     /// Runs a selected mode with cooperative cancellation and an optional
     /// deadline. Cancellation or deadline expiry reported by the engine means
-    /// staged writes were not submitted for commit. FIFO admission observes
-    /// cancellation while waiting; callbacks, state-lock waits and I/O are
-    /// not forcibly interrupted. Once append starts it may succeed after
+    /// staged writes were not submitted for commit. FIFO and transaction
+    /// state-lock admission observe cancellation while waiting. Callbacks,
+    /// other lock waits and I/O are not forcibly interrupted, and completion
+    /// time is not bounded. Once append starts it may succeed after
     /// cancellation or return an operation error with an unknown outcome.
     /// Automatic checkpoint maintenance can complete before cancellation.
     pub fn transaction_controlled<T>(
@@ -453,7 +473,14 @@ impl CheckpointStore {
         };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
-        let generation = self.read()?.generation;
+        let generation = {
+            let state =
+                crate::cancellation::read_lock(&self.state, deadline, cancellation, uncertain)?;
+            if state.failed {
+                return Err(uncertain().into());
+            }
+            state.generation
+        };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         let mut transaction = CheckpointTransaction {
@@ -481,7 +508,11 @@ impl CheckpointStore {
         } else {
             Some(encode_payload(&operations)?)
         };
-        let mut state = self.write()?;
+        let mut state =
+            crate::cancellation::write_lock(&self.state, deadline, cancellation, uncertain)?;
+        if state.failed {
+            return Err(uncertain().into());
+        }
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         let valid = if let Some(read_set) = &transaction.read_set {

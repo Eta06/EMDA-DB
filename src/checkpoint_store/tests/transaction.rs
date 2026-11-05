@@ -195,10 +195,11 @@ fn cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_app
     let (staged_tx, staged_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
     let (finished_tx, finished_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
     let writer = Arc::clone(&store);
     let worker_token = token.clone();
     let worker = std::thread::spawn(move || {
-        writer.transaction_controlled(
+        let result = writer.transaction_controlled(
             &worker_token,
             None,
             CheckpointTransactionMode::Conservative,
@@ -208,20 +209,109 @@ fn cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_app
                 resume_rx.recv().map_err(io::Error::other)?;
                 finished_tx.send(()).map_err(io::Error::other)
             },
-        )
+        );
+        done_tx.send(result).unwrap();
     });
     staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
     let guard = store.write().unwrap();
     resume_tx.send(()).unwrap();
     finished_rx.recv_timeout(Duration::from_secs(10)).unwrap();
     token.cancel();
+    let early = done_rx.recv_timeout(Duration::from_secs(3));
     drop(guard);
-    assert!(matches!(
-        worker.join().unwrap(),
-        Err(ControlledTransactionError::Cancelled)
-    ));
+    let returned_while_locked = early.is_ok();
+    let result = early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
+    assert!(
+        returned_while_locked,
+        "cancellation waited for the state lock"
+    );
+    assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
     assert_eq!(store.get(b"key").unwrap(), None);
     assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+}
+
+#[test]
+fn cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks() {
+    use crate::{CancellationToken, CheckpointTransactionMode, ControlledTransactionError};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let first_store = Arc::clone(&store);
+    let (staged_tx, staged_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let first = std::thread::spawn(move || {
+        let result = first_store.transaction_controlled(
+            &worker_token,
+            None,
+            CheckpointTransactionMode::ReadSetFifo,
+            |tx| {
+                tx.put(b"aborted", b"value")?;
+                staged_tx.send(()).map_err(io::Error::other)?;
+                resume_rx.recv().map_err(io::Error::other)
+            },
+        );
+        done_tx.send(result).unwrap();
+    });
+    staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let held = store.state.write().unwrap();
+    let follower_store = Arc::clone(&store);
+    let follower = std::thread::spawn(move || {
+        follower_store.transaction_with_read_set_fifo(|tx| tx.put(b"follower", b"ok"))
+    });
+    wait_for_queue(&store, 2);
+    resume_tx.send(()).unwrap();
+    token.cancel();
+    let early = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(held);
+    let result = early.expect("cancelled turn remained blocked on state lock");
+    assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
+    first.join().unwrap();
+    follower.join().unwrap().unwrap();
+    assert_eq!(store.transaction_queue.queued_for_test(), 0);
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        0
+    );
+    assert_eq!(store.get(b"aborted").unwrap(), None);
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(reopened.get(b"aborted").unwrap(), None);
+    assert_eq!(
+        reopened.get(b"follower").unwrap().as_deref(),
+        Some(&b"ok"[..])
+    );
+}
+
+#[test]
+fn checkpoint_state_poison_fails_closed_and_preserves_recovery() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.put(b"before", b"durable").unwrap();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = store.state.write().unwrap();
+            panic!("poison state");
+        }))
+        .is_err()
+    );
+    assert!(store.get(b"before").is_err());
+    assert!(store.put(b"after", b"rejected").is_err());
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(
+        reopened.get(b"before").unwrap().as_deref(),
+        Some(&b"durable"[..])
+    );
+    assert_eq!(reopened.get(b"after").unwrap(), None);
 }
 
 #[test]
@@ -398,27 +488,32 @@ fn expiry_waiting_for_state_lock_aborts_before_commit() {
             Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
         let (staged_send, staged_receive) = mpsc::channel();
         let (resume_send, resume_receive) = mpsc::channel();
+        let (done_send, done_receive) = mpsc::channel();
         let waiting = Arc::clone(&store);
         let deadline = Instant::now() + Duration::from_secs(2);
         let worker = std::thread::spawn(move || {
-            waiting.transaction_until(deadline, mode, |tx| {
+            let result = waiting.transaction_until(deadline, mode, |tx| {
                 tx.put(b"staged", b"discarded")?;
                 staged_send.send(()).unwrap();
                 resume_receive.recv().unwrap();
                 Ok(())
-            })
+            });
+            done_send.send(result).unwrap();
         });
         staged_receive
             .recv_timeout(Duration::from_secs(5))
             .expect("callback did not stage");
         let state = store.write().unwrap();
         resume_send.send(()).unwrap();
-        std::thread::sleep(
-            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
-        );
+        let early = done_receive.recv_timeout(Duration::from_secs(5));
         drop(state);
+        let returned_while_locked = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| done_receive.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
+        assert!(returned_while_locked, "deadline waited for the state lock");
         assert!(matches!(
-            worker.join().unwrap(),
+            result,
             Err(TimedTransactionError::DeadlineExceeded)
         ));
         assert_eq!(store.get(b"staged").unwrap(), None);
@@ -724,4 +819,195 @@ fn checkpoint_snapshot_rejects_reads_after_an_uncertain_commit() {
         recovered.get(b"new").unwrap().as_deref(),
         Some(&b"unknown"[..])
     );
+}
+
+#[test]
+fn checkpoint_initial_state_admission_can_cancel_without_running_the_callback() {
+    use crate::{CancellationToken, CheckpointTransactionMode, ControlledTransactionError};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
+    for mode in [
+        CheckpointTransactionMode::Conservative,
+        CheckpointTransactionMode::Fifo,
+        CheckpointTransactionMode::ReadSet,
+        CheckpointTransactionMode::ReadSetFifo,
+    ] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let store =
+            Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+        let guard = store.write().unwrap();
+        let token = CancellationToken::new();
+        let called = Arc::new(AtomicBool::new(false));
+        let worker_called = Arc::clone(&called);
+        let worker_token = token.clone();
+        let waiting = Arc::clone(&store);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = waiting.transaction_controlled(&worker_token, None, mode, |tx| {
+                worker_called.store(true, Ordering::SeqCst);
+                tx.put(b"key", b"must not commit")
+            });
+            done_tx.send(result).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        token.cancel();
+        let early = done_rx.recv_timeout(Duration::from_secs(3));
+        drop(guard);
+        let finished_while_locked = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
+        assert!(
+            finished_while_locked,
+            "initial checkpoint state wait ignored cancellation"
+        );
+        assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
+        assert!(!called.load(Ordering::SeqCst));
+        assert_eq!(
+            store
+                .transaction_budget_status()
+                .unwrap()
+                .active_transactions,
+            0
+        );
+        assert_eq!(store.get(b"key").unwrap(), None);
+    }
+}
+
+#[test]
+fn checkpoint_callback_read_can_cancel_while_state_lock_is_held() {
+    use crate::{CancellationToken, CheckpointTransactionMode, ControlledTransactionError};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let waiting = Arc::clone(&store);
+    let (staged_tx, staged_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let result = waiting.transaction_controlled(
+            &worker_token,
+            None,
+            CheckpointTransactionMode::ReadSetFifo,
+            |tx| {
+                tx.put(b"key", b"must not commit")?;
+                staged_tx.send(()).map_err(io::Error::other)?;
+                resume_rx.recv().map_err(io::Error::other)?;
+                tx.get(b"other")?;
+                Ok(())
+            },
+        );
+        done_tx.send(result).unwrap();
+    });
+    staged_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let guard = store.write().unwrap();
+    resume_tx.send(()).unwrap();
+    token.cancel();
+    let early = done_rx.recv_timeout(Duration::from_secs(3));
+    drop(guard);
+    let finished_while_locked = early.is_ok();
+    let result = early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    worker.join().unwrap();
+    assert!(
+        finished_while_locked,
+        "checkpoint callback read ignored cancellation"
+    );
+    assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        0
+    );
+    assert_eq!(store.get(b"key").unwrap(), None);
+}
+
+#[test]
+fn checkpoint_initial_state_deadlines_expire_while_the_lock_remains_held() {
+    use crate::{CheckpointTransactionMode, TimedTransactionError};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    use std::time::{Duration, Instant};
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let guard = store.write().unwrap();
+    let called = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut workers = Vec::new();
+    for mode in [
+        CheckpointTransactionMode::Conservative,
+        CheckpointTransactionMode::Fifo,
+        CheckpointTransactionMode::ReadSet,
+        CheckpointTransactionMode::ReadSetFifo,
+    ] {
+        let waiting = Arc::clone(&store);
+        let worker_called = Arc::clone(&called);
+        let started = started_tx.clone();
+        let done = done_tx.clone();
+        workers.push(std::thread::spawn(move || {
+            started.send(()).unwrap();
+            let result = waiting.transaction_until(deadline, mode, |tx| {
+                worker_called.store(true, Ordering::SeqCst);
+                tx.put(b"key", b"must not commit")
+            });
+            done.send(result).unwrap();
+        }));
+    }
+    drop(started_tx);
+    drop(done_tx);
+    for _ in 0..4 {
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    }
+    let wait_until = Instant::now() + Duration::from_secs(5);
+    let mut results = Vec::new();
+    while results.len() < 4 {
+        match done_rx.recv_timeout(wait_until.saturating_duration_since(Instant::now())) {
+            Ok(result) => results.push(result),
+            Err(_) => break,
+        }
+    }
+    let finished_while_locked = results.len() == 4;
+    drop(guard);
+    while results.len() < 4 {
+        results.push(done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    assert!(
+        finished_while_locked,
+        "initial checkpoint state wait ignored deadlines"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|result| matches!(result, Err(TimedTransactionError::DeadlineExceeded)))
+    );
+    assert!(!called.load(Ordering::SeqCst));
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        0
+    );
+    assert_eq!(store.transaction_queue.queued_for_test(), 0);
+    assert_eq!(store.get(b"key").unwrap(), None);
 }
