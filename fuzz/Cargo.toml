@@ -290,3 +290,10 @@ path = "fuzz_targets/group_commit_limits.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "direct_write_admission"
+path = "fuzz_targets/direct_write_admission.rs"
+test = false
+doc = false
+bench = false
