@@ -8,6 +8,8 @@ The engine source is available under Apache License 2.0. A separately operated m
 
 The package version is **0.1.0, unreleased**. Statuses describe the current prototype, not production guarantees. We do not assign completion percentages to features without a defined and tested scope.
 
+Specific tests requested on independent machines are listed in [external test requests](external-test-requests/README.md), with commands and evidence to return.
+
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
 | Embedded key-value core | Prototype | Byte-key operations, bounded bulk reads, atomic write batches, conditional updates, signed 64-bit increments, and ordered paginated scans; one store per process with an advisory lock. |
