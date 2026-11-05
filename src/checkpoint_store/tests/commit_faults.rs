@@ -23,6 +23,18 @@ fn every_partial_append_and_sync_failure_poison_until_reopen() {
         let outcome =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.put(b"k", b"new")));
         assert!(outcome.is_err() || outcome.unwrap().is_err());
+        store.set_active_direct_read_limit(0).unwrap();
+        assert_eq!(
+            store.get(b"").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            store.get(b"base").unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        store.set_active_direct_read_limit(1).unwrap();
+        assert!(store.get(b"base").is_err());
+        assert_eq!(store.direct_read_status().active, 0);
         assert_eq!(store.direct_write_status().active, 0);
         store.set_active_direct_write_limit(0).unwrap();
         assert_eq!(
