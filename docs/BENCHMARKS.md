@@ -672,3 +672,7 @@ A [cross-engine smoke workflow](../.github/workflows/compound-range-smoke.yml) r
 ### Transaction cancellation overhead
 
 [`transaction_before_after.py`](../scripts/transaction_before_after.py) alternates separately built binaries for the same two-key transaction workload and verifies every run's recovered counters and samples. It rejects dirty source checkouts and identical binaries; callers must build from the declared revisions in isolated Cargo target directories. The [paired cancellation comparison](TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) includes primary and repeat results, VM noise and the limitations of this small in-process workload.
+
+### Collection deletion cursor
+
+[`collection_drop_bench`](../examples/collection_drop_bench.rs) creates a uniquely indexed collection, deletes it in synchronized steps, and verifies recreation after full-log reopen. Build the same example source against the two revisions in isolated Cargo target directories, then run [`collection_drop_compare.py`](../scripts/collection_drop_compare.py) with `--directory`, `--before-binary`, `--after-binary` and a new `--output` path. `--sizes 100,1000,3000 --rounds 4` reproduces the workload settings in the [cursor report](CHECKPOINT_DROP_CURSOR_2026_11_05.md); choose available CPUs and interpret the recorded VM noise and durability formats. The timer excludes setup, marker creation and recovery verification. Log growth includes the marker and deletion steps, but not all files or total disk use.

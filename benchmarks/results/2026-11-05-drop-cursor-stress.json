@@ -1,0 +1,109 @@
+{
+  "revision": "8490fd0",
+  "repetitions_per_case_and_filesystem": 10,
+  "scope": "Finite fault, process and thread schedules on one running VM, with other validation active. The workspace overlay backing device was not independently verified; this is not physical-power-loss or off-host testing.",
+  "binary_sha256": {
+    "/tmp/emda-drop-cursor-target/debug/deps/database_engine-719878045fa56782": "03bf08f0ee9215f929e8bb31284df87d349c95b7d07f71587ab4ea0cefbd505a",
+    "/tmp/emda-drop-cursor-target/debug/deps/document_collection_drop-35024f6fdc235243": "9fa15ebc25db74ee7777acd8e615cdcee10cc88c316d3a95404f0cd42b1549ca"
+  },
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 6.731
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v3_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 6.205
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::document_faults::later_checkpoint_drop_cursor_update_and_receipt_are_atomic_at_every_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 7.02
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::metadata_faults::checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 0.348
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "document::point_read_tests::drop_cursor_rejects_forged_or_skipped_ranges_without_deleting_metadata",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 0.041
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "concurrent_drop_workers_commit_each_key_once_on_both_backends",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 0.82
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "online_handoff_preserves_a_checkpoint_origin_drop_cursor",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 0.645
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 33.303
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v3_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 26.126
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::document_faults::later_checkpoint_drop_cursor_update_and_receipt_are_atomic_at_every_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 29.382
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::metadata_faults::checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 1.226
+    },
+    {
+      "filesystem": "overlay",
+      "test": "document::point_read_tests::drop_cursor_rejects_forged_or_skipped_ranges_without_deleting_metadata",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 0.095
+    },
+    {
+      "filesystem": "overlay",
+      "test": "concurrent_drop_workers_commit_each_key_once_on_both_backends",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 1.732
+    },
+    {
+      "filesystem": "overlay",
+      "test": "online_handoff_preserves_a_checkpoint_origin_drop_cursor",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 0.83
+    }
+  ]
+}

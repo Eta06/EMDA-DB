@@ -46,6 +46,10 @@ pub struct DocumentTransaction<'a, 'store> {
 }
 
 impl<'a, 'store> DocumentTransaction<'a, 'store> {
+    pub(super) fn checkpoint_backed(&self) -> bool {
+        matches!(&self.backend, BackendTransaction::Checkpoint(_))
+    }
+
     pub(super) fn ordinary(tx: &'a mut Transaction<'store>) -> Self {
         Self {
             backend: BackendTransaction::Ordinary(tx),
@@ -170,8 +174,8 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         let metadata: Metadata = serde_json::from_slice(&bytes)
             .map_err(|_| invalid_data("invalid document metadata"))?;
         let mut names = BTreeSet::new();
-        if !matches!(metadata.version, 1..=3)
-            || ((metadata.version == 3) != metadata.dropping)
+        if !matches!(metadata.version, 1..=4)
+            || (matches!(metadata.version, 3 | 4) != metadata.dropping)
             || (metadata.dropping && (!metadata.jobs.is_empty() || metadata.schema_job.is_some()))
             || (metadata.version == 1
                 && (!metadata.jobs.is_empty() || metadata.schema_job.is_some()))
@@ -218,6 +222,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                     io::ErrorKind::AlreadyExists,
                     "collection already exists",
                 ));
+            }
+            if this.read(&key::collection(b'P', collection)?)?.is_some() {
+                return Err(invalid_data("collection has an unexpected drop cursor"));
             }
             this.save_metadata(
                 collection,
