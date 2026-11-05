@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Persist a checkpoint-backed collection-deletion cursor atomically with each deletion step, reducing repeated tombstone scans. The first cursor step upgrades the marked collection to metadata version 4, which older document readers reject; existing version 3 markers still resume. Final deletion verifies all namespaces are empty and removes the cursor atomically with metadata. Cursor records add log bytes and remain subject to the existing limits.
+
 - Add irreversible, resumable collection deletion in bounded atomic steps. Starting a drop writes version 3 collection metadata that older document readers reject. Access to the affected collection is blocked until deletion completes; underlying transaction and recovery limits continue to apply.
 
 - Make per-open aggregate snapshot reservation limits configurable and observable on both writable stores. Reductions below live reservations fail unchanged; supported compaction handoffs preserve limits, and reopening resets them.

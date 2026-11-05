@@ -7,6 +7,17 @@ const MAX_COLLECTION_DROP_KEYS: usize = 768;
 const MAX_MAINTENANCE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_DROP_STEP: usize = 128;
 
+pub(super) fn drop_cursor_kind(collection: &str, cursor: &[u8]) -> io::Result<u8> {
+    crate::record::validate_key(cursor)?;
+    for kind in *b"DIU" {
+        let prefix = key::collection(kind, collection)?;
+        if cursor.starts_with(&prefix) && cursor.len() > prefix.len() {
+            return Ok(kind);
+        }
+    }
+    Err(key::invalid("invalid collection drop cursor"))
+}
+
 /// The result of one atomic incremental collection-drop step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CollectionDropStep {
@@ -99,6 +110,12 @@ impl DocumentTransaction<'_, '_> {
                     "finish or cancel collection maintenance first",
                 ));
             }
+            if this.read(&key::collection(b'P', collection)?)?.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "collection has an unexpected drop cursor",
+                ));
+            }
             metadata.version = 3;
             metadata.dropping = true;
             this.save_metadata(collection, &metadata)
@@ -112,7 +129,8 @@ impl DocumentTransaction<'_, '_> {
 
     /// Removes at most 128 keys in one transaction. A short nonempty scan is
     /// never interpreted as exhaustion because the scan byte cap may stop it.
-    /// Once all three namespaces are empty, the metadata is atomically removed.
+    /// Checkpoint-backed steps atomically persist a progress cursor. Once all
+    /// three namespaces are verified empty, the metadata is atomically removed.
     pub fn advance_collection_drop(
         &mut self,
         collection: &str,
@@ -124,25 +142,74 @@ impl DocumentTransaction<'_, '_> {
                     "collection drop step must be between 1 and 128",
                 ));
             }
-            if !this.metadata_including_drop(collection)?.dropping {
+            let mut metadata = this.metadata_including_drop(collection)?;
+            if !metadata.dropping {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     "collection deletion is not in progress",
                 ));
             }
+            let cursor_key = key::collection(b'P', collection)?;
+            let cursor = this.read(&cursor_key)?;
+            if (metadata.version == 4) != cursor.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "collection drop cursor does not match metadata",
+                ));
+            }
+            let cursor_kind = cursor
+                .as_ref()
+                .map(|cursor| {
+                    drop_cursor_kind(collection, cursor).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid collection drop cursor")
+                    })
+                })
+                .transpose()?;
             for kind in *b"DIU" {
+                if cursor_kind.is_some_and(|previous| kind < previous) {
+                    continue;
+                }
                 let prefix = key::collection(kind, collection)?;
-                let rows = this.scan(&prefix, &key::end(&prefix), limit)?;
+                let after = if cursor_kind == Some(kind) {
+                    cursor.as_deref().expect("cursor kind requires cursor")
+                } else {
+                    &prefix
+                };
+                let rows = this.scan(after, &key::end(&prefix), limit)?;
                 if !rows.is_empty() {
                     let removed = rows.len();
+                    let next_cursor = this
+                        .checkpoint_backed()
+                        .then(|| rows.last().expect("nonempty rows").0.clone());
                     for (key, _) in rows {
                         this.remove(&key)?;
+                    }
+                    if let Some(next_cursor) = next_cursor {
+                        if metadata.version == 3 {
+                            metadata.version = 4;
+                            this.save_metadata(collection, &metadata)?;
+                        }
+                        this.write(&cursor_key, &next_cursor)?;
                     }
                     return Ok(CollectionDropStep {
                         removed,
                         complete: false,
                     });
                 }
+            }
+            // A stale or forged cursor must never silently orphan remaining
+            // keys. Valid jobs have no surviving keys before their cursor.
+            if cursor.is_some() {
+                for kind in *b"DIU" {
+                    let prefix = key::collection(kind, collection)?;
+                    if !this.scan(&prefix, &key::end(&prefix), 1)?.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "collection drop cursor skipped existing keys",
+                        ));
+                    }
+                }
+                this.remove(&cursor_key)?;
             }
             this.remove(&key::collection(b'M', collection)?)?;
             Ok(CollectionDropStep {

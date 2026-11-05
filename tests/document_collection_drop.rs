@@ -2,6 +2,8 @@ mod support;
 use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, IndexDefinition, Store,
 };
+#[cfg(target_os = "linux")]
+use database_engine::{OnlineCompactionOptions, OnlineStore};
 use serde_json::json;
 use std::{
     io,
@@ -156,6 +158,27 @@ fn checkpoint_drop_resumes_across_reopen_and_full_recovery() {
 }
 
 #[test]
+fn ordinary_drop_can_continue_from_a_new_checkpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    let db = DocumentDatabase::new(&store);
+    prepare(&db);
+    start_and_check(&db);
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    finish_and_check(&DocumentDatabase::with_checkpoint_store(&store));
+    drop(store);
+    let store = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        DocumentDatabase::new(&store).get("c", "again").unwrap(),
+        Some(json!({"n":0}))
+    );
+}
+
+#[test]
 fn backup_restore_resumes_the_captured_drop_even_if_source_progresses() {
     for checkpoint_mode in [false, true] {
         let root = tempfile::tempdir().unwrap();
@@ -211,6 +234,32 @@ fn compaction_handoffs_preserve_an_in_progress_drop() {
     start_and_check(&DocumentDatabase::with_checkpoint_store(&store));
     let (store, _) = store.compact_and_replace(&previous).unwrap();
     finish_and_check(&DocumentDatabase::with_checkpoint_store(&store));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn online_handoff_preserves_a_checkpoint_origin_drop_cursor() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let previous = root.path().join("previous");
+    let initial = Store::open(&path).unwrap();
+    prepare(&DocumentDatabase::new(&initial));
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    drop(initial);
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    start_and_check(&DocumentDatabase::with_checkpoint_store(&store));
+    drop(store);
+    let online = retry_lock(|| OnlineStore::open(&path)).unwrap();
+    online
+        .compact_and_replace(&previous, &OnlineCompactionOptions::default())
+        .unwrap();
+    online
+        .with_store(|store| {
+            finish_and_check(&DocumentDatabase::new(store));
+            Ok(())
+        })
+        .unwrap();
 }
 
 fn race_old_transaction(db: &DocumentDatabase<'_>) {

@@ -728,7 +728,7 @@ mod shared_snapshot_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod array_document_fault_tests;
 #[cfg(all(test, target_os = "linux"))]
-mod collection_drop_fault_tests;
+pub(crate) mod collection_drop_fault_tests;
 
 #[cfg(test)]
 mod fault_tests;

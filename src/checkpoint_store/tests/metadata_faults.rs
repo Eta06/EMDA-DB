@@ -63,6 +63,66 @@ impl WitnessIo for Metadata {
 }
 
 #[test]
+fn checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together() {
+    use crate::DocumentDatabase;
+    use crate::store::collection_drop_fault_tests::{
+        prepare, step, step_second, verify, verify_second,
+    };
+    for second in [false, true] {
+        for fault in [
+            Fault::WriteBefore,
+            Fault::WriteAfter,
+            Fault::WritePanic,
+            Fault::SyncBefore,
+            Fault::SyncAfter,
+            Fault::SyncPanic,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let checkpoint = root.path().join("checkpoint");
+            let store = Store::open(&path).unwrap();
+            prepare(&DocumentDatabase::new(&store));
+            let digest = store.checkpoint_to(&checkpoint).unwrap();
+            drop(store);
+            let mut store =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            if second {
+                step(&DocumentDatabase::with_checkpoint_store(&store)).unwrap();
+            }
+            let header = fs::read(path.join("records.log")).unwrap();
+            assert_eq!(&header[..8], b"EMDALOG3");
+            let id = crate::metadata_witness::parse_header(
+                header[..witness::LOG_HEADER_SIZE].try_into().unwrap(),
+            )
+            .unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            store.log.attach_test_witness(Witness::for_test(
+                Box::new(Metadata { file, fault }),
+                id,
+                header.len() as u64,
+            ));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let db = DocumentDatabase::with_checkpoint_store(&store);
+                if second { step_second(&db) } else { step(&db) }
+            }));
+            assert!(!matches!(result, Ok(Ok(()))));
+            drop(store);
+            let reopened = retry_lock(|| Store::open(&path)).unwrap();
+            let db = DocumentDatabase::new(&reopened);
+            if second {
+                verify_second(&db);
+            } else {
+                verify(&db);
+            }
+        }
+    }
+}
+
+#[test]
 fn metadata_write_sync_failures_and_panics_fail_closed_for_mutations() {
     for fault in [
         Fault::WriteBefore,

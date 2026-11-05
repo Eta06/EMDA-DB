@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub(super) fn prepare(db: &DocumentDatabase<'_>) {
+pub(crate) fn prepare(db: &DocumentDatabase<'_>) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
     db.create_index(
@@ -29,14 +29,45 @@ pub(super) fn prepare(db: &DocumentDatabase<'_>) {
     db.start_collection_drop("c").unwrap();
 }
 
-pub(super) fn step(db: &DocumentDatabase<'_>) -> io::Result<()> {
+pub(crate) fn step(db: &DocumentDatabase<'_>) -> io::Result<()> {
     db.transaction(|tx| {
         assert_eq!(tx.advance_collection_drop("c", 1)?.removed, 1);
         tx.put_raw(b"receipt", b"committed")
     })
 }
 
-pub(super) fn verify(db: &DocumentDatabase<'_>) {
+pub(crate) fn prepare_second(db: &DocumentDatabase<'_>) {
+    prepare(db);
+    step(db).unwrap();
+}
+
+pub(crate) fn step_second(db: &DocumentDatabase<'_>) -> io::Result<()> {
+    db.transaction(|tx| {
+        assert_eq!(tx.advance_collection_drop("c", 1)?.removed, 1);
+        tx.put_raw(b"receipt", b"second")
+    })
+}
+
+pub(crate) fn verify_second(db: &DocumentDatabase<'_>) {
+    assert!(db.collection_drop_in_progress("c").unwrap());
+    let receipt = db.transaction(|tx| tx.get_raw(b"receipt")).unwrap();
+    let committed = match receipt.as_deref() {
+        Some(b"committed") => false,
+        Some(b"second") => true,
+        other => panic!("bad second-step receipt {other:?}"),
+    };
+    let mut removed = 0;
+    loop {
+        let step = db.advance_collection_drop("c", 16).unwrap();
+        removed += step.removed;
+        if step.complete {
+            break;
+        }
+    }
+    assert_eq!(removed, if committed { 4 } else { 5 });
+}
+
+pub(crate) fn verify(db: &DocumentDatabase<'_>) {
     assert!(db.collection_drop_in_progress("c").unwrap());
     assert_eq!(
         db.get("c", "a").unwrap_err().kind(),
