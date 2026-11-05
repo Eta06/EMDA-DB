@@ -6,6 +6,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 - Add sparse in-memory checkpoint lookup offsets while continuing to verify the complete SHA-256 block before every point read. [Paired measurements](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) record modest median improvements, mixed tails and additional per-block memory.
 
+- Document the conservative lifecycle for unmarked legacy staging paths; cleanup continues to retain them unless an operator separately establishes their role and redundancy.
+
 - Enforce a checkpoint-backed store's per-open view byte and block limits while streaming explicit, managed and automatic rollover candidates. An over-limit candidate is now rejected before publication instead of leaving an unusable checkpoint at its destination. Independent `checkpoint_to` copies and compaction retain their previous behavior; these bounds are not total disk quotas.
 
 - Reject existing zero-byte logs on ordinary open instead of silently treating an interrupted initialization as an unwitnessed legacy database. Explicitly verified empty legacy logs can be copied to a new witnessed store with `Store::upgrade_empty_legacy`; valid zero-byte legacy backups restore as new witnessed empty stores, changing their restored format and identity.

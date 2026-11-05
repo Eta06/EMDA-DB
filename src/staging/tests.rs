@@ -327,8 +327,16 @@ fn cleanup_preserves_unknown_legacy_and_symlink_entries() {
     let directory = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     fs::write(outside.path().join("sentinel"), b"preserve").unwrap();
-    let legacy = directory.path().join(".db-backup-old");
-    fs::write(&legacy, b"old data").unwrap();
+    let legacy = ["backup", "restore", "upgrade", "index", "compact"]
+        .map(|kind| directory.path().join(format!(".db-{kind}-old")));
+    for path in &legacy {
+        fs::write(path, b"old data").unwrap();
+    }
+    let legacy_link = directory.path().join(".db-upgrade-link");
+    symlink(outside.path(), &legacy_link).unwrap();
+    let legacy_dir = directory.path().join(".db-restore-directory");
+    fs::create_dir(&legacy_dir).unwrap();
+    fs::write(legacy_dir.join("records.log"), b"preserve this copy").unwrap();
     let bogus = directory
         .path()
         .join(".emda-stage-v1-f-1234567890123456.owner");
@@ -347,7 +355,19 @@ fn cleanup_preserves_unknown_legacy_and_symlink_entries() {
     assert_eq!(report.removed_payloads, 0);
     assert_eq!(report.removed_markers, 0);
     assert_eq!(report.skipped, 3);
-    assert_eq!(fs::read(&legacy).unwrap(), b"old data");
+    for path in &legacy {
+        assert_eq!(fs::read(path).unwrap(), b"old data");
+    }
+    assert!(
+        fs::symlink_metadata(&legacy_link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read(legacy_dir.join("records.log")).unwrap(),
+        b"preserve this copy"
+    );
     assert_eq!(fs::read(payload_path(&bogus)).unwrap(), b"unowned");
     assert_eq!(
         fs::read(outside.path().join("sentinel")).unwrap(),
