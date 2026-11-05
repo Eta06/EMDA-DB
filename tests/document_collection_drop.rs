@@ -150,6 +150,64 @@ fn checkpoint_drop_resumes_across_reopen_and_full_recovery() {
     );
 }
 
+#[test]
+fn backup_restore_resumes_the_captured_drop_even_if_source_progresses() {
+    for checkpoint_mode in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source");
+        let backup = root.path().join("backup");
+        let restored = root.path().join("restored");
+        let initial = Store::open(&path).unwrap();
+        prepare(&DocumentDatabase::new(&initial));
+        if checkpoint_mode {
+            let checkpoint = root.path().join("checkpoint");
+            let digest = initial.checkpoint_to(&checkpoint).unwrap();
+            drop(initial);
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            let db = DocumentDatabase::with_checkpoint_store(&store);
+            start_and_check(&db);
+            store.backup(&backup).unwrap();
+            assert_eq!(db.advance_collection_drop("c", 37).unwrap().removed, 37);
+        } else {
+            let db = DocumentDatabase::new(&initial);
+            start_and_check(&db);
+            initial.backup(&backup).unwrap();
+            assert_eq!(db.advance_collection_drop("c", 37).unwrap().removed, 37);
+        }
+        Store::restore(&backup, &restored).unwrap();
+        let store = retry_lock(|| Store::open(&restored)).unwrap();
+        let db = DocumentDatabase::new(&store);
+        assert!(db.collection_drop_in_progress("c").unwrap());
+        finish_and_check(&db);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn compaction_handoffs_preserve_an_in_progress_drop() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ordinary");
+    let previous = root.path().join("ordinary-previous");
+    let store = Store::open(&path).unwrap();
+    let db = DocumentDatabase::new(&store);
+    prepare(&db);
+    start_and_check(&db);
+    let store = store.compact_and_replace(&path, &previous).unwrap();
+    finish_and_check(&DocumentDatabase::new(&store));
+
+    let path = root.path().join("checkpoint-store");
+    let checkpoint = root.path().join("base");
+    let previous = root.path().join("checkpoint-previous");
+    let initial = Store::open(&path).unwrap();
+    prepare(&DocumentDatabase::new(&initial));
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    drop(initial);
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    start_and_check(&DocumentDatabase::with_checkpoint_store(&store));
+    let (store, _) = store.compact_and_replace(&previous).unwrap();
+    finish_and_check(&DocumentDatabase::with_checkpoint_store(&store));
+}
+
 fn race_old_transaction(db: &DocumentDatabase<'_>) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
