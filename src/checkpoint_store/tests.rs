@@ -161,10 +161,10 @@ mod transaction;
 #[test]
 fn direct_read_reservation_rejects_competing_calls_without_blocking_writes() {
     let (_root, path, checkpoint, digest) = fixture();
-    let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
-    store.set_active_direct_read_limit(1).unwrap();
+    let mut store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    store.enable_direct_read_limit(1).unwrap();
     let admission = store.direct_reads.acquire().unwrap();
-    assert_eq!(store.direct_read_status().active, 1);
+    assert_eq!(store.direct_read_status().active, Some(1));
     assert_eq!(
         store.set_active_direct_read_limit(0).unwrap_err().kind(),
         io::ErrorKind::WouldBlock
@@ -187,7 +187,7 @@ fn direct_read_reservation_rejects_competing_calls_without_blocking_writes() {
             .unwrap()
     );
     drop(admission);
-    assert_eq!(store.direct_read_status().active, 0);
+    assert_eq!(store.direct_read_status().active, Some(0));
     assert_eq!(
         store.get(b"base").unwrap().as_deref(),
         Some(&b"updated"[..])
@@ -199,8 +199,8 @@ fn direct_read_admission_counts_checkpoint_state_lock_waiters() {
     use std::sync::Barrier;
     use std::time::{Duration, Instant};
     let (_root, path, checkpoint, digest) = fixture();
-    let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
-    store.set_active_direct_read_limit(1).unwrap();
+    let mut store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    store.enable_direct_read_limit(1).unwrap();
     let entered = Barrier::new(2);
     std::thread::scope(|scope| {
         let lock = store.state.write().unwrap();
@@ -210,11 +210,11 @@ fn direct_read_admission_counts_checkpoint_state_lock_waiters() {
         });
         entered.wait();
         let deadline = Instant::now() + Duration::from_secs(10);
-        while store.direct_read_status().active == 0 && Instant::now() < deadline {
+        while store.direct_read_status().active == Some(0) && Instant::now() < deadline {
             std::thread::yield_now();
         }
         let status = store.direct_read_status();
-        if status.active != 1 {
+        if status.active != Some(1) {
             drop(lock);
             let _ = worker.join();
             panic!("checkpoint reader did not enter admission");
@@ -223,10 +223,10 @@ fn direct_read_admission_counts_checkpoint_state_lock_waiters() {
         let reduction = store.set_active_direct_read_limit(0);
         drop(lock);
         let result = worker.join().unwrap();
-        assert_eq!((status.limit, status.active), (1, 1));
+        assert_eq!((status.limit, status.active), (Some(1), Some(1)));
         assert_eq!(rejected.unwrap_err().kind(), io::ErrorKind::WouldBlock);
         assert_eq!(reduction.unwrap_err().kind(), io::ErrorKind::WouldBlock);
         assert_eq!(result.unwrap().as_deref(), Some(&b"acknowledged"[..]));
     });
-    assert_eq!(store.direct_read_status().active, 0);
+    assert_eq!(store.direct_read_status().active, Some(0));
 }

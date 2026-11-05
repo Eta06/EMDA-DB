@@ -5,15 +5,37 @@ use std::thread;
 use std::time::Duration;
 
 #[test]
+fn online_handoff_keeps_disabled_direct_read_admission_disabled() {
+    let root = tempfile::tempdir().unwrap();
+    let (source, previous) = paths(root.path());
+    let store = OnlineStore::open(&source).unwrap();
+    store.with_store(|db| db.put(b"key", b"value")).unwrap();
+    store
+        .compact_and_replace(&previous, &OnlineCompactionOptions::default())
+        .unwrap();
+    assert_eq!(
+        store
+            .with_store(|db| Ok(db.direct_read_status().limit))
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store.with_store(|db| db.get(b"key")).unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+}
+
+#[test]
 fn handoff_keeps_a_transaction_limit_changed_during_copy() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());
-    let store = Arc::new(OnlineStore::open(&source).unwrap());
+    let mut initial = OnlineStore::open(&source).unwrap();
+    initial.enable_direct_read_limit(5).unwrap();
+    let store = Arc::new(initial);
     store
         .with_store(|db| {
             db.put(b"key", b"value")?;
             db.set_active_direct_write_limit(5)?;
-            db.set_active_direct_read_limit(5)?;
             db.set_group_commit_limits(4096, 4)?;
             db.set_transaction_staging_limit(512)?;
             db.set_active_transaction_limit(8)
@@ -58,7 +80,7 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
         store
             .with_store(|db| Ok(db.direct_read_status().limit))
             .unwrap(),
-        2
+        Some(2)
     );
     let group = store.with_store(|db| db.group_commit_status()).unwrap();
     assert_eq!((group.limit_bytes, group.limit_records), (2048, 2));

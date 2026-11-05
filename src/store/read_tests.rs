@@ -335,25 +335,24 @@ fn direct_read_admission_counts_blocked_io_and_does_not_block_writes() {
     let armed = Arc::new(AtomicBool::new(false));
     let (started_tx, started_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
-    let store = Arc::new(
-        Store::open_using(dir.path(), |path, _| {
-            let file = OpenOptions::new()
-                .read(true)
-                .append(true)
-                .create(true)
-                .open(path.join("records.log"))?;
-            File::open(path)?.sync_all()?;
-            Log::from_io(Box::new(BlockingReadIo {
-                file,
-                armed: Arc::clone(&armed),
-                started: started_tx,
-                resume: Mutex::new(resume_rx),
-            }))
-        })
-        .unwrap(),
-    );
+    let mut initial = Store::open_using(dir.path(), |path, _| {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(path.join("records.log"))?;
+        File::open(path)?.sync_all()?;
+        Log::from_io(Box::new(BlockingReadIo {
+            file,
+            armed: Arc::clone(&armed),
+            started: started_tx,
+            resume: Mutex::new(resume_rx),
+        }))
+    })
+    .unwrap();
+    initial.enable_direct_read_limit(1).unwrap();
+    let store = Arc::new(initial);
     store.put(b"key", b"old").unwrap();
-    store.set_active_direct_read_limit(1).unwrap();
     armed.store(true, Ordering::SeqCst);
     let reading = Arc::clone(&store);
     let reader = thread::spawn(move || reading.get(b"key"));
@@ -370,14 +369,14 @@ fn direct_read_admission_counts_blocked_io_and_does_not_block_writes() {
     let increment = store.increment_i64(b"counter", 1);
     resume_tx.send(()).unwrap();
     let value = reader.join().unwrap().unwrap();
-    assert_eq!((status.limit, status.active), (1, 1));
+    assert_eq!((status.limit, status.active), (Some(1), Some(1)));
     assert_eq!(lowering.unwrap_err().kind(), io::ErrorKind::WouldBlock);
     assert_eq!(get.unwrap_err().kind(), io::ErrorKind::WouldBlock);
     assert_eq!(many.unwrap_err().kind(), io::ErrorKind::WouldBlock);
     assert_eq!(scan.unwrap_err().kind(), io::ErrorKind::WouldBlock);
     assert_eq!(increment.unwrap(), 1);
     assert_eq!(value.as_deref(), Some(&b"old"[..]));
-    assert_eq!(store.direct_read_status().active, 0);
+    assert_eq!(store.direct_read_status().active, Some(0));
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"old"[..]));
 }
 
@@ -386,15 +385,15 @@ fn failed_read_releases_direct_read_admission() {
     use crate::store::fault_tests::{Fault, open_fault_store};
     let root = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));
-    let store = open_fault_store(&root, Arc::clone(&fault)).unwrap();
+    let mut store = open_fault_store(&root, Arc::clone(&fault)).unwrap();
     store.put(b"key", b"value").unwrap();
-    store.set_active_direct_read_limit(1).unwrap();
+    store.enable_direct_read_limit(1).unwrap();
     *fault.lock().unwrap() = Some(Fault::ShortRead(0));
     assert_eq!(
         store.get(b"key").unwrap_err().kind(),
         io::ErrorKind::UnexpectedEof
     );
-    assert_eq!(store.direct_read_status().active, 0);
+    assert_eq!(store.direct_read_status().active, Some(0));
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
 }
 
@@ -403,16 +402,16 @@ fn saturated_direct_reads_do_not_clear_an_uncertain_write() {
     use crate::store::fault_tests::{Fault, open_fault_store};
     let root = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));
-    let store = open_fault_store(&root, Arc::clone(&fault)).unwrap();
+    let mut store = open_fault_store(&root, Arc::clone(&fault)).unwrap();
     store.put(b"key", b"before").unwrap();
     *fault.lock().unwrap() = Some(Fault::SyncBefore);
     assert!(store.put(b"key", b"uncertain").is_err());
-    store.set_active_direct_read_limit(0).unwrap();
+    store.enable_direct_read_limit(0).unwrap();
     assert_eq!(
         store.get(b"key").unwrap_err().kind(),
         io::ErrorKind::WouldBlock
     );
     store.set_active_direct_read_limit(1).unwrap();
     assert!(store.get(b"key").is_err());
-    assert_eq!(store.direct_read_status().active, 0);
+    assert_eq!(store.direct_read_status().active, Some(0));
 }

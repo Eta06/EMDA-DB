@@ -15,6 +15,12 @@ enum Backend {
     Checkpoint(CheckpointStore),
 }
 impl Backend {
+    fn enable_read(&mut self, limit: usize) -> io::Result<()> {
+        match self {
+            Self::Ordinary(s) => s.enable_direct_read_limit(limit),
+            Self::Checkpoint(s) => s.enable_direct_read_limit(limit),
+        }
+    }
     fn read_status(&self) -> DirectReadStatus {
         match self {
             Self::Ordinary(s) => s.direct_read_status(),
@@ -108,7 +114,7 @@ fuzz_target!(|data: &[u8]| {
     let mut store = open(&path, &checkpoint, &digest, checkpoint_mode);
     let mut model = BTreeMap::<Vec<u8>, Vec<u8>>::new();
     let mut limit = MAX_ACTIVE_DIRECT_WRITES;
-    let mut read_limit = MAX_ACTIVE_DIRECT_READS;
+    let mut read_limit = None;
     for chunk in data[1..].chunks(3) {
         let flag = chunk[0];
         let key = vec![b'k', chunk.get(1).copied().unwrap_or(0) % 4];
@@ -170,11 +176,16 @@ fuzz_target!(|data: &[u8]| {
                 drop(store);
                 store = open(&path, &checkpoint, &digest, checkpoint_mode);
                 limit = MAX_ACTIVE_DIRECT_WRITES;
-                read_limit = MAX_ACTIVE_DIRECT_READS;
+                read_limit = None;
             }
             7 => {
-                read_limit = if flag & 16 == 0 { 0 } else { 1 };
-                store.set_read(read_limit).unwrap();
+                let next = if flag & 16 == 0 { 0 } else { 1 };
+                if read_limit.is_none() {
+                    store.enable_read(next).unwrap();
+                } else {
+                    store.set_read(next).unwrap();
+                }
+                read_limit = Some(next);
             }
             8 => {
                 let before = store.read_status();
@@ -190,7 +201,7 @@ fuzz_target!(|data: &[u8]| {
             _ => {
                 let many = store.get_many(&[&key, &other]);
                 let scan = store.scan();
-                if read_limit == 0 {
+                if read_limit == Some(0) {
                     assert_eq!(many.unwrap_err().kind(), ErrorKind::WouldBlock);
                     assert_eq!(scan.unwrap_err().kind(), ErrorKind::WouldBlock);
                 } else {
@@ -211,10 +222,13 @@ fuzz_target!(|data: &[u8]| {
         let status = store.status();
         assert_eq!((status.limit, status.active), (limit, 0));
         let status = store.read_status();
-        assert_eq!((status.limit, status.active), (read_limit, 0));
+        assert_eq!(
+            (status.limit, status.active),
+            (read_limit, read_limit.map(|_| 0))
+        );
         for n in 0..4 {
             let key = vec![b'k', n];
-            if read_limit == 0 {
+            if read_limit == Some(0) {
                 assert_eq!(store.get(&key).unwrap_err().kind(), ErrorKind::WouldBlock);
             } else {
                 assert_eq!(store.get(&key).unwrap(), model.get(&key).cloned());

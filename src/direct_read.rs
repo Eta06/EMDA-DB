@@ -1,8 +1,8 @@
-//! Per-open admission for independent key-value read calls.
+//! Opt-in per-open admission for independent key-value read calls.
 //!
-//! The limit and active count share one atomic word, so acquisition cannot
-//! race a limit reduction into an oversubscribed state. These counters do not
-//! protect storage data or account for memory used by callers or other APIs.
+//! Enabling requires exclusive access to the store, ensuring no earlier reads
+//! are untracked. Once enabled, limit and active count share one atomic word,
+//! so reconfiguration cannot race admission into an oversubscribed state.
 use crate::{CheckpointStore, Store};
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,25 +16,40 @@ const MASK: usize = u16::MAX as usize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DirectReadStatus {
-    /// Maximum concurrently admitted independent read calls.
-    pub limit: usize,
-    /// Calls holding admission, including lock and I/O waiters.
-    pub active: usize,
+    /// Configured maximum, or `None` when admission is disabled.
+    pub limit: Option<usize>,
+    /// Admitted calls including lock and I/O waiters, or `None` when disabled.
+    pub active: Option<usize>,
 }
 
-pub(crate) struct DirectReads(AtomicUsize);
-impl Default for DirectReads {
-    fn default() -> Self {
-        Self(AtomicUsize::new(MAX_ACTIVE_DIRECT_READS << SHIFT))
-    }
-}
+#[derive(Default)]
+pub(crate) struct DirectReads(Option<AtomicUsize>);
 impl DirectReads {
     fn status(&self) -> DirectReadStatus {
-        let state = self.0.load(Ordering::Acquire);
-        DirectReadStatus {
-            limit: (state >> SHIFT) & MASK,
-            active: state & MASK,
+        match &self.0 {
+            None => DirectReadStatus {
+                limit: None,
+                active: None,
+            },
+            Some(state) => {
+                let state = state.load(Ordering::Acquire);
+                DirectReadStatus {
+                    limit: Some((state >> SHIFT) & MASK),
+                    active: Some(state & MASK),
+                }
+            }
         }
+    }
+    fn enable(&mut self, limit: usize) -> io::Result<()> {
+        if limit > MAX_ACTIVE_DIRECT_READS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct-read admission limit exceeds hard maximum",
+            ));
+        }
+        // Exclusive access ensures no previous guard or read is still active.
+        self.0 = Some(AtomicUsize::new(limit << SHIFT));
+        Ok(())
     }
     fn set_limit(&self, limit: usize) -> io::Result<()> {
         if limit > MAX_ACTIVE_DIRECT_READS {
@@ -43,7 +58,13 @@ impl DirectReads {
                 "direct-read admission limit exceeds hard maximum",
             ));
         }
-        let mut current = self.0.load(Ordering::Acquire);
+        let state = self.0.as_ref().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "enable direct-read admission with exclusive store access first",
+            )
+        })?;
+        let mut current = state.load(Ordering::Acquire);
         loop {
             let active = current & MASK;
             if active > limit {
@@ -53,17 +74,17 @@ impl DirectReads {
                 ));
             }
             let next = (limit << SHIFT) | active;
-            match self
-                .0
-                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
-            {
+            match state.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => return Ok(()),
                 Err(changed) => current = changed,
             }
         }
     }
-    pub(crate) fn acquire(&self) -> io::Result<DirectReadGuard<'_>> {
-        let mut current = self.0.load(Ordering::Acquire);
+    pub(crate) fn acquire(&self) -> io::Result<Option<DirectReadGuard<'_>>> {
+        let Some(state) = &self.0 else {
+            return Ok(None);
+        };
+        let mut current = state.load(Ordering::Acquire);
         loop {
             let active = current & MASK;
             let limit = (current >> SHIFT) & MASK;
@@ -73,22 +94,22 @@ impl DirectReads {
                     "active direct-read admission limit exceeded",
                 ));
             }
-            match self.0.compare_exchange_weak(
+            match state.compare_exchange_weak(
                 current,
                 current + 1,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return Ok(DirectReadGuard(self)),
+                Ok(_) => return Ok(Some(DirectReadGuard(state))),
                 Err(changed) => current = changed,
             }
         }
     }
 }
-pub(crate) struct DirectReadGuard<'a>(&'a DirectReads);
+pub(crate) struct DirectReadGuard<'a>(&'a AtomicUsize);
 impl Drop for DirectReadGuard<'_> {
     fn drop(&mut self) {
-        let previous = self.0.0.fetch_sub(1, Ordering::Release);
+        let previous = self.0.fetch_sub(1, Ordering::Release);
         debug_assert!(previous & MASK > 0, "direct-read admission underflow");
     }
 }
@@ -96,18 +117,24 @@ impl Drop for DirectReadGuard<'_> {
 macro_rules! direct_read_api {
     ($store:ty) => {
         impl $store {
-            /// Reports independent `get`, `get_many` and `scan` admission.
-            /// Transactions, snapshots, document calls, maintenance, other
-            /// stores and caller buffers are outside this per-open count.
+            /// Reports the optional independent key-value read admission state.
+            /// Disabled admission does not track reads; transactions, snapshots,
+            /// document calls, maintenance and other stores are always excluded.
             pub fn direct_read_status(&self) -> DirectReadStatus {
                 self.direct_reads.status()
             }
-            /// Sets the per-open maximum for concurrently admitted independent
-            /// key-value `get`, `get_many` and `scan` calls. Zero rejects new
-            /// calls; lowering below active calls returns `WouldBlock` without
-            /// changing the limit. Saturation may mask a previously unhealthy
-            /// store. In-process compaction handoffs preserve the limit; reopen
-            /// resets it. This is neither a project quota nor a memory bound.
+            /// Enables independent `get`, `get_many` and `scan` admission before
+            /// sharing the store. Exclusive access ensures no untracked read is
+            /// active. Zero rejects these calls. The cap resets on reopen, but is
+            /// preserved by supported in-process compaction handoffs.
+            pub fn enable_direct_read_limit(&mut self, limit: usize) -> io::Result<()> {
+                self.direct_reads.enable(limit)
+            }
+            /// Reconfigures enabled admission; disabled admission must first be
+            /// enabled with exclusive access. A reduction below currently active
+            /// calls returns `WouldBlock` and leaves the old limit in place.
+            /// Saturation can mask a previous uncertain write. This counter is
+            /// neither a project quota nor a memory or completion-time bound.
             pub fn set_active_direct_read_limit(&self, limit: usize) -> io::Result<()> {
                 self.direct_reads.set_limit(limit)
             }
@@ -125,12 +152,12 @@ mod tests {
 
     #[test]
     fn limits_and_raii_release_are_atomic_on_failure_and_unwind() {
-        let budget = DirectReads::default();
+        let mut budget = DirectReads::default();
         assert_eq!(
             budget.status(),
             DirectReadStatus {
-                limit: MAX_ACTIVE_DIRECT_READS,
-                active: 0
+                limit: None,
+                active: None
             }
         );
         assert_eq!(
@@ -140,13 +167,17 @@ mod tests {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
-        budget.set_limit(1).unwrap();
+        assert_eq!(
+            budget.set_limit(1).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        budget.enable(1).unwrap();
         let guard = budget.acquire().unwrap();
         assert_eq!(
             budget.status(),
             DirectReadStatus {
-                limit: 1,
-                active: 1
+                limit: Some(1),
+                active: Some(1)
             }
         );
         assert_eq!(
@@ -163,7 +194,7 @@ mod tests {
             panic!("injected direct-read panic");
         });
         assert!(result.is_err());
-        assert_eq!(budget.status().active, 0);
+        assert_eq!(budget.status().active, Some(0));
         budget.set_limit(0).unwrap();
         assert_eq!(
             budget.acquire().err().unwrap().kind(),
@@ -173,8 +204,9 @@ mod tests {
 
     #[test]
     fn simultaneous_acquisitions_never_exceed_the_limit() {
-        let budget = Arc::new(DirectReads::default());
-        budget.set_limit(10).unwrap();
+        let mut initial = DirectReads::default();
+        initial.enable(10).unwrap();
+        let budget = Arc::new(initial);
         let started = Arc::new(Barrier::new(33));
         let release = Arc::new(Barrier::new(33));
         let mut workers = Vec::new();
@@ -202,23 +234,24 @@ mod tests {
         assert_eq!(
             budget.status(),
             DirectReadStatus {
-                limit: 10,
-                active: 0
+                limit: Some(10),
+                active: Some(0)
             }
         );
     }
 
     #[test]
     fn packed_counter_does_not_carry_into_limit_at_the_hard_boundary() {
-        let budget = DirectReads::default();
+        let mut budget = DirectReads::default();
+        budget.enable(MAX_ACTIVE_DIRECT_READS).unwrap();
         let guards = (0..MAX_ACTIVE_DIRECT_READS)
             .map(|_| budget.acquire().unwrap())
             .collect::<Vec<_>>();
         assert_eq!(
             budget.status(),
             DirectReadStatus {
-                limit: MAX_ACTIVE_DIRECT_READS,
-                active: MAX_ACTIVE_DIRECT_READS
+                limit: Some(MAX_ACTIVE_DIRECT_READS),
+                active: Some(MAX_ACTIVE_DIRECT_READS)
             }
         );
         assert_eq!(
@@ -226,13 +259,14 @@ mod tests {
             io::ErrorKind::WouldBlock
         );
         drop(guards);
-        assert_eq!(budget.status().active, 0);
+        assert_eq!(budget.status().active, Some(0));
     }
 
     #[test]
     fn concurrent_reconfiguration_never_publishes_an_oversubscribed_state() {
-        let budget = Arc::new(DirectReads::default());
-        budget.set_limit(4).unwrap();
+        let mut initial = DirectReads::default();
+        initial.enable(4).unwrap();
+        let budget = Arc::new(initial);
         let start = Arc::new(Barrier::new(10));
         let mut workers = Vec::new();
         for _ in 0..8 {
@@ -246,7 +280,7 @@ mod tests {
                         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
                     }
                     let status = budget.status();
-                    assert!(status.active <= status.limit);
+                    assert!(status.active.unwrap() <= status.limit.unwrap());
                     drop(guard);
                     thread::yield_now();
                 }
@@ -261,7 +295,7 @@ mod tests {
                     assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
                 }
                 let status = changing.status();
-                assert!(status.active <= status.limit);
+                assert!(status.active.unwrap() <= status.limit.unwrap());
                 thread::yield_now();
             }
         });
@@ -270,6 +304,6 @@ mod tests {
             worker.join().unwrap();
         }
         setter.join().unwrap();
-        assert_eq!(budget.status().active, 0);
+        assert_eq!(budget.status().active, Some(0));
     }
 }

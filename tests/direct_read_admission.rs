@@ -14,6 +14,12 @@ enum Backend {
     Checkpoint(CheckpointStore),
 }
 impl Backend {
+    fn enable(&mut self, n: usize) -> io::Result<()> {
+        match self {
+            Self::Ordinary(s) => s.enable_direct_read_limit(n),
+            Self::Checkpoint(s) => s.enable_direct_read_limit(n),
+        }
+    }
     fn status(&self) -> DirectReadStatus {
         match self {
             Self::Ordinary(s) => s.direct_read_status(),
@@ -83,7 +89,7 @@ fn zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents()
             .unwrap();
         db.insert("c", "doc", &json!({"n":1})).unwrap();
         let digest = source.checkpoint_to(&checkpoint).unwrap();
-        let store = if checkpoint_mode {
+        let mut store = if checkpoint_mode {
             drop(source);
             Backend::Checkpoint(
                 retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap(),
@@ -91,15 +97,19 @@ fn zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents()
         } else {
             Backend::Ordinary(source)
         };
+        assert_eq!((store.status().limit, store.status().active), (None, None));
+        assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"old"[..]));
+        assert_eq!((store.status().limit, store.status().active), (None, None));
+        assert_eq!(store.set(0).unwrap_err().kind(), ErrorKind::InvalidInput);
         assert_eq!(
-            (store.status().limit, store.status().active),
-            (MAX_ACTIVE_DIRECT_READS, 0)
-        );
-        assert_eq!(
-            store.set(MAX_ACTIVE_DIRECT_READS + 1).unwrap_err().kind(),
+            store
+                .enable(MAX_ACTIVE_DIRECT_READS + 1)
+                .unwrap_err()
+                .kind(),
             ErrorKind::InvalidInput
         );
-        store.set(0).unwrap();
+        assert_eq!((store.status().limit, store.status().active), (None, None));
+        store.enable(0).unwrap();
         assert_eq!(store.get(b"").unwrap_err().kind(), ErrorKind::InvalidInput);
         assert_eq!(
             store.get_many(&[b""]).unwrap_err().kind(),
@@ -124,7 +134,10 @@ fn zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents()
         );
         assert!(store.compare().unwrap());
         assert_eq!(store.increment().unwrap(), 1);
-        assert_eq!((store.status().limit, store.status().active), (0, 0));
+        assert_eq!(
+            (store.status().limit, store.status().active),
+            (Some(0), Some(0))
+        );
         store.set(1).unwrap();
         assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
         assert_eq!(
@@ -132,13 +145,10 @@ fn zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents()
             vec![Some(b"new".to_vec()), None]
         );
         assert!(!store.scan(10).unwrap().is_empty());
-        assert_eq!(store.status().active, 0);
+        assert_eq!(store.status().active, Some(0));
         drop(store);
         let recovered = retry_lock(|| Store::open(&path)).unwrap();
-        assert_eq!(
-            recovered.direct_read_status().limit,
-            MAX_ACTIVE_DIRECT_READS
-        );
+        assert_eq!(recovered.direct_read_status().limit, None);
         assert_eq!(recovered.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
         assert_eq!(
             recovered.get(b"counter").unwrap().as_deref(),
@@ -155,15 +165,15 @@ fn blocking_compaction_preserves_the_limit_and_reopen_resets_it() {
         let path = root.path().join("live");
         let previous = root.path().join("previous");
         let index = root.path().join("index");
-        let source = Store::open(&path).unwrap();
+        let mut source = Store::open(&path).unwrap();
         source.put(b"key", b"value").unwrap();
         if checkpoint_mode {
             let digest = source.checkpoint_to(&index).unwrap();
             drop(source);
-            let store = retry_lock(|| CheckpointStore::open(&path, &index, &digest)).unwrap();
-            store.set_active_direct_read_limit(0).unwrap();
+            let mut store = retry_lock(|| CheckpointStore::open(&path, &index, &digest)).unwrap();
+            store.enable_direct_read_limit(0).unwrap();
             let (store, digest) = store.compact_and_replace(&previous).unwrap();
-            assert_eq!(store.direct_read_status().limit, 0);
+            assert_eq!(store.direct_read_status().limit, Some(0));
             assert_eq!(store.get(b"key").unwrap_err().kind(), ErrorKind::WouldBlock);
             drop(store);
             let reopened = retry_lock(|| {
@@ -174,19 +184,19 @@ fn blocking_compaction_preserves_the_limit_and_reopen_resets_it() {
                 )
             })
             .unwrap();
-            assert_eq!(reopened.direct_read_status().limit, MAX_ACTIVE_DIRECT_READS);
+            assert_eq!(reopened.direct_read_status().limit, None);
             assert_eq!(
                 reopened.get(b"key").unwrap().as_deref(),
                 Some(&b"value"[..])
             );
         } else {
-            source.set_active_direct_read_limit(0).unwrap();
+            source.enable_direct_read_limit(0).unwrap();
             let store = source.compact_and_replace(&path, &previous).unwrap();
-            assert_eq!(store.direct_read_status().limit, 0);
+            assert_eq!(store.direct_read_status().limit, Some(0));
             assert_eq!(store.get(b"key").unwrap_err().kind(), ErrorKind::WouldBlock);
             drop(store);
             let reopened = retry_lock(|| Store::open(&path)).unwrap();
-            assert_eq!(reopened.direct_read_status().limit, MAX_ACTIVE_DIRECT_READS);
+            assert_eq!(reopened.direct_read_status().limit, None);
             assert_eq!(
                 reopened.get(b"key").unwrap().as_deref(),
                 Some(&b"value"[..])

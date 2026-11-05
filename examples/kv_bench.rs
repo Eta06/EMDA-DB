@@ -32,7 +32,7 @@ impl Config {
 
     fn parse_args(args: &[String]) -> BenchResult<Self> {
         if !(6..=7).contains(&args.len()) {
-            return Err("usage: kv_bench <prototype|prototype-key-byte-limit|prototype-log-limit|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory> [value-bytes]".into());
+            return Err("usage: kv_bench <prototype|prototype-read-limited|prototype-key-byte-limit|prototype-log-limit|sqlite> <clients> <ops-per-client> <keys> <write-percent> <existing-directory> [value-bytes]".into());
         }
         let result = Self {
             backend: args[0].clone(),
@@ -45,7 +45,11 @@ impl Config {
         };
         if !matches!(
             result.backend.as_str(),
-            "prototype" | "prototype-key-byte-limit" | "prototype-log-limit" | "sqlite"
+            "prototype"
+                | "prototype-read-limited"
+                | "prototype-key-byte-limit"
+                | "prototype-log-limit"
+                | "sqlite"
         ) || !(1..=64).contains(&result.clients)
             || !(1..=100_000).contains(&result.operations)
             || !(1..=1_000_000).contains(&result.keys)
@@ -61,6 +65,11 @@ impl Config {
 
 fn open_prototype(config: &Config, path: &Path) -> BenchResult<Store> {
     match config.backend.as_str() {
+        "prototype-read-limited" => {
+            let mut store = Store::open(path)?;
+            store.enable_direct_read_limit(database_engine::MAX_ACTIVE_DIRECT_READS)?;
+            Ok(store)
+        }
         "prototype-key-byte-limit" => Ok(Store::open_with_resource_limits(
             path,
             None,
@@ -292,6 +301,8 @@ mod tests {
             DEFAULT_VALUE_SIZE
         );
         let mut limited = args.clone();
+        limited[0] = "prototype-read-limited".into();
+        assert!(Config::parse_args(&limited).is_ok());
         limited[0] = "prototype-key-byte-limit".into();
         assert!(Config::parse_args(&limited).is_ok());
         limited[0] = "prototype-log-limit".into();

@@ -110,7 +110,9 @@ impl CheckpointStore {
         candidate.set_transaction_staging_limit(self.transaction_budget_status()?.limit_bytes)?;
         candidate.set_active_transaction_limit(self.transaction_budget_status()?.active_limit)?;
         candidate.set_active_direct_write_limit(self.direct_write_status().limit)?;
-        candidate.set_active_direct_read_limit(self.direct_read_status().limit)?;
+        if let Some(limit) = self.direct_read_status().limit {
+            candidate.enable_direct_read_limit(limit)?;
+        }
         if original_selection.is_some() {
             // The file's final absolute path is used before exchange. Nobody
             // may use this private candidate until its directory is exchanged.
