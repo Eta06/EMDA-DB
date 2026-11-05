@@ -1,0 +1,78 @@
+{
+  "revision": "e0b5fe0",
+  "repetitions_per_case_and_filesystem": 10,
+  "binary_sha256": "fcc3f8045fa73aae6753f5e3c35d693ad54c50c8e214642048586a528c09ce9e",
+  "scope": "Finite injected failures on one running VM. Overlay backing device not independently verified. No physical power loss or off-host testing.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 5.704
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v3_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 5.446
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::document_faults::later_checkpoint_drop_cursor_update_and_receipt_are_atomic_at_every_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 5.672
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::document_faults::final_checkpoint_drop_cursor_removal_and_receipt_are_atomic_at_every_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 6.075
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::metadata_faults::checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 0.611
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 41.117
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v3_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 27.798
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::document_faults::later_checkpoint_drop_cursor_update_and_receipt_are_atomic_at_every_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 30.014
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::document_faults::final_checkpoint_drop_cursor_removal_and_receipt_are_atomic_at_every_append_cut",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 37.959
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::metadata_faults::checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together",
+      "successful": 10,
+      "failures": [],
+      "elapsed_seconds": 2.103
+    }
+  ]
+}

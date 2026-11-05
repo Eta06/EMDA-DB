@@ -66,9 +66,10 @@ impl WitnessIo for Metadata {
 fn checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together() {
     use crate::DocumentDatabase;
     use crate::store::collection_drop_fault_tests::{
-        prepare, step, step_second, verify, verify_second,
+        prepare, step, step_final, step_second, verify_checkpoint_first, verify_final,
+        verify_second,
     };
-    for second in [false, true] {
+    for phase in 0..3 {
         for fault in [
             Fault::WriteBefore,
             Fault::WriteAfter,
@@ -86,8 +87,14 @@ fn checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together() 
             drop(store);
             let mut store =
                 retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
-            if second {
+            if phase == 1 {
                 step(&DocumentDatabase::with_checkpoint_store(&store)).unwrap();
+            } else if phase == 2 {
+                let db = DocumentDatabase::with_checkpoint_store(&store);
+                for _ in 0..6 {
+                    let progress = db.advance_collection_drop("c", 1).unwrap();
+                    assert_eq!((progress.removed, progress.complete), (1, false));
+                }
             }
             let header = fs::read(path.join("records.log")).unwrap();
             assert_eq!(&header[..8], b"EMDALOG3");
@@ -107,16 +114,19 @@ fn checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together() 
             ));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let db = DocumentDatabase::with_checkpoint_store(&store);
-                if second { step_second(&db) } else { step(&db) }
+                match phase {
+                    0 => step(&db),
+                    1 => step_second(&db),
+                    _ => step_final(&db),
+                }
             }));
             assert!(!matches!(result, Ok(Ok(()))));
             drop(store);
             let reopened = retry_lock(|| Store::open(&path)).unwrap();
-            let db = DocumentDatabase::new(&reopened);
-            if second {
-                verify_second(&db);
-            } else {
-                verify(&db);
+            match phase {
+                0 => verify_checkpoint_first(&reopened),
+                1 => verify_second(&reopened),
+                _ => verify_final(&reopened),
             }
         }
     }
