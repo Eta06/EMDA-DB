@@ -1,0 +1,30 @@
+{
+  "old_revision": "c4064d4",
+  "new_revision": "8490fd0",
+  "scope": "A temporary local store on a running VM; does not test physical power loss or off-host restore.",
+  "sha256": {
+    "/tmp/emda-drop-compat-old-final": "d131b77350e0c9a79d123cb7f2e55a1fdba22e3cd22e327a6dfe1ac811e69cb0",
+    "/tmp/emda-drop-compat-new-final": "d4232e826c4a49188058b3768384fb54a3fd9eab3624ae81f01442f95832303e",
+    "examples/drop_format_compat_probe.rs": "31965f2bbd075c5122f6ef3f017f8d7b7399e288690008ff0ff2d820fe9671ab"
+  },
+  "runs": [
+    {
+      "mode": "create",
+      "exit": 0,
+      "stdout": "checkpoint step committed\n",
+      "stderr": ""
+    },
+    {
+      "mode": "old",
+      "exit": 0,
+      "stdout": "previous reader rejected version 4\n",
+      "stderr": ""
+    },
+    {
+      "mode": "resume",
+      "exit": 0,
+      "stdout": "current reader completed and recreated collection\n",
+      "stderr": ""
+    }
+  ]
+}
