@@ -10,6 +10,7 @@ mod cancellation;
 mod checkpoint;
 mod checkpoint_store;
 mod checkpoint_view;
+mod controlled_lock;
 mod directory;
 mod document;
 mod log;

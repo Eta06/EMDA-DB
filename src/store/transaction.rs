@@ -360,8 +360,9 @@ impl Store {
     /// back. A callback that forwards an expired snapshot read returns that
     /// read error as `Operation`, not `DeadlineExceeded`.
     ///
-    /// FIFO admission can time out while waiting in its queue. Callback work,
-    /// ordinary lock waits and I/O are not forcibly interrupted. After commit
+    /// FIFO admission and the pre-commit writer barrier observe expiry while
+    /// waiting. Callback work, other lock waits and I/O are not forcibly
+    /// interrupted; this is not a bounded-completion guarantee. After commit
     /// starts, synchronization runs to completion and can return success after
     /// the deadline; an I/O failure must retain its unknown-outcome semantics.
     pub fn transaction_until<T>(
@@ -381,8 +382,9 @@ impl Store {
     /// Runs a transaction with cooperative cancellation and an optional
     /// monotonic deadline. `Cancelled` or `DeadlineExceeded` means staged
     /// writes were not submitted for commit. Cancellation is checked at
-    /// operation boundaries and while waiting for FIFO admission; callbacks,
-    /// writer-lock waits and I/O are not forcibly interrupted. Once commit
+    /// operation boundaries and while waiting for FIFO admission or the
+    /// pre-commit writer barrier. Callbacks, other lock waits and I/O are not
+    /// forcibly interrupted; completion time is not bounded. Once commit
     /// begins, it may succeed after cancellation or return an operation error
     /// with an unknown outcome. Callback side effects are not rolled back.
     pub fn transaction_controlled<T>(
