@@ -18,6 +18,7 @@ use std::{
 };
 
 type BenchResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+const MAX_WRITER_COMMITS: u64 = 20_000;
 
 #[derive(Clone)]
 enum Engine {
@@ -103,7 +104,7 @@ fn main() -> BenchResult<()> {
             let first = writing.put(&count.to_le_bytes());
             ready_tx.send(first.is_ok()).map_err(io::Error::other)?;
             first?;
-            while !stop.load(Ordering::Acquire) {
+            while !stop.load(Ordering::Acquire) && count < MAX_WRITER_COMMITS {
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| io::Error::other("writer count overflow"))?;
@@ -171,7 +172,9 @@ fn main() -> BenchResult<()> {
         json!({
             "backend":backend, "mode":mode, "workload":workload,
         "clients":clients, "operations_per_client":operations, "warmup_per_client":10,
-            "writer_commits":writer_commits, "samples_ns":samples, "reopen_verified":true,
+        "writer_commits":writer_commits, "writer_commit_cap":MAX_WRITER_COMMITS,
+        "writer_saturated":writer_commits == MAX_WRITER_COMMITS,
+        "samples_ns":samples, "reopen_verified":true,
         })
     );
     Ok(())
