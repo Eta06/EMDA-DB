@@ -95,6 +95,7 @@ pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
     log: Log,
     state: ControlledRwLock<State>,
+    pub(crate) direct_writes: crate::direct_write::DirectWrites,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: crate::store::TransactionQueue,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
@@ -399,6 +400,7 @@ impl CheckpointStore {
                 selection,
                 automatic,
             }),
+            direct_writes: crate::direct_write::DirectWrites::default(),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: crate::store::TransactionQueue::new(),
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
@@ -830,6 +832,7 @@ impl CheckpointStore {
     /// Replaces a key and synchronizes the mutation before returning.
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(Operation::Put, key, value)?;
+        let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
         self.commit(&mut state, Operation::Put, key, value, &[key])
     }
@@ -837,6 +840,7 @@ impl CheckpointStore {
     /// Deletes a key, including an absent key, as a synchronized mutation.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
         record::validate(Operation::Delete, key, &[])?;
+        let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
         self.commit(&mut state, Operation::Delete, key, &[], &[key])
     }
@@ -854,6 +858,7 @@ impl CheckpointStore {
             None => (Operation::Delete, &[][..]),
         };
         record::validate(operation, key, value)?;
+        let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
         if state.view.get(key)?.as_deref() != expected {
             return Ok(false);
@@ -866,6 +871,7 @@ impl CheckpointStore {
     /// Invalid lengths and overflow fail without appending a record.
     pub fn increment_i64(&self, key: &[u8], delta: i64) -> io::Result<i64> {
         record::validate_key(key)?;
+        let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
         let current = match state.view.get(key)? {
             None => 0,
@@ -886,6 +892,7 @@ impl CheckpointStore {
     /// Applies a blind ordered batch atomically as one synchronized record.
     /// This is not a read-modify-write transaction.
     pub fn write_batch(&self, operations: &[BatchOperation<'_>]) -> io::Result<()> {
+        let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
         let payload = encode_payload(operations)?;
         let keys = operations
@@ -926,6 +933,7 @@ impl CheckpointStore {
                     )
                 })?;
         }
+        let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
         let payload = encode_payload(operations)?;
         for (key, expected) in conditions {

@@ -12,6 +12,7 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
     store
         .with_store(|db| {
             db.put(b"key", b"value")?;
+            db.set_active_direct_write_limit(5)?;
             db.set_group_commit_limits(4096, 4)?;
             db.set_transaction_staging_limit(512)?;
             db.set_active_transaction_limit(8)
@@ -37,6 +38,7 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
     ready_rx.recv_timeout(WAIT).unwrap();
     store
         .with_store(|db| {
+            db.set_active_direct_write_limit(2)?;
             db.set_group_commit_limits(2048, 2)?;
             db.set_transaction_staging_limit(128)?;
             db.set_active_transaction_limit(3)
@@ -44,6 +46,12 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
         .unwrap();
     release_tx.send(()).unwrap();
     thread.join().unwrap().unwrap();
+    assert_eq!(
+        store
+            .with_store(|db| Ok(db.direct_write_status().limit))
+            .unwrap(),
+        2
+    );
     let group = store.with_store(|db| db.group_commit_status()).unwrap();
     assert_eq!((group.limit_bytes, group.limit_records), (2048, 2));
     assert_eq!(
