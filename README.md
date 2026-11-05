@@ -56,6 +56,8 @@ The [empty-log recovery report](docs/EMPTY_RECOVERY_COMPARISON_2026_11_04.md) re
 
 The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) measures reopen time, sampled process memory and point reads through 200,000 keys. The checkpoint-backed writer used less sampled memory but had slower sampled base-key reads than full-log recovery.
 
+The [checkpoint landmark comparison](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) measures sparse in-memory lookup offsets that retain full-block verification, including their memory cost and mixed tails.
+
 A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.
 
 A [streaming scan comparison](docs/STREAM_SCAN_COMPARISON_2026_11_04.md) measures the filtered-query change against its prior implementation and SQLite, including a repeat and VM noise.
