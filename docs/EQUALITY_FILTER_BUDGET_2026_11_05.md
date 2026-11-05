@@ -19,6 +19,21 @@ The table reports the median of the three per-process p50 and p95 values in micr
 | workspace / 10 | 9.624 / 15.405 | 10.073 / 19.926 | 3.911 / 5.908 |
 | workspace / 500 | 13.597 / 24.405 | 14.578 / 28.944 | 3.693 / 5.843 |
 
-The new admission work adds cost in some runs; a small median difference or a noisy tail does not establish a causal percentage. SQLite's indexed query was faster in these samples with the adapter differences above. The before/after binaries predate the separately merged transaction-lock change, so the combined implementation needs its own validation. Raw samples and telemetry are retained rather than hiding regressions.
+The new admission work adds cost in some runs; a small median difference or a noisy tail does not establish a causal percentage. SQLite's indexed query was faster in these samples with the adapter differences above. The before/after binaries predate the separately merged transaction-lock change; combined validation and a follow-up comparison appear below. Raw samples and telemetry are retained rather than hiding regressions.
 
 Stable and Rust 1.85 debug all-target tests and clippy passed, as did the stable optimized all-target suite and 48 Python workflow/benchmark tests. Four [60-second model campaigns](../benchmarks/results/2026-11-05-equality-budget-fuzz.json) exercised 18,610 generated cases: 330 bounded-input cases including synthetic large values, 6,978 array queries, 4,170 membership queries and 7,132 compound-planner cases. They did not find a failure; these finite serial campaigns do not exhaust possible inputs, concurrency schedules or storage failures.
+
+The merged implementation was checked with stable clippy, targeted transaction and document tests, 48 Python checks and the hosted stable/Rust 1.85 CI matrix. Three [additional merged-model campaigns](../benchmarks/results/2026-11-05-combined-admission-filter-fuzz.json) exercised 22,336 filter-budget, controlled-transaction and checkpoint read-set cases. These campaigns do not model physical power loss.
+
+## Combined-lock follow-up
+
+A separate comparison reran the same benchmark against the merged `07acdc5` implementation, using the original `e56d10d` baseline. The [tmpfs](../benchmarks/results/2026-11-05-combined-document-tmpfs.json) and [workspace](../benchmarks/results/2026-11-05-combined-document-overlay.json) records each contain 30 verified runs with the same 10/500-document sizes, three rotated rounds, 100 cycles and SQLite adapter. All pre-run quiet windows passed and no run recorded cgroup throttling; VM steal was nonzero during 2/30 tmpfs runs and 24/30 workspace runs. The comparison includes the effects of both the lock change and filter budget, and has the same single-client, warm-cache, representation and durability limitations above.
+
+| Filesystem / documents | Earlier planned p50 / p95 (µs) | Combined planned p50 / p95 (µs) | SQLite p50 / p95 (µs) |
+| --- | ---: | ---: | ---: |
+| tmpfs / 10 | 4.107 / 6.894 | 4.196 / 5.563 | 2.191 / 2.284 |
+| tmpfs / 500 | 5.584 / 10.041 | 5.622 / 9.991 | 2.373 / 2.719 |
+| workspace / 10 | 10.215 / 14.808 | 10.905 / 16.475 | 4.075 / 7.654 |
+| workspace / 500 | 14.703 / 22.339 | 15.044 / 24.982 | 3.905 / 6.799 |
+
+The combined build's sampled medians were higher than the earlier build's in these four cases, and SQLite's sampled indexed-query medians were lower than both. Tail behavior was mixed. These small, noisy measurements do not establish a universal ranking or the exact contribution of either change.

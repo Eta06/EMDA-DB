@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Extend concurrent document serial-history and recovery checks to include pre-cancellation, cancellation after staging and cancellation racing a transaction.
+
 - Include equality predicates in the shared 256-value, 4 MiB encoded-input and 1,000,000-comparison document-filter budgets. Filters that exceed the combined limits now fail even when an oversized branch would short-circuit; this changes previously accepted queries.
 
 - Make pre-commit writer-barrier and checkpoint transaction state-lock waits observe cancellation and deadlines. Callback work, other lock waits and I/O remain cooperative and do not have a completion-time bound; a started commit retains its success or unknown-outcome semantics.

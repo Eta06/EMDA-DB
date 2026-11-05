@@ -1,7 +1,8 @@
 //! Real-time serial-history checks for document, index and raw-key transactions.
 use database_engine::{
-    CheckpointStore, CollectionSchema, DocumentDatabase, DocumentTransaction,
-    DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue, Store, TimedTransactionError,
+    CancellationToken, CheckpointStore, CollectionSchema, ControlledTransactionError,
+    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexDefinition, IndexQuery,
+    IndexValue, Store, TimedTransactionError,
 };
 use serde_json::json;
 use std::io::{self, ErrorKind};
@@ -56,6 +57,7 @@ enum Operation {
 enum Outcome {
     Conflict,
     Duplicate,
+    Cancelled,
     Write(Observation),
     Read(Observation),
     Claimed,
@@ -85,7 +87,7 @@ fn serializes(events: &[Event], final_state: &State) -> bool {
             }
             let mut next = state.clone();
             match (&event.operation, &event.outcome) {
-                (_, Outcome::Conflict) => {}
+                (_, Outcome::Conflict | Outcome::Cancelled) => {}
                 (Operation::Claim(_), Outcome::Duplicate) if state.claim.is_some() => {}
                 (Operation::Claim(id), Outcome::Claimed) if state.claim.is_none() => {
                     next.claim = Some(id);
@@ -200,24 +202,64 @@ fn execute(db: &DocumentDatabase<'_>, operation: Operation, mode: usize) -> Outc
             Ok(Outcome::Write(before))
         }
     };
-    let result = match mode % 3 {
-        0 => db.transaction(action),
-        1 => db.transaction_with_read_set(action),
-        _ => db
+    let result = match mode % 6 {
+        0 => db
+            .transaction(action)
+            .map_err(ControlledTransactionError::Operation),
+        1 => db
+            .transaction_with_read_set(action)
+            .map_err(ControlledTransactionError::Operation),
+        2 => db
             .transaction_until(
                 Instant::now() + Duration::from_secs(30),
                 DocumentTransactionMode::ReadSetFifo,
                 action,
             )
             .map_err(|error| match error {
-                TimedTransactionError::Operation(error) => error,
+                TimedTransactionError::Operation(error) => {
+                    ControlledTransactionError::Operation(error)
+                }
                 TimedTransactionError::DeadlineExceeded => panic!("model deadline expired"),
             }),
+        3 => {
+            let token = CancellationToken::new();
+            token.cancel();
+            db.transaction_controlled(&token, None, DocumentTransactionMode::Conservative, action)
+        }
+        4 => {
+            let token = CancellationToken::new();
+            db.transaction_controlled(&token, None, DocumentTransactionMode::ReadSetFifo, |tx| {
+                let outcome = action(tx)?;
+                token.cancel();
+                Ok(outcome)
+            })
+        }
+        _ => std::thread::scope(|scope| {
+            let token = CancellationToken::new();
+            let cancelling = token.clone();
+            let worker = scope.spawn(move || {
+                std::thread::yield_now();
+                cancelling.cancel();
+            });
+            let result =
+                db.transaction_controlled(&token, None, DocumentTransactionMode::ReadSet, action);
+            worker.join().unwrap();
+            result
+        }),
     };
     match result {
         Ok(outcome) => outcome,
-        Err(error) if error.kind() == ErrorKind::WouldBlock => Outcome::Conflict,
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => Outcome::Duplicate,
+        Err(ControlledTransactionError::Cancelled) => Outcome::Cancelled,
+        Err(ControlledTransactionError::Operation(error))
+            if error.kind() == ErrorKind::WouldBlock =>
+        {
+            Outcome::Conflict
+        }
+        Err(ControlledTransactionError::Operation(error))
+            if error.kind() == ErrorKind::AlreadyExists =>
+        {
+            Outcome::Duplicate
+        }
         Err(error) => panic!("unexpected {operation:?} error: {error}"),
     }
 }
@@ -332,6 +374,30 @@ fn history_checker_rejects_duplicate_unique_claims_and_lost_writes() {
     assert!(!serializes(&transfer, &start));
 }
 
+#[test]
+fn history_checker_rejects_changes_attributed_only_to_cancelled_work() {
+    let cancelled = [Event {
+        operation: Operation::Reset,
+        outcome: Outcome::Cancelled,
+        start: 0,
+        end: 1,
+    }];
+    assert!(serializes(
+        &cancelled,
+        &State {
+            amounts: [3, 2],
+            claim: None
+        }
+    ));
+    assert!(!serializes(
+        &cancelled,
+        &State {
+            amounts: [4, 6],
+            claim: None
+        }
+    ));
+}
+
 enum TestStore {
     Ordinary(Store),
     Checkpoint(CheckpointStore),
@@ -362,6 +428,9 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
         Operation::Claim("d"),
     ];
     for checkpoint_mode in [false, true] {
+        let mut cancelled = 0_usize;
+        let mut completed = 0_usize;
+        let mut rejected = 0_usize;
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("store");
         let checkpoint = root.path().join("checkpoint");
@@ -392,7 +461,8 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
                             std::thread::yield_now();
                         }
                         let start = clock.fetch_add(1, Ordering::SeqCst);
-                        let outcome = execute(db, operation, iteration + offset);
+                        // Vary mode independently of operation across iterations.
+                        let outcome = execute(db, operation, iteration * 2 + offset);
                         let end = clock.fetch_add(1, Ordering::SeqCst);
                         Event {
                             operation,
@@ -409,6 +479,13 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
                     .collect::<Vec<_>>()
             });
             let expected = read_state(&db);
+            for event in &events {
+                match &event.outcome {
+                    Outcome::Cancelled => cancelled += 1,
+                    Outcome::Conflict | Outcome::Duplicate => rejected += 1,
+                    _ => completed += 1,
+                }
+            }
             assert!(
                 serializes(&events, &expected),
                 "backend={checkpoint_mode} iteration={iteration} history={events:?} final={expected:?}"
@@ -421,5 +498,12 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
                 "backend={checkpoint_mode} iteration={iteration} recovery"
             );
         }
+        assert!(
+            cancelled >= histories,
+            "pre-cancelled operations must abort"
+        );
+        println!(
+            "checkpoint={checkpoint_mode} histories={histories} cancelled={cancelled} completed={completed} rejected={rejected}"
+        );
     }
 }

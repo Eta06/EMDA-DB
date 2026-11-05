@@ -1,0 +1,60 @@
+{
+  "revision": "4bab653",
+  "binary_sha256": "5aedcb6006b07198355efff3d16f5b9ace1cac776449fac13094541b392d33ac",
+  "histories_per_backend_per_filesystem": 1024,
+  "scope": "Six concurrent document operations with conservative, read-set, FIFO, pre-cancelled, callback-cancelled and racing-cancellation modes; every history is checked against real-time serial orders and full-log recovery. Finite process tests are not physical power loss or exhaustive scheduling.",
+  "runs": [
+    {
+      "location": "tmpfs",
+      "elapsed_seconds": 93.5,
+      "ok": true,
+      "exit": 0,
+      "counts": [
+        {
+          "checkpoint": false,
+          "histories": 1024,
+          "cancelled": 2981,
+          "completed": 1645,
+          "rejected": 1518
+        },
+        {
+          "checkpoint": true,
+          "histories": 1024,
+          "cancelled": 2939,
+          "completed": 1847,
+          "rejected": 1358
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_document_histories_serialize_and_recover_on_both_backends ... checkpoint=false histories=1024 cancelled=2981 completed=1645 rejected=1518\ncheckpoint=true histories=1024 cancelled=2939 completed=1847 rejected=1358\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 93.48s\n\n",
+      "stderr": ""
+    },
+    {
+      "location": "workspace",
+      "elapsed_seconds": 105.77,
+      "ok": true,
+      "exit": 0,
+      "counts": [
+        {
+          "checkpoint": false,
+          "histories": 1024,
+          "cancelled": 3023,
+          "completed": 1334,
+          "rejected": 1787
+        },
+        {
+          "checkpoint": true,
+          "histories": 1024,
+          "cancelled": 2963,
+          "completed": 1843,
+          "rejected": 1338
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_document_histories_serialize_and_recover_on_both_backends ... checkpoint=false histories=1024 cancelled=3023 completed=1334 rejected=1787\ncheckpoint=true histories=1024 cancelled=2963 completed=1843 rejected=1338\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 105.76s\n\n",
+      "stderr": ""
+    }
+  ],
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "kernel": "Linux 6.18.57",
+  "build_profile": "test, debug symbols disabled, incremental disabled",
+  "test_harness": "one test-harness thread; each history starts six concurrent operation threads plus the racing cancellation thread"
+}
