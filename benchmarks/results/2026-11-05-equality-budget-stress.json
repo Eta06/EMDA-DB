@@ -1,0 +1,42 @@
+{
+  "revision": "ae045dc",
+  "runs": [
+    {
+      "location": "tmpfs",
+      "repeat": 0,
+      "seconds": 2.498,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "repeat": 1,
+      "seconds": 1.979,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "repeat": 2,
+      "seconds": 1.921,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "repeat": 0,
+      "seconds": 1.864,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "repeat": 1,
+      "seconds": 1.856,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "repeat": 2,
+      "seconds": 2.473,
+      "ok": true
+    }
+  ],
+  "scope": "Targeted boundary and rollback tests on two local filesystems; no physical power-loss or independent off-host recovery."
+}
