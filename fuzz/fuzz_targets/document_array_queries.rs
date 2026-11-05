@@ -190,7 +190,9 @@ fuzz_target!(|data: &[u8]| {
                             })
                         }),
                         _ => array.iter().any(|element| {
-                            element.as_object().is_some_and(|object| !object.contains_key("x"))
+                            element
+                                .as_object()
+                                .is_some_and(|object| !object.contains_key("x"))
                         }),
                     },
                 };
