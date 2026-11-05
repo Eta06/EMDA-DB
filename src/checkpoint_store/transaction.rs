@@ -68,8 +68,26 @@ impl CheckpointTransaction<'_> {
                 "transaction deadline exceeded",
             ));
         }
-        let state = self.store.read()?;
+        let state = crate::cancellation::read_lock(
+            &self.store.state,
+            self.deadline,
+            self.cancellation.as_ref(),
+            uncertain,
+        )
+        .map_err(TimedTransactionError::into_io)?;
+        if state.failed {
+            return Err(uncertain());
+        }
         crate::cancellation::check(self.cancellation.as_ref())?;
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "transaction deadline exceeded",
+            ));
+        }
         if let Some(read_set) = &self.read_set {
             read_set
                 .lock()
@@ -453,7 +471,14 @@ impl CheckpointStore {
         };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
-        let generation = self.read()?.generation;
+        let generation = {
+            let state =
+                crate::cancellation::read_lock(&self.state, deadline, cancellation, uncertain)?;
+            if state.failed {
+                return Err(uncertain().into());
+            }
+            state.generation
+        };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         let mut transaction = CheckpointTransaction {
@@ -481,7 +506,11 @@ impl CheckpointStore {
         } else {
             Some(encode_payload(&operations)?)
         };
-        let mut state = self.write()?;
+        let mut state =
+            crate::cancellation::write_lock(&self.state, deadline, cancellation, uncertain)?;
+        if state.failed {
+            return Err(uncertain().into());
+        }
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         let valid = if let Some(read_set) = &transaction.read_set {

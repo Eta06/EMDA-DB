@@ -2,9 +2,11 @@
 use crate::TimedTransactionError;
 use std::fmt;
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError, TryLockResult};
+use std::time::{Duration, Instant};
+
+const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CommitControl<'a> {
@@ -90,6 +92,61 @@ pub(crate) fn check(token: Option<&CancellationToken>) -> io::Result<()> {
     }
 }
 
+// Poll only pre-commit admission when a deadline or cancellation token was
+// supplied. Once the lock is acquired, callers recheck control before any
+// append. The uncontrolled path retains its ordinary blocking lock behavior.
+fn wait_for_lock<T>(
+    mut attempt: impl FnMut() -> TryLockResult<T>,
+    deadline: Option<Instant>,
+    cancellation: Option<&CancellationToken>,
+    poisoned: impl Fn() -> io::Error,
+) -> Result<T, TimedTransactionError> {
+    loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(TimedTransactionError::DeadlineExceeded);
+        }
+        check(cancellation)?;
+        match attempt() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(_)) => return Err(poisoned().into()),
+            Err(TryLockError::WouldBlock) => {
+                let delay = deadline.map_or(LOCK_POLL_INTERVAL, |deadline| {
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(LOCK_POLL_INTERVAL)
+                });
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn read_lock<'a, T>(
+    lock: &'a RwLock<T>,
+    deadline: Option<Instant>,
+    cancellation: Option<&CancellationToken>,
+    poisoned: impl Fn() -> io::Error,
+) -> Result<RwLockReadGuard<'a, T>, TimedTransactionError> {
+    if deadline.is_none() && cancellation.is_none() {
+        return lock.read().map_err(|_| poisoned().into());
+    }
+    wait_for_lock(|| lock.try_read(), deadline, cancellation, poisoned)
+}
+
+pub(crate) fn write_lock<'a, T>(
+    lock: &'a RwLock<T>,
+    deadline: Option<Instant>,
+    cancellation: Option<&CancellationToken>,
+    poisoned: impl Fn() -> io::Error,
+) -> Result<RwLockWriteGuard<'a, T>, TimedTransactionError> {
+    if deadline.is_none() && cancellation.is_none() {
+        return lock.write().map_err(|_| poisoned().into());
+    }
+    wait_for_lock(|| lock.try_write(), deadline, cancellation, poisoned)
+}
+
 pub(crate) fn classify(error: TimedTransactionError) -> ControlledTransactionError {
     match error {
         TimedTransactionError::DeadlineExceeded => ControlledTransactionError::DeadlineExceeded,
@@ -101,5 +158,122 @@ pub(crate) fn classify(error: TimedTransactionError) -> ControlledTransactionErr
             ControlledTransactionError::Cancelled
         }
         TimedTransactionError::Operation(error) => ControlledTransactionError::Operation(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{PoisonError, mpsc};
+
+    // Drop any acquired guard immediately; the test intentionally keeps the
+    // writer held until the waiting operation has returned.
+    fn try_lock(lock: &RwLock<()>, read: bool) -> TryLockResult<()> {
+        if read {
+            match lock.try_read() {
+                Ok(guard) => {
+                    drop(guard);
+                    Ok(())
+                }
+                Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+                Err(TryLockError::Poisoned(_)) => Err(TryLockError::Poisoned(PoisonError::new(()))),
+            }
+        } else {
+            match lock.try_write() {
+                Ok(guard) => {
+                    drop(guard);
+                    Ok(())
+                }
+                Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+                Err(TryLockError::Poisoned(_)) => Err(TryLockError::Poisoned(PoisonError::new(()))),
+            }
+        }
+    }
+
+    #[test]
+    fn cancelled_and_expired_waits_finish_while_read_or_write_lock_is_busy() {
+        for read in [false, true] {
+            for cancelled in [false, true] {
+                let lock = Arc::new(RwLock::new(()));
+                let held = lock.write().unwrap();
+                let token = CancellationToken::new();
+                let worker_token = token.clone();
+                let worker_lock = Arc::clone(&lock);
+                let (blocked_tx, blocked_rx) = mpsc::channel();
+                let (done_tx, done_rx) = mpsc::channel();
+                let deadline = (!cancelled).then(|| Instant::now() + Duration::from_secs(2));
+                let worker = std::thread::spawn(move || {
+                    let mut first = Some(blocked_tx);
+                    let result = wait_for_lock(
+                        || {
+                            let result = try_lock(&worker_lock, read);
+                            if matches!(result, Err(TryLockError::WouldBlock)) {
+                                if let Some(signal) = first.take() {
+                                    signal.send(()).unwrap();
+                                }
+                            }
+                            result
+                        },
+                        deadline,
+                        Some(&worker_token),
+                        || io::Error::other("poisoned fixture"),
+                    );
+                    done_tx.send(result).unwrap();
+                });
+                blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                if cancelled {
+                    token.cancel();
+                }
+                let early = done_rx.recv_timeout(Duration::from_secs(5));
+                drop(held);
+                let finished_while_locked = early.is_ok();
+                let result =
+                    early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+                worker.join().unwrap();
+                assert!(
+                    finished_while_locked,
+                    "controlled wait did not exit while lock remained held"
+                );
+                if cancelled {
+                    assert!(matches!(
+                        classify(result.unwrap_err()),
+                        ControlledTransactionError::Cancelled
+                    ));
+                } else {
+                    assert!(matches!(
+                        result,
+                        Err(TimedTransactionError::DeadlineExceeded)
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn poisoned_locks_remain_operation_errors() {
+        let lock = Arc::new(RwLock::new(()));
+        let poisoning = Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoning.write().unwrap();
+            panic!("poison fixture");
+        })
+        .join();
+        let token = CancellationToken::new();
+        for error in [
+            read_lock(&lock, None, Some(&token), || {
+                io::Error::other("read poison")
+            })
+            .err()
+            .unwrap(),
+            write_lock(&lock, None, Some(&token), || {
+                io::Error::other("write poison")
+            })
+            .err()
+            .unwrap(),
+        ] {
+            assert!(
+                matches!(error, TimedTransactionError::Operation(ref inner) if inner.kind() == io::ErrorKind::Other)
+            );
+        }
     }
 }

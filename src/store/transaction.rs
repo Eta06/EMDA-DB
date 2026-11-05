@@ -465,10 +465,10 @@ impl Store {
         } else {
             None
         };
-        let _writer = self
-            .writes
-            .write()
-            .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        let _writer =
+            crate::cancellation::write_lock(&self.writes, deadline, cancellation, || {
+                io::Error::other("write barrier poisoned")
+            })?;
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         if self.commits.failed() {
@@ -654,10 +654,11 @@ mod tests {
         let writer_guard = store.writes.write().unwrap();
         let token = crate::CancellationToken::new();
         let (staged_tx, staged_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
         let writer = Arc::clone(&store);
         let worker_token = token.clone();
         let worker = thread::spawn(move || {
-            writer.transaction_controlled(
+            let result = writer.transaction_controlled(
                 &worker_token,
                 None,
                 TransactionMode::Conservative,
@@ -665,13 +666,23 @@ mod tests {
                     tx.put(b"key", b"value")?;
                     staged_tx.send(()).map_err(io::Error::other)
                 },
-            )
+            );
+            done_tx.send(result).unwrap();
         });
         staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         token.cancel();
+        let early = done_rx.recv_timeout(Duration::from_secs(3));
         drop(writer_guard);
+        let returned_while_locked = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
+        assert!(
+            returned_while_locked,
+            "cancellation waited for the writer lock"
+        );
         assert!(matches!(
-            worker.join().unwrap(),
+            result,
             Err(crate::ControlledTransactionError::Cancelled)
         ));
         assert_eq!(store.get(b"key").unwrap(), None);
@@ -685,20 +696,24 @@ mod tests {
         let writer = store.writes.write().unwrap();
         let waiting = Arc::clone(&store);
         let (staged_tx, staged_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
         let deadline = Instant::now() + Duration::from_secs(2);
         let worker = thread::spawn(move || {
-            waiting.transaction_until(deadline, TransactionMode::Conservative, |tx| {
+            let result = waiting.transaction_until(deadline, TransactionMode::Conservative, |tx| {
                 tx.put(b"key", b"value")?;
                 staged_tx.send(()).map_err(io::Error::other)
-            })
+            });
+            done_tx.send(result).unwrap();
         });
         let staged = staged_rx.recv_timeout(Duration::from_secs(5));
-        thread::sleep(
-            deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
-        );
+        let early = done_rx.recv_timeout(Duration::from_secs(5));
         drop(writer);
-        let result = worker.join().unwrap();
+        let returned_while_locked = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
         staged.expect("transaction callback did not finish staging");
+        assert!(returned_while_locked, "deadline waited for the writer lock");
         assert!(matches!(
             result,
             Err(TimedTransactionError::DeadlineExceeded)
