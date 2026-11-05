@@ -1,7 +1,8 @@
 //! Same-element array filtering, shared budgets and transaction safety.
 use database_engine::{
     AggregateRequest, CheckpointStore, CollectionSchema, Comparison, DocumentDatabase,
-    DocumentFilter as F, DocumentQuery, DocumentQueryAccess, IndexDefinition, IndexValue, Store,
+    DocumentFilter as F, DocumentQuery, DocumentQueryAccess, IndexDefinition, IndexValue,
+    PartialFilter, Store,
 };
 use serde_json::{Value, json};
 use std::{io::ErrorKind, sync::Barrier};
@@ -290,6 +291,113 @@ fn phantom(db: &DocumentDatabase<'_>) {
         writer.join().unwrap();
     });
     assert_eq!(db.transaction(|tx| tx.get_raw(b"phantom")).unwrap(), None);
+}
+
+fn partial_presence(db: &DocumentDatabase<'_>) {
+    let matching = query(F::And(vec![
+        eq("handle", json!("target")),
+        elem("items", eq("color", json!("red"))),
+    ]));
+    let planned = db.query_planned("c", &matching).unwrap();
+    assert_eq!(
+        planned.access,
+        DocumentQueryAccess::PartialUniqueEqualityIndex {
+            index: "handle".into(),
+            fields: 1,
+        }
+    );
+    assert_eq!(
+        planned.result.documents,
+        db.query("c", &matching).unwrap().documents
+    );
+    assert_eq!(planned.result.documents[0].id, "target");
+
+    // Missing root items still matches these alternatives; neither the child
+    // of an Or/Not nor a path relative to a nested object proves root presence.
+    for filter in [
+        F::Or(vec![elem("items", F::All), F::All]),
+        F::Not(Box::new(elem("items", F::All))),
+    ] {
+        let q = query(F::And(vec![eq("handle", json!("missing")), filter]));
+        let planned = db.query_planned("c", &q).unwrap();
+        assert_eq!(planned.access, DocumentQueryAccess::CollectionScan);
+        assert_eq!(
+            planned.result.documents,
+            db.query("c", &q).unwrap().documents
+        );
+        assert_eq!(planned.result.documents[0].id, "missing");
+    }
+    let nested = query(F::And(vec![
+        eq("handle", json!("nested")),
+        elem(
+            "groups",
+            F::Exists {
+                path: path("items"),
+                exists: true,
+            },
+        ),
+    ]));
+    let planned = db.query_planned("c", &nested).unwrap();
+    assert_eq!(planned.access, DocumentQueryAccess::CollectionScan);
+    assert_eq!(
+        planned.result.documents,
+        db.query("c", &nested).unwrap().documents
+    );
+    assert_eq!(planned.result.documents[0].id, "nested");
+}
+
+#[test]
+fn element_match_proves_only_its_own_required_presence_on_both_backends() {
+    for checkpoint_mode in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("store");
+        let checkpoint = root.path().join("checkpoint");
+        let store = Store::open(&source).unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        let setup = |db: &DocumentDatabase<'_>| {
+            db.create_collection("c", CollectionSchema::default())
+                .unwrap();
+            db.create_index(
+                "c",
+                IndexDefinition {
+                    name: "handle".into(),
+                    fields: vec![path("handle")],
+                    unique: true,
+                    partial: Some(PartialFilter::Exists {
+                        path: path("items"),
+                        exists: true,
+                    }),
+                },
+            )
+            .unwrap();
+            db.insert(
+                "c",
+                "target",
+                &json!({"handle":"target","items":[{"color":"red"}]}),
+            )
+            .unwrap();
+            db.insert("c", "missing", &json!({"handle":"missing"}))
+                .unwrap();
+            db.insert(
+                "c",
+                "nested",
+                &json!({"handle":"nested","groups":[{"items":true}]}),
+            )
+            .unwrap();
+            partial_presence(db);
+        };
+        if checkpoint_mode {
+            drop(store);
+            let store =
+                retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
+            setup(&DocumentDatabase::with_checkpoint_store(&store));
+        } else {
+            setup(&DocumentDatabase::new(&store));
+            drop(store);
+        }
+        let recovered = retry_lock(|| Store::open(&source)).unwrap();
+        partial_presence(&DocumentDatabase::new(&recovered));
+    }
 }
 
 #[test]

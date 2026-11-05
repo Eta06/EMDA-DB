@@ -6,7 +6,7 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 - Compare validated scalar filters without allocating encoded byte buffers, retaining the index encoding order and rejecting non-indexable values.
 
-- Add bounded same-object array element matching for nested document filters, with a shared one-million-element visit limit and conservative planner behavior. The new `DocumentFilter` variant requires exhaustive downstream Rust matches to be updated; no multikey index is added.
+- Add bounded same-object array element matching for nested document filters, with a shared one-million-element visit limit and safe partial-index presence proofs. The new `DocumentFilter` variant requires exhaustive downstream Rust matches to be updated; no multikey index is added.
 
 - Add per-open independent-write admission limits and status to both writable stores. The default and hard maximum are 65,535 calls; saturated admissions return `WouldBlock` before the storage lock or submission, even if a prior write left the store unhealthy. Transactions use their separate admission limit. Limits survive supported in-process compaction handoffs and reset on reopen.
 
