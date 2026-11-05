@@ -227,6 +227,13 @@ fn group_fault_case(fault: GroupFault) {
             assert!(store.put(b"later", b"value").is_err());
         }
     }
+    let status = store.group_commit_status().unwrap();
+    if matches!(fault, GroupFault::None) {
+        assert!(!status.failed);
+    } else {
+        assert!(status.failed);
+        assert!(store.set_group_commit_limits(1024, 1).is_err());
+    }
     drop(store);
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();
@@ -435,4 +442,62 @@ fn backup_waits_for_synchronized_writes_before_taking_snapshot() {
         restored_store.get(b"key").unwrap().as_deref(),
         Some(&b"new"[..])
     );
+}
+
+#[test]
+fn limits_cannot_undercut_a_write_during_synchronization() {
+    let dir = tempfile::tempdir().unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let store = Arc::new(
+        Store::open_using(dir.path(), |path, _| {
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .create(true)
+                .open(path.join("records.log"))?;
+            File::open(path)?.sync_all()?;
+            Log::from_io(Box::new(BlockingSyncIo {
+                file,
+                armed: Arc::clone(&armed),
+                started: started_tx,
+                resume: Mutex::new(resume_rx),
+            }))
+        })
+        .unwrap(),
+    );
+    store.put(b"key", b"old").unwrap();
+    armed.store(true, Ordering::SeqCst);
+    let writing = Arc::clone(&store);
+    let writer = thread::spawn(move || writing.put(b"key", b"new"));
+    started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let status = store.group_commit_status().unwrap();
+    assert_eq!(status.reserved_records, 1);
+    assert!(status.reserved_bytes > 0);
+    assert_eq!(
+        store
+            .set_group_commit_limits(status.reserved_bytes - 1, 1)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        store
+            .set_group_commit_limits(status.reserved_bytes, 0)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    store
+        .set_group_commit_limits(status.reserved_bytes, 1)
+        .unwrap();
+    resume_tx.send(()).unwrap();
+    writer.join().unwrap().unwrap();
+    let after = store.group_commit_status().unwrap();
+    assert_eq!((after.reserved_bytes, after.reserved_records), (0, 0));
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
+    drop(store);
+    let recovered = crate::test_support::retry_lock(|| Store::open(dir.path())).unwrap();
+    assert_eq!(recovered.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
 }

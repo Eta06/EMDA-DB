@@ -283,3 +283,10 @@ path = "fuzz_targets/document_filter_budget.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "group_commit_limits"
+path = "fuzz_targets/group_commit_limits.rs"
+test = false
+doc = false
+bench = false

@@ -60,3 +60,76 @@ fn panicking_preparation_releases_capacity_and_wakes_waiters() {
     );
     assert_eq!(coordinator.buffered(), (0, 0));
 }
+
+#[test]
+fn reconfiguration_is_atomic_and_rechecks_waiting_record_size() {
+    let coordinator = Arc::new(Coordinator::for_test(200, 1));
+    let held = coordinator.reserve_for_test(60).unwrap();
+    let initial = coordinator.status().unwrap();
+    assert_eq!((initial.limit_bytes, initial.limit_records), (200, 1));
+    assert_eq!((initial.reserved_bytes, initial.reserved_records), (60, 1));
+    assert_eq!(
+        coordinator.set_limits(59, 1).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        coordinator.set_limits(200, 0).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(coordinator.status().unwrap(), initial);
+
+    let waiting = Arc::clone(&coordinator);
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = waiting.reserve_for_test(150).map(drop);
+        done_tx.send(result).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while coordinator.admission_waiters() != 1 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    // Existing reservation fits, but the waiting 150-byte record no longer
+    // can. It must wake and reject before the held reservation is released.
+    coordinator.set_limits(100, 1).unwrap();
+    let early = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(held);
+    let result = early.expect("waiting writer did not recheck reduced limit");
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    worker.join().unwrap();
+    let status = coordinator.status().unwrap();
+    assert_eq!((status.limit_bytes, status.limit_records), (100, 1));
+    assert_eq!(
+        (
+            status.reserved_bytes,
+            status.reserved_records,
+            status.waiting_writers
+        ),
+        (0, 0, 0)
+    );
+}
+
+#[test]
+fn raising_record_limit_wakes_waiters_before_existing_reservations_finish() {
+    let coordinator = Arc::new(Coordinator::for_test(100, 1));
+    let held = coordinator.reserve_for_test(60).unwrap();
+    let waiting = Arc::clone(&coordinator);
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let result = waiting.reserve_for_test(10).map(drop);
+        done_tx.send(result).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while coordinator.admission_waiters() != 1 {
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    }
+    coordinator.set_limits(100, 2).unwrap();
+    let early = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(held);
+    early
+        .expect("raising the limit did not wake a waiting writer")
+        .unwrap();
+    worker.join().unwrap();
+    assert_eq!(coordinator.buffered(), (0, 0));
+}

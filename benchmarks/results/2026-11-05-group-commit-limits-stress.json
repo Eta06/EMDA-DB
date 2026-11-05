@@ -1,0 +1,1692 @@
+{
+  "revision": "32aefe0",
+  "toolchain": "Rust 1.85.0",
+  "repetitions_per_test_per_filesystem": 20,
+  "binary_sha256": {
+    "unit": "e9940eb68c30522d7689a4028e41d3c73b0e86810de3ce9d817055bac91ac1f8",
+    "integration": "7ceb59cf8a0b8eb62b0baaa6ecfdf98f54c0257bcbcace24cd66ff53853aee32"
+  },
+  "scope": "Concurrent reconfiguration, waiters, sync failure and compaction; local filesystems only, not physical power loss or exhaustive scheduling.",
+  "runs": [
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 0,
+      "elapsed_ms": 5.72,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 1,
+      "elapsed_ms": 4.03,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 2,
+      "elapsed_ms": 3.75,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 3,
+      "elapsed_ms": 4.06,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 4,
+      "elapsed_ms": 3.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 5,
+      "elapsed_ms": 4.22,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 6,
+      "elapsed_ms": 3.9,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 7,
+      "elapsed_ms": 3.94,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 8,
+      "elapsed_ms": 3.58,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 9,
+      "elapsed_ms": 3.62,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 10,
+      "elapsed_ms": 3.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 11,
+      "elapsed_ms": 3.63,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 12,
+      "elapsed_ms": 3.97,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 13,
+      "elapsed_ms": 3.94,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 14,
+      "elapsed_ms": 3.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 15,
+      "elapsed_ms": 3.67,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 16,
+      "elapsed_ms": 3.98,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 17,
+      "elapsed_ms": 3.75,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 18,
+      "elapsed_ms": 4.51,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 19,
+      "elapsed_ms": 3.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 0,
+      "elapsed_ms": 3.75,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 1,
+      "elapsed_ms": 4.66,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 2,
+      "elapsed_ms": 3.64,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 3,
+      "elapsed_ms": 3.64,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 4,
+      "elapsed_ms": 3.45,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 5,
+      "elapsed_ms": 3.64,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 6,
+      "elapsed_ms": 3.72,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 7,
+      "elapsed_ms": 3.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 8,
+      "elapsed_ms": 3.87,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 9,
+      "elapsed_ms": 7.05,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 10,
+      "elapsed_ms": 4.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 11,
+      "elapsed_ms": 4.01,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 12,
+      "elapsed_ms": 4.05,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 13,
+      "elapsed_ms": 4.87,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 14,
+      "elapsed_ms": 4.15,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 15,
+      "elapsed_ms": 4.22,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 16,
+      "elapsed_ms": 3.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 17,
+      "elapsed_ms": 4.27,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 18,
+      "elapsed_ms": 4.3,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 19,
+      "elapsed_ms": 3.87,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 0,
+      "elapsed_ms": 6.92,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 1,
+      "elapsed_ms": 5.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 2,
+      "elapsed_ms": 5.05,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 3,
+      "elapsed_ms": 5.83,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 4,
+      "elapsed_ms": 5.37,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 5,
+      "elapsed_ms": 5.71,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 6,
+      "elapsed_ms": 5.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 7,
+      "elapsed_ms": 5.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 8,
+      "elapsed_ms": 9.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 9,
+      "elapsed_ms": 8.29,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 10,
+      "elapsed_ms": 7.77,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 11,
+      "elapsed_ms": 5.42,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 12,
+      "elapsed_ms": 5.37,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 13,
+      "elapsed_ms": 6.06,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 14,
+      "elapsed_ms": 5.26,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 15,
+      "elapsed_ms": 6.21,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 16,
+      "elapsed_ms": 5.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 17,
+      "elapsed_ms": 5.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 18,
+      "elapsed_ms": 5.83,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 19,
+      "elapsed_ms": 5.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 0,
+      "elapsed_ms": 5.53,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 1,
+      "elapsed_ms": 5.84,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 2,
+      "elapsed_ms": 6.11,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 3,
+      "elapsed_ms": 5.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 4,
+      "elapsed_ms": 11.99,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 5,
+      "elapsed_ms": 4.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 6,
+      "elapsed_ms": 4.1,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 7,
+      "elapsed_ms": 4.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 8,
+      "elapsed_ms": 4.17,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 9,
+      "elapsed_ms": 4.56,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 10,
+      "elapsed_ms": 4.39,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 11,
+      "elapsed_ms": 4.71,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 12,
+      "elapsed_ms": 5.1,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 13,
+      "elapsed_ms": 4.66,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 14,
+      "elapsed_ms": 4.44,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 15,
+      "elapsed_ms": 4.42,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 16,
+      "elapsed_ms": 5.05,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 17,
+      "elapsed_ms": 5.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 18,
+      "elapsed_ms": 5.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 19,
+      "elapsed_ms": 5.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 0,
+      "elapsed_ms": 17.27,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 1,
+      "elapsed_ms": 20.95,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 2,
+      "elapsed_ms": 14.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 3,
+      "elapsed_ms": 14.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 4,
+      "elapsed_ms": 14.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 5,
+      "elapsed_ms": 14.54,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 6,
+      "elapsed_ms": 13.45,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 7,
+      "elapsed_ms": 14.9,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 8,
+      "elapsed_ms": 22.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 9,
+      "elapsed_ms": 19.73,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 10,
+      "elapsed_ms": 15.83,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 11,
+      "elapsed_ms": 12.16,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 12,
+      "elapsed_ms": 15.68,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 13,
+      "elapsed_ms": 15.84,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 14,
+      "elapsed_ms": 19.19,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 15,
+      "elapsed_ms": 19.04,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 16,
+      "elapsed_ms": 17.16,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 17,
+      "elapsed_ms": 18.42,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 18,
+      "elapsed_ms": 17.02,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 19,
+      "elapsed_ms": 20.16,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 0,
+      "elapsed_ms": 8.16,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 1,
+      "elapsed_ms": 8.62,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 2,
+      "elapsed_ms": 9.03,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 3,
+      "elapsed_ms": 9.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 4,
+      "elapsed_ms": 9.9,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 5,
+      "elapsed_ms": 8.37,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 6,
+      "elapsed_ms": 10.95,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 7,
+      "elapsed_ms": 11.15,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 8,
+      "elapsed_ms": 8.37,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 9,
+      "elapsed_ms": 7.97,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 10,
+      "elapsed_ms": 11.15,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 11,
+      "elapsed_ms": 5.74,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 12,
+      "elapsed_ms": 5.73,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 13,
+      "elapsed_ms": 6.2,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 14,
+      "elapsed_ms": 5.56,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 15,
+      "elapsed_ms": 5.59,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 16,
+      "elapsed_ms": 5.72,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 17,
+      "elapsed_ms": 6.1,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 18,
+      "elapsed_ms": 5.99,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 19,
+      "elapsed_ms": 6.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 0,
+      "elapsed_ms": 4.64,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 1,
+      "elapsed_ms": 3.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 2,
+      "elapsed_ms": 6.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 3,
+      "elapsed_ms": 3.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 4,
+      "elapsed_ms": 4.72,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 5,
+      "elapsed_ms": 3.76,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 6,
+      "elapsed_ms": 4.13,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 7,
+      "elapsed_ms": 3.85,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 8,
+      "elapsed_ms": 3.65,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 9,
+      "elapsed_ms": 4.93,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 10,
+      "elapsed_ms": 6.8,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 11,
+      "elapsed_ms": 3.92,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 12,
+      "elapsed_ms": 3.63,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 13,
+      "elapsed_ms": 3.81,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 14,
+      "elapsed_ms": 4.18,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 15,
+      "elapsed_ms": 4.03,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 16,
+      "elapsed_ms": 4.06,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 17,
+      "elapsed_ms": 5.25,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 18,
+      "elapsed_ms": 5.12,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size",
+      "iteration": 19,
+      "elapsed_ms": 3.97,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 0,
+      "elapsed_ms": 4.38,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 1,
+      "elapsed_ms": 4.1,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 2,
+      "elapsed_ms": 5.16,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 3,
+      "elapsed_ms": 3.75,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 4,
+      "elapsed_ms": 3.83,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 5,
+      "elapsed_ms": 3.8,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 6,
+      "elapsed_ms": 3.69,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 7,
+      "elapsed_ms": 3.95,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 8,
+      "elapsed_ms": 3.82,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 9,
+      "elapsed_ms": 3.95,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 10,
+      "elapsed_ms": 3.8,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 11,
+      "elapsed_ms": 3.74,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 12,
+      "elapsed_ms": 3.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 13,
+      "elapsed_ms": 3.67,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 14,
+      "elapsed_ms": 3.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 15,
+      "elapsed_ms": 4.06,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 16,
+      "elapsed_ms": 3.75,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 17,
+      "elapsed_ms": 3.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 18,
+      "elapsed_ms": 3.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish",
+      "iteration": 19,
+      "elapsed_ms": 3.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 0,
+      "elapsed_ms": 10.11,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 1,
+      "elapsed_ms": 8.79,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 2,
+      "elapsed_ms": 12.36,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 3,
+      "elapsed_ms": 9.55,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 4,
+      "elapsed_ms": 8.76,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 5,
+      "elapsed_ms": 9.91,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 6,
+      "elapsed_ms": 7.84,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 7,
+      "elapsed_ms": 9.05,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 8,
+      "elapsed_ms": 8.5,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 9,
+      "elapsed_ms": 9.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 10,
+      "elapsed_ms": 8.17,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 11,
+      "elapsed_ms": 6.59,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 12,
+      "elapsed_ms": 6.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 13,
+      "elapsed_ms": 7.26,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 14,
+      "elapsed_ms": 7.35,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 15,
+      "elapsed_ms": 6.56,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 16,
+      "elapsed_ms": 9.0,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 17,
+      "elapsed_ms": 9.13,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 18,
+      "elapsed_ms": 12.45,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::limits_cannot_undercut_a_write_during_synchronization",
+      "iteration": 19,
+      "elapsed_ms": 9.35,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 0,
+      "elapsed_ms": 10.28,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 1,
+      "elapsed_ms": 10.17,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 2,
+      "elapsed_ms": 9.1,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 3,
+      "elapsed_ms": 8.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 4,
+      "elapsed_ms": 9.01,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 5,
+      "elapsed_ms": 10.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 6,
+      "elapsed_ms": 9.11,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 7,
+      "elapsed_ms": 11.56,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 8,
+      "elapsed_ms": 12.01,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 9,
+      "elapsed_ms": 8.71,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 10,
+      "elapsed_ms": 11.38,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 11,
+      "elapsed_ms": 8.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 12,
+      "elapsed_ms": 9.14,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 13,
+      "elapsed_ms": 8.25,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 14,
+      "elapsed_ms": 10.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 15,
+      "elapsed_ms": 10.07,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 16,
+      "elapsed_ms": 9.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 17,
+      "elapsed_ms": 9.88,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 18,
+      "elapsed_ms": 10.49,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::group_tests::failed_group_sync_fails_all_waiters",
+      "iteration": 19,
+      "elapsed_ms": 10.96,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 0,
+      "elapsed_ms": 65.63,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 1,
+      "elapsed_ms": 65.69,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 2,
+      "elapsed_ms": 58.73,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 3,
+      "elapsed_ms": 69.09,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 4,
+      "elapsed_ms": 70.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 5,
+      "elapsed_ms": 64.69,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 6,
+      "elapsed_ms": 70.8,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 7,
+      "elapsed_ms": 84.47,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 8,
+      "elapsed_ms": 65.38,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 9,
+      "elapsed_ms": 77.89,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 10,
+      "elapsed_ms": 54.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 11,
+      "elapsed_ms": 61.55,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 12,
+      "elapsed_ms": 45.38,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 13,
+      "elapsed_ms": 50.75,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 14,
+      "elapsed_ms": 77.01,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 15,
+      "elapsed_ms": 70.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 16,
+      "elapsed_ms": 60.49,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 17,
+      "elapsed_ms": 68.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 18,
+      "elapsed_ms": 68.53,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover",
+      "iteration": 19,
+      "elapsed_ms": 58.23,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 0,
+      "elapsed_ms": 26.0,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 1,
+      "elapsed_ms": 15.25,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 2,
+      "elapsed_ms": 15.4,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 3,
+      "elapsed_ms": 16.56,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 4,
+      "elapsed_ms": 15.02,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 5,
+      "elapsed_ms": 18.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 6,
+      "elapsed_ms": 26.77,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 7,
+      "elapsed_ms": 22.48,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 8,
+      "elapsed_ms": 23.61,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 9,
+      "elapsed_ms": 25.19,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 10,
+      "elapsed_ms": 24.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 11,
+      "elapsed_ms": 24.27,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 12,
+      "elapsed_ms": 16.2,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 13,
+      "elapsed_ms": 16.87,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 14,
+      "elapsed_ms": 14.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 15,
+      "elapsed_ms": 17.97,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 16,
+      "elapsed_ms": 15.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 17,
+      "elapsed_ms": 14.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 18,
+      "elapsed_ms": 15.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "compact_handoff_preserves_limits_but_a_later_reopen_resets_them",
+      "iteration": 19,
+      "elapsed_ms": 27.47,
+      "ok": true
+    }
+  ]
+}
