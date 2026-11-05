@@ -13,20 +13,108 @@ pub const MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS: usize = 65_536;
 /// Maximum combined copied overlay-key bytes across active snapshots.
 pub const MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Default)]
+/// Per-open logical checkpoint-snapshot reservation limits and usage.
+/// These counters do not cover total memory or other stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CheckpointSnapshotBudgetStatus {
+    /// Maximum concurrent checkpoint snapshots.
+    pub active_limit: usize,
+    /// Current reserved checkpoint snapshots.
+    pub active: usize,
+    /// Maximum combined copied checkpoint block-directory entries.
+    pub block_limit: usize,
+    /// Block-directory entries currently reserved.
+    pub blocks: usize,
+    /// Maximum combined copied suffix-overlay keys.
+    pub key_limit: usize,
+    /// Overlay keys currently reserved, including tombstones.
+    pub keys: usize,
+    /// Maximum combined logical overlay-key bytes.
+    pub key_byte_limit: usize,
+    /// Overlay-key bytes currently reserved.
+    pub key_bytes: usize,
+}
+
 pub(super) struct SnapshotBudget {
     active: usize,
     blocks: usize,
     keys: usize,
     key_bytes: usize,
+    active_limit: usize,
+    block_limit: usize,
+    key_limit: usize,
+    key_byte_limit: usize,
+}
+
+impl Default for SnapshotBudget {
+    fn default() -> Self {
+        Self {
+            active: 0,
+            blocks: 0,
+            keys: 0,
+            key_bytes: 0,
+            active_limit: MAX_CHECKPOINT_ACTIVE_SNAPSHOTS,
+            block_limit: MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
+            key_limit: MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
+            key_byte_limit: MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES,
+        }
+    }
 }
 
 impl SnapshotBudget {
+    fn status(&self) -> CheckpointSnapshotBudgetStatus {
+        CheckpointSnapshotBudgetStatus {
+            active_limit: self.active_limit,
+            active: self.active,
+            block_limit: self.block_limit,
+            blocks: self.blocks,
+            key_limit: self.key_limit,
+            keys: self.keys,
+            key_byte_limit: self.key_byte_limit,
+            key_bytes: self.key_bytes,
+        }
+    }
+
+    fn set_limits(
+        &mut self,
+        active: usize,
+        blocks: usize,
+        keys: usize,
+        key_bytes: usize,
+    ) -> io::Result<()> {
+        if active > MAX_CHECKPOINT_ACTIVE_SNAPSHOTS
+            || blocks > MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS
+            || keys > MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS
+            || key_bytes > MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint snapshot budget exceeds hard maximum",
+            ));
+        }
+        if active < self.active
+            || blocks < self.blocks
+            || keys < self.keys
+            || key_bytes < self.key_bytes
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "checkpoint snapshot budget is below current reservations",
+            ));
+        }
+        self.active_limit = active;
+        self.block_limit = blocks;
+        self.key_limit = keys;
+        self.key_byte_limit = key_bytes;
+        Ok(())
+    }
+
     fn reserve(&mut self, blocks: usize, keys: usize, key_bytes: usize) -> io::Result<()> {
-        if self.active >= MAX_CHECKPOINT_ACTIVE_SNAPSHOTS
-            || blocks > MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS - self.blocks
-            || keys > MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS - self.keys
-            || key_bytes > MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES - self.key_bytes
+        if self.active >= self.active_limit
+            || blocks > self.block_limit - self.blocks
+            || keys > self.key_limit - self.keys
+            || key_bytes > self.key_byte_limit - self.key_bytes
         {
             return Err(io::Error::other(
                 "aggregate checkpoint snapshot limit exceeded",
@@ -213,6 +301,33 @@ impl Drop for CheckpointSnapshot<'_> {
 }
 
 impl CheckpointStore {
+    /// Reports per-open checkpoint-snapshot reservation limits and usage.
+    /// Expired views may remain reserved until reaped, cancelled or dropped.
+    pub fn snapshot_budget_status(&self) -> io::Result<CheckpointSnapshotBudgetStatus> {
+        Ok(self
+            .snapshot_budget
+            .lock()
+            .map_err(|_| io::Error::other("checkpoint snapshot budget poisoned"))?
+            .status())
+    }
+
+    /// Sets aggregate active, block, overlay-key and key-byte limits. A
+    /// reduction below existing reservations returns `WouldBlock` unchanged.
+    /// Zero can reject new snapshots. These per-open logical limits reset on
+    /// reopen and do not bound total memory, log size or project resources.
+    pub fn set_snapshot_budget_limits(
+        &self,
+        active: usize,
+        blocks: usize,
+        keys: usize,
+        key_bytes: usize,
+    ) -> io::Result<()> {
+        self.snapshot_budget
+            .lock()
+            .map_err(|_| io::Error::other("checkpoint snapshot budget poisoned"))?
+            .set_limits(active, blocks, keys, key_bytes)
+    }
+
     /// Captures a stable view with the checkpoint store's hard per-view caps.
     pub fn snapshot(&self) -> io::Result<CheckpointSnapshot<'_>> {
         self.snapshot_with_limits(

@@ -29,8 +29,9 @@ mod snapshot;
 mod transaction;
 mod worker;
 pub use snapshot::{
-    CheckpointSnapshot, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
-    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
+    CheckpointSnapshot, CheckpointSnapshotBudgetStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS,
+    MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES,
+    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
 };
 pub use transaction::{CheckpointTransaction, CheckpointTransactionMode};
 pub use worker::{CheckpointWorker, CheckpointWorkerStatus};

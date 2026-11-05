@@ -460,6 +460,12 @@ impl OnlineStore {
             .set_transaction_staging_limit(current.transaction_budget_status()?.limit_bytes)?;
         candidate
             .set_active_transaction_limit(current.transaction_budget_status()?.active_limit)?;
+        let snapshot_budget = current.snapshot_budget_status()?;
+        candidate.set_snapshot_budget_limits(
+            snapshot_budget.active_limit,
+            snapshot_budget.key_limit,
+            snapshot_budget.key_byte_limit,
+        )?;
         candidate.set_active_direct_write_limit(current.direct_write_status().limit)?;
         if let Some(limit) = current.direct_read_status().limit {
             candidate.enable_direct_read_limit(limit)?;

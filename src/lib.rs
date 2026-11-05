@@ -31,8 +31,8 @@ mod witness;
 
 pub use cancellation::{CancellationToken, ControlledTransactionError};
 pub use checkpoint_store::{
-    CheckpointSnapshot, CheckpointStore, CheckpointStoreLimits, CheckpointTransaction,
-    CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,
+    CheckpointSnapshot, CheckpointSnapshotBudgetStatus, CheckpointStore, CheckpointStoreLimits,
+    CheckpointTransaction, CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,
     MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
 };
@@ -69,6 +69,6 @@ pub use store::{
     MAX_TRANSACTION_VALIDATION_ITEMS, OnlineCompactionOptions, OnlineCompactionReport,
     OnlineReclaimError, OnlineReclamationFailure, OnlineReclamationFailureStage,
     OnlineReclamationWorker, OnlineReclamationWorkerStatus, OnlineStore, RetiredCleanupStatus,
-    Snapshot, Store, TimedTransactionError, Transaction, TransactionMode,
+    Snapshot, SnapshotBudgetStatus, Store, TimedTransactionError, Transaction, TransactionMode,
 };
 pub use transaction_budget::{MAX_ACTIVE_TRANSACTIONS, TransactionBudgetStatus};

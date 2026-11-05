@@ -1,0 +1,109 @@
+{
+  "revision": "c777cc9",
+  "repetitions_per_case_and_filesystem": 20,
+  "scope": "Finite thread and process schedules on a running VM; other validation ran concurrently. The overlay backing device was not independently verified. Not physical power-loss or off-host testing.",
+  "binary_sha256": {
+    "/tmp/emda-snapshot-target/debug/deps/database_engine-719878045fa56782": "497739548f34ae97920449c9b38ba77cd87f97ba3b6e20977ec84a9afc2b950d",
+    "/tmp/emda-snapshot-target/debug/deps/snapshot_budget_controls-b56a6783b57404ee": "84a3cb53df177bb3cdee9b25770c07e72810fcd1bc47b36d763e688c610158a6"
+  },
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "test": "concurrent_snapshot_admission_and_reconfiguration_never_oversubscribe",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 1.692
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "ordinary_snapshot_limits_follow_live_reservations_and_block_shared_users",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.106
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_snapshot_limits_follow_all_live_reservations",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.095
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "blocking_handoffs_preserve_configured_limits_but_reopen_resets_them",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.167
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "online_compaction_rejects_a_zero_snapshot_budget_without_replacing_the_store",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.107
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.129
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "store::point_read::tests::point_reads_share_snapshot_admission_and_release_on_unwind",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.102
+    },
+    {
+      "filesystem": "overlay",
+      "test": "concurrent_snapshot_admission_and_reconfiguration_never_oversubscribe",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.555
+    },
+    {
+      "filesystem": "overlay",
+      "test": "ordinary_snapshot_limits_follow_live_reservations_and_block_shared_users",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.201
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_snapshot_limits_follow_all_live_reservations",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.251
+    },
+    {
+      "filesystem": "overlay",
+      "test": "blocking_handoffs_preserve_configured_limits_but_reopen_resets_them",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.917
+    },
+    {
+      "filesystem": "overlay",
+      "test": "online_compaction_rejects_a_zero_snapshot_budget_without_replacing_the_store",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.431
+    },
+    {
+      "filesystem": "overlay",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.316
+    },
+    {
+      "filesystem": "overlay",
+      "test": "store::point_read::tests::point_reads_share_snapshot_admission_and_release_on_unwind",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.125
+    }
+  ]
+}

@@ -36,6 +36,7 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
         .with_store(|db| {
             db.put(b"key", b"value")?;
             db.set_active_direct_write_limit(5)?;
+            db.set_snapshot_budget_limits(4, 64, 4096)?;
             db.set_group_commit_limits(4096, 4)?;
             db.set_transaction_staging_limit(512)?;
             db.set_active_transaction_limit(8)
@@ -63,6 +64,7 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
         .with_store(|db| {
             db.set_active_direct_write_limit(2)?;
             db.set_active_direct_read_limit(2)?;
+            db.set_snapshot_budget_limits(2, 32, 2048)?;
             db.set_group_commit_limits(2048, 2)?;
             db.set_transaction_staging_limit(128)?;
             db.set_active_transaction_limit(3)
@@ -81,6 +83,19 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
             .with_store(|db| Ok(db.direct_read_status().limit))
             .unwrap(),
         Some(2)
+    );
+    let snapshots = store.with_store(|db| db.snapshot_budget_status()).unwrap();
+    assert_eq!(
+        (
+            snapshots.active_limit,
+            snapshots.key_limit,
+            snapshots.key_byte_limit
+        ),
+        (2, 32, 2048)
+    );
+    assert_eq!(
+        (snapshots.active, snapshots.keys, snapshots.key_bytes),
+        (0, 0, 0)
     );
     let group = store.with_store(|db| db.group_commit_status()).unwrap();
     assert_eq!((group.limit_bytes, group.limit_records), (2048, 2));
