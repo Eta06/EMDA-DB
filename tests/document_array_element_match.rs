@@ -238,6 +238,21 @@ fn bounds(db: &DocumentDatabase<'_>) {
         db.query("c", &query(invalid)).unwrap_err().kind(),
         ErrorKind::InvalidInput
     );
+    let invalid_scalar = F::Or(vec![
+        F::All,
+        elem(
+            "items",
+            F::Compare {
+                path: path("x"),
+                comparison: Comparison::Greater,
+                value: IndexValue::String("x".repeat(257)),
+            },
+        ),
+    ]);
+    assert_eq!(
+        db.query("c", &query(invalid_scalar)).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
     let mut too_deep = F::All;
     for _ in 0..17 {
         too_deep = elem("items", too_deep);
