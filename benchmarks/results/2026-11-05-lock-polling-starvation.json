@@ -1,0 +1,41 @@
+{
+  "scope": "Four clients execute 30 controlled, read-only checkpoint transactions while one writer repeatedly commits on tmpfs. Each process has a five-second timeout and a disposable private directory. This smoke demonstrates liveness, not a controlled performance comparison.",
+  "revisions": {
+    "baseline": "a7ddbd2",
+    "polling": "fb23a0d"
+  },
+  "binary_sha256": {
+    "baseline": "1be73f2ba7b18c12d747562673d9e41342861babb54db3969051d76ee09802e8",
+    "polling": "efea8a5adcf00d2e424d147ef52bfcc7cc30ef3b1153fea6acd61c2ffc12a045"
+  },
+  "runs": [
+    {
+      "variant": "baseline",
+      "returncode": 0,
+      "elapsed_seconds": 0.006706,
+      "stderr": "",
+      "writer_commits": 420,
+      "samples": 120,
+      "reopen_verified": true
+    },
+    {
+      "variant": "polling",
+      "timeout_seconds": 5,
+      "elapsed_seconds": 5.006123
+    },
+    {
+      "variant": "polling",
+      "timeout_seconds": 5,
+      "elapsed_seconds": 5.003987
+    },
+    {
+      "variant": "baseline",
+      "returncode": 0,
+      "elapsed_seconds": 0.004745,
+      "stderr": "",
+      "writer_commits": 185,
+      "samples": 120,
+      "reopen_verified": true
+    }
+  ]
+}
