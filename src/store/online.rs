@@ -447,6 +447,8 @@ impl OnlineStore {
             .set_transaction_staging_limit(current.transaction_budget_status()?.limit_bytes)?;
         candidate
             .set_active_transaction_limit(current.transaction_budget_status()?.active_limit)?;
+        let group_limits = current.group_commit_status()?;
+        candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
         crate::directory::verify_lock_identity(&source, &current._lock_file)?;
         compact_exchange::source_directory_is_owned(&source)?;
         fs::File::open(stage.path())?.sync_all()?;

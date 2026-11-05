@@ -16,6 +16,7 @@ mod commit;
 mod compact;
 pub(crate) mod compact_exchange;
 mod compact_stream;
+mod group_limits;
 mod log_quota;
 mod online;
 mod point_read;
@@ -24,6 +25,9 @@ mod snapshot;
 mod transaction;
 mod transaction_queue;
 use commit::Coordinator;
+pub use commit::{
+    GroupCommitStatus, MAX_GROUP_COMMIT_BUFFERED_BYTES, MAX_GROUP_COMMIT_BUFFERED_RECORDS,
+};
 pub use compact_stream::COMPACTED_CHECKPOINT_FILE;
 pub(crate) use compact_stream::compact_checkpoint;
 #[cfg(test)]

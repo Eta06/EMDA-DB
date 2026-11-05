@@ -14,10 +14,33 @@ use std::time::Duration;
 
 // These bound encoded bytes and entry count, not total process memory. Caller
 // buffers, keys, allocator overhead, thread stacks, and the index are separate.
-const MAX_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
+/// Hard maximum encoded bytes reserved by the ordinary store's group commit.
+pub const MAX_GROUP_COMMIT_BUFFERED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BATCH_RECORDS: usize = 64;
-const MAX_BUFFERED_RECORDS: usize = 1024;
+/// Hard maximum records reserved by the ordinary store's group commit.
+pub const MAX_GROUP_COMMIT_BUFFERED_RECORDS: usize = 1024;
 const LEADER_RECHECK_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Process-local group-commit admission state for one ordinary store.
+///
+/// Reservations count encoded records, including in-flight preparation. They
+/// do not account for caller buffers, other lock waiters or total memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GroupCommitStatus {
+    /// Current encoded-byte admission limit.
+    pub limit_bytes: usize,
+    /// Current record-count admission limit.
+    pub limit_records: usize,
+    /// Reserved encoded bytes, including preparation and in-flight records.
+    pub reserved_bytes: usize,
+    /// Reserved records, including preparation and in-flight records.
+    pub reserved_records: usize,
+    /// Writers waiting inside group-commit capacity admission.
+    pub waiting_writers: usize,
+    /// Whether a prior commit or coordinator failure requires reopening.
+    pub failed: bool,
+}
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +108,8 @@ struct State {
     buffered_bytes: usize,
     buffered_records: usize,
     admission_waiters: usize,
+    max_bytes: usize,
+    max_records: usize,
     active: bool,
     active_completions: Vec<Arc<Completion>>,
     failure: Option<Failure>,
@@ -94,15 +119,16 @@ pub(super) struct Coordinator {
     state: Mutex<State>,
     admission_changed: Condvar,
     failed: AtomicBool,
-    max_bytes: usize,
-    max_records: usize,
     #[cfg(test)]
     snapshot_copy_hook: Mutex<Option<SnapshotCopyHook>>,
 }
 
 impl Coordinator {
     pub(super) fn new() -> Self {
-        Self::with_limits(MAX_BUFFERED_BYTES, MAX_BUFFERED_RECORDS)
+        Self::with_limits(
+            MAX_GROUP_COMMIT_BUFFERED_BYTES,
+            MAX_GROUP_COMMIT_BUFFERED_RECORDS,
+        )
     }
 
     fn with_limits(max_bytes: usize, max_records: usize) -> Self {
@@ -112,14 +138,14 @@ impl Coordinator {
                 buffered_bytes: 0,
                 buffered_records: 0,
                 admission_waiters: 0,
+                max_bytes,
+                max_records,
                 active: false,
                 active_completions: Vec::new(),
                 failure: None,
             }),
             admission_changed: Condvar::new(),
             failed: AtomicBool::new(false),
-            max_bytes,
-            max_records,
             #[cfg(test)]
             snapshot_copy_hook: Mutex::new(None),
         }
@@ -196,6 +222,43 @@ impl Coordinator {
 
     pub(super) fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
+    }
+
+    pub(super) fn status(&self) -> io::Result<GroupCommitStatus> {
+        let state = self.lock()?;
+        Ok(GroupCommitStatus {
+            limit_bytes: state.max_bytes,
+            limit_records: state.max_records,
+            reserved_bytes: state.buffered_bytes,
+            reserved_records: state.buffered_records,
+            waiting_writers: state.admission_waiters,
+            failed: self.failed(),
+        })
+    }
+
+    pub(super) fn set_limits(&self, bytes: usize, records: usize) -> io::Result<()> {
+        if bytes > MAX_GROUP_COMMIT_BUFFERED_BYTES || records > MAX_GROUP_COMMIT_BUFFERED_RECORDS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "group commit limit exceeds hard maximum",
+            ));
+        }
+        let mut state = self.lock()?;
+        if self.failed() {
+            return Err(Self::failure(&state));
+        }
+        if bytes < state.buffered_bytes || records < state.buffered_records {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "group commit limit is below current reservations",
+            ));
+        }
+        state.max_bytes = bytes;
+        state.max_records = records;
+        if state.admission_waiters > 0 {
+            self.admission_changed.notify_all();
+        }
+        Ok(())
     }
 
     fn failure(state: &State) -> io::Error {
@@ -276,19 +339,27 @@ impl Coordinator {
     // reservation keeps preparation bounded without holding the queue lock.
     fn reserve(&self, bytes: usize) -> io::Result<Reservation<'_>> {
         let mut state = self.lock()?;
-        if bytes > self.max_bytes {
-            return Err(io::Error::other("record exceeds the write buffer limit"));
-        }
-        while !self.failed()
-            && (state.buffered_bytes + bytes > self.max_bytes
-                || state.buffered_records >= self.max_records)
-        {
+        loop {
+            if self.failed() {
+                return Err(Self::failure(&state));
+            }
+            // Recheck after every wake: a caller can lower limits while this
+            // writer is waiting. A record that no longer fits must not wait
+            // indefinitely or be submitted after an admission rejection.
+            if bytes > state.max_bytes || state.max_records == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "record exceeds configured group commit admission limits",
+                ));
+            }
+            if state.buffered_bytes <= state.max_bytes - bytes
+                && state.buffered_records < state.max_records
+            {
+                break;
+            }
             state.admission_waiters += 1;
             state = self.wait(&self.admission_changed, state)?;
             state.admission_waiters -= 1;
-        }
-        if self.failed() {
-            return Err(Self::failure(&state));
         }
         state.buffered_bytes += bytes;
         state.buffered_records += 1;
