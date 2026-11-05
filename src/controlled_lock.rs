@@ -1,29 +1,38 @@
-//! A wakeable admission gate around a standard, poisoning read/write lock.
+//! A wakeable read/write lock with standard-style poison-on-writer-panic.
 //!
-//! Every access to `inner` must first hold the corresponding gate guard. The
-//! standard guard is declared first and therefore dropped first, so a panic
-//! poisons the inner lock before the gate admits the next operation.
-use parking_lot::{RwLock as Gate, RwLockReadGuard as GateRead, RwLockWriteGuard as GateWrite};
+//! `parking_lot` provides timed, queued admission but does not poison itself.
+//! We publish the poison flag while the exclusive guard is still held, before
+//! its underlying guard is dropped and the next operation can enter. As with
+//! `std::sync::RwLock`, a reader panic does not poison and a write guard first
+//! acquired during unwinding does not poison merely because it is dropped.
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::sync::{
-    LockResult, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError, TryLockResult,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LockResult, PoisonError, TryLockError, TryLockResult};
 use std::time::Duration;
 
 pub(crate) struct ControlledRwLock<T> {
-    gate: Gate<()>,
     inner: RwLock<T>,
+    poisoned: AtomicBool,
 }
 
 pub(crate) struct ReadGuard<'a, T> {
     inner: RwLockReadGuard<'a, T>,
-    _gate: GateRead<'a, ()>,
 }
 
 pub(crate) struct WriteGuard<'a, T> {
     inner: RwLockWriteGuard<'a, T>,
-    _gate: GateWrite<'a, ()>,
+    poisoned: &'a AtomicBool,
+    acquired_during_panic: bool,
+}
+
+impl<T> Drop for WriteGuard<'_, T> {
+    fn drop(&mut self) {
+        if !self.acquired_during_panic && std::thread::panicking() {
+            self.poisoned.store(true, Ordering::Release);
+        }
+    }
 }
 
 impl<T> fmt::Debug for ReadGuard<'_, T> {
@@ -59,61 +68,61 @@ impl<T> DerefMut for WriteGuard<'_, T> {
 impl<T> ControlledRwLock<T> {
     pub(crate) fn new(value: T) -> Self {
         Self {
-            gate: Gate::new(()),
             inner: RwLock::new(value),
+            poisoned: AtomicBool::new(false),
         }
     }
 
-    fn read_after_gate<'a>(&'a self, gate: GateRead<'a, ()>) -> LockResult<ReadGuard<'a, T>> {
-        match self.inner.try_read() {
-            Ok(inner) => Ok(ReadGuard { inner, _gate: gate }),
-            Err(TryLockError::Poisoned(error)) => Err(PoisonError::new(ReadGuard {
-                inner: error.into_inner(),
-                _gate: gate,
-            })),
-            Err(TryLockError::WouldBlock) => unreachable!("controlled read gate invariant"),
+    fn wrap_read<'a>(&'a self, inner: RwLockReadGuard<'a, T>) -> LockResult<ReadGuard<'a, T>> {
+        let guard = ReadGuard { inner };
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(PoisonError::new(guard))
+        } else {
+            Ok(guard)
         }
     }
 
-    fn write_after_gate<'a>(&'a self, gate: GateWrite<'a, ()>) -> LockResult<WriteGuard<'a, T>> {
-        match self.inner.try_write() {
-            Ok(inner) => Ok(WriteGuard { inner, _gate: gate }),
-            Err(TryLockError::Poisoned(error)) => Err(PoisonError::new(WriteGuard {
-                inner: error.into_inner(),
-                _gate: gate,
-            })),
-            Err(TryLockError::WouldBlock) => unreachable!("controlled write gate invariant"),
+    fn wrap_write<'a>(&'a self, inner: RwLockWriteGuard<'a, T>) -> LockResult<WriteGuard<'a, T>> {
+        let guard = WriteGuard {
+            inner,
+            poisoned: &self.poisoned,
+            acquired_during_panic: std::thread::panicking(),
+        };
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(PoisonError::new(guard))
+        } else {
+            Ok(guard)
         }
     }
 
     pub(crate) fn read(&self) -> LockResult<ReadGuard<'_, T>> {
-        self.read_after_gate(self.gate.read())
+        self.wrap_read(self.inner.read())
     }
 
     pub(crate) fn write(&self) -> LockResult<WriteGuard<'_, T>> {
-        self.write_after_gate(self.gate.write())
+        self.wrap_write(self.inner.write())
     }
 
     #[cfg(test)]
     pub(crate) fn try_read(&self) -> TryLockResult<ReadGuard<'_, T>> {
-        let gate = self.gate.try_read().ok_or(TryLockError::WouldBlock)?;
-        self.read_after_gate(gate).map_err(TryLockError::Poisoned)
+        let guard = self.inner.try_read().ok_or(TryLockError::WouldBlock)?;
+        self.wrap_read(guard).map_err(TryLockError::Poisoned)
     }
 
     pub(crate) fn try_read_for(&self, timeout: Duration) -> TryLockResult<ReadGuard<'_, T>> {
-        let gate = self
-            .gate
+        let guard = self
+            .inner
             .try_read_for(timeout)
             .ok_or(TryLockError::WouldBlock)?;
-        self.read_after_gate(gate).map_err(TryLockError::Poisoned)
+        self.wrap_read(guard).map_err(TryLockError::Poisoned)
     }
 
     pub(crate) fn try_write_for(&self, timeout: Duration) -> TryLockResult<WriteGuard<'_, T>> {
-        let gate = self
-            .gate
+        let guard = self
+            .inner
             .try_write_for(timeout)
             .ok_or(TryLockError::WouldBlock)?;
-        self.write_after_gate(gate).map_err(TryLockError::Poisoned)
+        self.wrap_write(guard).map_err(TryLockError::Poisoned)
     }
 }
 
@@ -163,6 +172,35 @@ mod tests {
         );
         assert_eq!(*lock.read().unwrap(), 7);
         *lock.write().unwrap() = 8;
+    }
+
+    #[test]
+    fn caught_panics_and_write_guards_acquired_during_unwind_match_std_poisoning() {
+        let lock = Arc::new(ControlledRwLock::new(0));
+        {
+            let mut held = lock.write().unwrap();
+            let caught = std::panic::catch_unwind(|| panic!("caught within guard"));
+            assert!(caught.is_err());
+            *held = 1;
+        }
+        assert_eq!(*lock.read().unwrap(), 1);
+
+        struct AcquireOnDrop(Arc<ControlledRwLock<usize>>);
+        impl Drop for AcquireOnDrop {
+            fn drop(&mut self) {
+                *self.0.write().unwrap() = 2;
+            }
+        }
+        let during_unwind = Arc::clone(&lock);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = AcquireOnDrop(during_unwind);
+                panic!("start unwinding");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(*lock.read().unwrap(), 2);
     }
 
     #[test]

@@ -232,6 +232,89 @@ fn cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_app
 }
 
 #[test]
+fn cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks() {
+    use crate::{CancellationToken, CheckpointTransactionMode, ControlledTransactionError};
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store =
+        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let first_store = Arc::clone(&store);
+    let (staged_tx, staged_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let first = std::thread::spawn(move || {
+        let result = first_store.transaction_controlled(
+            &worker_token,
+            None,
+            CheckpointTransactionMode::ReadSetFifo,
+            |tx| {
+                tx.put(b"aborted", b"value")?;
+                staged_tx.send(()).map_err(io::Error::other)?;
+                resume_rx.recv().map_err(io::Error::other)
+            },
+        );
+        done_tx.send(result).unwrap();
+    });
+    staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let held = store.state.write().unwrap();
+    let follower_store = Arc::clone(&store);
+    let follower = std::thread::spawn(move || {
+        follower_store.transaction_with_read_set_fifo(|tx| tx.put(b"follower", b"ok"))
+    });
+    wait_for_queue(&store, 2);
+    resume_tx.send(()).unwrap();
+    token.cancel();
+    let early = done_rx.recv_timeout(Duration::from_secs(5));
+    drop(held);
+    let result = early.expect("cancelled turn remained blocked on state lock");
+    assert!(matches!(result, Err(ControlledTransactionError::Cancelled)));
+    first.join().unwrap();
+    follower.join().unwrap().unwrap();
+    assert_eq!(store.transaction_queue.queued_for_test(), 0);
+    assert_eq!(
+        store
+            .transaction_budget_status()
+            .unwrap()
+            .active_transactions,
+        0
+    );
+    assert_eq!(store.get(b"aborted").unwrap(), None);
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(reopened.get(b"aborted").unwrap(), None);
+    assert_eq!(
+        reopened.get(b"follower").unwrap().as_deref(),
+        Some(&b"ok"[..])
+    );
+}
+
+#[test]
+fn checkpoint_state_poison_fails_closed_and_preserves_recovery() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.put(b"before", b"durable").unwrap();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = store.state.write().unwrap();
+            panic!("poison state");
+        }))
+        .is_err()
+    );
+    assert!(store.get(b"before").is_err());
+    assert!(store.put(b"after", b"rejected").is_err());
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(
+        reopened.get(b"before").unwrap().as_deref(),
+        Some(&b"durable"[..])
+    );
+    assert_eq!(reopened.get(b"after").unwrap(), None);
+}
+
+#[test]
 fn fifo_runs_callbacks_and_commits_in_admission_order() {
     use std::sync::{Arc, mpsc};
     let (_dir, path, checkpoint, digest) = fixture();

@@ -692,6 +692,88 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        let held = store.writes.write().unwrap();
+        let token = crate::CancellationToken::new();
+        let worker_token = token.clone();
+        let first_store = Arc::clone(&store);
+        let (staged_tx, staged_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let first = thread::spawn(move || {
+            let result = first_store.transaction_controlled(
+                &worker_token,
+                None,
+                TransactionMode::ReadSetFifo,
+                |tx| {
+                    tx.put(b"aborted", b"value")?;
+                    staged_tx.send(()).map_err(io::Error::other)
+                },
+            );
+            done_tx.send(result).unwrap();
+        });
+        staged_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        let follower_store = Arc::clone(&store);
+        let follower = thread::spawn(move || {
+            follower_store.transaction_with_read_set_fifo(|tx| tx.put(b"follower", b"ok"))
+        });
+        let timeout = Instant::now() + Duration::from_secs(10);
+        while store.transaction_queue.queued_for_test() != 2 {
+            assert!(Instant::now() < timeout);
+            thread::yield_now();
+        }
+        token.cancel();
+        let early = done_rx.recv_timeout(Duration::from_secs(5));
+        drop(held);
+        let result = early.expect("cancelled turn remained blocked on writer lock");
+        assert!(matches!(
+            result,
+            Err(crate::ControlledTransactionError::Cancelled)
+        ));
+        first.join().unwrap();
+        follower.join().unwrap().unwrap();
+        assert_eq!(store.transaction_queue.queued_for_test(), 0);
+        assert_eq!(
+            store
+                .transaction_budget_status()
+                .unwrap()
+                .active_transactions,
+            0
+        );
+        assert_eq!(store.get(b"aborted").unwrap(), None);
+        drop(store);
+        let reopened = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
+        assert_eq!(reopened.get(b"aborted").unwrap(), None);
+        assert_eq!(
+            reopened.get(b"follower").unwrap().as_deref(),
+            Some(&b"ok"[..])
+        );
+    }
+
+    #[test]
+    fn writer_barrier_poison_fails_closed_and_preserves_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put(b"before", b"durable").unwrap();
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _held = store.writes.write().unwrap();
+                panic!("poison barrier");
+            }))
+            .is_err()
+        );
+        assert!(store.put(b"after", b"rejected").is_err());
+        drop(store);
+        let reopened = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
+        assert_eq!(
+            reopened.get(b"before").unwrap().as_deref(),
+            Some(&b"durable"[..])
+        );
+        assert_eq!(reopened.get(b"after").unwrap(), None);
+    }
+
+    #[test]
     fn a_deadline_passed_while_waiting_for_the_writer_aborts_before_commit() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(directory.path()).unwrap());
