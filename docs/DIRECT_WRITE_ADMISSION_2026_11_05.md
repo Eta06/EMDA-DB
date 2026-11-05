@@ -1,0 +1,30 @@
+# Independent-write admission
+
+Both writable stores provide `set_active_direct_write_limit` and `direct_write_status` for independent `put`, `delete`, compare-exchange, increment and batch calls. Checkpoint compare-exchange batches are included. The default and hard maximum are 65,535 admitted calls per open store; zero rejects new direct calls. Reducing the limit below the current count returns `WouldBlock` without changing it. Admission is acquired before waiting for the storage lock, is released on return or unwind, and does not cancel a call already admitted. Some argument validation occurs before admission; a conditional call can be rejected before its condition is checked.
+
+`WouldBlock` from admission confirms that this call was not submitted. It does **not** establish that the store is healthy, resolve a previous uncertain write, or imply that retrying immediately will succeed. Once a call submits a write, existing synchronization, unknown-outcome and reopen rules still apply. The counter covers only these direct calls: transaction callbacks have their separate active-transaction limits, while reads, maintenance, caller-owned buffers, pre-admission validation and other stores are excluded. The setting survives supported in-process compaction handoffs and resets on reopen. It is not a project isolation boundary, persistent quota, total-memory bound, fairness guarantee, or bounded-response guarantee.
+
+Targeted checks cover simultaneous admission and limit changes, the maximum packed-counter boundary, waiters behind each storage lock, zero limits, transactions and reads remaining independent, group-commit rejection, panic/error release, uncertain failure behavior, both blocking compaction handoffs and the guarded ordinary-store handoff. A [360-run local stress campaign](../benchmarks/results/2026-11-05-direct-admission-stress.json) repeated concurrent admission and reconfiguration, lock waiters, panic and failure handling, transaction independence and compaction recovery on tmpfs and the workspace overlay. These finite tests do not exhaust thread schedules or physical failure states. Four [60-second serial model campaigns](../benchmarks/results/2026-11-05-direct-admission-fuzz.json) exercised 42,706 generated cases across direct-write admission, group commit, controlled transactions and checkpoint writes without a finding. The stable and Rust 1.85 debug all-target matrices and clippy passed, as did the stable optimized all-target matrix and 48 Python checks. These finite models do not exhaust concurrency schedules or physical failures. The counter uses a single atomic word for a consistent limit/count update; this does not change the storage format.
+
+## Before/after local comparison
+
+The initial [tmpfs](../benchmarks/results/2026-11-05-direct-admission-tmpfs.json) and [workspace](../benchmarks/results/2026-11-05-direct-admission-overlay.json) records each contain 36 verified runs. The longer [tmpfs repeat](../benchmarks/results/2026-11-05-direct-admission-tmpfs-repeat.json) contains 60 runs and the [workspace repeat](../benchmarks/results/2026-11-05-direct-admission-overlay-repeat.json) 36. They compare the existing group-commit implementation at `8ab32fb` with the direct-admission implementation at `6182065`, using [`key_byte_limit_compare.py`](../scripts/key_byte_limit_compare.py) and [`kv_bench`](../examples/kv_bench.rs). Changes between `8ab32fb` and the direct-admission branch base `2446465` were tests, fuzzing and documentation; the baseline binary was built from the earlier revision. Candidate production code is at `f17e937`, with the later candidate revision adding the model-fuzzer files.
+
+Workloads use 16 existing eight-byte keys, 64-byte values, one or four clients and 50% or 100% writes. The initial comparison used 200 operations per client and three rotated rounds. The tmpfs repeat used 1,000 operations per client and five rounds; the workspace repeat used 500 operations and three rounds. Both versions used default direct-write limits and the same sufficiently large log cap. The candidate's uncapped-log path is also retained in the raw files. Each acknowledged write follows the existing synchronized prototype path, and each process verifies sampled values after reopening. These tests do not exercise lower direct-write limits, checkpoint-store write performance, inserts or overload rejection.
+
+All case-level quiet windows passed and no run recorded cgroup CPU throttling. VM steal was nonzero in 4/36 initial tmpfs, 22/36 initial workspace, 18/60 repeated tmpfs and 34/36 repeated workspace runs. Workloads and driver were pinned to separate available CPUs; host and storage interference remain. These are short warm-cache samples from one VM, not a universal ranking. Raw files contain per-run summaries rather than individual latency samples.
+
+The table reports median per-run write p50/p99 in microseconds and overall throughput for the **log-capped repeat**:
+
+| Filesystem | Clients / writes | Baseline p50 / p99 | Candidate p50 / p99 | Baseline / candidate ops/s |
+| --- | --- | ---: | ---: | ---: |
+| tmpfs | 1 / 50% | 3.1 / 19.2 | 3.1 / 15.1 | 365,724 / 454,998 |
+| tmpfs | 1 / 100% | 3.0 / 4.7 | 3.1 / 5.7 | 281,871 / 263,112 |
+| tmpfs | 4 / 50% | 29.0 / 214.3 | 27.6 / 246.1 | 202,361 / 197,120 |
+| tmpfs | 4 / 100% | 21.2 / 200.3 | 16.4 / 203.2 | 109,142 / 117,528 |
+| workspace | 1 / 50% | 252.7 / 706.4 | 263.1 / 709.5 | 6,714 / 7,088 |
+| workspace | 1 / 100% | 232.9 / 636.2 | 236.3 / 821.1 | 3,755 / 3,644 |
+| workspace | 4 / 50% | 476.8 / 1,224.2 | 470.7 / 1,092.9 | 14,148 / 13,661 |
+| workspace | 4 / 100% | 496.7 / 1,375.4 | 474.1 / 1,043.0 | 7,309 / 7,543 |
+
+The initial tmpfs four-client write-only p99 was 177.5 µs for the baseline and 437.6 µs for the candidate; the longer repeat measured 200.3 and 203.2 µs. Other medians and tails also moved in both directions. This variability means the measurements do not establish a consistent speedup or absence of regression. They compare two revisions of this engine rather than a competitor and do not validate physical power-loss behavior.

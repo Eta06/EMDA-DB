@@ -1,0 +1,2531 @@
+{
+  "revision": "6182065",
+  "repetitions_per_test_per_filesystem": 20,
+  "binary_sha256": {
+    "unit": "3cfd37377ea349c7a2898721ef5401d47d16d5d2ea003e30a67133d6cee6c76e",
+    "integration": "cfe699396363282b97697ce0c96be52426dc5c41f433952802aca5e472838fd0"
+  },
+  "scope": "Concurrent admission and reconfiguration, lock waiters, failed and panicking writes, both compaction handoffs, transaction independence and local recovery; finite process checks do not prove physical power-loss safety.",
+  "runs": [
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 0,
+      "elapsed_ms": 71.5,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 1,
+      "elapsed_ms": 25.1,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 2,
+      "elapsed_ms": 70.93,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 3,
+      "elapsed_ms": 43.97,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 4,
+      "elapsed_ms": 84.77,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 5,
+      "elapsed_ms": 46.74,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 6,
+      "elapsed_ms": 25.31,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 7,
+      "elapsed_ms": 140.0,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 8,
+      "elapsed_ms": 297.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 9,
+      "elapsed_ms": 438.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 10,
+      "elapsed_ms": 54.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 11,
+      "elapsed_ms": 50.57,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 12,
+      "elapsed_ms": 33.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 13,
+      "elapsed_ms": 966.54,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 14,
+      "elapsed_ms": 1462.92,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 15,
+      "elapsed_ms": 32.73,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 16,
+      "elapsed_ms": 30.96,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 17,
+      "elapsed_ms": 51.69,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 18,
+      "elapsed_ms": 56.45,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 19,
+      "elapsed_ms": 59.47,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 0,
+      "elapsed_ms": 14.58,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 1,
+      "elapsed_ms": 15.3,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 2,
+      "elapsed_ms": 33.46,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 3,
+      "elapsed_ms": 16.11,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 4,
+      "elapsed_ms": 20.63,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 5,
+      "elapsed_ms": 14.31,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 6,
+      "elapsed_ms": 14.76,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 7,
+      "elapsed_ms": 29.98,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 8,
+      "elapsed_ms": 17.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 9,
+      "elapsed_ms": 15.86,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 10,
+      "elapsed_ms": 11.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 11,
+      "elapsed_ms": 24.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 12,
+      "elapsed_ms": 23.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 13,
+      "elapsed_ms": 24.41,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 14,
+      "elapsed_ms": 14.52,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 15,
+      "elapsed_ms": 21.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 16,
+      "elapsed_ms": 40.64,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 17,
+      "elapsed_ms": 13.28,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 18,
+      "elapsed_ms": 10.54,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 19,
+      "elapsed_ms": 25.31,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 0,
+      "elapsed_ms": 20.17,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 1,
+      "elapsed_ms": 34.97,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 2,
+      "elapsed_ms": 13.18,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 3,
+      "elapsed_ms": 19.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 4,
+      "elapsed_ms": 16.22,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 5,
+      "elapsed_ms": 13.72,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 6,
+      "elapsed_ms": 28.35,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 7,
+      "elapsed_ms": 16.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 8,
+      "elapsed_ms": 23.06,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 9,
+      "elapsed_ms": 15.98,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 10,
+      "elapsed_ms": 12.15,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 11,
+      "elapsed_ms": 10.5,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 12,
+      "elapsed_ms": 6.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 13,
+      "elapsed_ms": 20.43,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 14,
+      "elapsed_ms": 29.57,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 15,
+      "elapsed_ms": 17.32,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 16,
+      "elapsed_ms": 15.14,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 17,
+      "elapsed_ms": 30.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 18,
+      "elapsed_ms": 18.05,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 19,
+      "elapsed_ms": 9.88,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 0,
+      "elapsed_ms": 14.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 1,
+      "elapsed_ms": 18.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 2,
+      "elapsed_ms": 7.9,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 3,
+      "elapsed_ms": 5.4,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 4,
+      "elapsed_ms": 26.36,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 5,
+      "elapsed_ms": 11.93,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 6,
+      "elapsed_ms": 12.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 7,
+      "elapsed_ms": 15.88,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 8,
+      "elapsed_ms": 10.99,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 9,
+      "elapsed_ms": 8.34,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 10,
+      "elapsed_ms": 11.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 11,
+      "elapsed_ms": 35.9,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 12,
+      "elapsed_ms": 13.74,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 13,
+      "elapsed_ms": 15.59,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 14,
+      "elapsed_ms": 22.26,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 15,
+      "elapsed_ms": 10.34,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 16,
+      "elapsed_ms": 31.45,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 17,
+      "elapsed_ms": 14.08,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 18,
+      "elapsed_ms": 13.15,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 19,
+      "elapsed_ms": 6.32,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 0,
+      "elapsed_ms": 6.85,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 1,
+      "elapsed_ms": 4.39,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 2,
+      "elapsed_ms": 4.52,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 3,
+      "elapsed_ms": 7.92,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 4,
+      "elapsed_ms": 4.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 5,
+      "elapsed_ms": 4.89,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 6,
+      "elapsed_ms": 6.21,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 7,
+      "elapsed_ms": 27.89,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 8,
+      "elapsed_ms": 9.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 9,
+      "elapsed_ms": 6.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 10,
+      "elapsed_ms": 3.56,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 11,
+      "elapsed_ms": 16.3,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 12,
+      "elapsed_ms": 7.47,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 13,
+      "elapsed_ms": 7.32,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 14,
+      "elapsed_ms": 3.38,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 15,
+      "elapsed_ms": 5.33,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 16,
+      "elapsed_ms": 4.54,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 17,
+      "elapsed_ms": 3.82,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 18,
+      "elapsed_ms": 29.25,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 19,
+      "elapsed_ms": 22.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 0,
+      "elapsed_ms": 90.75,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 1,
+      "elapsed_ms": 101.52,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 2,
+      "elapsed_ms": 100.03,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 3,
+      "elapsed_ms": 88.24,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 4,
+      "elapsed_ms": 68.89,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 5,
+      "elapsed_ms": 124.39,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 6,
+      "elapsed_ms": 76.62,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 7,
+      "elapsed_ms": 96.58,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 8,
+      "elapsed_ms": 94.85,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 9,
+      "elapsed_ms": 140.65,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 10,
+      "elapsed_ms": 119.71,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 11,
+      "elapsed_ms": 90.99,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 12,
+      "elapsed_ms": 81.88,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 13,
+      "elapsed_ms": 109.69,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 14,
+      "elapsed_ms": 104.2,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 15,
+      "elapsed_ms": 117.45,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 16,
+      "elapsed_ms": 121.3,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 17,
+      "elapsed_ms": 168.96,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 18,
+      "elapsed_ms": 131.63,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 19,
+      "elapsed_ms": 125.06,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 0,
+      "elapsed_ms": 22.43,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 1,
+      "elapsed_ms": 7.1,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 2,
+      "elapsed_ms": 20.25,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 3,
+      "elapsed_ms": 11.98,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 4,
+      "elapsed_ms": 16.39,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 5,
+      "elapsed_ms": 15.92,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 6,
+      "elapsed_ms": 35.66,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 7,
+      "elapsed_ms": 14.29,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 8,
+      "elapsed_ms": 17.95,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 9,
+      "elapsed_ms": 13.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 10,
+      "elapsed_ms": 15.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 11,
+      "elapsed_ms": 53.14,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 12,
+      "elapsed_ms": 20.89,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 13,
+      "elapsed_ms": 14.53,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 14,
+      "elapsed_ms": 16.86,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 15,
+      "elapsed_ms": 32.31,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 16,
+      "elapsed_ms": 15.35,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 17,
+      "elapsed_ms": 20.61,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 18,
+      "elapsed_ms": 17.56,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 19,
+      "elapsed_ms": 35.5,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 0,
+      "elapsed_ms": 21.35,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 1,
+      "elapsed_ms": 15.72,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 2,
+      "elapsed_ms": 17.01,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 3,
+      "elapsed_ms": 38.8,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 4,
+      "elapsed_ms": 8.21,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 5,
+      "elapsed_ms": 8.47,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 6,
+      "elapsed_ms": 8.49,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 7,
+      "elapsed_ms": 10.58,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 8,
+      "elapsed_ms": 6.13,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 9,
+      "elapsed_ms": 21.79,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 10,
+      "elapsed_ms": 12.78,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 11,
+      "elapsed_ms": 37.2,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 12,
+      "elapsed_ms": 13.6,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 13,
+      "elapsed_ms": 17.82,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 14,
+      "elapsed_ms": 19.0,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 15,
+      "elapsed_ms": 38.36,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 16,
+      "elapsed_ms": 9.61,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 17,
+      "elapsed_ms": 11.12,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 18,
+      "elapsed_ms": 16.79,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 19,
+      "elapsed_ms": 5.94,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 0,
+      "elapsed_ms": 8.86,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 1,
+      "elapsed_ms": 8.95,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 2,
+      "elapsed_ms": 8.44,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 3,
+      "elapsed_ms": 7.55,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 4,
+      "elapsed_ms": 21.01,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 5,
+      "elapsed_ms": 26.61,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 6,
+      "elapsed_ms": 11.81,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 7,
+      "elapsed_ms": 8.23,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 8,
+      "elapsed_ms": 6.53,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 9,
+      "elapsed_ms": 7.0,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 10,
+      "elapsed_ms": 7.99,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 11,
+      "elapsed_ms": 7.77,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 12,
+      "elapsed_ms": 37.88,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 13,
+      "elapsed_ms": 23.31,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 14,
+      "elapsed_ms": 15.7,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 15,
+      "elapsed_ms": 43.63,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 16,
+      "elapsed_ms": 14.69,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 17,
+      "elapsed_ms": 20.86,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 18,
+      "elapsed_ms": 20.21,
+      "ok": true
+    },
+    {
+      "location": "tmpfs",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 19,
+      "elapsed_ms": 40.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 0,
+      "elapsed_ms": 235.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 1,
+      "elapsed_ms": 313.73,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 2,
+      "elapsed_ms": 83.5,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 3,
+      "elapsed_ms": 31.67,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 4,
+      "elapsed_ms": 112.11,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 5,
+      "elapsed_ms": 240.42,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 6,
+      "elapsed_ms": 37.12,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 7,
+      "elapsed_ms": 17.82,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 8,
+      "elapsed_ms": 51.03,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 9,
+      "elapsed_ms": 107.08,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 10,
+      "elapsed_ms": 81.71,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 11,
+      "elapsed_ms": 41.06,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 12,
+      "elapsed_ms": 243.97,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 13,
+      "elapsed_ms": 343.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 14,
+      "elapsed_ms": 25.64,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 15,
+      "elapsed_ms": 59.86,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 16,
+      "elapsed_ms": 113.9,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 17,
+      "elapsed_ms": 290.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 18,
+      "elapsed_ms": 64.57,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "iteration": 19,
+      "elapsed_ms": 46.13,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 0,
+      "elapsed_ms": 60.21,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 1,
+      "elapsed_ms": 19.3,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 2,
+      "elapsed_ms": 30.16,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 3,
+      "elapsed_ms": 11.54,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 4,
+      "elapsed_ms": 32.01,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 5,
+      "elapsed_ms": 18.2,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 6,
+      "elapsed_ms": 20.59,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 7,
+      "elapsed_ms": 17.95,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 8,
+      "elapsed_ms": 42.11,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 9,
+      "elapsed_ms": 25.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 10,
+      "elapsed_ms": 15.61,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 11,
+      "elapsed_ms": 19.86,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 12,
+      "elapsed_ms": 8.75,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 13,
+      "elapsed_ms": 54.07,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 14,
+      "elapsed_ms": 27.9,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 15,
+      "elapsed_ms": 53.1,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 16,
+      "elapsed_ms": 21.84,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 17,
+      "elapsed_ms": 30.21,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 18,
+      "elapsed_ms": 54.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "iteration": 19,
+      "elapsed_ms": 27.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 0,
+      "elapsed_ms": 55.79,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 1,
+      "elapsed_ms": 34.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 2,
+      "elapsed_ms": 30.07,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 3,
+      "elapsed_ms": 58.09,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 4,
+      "elapsed_ms": 25.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 5,
+      "elapsed_ms": 51.91,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 6,
+      "elapsed_ms": 27.58,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 7,
+      "elapsed_ms": 26.14,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 8,
+      "elapsed_ms": 23.95,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 9,
+      "elapsed_ms": 53.57,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 10,
+      "elapsed_ms": 22.65,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 11,
+      "elapsed_ms": 12.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 12,
+      "elapsed_ms": 8.87,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 13,
+      "elapsed_ms": 33.51,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 14,
+      "elapsed_ms": 24.53,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 15,
+      "elapsed_ms": 37.87,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 16,
+      "elapsed_ms": 40.06,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 17,
+      "elapsed_ms": 18.75,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 18,
+      "elapsed_ms": 19.05,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery",
+      "iteration": 19,
+      "elapsed_ms": 26.96,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 0,
+      "elapsed_ms": 44.49,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 1,
+      "elapsed_ms": 32.42,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 2,
+      "elapsed_ms": 64.12,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 3,
+      "elapsed_ms": 34.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 4,
+      "elapsed_ms": 66.35,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 5,
+      "elapsed_ms": 61.04,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 6,
+      "elapsed_ms": 45.53,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 7,
+      "elapsed_ms": 21.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 8,
+      "elapsed_ms": 48.82,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 9,
+      "elapsed_ms": 40.19,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 10,
+      "elapsed_ms": 64.15,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 11,
+      "elapsed_ms": 44.9,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 12,
+      "elapsed_ms": 47.36,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 13,
+      "elapsed_ms": 19.11,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 14,
+      "elapsed_ms": 15.49,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 15,
+      "elapsed_ms": 11.61,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 16,
+      "elapsed_ms": 12.08,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 17,
+      "elapsed_ms": 49.88,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 18,
+      "elapsed_ms": 39.25,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery",
+      "iteration": 19,
+      "elapsed_ms": 44.55,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 0,
+      "elapsed_ms": 8.3,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 1,
+      "elapsed_ms": 6.82,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 2,
+      "elapsed_ms": 14.81,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 3,
+      "elapsed_ms": 15.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 4,
+      "elapsed_ms": 13.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 5,
+      "elapsed_ms": 28.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 6,
+      "elapsed_ms": 11.32,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 7,
+      "elapsed_ms": 11.65,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 8,
+      "elapsed_ms": 13.04,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 9,
+      "elapsed_ms": 37.26,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 10,
+      "elapsed_ms": 33.74,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 11,
+      "elapsed_ms": 13.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 12,
+      "elapsed_ms": 10.19,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 13,
+      "elapsed_ms": 6.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 14,
+      "elapsed_ms": 8.6,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 15,
+      "elapsed_ms": 7.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 16,
+      "elapsed_ms": 13.31,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 17,
+      "elapsed_ms": 11.17,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 18,
+      "elapsed_ms": 28.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log",
+      "iteration": 19,
+      "elapsed_ms": 5.88,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 0,
+      "elapsed_ms": 353.22,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 1,
+      "elapsed_ms": 574.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 2,
+      "elapsed_ms": 504.81,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 3,
+      "elapsed_ms": 507.53,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 4,
+      "elapsed_ms": 492.19,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 5,
+      "elapsed_ms": 568.37,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 6,
+      "elapsed_ms": 522.2,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 7,
+      "elapsed_ms": 527.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 8,
+      "elapsed_ms": 559.04,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 9,
+      "elapsed_ms": 553.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 10,
+      "elapsed_ms": 521.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 11,
+      "elapsed_ms": 426.83,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 12,
+      "elapsed_ms": 543.23,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 13,
+      "elapsed_ms": 555.74,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 14,
+      "elapsed_ms": 478.44,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 15,
+      "elapsed_ms": 430.27,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 16,
+      "elapsed_ms": 382.84,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 17,
+      "elapsed_ms": 516.34,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 18,
+      "elapsed_ms": 571.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen",
+      "iteration": 19,
+      "elapsed_ms": 544.5,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 0,
+      "elapsed_ms": 53.88,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 1,
+      "elapsed_ms": 35.04,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 2,
+      "elapsed_ms": 32.17,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 3,
+      "elapsed_ms": 54.11,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 4,
+      "elapsed_ms": 31.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 5,
+      "elapsed_ms": 54.57,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 6,
+      "elapsed_ms": 33.73,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 7,
+      "elapsed_ms": 30.99,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 8,
+      "elapsed_ms": 48.37,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 9,
+      "elapsed_ms": 31.72,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 10,
+      "elapsed_ms": 62.77,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 11,
+      "elapsed_ms": 32.01,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 12,
+      "elapsed_ms": 62.03,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 13,
+      "elapsed_ms": 29.61,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 14,
+      "elapsed_ms": 71.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 15,
+      "elapsed_ms": 28.54,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 16,
+      "elapsed_ms": 63.28,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 17,
+      "elapsed_ms": 40.03,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 18,
+      "elapsed_ms": 23.98,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "iteration": 19,
+      "elapsed_ms": 69.85,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 0,
+      "elapsed_ms": 62.42,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 1,
+      "elapsed_ms": 37.68,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 2,
+      "elapsed_ms": 68.94,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 3,
+      "elapsed_ms": 39.01,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 4,
+      "elapsed_ms": 87.76,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 5,
+      "elapsed_ms": 62.15,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 6,
+      "elapsed_ms": 44.2,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 7,
+      "elapsed_ms": 77.2,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 8,
+      "elapsed_ms": 28.31,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 9,
+      "elapsed_ms": 67.82,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 10,
+      "elapsed_ms": 84.27,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 11,
+      "elapsed_ms": 19.77,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 12,
+      "elapsed_ms": 47.66,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 13,
+      "elapsed_ms": 35.62,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 14,
+      "elapsed_ms": 15.29,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 15,
+      "elapsed_ms": 15.47,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 16,
+      "elapsed_ms": 22.08,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 17,
+      "elapsed_ms": 55.07,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 18,
+      "elapsed_ms": 47.13,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "zero_limit_rejects_all_direct_writes_but_not_transactions_or_reads",
+      "iteration": 19,
+      "elapsed_ms": 52.22,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 0,
+      "elapsed_ms": 84.38,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 1,
+      "elapsed_ms": 97.41,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 2,
+      "elapsed_ms": 71.36,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 3,
+      "elapsed_ms": 73.16,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 4,
+      "elapsed_ms": 72.24,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 5,
+      "elapsed_ms": 46.81,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 6,
+      "elapsed_ms": 74.84,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 7,
+      "elapsed_ms": 81.66,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 8,
+      "elapsed_ms": 69.69,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 9,
+      "elapsed_ms": 40.24,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 10,
+      "elapsed_ms": 65.78,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 11,
+      "elapsed_ms": 62.2,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 12,
+      "elapsed_ms": 90.46,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 13,
+      "elapsed_ms": 58.43,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 14,
+      "elapsed_ms": 84.37,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 15,
+      "elapsed_ms": 48.75,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 16,
+      "elapsed_ms": 72.07,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 17,
+      "elapsed_ms": 48.77,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 18,
+      "elapsed_ms": 76.52,
+      "ok": true
+    },
+    {
+      "location": "workspace",
+      "test": "both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets",
+      "iteration": 19,
+      "elapsed_ms": 70.8,
+      "ok": true
+    }
+  ]
+}

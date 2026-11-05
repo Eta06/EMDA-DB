@@ -1,4 +1,10 @@
 //! Per-open admission for independent, non-transactional write calls.
+//!
+//! Limit and active count occupy separate 16-bit fields in one atomic word.
+//! Acquisition and reconfiguration update both fields with compare-exchange,
+//! so neither can publish a count above the limit. Only a successful acquire
+//! constructs a non-cloneable guard; its drop releases exactly one admission.
+//! The storage locks, not this counter, protect database data.
 use crate::{CheckpointStore, Store};
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
