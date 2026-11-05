@@ -79,12 +79,12 @@ impl IndexValue {
         match actual {
             Value::Null => Some(match self {
                 Self::Null => Ordering::Equal,
-                _ => Ordering::Less,
+                Self::Boolean(_) | Self::Integer(_) | Self::String(_) => Ordering::Less,
             }),
             Value::Bool(actual) => Some(match self {
                 Self::Null => Ordering::Greater,
                 Self::Boolean(expected) => actual.cmp(expected),
-                _ => Ordering::Less,
+                Self::Integer(_) | Self::String(_) => Ordering::Less,
             }),
             Value::Number(actual) => actual.as_i64().map(|actual| match self {
                 Self::Null | Self::Boolean(_) => Ordering::Greater,
@@ -93,9 +93,9 @@ impl IndexValue {
             }),
             Value::String(actual) if actual.len() <= 256 => Some(match self {
                 Self::String(expected) => actual.as_bytes().cmp(expected.as_bytes()),
-                _ => Ordering::Greater,
+                Self::Null | Self::Boolean(_) | Self::Integer(_) => Ordering::Greater,
             }),
-            _ => None,
+            Value::String(_) | Value::Array(_) | Value::Object(_) => None,
         }
     }
 
