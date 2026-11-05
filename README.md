@@ -246,6 +246,8 @@ cargo test --release --locked
 python3 -m unittest discover -s scripts/tests -v
 ```
 
+The scheduled and manually dispatched recovery-fuzz workflow runs every declared fuzz target in one of four independent shards. Each target has a one-minute campaign; a failed target does not prevent the rest of its shard from running, and any reproducer is uploaded under a shard-specific artifact name. These short campaigns complement, rather than replace, longer fault and recovery tests.
+
 Track outstanding foundation and storage work in the [follow-up checklist](docs/FOUNDATION_FOLLOW_UP.md).
 
 Explore the [changelog](CHANGELOG.md), [versioning policy](docs/VERSIONING.md), [architecture](docs/ARCHITECTURE.md), [storage and transaction contract](docs/STORAGE_TRANSACTION_CONTRACT.md), [prioritized roadmap](docs/ROADMAP.md), [competitor feature inventory](docs/COMPETITOR_FEATURES.md), and [benchmark plan and recorded results](docs/BENCHMARKS.md). The recorded measurements reflect their stated test conditions; they are not a general performance ranking. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and verification expectations.

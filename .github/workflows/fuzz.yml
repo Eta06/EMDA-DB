@@ -10,209 +10,252 @@ permissions:
 
 jobs:
   recovery:
-    name: Recovery parser and fail-closed behavior
+    name: Recovery fuzzing / shard ${{ matrix.shard }}
     runs-on: ubuntu-24.04
-    # Thirty-nine sequential campaigns each run for a minute in addition to
-    # toolchain installation and target compilation.
-    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # Each shard runs at most ten one-minute campaigns plus setup and builds.
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install nightly Rust
         run: rustup toolchain install nightly-2026-11-03 --profile minimal
       - name: Install cargo-fuzz
+        id: fuzz_setup
         run: cargo +nightly-2026-11-03 install cargo-fuzz --version 0.13.2 --locked
       - name: Run JSON string input-budget fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/json-string-budget-corpus"
           cp fuzz/json-string-budget-seeds/* "$RUNNER_TEMP/json-string-budget-corpus/"
           cargo +nightly-2026-11-03 fuzz run json_string_budget "$RUNNER_TEMP/json-string-budget-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run document update input budget fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-update-budget-corpus"
           cp fuzz/document-update-budget-seeds/* "$RUNNER_TEMP/document-update-budget-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_update_budget "$RUNNER_TEMP/document-update-budget-corpus" -- -max_total_time=60 -max_len=16 -timeout=10
       - name: Run document scalar update model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-scalar-update-corpus"
           cp fuzz/document-scalar-update-seeds/* "$RUNNER_TEMP/document-scalar-update-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_scalar_updates "$RUNNER_TEMP/document-scalar-update-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run transaction budget model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/transaction-budget-limit-corpus"
           cp fuzz/transaction-budget-limit-seeds/* "$RUNNER_TEMP/transaction-budget-limit-corpus/"
           cargo +nightly-2026-11-03 fuzz run transaction_budget_limit "$RUNNER_TEMP/transaction-budget-limit-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document statistics model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-aggregate-stats-corpus"
           cp fuzz/document-aggregate-stats-seeds/* "$RUNNER_TEMP/document-aggregate-stats-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_aggregate_stats "$RUNNER_TEMP/document-aggregate-stats-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run coverage-guided recovery fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/recovery-corpus"
           cp fuzz/seeds/* "$RUNNER_TEMP/recovery-corpus/"
           cargo +nightly-2026-11-03 fuzz run recovery "$RUNNER_TEMP/recovery-corpus" -- -max_total_time=60 -max_len=8192 -timeout=10
       - name: Run checkpoint parser fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-corpus"
           cp fuzz/checkpoint-seeds/* "$RUNNER_TEMP/checkpoint-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint "$RUNNER_TEMP/checkpoint-corpus" -- -max_total_time=60 -max_len=8192 -timeout=10
       - name: Run checkpoint view limits model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-view-limits-corpus"
           cp fuzz/checkpoint-view-limits-seeds/* "$RUNNER_TEMP/checkpoint-view-limits-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_view_limits "$RUNNER_TEMP/checkpoint-view-limits-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run checkpoint index ordering fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-order-corpus"
           cp fuzz/checkpoint-order-seeds/* "$RUNNER_TEMP/checkpoint-order-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_order "$RUNNER_TEMP/checkpoint-order-corpus" -- -max_total_time=60 -max_len=1025 -timeout=10
       - name: Run read-set transaction model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/transaction-read-set-corpus"
           cp fuzz/transaction-read-set-seeds/* "$RUNNER_TEMP/transaction-read-set-corpus/"
           cargo +nightly-2026-11-03 fuzz run transaction_read_set "$RUNNER_TEMP/transaction-read-set-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
       - name: Run controlled transaction model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/controlled-transaction-corpus"
           cp fuzz/controlled-transaction-seeds/* "$RUNNER_TEMP/controlled-transaction-corpus/"
           cargo +nightly-2026-11-03 fuzz run controlled_transactions "$RUNNER_TEMP/controlled-transaction-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run live-key byte limit model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/key-byte-limit-corpus"
           cp fuzz/key-byte-limit-seeds/* "$RUNNER_TEMP/key-byte-limit-corpus/"
           cargo +nightly-2026-11-03 fuzz run key_byte_limit "$RUNNER_TEMP/key-byte-limit-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run log limit model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/log-limit-corpus"
           cp fuzz/log-limit-seeds/* "$RUNNER_TEMP/log-limit-corpus/"
           cargo +nightly-2026-11-03 fuzz run log_limit "$RUNNER_TEMP/log-limit-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run recovered checkpoint ordering fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/recovered-view-order-corpus"
           cp fuzz/checkpoint-order-seeds/* "$RUNNER_TEMP/recovered-view-order-corpus/"
           cargo +nightly-2026-11-03 fuzz run recovered_view_order "$RUNNER_TEMP/recovered-view-order-corpus" -- -max_total_time=60 -max_len=1025 -timeout=10
       - name: Run read-only recovery limits model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/readonly-recovery-limits-corpus"
           cp fuzz/readonly-recovery-limits-seeds/* "$RUNNER_TEMP/readonly-recovery-limits-corpus/"
           cargo +nightly-2026-11-03 fuzz run readonly_recovery_limits "$RUNNER_TEMP/readonly-recovery-limits-corpus" -- -max_total_time=60 -max_len=16 -timeout=10
       - name: Run writable checkpoint model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-store-corpus"
           cp fuzz/checkpoint-store-seeds/* "$RUNNER_TEMP/checkpoint-store-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_store "$RUNNER_TEMP/checkpoint-store-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run checkpoint point read-set model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-read-set-corpus"
           cp fuzz/checkpoint-read-set-seeds/* "$RUNNER_TEMP/checkpoint-read-set-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_read_set "$RUNNER_TEMP/checkpoint-read-set-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
       - name: Run writable checkpoint recovery fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-recovery-corpus"
           cp fuzz/checkpoint-recovery-seeds/* "$RUNNER_TEMP/checkpoint-recovery-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_recovery "$RUNNER_TEMP/checkpoint-recovery-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
       - name: Run streamed backup restore fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/backup-restore-corpus"
           cp fuzz/backup-restore-seeds/* "$RUNNER_TEMP/backup-restore-corpus/"
           cargo +nightly-2026-11-03 fuzz run backup_restore "$RUNNER_TEMP/backup-restore-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
       - name: Run managed checkpoint model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/managed-checkpoint-corpus"
           cp fuzz/managed-checkpoint-seeds/* "$RUNNER_TEMP/managed-checkpoint-corpus/"
           cargo +nightly-2026-11-03 fuzz run managed_checkpoint "$RUNNER_TEMP/managed-checkpoint-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run automatic checkpoint model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/automatic-checkpoint-corpus"
           cp fuzz/automatic-checkpoint-seeds/* "$RUNNER_TEMP/automatic-checkpoint-corpus/"
           cargo +nightly-2026-11-03 fuzz run automatic_checkpoint "$RUNNER_TEMP/automatic-checkpoint-corpus" -- -max_total_time=60 -max_len=128 -timeout=10
       - name: Run compacted-store exchange model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/compact-exchange-corpus"
           cp fuzz/compact-exchange-seeds/* "$RUNNER_TEMP/compact-exchange-corpus/"
           cargo +nightly-2026-11-03 fuzz run compact_exchange "$RUNNER_TEMP/compact-exchange-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document transaction and index model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-model-corpus"
           cp fuzz/document-model-seeds/* "$RUNNER_TEMP/document-model-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_model "$RUNNER_TEMP/document-model-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Run checkpoint-store exchange model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-exchange-corpus"
           cp fuzz/checkpoint-exchange-seeds/* "$RUNNER_TEMP/checkpoint-exchange-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_exchange "$RUNNER_TEMP/checkpoint-exchange-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Run background checkpoint worker model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/checkpoint-worker-corpus"
           cp fuzz/checkpoint-worker-seeds/* "$RUNNER_TEMP/checkpoint-worker-corpus/"
           cargo +nightly-2026-11-03 fuzz run checkpoint_worker "$RUNNER_TEMP/checkpoint-worker-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Run resumable document index model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-online-index-corpus"
           cp fuzz/document-online-index-seeds/* "$RUNNER_TEMP/document-online-index-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_online_index "$RUNNER_TEMP/document-online-index-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Run resumable document schema model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-schema-migration-corpus"
           cp fuzz/document-schema-migration-seeds/* "$RUNNER_TEMP/document-schema-migration-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_schema_migration "$RUNNER_TEMP/document-schema-migration-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Run online-compaction model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/online-compaction-corpus"
           cp fuzz/online-compaction-seeds/* "$RUNNER_TEMP/online-compaction-corpus/"
           cargo +nightly-2026-11-03 fuzz run online_compaction "$RUNNER_TEMP/online-compaction-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run background reclamation worker model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/online-reclamation-worker-corpus"
           cp fuzz/online-reclamation-worker-seeds/* "$RUNNER_TEMP/online-reclamation-worker-corpus/"
           cargo +nightly-2026-11-03 fuzz run online_reclamation_worker "$RUNNER_TEMP/online-reclamation-worker-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
       - name: Run shared-snapshot model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/shared-snapshot-corpus"
           cp fuzz/shared-snapshot-seeds/* "$RUNNER_TEMP/shared-snapshot-corpus/"
           cargo +nightly-2026-11-03 fuzz run shared_snapshot "$RUNNER_TEMP/shared-snapshot-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document array update model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-array-update-corpus"
           cp fuzz/document-array-update-seeds/* "$RUNNER_TEMP/document-array-update-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_array_update "$RUNNER_TEMP/document-array-update-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document array query model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-array-query-corpus"
           cp fuzz/document-array-query-seeds/* "$RUNNER_TEMP/document-array-query-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_array_queries "$RUNNER_TEMP/document-array-query-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document membership index-union model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-membership-union-corpus"
           cp fuzz/document-membership-union-seeds/* "$RUNNER_TEMP/document-membership-union-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_membership_union "$RUNNER_TEMP/document-membership-union-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document partial planner differential fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-partial-planner-corpus"
           cp fuzz/document-partial-planner-seeds/* "$RUNNER_TEMP/document-partial-planner-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_partial_planner "$RUNNER_TEMP/document-partial-planner-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document membership model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-membership-corpus"
           cp fuzz/document-membership-seeds/* "$RUNNER_TEMP/document-membership-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_membership "$RUNNER_TEMP/document-membership-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document compound range differential fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-compound-range-corpus"
           cp fuzz/document-compound-range-seeds/* "$RUNNER_TEMP/document-compound-range-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_compound_range "$RUNNER_TEMP/document-compound-range-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document compound planner differential fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-compound-planner-corpus"
           cp fuzz/document-compound-planner-seeds/* "$RUNNER_TEMP/document-compound-planner-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_compound_planner "$RUNNER_TEMP/document-compound-planner-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document range planner differential fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-range-planner-corpus"
           cp fuzz/document-range-planner-seeds/* "$RUNNER_TEMP/document-range-planner-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_range_planner "$RUNNER_TEMP/document-range-planner-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Run document query planner differential fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |
           mkdir -p "$RUNNER_TEMP/document-query-planner-corpus"
           cp fuzz/document-query-planner-seeds/* "$RUNNER_TEMP/document-query-planner-corpus/"
@@ -221,6 +264,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: recovery-fuzz-reproducer
+          name: recovery-fuzz-reproducer-${{ matrix.shard }}
           path: fuzz/artifacts/
           if-no-files-found: ignore
