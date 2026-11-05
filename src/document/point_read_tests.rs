@@ -253,6 +253,100 @@ fn checkpoint_drop_does_not_publish_completion_for_a_skipped_range() {
 }
 
 #[test]
+fn checkpoint_cursor_starts_on_a_full_page_but_not_a_short_page() {
+    for (limit, expected_version, expect_cursor) in [(2, 4, true), (3, 3, false)] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("checkpoint");
+        let store = Store::open(&path).unwrap();
+        let db = DocumentDatabase::new(&store);
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.insert("c", "a", &json!({})).unwrap();
+        db.insert("c", "b", &json!({})).unwrap();
+        db.start_collection_drop("c").unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        drop(store);
+        let store = crate::test_support::retry_lock(|| {
+            crate::CheckpointStore::open(&path, &checkpoint, &digest)
+        })
+        .unwrap();
+        let db = DocumentDatabase::with_checkpoint_store(&store);
+        let step = db.advance_collection_drop("c", limit).unwrap();
+        assert_eq!((step.removed, step.complete), (2, false));
+        let metadata: Value = serde_json::from_slice(
+            &store
+                .get(&key::collection(b'M', "c").unwrap())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["version"], json!(expected_version));
+        assert_eq!(
+            store
+                .get(&key::collection(b'P', "c").unwrap())
+                .unwrap()
+                .is_some(),
+            expect_cursor
+        );
+        assert!(db.advance_collection_drop("c", limit).unwrap().complete);
+    }
+}
+
+#[test]
+fn checkpoint_drop_keeps_going_after_a_byte_limited_short_page() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    let db = DocumentDatabase::new(&store);
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    let payload = "x".repeat(1_000_000);
+    for id in 0..34 {
+        db.insert(
+            "c",
+            &format!("{id:02}"),
+            &json!({"payload":payload.as_str()}),
+        )
+        .unwrap();
+    }
+    db.start_collection_drop("c").unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let store = crate::test_support::retry_lock(|| {
+        crate::CheckpointStore::open(&path, &checkpoint, &digest)
+    })
+    .unwrap();
+    let db = DocumentDatabase::with_checkpoint_store(&store);
+    let first = db.advance_collection_drop("c", 64).unwrap();
+    assert!(!first.complete && first.removed > 0 && first.removed < 34);
+    let metadata: Value = serde_json::from_slice(
+        &store
+            .get(&key::collection(b'M', "c").unwrap())
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata["version"], json!(3));
+    assert!(
+        store
+            .get(&key::collection(b'P', "c").unwrap())
+            .unwrap()
+            .is_none()
+    );
+    let mut removed = first.removed;
+    loop {
+        let step = db.advance_collection_drop("c", 64).unwrap();
+        removed += step.removed;
+        if step.complete {
+            break;
+        }
+    }
+    assert_eq!(removed, 34);
+}
+
+#[test]
 fn previous_drop_marker_without_a_cursor_resumes_after_reopening() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");

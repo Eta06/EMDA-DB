@@ -129,8 +129,8 @@ impl DocumentTransaction<'_, '_> {
 
     /// Removes at most 128 keys in one transaction. A short nonempty scan is
     /// never interpreted as exhaustion because the scan byte cap may stop it.
-    /// Checkpoint-backed steps atomically persist a progress cursor. Once all
-    /// three namespaces are verified empty, the metadata is atomically removed.
+    /// A full checkpoint-backed page starts an atomically persisted progress
+    /// cursor. Once all namespaces are verified empty, metadata is removed.
     pub fn advance_collection_drop(
         &mut self,
         collection: &str,
@@ -178,8 +178,8 @@ impl DocumentTransaction<'_, '_> {
                 let rows = this.scan(after, &key::end(&prefix), limit)?;
                 if !rows.is_empty() {
                     let removed = rows.len();
-                    let next_cursor = this
-                        .checkpoint_backed()
+                    let next_cursor = (this.checkpoint_backed()
+                        && (cursor.is_some() || rows.len() == limit))
                         .then(|| rows.last().expect("nonempty rows").0.clone());
                     for (key, _) in rows {
                         this.remove(&key)?;
