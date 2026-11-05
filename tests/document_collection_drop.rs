@@ -3,7 +3,11 @@ use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, IndexDefinition, Store,
 };
 use serde_json::json;
-use std::{io, sync::mpsc, thread};
+use std::{
+    io,
+    sync::{Barrier, mpsc},
+    thread,
+};
 use support::retry_lock;
 
 fn index() -> IndexDefinition {
@@ -237,6 +241,87 @@ fn race_old_transaction(db: &DocumentDatabase<'_>) {
         }
     }
     assert_eq!(removed, 1);
+}
+
+fn concurrent_drop_workers(db: &DocumentDatabase<'_>) {
+    prepare(db);
+    start_and_check(db);
+    let barrier = Barrier::new(4);
+    let results = thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let mut removed = 0;
+                    barrier.wait();
+                    for _ in 0..20_000 {
+                        match db.advance_collection_drop("c", 7) {
+                            Ok(step) => {
+                                removed += step.removed;
+                                if step.complete {
+                                    return (removed, true);
+                                }
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                thread::yield_now()
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                                return (removed, false);
+                            }
+                            Err(error) => panic!("unexpected collection-drop error: {error}"),
+                        }
+                    }
+                    panic!("workers did not complete the collection drop");
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(results.iter().map(|result| result.0).sum::<usize>(), 807);
+    assert_eq!(results.iter().filter(|result| result.1).count(), 1);
+    assert_eq!(
+        db.get("c", "0").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        db.get("neighbor", "id").unwrap(),
+        Some(json!({"safe":true}))
+    );
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index("c", index()).unwrap();
+    db.insert("c", "new", &json!({"n":0})).unwrap();
+    assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
+}
+
+#[test]
+fn concurrent_drop_workers_commit_each_key_once_on_both_backends() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ordinary");
+    let store = Store::open(&path).unwrap();
+    concurrent_drop_workers(&DocumentDatabase::new(&store));
+    drop(store);
+    let reopened = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        DocumentDatabase::new(&reopened).get("c", "new").unwrap(),
+        Some(json!({"n":0}))
+    );
+    let path = root.path().join("checkpoint-store");
+    let base = root.path().join("checkpoint");
+    let initial = Store::open(&path).unwrap();
+    let digest = initial.checkpoint_to(&base).unwrap();
+    drop(initial);
+    let store = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+    concurrent_drop_workers(&DocumentDatabase::with_checkpoint_store(&store));
+    drop(store);
+    let reopened = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        DocumentDatabase::new(&reopened).get("c", "new").unwrap(),
+        Some(json!({"n":0}))
+    );
 }
 
 #[test]
