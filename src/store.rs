@@ -73,6 +73,7 @@ pub struct Store {
     // snapshot is complete; writers share it while the coordinator batches.
     writes: crate::controlled_lock::ControlledRwLock<()>,
     pub(crate) direct_writes: crate::direct_write::DirectWrites,
+    pub(crate) direct_reads: crate::direct_read::DirectReads,
     commits: Coordinator,
     log_quota: Option<LogQuota>,
     max_live_keys: Option<usize>,
@@ -280,6 +281,7 @@ impl Store {
             }),
             writes: crate::controlled_lock::ControlledRwLock::new(()),
             direct_writes: crate::direct_write::DirectWrites::default(),
+            direct_reads: crate::direct_read::DirectReads::default(),
             commits: Coordinator::new(),
             log_quota: None,
             max_live_keys: None,
@@ -297,6 +299,14 @@ impl Store {
     /// Reads a value by key, returning `None` if the key is absent.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
+        let _admission = self.direct_reads.acquire()?;
+        self.get_validated(key)
+    }
+
+    // Callers have already validated the key. Internal read-modify-write
+    // operations use this path so direct-read saturation cannot prevent a
+    // separately admitted write from inspecting its current value.
+    fn get_validated(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let inner = self.read()?;
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -324,6 +334,7 @@ impl Store {
         for key in keys {
             record::validate_key(key)?;
         }
+        let _admission = self.direct_reads.acquire()?;
         let inner = self.read()?;
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -370,6 +381,7 @@ impl Store {
                 "scan limit must be between 1 and 1024",
             ));
         }
+        let _admission = self.direct_reads.acquire()?;
         let inner = self.read()?;
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -433,7 +445,7 @@ impl Store {
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        if self.get(key)?.as_deref() != expected {
+        if self.get_validated(key)?.as_deref() != expected {
             return Ok(false);
         }
         self.commit_limited(operation, key, value)?;
@@ -453,7 +465,7 @@ impl Store {
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        let current = match self.get(key)? {
+        let current = match self.get_validated(key)? {
             None => 0,
             Some(bytes) => {
                 let array: [u8; 8] = bytes.try_into().map_err(|_| {
