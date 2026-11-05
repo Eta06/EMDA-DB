@@ -251,3 +251,33 @@ fn concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recov
         }
     }
 }
+
+#[test]
+fn encoded_record_byte_limit_accepts_exact_boundary_and_rejects_one_less() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let store = Store::open(&path).unwrap();
+    let before = fs::metadata(path.join("records.log")).unwrap().len();
+    store.put(b"key", b"value").unwrap();
+    let after = fs::metadata(path.join("records.log")).unwrap().len();
+    let encoded = usize::try_from(after - before).unwrap();
+    store.set_group_commit_limits(encoded - 1, 1).unwrap();
+    assert_eq!(
+        store.put(b"key", b"other").unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+    assert_eq!(fs::metadata(path.join("records.log")).unwrap().len(), after);
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+    store.set_group_commit_limits(encoded, 1).unwrap();
+    store.put(b"key", b"other").unwrap();
+    assert_eq!(
+        fs::metadata(path.join("records.log")).unwrap().len(),
+        after + encoded as u64
+    );
+    drop(store);
+    let reopened = retry_lock(|| Store::open(&path)).unwrap();
+    assert_eq!(
+        reopened.get(b"key").unwrap().as_deref(),
+        Some(&b"other"[..])
+    );
+}
