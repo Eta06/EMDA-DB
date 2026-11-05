@@ -34,9 +34,9 @@ fn value(byte: u8) -> Value {
         2 => json!(i64::from(byte % 3)),
         3 => json!(1.0),
         4 => json!("a"),
-        5 => json!({"x":1}),
+        5 => json!({"x": byte % 3, "y": (byte / 3) % 3}),
         6 => json!([1, 2]),
-        _ => json!("b"),
+        _ => json!({"y": byte % 3}),
     }
 }
 fn document(id: u8, byte: u8) -> Value {
@@ -114,7 +114,7 @@ fuzz_target!(|data: &[u8]| {
             .collect::<Vec<_>>();
         let needle = value(bytes[2]);
         let length = usize::from(bytes[2] % 6);
-        let mode = bytes[0] % 4;
+        let mode = bytes[0] % 6;
         let field = vec!["tags".into()];
         let mut filter = match mode {
             0 => DocumentFilter::ArrayContains {
@@ -129,9 +129,29 @@ fuzz_target!(|data: &[u8]| {
                 path: field,
                 values: needles.clone(),
             },
-            _ => DocumentFilter::ArrayLength {
+            3 => DocumentFilter::ArrayLength {
                 path: field,
                 length,
+            },
+            4 => DocumentFilter::ArrayElementMatch {
+                path: field,
+                filter: Box::new(DocumentFilter::And(vec![
+                    DocumentFilter::Equal {
+                        path: vec!["x".into()],
+                        value: json!(bytes[2] % 3),
+                    },
+                    DocumentFilter::Equal {
+                        path: vec!["y".into()],
+                        value: json!(bytes[3] % 3),
+                    },
+                ])),
+            },
+            _ => DocumentFilter::ArrayElementMatch {
+                path: field,
+                filter: Box::new(DocumentFilter::Not(Box::new(DocumentFilter::Exists {
+                    path: vec!["x".into()],
+                    exists: true,
+                }))),
             },
         };
         let negate = bytes[3] & 4 != 0;
@@ -162,7 +182,16 @@ fuzz_target!(|data: &[u8]| {
                         0 => array.contains(&needle),
                         1 => needles.iter().any(|needle| array.contains(needle)),
                         2 => needles.iter().all(|needle| array.contains(needle)),
-                        _ => array.len() == length,
+                        3 => array.len() == length,
+                        4 => array.iter().any(|element| {
+                            element.as_object().is_some_and(|object| {
+                                object.get("x") == Some(&json!(bytes[2] % 3))
+                                    && object.get("y") == Some(&json!(bytes[3] % 3))
+                            })
+                        }),
+                        _ => array.iter().any(|element| {
+                            element.as_object().is_some_and(|object| !object.contains_key("x"))
+                        }),
                     },
                 };
                 ((matches ^ negate) && (!indexed || *row_id == id)).then(|| row_id.to_string())

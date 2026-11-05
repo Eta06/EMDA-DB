@@ -11,13 +11,16 @@ pub(super) const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
 const MAX_FILTER_VALUES: usize = 256;
 const MAX_FILTER_INPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FILTER_COMPARISONS: usize = 1_000_000;
+const MAX_FILTER_ARRAY_ELEMENT_VISITS: usize = 1_000_000;
 
 /// A filter evaluated against object paths. Missing never equals null. Paths
 /// traverse objects only. Array predicates match only an array at the path;
 /// values use exact `serde_json` equality, including nested values. Across one
 /// filter, equality, membership and array predicates accept at most 256 values
 /// and 4 MiB of their encoded JSON. A query fails after 1,000,000 comparisons
-/// across its evaluated documents; these are not total memory or time bounds.
+/// across its evaluated documents. Array element matching additionally accepts
+/// at most 1,000,000 element visits per query, including non-object elements.
+/// These are not total memory or time bounds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DocumentFilter {
     /// Match all documents.
@@ -51,6 +54,13 @@ pub enum DocumentFilter {
     },
     /// Match an array with exactly this number of elements.
     ArrayLength { path: Vec<String>, length: usize },
+    /// Match when one object element satisfies `filter` relative to that object.
+    /// Missing, null, non-array and empty values never match. Non-object array
+    /// elements are skipped, including when the nested filter is negated.
+    ArrayElementMatch {
+        path: Vec<String>,
+        filter: Box<DocumentFilter>,
+    },
     /// Compare indexable scalars by the documented index ordering.
     Compare {
         path: Vec<String>,
@@ -144,6 +154,7 @@ struct FilterValueBudget {
     values: usize,
     bytes: usize,
     comparisons: usize,
+    array_element_visits: usize,
 }
 
 impl Write for FilterValueBudget {
@@ -165,6 +176,17 @@ impl Write for FilterValueBudget {
 }
 
 impl FilterValueBudget {
+    fn visit_array_element(&mut self) -> io::Result<()> {
+        self.array_element_visits = self
+            .array_element_visits
+            .checked_add(1)
+            .ok_or_else(|| key::invalid("array element visit limit exceeded"))?;
+        if self.array_element_visits > MAX_FILTER_ARRAY_ELEMENT_VISITS {
+            return Err(key::invalid("array element visit limit exceeded"));
+        }
+        Ok(())
+    }
+
     fn add_values<'a>(&mut self, values: impl IntoIterator<Item = &'a Value>) -> io::Result<()> {
         for value in values {
             self.values = self
@@ -235,6 +257,10 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
                 value_budget.add_values(values)?;
             }
             DocumentFilter::ArrayLength { path, .. } => schema::validate_path(path)?,
+            DocumentFilter::ArrayElementMatch { path, filter } => {
+                schema::validate_path(path)?;
+                pending.push((filter, depth + 1));
+            }
             DocumentFilter::Compare { path, value, .. } => {
                 schema::validate_path(path)?;
                 value.encode(&mut Vec::new())?;
@@ -315,6 +341,19 @@ fn matches(
         DocumentFilter::ArrayLength { path, length } => schema::field(document, path)
             .and_then(Value::as_array)
             .is_some_and(|array| array.len() == *length),
+        DocumentFilter::ArrayElementMatch { path, filter } => {
+            let mut found = false;
+            if let Some(array) = schema::field(document, path).and_then(Value::as_array) {
+                for element in array {
+                    value_budget.visit_array_element()?;
+                    if element.is_object() && matches(filter, element, value_budget)? {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            found
+        }
         DocumentFilter::Compare {
             path,
             comparison,
