@@ -173,6 +173,19 @@ impl OnlineStore {
         Self::open_with_resource_limits(path, None, None, None)
     }
 
+    /// Enables direct key-value read admission before sharing this handle.
+    /// Exclusive access prevents any earlier untracked callback from running.
+    pub fn enable_direct_read_limit(&mut self, limit: usize) -> io::Result<()> {
+        let state = self.state.get_mut().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        let store = Arc::get_mut(&mut state.store).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::WouldBlock, "online store is still shared")
+        })?;
+        store.enable_direct_read_limit(limit)
+    }
+
     /// Opens with the ordinary store's per-open logical limits.
     pub fn open_with_resource_limits(
         path: impl AsRef<Path>,
@@ -437,7 +450,7 @@ impl OnlineStore {
         let original_key_limit = current.max_live_keys;
         let original_key_bytes = current.max_live_key_bytes;
         super::compact::close_private_store(target)?;
-        let candidate = Store::open_with_resource_limits(
+        let mut candidate = Store::open_with_resource_limits(
             stage.path(),
             original_log_limit,
             original_key_limit,
@@ -448,6 +461,9 @@ impl OnlineStore {
         candidate
             .set_active_transaction_limit(current.transaction_budget_status()?.active_limit)?;
         candidate.set_active_direct_write_limit(current.direct_write_status().limit)?;
+        if let Some(limit) = current.direct_read_status().limit {
+            candidate.enable_direct_read_limit(limit)?;
+        }
         let group_limits = current.group_commit_status()?;
         candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
         crate::directory::verify_lock_identity(&source, &current._lock_file)?;

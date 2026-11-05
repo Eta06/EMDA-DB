@@ -96,6 +96,7 @@ pub struct CheckpointStore {
     log: Log,
     state: ControlledRwLock<State>,
     pub(crate) direct_writes: crate::direct_write::DirectWrites,
+    pub(crate) direct_reads: crate::direct_read::DirectReads,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: crate::store::TransactionQueue,
     snapshot_budget: Mutex<snapshot::SnapshotBudget>,
@@ -401,6 +402,7 @@ impl CheckpointStore {
                 automatic,
             }),
             direct_writes: crate::direct_write::DirectWrites::default(),
+            direct_reads: crate::direct_read::DirectReads::default(),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: crate::store::TransactionQueue::new(),
             snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
@@ -434,6 +436,8 @@ impl CheckpointStore {
 
     /// Reads a key from the verified checkpoint and committed overlay.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        record::validate_key(key)?;
+        let _admission = self.direct_reads.acquire()?;
         self.read()?.view.get(key)
     }
 
@@ -449,6 +453,7 @@ impl CheckpointStore {
         for key in keys {
             record::validate_key(key)?;
         }
+        let _admission = self.direct_reads.acquire()?;
         let state = self.read()?;
         let mut size = 0_usize;
         let mut locations = Vec::with_capacity(keys.len());
@@ -479,6 +484,16 @@ impl CheckpointStore {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        for key in [after, before].into_iter().flatten() {
+            record::validate_key(key)?;
+        }
+        if limit == 0 || limit > MAX_SCAN_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "scan limit must be between 1 and 1024",
+            ));
+        }
+        let _admission = self.direct_reads.acquire()?;
         self.read()?.view.scan(after, before, limit)
     }
 
