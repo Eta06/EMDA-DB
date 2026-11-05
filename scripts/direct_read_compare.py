@@ -30,12 +30,13 @@ def main():
     p.add_argument("--output", required=True)
     p.add_argument("--rounds", type=int, default=4)
     p.add_argument("--operations", type=int, default=2000)
+    p.add_argument("--read-operations", type=int, default=30000)
     p.add_argument("--include-limited", action="store_true", help="also measure the candidate with read admission enabled")
     a = p.parse_args()
     allowed = sorted(os.sched_getaffinity(0))
     if (not Path(a.directory).is_dir() or not Path(a.before).is_file() or not Path(a.after).is_file()
             or os.path.lexists(a.output) or len(allowed) < 2 or not 2 <= a.rounds <= 50
-            or not 100 <= a.operations <= 100000):
+            or not 100 <= a.operations <= 100000 or not 100 <= a.read_operations <= 100000):
         p.error("invalid paths, CPU availability, rounds or operation count")
     baseline = subprocess.check_output(["git", "rev-parse", "--verify", a.baseline_revision + "^{commit}"], text=True).strip()
     workers, driver = allowed[:min(4, len(allowed) - 1)], allowed[-1]
@@ -53,7 +54,8 @@ def main():
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", a.directory, "-o", "TARGET,FSTYPE"], text=True)),
         "scope": "Rotated fresh processes, one or four closed-loop clients, 16 existing keys and 64-byte values, read-only or 50% writes. Candidate default admission is disabled; when requested a separate variant enables the maximum admission limit. Writes synchronize before acknowledgement in all versions; returned data and sampled reopen values are checked. Results contain per-run latency summaries, not individual samples. Setup/reopen are outside timed operations but within telemetry. No checkpoint-store, saturation, total-memory, physical-power-loss or off-host comparison.",
         "include_limited": a.include_limited,
-        "rounds": a.rounds, "operations_per_client": a.operations, "runs": [], "failures": []}
+        "rounds": a.rounds, "mixed_operations_per_client": a.operations,
+        "read_operations_per_client": a.read_operations, "runs": [], "failures": []}
     output = Path(a.output)
     with output.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2)
@@ -62,23 +64,24 @@ def main():
         cases = [(1, 0), (1, 50), (4, 0), (4, 50)]
         rotation = round_index % len(cases)
         for index, (clients, write_pct) in enumerate(cases[rotation:] + cases[:rotation]):
+            operations = a.read_operations if write_pct == 0 else a.operations
             variants = [("before", a.before, "prototype"), ("after", a.after, "prototype")]
             if a.include_limited:
                 variants.append(("after_limited", a.after, "prototype-read-limited"))
             order = (round_index + index) % len(variants)
             variants = variants[order:] + variants[:order]
             for variant, binary, backend in variants:
-                entry = {"variant": variant, "clients": clients, "write_percent": write_pct, "round": round_index + 1}
+                entry = {"variant": variant, "clients": clients, "write_percent": write_pct, "round": round_index + 1, "operations_per_client": operations}
                 try:
                     entry["pre_run_quiet"] = quiet_window(seconds=.25, attempts=3)
                     before = snapshot()
                     try:
-                        command = ["taskset", "-c", cpus, binary, backend, str(clients), str(a.operations), "16", str(write_pct), a.directory, "64"]
+                        command = ["taskset", "-c", cpus, binary, backend, str(clients), str(operations), "16", str(write_pct), a.directory, "64"]
                         proc = subprocess.run(command, capture_output=True, text=True, timeout=300, check=True)
                         lines = proc.stdout.strip().splitlines()
                         head = fields(lines[0])
                         latency = {line.split(":", 1)[0]: fields(line) for line in lines if line.startswith(("read:", "write:"))}
-                        if (head.get("backend") != backend or int(head.get("completed", 0)) != clients * a.operations
+                        if (head.get("backend") != backend or int(head.get("completed", 0)) != clients * operations
                                 or "verified_reopen=true" not in lines or int(latency["read"]["count"]) == 0):
                             raise ValueError("benchmark identity, reads or recovery check failed")
                         if write_pct == 0 and int(latency["write"]["count"]) != 0:
