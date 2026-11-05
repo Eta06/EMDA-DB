@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an ARM64 Linux VM setup and a designated result directory for the independent Mac mini benchmark; development can continue against other commits while it runs.
+
 - Add an external test-request workflow and a reproducible quieter-host document-query comparison with SQLite, PostgreSQL, and MongoDB.
 
 - Persist a checkpoint-backed collection-deletion cursor after a full page, reducing repeated tombstone scans. The first cursor step upgrades the marked collection to metadata version 4, which older document readers reject; existing version 3 markers still resume. Final deletion verifies all namespaces are empty and removes the cursor atomically with metadata. Cursor records add log bytes and remain subject to the existing limits.

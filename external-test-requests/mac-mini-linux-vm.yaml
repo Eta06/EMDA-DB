@@ -1,0 +1,28 @@
+# Lima VM for request 001. No host directories are mounted.
+# Ubuntu 24.04 avoids the known MongoDB 8 / Linux 7.0.0 startup issue observed
+# by this project's hosted CI. The actual kernel is still recorded by the run.
+base:
+  - template:_images/ubuntu-24.04
+
+mounts: []
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euxo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y ca-certificates curl git docker.io python3-venv build-essential pkg-config util-linux
+      systemctl enable --now docker
+      usermod -aG docker '{{.User}}'
+
+probes:
+  - script: |
+      #!/bin/bash
+      set -euo pipefail
+      timeout 60s bash -c 'until docker --host=unix:///var/run/docker.sock info >/dev/null 2>&1; do sleep 2; done'
+    hint: Docker did not become ready; inspect /var/log/cloud-init-output.log in the VM.

@@ -9,6 +9,11 @@ and investigate the gap between the prototype's indexed reads and SQLite's.
 The previous [VM results](../docs/COMPOUND_RANGE_CURRENT_2026_11_05.md) are a
 baseline, not an expected outcome. Please retain slower and failed runs too.
 
+For the Mac mini, first follow the [Apple silicon VM setup](001-mac-mini.md).
+Run the commands below **inside the Linux VM**, with its test parent on the
+guest's local virtual disk. This is a Linux/ARM64 VM test, not a native macOS
+benchmark.
+
 The test compares one equality-prefix plus numeric-range query with the same
 synthetic documents and expected results on the prototype, SQLite, PostgreSQL,
 and MongoDB. The runner checks results and index plans, reopens the data, rotates
@@ -63,7 +68,7 @@ the time needed to download and build its dependencies.
 
 ```bash
 set -euo pipefail
-export EMDA_TEST_PARENT="$HOME/emda-external-tests"
+export EMDA_TEST_PARENT="${EMDA_TEST_PARENT:-$HOME/emda-external-tests}"
 mkdir -p -- "$EMDA_TEST_PARENT"
 export EMDA_TEST_DIR="$(mktemp -d "$EMDA_TEST_PARENT/emda-range.XXXXXXXX")"
 printf 'Test files and results: %s\n' "$EMDA_TEST_DIR"
