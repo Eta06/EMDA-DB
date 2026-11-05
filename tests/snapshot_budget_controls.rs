@@ -5,6 +5,8 @@ use database_engine::{
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
     MAX_SNAPSHOT_TOTAL_KEY_BYTES, MAX_SNAPSHOT_TOTAL_KEYS, Store,
 };
+#[cfg(target_os = "linux")]
+use database_engine::{OnlineCompactionOptions, OnlineStore};
 use serde_json::json;
 use std::{
     io::ErrorKind,
@@ -310,6 +312,49 @@ fn blocking_handoffs_preserve_configured_limits_but_reopen_resets_them() {
             );
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn online_compaction_rejects_a_zero_snapshot_budget_without_replacing_the_store() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let previous = root.path().join("previous");
+    let store = OnlineStore::open(&path).unwrap();
+    store
+        .with_store(|db| {
+            db.put(b"key", b"value")?;
+            db.set_snapshot_budget_limits(0, 0, 0)
+        })
+        .unwrap();
+    assert!(
+        store
+            .compact_and_replace(&previous, &OnlineCompactionOptions::default())
+            .is_err()
+    );
+    assert!(!previous.exists());
+    assert_eq!(
+        store.with_store(|db| db.get(b"key")).unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+    store
+        .with_store(|db| {
+            db.set_snapshot_budget_limits(1, MAX_SNAPSHOT_TOTAL_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES)
+        })
+        .unwrap();
+    store
+        .compact_and_replace(&previous, &OnlineCompactionOptions::default())
+        .unwrap();
+    assert_eq!(
+        store
+            .with_store(|db| Ok(db.snapshot_budget_status()?.active_limit))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store.with_store(|db| db.get(b"key")).unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
 }
 
 fn exercise_concurrent_budget(
