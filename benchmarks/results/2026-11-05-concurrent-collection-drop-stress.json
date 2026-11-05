@@ -1,0 +1,19 @@
+{
+  "revision": "5e1605f",
+  "binary_sha256": "155ec3cb355ac40065846d8e19edbcd9523599ac5802e3810775e5f796a12500",
+  "scope": "Finite process and thread schedules on one running VM. The workspace overlay backing device is not independently verified; this does not test physical power loss or off-host restore.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "successful": 50,
+      "failures": [],
+      "elapsed_seconds": 4.157
+    },
+    {
+      "filesystem": "overlay",
+      "successful": 50,
+      "failures": [],
+      "elapsed_seconds": 9.36
+    }
+  ]
+}

@@ -7,6 +7,7 @@ use std::{
     io,
     sync::{Barrier, mpsc},
     thread,
+    time::{Duration, Instant},
 };
 use support::retry_lock;
 
@@ -254,7 +255,12 @@ fn concurrent_drop_workers(db: &DocumentDatabase<'_>) {
                 scope.spawn(move || {
                     let mut removed = 0;
                     barrier.wait();
-                    for _ in 0..20_000 {
+                    let deadline = Instant::now() + Duration::from_secs(30);
+                    loop {
+                        assert!(
+                            Instant::now() < deadline,
+                            "workers did not complete the collection drop"
+                        );
                         match db.advance_collection_drop("c", 7) {
                             Ok(step) => {
                                 removed += step.removed;
@@ -271,7 +277,6 @@ fn concurrent_drop_workers(db: &DocumentDatabase<'_>) {
                             Err(error) => panic!("unexpected collection-drop error: {error}"),
                         }
                     }
-                    panic!("workers did not complete the collection drop");
                 })
             })
             .collect();
