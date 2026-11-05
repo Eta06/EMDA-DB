@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add per-open encoded-byte and record-count limits and status for ordinary-store group commit. Limit reductions cannot undercut reservations; waiting writers recheck changed limits. Supported in-process ordinary compaction handoffs preserve the setting, while reopening resets it.
+
 - Extend concurrent document serial-history and recovery checks to include pre-cancellation, cancellation after staging and cancellation racing a transaction.
 
 - Include equality predicates in the shared 256-value, 4 MiB encoded-input and 1,000,000-comparison document-filter budgets. Filters that exceed the combined limits now fail even when an oversized branch would short-circuit; this changes previously accepted queries.
