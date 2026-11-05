@@ -5,9 +5,11 @@ use std::io;
 impl Store {
     /// Reports logical group-commit reservations and capacity waiters.
     ///
-    /// Counts cover encoded records from reservation through acknowledgement,
-    /// including preparation and active batches. They exclude caller buffers,
-    /// threads waiting for other locks, allocator overhead and total memory.
+    /// Counts cover encoded records from reservation through synchronization and
+    /// publication, including preparation and active batches. Reservations
+    /// are released when completion is signalled, before callers necessarily
+    /// return. They exclude caller buffers, threads waiting for other locks,
+    /// allocator overhead and total memory.
     pub fn group_commit_status(&self) -> io::Result<GroupCommitStatus> {
         self.commits.status()
     }

@@ -227,6 +227,13 @@ fn group_fault_case(fault: GroupFault) {
             assert!(store.put(b"later", b"value").is_err());
         }
     }
+    let status = store.group_commit_status().unwrap();
+    if matches!(fault, GroupFault::None) {
+        assert!(!status.failed);
+    } else {
+        assert!(status.failed);
+        assert!(store.set_group_commit_limits(1024, 1).is_err());
+    }
     drop(store);
     let path = dir.path().join("records.log");
     let before = fs::read(&path).unwrap();

@@ -173,3 +173,81 @@ fn compact_handoff_preserves_limits_but_a_later_reopen_resets_them() {
     );
     reopened.put(b"b", b"allowed").unwrap();
 }
+
+#[test]
+fn concurrent_reconfiguration_never_oversubscribes_and_acknowledged_writes_recover() {
+    use std::sync::{
+        Arc, Barrier,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::thread;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let store = Arc::new(Store::open(&path).unwrap());
+    store.set_group_commit_limits(1024, 4).unwrap();
+    let start = Arc::new(Barrier::new(10));
+    let done = Arc::new(AtomicBool::new(false));
+    let mut writers = Vec::new();
+    for id in 0..8 {
+        let store = Arc::clone(&store);
+        let start = Arc::clone(&start);
+        writers.push(thread::spawn(move || {
+            start.wait();
+            for sequence in 0..40 {
+                let key = format!("writer-{id}-{sequence}");
+                store
+                    .put(key.as_bytes(), &[id as u8, sequence as u8])
+                    .unwrap();
+            }
+        }));
+    }
+    let configuring = Arc::clone(&store);
+    let starting = Arc::clone(&start);
+    let finished = Arc::clone(&done);
+    let setter = thread::spawn(move || {
+        starting.wait();
+        let mut attempts = 0_usize;
+        loop {
+            let limit = [1, 2, 4, 8][attempts % 4];
+            if let Err(error) = configuring.set_group_commit_limits(1024, limit) {
+                assert_eq!(error.kind(), ErrorKind::WouldBlock);
+            }
+            let status = configuring.group_commit_status().unwrap();
+            assert!(status.reserved_bytes <= status.limit_bytes);
+            assert!(status.reserved_records <= status.limit_records);
+            assert!(!status.failed);
+            attempts += 1;
+            if finished.load(Ordering::Acquire) {
+                break;
+            }
+            thread::yield_now();
+        }
+        attempts
+    });
+    start.wait();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    done.store(true, Ordering::Release);
+    assert!(setter.join().unwrap() > 0);
+    let status = store.group_commit_status().unwrap();
+    assert_eq!(
+        (
+            status.reserved_bytes,
+            status.reserved_records,
+            status.waiting_writers
+        ),
+        (0, 0, 0)
+    );
+    drop(store);
+    let recovered = retry_lock(|| Store::open(&path)).unwrap();
+    for id in 0..8 {
+        for sequence in 0..40 {
+            let key = format!("writer-{id}-{sequence}");
+            assert_eq!(
+                recovered.get(key.as_bytes()).unwrap().as_deref(),
+                Some(&[id as u8, sequence as u8][..])
+            );
+        }
+    }
+}
