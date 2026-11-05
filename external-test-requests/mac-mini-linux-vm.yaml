@@ -17,8 +17,14 @@ provision:
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
       apt-get install -y ca-certificates curl git docker.io python3-venv build-essential pkg-config util-linux
-      systemctl enable --now docker
-      usermod -aG docker '{{.User}}'
+      # A pre-existing Lima SSH connection can retain old supplementary
+      # groups. Assign the socket to the guest user instead of relying on a
+      # group change becoming visible in that connection.
+      systemctl stop docker.service docker.socket
+      install -d -m 0755 /etc/systemd/system/docker.socket.d
+      printf '[Socket]\nSocketUser=%s\n' '{{.User}}' > /etc/systemd/system/docker.socket.d/override.conf
+      systemctl daemon-reload
+      systemctl enable --now docker.socket docker.service
 
 probes:
   - script: |

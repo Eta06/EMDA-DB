@@ -26,9 +26,9 @@ dependencies and container images.
 
 Choose a new directory and VM name if either already exists. The commands
 clone the public repository separately from any existing checkout. The VM
-template installs Docker and build dependencies **inside the VM**, adds its
-guest user to the Docker group, and mounts no host directories. Docker group
-membership provides root-equivalent access within this disposable guest.
+template installs Docker and build dependencies **inside the VM**, gives its
+guest user access to the Docker socket, and mounts no host directories. That
+socket provides root-equivalent access within this disposable guest.
 
 ```bash
 export EMDA_MAC_WORK="$HOME/emda-mac-benchmark-001"
