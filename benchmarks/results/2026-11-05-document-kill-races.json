@@ -1,0 +1,60 @@
+{
+  "revision": "a23990a",
+  "binary_sha256": "ead57223c4a3ecd3eeabc7956dc3ef282d28bd977cc4668c7172bb82b9807c83",
+  "repetitions_per_mode_and_delay": 50,
+  "delays_microseconds": [
+    0,
+    50,
+    500,
+    2000
+  ],
+  "scope": "Process kill on a running OS; no simulated power loss or off-host restore. On fail-closed outcomes only the acknowledged log prefix, not recovered logical state, is verified.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "parent": "/tmp",
+      "exit": 0,
+      "elapsed_seconds": 3.307,
+      "modes": [
+        {
+          "mode": "ordinary",
+          "repetitions": 50,
+          "recovered": 200,
+          "pending_present": 125,
+          "failed_closed": 0
+        },
+        {
+          "mode": "checkpoint",
+          "repetitions": 50,
+          "recovered": 200,
+          "pending_present": 118,
+          "failed_closed": 0
+        }
+      ],
+      "output": "\nrunning 1 test\ntest killed_document_writers_recover_acknowledged_transactions_or_fail_closed ... mode=ordinary repetitions=50 recovered=200 pending_present=125 failed_closed=0\nmode=checkpoint repetitions=50 recovered=200 pending_present=118 failed_closed=0\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 3.30s\n\n"
+    },
+    {
+      "filesystem": "overlay",
+      "parent": "/workspace",
+      "exit": 0,
+      "elapsed_seconds": 6.241,
+      "modes": [
+        {
+          "mode": "ordinary",
+          "repetitions": 50,
+          "recovered": 200,
+          "pending_present": 124,
+          "failed_closed": 0
+        },
+        {
+          "mode": "checkpoint",
+          "repetitions": 50,
+          "recovered": 200,
+          "pending_present": 115,
+          "failed_closed": 0
+        }
+      ],
+      "output": "\nrunning 1 test\ntest killed_document_writers_recover_acknowledged_transactions_or_fail_closed ... mode=ordinary repetitions=50 recovered=200 pending_present=124 failed_closed=0\nmode=checkpoint repetitions=50 recovered=200 pending_present=115 failed_closed=0\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 6.24s\n\n"
+    }
+  ]
+}
