@@ -19,8 +19,64 @@ fn metadata(field_type: FieldType) -> Vec<u8> {
         indexes: Vec::new(),
         jobs: Vec::new(),
         schema_job: None,
+        dropping: false,
     })
     .unwrap()
+}
+
+#[test]
+fn dropping_metadata_is_rejected_for_normal_reads_and_invalid_versions_fail_closed() {
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&metadata(FieldType::Integer)).unwrap();
+    for version in [1, 2] {
+        value["version"] = json!(version);
+        assert!(
+            transaction::DocumentTransaction::decode_metadata(
+                "c",
+                Some(serde_json::to_vec(&value).unwrap())
+            )
+            .is_ok()
+        );
+    }
+    value["version"] = json!(3);
+    value["dropping"] = json!(true);
+    assert_eq!(
+        transaction::DocumentTransaction::decode_metadata(
+            "c",
+            Some(serde_json::to_vec(&value).unwrap())
+        )
+        .err()
+        .unwrap()
+        .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    for (version, dropping) in [(3, false), (2, true), (4, true)] {
+        value["version"] = json!(version);
+        value["dropping"] = json!(dropping);
+        assert_eq!(
+            transaction::DocumentTransaction::decode_metadata(
+                "c",
+                Some(serde_json::to_vec(&value).unwrap())
+            )
+            .err()
+            .unwrap()
+            .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+    value["version"] = json!(3);
+    value["dropping"] = json!(true);
+    value["schema_job"] = json!({"schema": CollectionSchema::default(), "after": null});
+    assert_eq!(
+        transaction::DocumentTransaction::decode_metadata(
+            "c",
+            Some(serde_json::to_vec(&value).unwrap())
+        )
+        .err()
+        .unwrap()
+        .kind(),
+        std::io::ErrorKind::InvalidData
+    );
 }
 
 #[test]

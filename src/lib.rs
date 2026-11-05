@@ -44,9 +44,9 @@ pub use direct_read::{DirectReadStatus, MAX_ACTIVE_DIRECT_READS};
 pub use direct_write::{DirectWriteStatus, MAX_ACTIVE_DIRECT_WRITES};
 pub use document::{
     AggregateGroup, AggregateRequest, AggregateResult, AggregateStatsGroup, AggregateStatsRequest,
-    AggregateStatsResult, BulkOperation, BulkResult, CollectionIntegrity, CollectionSchema,
-    Comparison, DocumentDatabase, DocumentEntry, DocumentFilter, DocumentPage, DocumentQuery,
-    DocumentQueryAccess, DocumentQueryResult, DocumentSort, DocumentTransaction,
+    AggregateStatsResult, BulkOperation, BulkResult, CollectionDropStep, CollectionIntegrity,
+    CollectionSchema, Comparison, DocumentDatabase, DocumentEntry, DocumentFilter, DocumentPage,
+    DocumentQuery, DocumentQueryAccess, DocumentQueryResult, DocumentSort, DocumentTransaction,
     DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule, FieldType, IndexBound,
     IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus, IndexQuery, IndexQueryPlan,
     IndexStep, IndexValue, LookupEntry, LookupResult, MAX_DOCUMENT_UPDATE_INPUT_BYTES,

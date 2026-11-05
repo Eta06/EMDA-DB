@@ -31,6 +31,7 @@ pub use filter::{
 };
 pub use index::{IndexDefinition, IndexValue, PartialFilter};
 pub use integrity::CollectionIntegrity;
+pub use lifecycle::CollectionDropStep;
 pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
 pub use planner::{DocumentQueryAccess, PlannedDocumentQueryResult};
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
@@ -248,6 +249,25 @@ impl<'a> DocumentDatabase<'a> {
     /// Removes a bounded collection and its indexes atomically.
     pub fn drop_collection(&self, collection: &str) -> io::Result<()> {
         self.transaction(|tx| tx.drop_collection(collection))
+    }
+
+    /// Starts an irreversible, resumable collection deletion.
+    pub fn start_collection_drop(&self, collection: &str) -> io::Result<()> {
+        self.transaction(|tx| tx.start_collection_drop(collection))
+    }
+
+    /// Reports a collection's pending incremental deletion marker.
+    pub fn collection_drop_in_progress(&self, collection: &str) -> io::Result<bool> {
+        self.transaction(|tx| tx.collection_drop_in_progress(collection))
+    }
+
+    /// Advances an incremental collection deletion by at most `limit` keys.
+    pub fn advance_collection_drop(
+        &self,
+        collection: &str,
+        limit: usize,
+    ) -> io::Result<CollectionDropStep> {
+        self.transaction(|tx| tx.advance_collection_drop(collection, limit))
     }
 
     /// Runs a bounded atomic batch of document operations.

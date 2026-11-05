@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add irreversible, resumable collection deletion in bounded atomic steps. Starting a drop writes version 3 collection metadata that older document readers reject. Access to the affected collection is blocked until deletion completes; underlying transaction and recovery limits continue to apply.
+
 - Make per-open aggregate snapshot reservation limits configurable and observable on both writable stores. Reductions below live reservations fail unchanged; supported compaction handoffs preserve limits, and reopening resets them.
 
 - Add opt-in per-open independent key-value read admission, enabled with exclusive store access before sharing. Once enabled, at most 65,535 calls may be admitted, and saturated `get`, `get_many` and `scan` return `WouldBlock`. Reopening disables the limit. Checkpoint invalid read arguments now fail validation before store health is checked. Other read APIs have separate controls.

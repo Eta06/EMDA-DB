@@ -1,0 +1,95 @@
+{
+  "base_revision": "f50bda8",
+  "repetitions_per_case_and_filesystem": 20,
+  "scope": "Finite tests on one running VM, with other validation active. Workspace overlay backing device was not independently verified. No physical power-loss or off-host testing.",
+  "binary_sha256": {
+    "/tmp/emda-collection-target/debug/deps/database_engine-719878045fa56782": "16ac3d5407f06483a822fd01441b187b63736fd19209a105f92baac8b1579359",
+    "/tmp/emda-collection-target/debug/deps/document_collection_drop-35024f6fdc235243": "ddd6407c385e95160a85ccb4f5ec5ff25d1cbd998a9563ef9b3dd7a5a3838e9b"
+  },
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "test": "ordinary_drop_resumes_across_reopen_and_does_not_touch_neighbors",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.503
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_drop_resumes_across_reopen_and_full_recovery",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 2.396
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "deletion_marker_conflicts_with_inflight_read_set_writers_on_both_backends",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.119
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "pending_schema_and_index_jobs_must_finish_before_deletion",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.077
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "store::collection_drop_fault_tests::partial_drop_step_append_recovers_all_or_none_with_its_raw_receipt",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 2.628
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "store::metadata_tests::document_faults::incremental_collection_drop_remains_atomic_across_v3_metadata_faults",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.31
+    },
+    {
+      "filesystem": "overlay",
+      "test": "ordinary_drop_resumes_across_reopen_and_does_not_touch_neighbors",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.877
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_drop_resumes_across_reopen_and_full_recovery",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 2.907
+    },
+    {
+      "filesystem": "overlay",
+      "test": "deletion_marker_conflicts_with_inflight_read_set_writers_on_both_backends",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.289
+    },
+    {
+      "filesystem": "overlay",
+      "test": "pending_schema_and_index_jobs_must_finish_before_deletion",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.141
+    },
+    {
+      "filesystem": "overlay",
+      "test": "store::collection_drop_fault_tests::partial_drop_step_append_recovers_all_or_none_with_its_raw_receipt",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 10.843
+    },
+    {
+      "filesystem": "overlay",
+      "test": "store::metadata_tests::document_faults::incremental_collection_drop_remains_atomic_across_v3_metadata_faults",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 1.057
+    }
+  ]
+}

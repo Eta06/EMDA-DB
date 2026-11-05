@@ -284,6 +284,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/snapshot-budget-corpus"
           cp fuzz/snapshot-budget-seeds/* "$RUNNER_TEMP/snapshot-budget-corpus/"
           cargo +nightly-2026-11-03 fuzz run snapshot_budget_controls "$RUNNER_TEMP/snapshot-budget-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
+      - name: Run incremental collection deletion model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/document-collection-drop-corpus"
+          cp fuzz/document-collection-drop-seeds/* "$RUNNER_TEMP/document-collection-drop-corpus/"
+          cargo +nightly-2026-11-03 fuzz run document_collection_drop "$RUNNER_TEMP/document-collection-drop-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

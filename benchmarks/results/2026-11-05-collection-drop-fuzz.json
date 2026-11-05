@@ -1,0 +1,31 @@
+{
+  "scope": "Finite address-sanitized serial reference-model histories on one running VM; no physical power loss or exhaustive concurrency. The initial build preceded the commit but produced the same binary hash as the committed implementation. Other tests ran concurrently.",
+  "target": "document_collection_drop",
+  "max_len": 96,
+  "runs": [
+    {
+      "source": "precommit binary identical to a7c4f01",
+      "runs": 8086,
+      "fuzzer_seconds": 121,
+      "binary_sha256": "71cc023643577c79d386f39877366b1a2473d517f5a0cea88ff3e7c506f8d737",
+      "log_sha256": "a3ce5bd03dff152659068a9eebc047e454a725e04362198989888d3b0be17444",
+      "exit": 0
+    },
+    {
+      "source": "a7c4f01",
+      "runs": 4593,
+      "fuzzer_seconds": 61,
+      "binary_sha256": "71cc023643577c79d386f39877366b1a2473d517f5a0cea88ff3e7c506f8d737",
+      "log_sha256": "415dd4d62ba4bb9abf2766ab5f1d8de54366bb9d88ae6777a4fbe8b492277bdd",
+      "exit": 0
+    },
+    {
+      "source": "4de3c42",
+      "runs": 4185,
+      "fuzzer_seconds": 61,
+      "binary_sha256": "f309a1c15b32c6f2611cfe5373432592fa53a20ea27aa40a180c61ef7044ceeb",
+      "log_sha256": "c901055ece39fd6fa2915133b250c8a0b0ea3bac195de6ba290cb3856519e7ab",
+      "exit": 0
+    }
+  ]
+}

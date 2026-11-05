@@ -1,0 +1,219 @@
+mod support;
+use database_engine::{
+    CheckpointStore, CollectionSchema, DocumentDatabase, IndexDefinition, Store,
+};
+use serde_json::json;
+use std::{io, sync::mpsc, thread};
+use support::retry_lock;
+
+fn index() -> IndexDefinition {
+    IndexDefinition {
+        name: "unique".into(),
+        fields: vec![vec!["n".into()]],
+        unique: true,
+        partial: None,
+    }
+}
+
+fn prepare(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index("c", index()).unwrap();
+    db.create_collection("neighbor", CollectionSchema::default())
+        .unwrap();
+    db.insert("neighbor", "id", &json!({"safe":true})).unwrap();
+    for start in (0..270).step_by(30) {
+        db.transaction(|tx| {
+            for n in start..start + 30 {
+                tx.insert("c", &n.to_string(), &json!({"n":n}))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert!(!db.collection_drop_in_progress("c").unwrap());
+    assert!(db.drop_collection("c").is_err()); // 810 document/index keys exceed the atomic cap.
+    assert_eq!(db.get("c", "0").unwrap(), Some(json!({"n":0})));
+}
+
+fn start_and_check(db: &DocumentDatabase<'_>) {
+    db.start_collection_drop("c").unwrap();
+    assert!(db.collection_drop_in_progress("c").unwrap());
+    assert_eq!(
+        db.start_collection_drop("c").unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(
+        db.get("c", "0").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        db.insert("c", "new", &json!({"n":900})).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        db.indexes("c").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        db.drop_collection("c").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        db.advance_collection_drop("c", 0).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        db.advance_collection_drop("c", 129).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    let cancelled = db.transaction::<()>(|tx| {
+        assert_eq!(tx.advance_collection_drop("c", 3)?.removed, 3);
+        tx.put_raw(b"atomic", b"must-not-commit")?;
+        Err(io::Error::other("abort"))
+    });
+    assert!(cancelled.is_err());
+    assert_eq!(db.transaction(|tx| tx.get_raw(b"atomic")).unwrap(), None);
+    assert_eq!(db.advance_collection_drop("c", 3).unwrap().removed, 3);
+    assert_eq!(
+        db.get("neighbor", "id").unwrap(),
+        Some(json!({"safe":true}))
+    );
+}
+
+fn finish_and_check(db: &DocumentDatabase<'_>) {
+    let mut removed = 3;
+    loop {
+        let step = db.advance_collection_drop("c", 37).unwrap();
+        removed += step.removed;
+        if step.complete {
+            assert_eq!(step.removed, 0);
+            break;
+        }
+        assert!((1..=37).contains(&step.removed));
+    }
+    assert_eq!(removed, 810);
+    assert_eq!(
+        db.get("c", "0").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    assert_eq!(
+        db.collection_drop_in_progress("c").unwrap_err().kind(),
+        io::ErrorKind::NotFound
+    );
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index("c", index()).unwrap();
+    db.insert("c", "again", &json!({"n":0})).unwrap();
+    assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
+    assert_eq!(
+        db.get("neighbor", "id").unwrap(),
+        Some(json!({"safe":true}))
+    );
+}
+
+#[test]
+fn ordinary_drop_resumes_across_reopen_and_does_not_touch_neighbors() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let db = DocumentDatabase::new(&store);
+    prepare(&db);
+    start_and_check(&db);
+    drop(store);
+    let store = retry_lock(|| Store::open(root.path())).unwrap();
+    let db = DocumentDatabase::new(&store);
+    assert!(db.collection_drop_in_progress("c").unwrap());
+    finish_and_check(&db);
+}
+
+#[test]
+fn checkpoint_drop_resumes_across_reopen_and_full_recovery() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let base = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    prepare(&DocumentDatabase::new(&store));
+    let digest = store.checkpoint_to(&base).unwrap();
+    drop(store);
+    let store = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+    start_and_check(&DocumentDatabase::with_checkpoint_store(&store));
+    drop(store);
+    let store = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+    finish_and_check(&DocumentDatabase::with_checkpoint_store(&store));
+    drop(store);
+    let store = retry_lock(|| Store::open(&path)).unwrap();
+    let db = DocumentDatabase::new(&store);
+    assert_eq!(db.get("c", "again").unwrap(), Some(json!({"n":0})));
+    assert_eq!(
+        db.get("neighbor", "id").unwrap(),
+        Some(json!({"safe":true}))
+    );
+}
+
+fn race_old_transaction(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.insert("c", "old", &json!({})).unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (go_tx, go_rx) = mpsc::channel();
+    thread::scope(|scope| {
+        let writer = scope.spawn(move || {
+            db.transaction_with_read_set(|tx| {
+                assert!(tx.get("c", "old")?.is_some());
+                ready_tx.send(()).unwrap();
+                go_rx.recv().unwrap();
+                tx.insert("c", "late", &json!({}))
+            })
+        });
+        ready_rx.recv().unwrap();
+        db.start_collection_drop("c").unwrap();
+        go_tx.send(()).unwrap();
+        assert!(writer.join().unwrap().is_err());
+    });
+    let mut removed = 0;
+    loop {
+        let step = db.advance_collection_drop("c", 2).unwrap();
+        removed += step.removed;
+        if step.complete {
+            break;
+        }
+    }
+    assert_eq!(removed, 1);
+}
+
+#[test]
+fn deletion_marker_conflicts_with_inflight_read_set_writers_on_both_backends() {
+    let root = tempfile::tempdir().unwrap();
+    let ordinary = Store::open(root.path().join("ordinary")).unwrap();
+    race_old_transaction(&DocumentDatabase::new(&ordinary));
+    let path = root.path().join("checkpoint-store");
+    let base = root.path().join("checkpoint");
+    let initial = Store::open(&path).unwrap();
+    let digest = initial.checkpoint_to(&base).unwrap();
+    drop(initial);
+    let checkpoint = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+    race_old_transaction(&DocumentDatabase::with_checkpoint_store(&checkpoint));
+}
+
+#[test]
+fn pending_schema_and_index_jobs_must_finish_before_deletion() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let db = DocumentDatabase::new(&store);
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.start_schema_migration("c", CollectionSchema::default())
+        .unwrap();
+    assert_eq!(
+        db.start_collection_drop("c").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    db.cancel_schema_migration("c").unwrap();
+    db.start_index_build("c", index()).unwrap();
+    assert_eq!(
+        db.start_collection_drop("c").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    db.advance_index_build("c", "unique", 10).unwrap();
+    db.start_collection_drop("c").unwrap();
+}
