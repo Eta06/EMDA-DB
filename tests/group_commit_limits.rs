@@ -281,3 +281,28 @@ fn encoded_record_byte_limit_accepts_exact_boundary_and_rejects_one_less() {
         Some(&b"other"[..])
     );
 }
+
+#[test]
+fn rejected_admission_does_not_consume_live_key_capacity() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let store = Store::open_with_resource_limits(&path, None, Some(1), Some(1)).unwrap();
+    store.set_group_commit_limits(0, 0).unwrap();
+    assert_eq!(
+        store.put(b"a", b"rejected").unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+    store.set_group_commit_limits(4096, 4).unwrap();
+    store.put(b"b", b"accepted").unwrap();
+    assert!(store.put(b"a", b"over key limit").is_err());
+    store.delete(b"b").unwrap();
+    store.put(b"a", b"accepted").unwrap();
+    drop(store);
+    let recovered =
+        retry_lock(|| Store::open_with_resource_limits(&path, None, Some(1), Some(1))).unwrap();
+    assert_eq!(
+        recovered.get(b"a").unwrap().as_deref(),
+        Some(&b"accepted"[..])
+    );
+    assert_eq!(recovered.get(b"b").unwrap(), None);
+}
