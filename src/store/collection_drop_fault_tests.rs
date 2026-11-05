@@ -48,7 +48,69 @@ pub(crate) fn step_second(db: &DocumentDatabase<'_>) -> io::Result<()> {
     })
 }
 
-pub(crate) fn verify_second(db: &DocumentDatabase<'_>) {
+pub(crate) fn prepare_final(db: &DocumentDatabase<'_>) {
+    prepare(db);
+    for _ in 0..6 {
+        let step = db.advance_collection_drop("c", 1).unwrap();
+        assert_eq!((step.removed, step.complete), (1, false));
+    }
+}
+
+pub(crate) fn step_final(db: &DocumentDatabase<'_>) -> io::Result<()> {
+    db.transaction(|tx| {
+        let step = tx.advance_collection_drop("c", 1)?;
+        assert_eq!((step.removed, step.complete), (0, true));
+        tx.put_raw(b"receipt", b"final")
+    })
+}
+
+pub(crate) fn verify_final(store: &Store) {
+    let db = DocumentDatabase::new(store);
+    match store.get(b"receipt").unwrap().as_deref() {
+        None => {
+            let cursor = store
+                .get(CURSOR_KEY)
+                .unwrap()
+                .expect("final cursor must remain");
+            assert!(cursor.starts_with(b"\0emda-document\x01U\0\x01c"));
+            assert_cursor_state(store, 4, Some(&cursor));
+            assert!(db.advance_collection_drop("c", 1).unwrap().complete);
+        }
+        Some(b"final") => {
+            assert!(store.get(METADATA_KEY).unwrap().is_none());
+            assert!(store.get(CURSOR_KEY).unwrap().is_none());
+        }
+        other => panic!("bad final-step receipt {other:?}"),
+    }
+    assert!(store.get(CURSOR_KEY).unwrap().is_none());
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    assert!(db.get("c", "a").unwrap().is_none());
+}
+
+const CURSOR_KEY: &[u8] = b"\0emda-document\x01P\0\x01c";
+const METADATA_KEY: &[u8] = b"\0emda-document\x01M\0\x01c";
+const CURSOR_A: &[u8] = b"\0emda-document\x01D\0\x01ca";
+const CURSOR_B: &[u8] = b"\0emda-document\x01D\0\x01cb";
+
+fn assert_cursor_state(store: &Store, version: u64, expected: Option<&[u8]>) {
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&store.get(METADATA_KEY).unwrap().unwrap()).unwrap();
+    assert_eq!(metadata["version"].as_u64(), Some(version));
+    assert_eq!(store.get(CURSOR_KEY).unwrap().as_deref(), expected);
+}
+
+pub(crate) fn verify_checkpoint_first(store: &Store) {
+    match store.get(b"receipt").unwrap().as_deref() {
+        None => assert_cursor_state(store, 3, None),
+        Some(b"committed") => assert_cursor_state(store, 4, Some(CURSOR_A)),
+        other => panic!("bad first-step receipt {other:?}"),
+    }
+    verify(&DocumentDatabase::new(store));
+}
+
+pub(crate) fn verify_second(store: &Store) {
+    let db = DocumentDatabase::new(store);
     assert!(db.collection_drop_in_progress("c").unwrap());
     let receipt = db.transaction(|tx| tx.get_raw(b"receipt")).unwrap();
     let committed = match receipt.as_deref() {
@@ -56,6 +118,7 @@ pub(crate) fn verify_second(db: &DocumentDatabase<'_>) {
         Some(b"second") => true,
         other => panic!("bad second-step receipt {other:?}"),
     };
+    assert_cursor_state(store, 4, Some(if committed { CURSOR_B } else { CURSOR_A }));
     let mut removed = 0;
     loop {
         let step = db.advance_collection_drop("c", 16).unwrap();

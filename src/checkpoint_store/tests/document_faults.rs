@@ -5,7 +5,7 @@ use serde_json::json;
 #[cfg(target_os = "linux")]
 #[test]
 fn checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut() {
-    use crate::store::collection_drop_fault_tests::{prepare, step, verify};
+    use crate::store::collection_drop_fault_tests::{prepare, step, verify_checkpoint_first};
     let length = {
         let (_root, path, checkpoint, digest) = fixture();
         let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
@@ -45,7 +45,7 @@ fn checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut()
         let log = path.join("records.log");
         let bytes = fs::read(&log).unwrap();
         match retry_lock(|| Store::open(&path)) {
-            Ok(reopened) => verify(&DocumentDatabase::new(&reopened)),
+            Ok(reopened) => verify_checkpoint_first(&reopened),
             Err(error) => {
                 assert!(matches!(
                     error.kind(),
@@ -60,7 +60,7 @@ fn checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut()
 #[cfg(target_os = "linux")]
 #[test]
 fn checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v3_append_cut() {
-    use crate::store::collection_drop_fault_tests::{prepare, step, verify};
+    use crate::store::collection_drop_fault_tests::{prepare, step, verify_checkpoint_first};
     fn fixture_v3() -> (
         tempfile::TempDir,
         std::path::PathBuf,
@@ -118,7 +118,7 @@ fn checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v3_append_cut()
         let log = path.join("records.log");
         let bytes = fs::read(&log).unwrap();
         match retry_lock(|| Store::open(&path)) {
-            Ok(reopened) => verify(&DocumentDatabase::new(&reopened)),
+            Ok(reopened) => verify_checkpoint_first(&reopened),
             Err(error) => {
                 assert!(matches!(
                     error.kind(),
@@ -206,7 +206,96 @@ fn later_checkpoint_drop_cursor_update_and_receipt_are_atomic_at_every_append_cu
             let log = path.join("records.log");
             let bytes = fs::read(&log).unwrap();
             match retry_lock(|| Store::open(&path)) {
-                Ok(reopened) => verify_second(&DocumentDatabase::new(&reopened)),
+                Ok(reopened) => verify_second(&reopened),
+                Err(error) => {
+                    assert!(matches!(
+                        error.kind(),
+                        io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                    ));
+                    assert_eq!(fs::read(&log).unwrap(), bytes);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn final_checkpoint_drop_cursor_removal_and_receipt_are_atomic_at_every_append_cut() {
+    use crate::store::collection_drop_fault_tests::{prepare_final, step_final, verify_final};
+    fn fixture_for(
+        v3: bool,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        [u8; 32],
+    ) {
+        if !v3 {
+            return fixture();
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("checkpoint");
+        let store = Store::open(&path).unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        drop(store);
+        assert_eq!(
+            &fs::read(path.join("records.log")).unwrap()[..8],
+            b"EMDALOG3"
+        );
+        (root, path, checkpoint, digest)
+    }
+    for v3 in [false, true] {
+        let length = {
+            let (_root, path, checkpoint, digest) = fixture_for(v3);
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            let db = DocumentDatabase::with_checkpoint_store(&store);
+            prepare_final(&db);
+            let log = path.join("records.log");
+            let before = fs::metadata(&log).unwrap().len();
+            step_final(&db).unwrap();
+            usize::try_from(fs::metadata(log).unwrap().len() - before).unwrap()
+        };
+        eprintln!(
+            "final checkpoint cursor removal append cuts, V3={v3}: {}",
+            length + 1
+        );
+        let mut faults = (0..=length).map(LogFault::Partial).collect::<Vec<_>>();
+        faults.extend([
+            LogFault::Panic(0),
+            LogFault::Panic(length / 2),
+            LogFault::Panic(length),
+        ]);
+        if !v3 {
+            faults.extend([
+                LogFault::SyncBefore,
+                LogFault::SyncAfter,
+                LogFault::SyncTimeout,
+            ]);
+        }
+        for fault in faults {
+            let (_root, path, checkpoint, digest) = fixture_for(v3);
+            let mut store =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            prepare_final(&DocumentDatabase::with_checkpoint_store(&store));
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            store
+                .log
+                .replace_io_for_test(Box::new(FaultLog { file, fault }));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                step_final(&DocumentDatabase::with_checkpoint_store(&store))
+            }));
+            assert!(!matches!(result, Ok(Ok(()))));
+            drop(store);
+            let log = path.join("records.log");
+            let bytes = fs::read(&log).unwrap();
+            match retry_lock(|| Store::open(&path)) {
+                Ok(reopened) => verify_final(&reopened),
                 Err(error) => {
                     assert!(matches!(
                         error.kind(),
