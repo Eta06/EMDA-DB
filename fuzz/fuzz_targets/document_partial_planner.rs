@@ -42,7 +42,13 @@ fn and(filters: Vec<DocumentFilter>) -> DocumentFilter {
     DocumentFilter::And(filters)
 }
 fn document(id: u8, byte: u8) -> Value {
-    let mut doc = json!({"id":format!("id{id}"), "tags":[id % 3,"shared"]});
+    let mut doc = json!({"id":format!("id{id}")});
+    match (byte >> 5) % 4 {
+        0 => {}
+        1 => doc["tags"] = Value::Null,
+        2 => doc["tags"] = json!([]),
+        _ => doc["tags"] = json!([id % 3, "shared", {"x": id % 2}]),
+    }
     if byte & 8 != 0 {
         doc["tenant"] = json!("t");
     }
@@ -74,7 +80,7 @@ fuzz_target!(|data: &[u8]| {
     drop(initial);
     let checkpoint_mode = data[0] & 1 != 0;
     let compound = data[0] & 2 != 0;
-    let kind = (data[0] >> 2) % 4;
+    let kind = (data[0] >> 2) % 5;
     let (partial, guard, opposite) = match kind {
         0 => (
             PartialFilter::Exists {
@@ -100,13 +106,24 @@ fuzz_target!(|data: &[u8]| {
             equal("active", json!(true)),
             equal("active", json!(false)),
         ),
-        _ => (
+        3 => (
             PartialFilter::Equals {
                 path: vec!["active".into()],
                 value: IndexValue::Null,
             },
             equal("active", Value::Null),
             equal("active", json!(false)),
+        ),
+        _ => (
+            PartialFilter::Exists {
+                path: vec!["tags".into()],
+                exists: true,
+            },
+            DocumentFilter::ArrayElementMatch {
+                path: vec!["tags".into()],
+                filter: Box::new(equal("x", json!(1))),
+            },
+            exists("tags", false),
         ),
     };
     let mut store = open(&path, &checkpoint, &digest, checkpoint_mode);

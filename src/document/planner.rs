@@ -152,6 +152,7 @@ fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> 
             | DocumentFilter::ArrayContainsAny { path: field, .. }
             | DocumentFilter::ArrayContainsAll { path: field, .. }
             | DocumentFilter::ArrayLength { path: field, .. }
+            | DocumentFilter::ArrayElementMatch { path: field, .. }
                 if exists && field == path =>
             {
                 return true;
