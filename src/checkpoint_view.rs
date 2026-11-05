@@ -16,6 +16,9 @@ pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 131_072;
 /// Maximum checkpoint index bytes read into memory for one block.
 pub const MAX_CHECKPOINT_VIEW_BLOCK_BYTES: usize = 32 * 1024;
 const KEY_PREFIX_BYTES: usize = 16;
+// A sparse directory of entry offsets reduces per-lookup decoding work while
+// retaining the full block read and SHA-256 verification on every access.
+const LANDMARK_INTERVAL: usize = 16;
 /// Largest checkpoint file accepted by the bounded view.
 pub const MAX_CHECKPOINT_VIEW_FILE_BYTES: u64 =
     MAX_CHECKPOINT_VIEW_BLOCKS as u64 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES as u64 + 100;
@@ -60,6 +63,7 @@ struct Block {
     offset: u64,
     length: usize,
     digest: [u8; 32],
+    landmarks: Vec<u16>,
 }
 
 impl Block {
@@ -82,6 +86,8 @@ struct BlockBuilder {
     offset: u64,
     length: usize,
     digest: Sha256,
+    entries: usize,
+    landmarks: Vec<u16>,
 }
 
 impl BlockBuilder {
@@ -92,6 +98,7 @@ impl BlockBuilder {
             offset: self.offset,
             length: self.length,
             digest: self.digest.finalize().into(),
+            landmarks: self.landmarks,
         }
     }
 }
@@ -249,13 +256,23 @@ impl CheckpointView {
                         offset,
                         length: 0,
                         digest: Sha256::new(),
+                        entries: 0,
+                        landmarks: Vec::new(),
                     });
                 }
                 let block = current.as_mut().expect("current block");
+                if block.entries % LANDMARK_INTERVAL == 0 {
+                    block
+                        .landmarks
+                        .push(u16::try_from(block.length).map_err(|_| {
+                            record::invalid_data("checkpoint landmark offset overflow")
+                        })?);
+                }
                 block.digest.update(key_len);
                 block.digest.update(key);
                 block.digest.update(tail);
                 block.length += size;
+                block.entries += 1;
                 keys += 1;
                 Ok(())
             },
@@ -418,8 +435,28 @@ impl CheckpointView {
         let Some(position) = self.preceding_block(key)? else {
             return Ok(None);
         };
-        let bytes = self.read_block(&self.blocks[position])?;
-        let mut cursor = BlockCursor::new(&bytes, self.prefix);
+        let block = &self.blocks[position];
+        let bytes = self.read_block(block)?;
+        let mut low = 0;
+        let mut high = block.landmarks.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let mut cursor =
+                BlockCursor::at(&bytes, self.prefix, usize::from(block.landmarks[middle]));
+            let (candidate, _) = cursor
+                .next()?
+                .ok_or_else(|| record::invalid_data("empty checkpoint landmark"))?;
+            if candidate <= key {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        let Some(landmark) = low.checked_sub(1) else {
+            return Ok(None);
+        };
+        let mut cursor =
+            BlockCursor::at(&bytes, self.prefix, usize::from(block.landmarks[landmark]));
         while let Some((candidate, location)) = cursor.next()? {
             match candidate.cmp(key) {
                 std::cmp::Ordering::Equal => return Ok(Some(location)),
@@ -504,6 +541,13 @@ impl<'a> BlockCursor<'a> {
         Self {
             bytes,
             offset: 0,
+            prefix,
+        }
+    }
+    fn at(bytes: &'a [u8], prefix: u64, offset: usize) -> Self {
+        Self {
+            bytes,
+            offset,
             prefix,
         }
     }
@@ -592,6 +636,7 @@ mod tests {
                 offset: 0,
                 length: 0,
                 digest: [0; 32],
+                landmarks: Vec::new(),
             };
             for key in &keys {
                 match block.compare_prefix(key) {
