@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add concurrent document deadline-race checks covering atomic indexes and raw keys, confirmed expiry, potentially uncertain operation timeouts, and clean reopen on both writable backends.
+
 - Add an ARM64 Linux VM setup and a designated result directory for the independent Mac mini benchmark; development can continue against other commits while it runs.
 
 - Add an external test-request workflow and a reproducible quieter-host document-query comparison with SQLite, PostgreSQL, and MongoDB.

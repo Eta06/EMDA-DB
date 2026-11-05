@@ -10,6 +10,8 @@ The package version is **0.1.0, unreleased**. Statuses describe the current prot
 
 Specific tests requested on independent machines are listed in [external test requests](external-test-requests/README.md), with commands and evidence to return.
 
+A [targeted deadline-race test](docs/DOCUMENT_DEADLINE_RACES_2026_11_06.md) checks concurrent document, index and raw-key atomicity across both writable backends and clean reopens; broader failure and recovery validation remains open.
+
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
 | Embedded key-value core | Prototype | Byte-key operations, bounded bulk reads, atomic write batches, conditional updates, signed 64-bit increments, and ordered paginated scans; one store per process with an advisory lock. |
