@@ -1,0 +1,109 @@
+{
+  "revision": "8841787",
+  "repetitions_per_case_and_filesystem": 20,
+  "scope": "Finite process/thread schedules on a running VM. Concurrent host activity was not controlled; no physical power-loss or off-host restore.",
+  "binary_sha256": {
+    "/tmp/emda-read-target/debug/deps/database_engine-719878045fa56782": "5be322bec29bc764288c21c0434f5006dd811af792e1412fcfcea05b78fbeea2",
+    "/tmp/emda-read-target/debug/deps/direct_read_admission-8cb6719f0d4ad7a3": "12064aba0a5034b9a3611cf7e4e33677b376e956500509ece7452de41e709440"
+  },
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "test": "direct_read::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.146
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "direct_read::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.141
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "store::read_tests::direct_read_admission_counts_blocked_io_and_does_not_block_writes",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.067
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "checkpoint_store::tests::direct_read_admission_counts_checkpoint_state_lock_waiters",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.079
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.111
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.115
+    },
+    {
+      "filesystem": "tmpfs",
+      "test": "blocking_compaction_preserves_the_limit_and_reopen_resets_it",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.158
+    },
+    {
+      "filesystem": "overlay",
+      "test": "direct_read::tests::simultaneous_acquisitions_never_exceed_the_limit",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.142
+    },
+    {
+      "filesystem": "overlay",
+      "test": "direct_read::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.137
+    },
+    {
+      "filesystem": "overlay",
+      "test": "store::read_tests::direct_read_admission_counts_blocked_io_and_does_not_block_writes",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.104
+    },
+    {
+      "filesystem": "overlay",
+      "test": "checkpoint_store::tests::direct_read_admission_counts_checkpoint_state_lock_waiters",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.166
+    },
+    {
+      "filesystem": "overlay",
+      "test": "store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.246
+    },
+    {
+      "filesystem": "overlay",
+      "test": "zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.365
+    },
+    {
+      "filesystem": "overlay",
+      "test": "blocking_compaction_preserves_the_limit_and_reopen_resets_it",
+      "successful": 20,
+      "failures": [],
+      "elapsed_seconds": 0.513
+    }
+  ]
+}
