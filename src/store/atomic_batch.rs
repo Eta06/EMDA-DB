@@ -13,6 +13,7 @@ impl Store {
     /// records, which older software cannot read. This is a blind atomic write,
     /// not a read-modify-write transaction or snapshot isolation.
     pub fn write_batch(&self, operations: &[BatchOperation<'_>]) -> io::Result<()> {
+        let _admission = self.direct_writes.acquire()?;
         let _writer = self
             .writes
             .write()

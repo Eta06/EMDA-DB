@@ -272,6 +272,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/group-commit-limits-corpus"
           cp fuzz/group-commit-limits-seeds/* "$RUNNER_TEMP/group-commit-limits-corpus/"
           cargo +nightly-2026-11-03 fuzz run group_commit_limits "$RUNNER_TEMP/group-commit-limits-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
+      - name: Run direct-write admission model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 2 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/direct-write-admission-corpus"
+          cp fuzz/direct-write-admission-seeds/* "$RUNNER_TEMP/direct-write-admission-corpus/"
+          cargo +nightly-2026-11-03 fuzz run direct_write_admission "$RUNNER_TEMP/direct-write-admission-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

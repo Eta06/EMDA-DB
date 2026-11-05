@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add per-open independent-write admission limits and status to both writable stores. The default and hard maximum are 65,535 calls; saturated admissions return `WouldBlock` before the storage lock or submission, even if a prior write left the store unhealthy. Transactions use their separate admission limit. Limits survive supported in-process compaction handoffs and reset on reopen.
+
 - Add per-open encoded-byte and record-count limits and status for ordinary-store group commit. Limit reductions cannot undercut reservations; waiting writers recheck changed limits. Supported in-process ordinary compaction handoffs preserve the setting, while reopening resets it.
 
 - Extend concurrent document serial-history and recovery checks to include pre-cancellation, cancellation after staging and cancellation racing a transaction.

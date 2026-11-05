@@ -551,6 +551,15 @@ fn writer_panic_blocks_subsequent_reads_and_preserves_the_log() {
     let panic =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| store.put(b"bad", b"value")));
     assert!(panic.is_err());
+    assert_eq!(store.direct_write_status().active, 0);
+    store.set_active_direct_write_limit(0).unwrap();
+    assert_eq!(
+        store.put(b"blocked", b"value").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    store
+        .set_active_direct_write_limit(crate::MAX_ACTIVE_DIRECT_WRITES)
+        .unwrap();
     assert!(
         store
             .get(b"safe")

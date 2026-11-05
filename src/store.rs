@@ -72,6 +72,7 @@ pub struct Store {
     // A backup excludes all in-flight writes and holds this barrier until the
     // snapshot is complete; writers share it while the coordinator batches.
     writes: crate::controlled_lock::ControlledRwLock<()>,
+    pub(crate) direct_writes: crate::direct_write::DirectWrites,
     commits: Coordinator,
     log_quota: Option<LogQuota>,
     max_live_keys: Option<usize>,
@@ -278,6 +279,7 @@ impl Store {
                 generation: 0,
             }),
             writes: crate::controlled_lock::ControlledRwLock::new(()),
+            direct_writes: crate::direct_write::DirectWrites::default(),
             commits: Coordinator::new(),
             log_quota: None,
             max_live_keys: None,
@@ -423,6 +425,7 @@ impl Store {
             None => (Operation::Delete, &[][..]),
         };
         record::validate(operation, key, value)?;
+        let _admission = self.direct_writes.acquire()?;
         // Ordinary mutations hold the shared side through acknowledgement.
         // The exclusive side makes the read and commit indivisible relative
         // to every other mutation, including other compare-exchange calls.
@@ -445,6 +448,7 @@ impl Store {
     /// can leave the outcome uncertain.
     pub fn increment_i64(&self, key: &[u8], delta: i64) -> io::Result<i64> {
         record::validate_key(key)?;
+        let _admission = self.direct_writes.acquire()?;
         let _writer = self
             .writes
             .write()
@@ -581,6 +585,7 @@ impl Store {
 
     fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
         record::validate(operation, key, value)?;
+        let _admission = self.direct_writes.acquire()?;
         if operation == Operation::Put
             && (self.max_live_keys.is_some() || self.max_live_key_bytes.is_some())
         {
@@ -701,6 +706,9 @@ impl Store {
 fn uncertain_error() -> io::Error {
     io::Error::other("a previous write had an uncertain outcome; reopen the store")
 }
+
+#[cfg(test)]
+mod direct_admission_tests;
 
 #[cfg(test)]
 mod shared_snapshot_tests;

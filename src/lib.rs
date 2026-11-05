@@ -11,6 +11,7 @@ mod checkpoint;
 mod checkpoint_store;
 mod checkpoint_view;
 mod controlled_lock;
+mod direct_write;
 mod directory;
 mod document;
 mod log;
@@ -38,6 +39,7 @@ pub use checkpoint_view::{
     CheckpointView, CheckpointViewLimits, MAX_CHECKPOINT_VIEW_BLOCK_BYTES,
     MAX_CHECKPOINT_VIEW_BLOCKS, MAX_CHECKPOINT_VIEW_FILE_BYTES,
 };
+pub use direct_write::{DirectWriteStatus, MAX_ACTIVE_DIRECT_WRITES};
 pub use document::{
     AggregateGroup, AggregateRequest, AggregateResult, AggregateStatsGroup, AggregateStatsRequest,
     AggregateStatsResult, BulkOperation, BulkResult, CollectionIntegrity, CollectionSchema,
