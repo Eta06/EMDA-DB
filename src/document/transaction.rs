@@ -28,6 +28,8 @@ pub(super) struct Metadata {
     pub jobs: Vec<IndexJob>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_job: Option<SchemaJob>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dropping: bool,
 }
 
 enum BackendTransaction<'a, 'store> {
@@ -140,7 +142,26 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         Self::decode_metadata(collection, bytes)
     }
 
+    pub(super) fn metadata_including_drop(&self, collection: &str) -> io::Result<Metadata> {
+        let bytes = self.read(&key::collection(b'M', collection)?)?;
+        Self::decode_metadata_including_drop(collection, bytes)
+    }
+
     pub(super) fn decode_metadata(
+        collection: &str,
+        bytes: Option<Vec<u8>>,
+    ) -> io::Result<Metadata> {
+        let metadata = Self::decode_metadata_including_drop(collection, bytes)?;
+        if metadata.dropping {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "collection deletion is in progress",
+            ));
+        }
+        Ok(metadata)
+    }
+
+    fn decode_metadata_including_drop(
         collection: &str,
         bytes: Option<Vec<u8>>,
     ) -> io::Result<Metadata> {
@@ -149,7 +170,8 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         let metadata: Metadata = serde_json::from_slice(&bytes)
             .map_err(|_| invalid_data("invalid document metadata"))?;
         let mut names = BTreeSet::new();
-        if !matches!(metadata.version, 1 | 2)
+        if !matches!(metadata.version, 1..=3)
+            || ((metadata.version == 3) != metadata.dropping)
             || (metadata.version == 1
                 && (!metadata.jobs.is_empty() || metadata.schema_job.is_some()))
             || metadata.schema.validate_definition().is_err()
@@ -204,6 +226,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                     indexes: Vec::new(),
                     jobs: Vec::new(),
                     schema_job: None,
+                    dropping: false,
                 },
             )
         })

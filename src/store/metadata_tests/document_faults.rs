@@ -4,6 +4,35 @@ use crate::{CollectionSchema, DocumentDatabase, IndexDefinition, IndexQuery, Ind
 use serde_json::json;
 
 #[test]
+fn incremental_collection_drop_remains_atomic_across_v3_metadata_faults() {
+    use crate::store::collection_drop_fault_tests::{prepare, step, verify};
+    for fault in [
+        Fault::Read,
+        Fault::WriteBefore,
+        Fault::WriteAfter,
+        Fault::SyncBefore,
+        Fault::SyncTimeout,
+        Fault::SyncAfter,
+        Fault::Panic,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered, _) = mpsc::channel();
+        let (_, resume) = mpsc::channel();
+        let store = store(root.path(), fault, Arc::clone(&armed), entered, resume);
+        prepare(&DocumentDatabase::new(&store));
+        armed.store(true, Ordering::Release);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            step(&DocumentDatabase::new(&store))
+        }));
+        assert!(!matches!(result, Ok(Ok(()))));
+        drop(store);
+        let reopened = retry_lock(|| Store::open(root.path())).unwrap();
+        verify(&DocumentDatabase::new(&reopened));
+    }
+}
+
+#[test]
 fn document_and_unique_index_remain_atomic_across_metadata_faults() {
     for fault in [
         Fault::WriteBefore,
