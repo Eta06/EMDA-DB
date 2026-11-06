@@ -6,7 +6,7 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 - Avoid a redundant parent-directory sync after managed checkpoint selection or automatic configuration replacement has already been synchronized. Failed synchronization still retains cleanup ownership and reports the existing uncertain outcome.
 
-- Make retired-stage tests tolerate a briefly held fixture lock while still requiring eventual cleanup and preservation of unsafe entries; add held-lock regression checks.
+- Make retired-stage tests tolerate a briefly held fixture lock while still requiring eventual cleanup and preservation of unsafe entries. Explicitly release fixture locks even if an inherited descriptor remains open, with regression checks.
 
 - Check acknowledged writes from concurrent workers across process-kill races on V2/V3 and both writable recovery paths.
 

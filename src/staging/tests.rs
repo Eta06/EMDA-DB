@@ -41,6 +41,8 @@ fn busy_retired_fixture_is_preserved_until_its_lock_is_released() {
     let path = orphan(stage);
     let lock = File::open(lock_path).unwrap();
     fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    // Model a descriptor inherited by another process that stays open after release.
+    let inherited = lock.try_clone().unwrap();
     let skipped =
         crate::test_support::retry_lock(|| cleanup_retired(directory.path(), &id, || Ok(())))
             .unwrap();
@@ -48,12 +50,14 @@ fn busy_retired_fixture_is_preserved_until_its_lock_is_released() {
     assert!(path.exists());
     let release = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(20));
+        fs2::FileExt::unlock(&lock).unwrap();
         drop(lock);
     });
     let report = retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap();
     release.join().unwrap();
     assert_eq!((report.removed_markers, report.skipped), (1, 0));
     assert!(!path.exists());
+    drop(inherited);
 }
 
 #[test]
@@ -176,6 +180,7 @@ fn selective_retired_cleanup_preserves_corrupt_markers_busy_locks_and_unknown_fi
     assert!(busy_path.exists());
     let release = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(20));
+        fs2::FileExt::unlock(&lock).unwrap();
         drop(lock);
     });
     let report = retry_fixture_retired_cleanup(directory.path(), &id, 2).unwrap();
@@ -289,6 +294,9 @@ fn retired_stage_removal_resumes_after_every_injected_interruption() {
             .is_err(),
             "{selected:?}"
         );
+        if let Some(lock) = &lock {
+            fs2::FileExt::unlock(lock).unwrap();
+        }
         drop(lock);
         let report = retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap();
         assert_eq!(
