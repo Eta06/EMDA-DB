@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Extend the concurrent-write and clean-restart resource diagnostic with an optional checksum-verified SQLite WAL/FULL comparison.
+
 - Check actual inode exhaustion during initialization, backup, restore and upgrade in the guarded tmpfs failure workflow.
 
 - Model concurrent deletion, reinsertion, missing-key compare-exchange, ordered batches and reads across both writable recovery paths.

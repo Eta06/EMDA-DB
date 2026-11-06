@@ -13,7 +13,7 @@ import time
 from benchmarks.telemetry import difference, quiet_window, read, snapshot
 from index_memory_compare import fields
 
-MODES = ("full", "checkpoint")
+ENGINE_MODES = ("full", "checkpoint")
 
 
 def digest(path):
@@ -47,6 +47,11 @@ def validate_sample(sample, mode, phase, epoch, keys, tail, key_bytes, workers, 
         for key in ("rchar", "wchar", "read_bytes", "write_bytes", "read_calls", "write_calls")
     ):
         raise ValueError("benchmark returned invalid process I/O counters")
+    if mode == "sqlite" and (sample.get("journal") != "wal" or sample.get("synchronous") != "FULL"
+                              or not sample.get("sqlite_version")
+                              or not isinstance(sample.get("integrity_check_us"), int)
+                              or sample["integrity_check_us"] <= 0):
+        raise ValueError("SQLite durability settings or integrity check were not verified")
     return sample
 
 
@@ -56,6 +61,7 @@ def main():
     parser.add_argument("--output", required=True, help="new JSON result file")
     parser.add_argument("--binary", default="target/release/examples/restart_write_bench")
     parser.add_argument("--prepare-binary", default="target/release/examples/index_memory_bench")
+    parser.add_argument("--sqlite-binary", help="optional prebuilt SQLite companion for an in-process comparison")
     parser.add_argument("--keys", default="10000,200000")
     parser.add_argument("--key-bytes", type=int, default=128)
     parser.add_argument("--tail-keys", type=int, default=1024)
@@ -77,6 +83,8 @@ def main():
         parser.error("invalid size, worker, epoch or checkpoint overlay limit")
     if not Path(args.directory).is_dir() or not Path(args.binary).is_file() or not Path(args.prepare_binary).is_file():
         parser.error("an existing fixture directory and prebuilt binaries are required")
+    if args.sqlite_binary and not Path(args.sqlite_binary).is_file():
+        parser.error("SQLite companion binary must exist")
     if os.path.lexists(args.output):
         parser.error("output must not already exist")
     allowed = sorted(os.sched_getaffinity(0))
@@ -84,9 +92,12 @@ def main():
         parser.error("at least two CPUs in the allowed affinity mask are required")
     bench_cpus, driver_cpu = allowed[:-1], allowed[-1]
     os.sched_setaffinity(0, {driver_cpu})
+    modes = ENGINE_MODES + (("sqlite",) if args.sqlite_binary else ())
     sources = sorted([*Path("src").rglob("*.rs"), Path("Cargo.toml"), Path("Cargo.lock"),
                       Path("examples/restart_write_bench.rs"), Path("examples/index_memory_bench.rs"),
                       Path("scripts/index_memory_compare.py"), Path("scripts/benchmarks/telemetry.py"), Path(__file__)])
+    if args.sqlite_binary:
+        sources.append(Path("examples/sqlite_restart_write_bench.rs"))
     result = {
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
@@ -97,9 +108,11 @@ def main():
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "allowed_cpus": allowed,
         "benchmark_cpus": bench_cpus, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "limitations": "One Linux VM/filesystem and warm caches; processes open and close cleanly, with no power-loss simulation. Different engine paths use separate equivalently populated fixtures. Workers perform independent, unique-key durable writes; no transaction, failure or external competitor is measured. Every earlier workload value is checked after each fresh-process open, and all final values are checked by an additional clean open; only sampled base/tail values are checked. RSS excludes page cache; process I/O includes open, verification and measurement overhead and is not physical I/O. Telemetry includes the VM/cgroup workload. Results do not establish resource, recovery or latency bounds.",
+        "limitations": "One Linux VM/filesystem and warm caches; processes open and close cleanly, with no power-loss simulation. Different engine paths use separate equivalently populated fixtures. Workers perform independent, unique-key durable writes; no transaction or failure is measured. SQLite uses a separate FULL/WAL connection per worker and checks integrity outside open/write timers; its open is lazy, while the prototype validates the log during open, so open timings are not equivalent verification. SQLite worker statement preparation is included in aggregate write elapsed time. Every earlier workload value is checked after each fresh-process open, and all final values are checked by an additional clean open; only sampled base/tail values are checked. RSS excludes page cache; process I/O includes open, verification and measurement overhead and is not physical I/O. Telemetry includes the VM/cgroup workload. Results do not establish resource, recovery or latency bounds.",
         "completed": False, "failure": None, "cases": [],
     }
+    if args.sqlite_binary:
+        result["sqlite_binary_sha256"] = digest(args.sqlite_binary)
     output = Path(args.output)
     with output.open("x", encoding="utf-8") as file:
         json.dump(result, file, indent=2)
@@ -125,9 +138,19 @@ def main():
                         "workers": args.workers, "writes_per_worker": args.writes,
                         "epochs": args.epochs, "fixtures": {}, "runs": []}
                 result["cases"].append(case)
-                for mode in MODES:
+                for mode in modes:
                     parent = Path(root) / f"{count}-{mode}"
                     parent.mkdir()
+                    if mode == "sqlite":
+                        prepared = subprocess.run(affinity + [args.sqlite_binary, "prepare", str(parent), str(count), str(args.key_bytes), str(args.tail_keys)],
+                                                  check=True, text=True, capture_output=True, timeout=600)
+                        info = json.loads(prepared.stdout)
+                        if (info.get("keys") != count or info.get("key_bytes") != args.key_bytes
+                                or info.get("tail_keys") != args.tail_keys or info.get("journal") != "wal"
+                                or info.get("synchronous") != "FULL"):
+                            raise RuntimeError("unexpected SQLite fixture configuration")
+                        case["fixtures"][mode] = {**info, "database_sha256": digest(parent / "sqlite.db")}
+                        continue
                     prepared = subprocess.run(affinity + [args.prepare_binary, "prepare", str(parent), str(count), str(args.key_bytes), str(args.tail_keys)],
                                               check=True, text=True, capture_output=True, timeout=600)
                     info = fields(prepared.stdout)
@@ -141,11 +164,15 @@ def main():
                 save()
                 for epoch in range(args.epochs + 1):
                     phase = "write" if epoch < args.epochs else "verify"
-                    modes = MODES if epoch % 2 == 0 else tuple(reversed(MODES))
-                    for mode in modes:
+                    rotation = epoch % len(modes)
+                    for mode in modes[rotation:] + modes[:rotation]:
                         parent = Path(root) / f"{count}-{mode}"
-                        command = affinity + [args.binary, str(parent), str(count), str(args.tail_keys), str(args.key_bytes),
-                                              mode, case["fixtures"][mode]["token"], str(args.workers), str(args.writes), str(epoch), phase]
+                        if mode == "sqlite":
+                            command = affinity + [args.sqlite_binary, "run", str(parent), str(count), str(args.tail_keys),
+                                                  str(args.key_bytes), str(args.workers), str(args.writes), str(epoch), phase]
+                        else:
+                            command = affinity + [args.binary, str(parent), str(count), str(args.tail_keys), str(args.key_bytes),
+                                                  mode, case["fixtures"][mode]["token"], str(args.workers), str(args.writes), str(epoch), phase]
                         before = snapshot()
                         process = subprocess.run(command, check=True, text=True, capture_output=True, timeout=600)
                         noise = difference(before, snapshot())
@@ -154,7 +181,7 @@ def main():
                         case["runs"].append({**sample, "noise": noise})
                         save()
                 case["summary"] = {}
-                for mode in MODES:
+                for mode in modes:
                     runs = [run for run in case["runs"] if run["mode"] == mode]
                     writes = [run for run in runs if run["phase"] == "write"]
                     latencies = [ns for run in writes for ns in run["write_latencies_ns"]]
@@ -167,6 +194,8 @@ def main():
                         "median_write_ops_per_second": statistics.median(len(run["write_latencies_ns"]) * 1e9 / run["write_elapsed_ns"] for run in writes),
                         "final_verified_workload_keys": runs[-1]["prior_verified"],
                     }
+                    if mode == "sqlite":
+                        case["summary"][mode]["median_integrity_check_us"] = statistics.median(run["integrity_check_us"] for run in runs)
                 save()
         result["completed"] = True
     except Exception as error:

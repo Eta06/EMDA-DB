@@ -46,6 +46,19 @@ class RestartResourceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check(bad, 'verify')
 
+    def test_sqlite_requires_checked_durability_and_integrity(self):
+        sample = self.sample()
+        sample.update(mode='sqlite', journal='wal', synchronous='FULL',
+                      sqlite_version='3.49.1', integrity_check_us=10)
+        validate_sample(sample, 'sqlite', 'write', 2, 32, 4, 8, 2, 3)
+        for field, value in (('journal', 'delete'), ('synchronous', 'NORMAL'),
+                             ('sqlite_version', ''), ('integrity_check_us', 0)):
+            with self.subTest(field=field):
+                bad = copy.deepcopy(sample)
+                bad[field] = value
+                with self.assertRaises(ValueError):
+                    validate_sample(bad, 'sqlite', 'write', 2, 32, 4, 8, 2, 3)
+
 
 if __name__ == '__main__':
     unittest.main()

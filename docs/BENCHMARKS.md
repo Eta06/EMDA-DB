@@ -683,7 +683,7 @@ A [cross-engine smoke workflow](../.github/workflows/compound-range-smoke.yml) r
 
 ### Concurrent writes and clean restarts
 
-On Linux, [`restart_write_resources.py`](../scripts/restart_write_resources.py) prepares separate, equivalently populated fixtures for the ordinary and checkpoint-backed stores. Each epoch starts a fresh process, checks every prior workload key plus sampled base and suffix values, then times unique-key durable writes by concurrent workers and verifies the new values. A final fresh process checks every workload key again. Variant order alternates between epochs; the process reports open time, individual write latencies, elapsed write time, RSS and process I/O. The report retains source/binary hashes, fixture identifiers, each sample and VM/cgroup noise telemetry, including partial results on errors.
+On Linux, [`restart_write_resources.py`](../scripts/restart_write_resources.py) prepares separate, equivalently populated fixtures for the ordinary and checkpoint-backed stores and, optionally, SQLite. Each epoch starts a fresh process, checks every prior workload key plus sampled base and suffix values, then times unique-key durable writes by concurrent workers and verifies the new values. A final fresh process checks every workload key again. Variant order rotates between epochs; the process reports open time, individual write latencies, elapsed write time, RSS and process I/O. The report retains source/binary hashes, fixture identifiers, each sample and VM/cgroup noise telemetry, including partial results on errors.
 
 ```sh
 cargo build --release --locked --example index_memory_bench --example restart_write_bench
@@ -692,7 +692,9 @@ python3 scripts/restart_write_resources.py --directory /path/to/test-filesystem 
   --key-bytes 128 --tail-keys 1024 --workers 4 --writes 128 --epochs 4
 ```
 
-The fixture directory must already exist and the output path must be new. The Linux run needs at least two available CPUs. RSS excludes the OS page cache; process I/O includes reads and writes used for verification and metrics. These are clean restarts on warm caches, not simulated crashes or power loss. The diagnostic does not test transactions, total resource bounds, independent machines or competitors.
+The fixture directory must already exist and the output path must be new. The Linux run needs at least two available CPUs. RSS excludes the OS page cache; process I/O includes reads and writes used for verification and metrics. These are clean restarts on warm caches, not simulated crashes or power loss. The diagnostic does not test transactions, total resource bounds, independent machines or competitors other than the optional SQLite path.
+
+To include SQLite, also build `sqlite_restart_write_bench` in release mode and pass `--sqlite-binary target/release/examples/sqlite_restart_write_bench`. SQLite uses WAL and `synchronous=FULL` with one connection per writer; each fetched value has an application-level checksum. The SQLite process records an integrity check separately, outside the open and write timers. SQLite opens lazily while the prototype validates its log on open, so those open timings do not perform equivalent verification. SQLite statement preparation is included in its aggregate write elapsed time. Durability implementations, on-disk formats and memory behavior differ; the comparison does not prove equal power-loss guarantees.
 
 ### Collection deletion cursor
 
