@@ -27,18 +27,22 @@ concurrency:
 
 jobs:
   test:
-    name: Rust stable / macOS
+    name: Rust ${{ matrix.toolchain }} / macOS
     runs-on: macos-15
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.85.0", "stable"]
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install Rust
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal
       - name: Record environment
         run: |
           uname -m
           sw_vers
-          rustc +stable --version
+          rustc +${{ matrix.toolchain }} --version
       - name: Test library and integration tests
-        run: cargo +stable test --locked --lib --tests
+        run: cargo +${{ matrix.toolchain }} test --locked --lib --tests
