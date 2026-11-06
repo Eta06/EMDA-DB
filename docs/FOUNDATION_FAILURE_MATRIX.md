@@ -72,6 +72,8 @@ operation may still succeed; successful outcomes must be visible on recovery.
 These synthetic return values do not deliver a real signal or create actual
 disk/quota exhaustion. The separate isolated tmpfs check exercises real
 kernel `ENOSPC`.
+The filesystem workflow's manual `full_eintr` option runs the broader
+interrupted-call matrix on GitHub and preserves each syscall group's report.
 
 [`double_eio_campaign.py`](../scripts/double_eio_campaign.py) adds a separate
 two-error model. For each selected data, namespace or synchronization error on a successful path,
