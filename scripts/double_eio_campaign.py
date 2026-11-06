@@ -45,15 +45,22 @@ class ReportWriter:
 
     def save(self, result, force=False):
         # This small sidecar records the most recent case even between full
-        # snapshots. On a caught failure or normal exit the main file is forced.
-        self._atomic_json(self.progress, {'revision': result['revision'], 'current': result['current'],
-                                          'completed': result['completed'], 'failure': result['failure']})
+        # snapshots. On normal completion or a caught failure, publish the
+        # forced full report first so the sidecar cannot claim completion if
+        # serializing that report fails.
+        progress = {'revision': result['revision'], 'current': result['current'],
+                    'completed': result['completed'], 'failure': result['failure']}
         now = time.monotonic()
-        if force or self.last_snapshot is None or now - self.last_snapshot >= self.interval:
+        full_due = force or self.last_snapshot is None or now - self.last_snapshot >= self.interval
+        if not force:
+            self._atomic_json(self.progress, progress)
+        if full_due:
             self.snapshots += 1
             result['full_report_snapshots'] = self.snapshots
             self._atomic_json(self.output, result)
             self.last_snapshot = time.monotonic()
+        if force:
+            self._atomic_json(self.progress, progress)
 
 
 def calls_after_primary(lines, primary, root, allow_same_second=False):

@@ -44,6 +44,21 @@ class DoubleEioCampaignTests(unittest.TestCase):
             self.assertEqual(output.read_text(), 'previous report')
             self.assertEqual(list(Path(directory).glob('.double-eio-report-*')), [])
 
+    def test_failed_final_snapshot_does_not_report_completion_in_sidecar(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'result.json'
+            writer = ReportWriter(output, 1.0)
+            result = {'revision': 'test', 'current': {'case': 1}, 'completed': False,
+                      'failure': None, 'cases': []}
+            writer.save(result, force=True)
+            result['completed'] = True
+            result['current'] = None
+            result['cases'].append(object())
+            with self.assertRaises(TypeError):
+                writer.save(result, force=True)
+            self.assertFalse(json.loads(output.read_text())['completed'])
+            self.assertFalse(json.loads(writer.progress.read_text())['completed'])
+
     def test_cleanup_ordinals_count_synchronizations_before_the_first_fault(self):
         lines = [
             '1 fsync(3</work/case/file>) = 0',
