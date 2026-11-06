@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,15 @@ def digest(path):
         for part in iter(lambda: file.read(1024 * 1024), b''):
             value.update(part)
     return value.hexdigest()
+
+
+def driver_rustc_version():
+    if not shutil.which('rustc'):
+        return None
+    try:
+        return subprocess.check_output(['rustc', '--version'], text=True, timeout=10).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def main():
@@ -52,11 +62,10 @@ def main():
     args.directory = str(Path(args.directory).resolve())
     args.server, args.prototype_preparer, args.sqlite_preparer = (str(path.resolve()) for path in binaries)
     os.sched_setaffinity(0, client_cpus)
-    sources = [Path(__file__), Path('scripts/benchmarks/large_crash.py'),
-               Path('scripts/compare_crashes.py'), Path('scripts/benchmarks/services.py'),
-               Path('scripts/benchmarks/clients.py'), Path('examples/network_bench_server.rs'),
-               Path('examples/index_memory_bench.rs'), Path('examples/sqlite_restart_write_bench.rs'),
-               Path('Cargo.lock'), *Path('src').rglob('*.rs')]
+    sources = [Path(__file__), Path('scripts/compare_crashes.py'),
+               Path('scripts/index_memory_compare.py'), *Path('scripts/benchmarks').glob('*.py'),
+               Path('Cargo.toml'), Path('Cargo.lock'), *Path('examples').rglob('*.rs'),
+               *Path('src').rglob('*.rs')]
     versions = {}
     for package in ('psycopg', 'pymongo'):
         try:
@@ -70,6 +79,9 @@ def main():
         'source_sha256': {str(path): digest(path) for path in sorted(sources)},
         'binary_sha256': {path.name: digest(path) for path in binaries},
         'python': sys.version, 'platform': platform.platform(), 'dependencies': versions,
+        'rustc_on_driver_path': driver_rustc_version(),
+        'cpu_model': next((line.split(':', 1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
+                           if line.startswith('model name')), 'unknown'),
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', args.directory, '-o', 'TARGET,FSTYPE'], text=True)),
         'cpu_quota': read('/sys/fs/cgroup/cpu.max'), 'allowed_cpus': sorted(allowed),
