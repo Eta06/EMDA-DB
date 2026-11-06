@@ -31,6 +31,13 @@ were on the workspace overlay; its underlying storage device was not verified.
 The [methodology](COMPARISON_METHOD.md) describes the distinct adapters and
 durability settings. Similar settings do not establish identical guarantees.
 
+As a provenance follow-up, the Rust adapter was rebuilt with Rust 1.99.1 from
+clean revision `8a496b28bb7c24f2417345fbbc42a4a3165a2b25`; its new hash and
+source hashes are recorded in a separate
+[four-run result](../benchmarks/results/2026-11-06-rebuilt-adapter-crash.json).
+Both prototype runs and both SQLite runs passed the same process-crash check.
+The full 22-run matrix above still used the earlier prebuilt adapter.
+
 An earlier [pilot](../benchmarks/results/2026-11-06-process-crash-pilot.json)
 passed the first nine configurations but failed to load FoundationDB's missing
 native client library. After installing the matching 7.3.79 library from the
