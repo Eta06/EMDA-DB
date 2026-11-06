@@ -10,7 +10,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::Command;
+
+mod kernel_file_limit_common;
 
 const XATTR: &str = "user.db.commit.v3";
 const CHILD_READY: &str = "EMDA_FILE_LIMIT_READY";
@@ -182,19 +183,12 @@ fn kernel_file_size_failures_preserve_witness_and_prior_bytes() {
                             Format::V3 => b"EMDALOG3",
                         }
                     );
-                    let executable = std::env::current_exe().unwrap();
-                    let mut command = if ignore_signal {
-                        // Exercise the returned EFBIG path even when SIGXFSZ would
-                        // otherwise terminate the child before it sees the error.
-                        let mut shell = Command::new("sh");
-                        shell.args(["-c", "trap '' XFSZ; exec \"$@\"", "file-limit-child"]);
-                        shell.arg(&executable);
-                        shell
-                    } else {
-                        Command::new(&executable)
-                    };
-                    let output = command
-                        .args(["--exact", "kernel_file_limit_child", "--nocapture"])
+                    let mut command = kernel_file_limit_common::child_command(
+                        "kernel_file_limit_child",
+                        ignore_signal,
+                    )
+                    .unwrap();
+                    command
                         .env("EMDA_FILE_LIMIT_ROOT", root.path())
                         .env("EMDA_FILE_LIMIT_DIGEST", hex(&digest))
                         .env(
@@ -207,9 +201,9 @@ fn kernel_file_size_failures_preserve_witness_and_prior_bytes() {
                         .env(
                             "EMDA_FILE_LIMIT_BYTES",
                             (before.len() as u64 + extra_bytes).to_string(),
-                        )
-                        .output()
-                        .unwrap();
+                        );
+                    let output =
+                        kernel_file_limit_common::output_with_timeout(&mut command).unwrap();
                     let context = format!(
                         "{format:?} {writer:?} extra={extra_bytes} ignore_signal={ignore_signal} stdout={} stderr={}",
                         String::from_utf8_lossy(&output.stdout),

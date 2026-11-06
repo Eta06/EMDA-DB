@@ -9,7 +9,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::Command;
+
+mod kernel_file_limit_common;
 
 const XATTR: &str = "user.db.commit.v3";
 const READY: &str = "EMDA_COPY_FILE_LIMIT_READY";
@@ -163,22 +164,17 @@ fn file_size_failures_never_publish_partial_copies_and_allow_retry() {
                         }
                     );
                     assert!(before.len() as u64 > limit && backup_before.len() as u64 > limit);
-                    let executable = std::env::current_exe().unwrap();
-                    let mut command = if ignore_signal {
-                        let mut shell = Command::new("sh");
-                        shell.args(["-c", "trap '' XFSZ; exec \"$@\"", "copy-limit-child"]);
-                        shell.arg(&executable);
-                        shell
-                    } else {
-                        Command::new(&executable)
-                    };
-                    let output = command
-                        .args(["--exact", "kernel_file_limit_copy_child", "--nocapture"])
+                    let mut command = kernel_file_limit_common::child_command(
+                        "kernel_file_limit_copy_child",
+                        ignore_signal,
+                    )
+                    .unwrap();
+                    command
                         .env("EMDA_COPY_LIMIT_ROOT", root.path())
                         .env("EMDA_COPY_LIMIT_OPERATION", operation.name())
-                        .env("EMDA_COPY_LIMIT_BYTES", limit.to_string())
-                        .output()
-                        .unwrap();
+                        .env("EMDA_COPY_LIMIT_BYTES", limit.to_string());
+                    let output =
+                        kernel_file_limit_common::output_with_timeout(&mut command).unwrap();
                     let context = format!(
                         "{format:?} {operation:?} limit={limit} ignore_signal={ignore_signal} stdout={} stderr={}",
                         String::from_utf8_lossy(&output.stdout),
