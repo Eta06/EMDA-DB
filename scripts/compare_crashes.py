@@ -23,8 +23,10 @@ from benchmarks.services import IMAGES, LocalService
 from compare_engines import BACKENDS
 
 
-def adapter(backend, directory, server):
+def adapter(backend, directory, server, cpus=None):
     command = ([server] if backend in ("prototype", "sqlite") else [sys.executable, "scripts/embedded_bench_server.py"])
+    if cpus is not None:
+        command = ["taskset", "-c", cpus, *command]
     process = subprocess.Popen(command + [backend, str(directory)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         with selectors.DefaultSelector() as selector:

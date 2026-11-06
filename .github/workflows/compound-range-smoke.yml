@@ -9,11 +9,17 @@ name: Compound range cross-engine smoke
       - "Cargo.lock"
       - "Cargo.toml"
       - "examples/compound_range_query_bench.rs"
+      - "examples/network_bench_server.rs"
+      - "examples/index_memory_bench.rs"
+      - "examples/sqlite_restart_write_bench.rs"
+      - "scripts/large_crash_compare.py"
+      - "scripts/compare_crashes.py"
       - "scripts/compound_range_external_compare.py"
       - "scripts/nonunique_query_compare.py"
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
       - "scripts/tests/test_compound_range_external_compare.py"
+      - "scripts/tests/test_large_crash_compare.py"
       - "src/**"
   pull_request:
     paths:
@@ -21,11 +27,17 @@ name: Compound range cross-engine smoke
       - "Cargo.lock"
       - "Cargo.toml"
       - "examples/compound_range_query_bench.rs"
+      - "examples/network_bench_server.rs"
+      - "examples/index_memory_bench.rs"
+      - "examples/sqlite_restart_write_bench.rs"
+      - "scripts/large_crash_compare.py"
+      - "scripts/compare_crashes.py"
       - "scripts/compound_range_external_compare.py"
       - "scripts/nonunique_query_compare.py"
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
       - "scripts/tests/test_compound_range_external_compare.py"
+      - "scripts/tests/test_large_crash_compare.py"
       - "src/**"
 
 permissions:
@@ -66,10 +78,16 @@ jobs:
             --directory "$RUNNER_TEMP" --binary target/release/examples/compound_range_query_bench \
             --output "$RUNNER_TEMP/compound-range-smoke.json" --cases 16:4 --rounds 2 --cycles 2 \
             --driver-cpus "$driver_cpu" --server-cpus "$server_cpu"
+          cargo +stable build --release --locked --example network_bench_server --example index_memory_bench --example sqlite_restart_write_bench
+          "$RUNNER_TEMP/benchmark-venv/bin/python" scripts/large_crash_compare.py \
+            --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/large-crash-smoke.json" \
+            --keys 128 --client-cpus "$driver_cpu" --server-cpus "$server_cpu"
       - name: Preserve smoke report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: compound-range-cross-engine-smoke
-          path: ${{ runner.temp }}/compound-range-smoke.json
+          path: |
+            ${{ runner.temp }}/compound-range-smoke.json
+            ${{ runner.temp }}/large-crash-smoke.json
           if-no-files-found: ignore
