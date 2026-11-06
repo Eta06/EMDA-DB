@@ -94,6 +94,7 @@ jobs:
           cargo +stable build --release --locked --example checkpoint_rollover_bench
           python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
           python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-managed-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --managed
+          python3 scripts/managed_rollover_before_after.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-managed-pair-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --baseline-binary target/release/examples/checkpoint_rollover_bench --baseline-revision HEAD --binary target/release/examples/checkpoint_rollover_bench --prepare-binary target/release/examples/index_memory_bench
           cargo +stable build --release --locked --example backup_validation_bench
           python3 scripts/backup_validation_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/backup-validation-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --baseline-binary target/release/examples/backup_validation_bench --baseline-revision HEAD
           cargo +stable build --release --locked --example checkpoint_compaction_bench

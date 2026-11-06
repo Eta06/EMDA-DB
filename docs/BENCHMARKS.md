@@ -562,6 +562,14 @@ cargo build --release --locked --example checkpoint_rollover_bench --example ind
 python3 scripts/checkpoint_rollover_compare.py --directory /path/to/disposable-fixtures --output /path/to/new-result.json --rounds 10 --keys 10000,50000 --key-bytes 32 --tail-keys 1024 --managed
 ```
 
+For a before/after comparison of managed rollover, build the same benchmark
+examples against both revisions in separate target directories, then use
+`scripts/managed_rollover_before_after.py` with `--baseline-binary`,
+`--baseline-revision`, `--binary`, `--prepare-binary`, `--directory` and a
+new `--output` path. It alternates the binaries on the same verified fixture,
+checks checkpoint digests and sampled reopened values, and records failures and
+VM telemetry. The baseline revision is supplied by the caller.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
