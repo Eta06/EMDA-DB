@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject EIO at real synchronization syscalls on disposable Linux fixtures."""
+"""Inject EIO at selected filesystem syscalls on disposable Linux fixtures."""
 import argparse
 import errno
 import hashlib
@@ -13,14 +13,25 @@ import subprocess
 import tempfile
 import time
 
-SYSCALLS = ('fsync', 'fdatasync')
+SYSCALL_SETS = {
+    'sync': ('fsync', 'fdatasync'),
+    'data': ('write', 'writev', 'pwrite64', 'setxattr', 'fsetxattr'),
+    'read': ('read', 'readv', 'pread64'),
+    'open': ('open', 'openat', 'openat2', 'creat'),
+    'namespace': ('mkdir', 'mkdirat', 'rename', 'renameat', 'renameat2',
+                  'unlink', 'unlinkat', 'rmdir', 'link', 'linkat'),
+}
+SYSCALLS = SYSCALL_SETS['sync']
 OPERATIONS = ('write', 'backup', 'restore', 'upgrade', 'checkpoint', 'compaction',
               'checkpoint-write', 'checkpoint-backup', 'checkpoint-compaction', 'checkpoint-rollover',
               'initialize')
 WRITES = ('write', 'checkpoint-write')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
-CALL = re.compile(r'\b(fsync|fdatasync)\(')
+CALL = re.compile(r'\b(' + '|'.join(sorted(
+    {name for names in SYSCALL_SETS.values() for name in names}, key=len, reverse=True)) + r')\(')
+TRACEE = re.compile(r'^\s*(\d+)\s')
+FD_CALLS = frozenset(('read', 'readv', 'pread64', 'write', 'writev', 'pwrite64', 'fsetxattr'))
 
 
 def digest(data):
@@ -127,9 +138,45 @@ def run_probe(binary, *args):
     return json.loads(run.stdout)
 
 
-def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persistent=False):
+def targets_fixture(line, syscall, fixture):
+    """Match a syscall argument, never an incidental path in written bytes."""
+    path = re.escape(str(fixture))
+    if syscall in FD_CALLS:
+        return bool(re.search(r'\b' + syscall + r'\(\d+<' + path + r'(?:/|>)', line))
+    return bool(re.search(r'[<"]' + path + r'(?:/|[>"])', line))
+
+
+def traced_ordinals(lines, syscalls, fixture=None):
+    """Return per-syscall global ordinals, optionally restricted to the fixture.
+
+    strace's injection counters are per tracee, so path-filtered campaigns
+    reject multi-process traces instead of silently targeting a wrong call.
+    Counts include unrelated calls, even though they are never selected.
+    """
+    counts = {name: 0 for name in syscalls}
+    eligible = {name: [] for name in syscalls}
+    tracees = set()
+    for line in lines:
+        match = CALL.search(line)
+        if not match or match.group(1) not in counts:
+            continue
+        pid = TRACEE.match(line)
+        if pid:
+            tracees.add(pid.group(1))
+        name = match.group(1)
+        counts[name] += 1
+        if fixture is None or targets_fixture(line, name, fixture):
+            eligible[name].append(counts[name])
+    if fixture is not None and len(tracees) > 1:
+        raise ValueError('path-filtered campaign cannot index multiple tracees')
+    return counts, eligible
+
+
+def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persistent=False,
+                   syscalls=SYSCALLS, fixture_only=False):
     trace = root / 'trace.txt'
-    command = ['strace', '-f', '-qq', '-yy', '-o', str(trace), '-e', 'trace=fsync,fdatasync']
+    command = ['strace', '-f', '-qq', '-yy', '-s', '512', '-o', str(trace),
+               '-e', 'trace=' + ','.join(syscalls)]
     if syscall:
         when = f'{ordinal}+1' if persistent else str(ordinal)
         command += ['-e', f'inject={syscall}:error=EIO:when={when}']
@@ -141,28 +188,29 @@ def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persiste
     if outcome.get('operation') != operation or outcome.get('status') not in ('success', 'error'):
         raise ValueError('unexpected action outcome')
     lines = trace.read_text().splitlines()
-    counts = {
-        name: sum(1 for line in lines if (match := CALL.search(line)) and match.group(1) == name)
-        for name in SYSCALLS
-    }
+    counts, eligible = traced_ordinals(lines, syscalls, root if fixture_only else None)
     injected = [line for line in lines if '(INJECTED)' in line]
     if syscall and (not injected or (not persistent and len(injected) != 1)
                     or any(not re.search(r'\b' + syscall + r'\(', line) for line in injected)):
         raise ValueError(f'{syscall} injection did not match the requested mode')
     if not syscall and injected:
         raise ValueError('control run unexpectedly reported an injection')
-    return {'outcome': outcome, 'counts': counts, 'injected_traces': injected}
+    if fixture_only and syscall and any(not targets_fixture(line, syscall, root) for line in injected):
+        raise ValueError('injection did not target a fixture filesystem operation')
+    return {'outcome': outcome, 'counts': counts, 'eligible_ordinals': eligible,
+            'injected_traces': injected}
 
 
 def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
-             order='ordinary-first', persistent=False):
+             order='ordinary-first', persistent=False, syscalls=SYSCALLS, fixture_only=False):
     with tempfile.TemporaryDirectory(prefix='sync-eio-case-', dir=parent) as path:
         root = Path(path)
         setup = run_probe(binary, 'setup', root, format_name)
         if setup != {'status': 'ready', 'format': format_name}:
             raise ValueError('unexpected fixture setup')
         before = snapshot(root, format_name)
-        traced = traced_attempt(binary, root, operation, syscall, ordinal, persistent)
+        traced = traced_attempt(binary, root, operation, syscall, ordinal, persistent,
+                                syscalls, fixture_only)
         after = snapshot(root, format_name)
         check_source(before, after, format_name, operation)
         stages_before = stage_inventory(root)
@@ -196,11 +244,20 @@ def main():
                         help='limit each syscall per case; zero tests all baseline ordinals')
     parser.add_argument('--persistent-errors', action='store_true',
                         help='continue returning EIO for that syscall after the selected ordinal')
+    parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync',
+                        help='sync (default), data writes/metadata, reads, opens, or namespace operations')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output)
             or not 0 <= args.max_ordinals <= 100):
         parser.error('existing fixture directory and binary, new output, and valid ordinal limit required')
+    if args.persistent_errors and args.syscall_set != 'sync':
+        parser.error('persistent errors are supported only for synchronization syscalls')
     binary = str(Path(args.binary).resolve())
+    directory = str(Path(args.directory).resolve())
+    syscalls = SYSCALL_SETS[args.syscall_set]
+    fixture_only = args.syscall_set != 'sync'
+    if fixture_only and any(character in directory for character in ('"', '\\', '\n', '\r')):
+        parser.error('fixture directory contains characters escaped by strace')
     result = {
         'revision': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
         'git_status': subprocess.check_output(['git', 'status', '--short'], text=True),
@@ -211,12 +268,16 @@ def main():
         'strace': subprocess.check_output(['strace', '--version'], text=True).splitlines()[0],
         'host_platform': platform.platform(),
         'max_ordinals': args.max_ordinals,
+        'syscall_set': args.syscall_set,
+        'fixture_paths_only': fixture_only,
         'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', args.directory, '-o', 'TARGET,FSTYPE'], text=True)),
         'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'scope': ('Inject a returned EIO at each selected fsync or fdatasync ordinal from a successful '
-                  'single-process path. In persistent mode, later calls of that syscall also fail. '
+        'scope': ('Inject a returned EIO at selected syscall ordinals from a successful '
+                  'single-process path. Non-sync sets select fixture filesystem calls only; '
+                  'sync includes resolved ancestor directories. In persistent mode, later calls '
+                  'of that syscall also fail. '
                   'Test each injection with both writable recovery paths taking '
                   'turns reopening first. Verify acknowledged values, source/backup preservation and any '
                   'visible copy on the running OS. Failure-only extra syscalls, other syscall types, '
@@ -244,28 +305,29 @@ def main():
                 temporary.unlink(missing_ok=True)
 
     try:
-        with tempfile.TemporaryDirectory(prefix='sync-eio-campaign-', dir=args.directory) as temp:
+        with tempfile.TemporaryDirectory(prefix='sync-eio-campaign-', dir=directory) as temp:
             for format_name in FORMATS:
                 for operation in OPERATIONS:
                     result['current'] = {'format': format_name, 'operation': operation, 'stage': 'control'}
                     save()
-                    control = run_case(binary, temp, format_name, operation)
+                    control = run_case(binary, temp, format_name, operation,
+                                       syscalls=syscalls, fixture_only=fixture_only)
                     if control['outcome']['status'] != 'success':
                         raise ValueError(f'control action failed for {format_name}/{operation}')
                     case = {'format': format_name, 'operation': operation, 'control': control, 'injections': []}
                     result['cases'].append(case)
                     save()
-                    for syscall in SYSCALLS:
-                        count = control['counts'][syscall]
+                    for syscall in syscalls:
+                        ordinals = control['eligible_ordinals'][syscall]
                         if args.max_ordinals:
-                            count = min(count, args.max_ordinals)
-                        for ordinal in range(1, count + 1):
+                            ordinals = ordinals[:args.max_ordinals]
+                        for ordinal in ordinals:
                             for order in RECOVERY_ORDERS:
                                 result['current'] = {'format': format_name, 'operation': operation,
                                                      'syscall': syscall, 'ordinal': ordinal, 'order': order}
                                 save()
                                 injection = run_case(binary, temp, format_name, operation, syscall, ordinal,
-                                                     order, args.persistent_errors)
+                                                     order, args.persistent_errors, syscalls, fixture_only)
                                 case['injections'].append({'syscall': syscall, 'ordinal': ordinal,
                                                            'order': order, **injection})
                                 save()

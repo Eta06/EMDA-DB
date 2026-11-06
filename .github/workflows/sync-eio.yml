@@ -1,4 +1,4 @@
-name: Synchronization EIO checks
+name: Filesystem EIO checks
 
 "on":
   workflow_dispatch:
@@ -39,11 +39,14 @@ jobs:
           rustup toolchain install stable --profile minimal
           sudo apt-get update
           sudo apt-get install -y strace
-      - name: Build and inject sync failures
+      - name: Build and inject filesystem failures
         run: |
           cargo +stable build --release --locked --example sync_failure_probe
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-result.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-persistent.json" --persistent-errors
+          for syscall_group in data read open namespace; do
+            python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-$syscall_group.json" --syscall-set "$syscall_group"
+          done
       - name: Preserve result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -52,4 +55,8 @@ jobs:
           path: |
             ${{ runner.temp }}/sync-eio-result.json
             ${{ runner.temp }}/sync-eio-persistent.json
+            ${{ runner.temp }}/eio-data.json
+            ${{ runner.temp }}/eio-read.json
+            ${{ runner.temp }}/eio-open.json
+            ${{ runner.temp }}/eio-namespace.json
           if-no-files-found: ignore

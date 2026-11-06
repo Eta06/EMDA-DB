@@ -14,7 +14,7 @@ A [targeted deadline-race test](docs/DOCUMENT_DEADLINE_RACES_2026_11_06.md) chec
 
 [Initialization, staging and commit checks](docs/INITIALIZATION_AND_STAGING_BOUNDARIES_2026_11_06.md) cover additional interruption boundaries, synthetic torn-commit states and ownership-marker synchronization.
 The [failure and recovery matrix](docs/FOUNDATION_FAILURE_MATRIX.md) maps current evidence and remaining gaps to the storage contract.
-The [synchronization EIO campaigns](docs/SYNC_EIO_EXTENDED_2026_11_06.md) exercise initialization and ordinary/checkpoint-backed operations across both recovery orders, including repeated errors.
+The [filesystem EIO checks](docs/FOUNDATION_FAILURE_MATRIX.md#running-filesystem-eio-injection) exercise initialization and ordinary/checkpoint-backed operations across both recovery orders, including synchronization, read, write, open and namespace errors.
 An isolated [real ENOSPC campaign](benchmarks/results/2026-11-06-tmpfs-enospc.json) checks writes and copy operations on a disposable, size-limited tmpfs; physical power-loss testing remains open.
 The [local staging restore comparison](docs/STAGING_RESTORE_COMPARISON_2026_11_06.md) records the successful restore path before and after that synchronization change.
 The [current local engine comparison](docs/FOUNDATION_ENGINE_COMPARISON_2026_11_06.md) reports prototype, SQLite, PostgreSQL and MongoDB byte-key workloads with their settings and limitations.

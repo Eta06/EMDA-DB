@@ -146,6 +146,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/backup-restore-corpus"
           cp fuzz/backup-restore-seeds/* "$RUNNER_TEMP/backup-restore-corpus/"
           cargo +nightly-2026-11-03 fuzz run backup_restore "$RUNNER_TEMP/backup-restore-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
+      - name: Run backup snapshot model fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/backup-roundtrip-corpus"
+          cp fuzz/backup-roundtrip-seeds/* "$RUNNER_TEMP/backup-roundtrip-corpus/"
+          cargo +nightly-2026-11-03 fuzz run backup_roundtrip "$RUNNER_TEMP/backup-roundtrip-corpus" -- -max_total_time=60 -max_len=98 -timeout=10
       - name: Run managed checkpoint model fuzzing
         if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
         run: |

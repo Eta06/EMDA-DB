@@ -5,10 +5,43 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sync_eio_campaign import check_initialization, check_source, stage_inventory
+from sync_eio_campaign import (check_initialization, check_source, stage_inventory,
+                               targets_fixture, traced_ordinals)
 
 
 class SyncEioCampaignTests(unittest.TestCase):
+    def test_filtered_ordinals_include_unrelated_calls_in_the_counter(self):
+        lines = [
+            '123 write(1<pipe:[1]>, "status", 6) = 6',
+            '123 write(3</work/case/records.log>, "data", 4) = 4',
+            '123 pwrite64(4</work/case/commit.state>, "x", 1, 0) = 1',
+            '123 write(1<pipe:[1]>, "done", 4) = 4',
+            '123 write(5</work/case/stage>, "data", 4) = 4',
+        ]
+        counts, selected = traced_ordinals(lines, ('write', 'pwrite64'), Path('/work/case'))
+        self.assertEqual(counts, {'write': 4, 'pwrite64': 1})
+        self.assertEqual(selected, {'write': [2, 4], 'pwrite64': [1]})
+
+    def test_filtered_ordinals_reject_multiple_tracees(self):
+        lines = ['1 write(3</work/case/file>, "a", 1) = 1',
+                 '2 write(3</work/case/file>, "b", 1) = 1']
+        with self.assertRaises(ValueError):
+            traced_ordinals(lines, ('write',), Path('/work/case'))
+
+    def test_fixture_filter_checks_arguments_and_path_boundaries(self):
+        fixture = Path('/work/case')
+        self.assertTrue(targets_fixture('1 write(3</work/case/log>, "x", 1) = 1', 'write', fixture))
+        self.assertFalse(targets_fixture('1 write(1<pipe:[1]>, "/work/case/log", 14) = 14',
+                                         'write', fixture))
+        self.assertFalse(targets_fixture('1 read(3</work/case-other/log>, "x", 1) = 1',
+                                         'read', fixture))
+        self.assertTrue(targets_fixture('1 renameat2(AT_FDCWD, "/work/case/a", AT_FDCWD, '
+                                        '"/work/case/b", 0) = 0', 'renameat2', fixture))
+        self.assertTrue(targets_fixture('1 openat(AT_FDCWD, "/work/case/log", O_RDONLY) = 3',
+                                        'openat', fixture))
+        self.assertFalse(targets_fixture('1 openat(AT_FDCWD, "/work/case-other/log", O_RDONLY) = 3',
+                                         'openat', fixture))
+
     def state(self):
         return {'log': b'acknowledged', 'witness': b'anchor',
                 'metadata': b'boundary', 'backup': b'backup',

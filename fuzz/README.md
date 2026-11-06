@@ -20,6 +20,15 @@ The [recorded initial campaign](../benchmarks/results/2026-11-03-recovery-fuzz.j
 ran 127,313 inputs in 61 seconds without a detected crash. A scheduled and
 manually triggerable GitHub Actions workflow repeats a short campaign.
 
+The `backup_roundtrip` target applies generated puts, deletes, ordered batches
+and transactions to V2/V3 stores and an independent map. It checkpoints part
+of the history, backs up from either writable backend, changes the source after
+the backup, and compares the restored store and both checkpoint-backed views
+with the appropriate model state. Its synthetic seeds are in
+`fuzz/backup-roundtrip-seeds`. This serial model does not simulate concurrent
+backups, filesystem failures, physical power loss or independent off-host
+restores.
+
 The `staging_cleanup` target generates combinations of recognized file and
 directory markers, malformed and retired markers, missing payloads, unexpected
 types, symlinks and unrelated files. It checks cleanup counts, preservation of

@@ -100,6 +100,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "backup_roundtrip"
+path = "fuzz_targets/backup_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "managed_checkpoint"
 path = "fuzz_targets/managed_checkpoint.rs"
 test = false
