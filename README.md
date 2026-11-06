@@ -14,6 +14,7 @@ A [targeted deadline-race test](docs/DOCUMENT_DEADLINE_RACES_2026_11_06.md) chec
 
 [Initialization, staging and commit checks](docs/INITIALIZATION_AND_STAGING_BOUNDARIES_2026_11_06.md) cover additional interruption boundaries, synthetic torn-commit states and ownership-marker synchronization.
 The [local staging restore comparison](docs/STAGING_RESTORE_COMPARISON_2026_11_06.md) records the successful restore path before and after that synchronization change.
+The [current local engine comparison](docs/FOUNDATION_ENGINE_COMPARISON_2026_11_06.md) reports prototype, SQLite, PostgreSQL and MongoDB byte-key workloads with their settings and limitations.
 
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |

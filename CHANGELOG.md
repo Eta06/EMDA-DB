@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Record a 96-run local byte-key comparison against SQLite, PostgreSQL and MongoDB, including latency distributions, durability settings and noise telemetry.
+
 - Add deterministic process-kill checks for V2/V3 grouped independent writes, including a previously acknowledged write and partial grouped-record handling.
 
 - Exercise actual atomic-batch process termination at log and witness I/O boundaries on both writable backends and record a local staging/restore comparison.
