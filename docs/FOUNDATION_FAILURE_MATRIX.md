@@ -25,6 +25,28 @@ representative memory/I/O and repeated-restart measurements, and a later
 comparable cross-engine rerun. The separately deferred physical power-loss and
 independent off-host restore drills must remain open until actually performed.
 
+## Running synchronization EIO injection
+
+On Linux with `strace`, [`sync_eio_campaign.py`](../scripts/sync_eio_campaign.py)
+first traces successful V2 and V3 writes, backups, restores and upgrades. It
+then uses a fresh disposable fixture to inject `EIO` at each observed `fsync`
+and `fdatasync` ordinal, checking previously acknowledged values after reopen,
+the source and reference backup, and every copy visible after an error. A
+successful action must be visible; a failed write may have an unknown outcome.
+The driver retains partial results and the active case if it fails.
+
+```sh
+cargo build --release --locked --example sync_failure_probe
+python3 scripts/sync_eio_campaign.py --directory /path/to/disposable-fixtures \
+  --output /path/to/new-sync-eio-result.json
+```
+
+The directory must already exist. The [GitHub workflow](../.github/workflows/sync-eio.yml)
+runs the same campaign on relevant changes. This injects returned errors on a
+running OS; it does not exhaust calls reached only on failure paths, inject all
+syscall types, model storage reordering or establish physical power-loss or
+off-host restore behavior.
+
 ## Running the isolated ENOSPC check
 
 The ignored Linux test fills its filesystem to provoke a real kernel `ENOSPC`.
