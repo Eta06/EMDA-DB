@@ -1,5 +1,5 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
-use database_engine::{Store, cleanup_abandoned_staging};
+use database_engine::{CheckpointStore, Store, cleanup_abandoned_staging};
 use serde_json::json;
 use std::error::Error;
 use std::io;
@@ -47,6 +47,8 @@ fn setup(root: &Path, format: &str) -> ProbeResult<()> {
     if &std::fs::read(source.join("records.log"))?[..8] != expected {
         return Err("unexpected fixture log format".into());
     }
+    let checkpoint_digest = store.checkpoint_to(root.join("checkpoint"))?;
+    std::fs::write(root.join("checkpoint.digest"), checkpoint_digest)?;
     store.backup(root.join("reference-backup"))?;
     println!("{}", json!({"status":"ready","format":format}));
     Ok(())
@@ -79,13 +81,17 @@ fn attempt(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
-fn verify(root: &Path, operation: &str, status: &str) -> ProbeResult<()> {
-    if !matches!(status, "success" | "error") {
-        return Err("unknown outcome".into());
+fn inspect_source(
+    get: impl Fn(&[u8]) -> io::Result<Option<Vec<u8>>>,
+    operation: &str,
+    status: &str,
+) -> ProbeResult<bool> {
+    if get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
+        || get(b"old")?.as_deref() != Some(&b"original"[..])
+    {
+        return Err("acknowledged fixture values changed".into());
     }
-    let source = Store::open(root.join("source"))?;
-    check_values(&source)?;
-    let new_value = source.get(b"new")?;
+    let new_value = get(b"new")?;
     if operation == "write" {
         if status == "success" && new_value.as_deref() != Some(&b"attempted"[..]) {
             return Err("successful write missing after reopen".into());
@@ -99,7 +105,36 @@ fn verify(root: &Path, operation: &str, status: &str) -> ProbeResult<()> {
     } else if new_value.is_some() {
         return Err("copy operation changed source values".into());
     }
-    drop(source);
+    Ok(new_value.is_some())
+}
+
+fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResult<()> {
+    if !matches!(status, "success" | "error") {
+        return Err("unknown outcome".into());
+    }
+    let order = match order {
+        "ordinary-first" => ["ordinary", "checkpoint"],
+        "checkpoint-first" => ["checkpoint", "ordinary"],
+        _ => return Err("unknown recovery order".into()),
+    };
+    let digest: [u8; 32] = std::fs::read(root.join("checkpoint.digest"))?
+        .try_into()
+        .map_err(|_| "invalid checkpoint digest")?;
+    let mut new_present = None;
+    for backend in order {
+        let present = if backend == "ordinary" {
+            let source = Store::open(root.join("source"))?;
+            inspect_source(|key| source.get(key), operation, status)?
+        } else {
+            let source =
+                CheckpointStore::open(root.join("source"), root.join("checkpoint"), &digest)?;
+            inspect_source(|key| source.get(key), operation, status)?
+        };
+        if new_present.is_some_and(|previous| previous != present) {
+            return Err("recovery paths disagree about the write".into());
+        }
+        new_present = Some(present);
+    }
     let target = root.join("result");
     let visible = target.exists();
     if operation != "write" && status == "success" && !visible {
@@ -120,7 +155,7 @@ fn verify(root: &Path, operation: &str, status: &str) -> ProbeResult<()> {
     println!(
         "{}",
         json!({"status":"verified","operation":operation,"target_visible":visible,
-        "new_present":new_value.is_some(),"cleanup_removed_markers":cleanup.removed_markers,
+        "new_present":new_present.unwrap(),"recovery_order":order,"cleanup_removed_markers":cleanup.removed_markers,
         "cleanup_removed_payloads":cleanup.removed_payloads,"cleanup_skipped":cleanup.skipped})
     );
     Ok(())
@@ -131,8 +166,8 @@ fn main() -> ProbeResult<()> {
     match args.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
-        [command, root, operation, status] if command == "verify" => verify(Path::new(root), operation, status),
-        _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <write|backup|restore|upgrade> | verify <root> <operation> <success|error>".into()),
+        [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
+        _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <write|backup|restore|upgrade> | verify <root> <operation> <success|error> <ordinary-first|checkpoint-first>".into()),
     }
 }
 
@@ -144,13 +179,13 @@ mod tests {
     fn verifier_rejects_missing_data_and_partial_publication() {
         let root = tempfile::tempdir().unwrap();
         setup(root.path(), "v2").unwrap();
-        assert!(verify(root.path(), "restore", "success").is_err());
+        assert!(verify(root.path(), "restore", "success", "ordinary-first").is_err());
         std::fs::write(root.path().join("result"), b"partial backup").unwrap();
-        assert!(verify(root.path(), "backup", "error").is_err());
+        assert!(verify(root.path(), "backup", "error", "checkpoint-first").is_err());
         std::fs::remove_file(root.path().join("result")).unwrap();
         let store = Store::open(root.path().join("source")).unwrap();
         store.put(b"safe", b"changed").unwrap();
         drop(store);
-        assert!(verify(root.path(), "write", "error").is_err());
+        assert!(verify(root.path(), "write", "error", "ordinary-first").is_err());
     }
 }

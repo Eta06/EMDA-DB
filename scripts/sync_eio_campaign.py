@@ -14,6 +14,7 @@ import time
 SYSCALLS = ('fsync', 'fdatasync')
 OPERATIONS = ('write', 'backup', 'restore', 'upgrade')
 FORMATS = ('v2', 'v3')
+RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(fsync|fdatasync)\(')
 
 
@@ -78,7 +79,7 @@ def traced_attempt(binary, root, operation, syscall=None, ordinal=None):
     return {'outcome': outcome, 'counts': counts, 'injected_trace': injected[0] if injected else None}
 
 
-def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None):
+def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None, order='ordinary-first'):
     with tempfile.TemporaryDirectory(prefix='sync-eio-case-', dir=parent) as path:
         root = Path(path)
         setup = run_probe(binary, 'setup', root, format_name)
@@ -88,8 +89,10 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None)
         traced = traced_attempt(binary, root, operation, syscall, ordinal)
         after = snapshot(root, format_name)
         check_source(before, after, format_name, operation)
-        verification = run_probe(binary, 'verify', root, operation, traced['outcome']['status'])
-        if verification.get('status') != 'verified' or verification.get('operation') != operation:
+        verification = run_probe(binary, 'verify', root, operation, traced['outcome']['status'], order)
+        expected_order = ['ordinary', 'checkpoint'] if order == 'ordinary-first' else ['checkpoint', 'ordinary']
+        if (verification.get('status') != 'verified' or verification.get('operation') != operation
+                or verification.get('recovery_order') != expected_order):
             raise ValueError('recovery verification did not complete')
         final = snapshot(root, format_name)
         check_source(before, final, format_name, operation)
@@ -123,7 +126,8 @@ def main():
             ['findmnt', '-J', '-T', args.directory, '-o', 'TARGET,FSTYPE'], text=True)),
         'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'scope': ('Inject a returned EIO at each selected fsync or fdatasync ordinal from a successful '
-                  'single-process path. Verify acknowledged values, source/backup preservation and any '
+                  'single-process path. Test each injection with both writable recovery paths taking '
+                  'turns reopening first. Verify acknowledged values, source/backup preservation and any '
                   'visible copy on the running OS. Failure-only extra syscalls, other syscall types, '
                   'crash ordering, physical power loss and off-host recovery are not exhausted.'),
         'completed': False,
@@ -165,12 +169,14 @@ def main():
                         if args.max_ordinals:
                             count = min(count, args.max_ordinals)
                         for ordinal in range(1, count + 1):
-                            result['current'] = {'format': format_name, 'operation': operation,
-                                                 'syscall': syscall, 'ordinal': ordinal}
-                            save()
-                            injection = run_case(binary, temp, format_name, operation, syscall, ordinal)
-                            case['injections'].append({'syscall': syscall, 'ordinal': ordinal, **injection})
-                            save()
+                            for order in RECOVERY_ORDERS:
+                                result['current'] = {'format': format_name, 'operation': operation,
+                                                     'syscall': syscall, 'ordinal': ordinal, 'order': order}
+                                save()
+                                injection = run_case(binary, temp, format_name, operation, syscall, ordinal, order)
+                                case['injections'].append({'syscall': syscall, 'ordinal': ordinal,
+                                                           'order': order, **injection})
+                                save()
                     print(f'{format_name}/{operation}: {len(case["injections"])} injected failures', flush=True)
         result['current'] = None
         result['completed'] = True
