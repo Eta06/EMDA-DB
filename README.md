@@ -23,6 +23,7 @@ The [native macOS CI matrix](https://github.com/Eta06/EMDA-DB/actions/runs/42161
 An isolated [real ENOSPC campaign](benchmarks/results/2026-11-06-tmpfs-enospc.json) checks writes and copy operations on a disposable, size-limited tmpfs; physical power-loss testing remains open.
 The [local staging restore comparison](docs/STAGING_RESTORE_COMPARISON_2026_11_06.md) records the successful restore path before and after that synchronization change.
 The [current local engine comparison](docs/FOUNDATION_ENGINE_COMPARISON_2026_11_06.md) reports prototype, SQLite, PostgreSQL and MongoDB byte-key workloads with their settings and limitations.
+The [100,000-key follow-up](docs/100K_ENGINE_COMPARISON_2026_11_06.md) compares mixed and write-only throughput and latency across the same four configurations; SQLite retained lower sampled median write latency.
 The [cross-engine restart check](docs/CROSS_ENGINE_PROCESS_CRASH_2026_11_06.md) repeats a small acknowledged-write, update and delete workload across eleven configurations; it does not test physical power loss.
 
 | Area | Status | Current behavior or next step |
