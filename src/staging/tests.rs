@@ -9,6 +9,47 @@ fn orphan(mut stage: Stage) -> PathBuf {
     path
 }
 
+// A private, single-stage fixture can briefly retain a retired-store lock
+// across another test's fork/exec. Retry only its no-progress skipped report;
+// an unexpected result or a skip that persists past retry_lock's deadline
+// still fails the caller's assertions.
+fn retry_fixture_retired_cleanup(parent: &Path, id: &[u8; 16]) -> io::Result<StagingCleanup> {
+    crate::test_support::retry_lock(|| {
+        let report = cleanup_retired(parent, id, || Ok(()))?;
+        if report.removed_payloads == 0 && report.removed_markers == 0 && report.skipped == 1 {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        Ok(report)
+    })
+}
+
+#[test]
+fn busy_retired_fixture_is_preserved_until_its_lock_is_released() {
+    let directory = tempfile::tempdir().unwrap();
+    let id = [8_u8; 16];
+    let stage = Stage::retired_directory(directory.path(), &id).unwrap();
+    fs::create_dir(stage.path().join("retired")).unwrap();
+    let lock_path = stage.path().join("retired/store.lock");
+    fs::write(&lock_path, b"lock").unwrap();
+    fs::write(stage.path().join("retired/records.log"), b"old").unwrap();
+    let path = orphan(stage);
+    let lock = File::open(lock_path).unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    let skipped =
+        crate::test_support::retry_lock(|| cleanup_retired(directory.path(), &id, || Ok(())))
+            .unwrap();
+    assert_eq!((skipped.removed_markers, skipped.skipped), (0, 1));
+    assert!(path.exists());
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(lock);
+    });
+    let report = retry_fixture_retired_cleanup(directory.path(), &id).unwrap();
+    release.join().unwrap();
+    assert_eq!((report.removed_markers, report.skipped), (1, 0));
+    assert!(!path.exists());
+}
+
 #[test]
 fn active_operations_block_cleanup_and_orphans_can_be_removed() {
     let directory = tempfile::tempdir().unwrap();
@@ -236,7 +277,7 @@ fn retired_stage_removal_resumes_after_every_injected_interruption() {
             "{selected:?}"
         );
         drop(lock);
-        let report = cleanup_retired(directory.path(), &id, || Ok(())).unwrap();
+        let report = retry_fixture_retired_cleanup(directory.path(), &id).unwrap();
         assert_eq!(
             (report.removed_markers, report.skipped),
             (1, 0),
@@ -316,7 +357,7 @@ fn retired_stage_removal_resumes_after_process_kill_at_every_boundary() {
         }
         child.kill().unwrap();
         child.wait().unwrap();
-        let report = cleanup_retired(directory.path(), &id, || Ok(())).unwrap();
+        let report = retry_fixture_retired_cleanup(directory.path(), &id).unwrap();
         assert_eq!((report.removed_markers, report.skipped), (1, 0), "{point}");
         assert!(!path.exists());
     }

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Make retired-stage interruption tests tolerate a briefly held fixture lock while still requiring eventual cleanup; add a held-lock regression check.
+
 - Check acknowledged writes from concurrent workers across process-kill races on V2/V3 and both writable recovery paths.
 
 - Check sampled SQLite values and checksums after a clean reopen in the direct key-value benchmark, outside the measured timings.
