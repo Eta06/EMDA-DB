@@ -73,6 +73,75 @@ fn synchronized_publication_avoids_an_unnecessary_second_parent_sync() {
 }
 
 #[test]
+fn synchronized_file_replacement_avoids_a_duplicate_parent_sync() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut stage, mut file) = Stage::file(root.path()).unwrap();
+    file.write_all(b"new").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let marker = stage.marker.as_ref().unwrap().path().to_path_buf();
+    let destination = root.path().join("selection");
+    fs::write(&destination, b"old").unwrap();
+    stage.replace_file(&destination).unwrap();
+    assert_eq!(fs::read(&destination).unwrap(), b"new");
+    File::open(root.path()).unwrap().sync_all().unwrap();
+    stage.publication_synchronized();
+    stage.cleanup_on_drop_with_sync(|_| panic!("replacement was already synchronized"));
+    assert!(!marker.exists());
+    assert_eq!(fs::read(destination).unwrap(), b"new");
+}
+
+#[test]
+fn failed_replacement_sync_retains_the_marker_for_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut stage, mut file) = Stage::file(root.path()).unwrap();
+    file.write_all(b"new").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let marker = stage.marker.as_ref().unwrap().path().to_path_buf();
+    let destination = root.path().join("selection");
+    fs::write(&destination, b"old").unwrap();
+    stage.replace_file(&destination).unwrap();
+    stage.cleanup_on_drop_with_sync(|_| Err(io::Error::other("injected parent sync failure")));
+    drop(stage);
+    assert!(marker.exists());
+    assert_eq!(fs::read(&destination).unwrap(), b"new");
+    let report = cleanup_abandoned_staging(root.path()).unwrap();
+    assert_eq!((report.removed_payloads, report.removed_markers), (0, 1));
+    assert_eq!(fs::read(destination).unwrap(), b"new");
+}
+
+#[test]
+fn file_replacement_rejects_a_different_parent_or_non_file_stage() {
+    let root = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let (mut file_stage, file) = Stage::file(root.path()).unwrap();
+    drop(file);
+    let original = file_stage.path().to_path_buf();
+    assert_eq!(
+        file_stage
+            .replace_file(&other.path().join("selection"))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        file_stage.replace_file(&original).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert!(original.exists());
+    let mut directory_stage = Stage::directory(root.path()).unwrap();
+    assert_eq!(
+        directory_stage
+            .replace_file(&root.path().join("selection"))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert!(directory_stage.path().is_dir());
+}
+
+#[test]
 fn lingering_published_hard_link_is_synced_after_its_later_removal() {
     let root = tempfile::tempdir().unwrap();
     let (mut stage, mut file) = Stage::file(root.path()).unwrap();

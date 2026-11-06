@@ -119,13 +119,15 @@ pub(super) fn publish_configuration(
 ) -> io::Result<()> {
     let root = root(store);
     crate::cleanup_abandoned_staging(&root)?;
-    let (stage, mut file) = crate::staging::Stage::file(&root)?;
+    let (mut stage, mut file) = crate::staging::Stage::file(&root)?;
     file.write_all(if enabled { ROOT_ENABLED } else { ROOT_DISABLED })?;
     file.sync_all()?;
     drop(file);
     before_rename()?;
-    fs::rename(stage.path(), root.join(OWNER))?;
-    sync_parent(&root)
+    stage.replace_file(&root.join(OWNER))?;
+    sync_parent(&root)?;
+    stage.publication_synchronized();
+    Ok(())
 }
 
 impl CheckpointStore {

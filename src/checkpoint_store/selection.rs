@@ -150,13 +150,14 @@ pub(super) fn publish(
     before_rename: impl FnOnce() -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    let (stage, mut file) = crate::staging::Stage::file(store)?;
+    let (mut stage, mut file) = crate::staging::Stage::file(store)?;
     file.write_all(&selection.encode())?;
     file.sync_all()?;
     drop(file);
     before_rename()?;
-    std::fs::rename(stage.path(), path(store))?;
+    stage.replace_file(&path(store))?;
     sync_parent(store)?;
+    stage.publication_synchronized();
     Ok(())
 }
 

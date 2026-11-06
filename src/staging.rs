@@ -248,6 +248,23 @@ impl Stage {
         Ok(())
     }
 
+    /// Atomically replace a file in the staging parent. The caller must sync
+    /// that parent before recording publication as synchronized.
+    pub(crate) fn replace_file(&mut self, destination: &Path) -> io::Result<()> {
+        if !matches!(self.kind, Kind::File)
+            || destination == self.payload.as_path()
+            || destination.parent() != self.payload.parent()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "staged file replacement requires another name in the same parent",
+            ));
+        }
+        fs::rename(&self.payload, destination)?;
+        self.published = true;
+        Ok(())
+    }
+
     /// Record that the parent sync completed after publication. This avoids
     /// another sync if the old stage name was already absent at that point.
     pub(crate) fn publication_synchronized(&mut self) {
