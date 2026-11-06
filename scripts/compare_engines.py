@@ -33,6 +33,23 @@ CASES = [
 ]
 
 
+def configure_cases(names=None, key_count=None, noise_calibration=False):
+    available = {case["name"] for case in CASES}
+    if noise_calibration and names:
+        raise ValueError("noise calibration already selects its workload")
+    if names and (len(names) != len(set(names)) or not set(names) <= available):
+        raise ValueError("unknown or duplicate workload")
+    if key_count is not None and not 1 <= key_count <= 100000:
+        raise ValueError("key count must be between 1 and 100000")
+    selected_names = {"concurrent_mixed"} if noise_calibration else set(names) if names else available
+    selected = [case.copy() for case in CASES
+                if case["name"] in selected_names]
+    if key_count is not None:
+        for case in selected:
+            case["keys"] = key_count
+    return selected
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -48,10 +65,19 @@ def main():
     parser.add_argument("--server-cpus", default="1-3")
     parser.add_argument("--housekeeping-cpus", default="4")
     parser.add_argument("--noise-calibration", action="store_true", help="paired unrestricted/pinned runs of concurrent_mixed only")
+    parser.add_argument("--cases", nargs="+", choices=[case['name'] for case in CASES],
+                        help="optional workload subset")
+    parser.add_argument("--key-count", type=int, help="override the initialized key count for selected workloads")
+    parser.add_argument("--case-timeout", type=int, default=180,
+                        help="maximum seconds per workload including setup and verification")
     args = parser.parse_args()
+    try:
+        configured_cases = configure_cases(args.cases, args.key_count, args.noise_calibration)
+    except ValueError as error:
+        parser.error(str(error))
     allowed = os.sched_getaffinity(0)
     requested = parse_cpus(args.client_cpus) | parse_cpus(args.server_cpus) | parse_cpus(args.housekeeping_cpus)
-    if not requested <= allowed or args.rounds < 2 or not Path(args.directory).is_dir():
+    if not requested <= allowed or args.rounds < 2 or not Path(args.directory).is_dir() or not 1 <= args.case_timeout <= 1800:
         parser.error("invalid CPU affinity, rounds, or data directory")
     if parse_cpus(args.client_cpus) & parse_cpus(args.server_cpus):
         parser.error("client and server CPU sets must be disjoint")
@@ -72,6 +98,7 @@ def main():
                      "governor_visible": Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").exists(),
                      "swap": read("/proc/swaps"), "one_backend_at_a_time": True, "quiet_gate_max_seconds": 5,
                      "noise_calibration": args.noise_calibration, "unrelated_host_services_modified": False,
+                     "selected_cases": configured_cases, "case_timeout_seconds": args.case_timeout,
                      "notes": "No compilation, image pulls, cache drops, real-time priority, or disabled durability during measurement."},
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
         "initial_snapshot": snapshot(), "services": {}, "runs": [], "failures": [],
@@ -97,7 +124,8 @@ def main():
                 if service:
                     env.update(service.env)
                 try:
-                    cases = [CASES[1]] if args.noise_calibration else CASES[round_index % len(CASES):] + CASES[:round_index % len(CASES)]
+                    rotation = round_index % len(configured_cases)
+                    cases = configured_cases[rotation:] + configured_cases[:rotation]
                     for case in cases:
                         modes = (["unrestricted", "pinned"] if round_index % 2 == 0 else ["pinned", "unrestricted"]) if args.noise_calibration else ["pinned"]
                         for mode in modes:
@@ -115,7 +143,7 @@ def main():
                             entry = {"backend": backend, "round": round_index, "mode": mode, "case": case,
                                      "command": command, "pre_run_quiet": quiet}
                             try:
-                                run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=180)
+                                run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=args.case_timeout)
                                 if run.returncode:
                                     raise RuntimeError(run.stderr[-4000:] or f"exit {run.returncode}")
                                 entry["result"] = json.loads(run.stdout)

@@ -60,6 +60,13 @@ python3 scripts/compare_engines.py --directory /path/to/disk --output noise.json
 
 Choose valid disjoint client/server/housekeeping CPU sets for another host. Local Docker socket access is required. Containers bind published ports to localhost only and mount dedicated temporary data directories. The scripts remove only their own containers and synthetic data. Image digests, package versions, source and binary hashes, parameters, settings, failed runs and noise observations are saved. A process interruption can require cleaning up the explicitly named `emda-compare-*` resources from that interrupted invocation.
 
+To investigate a larger initialized key set without running the full six-case
+matrix, `compare_engines.py` accepts `--cases`, `--key-count` (up to 100,000)
+and `--case-timeout`. The default matrix is unchanged. Each case initializes
+and verifies all of its keys outside the individual operation timers; setup
+can take much longer with durable per-key writes. A larger warm-key workload
+does not by itself measure cold recovery, total memory, or production SLOs.
+
 The crash check holds clients open, acknowledges 100 inserts, 10 replacements and 10 deletes, kills the server with SIGKILL, reopens the same data, and verifies 90 values and 10 absences. Each round uses fresh fixture data, rotates the backend order and retains failures as well as an interrupted run's current case. The output records source and binary hashes, runtime versions, settings and filesystem type; it refuses to overwrite an existing result. This check does not measure recovery latency and is not a simulated power cut, storage reordering test, or an exhaustive crash-point campaign.
 
 ## Coverage beyond local point-operation tests
