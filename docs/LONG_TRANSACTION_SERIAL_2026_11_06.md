@@ -27,8 +27,29 @@ EMDA_LONG_TRANSACTION_WINDOWS=256 cargo test --release --locked --test transacti
   long_history -- --nocapture
 ```
 
-The workspace overlay's backing device was not independently verified. These
-bounded, sampled windows do not exercise a checkpoint-backed writer, expired
-deadlines, all interleavings, injected I/O errors, process crashes or physical
-power loss. A separate [long transfer test](LONG_TRANSACTION_HISTORY_2026_11_06.md)
+The ordinary-writer campaign does not exercise a checkpoint-backed writer,
+expired deadlines, all interleavings, injected I/O errors, process crashes or
+physical power loss. A separate [long transfer test](LONG_TRANSACTION_HISTORY_2026_11_06.md)
 covers concurrent transactions on both writable backends.
+
+## Checkpoint-backed writer
+
+On clean revision `41ab9e98c8ca35b883cad25cfa88c9e94589bdaa`, a separate
+[checkpoint-writer model](../tests/checkpoint_transaction_model/long_history.rs)
+composed 256-window histories across V2/V3 and capped/uncapped configurations.
+Each window raced two transactions, an atomic batch, a direct write and two
+bulk reads. Transaction modes rotated through conservative, FIFO, read-set and
+generously timed variants; one transaction observed a complete range. Every
+eighth window reopened ordinary recovery followed by checkpoint recovery.
+
+Ten runs checked [10,240 windows](../benchmarks/results/2026-11-06-long-checkpoint-transaction-serial.json.gz),
+61,440 concurrent operations and 2,560 recovery checks. Of 20,480 transaction
+attempts, 11,839 committed and 8,641 conflicted. These are different
+contention patterns from the ordinary-writer test above, so their conflict
+counts are not a backend performance comparison. The capped path limits its
+suffix overlay and log size; it is not a total-memory limit.
+
+Both campaigns used the workspace overlay, whose backing device was not
+independently verified. Their bounded, sampled windows do not cover expired
+deadlines, every interleaving, injected I/O errors, process crashes or physical
+power loss.
