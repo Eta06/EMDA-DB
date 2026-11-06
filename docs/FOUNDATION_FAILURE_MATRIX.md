@@ -40,7 +40,8 @@ For initialization, the new store uses the filesystem's default supported
 format; existing partial target files and metadata must not be rewritten by a
 failed reopen. A compacted checkpoint's digest is recomputed from that same
 output for corruption checking, so it is not independently authenticated.
-The driver retains partial results and the active case if it fails.
+The driver retains a partial report and active-case metadata if it fails;
+its temporary fixture is removed on exit.
 
 ```sh
 cargo build --release --locked --example sync_failure_probe
@@ -67,10 +68,13 @@ power-loss or off-host restore behavior.
 
 [`double_eio_campaign.py`](../scripts/double_eio_campaign.py) adds a separate
 two-error model. For each selected data or namespace error on a successful path,
-it discovers synchronization calls subsequently reached on that error path;
-each is then failed in turn, with both recovery orders. This covers some
-cleanup-failure combinations, not arbitrary multiple failures or all
-failure-only paths.
+it discovers synchronization and fixture-removal calls subsequently reached
+on that error path; each selected different syscall is then failed in turn,
+with both recovery orders. A malformed marker left without a payload must be
+reported as skipped and remain unchanged; recognized payloads must be cleaned
+when errors stop. This covers some cleanup-failure combinations, not two
+failures of the same syscall, arbitrary multiple failures or all failure-only
+paths.
 
 ## Running the isolated ENOSPC check
 

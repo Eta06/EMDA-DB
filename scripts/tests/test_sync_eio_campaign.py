@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sync_eio_campaign import (check_initialization, check_source, stage_inventory,
-                               targets_fixture, traced_ordinals)
+from sync_eio_campaign import (check_initialization, check_source, check_unrecognized_markers,
+                               stage_inventory, stage_markers, targets_fixture, traced_ordinals)
 
 
 class SyncEioCampaignTests(unittest.TestCase):
@@ -98,6 +98,29 @@ class SyncEioCampaignTests(unittest.TestCase):
                 stage_inventory(root)
             marker.write_bytes(b'EMDA-STAGING-V1-FILE\n')
             self.assertEqual(len(stage_inventory(root)), 2)
+
+    def test_skipped_malformed_marker_is_unchanged_and_has_no_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / '.emda-stage-v1-f-abcdefghijklmnop.owner'
+            marker.write_bytes(b'')
+            before = stage_markers(root, stage_inventory(root))
+            check_unrecognized_markers(root, before, [marker.name])
+            marker.write_bytes(b'changed')
+            with self.assertRaises(ValueError):
+                check_unrecognized_markers(root, before, [marker.name])
+            marker.write_bytes(b'')
+            Path(str(marker) + '.data').write_bytes(b'orphan')
+            with self.assertRaises(ValueError):
+                check_unrecognized_markers(root, before, [marker.name])
+            Path(str(marker) + '.data').unlink()
+            marker.write_bytes(b'EMDA-STAGING-V1-FILE\n')
+            with self.assertRaises(ValueError):
+                check_unrecognized_markers(root, {marker.name: marker.read_bytes()}, [marker.name])
+            marker.unlink()
+            marker.symlink_to('missing')
+            with self.assertRaises(ValueError):
+                check_unrecognized_markers(root, before, [marker.name])
 
 
 if __name__ == '__main__':

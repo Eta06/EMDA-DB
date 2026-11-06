@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject a filesystem EIO and then a cleanup-sync EIO on disposable fixtures."""
+"""Inject a filesystem EIO and then an error during later cleanup."""
 import argparse
 import json
 import os
@@ -14,13 +14,15 @@ import sync_eio_campaign as base
 
 PRIMARY = base.SYSCALL_SETS['data'] + base.SYSCALL_SETS['namespace']
 SYNC = base.SYSCALL_SETS['sync']
+CLEANUP = ('unlink', 'unlinkat', 'rmdir')
+SECONDARY = SYNC + CLEANUP
 TRACED = PRIMARY + SYNC
 
 
-def sync_ordinals_after_primary(lines, primary):
-    """Locate synchronization calls reached only after a first injected EIO."""
-    counts = dict.fromkeys(SYNC, 0)
-    selected = {name: [] for name in SYNC}
+def calls_after_primary(lines, primary, root):
+    """Find later syncs and fixture removals with per-syscall strace ordinals."""
+    counts = dict.fromkeys(SECONDARY, 0)
+    selected = {name: [] for name in SECONDARY}
     seen_primary = False
     for line in lines:
         match = base.CALL.search(line)
@@ -29,7 +31,8 @@ def sync_ordinals_after_primary(lines, primary):
         name = match.group(1)
         if name in counts:
             counts[name] += 1
-            if seen_primary:
+            if (seen_primary and name != primary
+                    and (name in SYNC or base.targets_fixture(line, name, root))):
                 selected[name].append(counts[name])
         if name == primary and '(INJECTED)' in line:
             if seen_primary:
@@ -50,8 +53,8 @@ def tracer_for(second=None):
                    '-e', f'inject={syscall}:error=EIO:when={ordinal}']
         if second:
             name, number = second
-            if name not in SYNC:
-                raise ValueError('second failure is not a synchronization call')
+            if name not in SECONDARY or name == syscall:
+                raise ValueError('second failure must use a different selected syscall')
             command += ['-e', f'inject={name}:error=EIO:when={number}']
         command += [binary, 'attempt', str(root), operation]
         run = subprocess.run(command, capture_output=True, text=True, timeout=60)
@@ -70,8 +73,10 @@ def tracer_for(second=None):
             raise ValueError('primary EIO did not target the selected fixture call')
         if second and not re.search(r'\b' + second[0] + r'\(', injected[1]):
             raise ValueError('secondary EIO was absent or occurred before the primary EIO')
+        if second and second[0] in CLEANUP and not base.targets_fixture(injected[1], second[0], root):
+            raise ValueError('secondary removal did not target the fixture')
         return {'outcome': outcome, 'counts': counts, 'eligible_ordinals': eligible,
-                'injected_traces': injected, 'sync_after_primary': sync_ordinals_after_primary(lines, syscall)}
+                'injected_traces': injected, 'calls_after_primary': calls_after_primary(lines, syscall, root)}
     return trace
 
 
@@ -105,8 +110,9 @@ def main():
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', directory, '-o', 'TARGET,FSTYPE'], text=True)),
         'scope': ('For each selected fixture data or namespace call observed on the successful path, '
-                  'inject one EIO. Discover sync calls subsequently reached on that failure path, '
-                  'then inject a second EIO at each such sync with each writable recovery order. '
+                  'inject one EIO. Discover sync and fixture-removal calls subsequently reached '
+                  'on that failure path, then inject a second EIO at each selected different '
+                  'syscall with each writable recovery order. Same-syscall pairs are excluded. '
                   'This is a finite single-process model; it does not prove physical persistence.'),
         'max_primary': args.max_primary,
         'formats': [args.format] if args.format else list(base.FORMATS),
@@ -152,22 +158,25 @@ def main():
                                                  'syscall': syscall, 'ordinal': ordinal, 'stage': 'first'}
                             save()
                             first = base.run_case(binary, temp, format_name, operation, syscall, ordinal,
-                                                  syscalls=TRACED, fixture_only=True, tracer=tracer_for())
+                                                  syscalls=TRACED, fixture_only=True, tracer=tracer_for(),
+                                                  allow_unrecognized_markers=True)
                             check = {'syscall': syscall, 'ordinal': ordinal, 'first': first, 'second': []}
                             case['primary_checks'].append(check)
                             save()
-                            for sync_name in SYNC:
-                                for sync_ordinal in first['sync_after_primary'][sync_name]:
+                            for second_name in SECONDARY:
+                                for second_ordinal in first['calls_after_primary'][second_name]:
                                     for order in base.RECOVERY_ORDERS:
                                         result['current'] = {'format': format_name, 'operation': operation,
                                                              'syscall': syscall, 'ordinal': ordinal,
-                                                             'sync': sync_name, 'sync_ordinal': sync_ordinal,
+                                                             'second_syscall': second_name,
+                                                             'second_ordinal': second_ordinal,
                                                              'order': order, 'stage': 'second'}
                                         save()
                                         item = base.run_case(binary, temp, format_name, operation, syscall, ordinal,
                                                              order=order, syscalls=TRACED, fixture_only=True,
-                                                             tracer=tracer_for((sync_name, sync_ordinal)))
-                                        check['second'].append({'sync': sync_name, 'ordinal': sync_ordinal,
+                                                             tracer=tracer_for((second_name, second_ordinal)),
+                                                             allow_unrecognized_markers=True)
+                                        check['second'].append({'syscall': second_name, 'ordinal': second_ordinal,
                                                                 'order': order, **item})
                                         save()
                     print(f'{format_name}/{operation}: {len(case["primary_checks"])} primary, '

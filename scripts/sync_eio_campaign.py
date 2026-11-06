@@ -117,6 +117,40 @@ def stage_inventory(root):
     return entries
 
 
+def stage_markers(root, entries):
+    """Capture marker bytes so intentionally skipped entries must remain intact."""
+    result = {}
+    for name in entries:
+        if not name.endswith('.owner'):
+            continue
+        path = root / name
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError('staging marker is not a regular file')
+        if metadata.st_size > 4096:
+            raise ValueError('unexpectedly large staging marker')
+        data = path.read_bytes()
+        result[name] = data
+    return result
+
+
+def check_unrecognized_markers(root, before, remaining):
+    """Permit unchanged malformed marker-only entries, never an orphan payload."""
+    for name in remaining:
+        if name not in before or not name.endswith('.owner'):
+            raise ValueError('cleanup left an unexpected staging entry')
+        if name.startswith('.emda-stage-v1-f-'):
+            expected = b'EMDA-STAGING-V1-FILE\n'
+        elif name.startswith('.emda-stage-v1-d-'):
+            expected = b'EMDA-STAGING-V1-DIRECTORY\n'
+        else:
+            raise ValueError('cleanup left an unknown staging kind')
+        path = root / name
+        if (not stat.S_ISREG(path.lstat().st_mode) or path.read_bytes() != before[name]
+                or before[name] == expected or os.path.lexists(str(path) + '.data')):
+            raise ValueError('cleanup changed or incorrectly retained a staging entry')
+
+
 def check_source(before, after, format_name, operation):
     if not after['log'].startswith(before['log']):
         raise ValueError('acknowledged log prefix changed')
@@ -203,7 +237,7 @@ def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persiste
 
 def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
              order='ordinary-first', persistent=False, syscalls=SYSCALLS, fixture_only=False,
-             tracer=traced_attempt):
+             tracer=traced_attempt, allow_unrecognized_markers=False):
     with tempfile.TemporaryDirectory(prefix='sync-eio-case-', dir=parent) as path:
         root = Path(path)
         setup = run_probe(binary, 'setup', root, format_name)
@@ -215,6 +249,7 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         after = snapshot(root, format_name)
         check_source(before, after, format_name, operation)
         stages_before = stage_inventory(root)
+        markers_before = stage_markers(root, stages_before)
         initial_target = initialization_snapshot(root) if operation == 'initialize' else None
         verification = run_probe(binary, 'verify', root, operation, traced['outcome']['status'], order)
         expected_order = ['ordinary', 'checkpoint'] if order == 'ordinary-first' else ['checkpoint', 'ordinary']
@@ -228,10 +263,15 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
             check_initialization(initial_target, final_target)
         stages_after = stage_inventory(root)
         if stages_after:
-            raise ValueError(f'recognized staging names remain after cleanup: {stages_after}')
+            if not allow_unrecognized_markers:
+                raise ValueError(f'staging names remain after cleanup: {stages_after}')
+            check_unrecognized_markers(root, markers_before, stages_after)
+            if verification.get('cleanup_skipped', 0) < len(stages_after):
+                raise ValueError('cleanup did not report its preserved malformed markers')
         return {**traced, 'verification': verification, 'before': describe(before),
                 'after_attempt': describe(after), 'after_verification': describe(final),
                 'stages_before_cleanup': stages_before, 'stages_after_cleanup': stages_after,
+                'preserved_unrecognized_markers': {name: digest(markers_before[name]) for name in stages_after},
                 'initialization_before_verification': describe_initialization(initial_target),
                 'initialization_after_verification': describe_initialization(final_target)}
 
