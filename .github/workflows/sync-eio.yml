@@ -78,6 +78,10 @@ jobs:
             python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-$syscall_group.json" --syscall-set "$syscall_group"
             python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eio-$syscall_group.json"
           done
+          for syscall_group in metadata path-read lock; do
+            python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-$syscall_group.json" --syscall-set "$syscall_group" --max-ordinals 3
+            python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eio-$syscall_group.json"
+          done
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-sync.json" --error EINTR --operation batch --format v3 --max-ordinals 2
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eintr-sync.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-data.json" --error EINTR --syscall-set data --operation batch --format v3 --max-ordinals 2
@@ -100,6 +104,9 @@ jobs:
             ${{ runner.temp }}/eio-data.json
             ${{ runner.temp }}/eio-read.json
             ${{ runner.temp }}/eio-xattr-read.json
+            ${{ runner.temp }}/eio-metadata.json
+            ${{ runner.temp }}/eio-path-read.json
+            ${{ runner.temp }}/eio-lock.json
             ${{ runner.temp }}/eio-open.json
             ${{ runner.temp }}/eio-namespace.json
             ${{ runner.temp }}/eintr-sync.json
@@ -128,7 +135,7 @@ jobs:
         run: |
           cargo +stable build --release --locked --example sync_failure_probe
           failed=0
-          for syscall_group in sync data read xattr-read open namespace; do
+          for syscall_group in sync data read xattr-read metadata path-read lock open namespace; do
             if ! python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-full-$syscall_group.json" --error EINTR --syscall-set "$syscall_group"; then
               failed=1
             elif ! python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eintr-full-$syscall_group.json"; then

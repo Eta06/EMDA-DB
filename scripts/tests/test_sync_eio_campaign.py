@@ -54,6 +54,14 @@ class SyncEioCampaignTests(unittest.TestCase):
                                          'fgetxattr', fixture))
         self.assertTrue(targets_fixture('1 getxattr("/work/case/log", "user.db.commit.v3", "", 0) = 0',
                                         'getxattr', fixture))
+        self.assertTrue(targets_fixture('1 statx(AT_FDCWD, "/work/case/log", 0, 0, {}) = 0',
+                                        'statx', fixture))
+        self.assertTrue(targets_fixture('1 flock(3</work/case/store.lock>, LOCK_EX) = 0',
+                                        'flock', fixture))
+        self.assertFalse(targets_fixture('1 fcntl(1<pipe:[1]>, F_DUPFD, "/work/case/log") = 3',
+                                         'fcntl', fixture))
+        self.assertTrue(targets_fixture('1 readlink("/work/case/log", "x", 1) = 1',
+                                        'readlink', fixture))
 
     def state(self):
         return {'log': b'acknowledged', 'witness': b'anchor',
