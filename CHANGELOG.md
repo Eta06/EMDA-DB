@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Model concurrent deletion, reinsertion, missing-key compare-exchange, ordered batches and reads across both writable recovery paths.
+
 - Exercise actual kernel `ENOSPC` on an isolated, size-limited tmpfs for writes, backup, restore and upgrade; run the guarded check in a dedicated hosted workflow.
 
 - Check kernel-enforced size failures during backup, restore and upgrade, including cleanup, source preservation and a complete retry.
