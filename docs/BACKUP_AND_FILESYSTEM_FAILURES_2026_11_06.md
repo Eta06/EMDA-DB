@@ -47,6 +47,20 @@ V2 and V3 source fixtures do not imply that new-store initialization was
 tested in both formats. The [failure matrix](FOUNDATION_FAILURE_MATRIX.md)
 explains the driver and the remaining limitations.
 
+### A second failure during cleanup
+
+On clean revision `b0677500a84e5eba6a234d3bb059a3181a1eb3bd`, the
+[two-error campaign](../benchmarks/results/2026-11-06-double-eio.json.gz)
+injected a data or namespace error at each of 167 selected calls, identified
+the synchronization calls subsequently reached, and repeated each with a
+second `EIO` and both recovery orders. All 258 resulting double-error cases
+completed their checks; every second injected error was `fsync` in this run.
+There were visible staging names before cleanup in 194 cases, none afterward,
+and 48 visible checkpoint-compaction copies were checked. The copied
+checkpoint's digest was recomputed from that copy and is not independent
+authentication. This samples pairs of returned errors, not all combinations
+or the physical effects of a power failure.
+
 ## Backups racing atomic writers
 
 The [concurrent backup test](../tests/backup_concurrent_model.rs) sends four
@@ -86,3 +100,11 @@ are retained. The model is serial and does not inject errors, establish
 concurrent backup behavior, simulate a crash or perform an off-host restore.
 To replay it, extract the synthetic corpus into a new temporary directory and
 run `cargo +nightly-2026-11-03 fuzz run backup_roundtrip <corpus-directory> -- -runs=0`.
+
+A second address-sanitized run on clean revision `b067750` started from eight
+seeds, including four 98-byte cases with 24 operations each. It completed
+5,182 generated inputs in 181 reported seconds without a finding, and its
+generated input-length limit reached 98 bytes. The [record](../benchmarks/results/2026-11-06-backup-roundtrip-long-fuzz.json),
+[log](../benchmarks/results/2026-11-06-backup-roundtrip-long-fuzz.log.gz) and
+[synthetic corpus](../benchmarks/results/2026-11-06-backup-roundtrip-long-corpus.tar.gz)
+are retained. The same serial-model and fault limitations apply.
