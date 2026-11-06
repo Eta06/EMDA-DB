@@ -51,6 +51,13 @@ schedules on the workspace overlay, whose underlying device is not verified.
 An injected returned error is not a partial successful syscall or a physical
 power loss, and a recovered failed write does not mean it was acknowledged.
 
+The [GitHub workflow](https://github.com/Eta06/EMDA-DB/actions/runs/42160313151)
+subsequently passed the expanded campaign on ext4 for revision `c06cf81`.
+Its retained artifact reports 96 cases, with all 137 observed acknowledged
+writes recovered; 141 failed writes were present after recovery. It also ran
+the broader filesystem-EIO suites. The hosted run has the same fault-model
+limitations as the local run.
+
 The [driver](../scripts/concurrent_eio_campaign.py) records the exact
 receipts, injected syscalls, selected vectored appends, hashes and recovery
 results. Its [GitHub workflow](../.github/workflows/sync-eio.yml) repeats a
