@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from double_eio_campaign import calls_after_primary, injection_rules
+from double_eio_campaign import calls_after_primary, injection_rules, primary_ordinals, targets_fixture_or_ancestor_sync
 
 
 class DoubleEioCampaignTests(unittest.TestCase):
@@ -46,6 +46,18 @@ class DoubleEioCampaignTests(unittest.TestCase):
         injected_twice = [lines[0], lines[1].replace('= 0', '= -1 EIO (INJECTED)')]
         self.assertEqual(calls_after_primary(injected_twice, 'unlink', Path('/work/case'),
                                              allow_same_second=True)['unlink'], [2])
+
+    def test_sync_ancestor_mode_selects_only_additional_sync_calls(self):
+        control = {'counts': {'fsync': 5, 'unlink': 5},
+                   'eligible_ordinals': {'fsync': [2, 4], 'unlink': [3]}}
+        self.assertEqual(primary_ordinals(control, 'fsync', False), [2, 4])
+        self.assertEqual(primary_ordinals(control, 'fsync', True), [1, 2, 3, 4, 5])
+        self.assertEqual(primary_ordinals(control, 'unlink', True), [3])
+        root = Path('/work/case')
+        self.assertTrue(targets_fixture_or_ancestor_sync('1 fsync(3</work>) = -1 EIO', 'fsync', root))
+        self.assertTrue(targets_fixture_or_ancestor_sync('1 fsync(3</work/case/a>) = -1 EIO', 'fsync', root))
+        self.assertFalse(targets_fixture_or_ancestor_sync('1 fsync(3</work/other>) = -1 EIO', 'fsync', root))
+        self.assertFalse(targets_fixture_or_ancestor_sync('1 unlink("/work/case/a") = -1 EIO', 'unlink', root))
 
 
 if __name__ == '__main__':

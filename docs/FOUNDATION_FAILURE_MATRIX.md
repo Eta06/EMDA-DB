@@ -76,6 +76,12 @@ when errors stop. It can select two failures of the same synchronization or
 removal syscall. This covers selected two-error combinations, not arbitrary
 multiple failures or all failure-only paths.
 
+With `--primary-mode sync --all-sync-paths`, the first injected error may hit
+any synchronization observed on the successful path, including resolved
+publication ancestors. The driver verifies the traced descriptor belongs to
+the fixture or one of its ancestors; the second error is chosen from later
+sync and fixture-removal calls on that error path.
+
 [`concurrent_eio_campaign.py`](../scripts/concurrent_eio_campaign.py) injects
 witness-write or log-sync EIO while four independent writers run. It checks every observed
 acknowledgement and each failed request through both recovery paths. `strace`

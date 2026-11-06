@@ -60,7 +60,23 @@ def injection_rules(syscall, ordinal, second):
             '-e', f'inject={name}:error=EIO:when={number}']
 
 
-def tracer_for(second=None):
+def primary_ordinals(control, syscall, all_sync_paths):
+    if all_sync_paths and syscall in SYNC:
+        return list(range(1, control['counts'][syscall] + 1))
+    return control['eligible_ordinals'][syscall]
+
+
+def targets_fixture_or_ancestor_sync(line, syscall, root):
+    if syscall not in SYNC:
+        return False
+    match = re.search(r'\b' + re.escape(syscall) + r'\(\d+<([^<>]+)>\)', line)
+    if not match:
+        return False
+    path = Path(match.group(1))
+    return path == root or root in path.parents or path in root.parents
+
+
+def tracer_for(second=None, all_sync_paths=False):
     def trace(binary, root, operation, syscall, ordinal, persistent, syscalls, fixture_only):
         if persistent or not fixture_only or syscall not in PRIMARY or syscalls != TRACED:
             raise ValueError('invalid double-fault configuration')
@@ -79,8 +95,10 @@ def tracer_for(second=None):
         injected = [line for line in lines if '(INJECTED)' in line]
         if len(injected) != (2 if second else 1):
             raise ValueError('unexpected number of injected EIOs')
-        if not re.search(r'\b' + syscall + r'\(', injected[0]) or not base.targets_fixture(
-                injected[0], syscall, root):
+        target = (targets_fixture_or_ancestor_sync(injected[0], syscall, root)
+                  if all_sync_paths and syscall in SYNC
+                  else base.targets_fixture(injected[0], syscall, root))
+        if not re.search(r'\b' + syscall + r'\(', injected[0]) or not target:
             raise ValueError('primary EIO did not target the selected fixture call')
         if second and not re.search(r'\b' + second[0] + r'\(', injected[1]):
             raise ValueError('secondary EIO was absent or occurred before the primary EIO')
@@ -100,11 +118,14 @@ def main():
     parser.add_argument('--max-primary', type=int, default=0, help='limit each primary syscall; 0 means all')
     parser.add_argument('--primary-mode', choices=('data-namespace', 'sync', 'all'), default='data-namespace',
                         help='which successful-path calls may receive the first EIO')
+    parser.add_argument('--all-sync-paths', action='store_true',
+                        help='also select synchronization calls on resolved ancestor directories')
     parser.add_argument('--operation', choices=base.OPERATIONS, help='optional single-operation smoke check')
     parser.add_argument('--format', choices=base.FORMATS, help='optional single-format smoke check')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
-            or os.path.lexists(args.output) or not 0 <= args.max_primary <= 100):
+            or os.path.lexists(args.output) or not 0 <= args.max_primary <= 100
+            or (args.all_sync_paths and args.primary_mode == 'data-namespace')):
         parser.error('existing fixture parent and binary, new output, and valid limit required')
     directory = str(Path(args.directory).resolve())
     if any(character in directory for character in ('"', '\\', '\n', '\r')):
@@ -123,12 +144,14 @@ def main():
         'host_platform': platform.platform(),
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', directory, '-o', 'TARGET,FSTYPE'], text=True)),
-        'scope': ('For each selected fixture data, namespace or sync call observed on the successful path, '
+        'scope': ('For each selected data, namespace or sync call observed on the successful path, '
                   'inject one EIO. Discover sync and fixture-removal calls subsequently reached '
                   'on that failure path, then inject a second EIO at each selected later syscall '
                   'with each writable recovery order, including the same sync or removal syscall. '
+                  'Data and namespace primary calls target the fixture; sync primary calls target '
+                  'the fixture unless all_sync_paths is enabled, which also selects resolved ancestors. '
                   'This is a finite single-process model; it does not prove physical persistence.'),
-        'max_primary': args.max_primary, 'primary_mode': args.primary_mode,
+        'max_primary': args.max_primary, 'primary_mode': args.primary_mode, 'all_sync_paths': args.all_sync_paths,
         'primary_syscalls': list({'data-namespace': DATA_NAMESPACE, 'sync': SYNC, 'all': PRIMARY}[args.primary_mode]),
         'formats': [args.format] if args.format else list(base.FORMATS),
         'operations': [args.operation] if args.operation else list(base.OPERATIONS),
@@ -165,7 +188,7 @@ def main():
                             'primary_checks': []}
                     result['cases'].append(case)
                     for syscall in result['primary_syscalls']:
-                        ordinals = control['eligible_ordinals'][syscall]
+                        ordinals = primary_ordinals(control, syscall, args.all_sync_paths)
                         if args.max_primary:
                             ordinals = ordinals[:args.max_primary]
                         for ordinal in ordinals:
@@ -173,7 +196,8 @@ def main():
                                                  'syscall': syscall, 'ordinal': ordinal, 'stage': 'first'}
                             save()
                             first = base.run_case(binary, temp, format_name, operation, syscall, ordinal,
-                                                  syscalls=TRACED, fixture_only=True, tracer=tracer_for(),
+                                                  syscalls=TRACED, fixture_only=True,
+                                                  tracer=tracer_for(all_sync_paths=args.all_sync_paths),
                                                   allow_unrecognized_markers=True)
                             check = {'syscall': syscall, 'ordinal': ordinal, 'first': first, 'second': []}
                             case['primary_checks'].append(check)
@@ -189,7 +213,8 @@ def main():
                                         save()
                                         item = base.run_case(binary, temp, format_name, operation, syscall, ordinal,
                                                              order=order, syscalls=TRACED, fixture_only=True,
-                                                             tracer=tracer_for((second_name, second_ordinal)),
+                                                             tracer=tracer_for((second_name, second_ordinal),
+                                                                               all_sync_paths=args.all_sync_paths),
                                                              allow_unrecognized_markers=True)
                                         check['second'].append({'syscall': second_name, 'ordinal': second_ordinal,
                                                                 'order': order, **item})
