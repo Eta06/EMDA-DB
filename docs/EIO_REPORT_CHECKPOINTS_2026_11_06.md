@@ -47,3 +47,10 @@ process group were stopped while a case was active; both retained reports
 remained incomplete and the sidecar identified the last active case. These
 checks concern the **test runner**, not database throughput or physical
 power-loss durability of the report files.
+
+A [larger one-shot run](../benchmarks/results/2026-11-06-one-shot-report-checkpoint.json.gz)
+on clean revision `7be52f6588f89d48c89399997c9e53581b72b872` checked 162
+V3 checkpoint-compaction metadata-error cases with the default interval. It
+recorded eight full snapshots after initial creation; its selected ordinals,
+recovery orders and outcomes matched the corresponding earlier full campaign.
+The independent verifier and the completed progress sidecar also passed.
