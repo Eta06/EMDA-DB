@@ -29,3 +29,21 @@ The [hosted filesystem workflow](https://github.com/Eta06/EMDA-DB/actions/runs/4
 passed the updated runner and independent report verifier on ext4. Its artifact
 includes both completed reports and their sidecars; it recorded 28 full
 snapshots for 998 paired cases and eight for 218 ancestor-sync cases.
+
+## One-shot campaign progress
+
+The one-shot and persistent-error driver now uses the same approach: it
+records the current case in a small `.progress.json` sidecar and writes full
+reports at a configurable interval, forcing the full result on completion or
+a caught error. A completed sidecar is published only after its corresponding
+full result. `--snapshot-interval 0` retains a full snapshot at each update;
+the default interval is one second. Both output paths must be unused.
+
+An eight-injection local metadata pilot with a 60-second interval recorded two
+full snapshots after the initial report creation and a completed sidecar. A
+persistent-error pilot also completed, and a forced probe failure retained its
+error in both files. In a separate SIGKILL check, a disposable driver and its
+process group were stopped while a case was active; both retained reports
+remained incomplete and the sidecar identified the last active case. These
+checks concern the **test runner**, not database throughput or physical
+power-loss durability of the report files.
