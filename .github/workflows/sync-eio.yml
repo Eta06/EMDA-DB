@@ -23,11 +23,13 @@ name: Filesystem EIO checks
       - "scripts/verify_double_eio_results.py"
       - "scripts/verify_one_shot_fs_results.py"
       - "scripts/concurrent_eio_campaign.py"
+      - "scripts/witness_retry_faults.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_double_eio_campaign.py"
       - "scripts/tests/test_verify_double_eio_results.py"
       - "scripts/tests/test_verify_one_shot_fs_results.py"
       - "scripts/tests/test_concurrent_eio_campaign.py"
+      - "scripts/tests/test_witness_retry_faults.py"
   pull_request:
     paths:
       - ".github/workflows/sync-eio.yml"
@@ -42,11 +44,13 @@ name: Filesystem EIO checks
       - "scripts/verify_double_eio_results.py"
       - "scripts/verify_one_shot_fs_results.py"
       - "scripts/concurrent_eio_campaign.py"
+      - "scripts/witness_retry_faults.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_double_eio_campaign.py"
       - "scripts/tests/test_verify_double_eio_results.py"
       - "scripts/tests/test_verify_one_shot_fs_results.py"
       - "scripts/tests/test_concurrent_eio_campaign.py"
+      - "scripts/tests/test_witness_retry_faults.py"
 
 permissions:
   contents: read
@@ -84,6 +88,7 @@ jobs:
           python3 scripts/verify_double_eio_results.py "$RUNNER_TEMP/eio-double-sync.json"
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-concurrent.json"
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-concurrent.json" --error EINTR --repetitions 1
+          python3 scripts/witness_retry_faults.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/witness-retry.json"
       - name: Preserve result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -104,6 +109,7 @@ jobs:
             ${{ runner.temp }}/eio-double-sync.json.progress.json
             ${{ runner.temp }}/eio-concurrent.json
             ${{ runner.temp }}/eintr-concurrent.json
+            ${{ runner.temp }}/witness-retry.json
           if-no-files-found: ignore
   interrupted-calls:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_eintr }}

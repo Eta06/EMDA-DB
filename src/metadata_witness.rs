@@ -42,6 +42,17 @@ mod platform {
     // An on-disk identifier, independent of the product's eventual name.
     const NAME: &str = "user.db.commit.v3";
 
+    fn retry_interrupted_replace(
+        mut replace: impl FnMut() -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        loop {
+            match replace() {
+                Err(Errno::INTR) => continue,
+                result => return result,
+            }
+        }
+    }
+
     pub(crate) fn is_present(file: &File) -> io::Result<bool> {
         match fgetxattr(file, NAME, &mut [0_u8; 0][..]) {
             Ok(_) => Ok(true),
@@ -100,12 +111,50 @@ mod platform {
                     "invalid witness update",
                 ));
             }
-            fsetxattr(&self.0, NAME, bytes, XattrFlags::REPLACE).map_err(Into::into)
+            // `Witness::advance` holds its boundary lock throughout the
+            // update. Repeating the same replacement is idempotent even if
+            // the interrupted syscall already installed it. Acknowledgement
+            // still requires the following full fsync to succeed.
+            retry_interrupted_replace(|| fsetxattr(&self.0, NAME, bytes, XattrFlags::REPLACE))
+                .map_err(Into::into)
         }
 
         fn sync_data(&self) -> io::Result<()> {
             // fdatasync need not persist xattrs. A full fsync is mandatory.
             self.0.sync_all()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn interrupted_replacement_retries_the_same_boundary_but_other_errors_stop() {
+            let expected = [42_u8; WITNESS_SIZE];
+            let mut installed = [0_u8; WITNESS_SIZE];
+            let mut calls = 0;
+            retry_interrupted_replace(|| {
+                calls += 1;
+                installed = expected;
+                if calls <= 2 { Err(Errno::INTR) } else { Ok(()) }
+            })
+            .unwrap();
+            assert_eq!(calls, 3);
+            assert_eq!(installed, expected);
+
+            calls = 0;
+            let error = retry_interrupted_replace(|| {
+                calls += 1;
+                if calls == 1 {
+                    Err(Errno::INTR)
+                } else {
+                    Err(Errno::IO)
+                }
+            })
+            .unwrap_err();
+            assert_eq!(calls, 2);
+            assert_eq!(error, Errno::IO);
         }
     }
 }
