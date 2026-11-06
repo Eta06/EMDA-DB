@@ -180,6 +180,9 @@ fuzz_target!(|data: &[u8]| {
             );
             assert_eq!(metadata_marker(&path, metadata), metadata_before);
         }
-        Err(_) => {}
+        // An unexpected I/O error may have an uncertain outcome. Stop the
+        // campaign for investigation instead of silently counting it as a
+        // checked malformed input or assuming the files are unchanged.
+        Err(error) => panic!("unclassified checkpoint recovery error: {error:?}"),
     }
 });

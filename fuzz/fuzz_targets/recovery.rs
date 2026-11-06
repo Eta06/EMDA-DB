@@ -103,6 +103,10 @@ fuzz_target!(|data: &[u8]| {
                 assert!(!witness_path.exists());
             }
         }
-        Err(_) => {}
+        // Do not silently count an unclassified operating-system or engine
+        // error as a checked input. A sync failure can have an uncertain
+        // outcome, so report it for investigation rather than assert that
+        // its files are unchanged or imply that the input passed.
+        Err(error) => panic!("unclassified recovery error: {error:?}"),
     }
 });
