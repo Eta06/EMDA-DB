@@ -5,6 +5,7 @@
 use database_engine::{CheckpointStore, Store};
 use rustix::fs::getxattr;
 use rustix::process::{Resource, Rlimit, Signal, getrlimit, setrlimit};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::process::ExitStatusExt;
@@ -41,7 +42,11 @@ fn witness(path: &Path, format: Format) -> Vec<u8> {
 }
 
 fn hex(token: &[u8; 32]) -> String {
-    token.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut encoded = String::with_capacity(64);
+    for byte in token {
+        write!(&mut encoded, "{byte:02x}").unwrap();
+    }
+    encoded
 }
 
 fn parse_hex(hex: &str) -> [u8; 32] {

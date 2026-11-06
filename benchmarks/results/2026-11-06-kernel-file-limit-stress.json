@@ -1,0 +1,81 @@
+{
+  "revision": "4aa2c916f921095c6587df6ec20947d5bfeecf31",
+  "git_status": "",
+  "completed_utc": "2026-11-06T01:29:19.117267+00:00",
+  "duration_seconds": 4.997,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "runs": [
+    {
+      "iteration": 1,
+      "target": "kernel_file_limit",
+      "exit_code": 0,
+      "signaled": 20,
+      "returned_efbig": 20
+    },
+    {
+      "iteration": 1,
+      "target": "kernel_file_limit_copy",
+      "exit_code": 0,
+      "signaled": 18,
+      "returned_efbig": 18
+    },
+    {
+      "iteration": 2,
+      "target": "kernel_file_limit",
+      "exit_code": 0,
+      "signaled": 20,
+      "returned_efbig": 20
+    },
+    {
+      "iteration": 2,
+      "target": "kernel_file_limit_copy",
+      "exit_code": 0,
+      "signaled": 18,
+      "returned_efbig": 18
+    },
+    {
+      "iteration": 3,
+      "target": "kernel_file_limit",
+      "exit_code": 0,
+      "signaled": 20,
+      "returned_efbig": 20
+    },
+    {
+      "iteration": 3,
+      "target": "kernel_file_limit_copy",
+      "exit_code": 0,
+      "signaled": 18,
+      "returned_efbig": 18
+    },
+    {
+      "iteration": 4,
+      "target": "kernel_file_limit",
+      "exit_code": 0,
+      "signaled": 20,
+      "returned_efbig": 20
+    },
+    {
+      "iteration": 4,
+      "target": "kernel_file_limit_copy",
+      "exit_code": 0,
+      "signaled": 18,
+      "returned_efbig": 18
+    },
+    {
+      "iteration": 5,
+      "target": "kernel_file_limit",
+      "exit_code": 0,
+      "signaled": 20,
+      "returned_efbig": 20
+    },
+    {
+      "iteration": 5,
+      "target": "kernel_file_limit_copy",
+      "exit_code": 0,
+      "signaled": 18,
+      "returned_efbig": 18
+    }
+  ],
+  "total_scenarios": 380,
+  "scope": "Disposable Linux processes with RLIMIT_FSIZE; existing data and witness checks, failed-copy cleanup and retries. Does not model physical ENOSPC, storage reordering, power loss or off-host restore."
+}
