@@ -19,6 +19,11 @@ enum Operation {
         key: usize,
         value: u8,
     },
+    CompareExchange {
+        key: usize,
+        expected: u8,
+        replacement: u8,
+    },
     ReadBoth,
 }
 
@@ -27,6 +32,7 @@ enum Outcome {
     Committed([u8; 2]),
     Conflict,
     Done,
+    Compared(bool),
     Read([u8; 2]),
 }
 
@@ -65,6 +71,18 @@ fn explain(events: &[Event], used: u64, values: [u8; 2]) -> bool {
             }
             (Operation::SetBoth(after), Outcome::Done) => next = after,
             (Operation::Put { key, value }, Outcome::Done) => next[key] = value,
+            (
+                Operation::CompareExchange {
+                    key,
+                    expected,
+                    replacement,
+                },
+                Outcome::Compared(success),
+            ) if success == (values[key] == expected) => {
+                if success {
+                    next[key] = replacement;
+                }
+            }
             (Operation::ReadBoth, Outcome::Read(observed)) if observed == values => {}
             _ => continue,
         }
@@ -154,6 +172,19 @@ fn execute(store: &Store, operation: Operation) -> Outcome {
                 .unwrap();
             Outcome::Done
         }
+        Operation::CompareExchange {
+            key,
+            expected,
+            replacement,
+        } => Outcome::Compared(
+            store
+                .compare_exchange(
+                    if key == 0 { b"a" } else { b"b" },
+                    Some(&[expected]),
+                    Some(&[replacement]),
+                )
+                .unwrap(),
+        ),
         Operation::ReadBoth => Outcome::Read(read_pair(store)),
     }
 }
@@ -175,7 +206,33 @@ fn reference_model_rejects_a_fractured_successful_transaction() {
 }
 
 #[test]
+fn reference_model_checks_compare_exchange_results() {
+    for (expected, success, valid) in [
+        (3, true, true),
+        (3, false, false),
+        (9, false, true),
+        (9, true, false),
+    ] {
+        let history = [Event {
+            operation: Operation::CompareExchange {
+                key: 0,
+                expected,
+                replacement: 7,
+            },
+            outcome: Outcome::Compared(success),
+            started: 0,
+            finished: 1,
+        }];
+        assert_eq!(explain(&history, 0, [3, 2]), valid);
+    }
+}
+
+#[test]
 fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery() {
+    let histories = std::env::var("EMDA_TRANSACTION_MODEL_HISTORIES")
+        .map(|value| value.parse::<usize>().expect("invalid history count"))
+        .unwrap_or(2048);
+    assert!((1..=4096).contains(&histories));
     let operations = [
         Operation::Transfer {
             from: 0,
@@ -215,10 +272,16 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         },
         Operation::SetBoth([5, 5]),
         Operation::Put { key: 0, value: 2 },
+        Operation::CompareExchange {
+            key: 0,
+            expected: 3,
+            replacement: 7,
+        },
         Operation::ReadBoth,
         Operation::ReadBoth,
     ];
-    for iteration in 0..2048 {
+    let mut compared = [0_usize; 2];
+    for iteration in 0..histories {
         let directory = tempfile::tempdir().unwrap();
         let capped = iteration % 2 == 0;
         let log_cap = (iteration % 4 == 0).then_some(1024 * 1024);
@@ -256,6 +319,11 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         });
         let expected = read_pair(&store);
         let mut events = events.into_inner().unwrap();
+        for event in &events {
+            if let Outcome::Compared(success) = event.outcome {
+                compared[usize::from(success)] += 1;
+            }
+        }
         events.push(Event {
             operation: Operation::ReadBoth,
             outcome: Outcome::Read(expected),
@@ -266,4 +334,8 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         drop(store);
         assert_eq!(read_pair(&open().unwrap()), expected);
     }
+    eprintln!(
+        "compare-exchange outcomes: mismatch={} success={}",
+        compared[0], compared[1]
+    );
 }

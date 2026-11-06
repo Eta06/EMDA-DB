@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Extend the ordinary-store serial-history model to check concurrent compare-exchange outcomes alongside transactions, batches, reads and recovery; allow longer local campaigns.
+
 - Add a Linux resource diagnostic for concurrent durable writes followed by repeated fresh-process recovery and value checks on the ordinary and checkpoint-backed stores.
 
 - Avoid a redundant parent-directory sync after managed checkpoint selection or automatic configuration replacement has already been synchronized. Failed synchronization still retains cleanup ownership and reports the existing uncertain outcome.
