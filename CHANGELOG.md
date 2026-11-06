@@ -4,7 +4,7 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
-- Make retired-stage interruption tests tolerate a briefly held fixture lock while still requiring eventual cleanup; add a held-lock regression check.
+- Make retired-stage tests tolerate a briefly held fixture lock while still requiring eventual cleanup and preservation of unsafe entries; add held-lock regression checks.
 
 - Check acknowledged writes from concurrent workers across process-kill races on V2/V3 and both writable recovery paths.
 

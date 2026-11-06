@@ -9,14 +9,20 @@ fn orphan(mut stage: Stage) -> PathBuf {
     path
 }
 
-// A private, single-stage fixture can briefly retain a retired-store lock
-// across another test's fork/exec. Retry only its no-progress skipped report;
-// an unexpected result or a skip that persists past retry_lock's deadline
-// still fails the caller's assertions.
-fn retry_fixture_retired_cleanup(parent: &Path, id: &[u8; 16]) -> io::Result<StagingCleanup> {
+// A private fixture can briefly retain a retired-store lock across another
+// test's fork/exec. Retry only the no-progress report with exactly one extra
+// skipped stage. Persistent skips and unexpected results still fail.
+fn retry_fixture_retired_cleanup(
+    parent: &Path,
+    id: &[u8; 16],
+    expected_skips: usize,
+) -> io::Result<StagingCleanup> {
     crate::test_support::retry_lock(|| {
         let report = cleanup_retired(parent, id, || Ok(()))?;
-        if report.removed_payloads == 0 && report.removed_markers == 0 && report.skipped == 1 {
+        if report.removed_payloads == 0
+            && report.removed_markers == 0
+            && report.skipped == expected_skips + 1
+        {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         Ok(report)
@@ -44,7 +50,7 @@ fn busy_retired_fixture_is_preserved_until_its_lock_is_released() {
         std::thread::sleep(std::time::Duration::from_millis(20));
         drop(lock);
     });
-    let report = retry_fixture_retired_cleanup(directory.path(), &id).unwrap();
+    let report = retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap();
     release.join().unwrap();
     assert_eq!((report.removed_markers, report.skipped), (1, 0));
     assert!(!path.exists());
@@ -143,7 +149,7 @@ fn selective_retired_cleanup_preserves_corrupt_markers_busy_locks_and_unknown_fi
     let malformed_path = orphan(malformed);
     let mut bytes = fs::read(&marker).unwrap();
     bytes[RETIRED_MARKER.len()] ^= 1;
-    fs::write(&marker, bytes).unwrap();
+    fs::write(&marker, &bytes).unwrap();
     let unknown = Stage::retired_directory(directory.path(), &id).unwrap();
     fs::write(unknown.path().join("unexpected"), b"keep").unwrap();
     let unknown_path = orphan(unknown);
@@ -168,8 +174,12 @@ fn selective_retired_cleanup_preserves_corrupt_markers_busy_locks_and_unknown_fi
     assert!(malformed_path.exists());
     assert!(unknown_path.exists());
     assert!(busy_path.exists());
-    drop(lock);
-    let report = cleanup_retired(directory.path(), &id, || Ok(())).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(lock);
+    });
+    let report = retry_fixture_retired_cleanup(directory.path(), &id, 2).unwrap();
+    release.join().unwrap();
     assert_eq!(
         (
             report.removed_payloads,
@@ -179,6 +189,9 @@ fn selective_retired_cleanup_preserves_corrupt_markers_busy_locks_and_unknown_fi
         (1, 1, 2)
     );
     assert!(!busy_path.exists());
+    assert!(malformed_path.exists());
+    assert_eq!(fs::read(&marker).unwrap(), bytes);
+    assert_eq!(fs::read(unknown_path.join("unexpected")).unwrap(), b"keep");
 }
 
 #[test]
@@ -277,7 +290,7 @@ fn retired_stage_removal_resumes_after_every_injected_interruption() {
             "{selected:?}"
         );
         drop(lock);
-        let report = retry_fixture_retired_cleanup(directory.path(), &id).unwrap();
+        let report = retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap();
         assert_eq!(
             (report.removed_markers, report.skipped),
             (1, 0),
@@ -357,7 +370,7 @@ fn retired_stage_removal_resumes_after_process_kill_at_every_boundary() {
         }
         child.kill().unwrap();
         child.wait().unwrap();
-        let report = retry_fixture_retired_cleanup(directory.path(), &id).unwrap();
+        let report = retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap();
         assert_eq!((report.removed_markers, report.skipped), (1, 0), "{point}");
         assert!(!path.exists());
     }
