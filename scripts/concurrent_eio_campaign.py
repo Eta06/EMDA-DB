@@ -48,6 +48,14 @@ def validate_receipts(report):
         raise ValueError('injected EIO did not fail a writer')
 
 
+def check_recovery(verified, backends):
+    if (len(verified) != 2 or any(item.get('status') != 'verified' or item.get('backend') != name
+                                  for item, name in zip(verified, backends))
+            or verified[0]['acknowledged'] != verified[1]['acknowledged']
+            or verified[0]['uncertain_present'] != verified[1]['uncertain_present']):
+        raise ValueError('recovery paths disagree')
+
+
 def case(binary, fixture_binary, parent, format_name, backend, ordinal, order):
     with tempfile.TemporaryDirectory(prefix='concurrent-eio-case-', dir=parent) as directory:
         root = Path(directory)
@@ -73,11 +81,7 @@ def case(binary, fixture_binary, parent, format_name, backend, ordinal, order):
         receipt_path.write_text(json.dumps(report))
         backends = ('ordinary', 'checkpoint') if order == 'ordinary-first' else ('checkpoint', 'ordinary')
         verified = [bounded([binary, 'verify', str(root), name, str(receipt_path)]) for name in backends]
-        if (any(item.get('status') != 'verified' or item.get('backend') != name
-                for item, name in zip(verified, backends))
-                or verified[0]['acknowledged'] != verified[1]['acknowledged']
-                or verified[0]['uncertain_present'] != verified[1]['uncertain_present']):
-            raise ValueError('recovery paths disagree')
+        check_recovery(verified, backends)
         final = base.snapshot(root, format_name)
         base.check_source(before, final, format_name, 'write')
         groups = [line for line in lines if re.search(r'\bwritev\(', line)

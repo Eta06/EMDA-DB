@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from concurrent_eio_campaign import validate_receipts
+from concurrent_eio_campaign import check_recovery, validate_receipts
 
 
 class ConcurrentEioCampaignTests(unittest.TestCase):
@@ -24,6 +24,16 @@ class ConcurrentEioCampaignTests(unittest.TestCase):
                                   'failed': None, 'error': None} for i in range(4)]}
         with self.assertRaises(ValueError):
             validate_receipts(no_errors)
+
+    def test_recovery_must_agree_on_which_uncertain_write_was_recovered(self):
+        verified = [{'status': 'verified', 'backend': 'ordinary', 'acknowledged': 3,
+                     'uncertain_present': [[0, 3]]},
+                    {'status': 'verified', 'backend': 'checkpoint', 'acknowledged': 3,
+                     'uncertain_present': [[1, 3]]}]
+        with self.assertRaises(ValueError):
+            check_recovery(verified, ('ordinary', 'checkpoint'))
+        verified[1]['uncertain_present'] = [[0, 3]]
+        check_recovery(verified, ('ordinary', 'checkpoint'))
 
 
 if __name__ == '__main__':

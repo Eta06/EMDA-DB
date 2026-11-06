@@ -124,7 +124,7 @@ fn verify(root: &Path, backend: &str, receipts: &Path) -> io::Result<()> {
             "lost earlier acknowledged value",
         ));
     }
-    let mut unknown_present = 0;
+    let mut unknown_present = Vec::new();
     for (id, worker) in report.workers.iter().enumerate() {
         if worker.id != id
             || worker
@@ -161,7 +161,9 @@ fn verify(root: &Path, backend: &str, receipts: &Path) -> io::Result<()> {
                         "invalid uncertain write",
                     ));
                 }
-                unknown_present += usize::from(actual.is_some());
+                if actual.is_some() {
+                    unknown_present.push([id, sequence]);
+                }
             } else if actual.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
