@@ -54,6 +54,8 @@ class SyncEioCampaignTests(unittest.TestCase):
         after['metadata'] = b'advanced'
         check_source(before, after, 'v3', 'write')
         check_source(before, after, 'v3', 'checkpoint-write')
+        check_source(before, after, 'v3', 'batch')
+        check_source(before, after, 'v3', 'checkpoint-batch')
         for field, value in (('log', b'truncated'), ('witness', b'changed'), ('backup', b'changed'),
                              ('checkpoint', b'changed'), ('checkpoint_digest', b'changed')):
             with self.subTest(field=field):

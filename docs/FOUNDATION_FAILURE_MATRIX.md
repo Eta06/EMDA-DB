@@ -29,7 +29,7 @@ independent off-host restore drills must remain open until actually performed.
 
 On Linux with `strace`, [`sync_eio_campaign.py`](../scripts/sync_eio_campaign.py)
 first traces successful initialization and V2/V3 ordinary and checkpoint-backed
-writes, backups, restores, upgrades, checkpoint creation, rollover and
+writes and atomic batches, backups, restores, upgrades, checkpoint creation, rollover and
 separate-copy compaction. It then uses a fresh
 disposable fixture to inject `EIO` at each observed `fsync`
 and `fdatasync` ordinal, checking previously acknowledged values after reopen,
@@ -51,7 +51,8 @@ python3 scripts/sync_eio_campaign.py --directory /path/to/disposable-fixtures \
 The directory must already exist. The [GitHub workflow](../.github/workflows/sync-eio.yml)
 runs the sync campaign on relevant changes, both with a single injected error and
 with `--persistent-errors`, which also fails later calls of the selected
-syscall. The latter checks visible staging ownership and cleanup after errors
+syscall. Batch cases check that two inserted values and a deletion appear
+together or not at all. The latter mode checks visible staging ownership and cleanup after errors
 stop. The same driver accepts `--syscall-set data`, `read`, `open`, or
 `namespace` for one-shot EIO at successful-path calls that target the disposable
 fixture. It indexes all calls, selects only fixture path/descriptor arguments,

@@ -1,6 +1,7 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
 use database_engine::{
-    COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging,
+    BatchOperation, COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store,
+    cleanup_abandoned_staging,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -62,12 +63,14 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
     let target = root.join("result");
     match operation {
         "write" => Store::open(source)?.put(b"new", b"attempted"),
+        "batch" => Store::open(source)?.write_batch(&batch()),
         "backup" => Store::open(source)?.backup(target),
         "restore" => Store::restore(root.join("reference-backup"), target),
         "upgrade" => Store::open(source)?.upgrade_format(target),
         "checkpoint" => Store::open(source)?.checkpoint_to(target).map(|_| ()),
         "compaction" => Store::open(source)?.compact_to(target),
         "checkpoint-write" => checkpoint_store(root)?.put(b"new", b"attempted"),
+        "checkpoint-batch" => checkpoint_store(root)?.write_batch(&batch()),
         "checkpoint-backup" => checkpoint_store(root)?.backup(target),
         "checkpoint-compaction" => checkpoint_store(root)?.compact_to(target).map(|_| ()),
         "checkpoint-rollover" => checkpoint_store(root)?.rollover_to(target).map(|_| ()),
@@ -77,6 +80,20 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
             "unknown operation",
         )),
     }
+}
+
+fn batch() -> [BatchOperation<'static>; 3] {
+    [
+        BatchOperation::Put {
+            key: b"new",
+            value: b"attempted",
+        },
+        BatchOperation::Put {
+            key: b"new-peer",
+            value: b"paired",
+        },
+        BatchOperation::Delete { key: b"old" },
+    ]
 }
 
 fn checkpoint_store(root: &Path) -> io::Result<CheckpointStore> {
@@ -103,12 +120,30 @@ fn inspect_source(
     operation: &str,
     status: &str,
 ) -> ProbeResult<bool> {
-    if get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
-        || get(b"old")?.as_deref() != Some(&b"original"[..])
-    {
+    if get(b"safe")?.as_deref() != Some(&b"acknowledged"[..]) {
         return Err("acknowledged fixture values changed".into());
     }
+    let old_value = get(b"old")?;
     let new_value = get(b"new")?;
+    let peer_value = get(b"new-peer")?;
+    if matches!(operation, "batch" | "checkpoint-batch") {
+        let before = old_value.as_deref() == Some(&b"original"[..])
+            && new_value.is_none()
+            && peer_value.is_none();
+        let after = old_value.is_none()
+            && new_value.as_deref() == Some(&b"attempted"[..])
+            && peer_value.as_deref() == Some(&b"paired"[..]);
+        if !before && !after {
+            return Err("atomic batch recovered a fractured state".into());
+        }
+        if status == "success" && !after {
+            return Err("successful batch missing after reopen".into());
+        }
+        return Ok(after);
+    }
+    if old_value.as_deref() != Some(&b"original"[..]) || peer_value.is_some() {
+        return Err("acknowledged fixture values changed".into());
+    }
     if matches!(operation, "write" | "checkpoint-write") {
         if status == "success" && new_value.as_deref() != Some(&b"attempted"[..]) {
             return Err("successful write missing after reopen".into());
@@ -154,7 +189,12 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
     }
     let target = root.join("result");
     let visible = target.exists();
-    if !matches!(operation, "write" | "checkpoint-write") && status == "success" && !visible {
+    if !matches!(
+        operation,
+        "write" | "checkpoint-write" | "batch" | "checkpoint-batch"
+    ) && status == "success"
+        && !visible
+    {
         return Err("successful copy was not published".into());
     }
     let mut initialization_state = None;
@@ -265,5 +305,31 @@ mod tests {
             std::fs::read(target.join("records.log")).unwrap(),
             b"partial"
         );
+    }
+
+    #[test]
+    fn batch_verifier_rejects_partial_puts_or_delete() {
+        let root = tempfile::tempdir().unwrap();
+        setup(root.path(), "v2").unwrap();
+        verify(root.path(), "batch", "error", "ordinary-first").unwrap();
+        let source = Store::open(root.path().join("source")).unwrap();
+        source.put(b"new", b"attempted").unwrap();
+        drop(source);
+        assert!(verify(root.path(), "batch", "error", "ordinary-first").is_err());
+        let source = Store::open(root.path().join("source")).unwrap();
+        source.put(b"new-peer", b"paired").unwrap();
+        drop(source);
+        assert!(verify(root.path(), "checkpoint-batch", "error", "checkpoint-first").is_err());
+        let source = Store::open(root.path().join("source")).unwrap();
+        source.delete(b"old").unwrap();
+        drop(source);
+        verify(root.path(), "batch", "success", "ordinary-first").unwrap();
+        verify(
+            root.path(),
+            "checkpoint-batch",
+            "success",
+            "checkpoint-first",
+        )
+        .unwrap();
     }
 }

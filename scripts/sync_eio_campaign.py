@@ -22,10 +22,10 @@ SYSCALL_SETS = {
                   'unlink', 'unlinkat', 'rmdir', 'link', 'linkat'),
 }
 SYSCALLS = SYSCALL_SETS['sync']
-OPERATIONS = ('write', 'backup', 'restore', 'upgrade', 'checkpoint', 'compaction',
-              'checkpoint-write', 'checkpoint-backup', 'checkpoint-compaction', 'checkpoint-rollover',
-              'initialize')
-WRITES = ('write', 'checkpoint-write')
+OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'compaction',
+              'checkpoint-write', 'checkpoint-batch', 'checkpoint-backup', 'checkpoint-compaction',
+              'checkpoint-rollover', 'initialize')
+WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(' + '|'.join(sorted(
@@ -247,6 +247,8 @@ def main():
                         help='continue returning EIO for that syscall after the selected ordinal')
     parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync',
                         help='sync (default), data writes/metadata, reads, opens, or namespace operations')
+    parser.add_argument('--operation', choices=OPERATIONS, help='optional single-operation check')
+    parser.add_argument('--format', choices=FORMATS, help='optional single-format check')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output)
             or not 0 <= args.max_ordinals <= 100):
@@ -271,6 +273,8 @@ def main():
         'max_ordinals': args.max_ordinals,
         'syscall_set': args.syscall_set,
         'fixture_paths_only': fixture_only,
+        'formats': [args.format] if args.format else list(FORMATS),
+        'operations': [args.operation] if args.operation else list(OPERATIONS),
         'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', args.directory, '-o', 'TARGET,FSTYPE'], text=True)),
@@ -307,8 +311,8 @@ def main():
 
     try:
         with tempfile.TemporaryDirectory(prefix='sync-eio-campaign-', dir=directory) as temp:
-            for format_name in FORMATS:
-                for operation in OPERATIONS:
+            for format_name in result['formats']:
+                for operation in result['operations']:
                     result['current'] = {'format': format_name, 'operation': operation, 'stage': 'control'}
                     save()
                     control = run_case(binary, temp, format_name, operation,
