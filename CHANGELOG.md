@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Extend the checkpoint-backed serial-history model with an independent write and a second reader, and permit longer local campaigns.
+
 - Add a staging cleanup model fuzzer for malformed markers, unexpected payloads, symlinks and repeat cleanup; include it in the scheduled recovery workflow.
 
 - Record a 96-run local byte-key comparison against SQLite, PostgreSQL and MongoDB, including latency distributions, durability settings and noise telemetry.

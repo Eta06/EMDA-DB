@@ -11,6 +11,7 @@ use std::sync::{Arc, Barrier};
 enum Outcome {
     Transaction(Option<[u8; 2]>),
     Blind,
+    PutX,
     Read([u8; 2]),
 }
 
@@ -46,6 +47,7 @@ fn serializes(events: &[Event], final_state: [u8; 2]) -> bool {
                     _ => unreachable!(),
                 },
                 Outcome::Blind => [7, 8],
+                Outcome::PutX => [4, state[1]],
                 Outcome::Read(observed) if *observed == state => state,
                 _ => continue,
             };
@@ -66,8 +68,30 @@ fn pair(values: Vec<Option<Vec<u8>>>) -> [u8; 2] {
 }
 
 #[test]
+fn model_rejects_a_stale_read_after_a_completed_independent_write() {
+    let events = [
+        Event {
+            operation: 4,
+            start: 0,
+            end: 1,
+            outcome: Outcome::PutX,
+        },
+        Event {
+            operation: 5,
+            start: 2,
+            end: 3,
+            outcome: Outcome::Read([0, 0]),
+        },
+    ];
+    assert!(!serializes(&events, [4, 0]));
+}
+
+#[test]
 fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
-    const HISTORIES: usize = 256;
+    let histories = std::env::var("EMDA_CHECKPOINT_MODEL_HISTORIES")
+        .map(|value| value.parse::<usize>().expect("invalid history count"))
+        .unwrap_or(256);
+    assert!((1..=4096).contains(&histories));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let checkpoint = dir.path().join("checkpoint");
@@ -75,7 +99,7 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
     let digest = ordinary.checkpoint_to(&checkpoint).unwrap();
     drop(ordinary);
     let mut store = Arc::new(CheckpointStore::open(&path, &checkpoint, &digest).unwrap());
-    for iteration in 0..HISTORIES {
+    for iteration in 0..histories {
         store
             .write_batch(&[
                 BatchOperation::Put {
@@ -88,11 +112,11 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                 },
             ])
             .unwrap();
-        let barrier = Arc::new(Barrier::new(5));
+        let barrier = Arc::new(Barrier::new(7));
         let clock = Arc::new(AtomicU64::new(0));
         let events = std::thread::scope(|scope| {
             let mut handles = Vec::new();
-            for operation in 0..4 {
+            for operation in 0..6 {
                 let store = Arc::clone(&store);
                 let barrier = Arc::clone(&barrier);
                 let clock = Arc::clone(&clock);
@@ -172,7 +196,11 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                                 .unwrap();
                             Outcome::Blind
                         }
-                        3 => Outcome::Read(pair(store.get_many(&[b"x", b"y"]).unwrap())),
+                        3 | 5 => Outcome::Read(pair(store.get_many(&[b"x", b"y"]).unwrap())),
+                        4 => {
+                            store.put(b"x", &[4]).unwrap();
+                            Outcome::PutX
+                        }
                         _ => unreachable!(),
                     };
                     let end = clock.fetch_add(1, Ordering::SeqCst);
