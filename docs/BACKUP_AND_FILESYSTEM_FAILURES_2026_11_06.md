@@ -61,6 +61,22 @@ checkpoint's digest was recomputed from that copy and is not independent
 authentication. This samples pairs of returned errors, not all combinations
 or the physical effects of a power failure.
 
+### Atomic batches under returned errors
+
+On clean revision `bc1d325`, a further [recorded campaign](../benchmarks/results/2026-11-06-atomic-batch-eio.json.gz)
+injected 248 one-shot or persistent errors into V2/V3 ordinary and
+checkpoint-backed batch paths, using both recovery orders. Each batch puts two
+new keys and deletes an existing key. All injected actions returned errors;
+212 checked cases recovered the prior state and 36 recovered the complete
+batch. Neither recovery path accepted a partially visible batch. These are
+case counts, including repeated recovery orders, not 248 independent
+physical crashes. The verifier has negative controls for partial insertion
+and a missing deletion. The two-error driver also checked ten primary failures
+for these batch operations, but those failure paths made no later sync calls,
+so this particular batch run exercised no second-error cases. Injected
+syscalls returned `EIO` without a partial successful write; physical power loss
+and other error combinations remain outside the evidence.
+
 ## Backups racing atomic writers
 
 The [concurrent backup test](../tests/backup_concurrent_model.rs) sends four
