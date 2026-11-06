@@ -59,12 +59,21 @@ capability test. No log, witness, checkpoint or backup format changed.
   without modifying the log or witness, preserving the earlier log prefix.
   The log-sync points apply only to V2; V3 synchronizes the log and witness
   together. This check does not simulate loss of OS or device caches.
+- Another 16 process kills exercise actual groups of three independently
+  queued ordinary-store writes on V2 and V3. The test first waits for an
+  earlier write to return successfully, then kills the process before or
+  partway through the grouped append, around the V2 log synchronization, or
+  around witness update and synchronization. The earlier acknowledged log
+  prefix remains intact; completed states reopen through both writable paths,
+  and a partially written grouped record fails without rewriting evidence.
+  Grouping independent writes is not an atomic multi-key transaction. These
+  are selected schedules on the running OS, not physical power failures.
 
 The new cases exercise 76 selected process-termination scenarios and 74
 returned-error scenarios across initialization and backup/restore/upgrade,
 plus cleanup-order failures, 77 damaged-anchor variants, the synthetic
-commit-state matrix and the 32 commit-I/O process kills. They use synthetic
-data and the running OS. A process
+commit-state matrix, 32 atomic-commit process kills and 16 group-commit process
+kills. They use synthetic data and the running OS. A process
 kill is **not** a physical power failure;
 the checks do not prove persistence ordering on a real device, exhaust all
 storage errors or concurrent schedules, or replace an independent off-host

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add deterministic process-kill checks for V2/V3 grouped independent writes, including a previously acknowledged write and partial grouped-record handling.
+
 - Exercise actual atomic-batch process termination at log and witness I/O boundaries on both writable backends and record a local staging/restore comparison.
 
 - Synchronize staging payload removal before deleting its ownership marker. Failed synchronization retains the marker for retry; already synchronized publication avoids a redundant sync, and unchanged cleanup no longer syncs the directory. Add initialization, backup, restore, upgrade and cleanup interruption checks; physical power-loss behavior remains unverified.
