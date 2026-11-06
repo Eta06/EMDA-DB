@@ -50,11 +50,21 @@ capability test. No log, witness, checkpoint or backup format changed.
   acknowledged values. The independent records are generated sequentially
   to construct the same possible persisted byte prefixes, so this matrix
   does not itself exercise a live group-commit schedule.
+- A process-kill check interrupts actual atomic batches at the append,
+  partial-append, log-sync and witness-write/sync boundaries. It covers V2
+  and V3 commits from both writable backends: 32 selected process kills in
+  all. While paused, the child retains its exclusive store lock. After a kill,
+  successful opens on both recovery paths retain earlier acknowledged values
+  and recover the original state or the full batch. Partial-batch opens fail
+  without modifying the log or witness, preserving the earlier log prefix.
+  The log-sync points apply only to V2; V3 synchronizes the log and witness
+  together. This check does not simulate loss of OS or device caches.
 
 The new cases exercise 76 selected process-termination scenarios and 74
 returned-error scenarios across initialization and backup/restore/upgrade,
-plus cleanup-order failures, 77 damaged-anchor variants and the synthetic
-commit-state matrix. They use synthetic data and the running OS. A process
+plus cleanup-order failures, 77 damaged-anchor variants, the synthetic
+commit-state matrix and the 32 commit-I/O process kills. They use synthetic
+data and the running OS. A process
 kill is **not** a physical power failure;
 the checks do not prove persistence ordering on a real device, exhaust all
 storage errors or concurrent schedules, or replace an independent off-host

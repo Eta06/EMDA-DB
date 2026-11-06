@@ -8,6 +8,13 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::os::unix::fs::FileExt;
 
+#[cfg(target_os = "linux")]
+impl CheckpointStore {
+    pub(crate) fn commit_process_test_log(&mut self) -> &mut Log {
+        &mut self.log
+    }
+}
+
 fn fixture() -> (
     tempfile::TempDir,
     std::path::PathBuf,

@@ -739,6 +739,9 @@ mod group_tests;
 #[cfg(test)]
 mod initialization_tests;
 
+#[cfg(all(test, target_os = "linux"))]
+mod commit_process_tests;
+
 #[cfg(test)]
 mod read_tests;
 

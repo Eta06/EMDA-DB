@@ -13,6 +13,7 @@ Specific tests requested on independent machines are listed in [external test re
 A [targeted deadline-race test](docs/DOCUMENT_DEADLINE_RACES_2026_11_06.md) checks concurrent document, index and raw-key atomicity across both writable backends and clean reopens; broader failure and recovery validation remains open.
 
 [Initialization, staging and commit checks](docs/INITIALIZATION_AND_STAGING_BOUNDARIES_2026_11_06.md) cover additional interruption boundaries, synthetic torn-commit states and ownership-marker synchronization.
+The [local staging restore comparison](docs/STAGING_RESTORE_COMPARISON_2026_11_06.md) records the successful restore path before and after that synchronization change.
 
 | Area | Status | Current behavior or next step |
 | --- | --- | --- |
