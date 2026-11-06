@@ -76,6 +76,13 @@ when errors stop. This covers some cleanup-failure combinations, not two
 failures of the same syscall, arbitrary multiple failures or all failure-only
 paths.
 
+[`concurrent_eio_campaign.py`](../scripts/concurrent_eio_campaign.py) injects
+witness-write EIO while four independent writers run. It checks every observed
+acknowledgement and each failed request through both recovery paths. `strace`
+counts the selected injection ordinal per traced thread. A failed request can
+recover in full, and its outcome remains unknown. This does not model partial
+syscall success or physical power loss.
+
 ## Running the isolated ENOSPC check
 
 The ignored Linux test fills its filesystem to provoke a real kernel `ENOSPC`.
