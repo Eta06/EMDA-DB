@@ -23,6 +23,7 @@ The [mixed transaction histories](docs/LONG_TRANSACTION_SERIAL_2026_11_06.md) ch
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes and uncertain outcomes when real syscalls return errors during concurrent writes. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
+The [large crash comparison](docs/LARGE_CROSS_ENGINE_CRASH_2026_11_06.md) checks 100,000 seeded keys after process restarts against SQLite, PostgreSQL and MongoDB.
 The [native macOS CI matrix](https://github.com/Eta06/EMDA-DB/actions/runs/42161569466) passed on Apple silicon with both stable Rust and Rust 1.85; V3 metadata witnesses and atomic compaction handoffs remain Linux-only.
 An isolated [real ENOSPC campaign](benchmarks/results/2026-11-06-tmpfs-enospc.json) checks writes and copy operations on a disposable, size-limited tmpfs; physical power-loss testing remains open.
 The [local staging restore comparison](docs/STAGING_RESTORE_COMPARISON_2026_11_06.md) records the successful restore path before and after that synchronization change.
