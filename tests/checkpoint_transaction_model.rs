@@ -24,6 +24,10 @@ struct Event {
 }
 
 fn serializes(events: &[Event], final_state: [u8; 2]) -> bool {
+    serializes_from(events, [0, 0], final_state)
+}
+
+fn serializes_from(events: &[Event], initial: [u8; 2], final_state: [u8; 2]) -> bool {
     fn search(events: &[Event], final_state: [u8; 2], chosen: u8, state: [u8; 2]) -> bool {
         if chosen.count_ones() as usize == events.len() {
             return state == final_state;
@@ -57,7 +61,7 @@ fn serializes(events: &[Event], final_state: [u8; 2]) -> bool {
         }
         false
     }
-    search(events, final_state, 0, [0, 0])
+    search(events, final_state, 0, initial)
 }
 
 fn pair(values: Vec<Option<Vec<u8>>>) -> [u8; 2] {
@@ -65,6 +69,83 @@ fn pair(values: Vec<Option<Vec<u8>>>) -> [u8; 2] {
         values[0].as_ref().unwrap()[0],
         values[1].as_ref().unwrap()[0],
     ]
+}
+
+fn execute(store: &CheckpointStore, operation: usize, iteration: usize) -> Outcome {
+    match operation {
+        0 | 1 => {
+            let action = |tx: &mut CheckpointTransaction<'_>| {
+                let (x, y) = if operation == 0 {
+                    (tx.get(b"x")?.unwrap()[0], tx.get(b"y")?.unwrap()[0])
+                } else {
+                    let range = tx.scan(Some(b"w"), Some(b"z"), 10)?;
+                    assert_eq!(range.len(), 2);
+                    assert_eq!(range[0].0, b"x");
+                    assert_eq!(range[1].0, b"y");
+                    (range[0].1[0], range[1].1[0])
+                };
+                let next = if operation == 0 {
+                    [x + 1, y + 1]
+                } else {
+                    [y + 2, x + 3]
+                };
+                tx.put(b"x", &[next[0]])?;
+                tx.put(b"y", &[next[1]])?;
+                Ok([x, y])
+            };
+            let result = match (iteration + operation) % 8 {
+                0 => store.transaction(action),
+                1 => store.transaction_with_fifo(action),
+                2 => store.transaction_with_read_set(action),
+                3 => store.transaction_with_read_set_fifo(action),
+                mode => store
+                    .transaction_until(
+                        std::time::Instant::now() + std::time::Duration::from_secs(30),
+                        match mode {
+                            4 => CheckpointTransactionMode::Conservative,
+                            5 => CheckpointTransactionMode::Fifo,
+                            6 => CheckpointTransactionMode::ReadSet,
+                            _ => CheckpointTransactionMode::ReadSetFifo,
+                        },
+                        action,
+                    )
+                    .map_err(|error| match error {
+                        TimedTransactionError::Operation(error) => error,
+                        TimedTransactionError::DeadlineExceeded => {
+                            panic!("model transaction exceeded its unexpired deadline")
+                        }
+                    }),
+            };
+            match result {
+                Ok(observed) => Outcome::Transaction(Some(observed)),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    Outcome::Transaction(None)
+                }
+                Err(error) => panic!("unexpected transaction error: {error}"),
+            }
+        }
+        2 => {
+            store
+                .write_batch(&[
+                    BatchOperation::Put {
+                        key: b"x",
+                        value: &[7],
+                    },
+                    BatchOperation::Put {
+                        key: b"y",
+                        value: &[8],
+                    },
+                ])
+                .unwrap();
+            Outcome::Blind
+        }
+        3 | 5 => Outcome::Read(pair(store.get_many(&[b"x", b"y"]).unwrap())),
+        4 => {
+            store.put(b"x", &[4]).unwrap();
+            Outcome::PutX
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]
@@ -126,83 +207,7 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
                         std::thread::yield_now();
                     }
                     let start = clock.fetch_add(1, Ordering::SeqCst);
-                    let outcome = match operation {
-                        0 | 1 => {
-                            let action = |tx: &mut CheckpointTransaction<'_>| {
-                                let (x, y) = if operation == 0 {
-                                    (tx.get(b"x")?.unwrap()[0], tx.get(b"y")?.unwrap()[0])
-                                } else {
-                                    let range = tx.scan(Some(b"w"), Some(b"z"), 10)?;
-                                    assert_eq!(range.len(), 2);
-                                    assert_eq!(range[0].0, b"x");
-                                    assert_eq!(range[1].0, b"y");
-                                    (range[0].1[0], range[1].1[0])
-                                };
-                                let next = if operation == 0 {
-                                    [x + 1, y + 1]
-                                } else {
-                                    [y + 2, x + 3]
-                                };
-                                tx.put(b"x", &[next[0]])?;
-                                tx.put(b"y", &[next[1]])?;
-                                Ok([x, y])
-                            };
-                            let result = match (iteration + operation) % 8 {
-                                0 => store.transaction(action),
-                                1 => store.transaction_with_fifo(action),
-                                2 => store.transaction_with_read_set(action),
-                                3 => store.transaction_with_read_set_fifo(action),
-                                mode => store
-                                    .transaction_until(
-                                        std::time::Instant::now()
-                                            + std::time::Duration::from_secs(30),
-                                        match mode {
-                                            4 => CheckpointTransactionMode::Conservative,
-                                            5 => CheckpointTransactionMode::Fifo,
-                                            6 => CheckpointTransactionMode::ReadSet,
-                                            _ => CheckpointTransactionMode::ReadSetFifo,
-                                        },
-                                        action,
-                                    )
-                                    .map_err(|error| match error {
-                                        TimedTransactionError::Operation(error) => error,
-                                        TimedTransactionError::DeadlineExceeded => {
-                                            panic!(
-                                                "model transaction exceeded its unexpired deadline"
-                                            )
-                                        }
-                                    }),
-                            };
-                            match result {
-                                Ok(observed) => Outcome::Transaction(Some(observed)),
-                                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                                    Outcome::Transaction(None)
-                                }
-                                Err(error) => panic!("unexpected transaction error: {error}"),
-                            }
-                        }
-                        2 => {
-                            store
-                                .write_batch(&[
-                                    BatchOperation::Put {
-                                        key: b"x",
-                                        value: &[7],
-                                    },
-                                    BatchOperation::Put {
-                                        key: b"y",
-                                        value: &[8],
-                                    },
-                                ])
-                                .unwrap();
-                            Outcome::Blind
-                        }
-                        3 | 5 => Outcome::Read(pair(store.get_many(&[b"x", b"y"]).unwrap())),
-                        4 => {
-                            store.put(b"x", &[4]).unwrap();
-                            Outcome::PutX
-                        }
-                        _ => unreachable!(),
-                    };
+                    let outcome = execute(&store, operation, iteration);
                     let end = clock.fetch_add(1, Ordering::SeqCst);
                     Event {
                         operation,
@@ -233,3 +238,7 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
         store = Arc::new(CheckpointStore::open(&path, &checkpoint, &digest).unwrap());
     }
 }
+
+#[cfg(target_os = "linux")]
+#[path = "checkpoint_transaction_model/long_history.rs"]
+mod long_history;
