@@ -1,0 +1,71 @@
+{
+  "revision": "24e425ff0a9e57a07e0110b45edd4d8ba2fed41f",
+  "git_status_at_start": "",
+  "scope": "Two parallel address-sanitized Linux libFuzzer campaigns; finite malformed-input coverage, not physical power loss or an off-host restore",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "source_sha256": {
+    "fuzz/Cargo.lock": "2f09025e1817fb64aae0497d7fcc1c0aa7a363f9cf138f68cda2f3e440e5ef45",
+    "fuzz/checkpoint-recovery-seeds/arbitrary-tail": "8ae6a971fb4a3075d0ffcde9c58d35257f48f579d689ea776fee522a2b128a20",
+    "fuzz/checkpoint-recovery-seeds/corrupt": "08885d7fea0f91658b31ed743483e96388d8ffa41f13a6280e6100ea915315dd",
+    "fuzz/checkpoint-recovery-seeds/limited": "a4b8ac2dd8d5202627525342e2304d177f9008dacd296283b611c194b9455555",
+    "fuzz/checkpoint-recovery-seeds/long-v2-complete-tail": "d876192a98d6fec202fcc6f51242dee71a0ec5777d94cf148a2f0d08e9c15838",
+    "fuzz/checkpoint-recovery-seeds/long-v3-complete-tail": "62a99f5078d00048c6441b5ddfb217ba20c3346e430281b797e63c69359e255e",
+    "fuzz/checkpoint-recovery-seeds/truncated": "9f07a1d473ac7214c792fbad73557633daf7631c55752d48eaa4b62b2d5583b8",
+    "fuzz/checkpoint-recovery-seeds/unacknowledged": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+    "fuzz/checkpoint-recovery-seeds/v3-corrupt": "f75fdd96997d874a8440df05c9620c5f1ef13f151f0bef2c662044f7a86f7f52",
+    "fuzz/checkpoint-recovery-seeds/v3-truncated": "151e3fbf18b93e762e64256c8719e1d031c76e58d99e4a0bf2fdad6b6c5cdfb4",
+    "fuzz/checkpoint-recovery-seeds/v3-unacknowledged": "1fc3bd4778fdfdaea679fe9d9da2bf8a30ce49e7a9e477c602c0ae68da9f57b6",
+    "fuzz/checkpoint-recovery-seeds/witnessed": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+    "fuzz/fuzz_targets/checkpoint_recovery.rs": "aa4f0820265389105769df8c6f2c4a66f0532d7c1e92127de8afd5c51b5ff6a7",
+    "fuzz/fuzz_targets/recovery.rs": "55fb06b4f050b8b36468841ed00c87763b76152d43bc329420540fb6f54ba9e1",
+    "fuzz/seeds/atomic-batch": "02cd2d374838b4b03918a7dc07248fc0b8ac9d628569ec5c1cd8eef5d2f99af5",
+    "fuzz/seeds/empty-unwitnessed": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+    "fuzz/seeds/legacy": "b0f37de62232014cc51ea0b7d928fcd4045a85a8c3e7b59e2f24efa4eaccbfad",
+    "fuzz/seeds/legacy-dangling-witness": "7e39b78411cd5edf81bb7b760686d28a4667c2caa189785166d0384d656d3e1f",
+    "fuzz/seeds/long-v2-batches": "01a5a49b1ea2210dff51399e7b3c17ef3bd514f73b97b5bb0f107df321fd0a30",
+    "fuzz/seeds/long-v3-records": "3b0301782a1fd0e168df6f8d4a5c3cf7dab6ff19b5d0cc209d842de6240e83a2",
+    "fuzz/seeds/metadata": "b769ac7af042d36dd6360f5c8ef06a625b9eb62c5c11562d54c5686789047880",
+    "fuzz/seeds/metadata-record": "1039a69486721a47ea3afbc8fd87a1fe4286bb66397c828924e0171c571ac6af",
+    "fuzz/seeds/witnessed": "cd735a131041a75f1a1b8d1c415c8e3135d9d588611b84348964a9c90ca60d8f"
+  },
+  "corpus_and_logs": "benchmarks/results/2026-11-06-long-recovery-fuzz-corpus.tar.gz",
+  "corpus_archive_sha256": "50ab4dcb1e98f2ca057bb7bcec4d865d924fbb25aba4601e2bff6f35715638b4",
+  "runs": [
+    {
+      "target": "recovery",
+      "seed": 395183,
+      "max_seconds": 180,
+      "max_len": 8192,
+      "initial_seeds": 9,
+      "largest_starting_seed_bytes": 8116,
+      "executions": 67581,
+      "reported_seconds": 181,
+      "exit_code": 0,
+      "log_sha256": "19d8d939e33a9afc8160ae2c5322bf7c4f2ffcb7cb16f6074decdb4cc8061c26",
+      "binary_sha256": "e6dc3459d61537421b96f7a6d6306c06b53d54ba6a4d9d703e92fde9a5dcdb0d"
+    },
+    {
+      "target": "checkpoint_recovery",
+      "seed": 395184,
+      "max_seconds": 180,
+      "max_len": 256,
+      "initial_seeds": 11,
+      "largest_starting_seed_bytes": 256,
+      "executions": 13430,
+      "reported_seconds": 181,
+      "exit_code": 0,
+      "log_sha256": "84ac34b3c5aa856b36002ad546a7fed8464628bb34ae2a464e3cc54c2b6180ba",
+      "binary_sha256": "0f0aca361fe4fc5b3bd3c49cd597d19f9e5f027ad5f0bed71f20e2c1bbfda2e3"
+    }
+  ],
+  "rustc": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "cargo-fuzz 0.13.2"
+}
