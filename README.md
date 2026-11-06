@@ -17,6 +17,7 @@ The [failure and recovery matrix](docs/FOUNDATION_FAILURE_MATRIX.md) maps curren
 The [filesystem EIO checks](docs/FOUNDATION_FAILURE_MATRIX.md#running-filesystem-eio-injection) exercise initialization and ordinary/checkpoint-backed operations across both recovery orders, including synchronization, read, write, open and namespace errors.
 The [backup and filesystem-failure report](docs/BACKUP_AND_FILESYSTEM_FAILURES_2026_11_06.md) records 1,772 additional injected errors, concurrent backup cuts and a model-based backup/restore fuzz run on a clean revision.
 The [long transaction-history report](docs/LONG_TRANSACTION_HISTORY_2026_11_06.md) checks concurrent transfers, live-reader invariants and recovery across both writable backends.
+The [concurrent witness-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes and uncertain outcomes when real syscalls return errors during concurrent writes.
 The [native macOS CI matrix](https://github.com/Eta06/EMDA-DB/actions/runs/42158413310) passed 720 tests on Apple silicon with both stable Rust and Rust 1.85; V3 metadata witnesses and atomic compaction handoffs remain Linux-only.
 An isolated [real ENOSPC campaign](benchmarks/results/2026-11-06-tmpfs-enospc.json) checks writes and copy operations on a disposable, size-limited tmpfs; physical power-loss testing remains open.
 The [local staging restore comparison](docs/STAGING_RESTORE_COMPARISON_2026_11_06.md) records the successful restore path before and after that synchronization change.
