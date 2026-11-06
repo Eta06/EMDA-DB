@@ -128,6 +128,22 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
             service.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_housekeeping_cpu_cannot_overlap_a_measured_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            server = root / 'server'
+            server.write_bytes(b'fixture')
+            output = root / 'report.json'
+            args = ['compare_engines.py', '--directory', directory, '--server', str(server),
+                    '--output', str(output), '--backends', 'prototype', '--housekeeping-cpus', '1']
+            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
+                  patch.object(compare_engines.os, 'sched_setaffinity') as set_affinity,
+                  contextlib.redirect_stderr(io.StringIO())):
+                with self.assertRaises(SystemExit):
+                    compare_engines.main()
+            set_affinity.assert_not_called()
+            self.assertFalse(output.exists())
+
     def test_completed_and_timed_out_cases_preserve_reports_and_remove_fixtures(self):
         for timed_out in (False, True):
             with self.subTest(timed_out=timed_out), tempfile.TemporaryDirectory() as directory:

@@ -124,12 +124,15 @@ def main():
     allowed = os.sched_getaffinity(0)
     requested = parse_cpus(args.client_cpus) | parse_cpus(args.server_cpus) | parse_cpus(args.housekeeping_cpus)
     if (not requested <= allowed or args.rounds < 2 or len(args.backends) != len(set(args.backends))
-            or not Path(args.directory).is_dir()
+            or not Path(args.directory).is_dir() or not Path(args.server).is_file()
             or not 1 <= args.case_timeout <= 1800 or os.path.lexists(args.output)
             or not Path(args.output).parent.is_dir()):
         parser.error("invalid CPU affinity, rounds, or data directory")
-    if parse_cpus(args.client_cpus) & parse_cpus(args.server_cpus):
-        parser.error("client and server CPU sets must be disjoint")
+    client = parse_cpus(args.client_cpus)
+    server = parse_cpus(args.server_cpus)
+    housekeeping = parse_cpus(args.housekeeping_cpus)
+    if client & server or housekeeping & (client | server):
+        parser.error("client, server and housekeeping CPU sets must be disjoint")
     os.sched_setaffinity(0, parse_cpus(args.housekeeping_cpus))
     sources = sorted([*Path("scripts/benchmarks").glob("*.py"), Path(__file__), Path("scripts/network_compare.py"),
                       Path("scripts/embedded_bench_server.py"), *Path("examples").rglob("*.rs"),
