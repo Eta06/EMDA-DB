@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in per-fixture cache-eviction advice to the clean-restart diagnostic, without dropping global caches.
+
 - Extend the concurrent-write and clean-restart resource diagnostic with an optional checksum-verified SQLite WAL/FULL comparison.
 
 - Check actual inode exhaustion during initialization, backup, restore and upgrade in the guarded tmpfs failure workflow.

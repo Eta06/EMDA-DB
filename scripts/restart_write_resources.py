@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import statistics
 import subprocess
 import tempfile
@@ -14,6 +15,32 @@ from benchmarks.telemetry import difference, quiet_window, read, snapshot
 from index_memory_compare import fields
 
 ENGINE_MODES = ("full", "checkpoint")
+
+
+def evict_fixture_files(parent, mode):
+    """Request eviction only for known files in this runner's disposable fixture."""
+    paths = [("sqlite.db", False), ("sqlite.db-wal", True)] if mode == "sqlite" else [
+        ("store/records.log", False), ("store/commit.state", False)]
+    if mode == "checkpoint":
+        paths.append(("index", False))
+    results = []
+    for relative, optional in paths:
+        path = parent / relative
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            if optional:
+                continue
+            raise
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("fixture cache advice requires regular files")
+            os.posix_fadvise(descriptor, 0, 0, os.POSIX_FADV_DONTNEED)
+            results.append({"file": relative, "bytes": metadata.st_size})
+        finally:
+            os.close(descriptor)
+    return results
 
 
 def digest(path):
@@ -68,6 +95,7 @@ def main():
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--writes", type=int, default=128, help="durable writes per worker per epoch")
     parser.add_argument("--epochs", type=int, default=4, help="write processes per fixture, followed by a verification process")
+    parser.add_argument("--evict-fixture-cache", action="store_true", help="request DONTNEED only for owned fixture files before each fresh process")
     args = parser.parse_args()
     try:
         counts = [int(value) for value in args.keys.split(",")]
@@ -85,6 +113,8 @@ def main():
         parser.error("an existing fixture directory and prebuilt binaries are required")
     if args.sqlite_binary and not Path(args.sqlite_binary).is_file():
         parser.error("SQLite companion binary must exist")
+    if args.evict_fixture_cache and (not hasattr(os, "posix_fadvise") or not hasattr(os, "POSIX_FADV_DONTNEED")):
+        parser.error("fixture cache eviction requires Linux posix_fadvise support")
     if os.path.lexists(args.output):
         parser.error("output must not already exist")
     allowed = sorted(os.sched_getaffinity(0))
@@ -107,8 +137,9 @@ def main():
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
         "cpu_quota": read("/sys/fs/cgroup/cpu.max"), "allowed_cpus": allowed,
         "benchmark_cpus": bench_cpus, "driver_cpu": driver_cpu,
+        "cache_policy": "fixture DONTNEED requested before each process" if args.evict_fixture_cache else "warm cache; no eviction requested",
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
-        "limitations": "One Linux VM/filesystem and warm caches; processes open and close cleanly, with no power-loss simulation. Different engine paths use separate equivalently populated fixtures. Workers perform independent, unique-key durable writes; no transaction or failure is measured. SQLite uses a separate FULL/WAL connection per worker and checks integrity outside open/write timers; its open is lazy, while the prototype validates the log during open, so open timings are not equivalent verification. SQLite worker statement preparation is included in aggregate write elapsed time. Every earlier workload value is checked after each fresh-process open, and all final values are checked by an additional clean open; only sampled base/tail values are checked. RSS excludes page cache; process I/O includes open, verification and measurement overhead and is not physical I/O. Telemetry includes the VM/cgroup workload. Results do not establish resource, recovery or latency bounds.",
+        "limitations": "One Linux VM/filesystem; processes open and close cleanly, with no power-loss simulation. Cache eviction, if requested, is advisory and applies only to owned fixture files; it does not ensure cold device or underlying host caches. Different engine paths use separate equivalently populated fixtures. Workers perform independent, unique-key durable writes; no transaction or failure is measured. SQLite uses a separate FULL/WAL connection per worker and checks integrity outside open/write timers; its open is lazy, while the prototype validates the log during open, so open timings are not equivalent verification. SQLite worker statement preparation is included in aggregate write elapsed time. Every earlier workload value is checked after each fresh-process open, and all final values are checked by an additional clean open; only sampled base/tail values are checked. RSS excludes page cache; process I/O includes open, verification and measurement overhead and is not physical I/O. Telemetry includes the VM/cgroup workload. Results do not establish resource, recovery or latency bounds.",
         "completed": False, "failure": None, "cases": [],
     }
     if args.sqlite_binary:
@@ -174,11 +205,12 @@ def main():
                             command = affinity + [args.binary, str(parent), str(count), str(args.tail_keys), str(args.key_bytes),
                                                   mode, case["fixtures"][mode]["token"], str(args.workers), str(args.writes), str(epoch), phase]
                         before = snapshot()
+                        evicted = evict_fixture_files(parent, mode) if args.evict_fixture_cache else None
                         process = subprocess.run(command, check=True, text=True, capture_output=True, timeout=600)
                         noise = difference(before, snapshot())
                         sample = validate_sample(json.loads(process.stdout), mode, phase, epoch, count, args.tail_keys,
                                                  args.key_bytes, args.workers, args.writes)
-                        case["runs"].append({**sample, "noise": noise})
+                        case["runs"].append({**sample, "cache_advice": evicted, "noise": noise})
                         save()
                 case["summary"] = {}
                 for mode in modes:

@@ -1,10 +1,12 @@
 import copy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from restart_write_resources import validate_sample
+from restart_write_resources import evict_fixture_files, validate_sample
 
 
 class RestartResourceTests(unittest.TestCase):
@@ -58,6 +60,33 @@ class RestartResourceTests(unittest.TestCase):
                 bad[field] = value
                 with self.assertRaises(ValueError):
                     validate_sample(bad, 'sqlite', 'write', 2, 32, 4, 8, 2, 3)
+
+    def test_cache_advice_targets_only_owned_known_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / 'store').mkdir()
+            (root / 'store' / 'records.log').write_bytes(b'log')
+            (root / 'store' / 'commit.state').write_bytes(b'witness')
+            (root / 'index').write_bytes(b'index')
+            (root / 'unrelated').write_bytes(b'untouched')
+            with patch('restart_write_resources.os.posix_fadvise') as advise:
+                result = evict_fixture_files(root, 'checkpoint')
+            self.assertEqual([entry['file'] for entry in result],
+                             ['store/records.log', 'store/commit.state', 'index'])
+            self.assertEqual(advise.call_count, 3)
+            self.assertEqual((root / 'unrelated').read_bytes(), b'untouched')
+
+    def test_cache_advice_refuses_a_symlink(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / 'store').mkdir()
+            (root / 'outside').write_bytes(b'untouched')
+            (root / 'store' / 'records.log').symlink_to(root / 'outside')
+            (root / 'store' / 'commit.state').write_bytes(b'witness')
+            with patch('restart_write_resources.os.posix_fadvise') as advise:
+                with self.assertRaises(OSError):
+                    evict_fixture_files(root, 'full')
+                advise.assert_not_called()
 
 
 if __name__ == '__main__':
