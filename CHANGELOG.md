@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Exercise repeated synchronization errors and verify staging ownership and cleanup after errors stop.
+
 - Add a Linux syscall-injection campaign for synchronization errors during initialization, ordinary and checkpoint-backed writes and maintenance, with recovery and publication checks.
 
 - Add opt-in per-fixture cache-eviction advice to the clean-restart diagnostic, without dropping global caches.

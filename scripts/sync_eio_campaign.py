@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import subprocess
 import tempfile
 import time
@@ -85,6 +86,26 @@ def describe_initialization(snapshot_value):
             'metadata_sha256': digest(snapshot_value['metadata']) if snapshot_value['metadata'] is not None else None}
 
 
+def stage_inventory(root):
+    """Check that every visible staging payload still has its valid owner."""
+    entries = sorted(path.name for path in root.iterdir() if path.name.startswith('.emda-stage-v1-'))
+    for name in entries:
+        if not name.endswith('.owner.data'):
+            continue
+        marker = root / name.removesuffix('.data')
+        if not stat.S_ISREG(marker.lstat().st_mode):
+            raise ValueError('staging payload owner is not a regular file')
+        if name.startswith('.emda-stage-v1-f-'):
+            expected = b'EMDA-STAGING-V1-FILE\n'
+        elif name.startswith('.emda-stage-v1-d-'):
+            expected = b'EMDA-STAGING-V1-DIRECTORY\n'
+        else:
+            raise ValueError('unexpected staging payload kind')
+        if marker.read_bytes() != expected:
+            raise ValueError('staging payload lacks a valid ownership marker')
+    return entries
+
+
 def check_source(before, after, format_name, operation):
     if not after['log'].startswith(before['log']):
         raise ValueError('acknowledged log prefix changed')
@@ -106,11 +127,12 @@ def run_probe(binary, *args):
     return json.loads(run.stdout)
 
 
-def traced_attempt(binary, root, operation, syscall=None, ordinal=None):
+def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persistent=False):
     trace = root / 'trace.txt'
     command = ['strace', '-f', '-qq', '-yy', '-o', str(trace), '-e', 'trace=fsync,fdatasync']
     if syscall:
-        command += ['-e', f'inject={syscall}:error=EIO:when={ordinal}']
+        when = f'{ordinal}+1' if persistent else str(ordinal)
+        command += ['-e', f'inject={syscall}:error=EIO:when={when}']
     command += [binary, 'attempt', str(root), operation]
     run = subprocess.run(command, capture_output=True, text=True, timeout=60)
     if run.returncode:
@@ -124,23 +146,26 @@ def traced_attempt(binary, root, operation, syscall=None, ordinal=None):
         for name in SYSCALLS
     }
     injected = [line for line in lines if '(INJECTED)' in line]
-    if syscall and (len(injected) != 1 or not re.search(r'\b' + syscall + r'\(', injected[0])):
-        raise ValueError(f'{syscall} injection was not observed exactly once')
+    if syscall and (not injected or (not persistent and len(injected) != 1)
+                    or any(not re.search(r'\b' + syscall + r'\(', line) for line in injected)):
+        raise ValueError(f'{syscall} injection did not match the requested mode')
     if not syscall and injected:
         raise ValueError('control run unexpectedly reported an injection')
-    return {'outcome': outcome, 'counts': counts, 'injected_trace': injected[0] if injected else None}
+    return {'outcome': outcome, 'counts': counts, 'injected_traces': injected}
 
 
-def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None, order='ordinary-first'):
+def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
+             order='ordinary-first', persistent=False):
     with tempfile.TemporaryDirectory(prefix='sync-eio-case-', dir=parent) as path:
         root = Path(path)
         setup = run_probe(binary, 'setup', root, format_name)
         if setup != {'status': 'ready', 'format': format_name}:
             raise ValueError('unexpected fixture setup')
         before = snapshot(root, format_name)
-        traced = traced_attempt(binary, root, operation, syscall, ordinal)
+        traced = traced_attempt(binary, root, operation, syscall, ordinal, persistent)
         after = snapshot(root, format_name)
         check_source(before, after, format_name, operation)
+        stages_before = stage_inventory(root)
         initial_target = initialization_snapshot(root) if operation == 'initialize' else None
         verification = run_probe(binary, 'verify', root, operation, traced['outcome']['status'], order)
         expected_order = ['ordinary', 'checkpoint'] if order == 'ordinary-first' else ['checkpoint', 'ordinary']
@@ -152,8 +177,12 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         final_target = initialization_snapshot(root) if operation == 'initialize' else None
         if operation == 'initialize':
             check_initialization(initial_target, final_target)
+        stages_after = stage_inventory(root)
+        if stages_after:
+            raise ValueError(f'recognized staging names remain after cleanup: {stages_after}')
         return {**traced, 'verification': verification, 'before': describe(before),
                 'after_attempt': describe(after), 'after_verification': describe(final),
+                'stages_before_cleanup': stages_before, 'stages_after_cleanup': stages_after,
                 'initialization_before_verification': describe_initialization(initial_target),
                 'initialization_after_verification': describe_initialization(final_target)}
 
@@ -165,6 +194,8 @@ def main():
     parser.add_argument('--output', required=True, help='new JSON result path')
     parser.add_argument('--max-ordinals', type=int, default=0,
                         help='limit each syscall per case; zero tests all baseline ordinals')
+    parser.add_argument('--persistent-errors', action='store_true',
+                        help='continue returning EIO for that syscall after the selected ordinal')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output)
             or not 0 <= args.max_ordinals <= 100):
@@ -180,11 +211,13 @@ def main():
         'strace': subprocess.check_output(['strace', '--version'], text=True).splitlines()[0],
         'host_platform': platform.platform(),
         'max_ordinals': args.max_ordinals,
+        'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', args.directory, '-o', 'TARGET,FSTYPE'], text=True)),
         'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'scope': ('Inject a returned EIO at each selected fsync or fdatasync ordinal from a successful '
-                  'single-process path. Test each injection with both writable recovery paths taking '
+                  'single-process path. In persistent mode, later calls of that syscall also fail. '
+                  'Test each injection with both writable recovery paths taking '
                   'turns reopening first. Verify acknowledged values, source/backup preservation and any '
                   'visible copy on the running OS. Failure-only extra syscalls, other syscall types, '
                   'crash ordering, physical power loss and off-host recovery are not exhausted.'),
@@ -231,7 +264,8 @@ def main():
                                 result['current'] = {'format': format_name, 'operation': operation,
                                                      'syscall': syscall, 'ordinal': ordinal, 'order': order}
                                 save()
-                                injection = run_case(binary, temp, format_name, operation, syscall, ordinal, order)
+                                injection = run_case(binary, temp, format_name, operation, syscall, ordinal,
+                                                     order, args.persistent_errors)
                                 case['injections'].append({'syscall': syscall, 'ordinal': ordinal,
                                                            'order': order, **injection})
                                 save()

@@ -1,10 +1,11 @@
 import copy
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sync_eio_campaign import check_initialization, check_source
+from sync_eio_campaign import check_initialization, check_source, stage_inventory
 
 
 class SyncEioCampaignTests(unittest.TestCase):
@@ -48,6 +49,20 @@ class SyncEioCampaignTests(unittest.TestCase):
                     check_initialization(before, bad)
         check_initialization({'files': {}, 'metadata': None},
                              {'files': {'records.log': b'new'}, 'metadata': b'new'})
+
+    def test_staging_payload_requires_its_valid_owner(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            marker = root / '.emda-stage-v1-f-abcdefghijklmnop.owner'
+            payload = root / (marker.name + '.data')
+            payload.write_bytes(b'partial')
+            with self.assertRaises(FileNotFoundError):
+                stage_inventory(root)
+            marker.write_bytes(b'corrupt')
+            with self.assertRaises(ValueError):
+                stage_inventory(root)
+            marker.write_bytes(b'EMDA-STAGING-V1-FILE\n')
+            self.assertEqual(len(stage_inventory(root)), 2)
 
 
 if __name__ == '__main__':

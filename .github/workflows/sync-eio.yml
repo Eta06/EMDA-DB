@@ -43,10 +43,13 @@ jobs:
         run: |
           cargo +stable build --release --locked --example sync_failure_probe
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-result.json"
+          python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-persistent.json" --persistent-errors
       - name: Preserve result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: synchronization-eio-result
-          path: ${{ runner.temp }}/sync-eio-result.json
+          path: |
+            ${{ runner.temp }}/sync-eio-result.json
+            ${{ runner.temp }}/sync-eio-persistent.json
           if-no-files-found: ignore
