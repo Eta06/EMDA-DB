@@ -178,6 +178,20 @@ fn workload(
     Ok((samples, worker))
 }
 
+fn verify_reopened(config: &Config, directory: &Path) -> BenchResult<()> {
+    let mut reader = if config.backend == "sqlite" {
+        Worker::Sqlite(sqlite_connection(&directory.join("sqlite.db"))?)
+    } else {
+        let reopened = open_prototype(config, &directory.join("store"))?;
+        Worker::Prototype(Arc::new(reopened))
+    };
+    for key in 0..config.keys.min(100) {
+        reader.read(&(key as u64).to_be_bytes(), config.value_size)?;
+    }
+    reader.read(&((config.keys - 1) as u64).to_be_bytes(), config.value_size)?;
+    Ok(())
+}
+
 fn main() -> BenchResult<()> {
     let config = Config::parse()?;
     let directory = tempfile::Builder::new()
@@ -273,22 +287,16 @@ fn main() -> BenchResult<()> {
         );
     }
     drop(held_workers);
-    if config.backend != "sqlite" {
-        let path = directory.path().join("store");
-        let reopened = open_prototype(&config, &path)?;
-        let mut reader = Worker::Prototype(Arc::new(reopened));
-        for key in 0..config.keys.min(100) {
-            reader.read(&(key as u64).to_be_bytes(), config.value_size)?;
-        }
-        reader.read(&((config.keys - 1) as u64).to_be_bytes(), config.value_size)?;
-        println!("verified_reopen=true");
-    }
+    verify_reopened(&config, directory.path())?;
+    println!("verified_reopen=true");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, DEFAULT_VALUE_SIZE, MAX_VALUE_SIZE, nearest_rank};
+    use super::{
+        Config, DEFAULT_VALUE_SIZE, MAX_VALUE_SIZE, nearest_rank, verify_reopened, workers,
+    };
 
     #[test]
     fn accepts_configurable_value_sizes_and_rejects_out_of_range() {
@@ -324,5 +332,30 @@ mod tests {
         assert_eq!(nearest_rank(&samples, 999), 999);
         assert_eq!(nearest_rank(&samples, 1000), 1000);
         assert_eq!(nearest_rank(&[10, 20], 999), 20);
+    }
+
+    #[test]
+    fn sqlite_reopen_verification_detects_corrupted_sample() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            backend: "sqlite".into(),
+            clients: 1,
+            operations: 1,
+            keys: 2,
+            write_percent: 100,
+            directory: directory.path().to_path_buf(),
+            value_size: 4,
+        };
+        drop(workers(&config, directory.path()).unwrap());
+        verify_reopened(&config, directory.path()).unwrap();
+        let connection = rusqlite::Connection::open(directory.path().join("sqlite.db")).unwrap();
+        connection
+            .execute(
+                "UPDATE kv SET value = ?1 WHERE key = ?2",
+                rusqlite::params![&[7_u8; 4][..], &0_u64.to_be_bytes()[..]],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(verify_reopened(&config, directory.path()).is_err());
     }
 }

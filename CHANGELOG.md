@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check sampled SQLite values and checksums after a clean reopen in the direct key-value benchmark, outside the measured timings.
+
 - Extend the checkpoint-backed serial-history model with an independent write and a second reader, and permit longer local campaigns.
 
 - Add a staging cleanup model fuzzer for malformed markers, unexpected payloads, symlinks and repeat cleanup; include it in the scheduled recovery workflow.
