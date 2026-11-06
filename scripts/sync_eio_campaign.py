@@ -18,6 +18,7 @@ SYSCALL_SETS = {
     'sync': ('fsync', 'fdatasync'),
     'data': ('write', 'writev', 'pwrite64', 'setxattr', 'fsetxattr'),
     'read': ('read', 'readv', 'pread64'),
+    'xattr-read': ('getxattr', 'lgetxattr', 'fgetxattr'),
     'open': ('open', 'openat', 'openat2', 'creat'),
     'namespace': ('mkdir', 'mkdirat', 'rename', 'renameat', 'renameat2',
                   'unlink', 'unlinkat', 'rmdir', 'link', 'linkat'),
@@ -32,7 +33,7 @@ RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(' + '|'.join(sorted(
     {name for names in SYSCALL_SETS.values() for name in names}, key=len, reverse=True)) + r')\(')
 TRACEE = re.compile(r'^\s*(\d+)\s')
-FD_CALLS = frozenset(('read', 'readv', 'pread64', 'write', 'writev', 'pwrite64', 'fsetxattr'))
+FD_CALLS = frozenset(('read', 'readv', 'pread64', 'write', 'writev', 'pwrite64', 'fsetxattr', 'fgetxattr'))
 
 
 def digest(data):

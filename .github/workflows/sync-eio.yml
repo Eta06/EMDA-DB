@@ -74,7 +74,7 @@ jobs:
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-result.json"
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/sync-eio-result.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-persistent.json" --persistent-errors
-          for syscall_group in data read open namespace; do
+          for syscall_group in data read xattr-read open namespace; do
             python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-$syscall_group.json" --syscall-set "$syscall_group"
             python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eio-$syscall_group.json"
           done
@@ -99,6 +99,7 @@ jobs:
             ${{ runner.temp }}/sync-eio-persistent.json
             ${{ runner.temp }}/eio-data.json
             ${{ runner.temp }}/eio-read.json
+            ${{ runner.temp }}/eio-xattr-read.json
             ${{ runner.temp }}/eio-open.json
             ${{ runner.temp }}/eio-namespace.json
             ${{ runner.temp }}/eintr-sync.json
@@ -127,7 +128,7 @@ jobs:
         run: |
           cargo +stable build --release --locked --example sync_failure_probe
           failed=0
-          for syscall_group in sync data read open namespace; do
+          for syscall_group in sync data read xattr-read open namespace; do
             if ! python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-full-$syscall_group.json" --error EINTR --syscall-set "$syscall_group"; then
               failed=1
             elif ! python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eintr-full-$syscall_group.json"; then

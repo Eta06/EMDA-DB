@@ -48,6 +48,12 @@ class SyncEioCampaignTests(unittest.TestCase):
                                         'openat', fixture))
         self.assertFalse(targets_fixture('1 openat(AT_FDCWD, "/work/case-other/log", O_RDONLY) = 3',
                                          'openat', fixture))
+        self.assertTrue(targets_fixture('1 fgetxattr(3</work/case/log>, "user.db.commit.v3", "", 0) = 0',
+                                        'fgetxattr', fixture))
+        self.assertFalse(targets_fixture('1 fgetxattr(1<pipe:[1]>, "/work/case/log", "", 0) = 0',
+                                         'fgetxattr', fixture))
+        self.assertTrue(targets_fixture('1 getxattr("/work/case/log", "user.db.commit.v3", "", 0) = 0',
+                                        'getxattr', fixture))
 
     def state(self):
         return {'log': b'acknowledged', 'witness': b'anchor',
