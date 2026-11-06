@@ -1,0 +1,25 @@
+{
+  "revision": "fa39905e9fb9d3987182a1629cd7105780530cec",
+  "git_status": "",
+  "command": [
+    "cargo",
+    "+stable",
+    "test",
+    "--release",
+    "--locked",
+    "--offline",
+    "--test",
+    "delete_reinsert_model",
+    "--",
+    "--nocapture"
+  ],
+  "histories": 4096,
+  "completed_utc": "2026-11-06T01:46:19.361385+00:00",
+  "duration_seconds": 35.341,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "exit_code": 0,
+  "stdout": "\nrunning 2 tests\ntest model_rejects_fractured_batch_and_false_conditional_success ... ok\ntest deletion_reinsertion_and_reads_have_a_serial_history_after_recovery ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 34.63s\n\n",
+  "stderr": "   Compiling database-engine v0.1.0 (/workspace/scratch/emda-restart-resource)\n    Finished `release` profile [optimized] target(s) in 0.67s\n     Running tests/delete_reinsert_model.rs (/workspace/database-engine/target/release/deps/delete_reinsert_model-d9f271fa3c4a9110)\nconditional results: mismatch=4778 success=3414\n",
+  "test_binary_sha256": "f73d41afc19e91e4a8dc7751d8cc1a016cece5e8ee62d0f71d85cb7ec662016c",
+  "limitations": "Finite nine-operation histories on the running Linux VM, with both clean recovery paths after each. No exhaustive scheduling, process-crash, or power-loss proof."
+}
