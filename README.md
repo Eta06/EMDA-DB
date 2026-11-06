@@ -15,6 +15,7 @@ A [targeted deadline-race test](docs/DOCUMENT_DEADLINE_RACES_2026_11_06.md) chec
 [Initialization, staging and commit checks](docs/INITIALIZATION_AND_STAGING_BOUNDARIES_2026_11_06.md) cover additional interruption boundaries, synthetic torn-commit states and ownership-marker synchronization.
 The [failure and recovery matrix](docs/FOUNDATION_FAILURE_MATRIX.md) maps current evidence and remaining gaps to the storage contract.
 The [filesystem EIO checks](docs/FOUNDATION_FAILURE_MATRIX.md#running-filesystem-eio-injection) exercise initialization and ordinary/checkpoint-backed operations across both recovery orders, including synchronization, read, write, open and namespace errors.
+The [interrupted-call campaign](docs/INTERRUPTED_FILESYSTEM_CALLS_2026_11_06.md) checks 2,742 synthetic `EINTR` returns through both recovery orders.
 The [backup and filesystem-failure report](docs/BACKUP_AND_FILESYSTEM_FAILURES_2026_11_06.md) records 1,772 additional injected errors, concurrent backup cuts and a model-based backup/restore fuzz run on a clean revision.
 The [long transaction-history report](docs/LONG_TRANSACTION_HISTORY_2026_11_06.md) checks concurrent transfers, live-reader invariants and recovery across both writable backends.
 The [long key-value history](docs/LONG_SERIAL_HISTORY_2026_11_06.md) checks successive concurrent operation windows against a serial model, with repeated reopens.
