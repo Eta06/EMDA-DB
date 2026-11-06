@@ -44,7 +44,8 @@ python3 scripts/sync_eio_campaign.py --directory /path/to/disposable-fixtures \
 ```
 
 The directory must already exist. The [GitHub workflow](../.github/workflows/sync-eio.yml)
-runs the same campaign on relevant changes. This injects returned errors on a
+runs the same campaign on relevant changes; the [460-case local run](SYNC_EIO_CAMPAIGN_2026_11_06.md)
+records its fixture, checks and limitations. This injects returned errors on a
 running OS; it does not exhaust calls reached only on failure paths, inject all
 syscall types, model storage reordering or establish physical power-loss or
 off-host restore behavior.
