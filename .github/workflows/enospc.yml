@@ -1,0 +1,51 @@
+name: Disposable ENOSPC checks
+
+"on":
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/enospc.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "src/**"
+      - "tests/enospc_tmpfs.rs"
+      - "tests/fixtures/**"
+      - "scripts/run_enospc_container.py"
+      - "scripts/tests/test_enospc_container.py"
+  pull_request:
+    paths:
+      - ".github/workflows/enospc.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "src/**"
+      - "tests/enospc_tmpfs.rs"
+      - "tests/fixtures/**"
+      - "scripts/run_enospc_container.py"
+      - "scripts/tests/test_enospc_container.py"
+
+permissions:
+  contents: read
+
+jobs:
+  tmpfs-enospc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Load pinned container image
+        run: docker pull debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+      - name: Build and run isolated tmpfs checks
+        run: |
+          cargo +stable test --release --locked --no-run --test enospc_tmpfs --message-format=json > "$RUNNER_TEMP/enospc-build.jsonl"
+          python3 scripts/run_enospc_container.py --cargo-json "$RUNNER_TEMP/enospc-build.jsonl" --output "$RUNNER_TEMP/enospc-result.json"
+      - name: Preserve result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: disposable-enospc-result
+          path: ${{ runner.temp }}/enospc-result.json
+          if-no-files-found: ignore

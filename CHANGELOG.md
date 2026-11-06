@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Exercise actual kernel `ENOSPC` on an isolated, size-limited tmpfs for writes, backup, restore and upgrade; run the guarded check in a dedicated hosted workflow.
+
 - Check kernel-enforced size failures during backup, restore and upgrade, including cleanup, source preservation and a complete retry.
 
 - Check kernel-enforced file-size failures on V2/V3 stores, including returned errors, signal termination, preserved witnesses and fail-closed recovery.
