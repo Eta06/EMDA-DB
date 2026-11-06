@@ -1,0 +1,732 @@
+{
+  "revision": "327978c1305af7f664e6c2db259d6562804f0b9e",
+  "git_status": "",
+  "binary_sha256": "fc4eaf37a1e778110b948d1a1787ae14443366ae97724e5a1fbb1a107933644f",
+  "fixture_directory": "/workspace/scratch/emda-foundation-tmp",
+  "filesystem": "overlay",
+  "started_utc": "2026-11-06T03:05:33.807937+00:00",
+  "runs": [
+    {
+      "iteration": 1,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 122324,
+          "conflicts": 257
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 1960,
+          "conflicts": 224
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 55623,
+          "conflicts": 195
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 1193,
+          "conflicts": 117
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=122324 conflicts=257\nformat=v2 writer=checkpoint commits=256 reader_snapshots=1960 conflicts=224\nformat=v3 writer=ordinary commits=256 reader_snapshots=55623 conflicts=195\nformat=v3 writer=checkpoint commits=256 reader_snapshots=1193 conflicts=117\n"
+    },
+    {
+      "iteration": 2,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 90042,
+          "conflicts": 296
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 376,
+          "conflicts": 175
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 51596,
+          "conflicts": 171
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 373,
+          "conflicts": 118
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=90042 conflicts=296\nformat=v2 writer=checkpoint commits=256 reader_snapshots=376 conflicts=175\nformat=v3 writer=ordinary commits=256 reader_snapshots=51596 conflicts=171\nformat=v3 writer=checkpoint commits=256 reader_snapshots=373 conflicts=118\n"
+    },
+    {
+      "iteration": 3,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 93901,
+          "conflicts": 242
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 397,
+          "conflicts": 134
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 44249,
+          "conflicts": 148
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 456,
+          "conflicts": 110
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=93901 conflicts=242\nformat=v2 writer=checkpoint commits=256 reader_snapshots=397 conflicts=134\nformat=v3 writer=ordinary commits=256 reader_snapshots=44249 conflicts=148\nformat=v3 writer=checkpoint commits=256 reader_snapshots=456 conflicts=110\n"
+    },
+    {
+      "iteration": 4,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 88163,
+          "conflicts": 222
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 595,
+          "conflicts": 169
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 60801,
+          "conflicts": 164
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 1076,
+          "conflicts": 133
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=88163 conflicts=222\nformat=v2 writer=checkpoint commits=256 reader_snapshots=595 conflicts=169\nformat=v3 writer=ordinary commits=256 reader_snapshots=60801 conflicts=164\nformat=v3 writer=checkpoint commits=256 reader_snapshots=1076 conflicts=133\n"
+    },
+    {
+      "iteration": 5,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 74915,
+          "conflicts": 242
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 372,
+          "conflicts": 159
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 45620,
+          "conflicts": 148
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 830,
+          "conflicts": 112
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=74915 conflicts=242\nformat=v2 writer=checkpoint commits=256 reader_snapshots=372 conflicts=159\nformat=v3 writer=ordinary commits=256 reader_snapshots=45620 conflicts=148\nformat=v3 writer=checkpoint commits=256 reader_snapshots=830 conflicts=112\n"
+    },
+    {
+      "iteration": 6,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 70490,
+          "conflicts": 273
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 405,
+          "conflicts": 224
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 57423,
+          "conflicts": 181
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 314,
+          "conflicts": 76
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=70490 conflicts=273\nformat=v2 writer=checkpoint commits=256 reader_snapshots=405 conflicts=224\nformat=v3 writer=ordinary commits=256 reader_snapshots=57423 conflicts=181\nformat=v3 writer=checkpoint commits=256 reader_snapshots=314 conflicts=76\n"
+    },
+    {
+      "iteration": 7,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 113109,
+          "conflicts": 273
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 644,
+          "conflicts": 132
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 53595,
+          "conflicts": 196
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 865,
+          "conflicts": 92
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=113109 conflicts=273\nformat=v2 writer=checkpoint commits=256 reader_snapshots=644 conflicts=132\nformat=v3 writer=ordinary commits=256 reader_snapshots=53595 conflicts=196\nformat=v3 writer=checkpoint commits=256 reader_snapshots=865 conflicts=92\n"
+    },
+    {
+      "iteration": 8,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 98118,
+          "conflicts": 278
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 479,
+          "conflicts": 182
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 49184,
+          "conflicts": 207
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 384,
+          "conflicts": 113
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=98118 conflicts=278\nformat=v2 writer=checkpoint commits=256 reader_snapshots=479 conflicts=182\nformat=v3 writer=ordinary commits=256 reader_snapshots=49184 conflicts=207\nformat=v3 writer=checkpoint commits=256 reader_snapshots=384 conflicts=113\n"
+    },
+    {
+      "iteration": 9,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 96452,
+          "conflicts": 266
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 573,
+          "conflicts": 131
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 51646,
+          "conflicts": 168
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 362,
+          "conflicts": 118
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=96452 conflicts=266\nformat=v2 writer=checkpoint commits=256 reader_snapshots=573 conflicts=131\nformat=v3 writer=ordinary commits=256 reader_snapshots=51646 conflicts=168\nformat=v3 writer=checkpoint commits=256 reader_snapshots=362 conflicts=118\n"
+    },
+    {
+      "iteration": 10,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 101327,
+          "conflicts": 269
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 1387,
+          "conflicts": 187
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 45824,
+          "conflicts": 208
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 683,
+          "conflicts": 118
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=101327 conflicts=269\nformat=v2 writer=checkpoint commits=256 reader_snapshots=1387 conflicts=187\nformat=v3 writer=ordinary commits=256 reader_snapshots=45824 conflicts=208\nformat=v3 writer=checkpoint commits=256 reader_snapshots=683 conflicts=118\n"
+    },
+    {
+      "iteration": 11,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 81209,
+          "conflicts": 375
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 584,
+          "conflicts": 169
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 64180,
+          "conflicts": 172
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 722,
+          "conflicts": 133
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=81209 conflicts=375\nformat=v2 writer=checkpoint commits=256 reader_snapshots=584 conflicts=169\nformat=v3 writer=ordinary commits=256 reader_snapshots=64180 conflicts=172\nformat=v3 writer=checkpoint commits=256 reader_snapshots=722 conflicts=133\n"
+    },
+    {
+      "iteration": 12,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 108021,
+          "conflicts": 284
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 1669,
+          "conflicts": 224
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 47638,
+          "conflicts": 123
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 722,
+          "conflicts": 111
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=108021 conflicts=284\nformat=v2 writer=checkpoint commits=256 reader_snapshots=1669 conflicts=224\nformat=v3 writer=ordinary commits=256 reader_snapshots=47638 conflicts=123\nformat=v3 writer=checkpoint commits=256 reader_snapshots=722 conflicts=111\n"
+    },
+    {
+      "iteration": 13,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 94752,
+          "conflicts": 298
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 511,
+          "conflicts": 139
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 56733,
+          "conflicts": 152
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 684,
+          "conflicts": 197
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=94752 conflicts=298\nformat=v2 writer=checkpoint commits=256 reader_snapshots=511 conflicts=139\nformat=v3 writer=ordinary commits=256 reader_snapshots=56733 conflicts=152\nformat=v3 writer=checkpoint commits=256 reader_snapshots=684 conflicts=197\n"
+    },
+    {
+      "iteration": 14,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 66498,
+          "conflicts": 270
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 400,
+          "conflicts": 164
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 53337,
+          "conflicts": 161
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 228,
+          "conflicts": 142
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=66498 conflicts=270\nformat=v2 writer=checkpoint commits=256 reader_snapshots=400 conflicts=164\nformat=v3 writer=ordinary commits=256 reader_snapshots=53337 conflicts=161\nformat=v3 writer=checkpoint commits=256 reader_snapshots=228 conflicts=142\n"
+    },
+    {
+      "iteration": 15,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 82091,
+          "conflicts": 259
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 392,
+          "conflicts": 181
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 48974,
+          "conflicts": 160
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 597,
+          "conflicts": 137
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=82091 conflicts=259\nformat=v2 writer=checkpoint commits=256 reader_snapshots=392 conflicts=181\nformat=v3 writer=ordinary commits=256 reader_snapshots=48974 conflicts=160\nformat=v3 writer=checkpoint commits=256 reader_snapshots=597 conflicts=137\n"
+    },
+    {
+      "iteration": 16,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 78847,
+          "conflicts": 236
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 779,
+          "conflicts": 189
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 45175,
+          "conflicts": 134
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 278,
+          "conflicts": 106
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=78847 conflicts=236\nformat=v2 writer=checkpoint commits=256 reader_snapshots=779 conflicts=189\nformat=v3 writer=ordinary commits=256 reader_snapshots=45175 conflicts=134\nformat=v3 writer=checkpoint commits=256 reader_snapshots=278 conflicts=106\n"
+    },
+    {
+      "iteration": 17,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 71954,
+          "conflicts": 243
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 608,
+          "conflicts": 154
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 52386,
+          "conflicts": 157
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 664,
+          "conflicts": 142
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=71954 conflicts=243\nformat=v2 writer=checkpoint commits=256 reader_snapshots=608 conflicts=154\nformat=v3 writer=ordinary commits=256 reader_snapshots=52386 conflicts=157\nformat=v3 writer=checkpoint commits=256 reader_snapshots=664 conflicts=142\n"
+    },
+    {
+      "iteration": 18,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 91502,
+          "conflicts": 279
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 389,
+          "conflicts": 174
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 55532,
+          "conflicts": 184
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 833,
+          "conflicts": 140
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=91502 conflicts=279\nformat=v2 writer=checkpoint commits=256 reader_snapshots=389 conflicts=174\nformat=v3 writer=ordinary commits=256 reader_snapshots=55532 conflicts=184\nformat=v3 writer=checkpoint commits=256 reader_snapshots=833 conflicts=140\n"
+    },
+    {
+      "iteration": 19,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 95747,
+          "conflicts": 275
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 461,
+          "conflicts": 142
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 43602,
+          "conflicts": 171
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 319,
+          "conflicts": 146
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=95747 conflicts=275\nformat=v2 writer=checkpoint commits=256 reader_snapshots=461 conflicts=142\nformat=v3 writer=ordinary commits=256 reader_snapshots=43602 conflicts=171\nformat=v3 writer=checkpoint commits=256 reader_snapshots=319 conflicts=146\n"
+    },
+    {
+      "iteration": 20,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 78224,
+          "conflicts": 248
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 433,
+          "conflicts": 197
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "commits": 256,
+          "reader_snapshots": 44560,
+          "conflicts": 154
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "commits": 256,
+          "reader_snapshots": 884,
+          "conflicts": 128
+        }
+      ],
+      "stdout": "\nrunning 2 tests\ntest snapshot_model_rejects_fractured_balances_and_progress ... ok\ntest longer_concurrent_histories_preserve_snapshot_invariants_and_recover ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s\n\n",
+      "stderr": "format=v2 writer=ordinary commits=256 reader_snapshots=78224 conflicts=248\nformat=v2 writer=checkpoint commits=256 reader_snapshots=433 conflicts=197\nformat=v3 writer=ordinary commits=256 reader_snapshots=44560 conflicts=154\nformat=v3 writer=checkpoint commits=256 reader_snapshots=884 conflicts=128\n"
+    }
+  ],
+  "completed": true,
+  "finished_utc": "2026-11-06T03:05:44.753760+00:00"
+}

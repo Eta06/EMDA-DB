@@ -74,7 +74,8 @@ unpublished acknowledgement. The source is checked again after the final
 round using checkpoint recovery.
 
 Twenty optimized repetitions completed 960 backup/restore rounds: 240 for each
-V2/V3 and ordinary/checkpoint-writer combination. In 842 rounds at least one
+V2/V3 and ordinary/checkpoint-writer combination. These used the default `/tmp`
+temporary directory, identified immediately afterward as tmpfs. In 842 rounds at least one
 writer's acknowledgement counter had not reached the current round when the
 backup returned; in 643 rounds at least one had reached it. These categories
 can overlap, and an outstanding counter does not prove the writer was executing
@@ -82,6 +83,14 @@ at that instant. The raw [stress record](../benchmarks/results/2026-11-06-concur
 contains every run and the observed counters. The first development version of
 the test encountered an expected optimistic conflict; the recorded campaign
 uses bounded retries for that specific conflict and fails on other errors.
+
+Ten additional optimized repetitions on the workspace overlay completed 480
+backup/restore rounds, with 120 in each format/backend combination. In 470
+rounds at least one counter was outstanding and in 410 at least one had
+completed; these counts can overlap. The [overlay stress record](../benchmarks/results/2026-11-06-concurrent-backup-overlay.json)
+includes the fixture location and per-run observations. Its backing device was
+not independently identified. Neither filesystem run simulates power loss or
+an independent off-host restore.
 
 ## Backup reference-model fuzzing
 
