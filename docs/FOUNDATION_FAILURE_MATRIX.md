@@ -42,8 +42,9 @@ python3 scripts/run_enospc_container.py --cargo-json /path/to/enospc-build.jsonl
 ```
 
 A [five-run local campaign](../benchmarks/results/2026-11-06-tmpfs-enospc.json)
-completed 50 scenarios on `ae7ff03`. The [dedicated GitHub workflow](../.github/workflows/enospc.yml) runs this
-check on relevant changes. The normal Rust suite leaves it ignored because it
+completed 50 scenarios on `ae7ff03`; a [later campaign](../benchmarks/results/2026-11-06-tmpfs-inodes-enospc.json)
+completed 85 byte- and inode-exhaustion scenarios on `5162c77`. The [dedicated
+GitHub workflow](../.github/workflows/enospc.yml) runs this check on relevant changes. The normal Rust suite leaves it ignored because it
 requires the isolated filesystem. The test does not establish actual disk
 exhaustion behavior on all filesystems, physical power-loss durability or an
 off-host restore.
