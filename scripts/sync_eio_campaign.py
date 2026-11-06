@@ -12,7 +12,7 @@ import tempfile
 import time
 
 SYSCALLS = ('fsync', 'fdatasync')
-OPERATIONS = ('write', 'backup', 'restore', 'upgrade')
+OPERATIONS = ('write', 'backup', 'restore', 'upgrade', 'checkpoint', 'compaction')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(fsync|fdatasync)\(')
@@ -28,7 +28,10 @@ def snapshot(root, format_name):
     witness = (source / 'commit.state').read_bytes()
     metadata = os.getxattr(source / 'records.log', 'user.db.commit.v3') if format_name == 'v3' else None
     backup = (root / 'reference-backup').read_bytes()
-    return {'log': log, 'witness': witness, 'metadata': metadata, 'backup': backup}
+    checkpoint = (root / 'checkpoint').read_bytes()
+    checkpoint_digest = (root / 'checkpoint.digest').read_bytes()
+    return {'log': log, 'witness': witness, 'metadata': metadata, 'backup': backup,
+            'checkpoint': checkpoint, 'checkpoint_digest': checkpoint_digest}
 
 
 def describe(state):
@@ -41,6 +44,9 @@ def check_source(before, after, format_name, operation):
         raise ValueError('acknowledged log prefix changed')
     if after['backup'] != before['backup']:
         raise ValueError('reference backup changed')
+    if (after['checkpoint'] != before['checkpoint']
+            or after['checkpoint_digest'] != before['checkpoint_digest']):
+        raise ValueError('trusted checkpoint or digest changed')
     if operation != 'write' and after != before:
         raise ValueError('copy operation changed the source or reference backup')
     if format_name == 'v3' and after['witness'] != before['witness']:

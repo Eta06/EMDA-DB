@@ -1,5 +1,5 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
-use database_engine::{CheckpointStore, Store, cleanup_abandoned_staging};
+use database_engine::{CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging};
 use serde_json::json;
 use std::error::Error;
 use std::io;
@@ -62,6 +62,8 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
         "backup" => Store::open(source)?.backup(target),
         "restore" => Store::restore(root.join("reference-backup"), target),
         "upgrade" => Store::open(source)?.upgrade_format(target),
+        "checkpoint" => Store::open(source)?.checkpoint_to(target).map(|_| ()),
+        "compaction" => Store::open(source)?.compact_to(target),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "unknown operation",
@@ -145,8 +147,16 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
             let restored = root.join("verify-copy");
             Store::restore(&target, &restored)?;
             check_values(&Store::open(restored)?)?;
-        } else if matches!(operation, "restore" | "upgrade") {
+        } else if matches!(operation, "restore" | "upgrade" | "compaction") {
             check_values(&Store::open(&target)?)?;
+        } else if operation == "checkpoint" {
+            // This digest was independently saved before the attempted copy.
+            let view = CheckpointView::open(root.join("source"), &target, &digest)?;
+            if view.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
+                || view.get(b"old")?.as_deref() != Some(&b"original"[..])
+            {
+                return Err("published checkpoint has incorrect values".into());
+            }
         } else {
             return Err("unexpected result path".into());
         }
@@ -167,7 +177,7 @@ fn main() -> ProbeResult<()> {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
-        _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <write|backup|restore|upgrade> | verify <root> <operation> <success|error> <ordinary-first|checkpoint-first>".into()),
+        _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <write|backup|restore|upgrade|checkpoint|compaction> | verify <root> <operation> <success|error> <ordinary-first|checkpoint-first>".into()),
     }
 }
 
@@ -182,6 +192,7 @@ mod tests {
         assert!(verify(root.path(), "restore", "success", "ordinary-first").is_err());
         std::fs::write(root.path().join("result"), b"partial backup").unwrap();
         assert!(verify(root.path(), "backup", "error", "checkpoint-first").is_err());
+        assert!(verify(root.path(), "checkpoint", "error", "ordinary-first").is_err());
         std::fs::remove_file(root.path().join("result")).unwrap();
         let store = Store::open(root.path().join("source")).unwrap();
         store.put(b"safe", b"changed").unwrap();

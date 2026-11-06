@@ -28,10 +28,11 @@ independent off-host restore drills must remain open until actually performed.
 ## Running synchronization EIO injection
 
 On Linux with `strace`, [`sync_eio_campaign.py`](../scripts/sync_eio_campaign.py)
-first traces successful V2 and V3 writes, backups, restores and upgrades. It
-then uses a fresh disposable fixture to inject `EIO` at each observed `fsync`
+first traces successful V2 and V3 writes, backups, restores, upgrades,
+checkpoint creation and separate-copy compaction. It then uses a fresh
+disposable fixture to inject `EIO` at each observed `fsync`
 and `fdatasync` ordinal, checking previously acknowledged values after reopen,
-the source and reference backup, and every copy visible after an error. Each
+the source, reference backup and trusted checkpoint, and every copy visible after an error. Each
 injection is repeated with each writable recovery path reopening first. A
 successful action must be visible; a failed write may have an unknown outcome.
 The driver retains partial results and the active case if it fails.

@@ -4,7 +4,7 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
-- Add a Linux syscall-injection campaign for synchronization errors during writes, backup, restore and format upgrade, with recovery and publication checks.
+- Add a Linux syscall-injection campaign for synchronization errors during writes, backup, restore, format upgrade, checkpoint creation and separate-copy compaction, with recovery and publication checks.
 
 - Add opt-in per-fixture cache-eviction advice to the clean-restart diagnostic, without dropping global caches.
 

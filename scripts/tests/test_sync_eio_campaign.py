@@ -10,7 +10,8 @@ from sync_eio_campaign import check_source
 class SyncEioCampaignTests(unittest.TestCase):
     def state(self):
         return {'log': b'acknowledged', 'witness': b'anchor',
-                'metadata': b'boundary', 'backup': b'backup'}
+                'metadata': b'boundary', 'backup': b'backup',
+                'checkpoint': b'checkpoint', 'checkpoint_digest': b'digest'}
 
     def test_write_may_append_but_cannot_change_acknowledged_prefix_or_anchor(self):
         before = self.state()
@@ -18,7 +19,8 @@ class SyncEioCampaignTests(unittest.TestCase):
         after['log'] += b'unacknowledged'
         after['metadata'] = b'advanced'
         check_source(before, after, 'v3', 'write')
-        for field, value in (('log', b'truncated'), ('witness', b'changed'), ('backup', b'changed')):
+        for field, value in (('log', b'truncated'), ('witness', b'changed'), ('backup', b'changed'),
+                             ('checkpoint', b'changed'), ('checkpoint_digest', b'changed')):
             with self.subTest(field=field):
                 bad = copy.deepcopy(after)
                 bad[field] = value
