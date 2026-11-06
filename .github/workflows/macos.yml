@@ -1,0 +1,44 @@
+name: macOS correctness
+
+"on":
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/macos.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "tests/**"
+  pull_request:
+    paths:
+      - ".github/workflows/macos.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Rust stable / macOS
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Record environment
+        run: |
+          uname -m
+          sw_vers
+          rustc +stable --version
+      - name: Test library and integration tests
+        run: cargo +stable test --locked --lib --tests

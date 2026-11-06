@@ -61,6 +61,21 @@ checkpoint's digest was recomputed from that copy and is not independent
 authentication. This samples pairs of returned errors, not all combinations
 or the physical effects of a power failure.
 
+A subsequent [clean campaign](../benchmarks/results/2026-11-06-cleanup-double-errors.json.gz)
+on `415273c` also failed fixture removal calls after an earlier data or
+namespace error. It checked 177 primary failures and 982 paired cases: 258
+second `fsync` failures, 330 `unlink` failures and 394 `unlinkat` failures,
+each with the applicable recovery order. Every paired action returned an
+error. After fault injection stopped, recognized top-level staging payloads
+were cleaned; 32 cases retained only an unchanged malformed marker without
+its payload, which cleanup reported as skipped. The initial [test-oracle run](../benchmarks/results/2026-11-06-cleanup-double-initial-oracle.json.gz)
+incorrectly required every marker-shaped entry to disappear; inspection showed
+an empty marker created before the first error and preserved after its unlink
+also failed. The verifier was corrected to require that such unrecognized
+entries stay unchanged and have no payload, while still rejecting leftovers
+that cleanup should own. This checks the fixture's top-level staging namespace,
+not every nested entry or arbitrary combinations of the same syscall.
+
 ### Atomic batches under returned errors
 
 On clean revision `bc1d325`, a further [recorded campaign](../benchmarks/results/2026-11-06-atomic-batch-eio.json.gz)

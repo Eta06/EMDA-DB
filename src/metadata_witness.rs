@@ -9,7 +9,9 @@
 //! requires a valid boundary and complete checksummed records; uncertainty
 //! never permits acknowledging a write or silently discarding a partial tail.
 use crate::record;
-use crate::witness::{self, LOG_HEADER_SIZE, LogId, Witness};
+#[cfg(target_os = "linux")]
+use crate::witness;
+use crate::witness::{LOG_HEADER_SIZE, LogId, Witness};
 use std::fs::File;
 use std::io;
 
