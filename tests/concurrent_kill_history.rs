@@ -304,3 +304,6 @@ fn acknowledged_concurrent_writes_survive_process_kill_or_fail_closed() {
 
 #[path = "concurrent_kill_history/updates.rs"]
 mod updates;
+
+#[path = "concurrent_kill_history/transactions.rs"]
+mod transactions;
