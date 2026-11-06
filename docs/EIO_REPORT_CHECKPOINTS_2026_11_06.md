@@ -24,3 +24,8 @@ the shared VM while another fault campaign ran. These are exploratory
 measurements of the **test runner**, not database operation latency or a
 guarantee of speedup elsewhere. The report files are process-level evidence;
 this does not test power-loss durability.
+
+The [hosted filesystem workflow](https://github.com/Eta06/EMDA-DB/actions/runs/42165362009)
+passed the updated runner and independent report verifier on ext4. Its artifact
+includes both completed reports and their sidecars; it recorded 28 full
+snapshots for 998 paired cases and eight for 218 ancestor-sync cases.
