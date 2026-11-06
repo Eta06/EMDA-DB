@@ -24,12 +24,16 @@ enum Format {
 
 trait TestStore: Sync {
     fn write(&self, key: &[u8], value: &[u8]) -> io::Result<()>;
+    fn remove(&self, key: &[u8]) -> io::Result<()>;
     fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>>;
 }
 
 impl TestStore for Store {
     fn write(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
         self.put(key, value)
+    }
+    fn remove(&self, key: &[u8]) -> io::Result<()> {
+        self.delete(key)
     }
     fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         self.get(key)
@@ -39,6 +43,9 @@ impl TestStore for Store {
 impl TestStore for CheckpointStore {
     fn write(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
         self.put(key, value)
+    }
+    fn remove(&self, key: &[u8]) -> io::Result<()> {
+        self.delete(key)
     }
     fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         self.get(key)
@@ -294,3 +301,6 @@ fn acknowledged_concurrent_writes_survive_process_kill_or_fail_closed() {
         }
     }
 }
+
+#[path = "concurrent_kill_history/updates.rs"]
+mod updates;
