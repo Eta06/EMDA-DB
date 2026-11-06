@@ -1,0 +1,80 @@
+{
+  "owned_interrupted_fixture": "/workspace/scratch/emda-foundation-tmp/.restart-resource-okivxzbp",
+  "memory_current_before": 32744390656,
+  "memory_current_after": 31675584512,
+  "advice": {
+    "1000000-checkpoint": [
+      {
+        "file": "store/records.log",
+        "bytes": 213705220
+      },
+      {
+        "file": "store/commit.state",
+        "bytes": 36
+      },
+      {
+        "file": "index",
+        "bytes": 146000100
+      }
+    ],
+    "1000000-full": [
+      {
+        "file": "store/records.log",
+        "bytes": 213705220
+      },
+      {
+        "file": "store/commit.state",
+        "bytes": 36
+      },
+      {
+        "file": "index",
+        "bytes": 146000100
+      }
+    ],
+    "1000000-sqlite": [
+      {
+        "file": "sqlite.db",
+        "bytes": 235319296
+      },
+      {
+        "file": "sqlite.db-wal",
+        "bytes": 0
+      }
+    ],
+    "200000-checkpoint": [
+      {
+        "file": "store/records.log",
+        "bytes": 43264582
+      },
+      {
+        "file": "store/commit.state",
+        "bytes": 36
+      },
+      {
+        "file": "index",
+        "bytes": 29200100
+      }
+    ],
+    "200000-full": [
+      {
+        "file": "store/records.log",
+        "bytes": 43264582
+      },
+      {
+        "file": "store/commit.state",
+        "bytes": 36
+      },
+      {
+        "file": "index",
+        "bytes": 29200100
+      }
+    ],
+    "200000-sqlite": [
+      {
+        "file": "sqlite.db",
+        "bytes": 47673344
+      }
+    ]
+  },
+  "note": "POSIX_FADV_DONTNEED requested only for files created by the interrupted benchmark; advisory, no global cache drop or deletion."
+}

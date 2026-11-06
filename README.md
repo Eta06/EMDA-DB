@@ -70,6 +70,8 @@ A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_
 
 A [SQLite restart comparison](docs/SQLITE_RESTART_RESOURCES_2026_11_06.md) adds a repeated three-way large-fixture run, including the different open and integrity-check semantics and long-tail samples.
 
+A [fixture-cache experiment](docs/FILE_CACHE_RECOVERY_2026_11_06.md) records advisory eviction requests, kernel read accounting and VM memory-reclaim noise without dropping global caches.
+
 The [checkpoint landmark comparison](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) measures sparse in-memory lookup offsets that retain full-block verification, including their memory cost and mixed tails.
 
 The [managed replacement comparison](docs/MANAGED_REPLACEMENT_COMPARISON_2026_11_06.md) records a removed duplicate directory sync, paired checkpoint timings and their VM-noise limits.

@@ -8,6 +8,8 @@ application-level value checksum. The ordinary prototype uses V3 witnessed
 synchronization; the experimental checkpoint-backed path uses the same
 witnessed log with a disk-backed base index. These durability mechanisms and
 formats differ and this test does not establish equal power-loss guarantees.
+Keys use a numeric prefix and repeated-byte padding, and values repeat a
+deterministic byte; the data does not represent production entropy.
 
 Each fixture had four fresh-process write epochs with four workers issuing 128
 independent, unique-key writes each. Every epoch checked prior workload
@@ -60,3 +62,5 @@ recovery bounds. These are clean process restarts, not crash, physical
 power-loss or off-host restore tests. They do not compare PostgreSQL, MongoDB
 or the other engines on this larger workload. For reproduction and settings,
 see [concurrent writes and clean restarts](BENCHMARKS.md#concurrent-writes-and-clean-restarts).
+A [follow-up](FILE_CACHE_RECOVERY_2026_11_06.md) records advisory fixture
+eviction, kernel read accounting and observed memory-reclaim interference.
