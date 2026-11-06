@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check kernel-enforced size failures during backup, restore and upgrade, including cleanup, source preservation and a complete retry.
+
 - Check kernel-enforced file-size failures on V2/V3 stores, including returned errors, signal termination, preserved witnesses and fail-closed recovery.
 
 - Extend the ordinary-store serial-history model to check concurrent compare-exchange outcomes alongside transactions, batches, reads and recovery; allow longer local campaigns.
