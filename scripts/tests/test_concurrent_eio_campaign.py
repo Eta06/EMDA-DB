@@ -42,6 +42,12 @@ class ConcurrentEioCampaignTests(unittest.TestCase):
             check_recovery(verified, ('ordinary', 'checkpoint'))
         verified[1]['uncertain_present'] = [[0, 3]]
         check_recovery(verified, ('ordinary', 'checkpoint'))
+        for item in verified:
+            item['mode'] = 'transaction'
+        check_recovery(verified, ('ordinary', 'checkpoint'), 'transaction')
+        verified[1]['mode'] = 'single'
+        with self.assertRaises(ValueError):
+            check_recovery(verified, ('ordinary', 'checkpoint'), 'transaction')
 
     def test_injection_must_target_the_expected_witness(self):
         root = Path('/work/case')

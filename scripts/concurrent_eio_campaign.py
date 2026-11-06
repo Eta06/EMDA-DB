@@ -48,9 +48,10 @@ def validate_receipts(report, require_failed=True):
         raise ValueError('injected EIO did not fail a writer')
 
 
-def check_recovery(verified, backends):
+def check_recovery(verified, backends, mode=None):
     if (len(verified) != 2 or any(item.get('status') != 'verified' or item.get('backend') != name
                                   for item, name in zip(verified, backends))
+            or (mode is not None and any(item.get('mode') != mode for item in verified))
             or verified[0]['acknowledged'] != verified[1]['acknowledged']
             or verified[0]['uncertain_present'] != verified[1]['uncertain_present']):
         raise ValueError('recovery paths disagree')
@@ -70,7 +71,7 @@ def targets_log_sync(line, root, format_name):
     return bool(call and call in line and f'<{root / "source" / "records.log"}>' in line)
 
 
-def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, order, error):
+def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, order, error, mode):
     with tempfile.TemporaryDirectory(prefix='concurrent-eio-case-', dir=parent) as directory:
         root = Path(directory)
         setup = base.run_probe(fixture_binary, 'setup', root, format_name)
@@ -93,7 +94,7 @@ def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, o
         report = bounded(['strace', '-f', '-qq', '-yy', '-s', '128', '-o', str(trace),
                           *path_filter, '-e', 'trace=' + trace_calls,
                           '-e', f'inject={call}:error={error}:when={ordinal}',
-                          binary, 'attempt', str(root), backend])
+                          binary, 'attempt', str(root), backend, mode])
         # EINTR may be retried below the API, leaving every writer successful.
         # EIO must continue to exercise an observed failure as before.
         validate_receipts(report, require_failed=error == 'EIO')
@@ -109,8 +110,8 @@ def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, o
         receipt_path = root / 'receipts.json'
         receipt_path.write_text(json.dumps(report))
         backends = ('ordinary', 'checkpoint') if order == 'ordinary-first' else ('checkpoint', 'ordinary')
-        verified = [bounded([binary, 'verify', str(root), name, str(receipt_path)]) for name in backends]
-        check_recovery(verified, backends)
+        verified = [bounded([binary, 'verify', str(root), name, str(receipt_path), mode]) for name in backends]
+        check_recovery(verified, backends, mode)
         final = base.snapshot(root, format_name)
         base.check_source(before, final, format_name, 'write')
         groups = [line for line in lines if re.search(r'\bwritev\(', line)
@@ -130,6 +131,7 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--repetitions', type=int, default=3)
     parser.add_argument('--error', choices=('EIO', 'EINTR'), default='EIO')
+    parser.add_argument('--mode', choices=('single', 'transaction'), default='single')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or not Path(args.fixture_binary).is_file() or os.path.lexists(args.output)
@@ -152,9 +154,10 @@ def main():
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', directory, '-o', 'TARGET,FSTYPE'], text=True)),
         'error': args.error,
+        'mode': args.mode,
         'scope': ('Four independent writers; strace injects a returned witness-write or log-sync '
                   f'{args.error} at the first or second matching syscall per traced thread. Check all observed '
-                  'acknowledgements and each failed write after both recovery orders. '
+                  f'acknowledgements and each failed {args.mode} write after both recovery orders. '
                   'This does not inject partial writes or model power loss.'),
         'repetitions': args.repetitions, 'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'completed': False, 'failure': None, 'current': None, 'cases': [],
@@ -188,7 +191,7 @@ def main():
                                                      'ordinal': ordinal, 'order': order}
                                 save()
                                 measured = case(binary, fixture_binary, directory, format_name, backend,
-                                                fault, ordinal, order, args.error)
+                                                fault, ordinal, order, args.error, args.mode)
                                 result['cases'].append({'repetition': repetition + 1, **measured})
                                 save()
             print(f'repetition {repetition + 1}: {len(result["cases"])} completed cases', flush=True)

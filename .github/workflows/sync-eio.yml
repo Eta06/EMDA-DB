@@ -96,6 +96,7 @@ jobs:
           python3 scripts/verify_double_eio_results.py "$RUNNER_TEMP/eio-double-sync.json"
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-concurrent.json"
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-concurrent.json" --error EINTR --repetitions 1
+          python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-concurrent-transaction.json" --mode transaction --repetitions 1
           python3 scripts/witness_retry_faults.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/witness-retry.json"
       - name: Preserve result
         if: always()
@@ -121,6 +122,7 @@ jobs:
             ${{ runner.temp }}/eio-double-sync.json.progress.json
             ${{ runner.temp }}/eio-concurrent.json
             ${{ runner.temp }}/eintr-concurrent.json
+            ${{ runner.temp }}/eio-concurrent-transaction.json
             ${{ runner.temp }}/witness-retry.json
             ${{ runner.temp }}/sync-eio-*.json.progress.json
             ${{ runner.temp }}/eio-*.json.progress.json
