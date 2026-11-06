@@ -14,9 +14,11 @@ name: Filesystem EIO checks
       - "examples/concurrent_eio_probe.rs"
       - "scripts/sync_eio_campaign.py"
       - "scripts/double_eio_campaign.py"
+      - "scripts/verify_double_eio_results.py"
       - "scripts/concurrent_eio_campaign.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_double_eio_campaign.py"
+      - "scripts/tests/test_verify_double_eio_results.py"
       - "scripts/tests/test_concurrent_eio_campaign.py"
   pull_request:
     paths:
@@ -29,9 +31,11 @@ name: Filesystem EIO checks
       - "examples/concurrent_eio_probe.rs"
       - "scripts/sync_eio_campaign.py"
       - "scripts/double_eio_campaign.py"
+      - "scripts/verify_double_eio_results.py"
       - "scripts/concurrent_eio_campaign.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_double_eio_campaign.py"
+      - "scripts/tests/test_verify_double_eio_results.py"
       - "scripts/tests/test_concurrent_eio_campaign.py"
 
 permissions:
@@ -58,7 +62,9 @@ jobs:
             python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-$syscall_group.json" --syscall-set "$syscall_group"
           done
           python3 scripts/double_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-double.json"
+          python3 scripts/verify_double_eio_results.py "$RUNNER_TEMP/eio-double.json"
           python3 scripts/double_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-double-sync.json" --primary-mode sync --all-sync-paths --operation checkpoint-compaction --format v3
+          python3 scripts/verify_double_eio_results.py "$RUNNER_TEMP/eio-double-sync.json"
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-concurrent.json"
       - name: Preserve result
         if: always()

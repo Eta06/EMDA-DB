@@ -89,6 +89,13 @@ an abrupt driver termination, the main partial report can lag behind the
 sidecar; preserve both files. `--snapshot-interval 0` requests a full snapshot
 after every driver update.
 
+[`verify_double_eio_results.py`](../scripts/verify_double_eio_results.py)
+independently checks a completed report for every selected primary ordinal,
+every recorded later failure and both recovery orders. The hosted workflow
+runs it on each paired-error report. It verifies the retained trace summary and
+probe results; it does not authenticate those records or prove unobserved
+syscalls and physical failures were covered.
+
 [`concurrent_eio_campaign.py`](../scripts/concurrent_eio_campaign.py) injects
 witness-write or log-sync EIO while four independent writers run. It checks every observed
 acknowledgement and each failed request through both recovery paths. `strace`
