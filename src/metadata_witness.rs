@@ -42,19 +42,23 @@ mod platform {
     // An on-disk identifier, independent of the product's eventual name.
     const NAME: &str = "user.db.commit.v3";
 
-    fn retry_interrupted_replace(
-        mut replace: impl FnMut() -> Result<(), Errno>,
-    ) -> Result<(), Errno> {
+    fn retry_interrupted<T>(mut operation: impl FnMut() -> Result<T, Errno>) -> Result<T, Errno> {
         loop {
-            match replace() {
+            match operation() {
                 Err(Errno::INTR) => continue,
                 result => return result,
             }
         }
     }
 
+    fn read_attribute(file: &File, bytes: &mut [u8]) -> Result<usize, Errno> {
+        // A read has no metadata side effects. Discard any partial buffer
+        // contents on EINTR by issuing the complete read again.
+        retry_interrupted(|| fgetxattr(file, NAME, &mut *bytes))
+    }
+
     pub(crate) fn is_present(file: &File) -> io::Result<bool> {
-        match fgetxattr(file, NAME, &mut [0_u8; 0][..]) {
+        match read_attribute(file, &mut []) {
             Ok(_) => Ok(true),
             Err(Errno::NODATA | Errno::NOTSUP | Errno::NOSYS) => Ok(false),
             Err(error) => Err(error.into()),
@@ -95,7 +99,7 @@ mod platform {
 
         fn read_marker(&self) -> io::Result<[u8; WITNESS_SIZE]> {
             let mut bytes = [0; WITNESS_SIZE];
-            match fgetxattr(&self.0, NAME, &mut bytes[..]) {
+            match read_attribute(&self.0, &mut bytes) {
                 Ok(WITNESS_SIZE) => Ok(bytes),
                 Ok(_) | Err(Errno::NODATA | Errno::RANGE) => Err(record::invalid_data(
                     "missing or invalid metadata commit witness",
@@ -115,7 +119,7 @@ mod platform {
             // update. Repeating the same replacement is idempotent even if
             // the interrupted syscall already installed it. Acknowledgement
             // still requires the following full fsync to succeed.
-            retry_interrupted_replace(|| fsetxattr(&self.0, NAME, bytes, XattrFlags::REPLACE))
+            retry_interrupted(|| fsetxattr(&self.0, NAME, bytes, XattrFlags::REPLACE))
                 .map_err(Into::into)
         }
 
@@ -134,7 +138,7 @@ mod platform {
             let expected = [42_u8; WITNESS_SIZE];
             let mut installed = [0_u8; WITNESS_SIZE];
             let mut calls = 0;
-            retry_interrupted_replace(|| {
+            retry_interrupted(|| {
                 calls += 1;
                 installed = expected;
                 if calls <= 2 { Err(Errno::INTR) } else { Ok(()) }
@@ -144,7 +148,7 @@ mod platform {
             assert_eq!(installed, expected);
 
             calls = 0;
-            let error = retry_interrupted_replace(|| {
+            let error = retry_interrupted::<()>(|| {
                 calls += 1;
                 if calls == 1 {
                     Err(Errno::INTR)
@@ -155,6 +159,27 @@ mod platform {
             .unwrap_err();
             assert_eq!(calls, 2);
             assert_eq!(error, Errno::IO);
+        }
+
+        #[test]
+        fn interrupted_read_retries_and_replaces_partial_buffer_contents() {
+            let expected = [37_u8; WITNESS_SIZE];
+            let mut actual = [0_u8; WITNESS_SIZE];
+            let mut calls = 0;
+            let length = retry_interrupted(|| {
+                calls += 1;
+                if calls == 1 {
+                    actual[0] = 99;
+                    Err(Errno::INTR)
+                } else {
+                    actual.copy_from_slice(&expected);
+                    Ok(actual.len())
+                }
+            })
+            .unwrap();
+            assert_eq!(calls, 2);
+            assert_eq!(length, WITNESS_SIZE);
+            assert_eq!(actual, expected);
         }
     }
 }

@@ -13,25 +13,33 @@ import time
 import sync_eio_campaign as base
 
 
-def validate_trace(lines, root, sync_error):
-    """Require interrupted replacement, identical retry, then selected fsync."""
+def validate_trace(lines, root, sync_error, fault='write'):
+    """Require an interrupted witness access, equivalent retry and log fsync."""
     source = f'<{root / "source" / "records.log"}>'
+    syscall = {'write': 'fsetxattr', 'read': 'fgetxattr'}[fault]
     witness = [index for index, line in enumerate(lines)
-               if 'fsetxattr(' in line and source in line and '"user.db.commit.v3"' in line]
+               if syscall + '(' in line and source in line and '"user.db.commit.v3"' in line]
     interrupted = [index for index in witness if base.reports_injected_error(lines[index], 'EINTR')]
     if len(interrupted) != 1:
-        raise ValueError('expected one interrupted V3 witness replacement')
+        raise ValueError('expected one interrupted V3 witness access')
     first = interrupted[0]
     following = [index for index in witness if index > first]
     if not following:
-        raise ValueError('interrupted witness replacement was not retried')
+        raise ValueError('interrupted witness access was not retried')
     retry = following[0]
+
     def arguments(line):
-        match = re.search(r'\bfsetxattr\((.*)\)\s+=', line)
+        if fault == 'read':
+            # strace prints an address on failure but the returned buffer on
+            # success. Compare the descriptor, attribute and requested size.
+            match = re.search(r'\bfgetxattr\((\d+<[^>]+>), ("[^"]+"), .*?, (\d+)\)\s+=', line)
+        else:
+            match = re.search(r'\bfsetxattr\((.*)\)\s+=', line)
         if not match:
-            raise ValueError('could not parse witness replacement')
-        return match.group(1)
-    if arguments(lines[first]) != arguments(lines[retry]) or not re.search(r'=\s*0\s*$', lines[retry]):
+            raise ValueError('could not parse witness access')
+        return match.groups()
+    success = r'=\s*\d+\s*$' if fault == 'read' else r'=\s*0\s*$'
+    if arguments(lines[first]) != arguments(lines[retry]) or not re.search(success, lines[retry]):
         raise ValueError('witness retry changed arguments or failed')
     syncs = [line for line in lines[retry + 1:] if 'fsync(' in line and source in line]
     if not syncs:
@@ -44,14 +52,15 @@ def validate_trace(lines, root, sync_error):
     return [lines[first], lines[retry], syncs[0]]
 
 
-def tracer(sync_error):
+def tracer(sync_error, fault):
     def trace(binary, root, operation, syscall, ordinal, persistent, syscalls, fixture_only):
         if syscall is not None or ordinal is not None or persistent or fixture_only:
             raise ValueError('unexpected retry-fault configuration')
         output = root / 'trace.txt'
+        syscall = {'write': 'fsetxattr', 'read': 'fgetxattr'}[fault]
         command = ['strace', '-f', '-qq', '-yy', '-s', '512', '-o', str(output),
-                   '-P', str(root / 'source' / 'records.log'), '-e', 'trace=fsetxattr,fsync',
-                   '-e', 'inject=fsetxattr:error=EINTR:when=1']
+                   '-P', str(root / 'source' / 'records.log'), '-e', 'trace=fsetxattr,fgetxattr,fsync',
+                   '-e', f'inject={syscall}:error=EINTR:when=1']
         if sync_error:
             command += ['-e', 'inject=fsync:error=EIO:when=1']
         command += [binary, 'attempt', str(root), operation]
@@ -62,7 +71,7 @@ def tracer(sync_error):
         expected = 'error' if sync_error else 'success'
         if outcome.get('operation') != operation or outcome.get('status') != expected:
             raise ValueError(f'expected operation {expected}, got {outcome}')
-        trace = validate_trace(output.read_text().splitlines(), root, sync_error)
+        trace = validate_trace(output.read_text().splitlines(), root, sync_error, fault)
         return {'outcome': outcome, 'selected_trace': trace}
     return trace
 
@@ -107,14 +116,16 @@ def main():
 
     try:
         for operation in ('write', 'checkpoint-write', 'batch', 'checkpoint-batch'):
-            for sync_error in (False, True):
-                for order in base.RECOVERY_ORDERS:
-                    result['current'] = {'operation': operation, 'sync_error': sync_error, 'order': order}
-                    save()
-                    checked = base.run_case(binary, directory, 'v3', operation, order=order,
-                                            tracer=tracer(sync_error))
-                    result['cases'].append({**result['current'], **checked})
-                    save()
+            for fault in ('write', 'read'):
+                for sync_error in (False, True):
+                    for order in base.RECOVERY_ORDERS:
+                        result['current'] = {'operation': operation, 'fault': fault,
+                                             'sync_error': sync_error, 'order': order}
+                        save()
+                        checked = base.run_case(binary, directory, 'v3', operation, order=order,
+                                                tracer=tracer(sync_error, fault))
+                        result['cases'].append({**result['current'], **checked})
+                        save()
         result['current'] = None
         result['completed'] = True
     except Exception as error:
