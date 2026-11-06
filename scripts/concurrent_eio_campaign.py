@@ -2,6 +2,7 @@
 """Inject log or witness errors while multiple disposable writers run."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -11,6 +12,7 @@ import subprocess
 import tempfile
 import time
 
+from campaign_report import ReportWriter
 import sync_eio_campaign as base
 
 WORKERS = 4
@@ -130,12 +132,15 @@ def main():
     parser.add_argument('--fixture-binary', default='target/release/examples/sync_failure_probe')
     parser.add_argument('--output', required=True)
     parser.add_argument('--repetitions', type=int, default=3)
+    parser.add_argument('--snapshot-interval', type=float, default=1.0,
+                        help='minimum seconds between full snapshots; progress is saved per case')
     parser.add_argument('--error', choices=('EIO', 'EINTR'), default='EIO')
     parser.add_argument('--mode', choices=('single', 'transaction'), default='single')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or not Path(args.fixture_binary).is_file() or os.path.lexists(args.output)
-            or not 1 <= args.repetitions <= 20):
+            or os.path.lexists(args.output + '.progress.json') or not 1 <= args.repetitions <= 20
+            or not math.isfinite(args.snapshot_interval) or not 0 <= args.snapshot_interval <= 60):
         parser.error('existing fixture parent and binaries, new output and 1..20 repetitions required')
     directory = str(Path(args.directory).resolve())
     if any(character in directory for character in ('"', '\\', '\n', '\r')):
@@ -149,6 +154,7 @@ def main():
         'fixture_binary_sha256': base.digest(Path(fixture_binary).read_bytes()),
         'probe_sha256': base.digest(Path('examples/concurrent_eio_probe.rs').read_bytes()),
         'driver_sha256': base.digest(Path(__file__).read_bytes()),
+        'report_writer_sha256': base.digest(Path('scripts/campaign_report.py').read_bytes()),
         'strace': subprocess.check_output(['strace', '--version'], text=True).splitlines()[0],
         'host_platform': platform.platform(),
         'filesystem': json.loads(subprocess.check_output(
@@ -159,7 +165,8 @@ def main():
                   f'{args.error} at the first or second matching syscall per traced thread. Check all observed '
                   f'acknowledgements and each failed {args.mode} write after both recovery orders. '
                   'This does not inject partial writes or model power loss.'),
-        'repetitions': args.repetitions, 'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        'repetitions': args.repetitions, 'snapshot_interval_seconds': args.snapshot_interval,
+        'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'completed': False, 'failure': None, 'current': None, 'cases': [],
     }
     output = Path(args.output)
@@ -167,17 +174,13 @@ def main():
         json.dump(result, file, indent=2)
         file.write('\n')
 
-    def save():
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
-                                         prefix='.concurrent-eio-', delete=False) as file:
-            temporary = Path(file.name)
-            try:
-                json.dump(result, file, indent=2)
-                file.write('\n')
-                file.flush()
-                os.replace(temporary, output)
-            finally:
-                temporary.unlink(missing_ok=True)
+    writer = ReportWriter(output, args.snapshot_interval)
+    with writer.progress.open('x', encoding='utf-8') as file:
+        json.dump({name: result.get(name) for name in ('revision', 'current', 'completed', 'failure')}, file)
+        file.write('\n')
+
+    def save(force=False):
+        writer.save(result, force=force)
 
     try:
         for repetition in range(args.repetitions):
@@ -202,7 +205,7 @@ def main():
         raise
     finally:
         result['finished_utc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-        save()
+        save(force=True)
 
 
 if __name__ == '__main__':
