@@ -1,0 +1,443 @@
+{
+  "revision": "c06cf81bbe20c527b0f552e5503a4bd9a1ec6077",
+  "scope": "SIGKILL after acknowledged writes, updates and deletes; no physical power failure",
+  "runs": [
+    {
+      "backend": "foundationdb",
+      "acknowledged_mutations": 120,
+      "verified_values": 90,
+      "verified_deletions": 10,
+      "result": "passed",
+      "metadata": {
+        "image": "foundationdb/foundationdb:7.3.79",
+        "image_id": "sha256:81492445e53bbda35cca8cce0fc7874a85d5c3e58598fadf3f1f14f6d7f52b0b",
+        "digests": [
+          "foundationdb/foundationdb@sha256:d3530c3066f94abffb61facac527c9c3517f6553ee0e75efa69d54296290156a"
+        ],
+        "container_cpu_set": "1-3",
+        "memory_limit_bytes": 2147483648,
+        "port_binding": "127.0.0.1 only",
+        "status": {
+          "client": {
+            "cluster_file": {
+              "path": "/data/fdb.cluster",
+              "up_to_date": true
+            },
+            "coordinators": {
+              "coordinators": [
+                {
+                  "address": "127.0.0.1:56143",
+                  "protocol": "0fdb00b073000000",
+                  "reachable": true
+                }
+              ],
+              "quorum_reachable": true
+            },
+            "database_status": {
+              "available": true,
+              "healthy": false
+            },
+            "messages": [],
+            "timestamp": 1793938036
+          },
+          "cluster": {
+            "active_primary_dc": "",
+            "active_tss_count": 0,
+            "bounce_impact": {
+              "can_clean_bounce": true
+            },
+            "clients": {
+              "count": 0
+            },
+            "cluster_controller_timestamp": 1793938036,
+            "configuration": {
+              "backup_worker_enabled": 0,
+              "blob_granules_enabled": 0,
+              "commit_proxies": 3,
+              "coordinators_count": 1,
+              "encryption_at_rest_mode": "disabled",
+              "excluded_servers": [],
+              "grv_proxies": 1,
+              "log_engine": "ssd-2",
+              "log_spill": 2,
+              "logs": 3,
+              "perpetual_storage_wiggle": 0,
+              "perpetual_storage_wiggle_engine": "none",
+              "perpetual_storage_wiggle_locality": "0",
+              "proxies": 4,
+              "redundancy_mode": "single",
+              "resolvers": 1,
+              "storage_engine": "ssd-2",
+              "storage_migration_type": "disabled",
+              "tenant_mode": "disabled",
+              "usable_regions": 1
+            },
+            "connection_string": "benchmark:2b185d6478be788b@127.0.0.1:56143",
+            "data": {
+              "least_operating_space_bytes_log_server": 5348814234,
+              "team_trackers": [],
+              "total_disk_used_bytes": 209723504
+            },
+            "database_available": true,
+            "database_lock_state": {
+              "locked": false
+            },
+            "datacenter_lag": {
+              "seconds": 0,
+              "versions": 0
+            },
+            "degraded_processes": 0,
+            "fault_tolerance": {
+              "max_zone_failures_without_losing_availability": 0,
+              "max_zone_failures_without_losing_data": 0
+            },
+            "full_replication": true,
+            "generation": 2,
+            "idempotency_ids": {
+              "size_bytes": 0
+            },
+            "incompatible_connections": [],
+            "latency_probe": {
+              "batch_priority_transaction_start_seconds": 3.314020000000001e-05,
+              "commit_seconds": 0.00136113,
+              "immediate_priority_transaction_start_seconds": 0.00289226,
+              "read_seconds": 2.3126600000000003e-05,
+              "transaction_start_seconds": 0.00325179
+            },
+            "layers": {
+              "_valid": true
+            },
+            "logs": [
+              {
+                "begin_version": 0,
+                "current": true,
+                "epoch": 2,
+                "log_fault_tolerance": 0,
+                "log_interfaces": [
+                  {
+                    "address": "127.0.0.1:56143",
+                    "healthy": true,
+                    "id": "32fce013b0c5ee41"
+                  }
+                ],
+                "log_replication_factor": 1,
+                "log_write_anti_quorum": 0,
+                "possibly_losing_data": false
+              }
+            ],
+            "lowest_compatible_protocol_version": "fdb00b072000000",
+            "machines": {},
+            "messages": [
+              {
+                "description": "Unable to retrieve all status information.",
+                "name": "status_incomplete",
+                "reasons": [
+                  {
+                    "description": "Cannot retrieve all process status information."
+                  },
+                  {
+                    "description": "Unknown cache statistics."
+                  }
+                ]
+              }
+            ],
+            "newest_protocol_version": "fdb00b073000000",
+            "processes": {
+              "43c66c9fb351ded40e34818bded96f70": {
+                "address": "127.0.0.1:56143",
+                "class_source": "command_line",
+                "class_type": "unset",
+                "command_line": "/usr/bin/fdbserver --cluster-file /data/fdb.cluster --public-address 127.0.0.1:56143 --listen-address 0.0.0.0:56143 --datadir /data/db --logdir /data/logs --locality-machineid emda-compare-foundationdb-456b041ac0 --memory 1GiB --storage-memory 256MiB --cache-memory 256MiB",
+                "excluded": false,
+                "memory": {
+                  "limit_bytes": 1073741824
+                },
+                "messages": [
+                  {
+                    "description": "Could not open file '/data/logs/trace.127.0.0.1.56143.1793938033.i6TsgG.0.1.xml' (No such file or directory).",
+                    "file_name": "/data/logs/trace.127.0.0.1.56143.1793938033.i6TsgG.0.1.xml",
+                    "name": "file_open_error"
+                  }
+                ],
+                "roles": [
+                  {
+                    "id": "252bdc8130969c75",
+                    "role": "master"
+                  },
+                  {
+                    "id": "c85cd9af2dd35ebf",
+                    "role": "cluster_controller"
+                  },
+                  {
+                    "id": "c05b88c19807cd1e",
+                    "role": "data_distributor"
+                  },
+                  {
+                    "id": "28a58a99f8cc7cac",
+                    "role": "ratekeeper"
+                  },
+                  {
+                    "id": "34974ce3f9379d41",
+                    "role": "consistency_scan"
+                  },
+                  {
+                    "role": "coordinator"
+                  },
+                  {
+                    "id": "711667ce8d690a31",
+                    "role": "commit_proxy"
+                  },
+                  {
+                    "id": "3c58414749443829",
+                    "role": "grv_proxy"
+                  },
+                  {
+                    "data_version": 0,
+                    "durable_bytes": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "id": "32fce013b0c5ee41",
+                    "input_bytes": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "kvstore_available_bytes": 8555511808,
+                    "kvstore_free_bytes": 8555511808,
+                    "kvstore_total_bytes": 64133787648,
+                    "kvstore_used_bytes": 104861752,
+                    "queue_disk_available_bytes": 8555511808,
+                    "queue_disk_free_bytes": 8555511808,
+                    "queue_disk_total_bytes": 64133787648,
+                    "queue_disk_used_bytes": 0,
+                    "role": "log"
+                  },
+                  {
+                    "bytes_queried": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "data_lag": {
+                      "seconds": 0,
+                      "versions": 0
+                    },
+                    "data_version": 0,
+                    "durability_lag": {
+                      "seconds": 0,
+                      "versions": 0
+                    },
+                    "durable_bytes": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "durable_version": 0,
+                    "fetched_versions": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "fetches_from_logs": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "finished_queries": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "id": "479e793004e20629",
+                    "input_bytes": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "keys_queried": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "kvstore_available_bytes": 8660377600,
+                    "kvstore_free_bytes": 8660377600,
+                    "kvstore_inline_keys": 0,
+                    "kvstore_total_bytes": 64133787648,
+                    "kvstore_total_nodes": 0,
+                    "kvstore_total_size": 0,
+                    "kvstore_used_bytes": 104861752,
+                    "local_rate": 100,
+                    "low_priority_queries": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "mutation_bytes": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "mutations": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "query_queue_max": 0,
+                    "role": "storage",
+                    "storage_metadata": {
+                      "created_time_datetime": "2026-11-06 04:07:16.186 +0000",
+                      "created_time_timestamp": 1793938036.1860464,
+                      "storage_engine": "unknown"
+                    },
+                    "stored_bytes": 0,
+                    "total_queries": {
+                      "counter": 0,
+                      "hz": 0,
+                      "roughness": -1
+                    },
+                    "tss": false
+                  },
+                  {
+                    "id": "c42bb0fc90a52b1c",
+                    "role": "resolver"
+                  }
+                ],
+                "version": "7.3.79"
+              }
+            },
+            "protocol_version": "fdb00b073000000",
+            "qos": {
+              "batch_performance_limited_by": {
+                "description": "The database is not being saturated by the workload.",
+                "name": "workload",
+                "reason_id": 4
+              },
+              "batch_released_transactions_per_second": 0,
+              "batch_transactions_per_second_limit": 1182990,
+              "performance_limited_by": {
+                "description": "The database is not being saturated by the workload.",
+                "name": "workload",
+                "reason_id": 0
+              },
+              "released_transactions_per_second": 19.1294,
+              "throttled_tags": {
+                "auto": {
+                  "busy_read": 0,
+                  "busy_write": 0,
+                  "count": 0,
+                  "recommended_only": 0
+                },
+                "manual": {
+                  "count": 0
+                }
+              },
+              "transactions_per_second_limit": 1000000,
+              "worst_queue_bytes_log_server": 4923
+            },
+            "recovery_state": {
+              "active_generations": 1,
+              "description": "Recovery complete.",
+              "name": "fully_recovered",
+              "seconds_since_last_recovered": 0.224465
+            },
+            "version_epoch": {
+              "enabled": false
+            },
+            "workload": {
+              "bytes": {
+                "read": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "written": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                }
+              },
+              "keys": {
+                "read": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                }
+              },
+              "operations": {
+                "location_requests": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "low_priority_reads": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "memory_errors": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "read_requests": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "reads": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "writes": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                }
+              },
+              "transactions": {
+                "committed": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "conflicted": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "rejected_for_queued_too_long": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "started": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "started_batch_priority": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "started_default_priority": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                },
+                "started_immediate_priority": {
+                  "counter": 0,
+                  "hz": 0,
+                  "roughness": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

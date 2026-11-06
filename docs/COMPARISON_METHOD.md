@@ -52,7 +52,7 @@ docker pull postgres:18-bookworm
 docker pull redis:8.2-bookworm
 docker pull mongo:8.0
 docker pull foundationdb/foundationdb:7.3.79
-python3 scripts/compare_crashes.py --directory /path/to/disk --output crashes.json
+python3 scripts/compare_crashes.py --directory /path/to/disk --output crashes.json --rounds 2
 python3 scripts/compare_engines.py --directory /path/to/disk --output engines.json --rounds 4
 python3 scripts/compare_engines.py --directory /path/to/disk --output noise.json \
   --noise-calibration --rounds 6 --backends prototype sqlite postgres
@@ -60,7 +60,7 @@ python3 scripts/compare_engines.py --directory /path/to/disk --output noise.json
 
 Choose valid disjoint client/server/housekeeping CPU sets for another host. Local Docker socket access is required. Containers bind published ports to localhost only and mount dedicated temporary data directories. The scripts remove only their own containers and synthetic data. Image digests, package versions, source and binary hashes, parameters, settings, failed runs and noise observations are saved. A process interruption can require cleaning up the explicitly named `emda-compare-*` resources from that interrupted invocation.
 
-The crash check holds clients open, acknowledges 100 inserts, 10 replacements and 10 deletes, kills the server with SIGKILL, reopens the same data, and verifies 90 values and 10 absences. It is not a simulated power cut, storage reordering test, or an exhaustive crash-point campaign.
+The crash check holds clients open, acknowledges 100 inserts, 10 replacements and 10 deletes, kills the server with SIGKILL, reopens the same data, and verifies 90 values and 10 absences. Each round uses fresh fixture data, rotates the backend order and retains failures as well as an interrupted run's current case. The output records source and binary hashes, runtime versions, settings and filesystem type; it refuses to overwrite an existing result. This check does not measure recovery latency and is not a simulated power cut, storage reordering test, or an exhaustive crash-point campaign.
 
 ## Coverage beyond local point-operation tests
 

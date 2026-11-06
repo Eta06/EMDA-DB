@@ -5,14 +5,18 @@ This is a process-crash check, not a power-loss test or proof of durability.
 """
 import argparse
 import contextlib
+import hashlib
+import importlib.metadata
 import json
 import os
 from pathlib import Path
+import platform
 import secrets
 import selectors
 import subprocess
 import sys
 import tempfile
+import time
 
 from benchmarks.clients import AdapterClient, PostgresClient, RedisClient, MongoClient, FoundationClient
 from benchmarks.services import IMAGES, LocalService
@@ -59,15 +63,28 @@ def check(backend, parent, server):
                     return FoundationClient(prefix)
                 client = connect()
                 if backend == "postgres":
-                    for key in ("fsync", "synchronous_commit", "full_page_writes"):
-                        assert client.conn.execute("SHOW " + key).fetchone()[0] == "on"
+                    settings = {key: client.conn.execute("SHOW " + key).fetchone()[0]
+                                for key in ("fsync", "synchronous_commit", "full_page_writes")}
+                    if any(value != "on" for value in settings.values()):
+                        raise RuntimeError("PostgreSQL durable settings are required")
                     client.conn.execute(f"CREATE TABLE {table} (key BYTEA PRIMARY KEY, value BYTEA NOT NULL, checksum BIGINT NOT NULL)")
                 elif backend == "redis":
-                    assert client.conn.config_get("appendfsync")["appendfsync"] == "always"
+                    if client.conn.config_get("appendfsync")["appendfsync"] != "always":
+                        raise RuntimeError("Redis appendfsync=always is required")
                 metadata = service.metadata()
+                if backend == "postgres":
+                    metadata.update(server_version=client.conn.info.server_version, settings=settings)
+                elif backend == "redis":
+                    metadata.update(server_version=client.conn.info("server")["redis_version"], appendfsync="always")
+                elif backend == "mongo":
+                    metadata.update(server_version=client.conn.server_info()["version"],
+                                    write_concern=client.collection.write_concern.document)
             else:
                 process, client = adapter(backend, directory, server)
                 metadata = json.loads(client.request(b"M", b"_"))
+                if backend == "prototype":
+                    with (Path(directory) / "store" / "records.log").open("rb") as source:
+                        metadata["log_magic"] = source.read(8).decode("ascii")
             expected = {}
             for i in range(100):
                 key, value = i.to_bytes(8, "big"), bytes([i]) * 64
@@ -128,17 +145,77 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--server", default="target/release/examples/network_bench_server")
     parser.add_argument("--backends", nargs="+", choices=BACKENDS, default=BACKENDS)
+    parser.add_argument("--rounds", type=int, default=1, help="fresh fixtures per backend, 1 to 10")
     args = parser.parse_args()
-    result = {"revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-              "scope": "SIGKILL after acknowledged writes, updates and deletes; no physical power failure", "runs": []}
-    for backend in args.backends:
+    output = Path(args.output)
+    if (not 1 <= args.rounds <= 10 or len(set(args.backends)) != len(args.backends)
+            or not Path(args.directory).is_dir() or not Path(args.server).is_file()
+            or not output.parent.is_dir() or output.exists()):
+        parser.error("invalid rounds, backends, directory, server, or existing output")
+    sources = sorted([Path(__file__), Path("scripts/compare_engines.py"), *Path("scripts/benchmarks").glob("*.py"),
+                      Path("scripts/embedded_bench_server.py"), *Path("examples").rglob("*.rs"),
+                      *Path("src").rglob("*.rs"), Path("Cargo.toml"), Path("Cargo.lock")])
+
+    def digest(path):
+        h = hashlib.sha256()
+        with open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    versions = {}
+    for package in ("psycopg", "redis", "pymongo", "pyturso", "rocksdict", "lmdb", "duckdb", "foundationdb"):
         try:
-            outcome = check(backend, args.directory, args.server)
-        except Exception as error:
-            outcome = {"backend": backend, "result": "failed", "error": str(error)}
-        result["runs"].append(outcome)
-        Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
-        print(backend, outcome["result"], flush=True)
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = None
+    result = {
+        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
+        "source_sha256": {str(path): digest(path) for path in sources},
+        "server_sha256": digest(args.server), "python": sys.version, "platform": platform.platform(),
+        "dependencies": versions,
+        "filesystem": json.loads(subprocess.check_output(
+            ["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
+        "scope": "SIGKILL after acknowledged writes, updates and deletes; no physical power failure",
+        "rounds": args.rounds, "backends": args.backends, "completed": False, "current": None, "runs": [],
+    }
+
+    def save():
+        # Keep the last complete result even if this process is interrupted.
+        with tempfile.NamedTemporaryFile(mode="w", dir=output.parent, prefix="." + output.name + ".",
+                                         delete=False) as temporary:
+            name = temporary.name
+            try:
+                json.dump(result, temporary, indent=2)
+                temporary.write("\n")
+            except BaseException:
+                os.unlink(name)
+                raise
+        try:
+            os.replace(name, output)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
+    save()
+    for round_index in range(args.rounds):
+        rotation = round_index % len(args.backends)
+        for backend in args.backends[rotation:] + args.backends[:rotation]:
+            result["current"] = {"round": round_index + 1, "backend": backend}
+            save()
+            try:
+                outcome = check(backend, args.directory, args.server)
+            except Exception as error:
+                outcome = {"backend": backend, "result": "failed", "error": str(error)}
+            result["runs"].append({"round": round_index + 1, **outcome})
+            save()
+            print(f"round={round_index + 1} {backend} {outcome['result']}", flush=True)
+    result["current"] = None
+    result["completed"] = True
+    result["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    save()
     if any(run["result"] != "passed" for run in result["runs"]):
         raise SystemExit("One or more crash checks failed; see results")
 
