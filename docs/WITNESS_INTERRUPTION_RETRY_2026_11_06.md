@@ -57,3 +57,31 @@ or simulating a physical power failure. They sample schedules on one shared
 VM and do not establish device behavior, off-host restoration, or exhaustive
 correctness. CI runs selected interrupted and paired-fault cases on hosted
 Linux as well.
+
+## Interrupted witness reads
+
+The same investigation found that an interrupted `fgetxattr` could fail an
+otherwise healthy operation. Linux witness reads and existence checks now
+retry `EINTR` by reissuing the full read. A successful short read, a missing
+required witness, malformed bytes and non-interruption errors still follow the
+existing failure rules. As with writes, repeated interruptions can delay
+completion indefinitely.
+
+The [before](../benchmarks/results/2026-11-06-xattr-read-eintr-before.json.gz)
+revision `e462571` and [after](../benchmarks/results/2026-11-06-xattr-read-eintr-after.json.gz)
+revision `eb5e090` ran the same 26 V2/V3 operation controls and selected the
+same fixture-call ordinals. All 176 one-shot interrupted reads returned errors
+before the change; all 176 operations succeeded after it. These included 66
+V2 and 110 V3 cases across writes, batches, initialization, backup, upgrade,
+checkpoint and compaction paths, with both recovery orders. The tested
+restore path made no eligible xattr read in this fixture. All injected calls
+were `fgetxattr`; no `getxattr` or `lgetxattr` call was observed.
+
+After the change, a separate [176-case EIO run](../benchmarks/results/2026-11-06-xattr-read-eio-after.json.gz)
+confirmed that those errors still propagated and recovery checks passed. A
+further [32 paired cases](../benchmarks/results/2026-11-06-xattr-read-paired-faults.json.gz)
+traced read and write retries followed by successful or failed log `fsync` on
+ordinary and checkpoint-backed writes and batches. All 16 injected sync
+errors returned errors without acknowledging the mutation; recovery observed
+the complete attempted mutations, an allowed unknown outcome. These are
+synthetic errno returns, not physical power-loss tests.
