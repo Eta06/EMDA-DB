@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from concurrent_eio_campaign import check_recovery, validate_receipts
+from concurrent_eio_campaign import check_recovery, targets_witness, validate_receipts
 
 
 class ConcurrentEioCampaignTests(unittest.TestCase):
@@ -34,6 +34,15 @@ class ConcurrentEioCampaignTests(unittest.TestCase):
             check_recovery(verified, ('ordinary', 'checkpoint'))
         verified[1]['uncertain_present'] = [[0, 3]]
         check_recovery(verified, ('ordinary', 'checkpoint'))
+
+    def test_injection_must_target_the_expected_witness(self):
+        root = Path('/work/case')
+        v2 = '1 pwrite64(3</work/case/source/commit.state>, "x", 1, 0) = -1 EIO (INJECTED)'
+        v3 = '1 fsetxattr(3</work/case/source/records.log>, "user.db.commit.v3", "x", 1, 0) = -1 EIO (INJECTED)'
+        self.assertTrue(targets_witness(v2, root, 'v2'))
+        self.assertTrue(targets_witness(v3, root, 'v3'))
+        self.assertFalse(targets_witness(v2.replace('commit.state', 'other'), root, 'v2'))
+        self.assertFalse(targets_witness(v3.replace('user.db.commit.v3', 'other'), root, 'v3'))
 
 
 if __name__ == '__main__':

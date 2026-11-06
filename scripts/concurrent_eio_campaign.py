@@ -56,6 +56,15 @@ def check_recovery(verified, backends):
         raise ValueError('recovery paths disagree')
 
 
+def targets_witness(line, root, format_name):
+    if format_name == 'v2':
+        return ('pwrite64(' in line and f'<{root / "source" / "commit.state"}>' in line)
+    if format_name == 'v3':
+        return ('fsetxattr(' in line and f'<{root / "source" / "records.log"}>' in line
+                and '"user.db.commit.v3"' in line)
+    return False
+
+
 def case(binary, fixture_binary, parent, format_name, backend, ordinal, order):
     with tempfile.TemporaryDirectory(prefix='concurrent-eio-case-', dir=parent) as directory:
         root = Path(directory)
@@ -72,9 +81,8 @@ def case(binary, fixture_binary, parent, format_name, backend, ordinal, order):
         validate_receipts(report)
         lines = trace.read_text().splitlines()
         injected = [line for line in lines if '(INJECTED)' in line]
-        if (not injected or any(not re.search(r'\b' + call + r'\(', line)
-                                or not base.targets_fixture(line, call, root) for line in injected)):
-            raise ValueError('witness EIO was not observed on fixture descriptors')
+        if not injected or any(not targets_witness(line, root, format_name) for line in injected):
+            raise ValueError('witness EIO was not observed on the expected source witness')
         after = base.snapshot(root, format_name)
         base.check_source(before, after, format_name, 'write')
         receipt_path = root / 'receipts.json'
@@ -85,7 +93,7 @@ def case(binary, fixture_binary, parent, format_name, backend, ordinal, order):
         final = base.snapshot(root, format_name)
         base.check_source(before, final, format_name, 'write')
         groups = [line for line in lines if re.search(r'\bwritev\(', line)
-                  and base.targets_fixture(line, 'writev', root)]
+                  and f'<{root / "source" / "records.log"}>' in line]
         return {'format': format_name, 'backend': backend, 'ordinal_per_tracee': ordinal,
                 'recovery_order': order, 'receipts': report, 'verified': verified,
                 'injected_traces': injected, 'vectored_append_traces': groups,
