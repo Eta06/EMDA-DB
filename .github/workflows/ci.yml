@@ -91,6 +91,8 @@ jobs:
           cargo +stable run --release --locked --example checkpoint_bench -- "$RUNNER_TEMP" 32 8 2
           cargo +stable build --release --locked --example index_memory_bench
           python3 scripts/index_memory_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/index-memory-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
+          cargo +stable build --release --locked --example restart_write_bench
+          python3 scripts/restart_write_resources.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/restart-write-smoke.json" --keys 32 --key-bytes 8 --tail-keys 4 --workers 2 --writes 8 --epochs 2
           cargo +stable build --release --locked --example checkpoint_rollover_bench
           python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
           python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-managed-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --managed

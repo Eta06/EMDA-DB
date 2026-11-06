@@ -681,6 +681,19 @@ A [cross-engine smoke workflow](../.github/workflows/compound-range-smoke.yml) r
 
 [`transaction_before_after.py`](../scripts/transaction_before_after.py) alternates separately built binaries for the same two-key transaction workload and verifies every run's recovered counters and samples. It rejects dirty source checkouts and identical binaries; callers must build from the declared revisions in isolated Cargo target directories. The [paired cancellation comparison](TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) includes primary and repeat results, VM noise and the limitations of this small in-process workload.
 
+### Concurrent writes and clean restarts
+
+On Linux, [`restart_write_resources.py`](../scripts/restart_write_resources.py) prepares separate, equivalently populated fixtures for the ordinary and checkpoint-backed stores. Each epoch starts a fresh process, checks every prior workload key plus sampled base and suffix values, then times unique-key durable writes by concurrent workers and verifies the new values. A final fresh process checks every workload key again. Variant order alternates between epochs; the process reports open time, individual write latencies, elapsed write time, RSS and process I/O. The report retains source/binary hashes, fixture identifiers, each sample and VM/cgroup noise telemetry, including partial results on errors.
+
+```sh
+cargo build --release --locked --example index_memory_bench --example restart_write_bench
+python3 scripts/restart_write_resources.py --directory /path/to/test-filesystem \
+  --output /path/to/new-restart-result.json --keys 10000,200000 \
+  --key-bytes 128 --tail-keys 1024 --workers 4 --writes 128 --epochs 4
+```
+
+The fixture directory must already exist and the output path must be new. The Linux run needs at least two available CPUs. RSS excludes the OS page cache; process I/O includes reads and writes used for verification and metrics. These are clean restarts on warm caches, not simulated crashes or power loss. The diagnostic does not test transactions, total resource bounds, independent machines or competitors.
+
 ### Collection deletion cursor
 
 [`collection_drop_bench`](../examples/collection_drop_bench.rs) creates a uniquely indexed collection, deletes it in synchronized steps, and verifies recreation after full-log reopen. Build the same example source against the two revisions in isolated Cargo target directories, then run [`collection_drop_compare.py`](../scripts/collection_drop_compare.py) with `--directory`, `--before-binary`, `--after-binary` and a new `--output` path. `--sizes 100,1000,3000 --rounds 4` reproduces the workload settings in the [cursor report](CHECKPOINT_DROP_CURSOR_2026_11_05.md); choose available CPUs and interpret the recorded VM noise and durability formats. The timer excludes setup, marker creation and recovery verification. Log growth includes the marker and deletion steps, but not all files or total disk use.
