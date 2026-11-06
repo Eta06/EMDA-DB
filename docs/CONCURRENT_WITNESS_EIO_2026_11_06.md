@@ -64,3 +64,37 @@ results. Its [GitHub workflow](../.github/workflows/sync-eio.yml) repeats a
 shorter campaign. The test uses threads in one process and returned errors on
 a running OS; it does not inject partial successful syscalls, exhaust all
 interleavings, simulate physical power loss or perform an off-host restore.
+
+## Concurrent two-key transactions
+
+On clean revision `8520081b656c06bcaf47cccdddda423590d93563`, four writers
+used transactions to write unique pairs of keys with matching values. The
+verifier requires both halves of each acknowledged or uncertain transaction to
+be present together or absent together; it also checks all earlier
+acknowledged data and requires the two recovery paths to agree on exactly
+which failed transactions are present. The test retries `WouldBlock` only
+because these specific writes repeat the same keys and values; an arbitrary
+transaction with an operation error must not be assumed safe to retry.
+
+Twenty repetitions of the [EIO campaign](../benchmarks/results/2026-11-06-concurrent-transaction-eio.json.gz)
+covered 640 cases across V2/V3, both writable paths, witness/log-sync errors,
+first/second per-thread ordinals and both recovery orders. All 1,091 observed
+acknowledged transactions were recovered intact. Workers reported 2,560 failed
+calls; 640 were present as complete pairs after recovery and 1,920 were
+absent. A failed call remains an unknown outcome, not a confirmed abort.
+
+Two repetitions of the separate [EINTR campaign](../benchmarks/results/2026-11-06-concurrent-transaction-eintr.json.gz)
+covered 64 cases. All 16,384 attempted transactions succeeded and both values
+from each were recovered; 256 injected interruptions were observed at the
+selected witness or log-sync calls. Negative controls reject missing
+acknowledgements, malformed receipts and fractured uncertain pairs.
+
+Both campaigns inject returned errno values under sampled thread schedules on
+the shared overlay. They do not inject partial successful syscalls, kill the
+process during commit or establish physical power-loss behavior.
+
+The [independent report verifier](../scripts/verify_concurrent_eio_results.py)
+checked the complete case matrix, receipt counts, uncertain-write identities,
+injected errno and target, and recorded reference-fixture hashes in both raw
+reports. It validates the recorded evidence; the probe performed the actual
+pair and source-prefix checks while the fixtures existed.

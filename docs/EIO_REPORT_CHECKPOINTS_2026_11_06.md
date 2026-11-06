@@ -54,3 +54,9 @@ V3 checkpoint-compaction metadata-error cases with the default interval. It
 recorded eight full snapshots after initial creation; its selected ordinals,
 recovery orders and outcomes matched the corresponding earlier full campaign.
 The independent verifier and the completed progress sidecar also passed.
+
+The concurrent-writer driver now uses the same checkpointed reporting helper.
+In a 32-case transaction-mode pilot with a 60-second interval, it recorded two
+full snapshots after initial creation and a completed progress sidecar. A
+single-write pilot also completed. These are runner checks, not engine
+performance measurements.
