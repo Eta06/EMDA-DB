@@ -28,13 +28,18 @@ independent off-host restore drills must remain open until actually performed.
 ## Running synchronization EIO injection
 
 On Linux with `strace`, [`sync_eio_campaign.py`](../scripts/sync_eio_campaign.py)
-first traces successful V2 and V3 writes, backups, restores, upgrades,
-checkpoint creation and separate-copy compaction. It then uses a fresh
+first traces successful initialization and V2/V3 ordinary and checkpoint-backed
+writes, backups, restores, upgrades, checkpoint creation, rollover and
+separate-copy compaction. It then uses a fresh
 disposable fixture to inject `EIO` at each observed `fsync`
 and `fdatasync` ordinal, checking previously acknowledged values after reopen,
 the source, reference backup and trusted checkpoint, and every copy visible after an error. Each
 injection is repeated with each writable recovery path reopening first. A
 successful action must be visible; a failed write may have an unknown outcome.
+For initialization, the new store uses the filesystem's default supported
+format; existing partial target files and metadata must not be rewritten by a
+failed reopen. A compacted checkpoint's digest is recomputed from that same
+output for corruption checking, so it is not independently authenticated.
 The driver retains partial results and the active case if it fails.
 
 ```sh

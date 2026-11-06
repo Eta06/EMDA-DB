@@ -1,6 +1,9 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
-use database_engine::{CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging};
+use database_engine::{
+    COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging,
+};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::error::Error;
 use std::io;
 use std::path::Path;
@@ -64,11 +67,23 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
         "upgrade" => Store::open(source)?.upgrade_format(target),
         "checkpoint" => Store::open(source)?.checkpoint_to(target).map(|_| ()),
         "compaction" => Store::open(source)?.compact_to(target),
+        "checkpoint-write" => checkpoint_store(root)?.put(b"new", b"attempted"),
+        "checkpoint-backup" => checkpoint_store(root)?.backup(target),
+        "checkpoint-compaction" => checkpoint_store(root)?.compact_to(target).map(|_| ()),
+        "checkpoint-rollover" => checkpoint_store(root)?.rollover_to(target).map(|_| ()),
+        "initialize" => Store::open(target).map(|_| ()),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "unknown operation",
         )),
     }
+}
+
+fn checkpoint_store(root: &Path) -> io::Result<CheckpointStore> {
+    let digest: [u8; 32] = std::fs::read(root.join("checkpoint.digest"))?
+        .try_into()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid checkpoint digest"))?;
+    CheckpointStore::open(root.join("source"), root.join("checkpoint"), &digest)
 }
 
 fn attempt(root: &Path, operation: &str) -> ProbeResult<()> {
@@ -94,7 +109,7 @@ fn inspect_source(
         return Err("acknowledged fixture values changed".into());
     }
     let new_value = get(b"new")?;
-    if operation == "write" {
+    if matches!(operation, "write" | "checkpoint-write") {
         if status == "success" && new_value.as_deref() != Some(&b"attempted"[..]) {
             return Err("successful write missing after reopen".into());
         }
@@ -139,17 +154,55 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
     }
     let target = root.join("result");
     let visible = target.exists();
-    if operation != "write" && status == "success" && !visible {
+    if !matches!(operation, "write" | "checkpoint-write") && status == "success" && !visible {
         return Err("successful copy was not published".into());
     }
+    let mut initialization_state = None;
     if visible {
-        if operation == "backup" {
+        if operation == "initialize" {
+            match Store::open(&target) {
+                Ok(store) => {
+                    if store.get(b"safe")?.is_some()
+                        || store.get(b"old")?.is_some()
+                        || store.get(b"new")?.is_some()
+                    {
+                        return Err("initialized store is not empty".into());
+                    }
+                    initialization_state = Some("openable");
+                }
+                Err(error) if status == "error" && error.kind() == io::ErrorKind::InvalidData => {
+                    initialization_state = Some("fail-closed");
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else if matches!(operation, "backup" | "checkpoint-backup") {
             let restored = root.join("verify-copy");
             Store::restore(&target, &restored)?;
             check_values(&Store::open(restored)?)?;
-        } else if matches!(operation, "restore" | "upgrade" | "compaction") {
+        } else if matches!(
+            operation,
+            "restore" | "upgrade" | "compaction" | "checkpoint-compaction"
+        ) {
             check_values(&Store::open(&target)?)?;
-        } else if operation == "checkpoint" {
+            if operation == "checkpoint-compaction" {
+                let checkpoint = target.join(COMPACTED_CHECKPOINT_FILE);
+                let bytes = std::fs::read(&checkpoint)?;
+                let length = bytes
+                    .len()
+                    .checked_sub(32)
+                    .ok_or("short compacted checkpoint")?;
+                let observed: [u8; 32] = Sha256::digest(&bytes[..length]).into();
+                if bytes[length..] != observed {
+                    return Err("compacted checkpoint digest mismatch".into());
+                }
+                let view = CheckpointView::open(&target, &checkpoint, &observed)?;
+                if view.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
+                    || view.get(b"old")?.as_deref() != Some(&b"original"[..])
+                {
+                    return Err("compacted checkpoint has incorrect values".into());
+                }
+            }
+        } else if matches!(operation, "checkpoint" | "checkpoint-rollover") {
             // This digest was independently saved before the attempted copy.
             let view = CheckpointView::open(root.join("source"), &target, &digest)?;
             if view.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
@@ -165,7 +218,7 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
     println!(
         "{}",
         json!({"status":"verified","operation":operation,"target_visible":visible,
-        "new_present":new_present.unwrap(),"recovery_order":order,"cleanup_removed_markers":cleanup.removed_markers,
+        "new_present":new_present.unwrap(),"recovery_order":order,"initialization_state":initialization_state,"cleanup_removed_markers":cleanup.removed_markers,
         "cleanup_removed_payloads":cleanup.removed_payloads,"cleanup_skipped":cleanup.skipped})
     );
     Ok(())
@@ -177,7 +230,7 @@ fn main() -> ProbeResult<()> {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
-        _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <write|backup|restore|upgrade|checkpoint|compaction> | verify <root> <operation> <success|error> <ordinary-first|checkpoint-first>".into()),
+        _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <operation> | verify <root> <operation> <success|error> <ordinary-first|checkpoint-first>".into()),
     }
 }
 
@@ -198,5 +251,19 @@ mod tests {
         store.put(b"safe", b"changed").unwrap();
         drop(store);
         assert!(verify(root.path(), "write", "error", "ordinary-first").is_err());
+    }
+
+    #[test]
+    fn interrupted_initialization_fails_closed_without_rewriting_a_partial_log() {
+        let root = tempfile::tempdir().unwrap();
+        setup(root.path(), "v2").unwrap();
+        let target = root.path().join("result");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("records.log"), b"partial").unwrap();
+        verify(root.path(), "initialize", "error", "ordinary-first").unwrap();
+        assert_eq!(
+            std::fs::read(target.join("records.log")).unwrap(),
+            b"partial"
+        );
     }
 }

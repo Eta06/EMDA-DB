@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sync_eio_campaign import check_source
+from sync_eio_campaign import check_initialization, check_source
 
 
 class SyncEioCampaignTests(unittest.TestCase):
@@ -19,6 +19,7 @@ class SyncEioCampaignTests(unittest.TestCase):
         after['log'] += b'unacknowledged'
         after['metadata'] = b'advanced'
         check_source(before, after, 'v3', 'write')
+        check_source(before, after, 'v3', 'checkpoint-write')
         for field, value in (('log', b'truncated'), ('witness', b'changed'), ('backup', b'changed'),
                              ('checkpoint', b'changed'), ('checkpoint_digest', b'changed')):
             with self.subTest(field=field):
@@ -36,6 +37,17 @@ class SyncEioCampaignTests(unittest.TestCase):
                 bad[field] += b'changed'
                 with self.assertRaises(ValueError):
                     check_source(before, bad, 'v3', 'restore')
+
+    def test_initialization_verification_preserves_existing_evidence(self):
+        before = {'files': {'records.log': b'partial', 'store.lock': b''}, 'metadata': b'boundary'}
+        check_initialization(before, copy.deepcopy(before))
+        for bad in (None, {'files': {'records.log': b'changed', 'store.lock': b''}, 'metadata': b'boundary'},
+                    {'files': before['files'], 'metadata': None}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    check_initialization(before, bad)
+        check_initialization({'files': {}, 'metadata': None},
+                             {'files': {'records.log': b'new'}, 'metadata': b'new'})
 
 
 if __name__ == '__main__':

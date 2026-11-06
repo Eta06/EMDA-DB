@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Inject EIO at real synchronization syscalls on disposable Linux fixtures."""
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -12,7 +13,10 @@ import tempfile
 import time
 
 SYSCALLS = ('fsync', 'fdatasync')
-OPERATIONS = ('write', 'backup', 'restore', 'upgrade', 'checkpoint', 'compaction')
+OPERATIONS = ('write', 'backup', 'restore', 'upgrade', 'checkpoint', 'compaction',
+              'checkpoint-write', 'checkpoint-backup', 'checkpoint-compaction', 'checkpoint-rollover',
+              'initialize')
+WRITES = ('write', 'checkpoint-write')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(fsync|fdatasync)\(')
@@ -39,6 +43,48 @@ def describe(state):
         'log_bytes': len(state['log']), 'backup_bytes': len(state['backup'])}
 
 
+def initialization_snapshot(root):
+    target = root / 'result'
+    if not target.exists():
+        return None
+    if not target.is_dir():
+        raise ValueError('initialization target is not a directory')
+    files = {}
+    for name in ('store.lock', 'records.log', 'commit.state'):
+        path = target / name
+        if path.exists():
+            files[name] = path.read_bytes()
+    metadata = None
+    if 'records.log' in files:
+        try:
+            metadata = os.getxattr(target / 'records.log', 'user.db.commit.v3')
+        except OSError as error:
+            if error.errno not in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+                raise
+    return {'files': files, 'metadata': metadata}
+
+
+def check_initialization(before, after):
+    if before is None:
+        if after is not None:
+            raise ValueError('absent initialization target unexpectedly appeared during verification')
+        return
+    if after is None:
+        raise ValueError('initialization target disappeared during verification')
+    for name, value in before['files'].items():
+        if after['files'].get(name) != value:
+            raise ValueError(f'initialization evidence changed: {name}')
+    if 'records.log' in before['files'] and after['metadata'] != before['metadata']:
+        raise ValueError('initialization metadata evidence changed')
+
+
+def describe_initialization(snapshot_value):
+    if snapshot_value is None:
+        return None
+    return {'files': {name: digest(value) for name, value in snapshot_value['files'].items()},
+            'metadata_sha256': digest(snapshot_value['metadata']) if snapshot_value['metadata'] is not None else None}
+
+
 def check_source(before, after, format_name, operation):
     if not after['log'].startswith(before['log']):
         raise ValueError('acknowledged log prefix changed')
@@ -47,7 +93,7 @@ def check_source(before, after, format_name, operation):
     if (after['checkpoint'] != before['checkpoint']
             or after['checkpoint_digest'] != before['checkpoint_digest']):
         raise ValueError('trusted checkpoint or digest changed')
-    if operation != 'write' and after != before:
+    if operation not in WRITES and after != before:
         raise ValueError('copy operation changed the source or reference backup')
     if format_name == 'v3' and after['witness'] != before['witness']:
         raise ValueError('V3 identity anchor changed')
@@ -95,6 +141,7 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         traced = traced_attempt(binary, root, operation, syscall, ordinal)
         after = snapshot(root, format_name)
         check_source(before, after, format_name, operation)
+        initial_target = initialization_snapshot(root) if operation == 'initialize' else None
         verification = run_probe(binary, 'verify', root, operation, traced['outcome']['status'], order)
         expected_order = ['ordinary', 'checkpoint'] if order == 'ordinary-first' else ['checkpoint', 'ordinary']
         if (verification.get('status') != 'verified' or verification.get('operation') != operation
@@ -102,8 +149,13 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
             raise ValueError('recovery verification did not complete')
         final = snapshot(root, format_name)
         check_source(before, final, format_name, operation)
+        final_target = initialization_snapshot(root) if operation == 'initialize' else None
+        if operation == 'initialize':
+            check_initialization(initial_target, final_target)
         return {**traced, 'verification': verification, 'before': describe(before),
-                'after_attempt': describe(after), 'after_verification': describe(final)}
+                'after_attempt': describe(after), 'after_verification': describe(final),
+                'initialization_before_verification': describe_initialization(initial_target),
+                'initialization_after_verification': describe_initialization(final_target)}
 
 
 def main():
