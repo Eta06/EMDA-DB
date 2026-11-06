@@ -55,7 +55,7 @@ def main():
         'runner_sha256': digest(__file__), 'cargo_lock_sha256': digest('Cargo.lock'),
         'image': IMAGE, 'container_name': name, 'host_platform': platform.platform(),
         'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'scope': 'Disposable 8 MiB tmpfs inside an isolated Docker container with a read-only root, no network, no capabilities, and only the test executable mounted read-only. A kernel ENOSPC result is not proof of physical disk, power-loss or off-host behavior.',
+        'scope': 'Disposable 8 MiB, 64-inode tmpfs inside an isolated Docker container with a read-only root, no network, no capabilities, and only the test executable mounted read-only. A kernel ENOSPC result is not proof of physical disk, power-loss or off-host behavior.',
         'completed': False, 'failure': None,
     }
     output = Path(args.output)
@@ -70,7 +70,7 @@ def main():
             command = [
                 'docker', 'run', '--rm', '--pull=never', '--name', name, '--network', 'none',
                 '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-                '--tmpfs', '/data:rw,size=8m,nosuid,nodev,noexec',
+                '--tmpfs', '/data:rw,size=8m,nr_inodes=64,nosuid,nodev,noexec',
                 '--mount', f'type=bind,src={mounted},dst=/probe,readonly',
                 '--env', 'EMDA_ENOSPC_ROOT=/data', '--env', 'EMDA_ENOSPC_CONFIRM=disposable-tmpfs-only',
                 IMAGE, '/probe', '--ignored', '--exact', TEST, '--nocapture',

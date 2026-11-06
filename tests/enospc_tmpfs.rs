@@ -31,6 +31,12 @@ enum CopyOperation {
     Upgrade,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Exhaustion {
+    Bytes,
+    Inodes,
+}
+
 fn disposable_root() -> PathBuf {
     assert_eq!(
         std::env::var("EMDA_ENOSPC_CONFIRM").as_deref(),
@@ -45,6 +51,10 @@ fn disposable_root() -> PathBuf {
     assert!(
         (2 * 1024 * 1024..=16 * 1024 * 1024).contains(&capacity),
         "unexpected tmpfs capacity"
+    );
+    assert!(
+        (16..=256).contains(&info.f_files),
+        "tmpfs must have a small inode limit"
     );
     assert_eq!(
         fs::read_dir(&root).unwrap().count(),
@@ -116,6 +126,33 @@ fn fill_until_enospc(path: &Path) -> usize {
     assert!(total > 0);
     drop(file);
     total
+}
+
+fn exhaust_inodes(directory: &Path) -> Vec<PathBuf> {
+    fs::create_dir(directory).unwrap();
+    let mut files = Vec::new();
+    for number in 0..256 {
+        let path = directory.join(number.to_string());
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                drop(file);
+                files.push(path);
+            }
+            Err(error) if error.raw_os_error() == Some(28) => {
+                assert!(!files.is_empty());
+                return files;
+            }
+            Err(error) => panic!("unexpected inode filler error: {error}"),
+        }
+    }
+    panic!("inode limit was not reached within the guarded bound");
+}
+
+fn release_inodes(directory: &Path, files: Vec<PathBuf>) {
+    for file in files {
+        fs::remove_file(file).unwrap();
+    }
+    fs::remove_dir(directory).unwrap();
 }
 
 fn assert_enospc(error: &io::Error) {
@@ -211,12 +248,13 @@ fn verify_copy(path: &Path) {
     assert_eq!(store.get(b"large").unwrap().as_deref(), Some(LARGE_VALUE));
 }
 
-fn check_copy(root: &Path, format: Format, operation: CopyOperation) {
+fn check_copy(root: &Path, format: Format, operation: CopyOperation, exhaustion: Exhaustion) {
     let case = tempfile::tempdir_in(root).unwrap();
     let source = case.path().join("source");
     let backup = case.path().join("backup");
     let reserve = case.path().join("reserve");
     let filler = case.path().join("filler");
+    let inode_filler = case.path().join("inode-filler");
     let store = prepare_source(&source, format);
     store.put(b"large", LARGE_VALUE).unwrap();
     store.backup(&backup).unwrap();
@@ -226,9 +264,19 @@ fn check_copy(root: &Path, format: Format, operation: CopyOperation) {
     let marker = witness(&source, format);
     let anchor = fs::read(source.join("commit.state")).unwrap();
     let backup_before = fs::read(&backup).unwrap();
-    fs::write(&reserve, vec![0x52; 64 * 1024]).unwrap();
-    let filled = fill_until_enospc(&filler);
-    fs::remove_file(reserve).unwrap();
+    let mut inode_files = Vec::new();
+    let filled = match exhaustion {
+        Exhaustion::Bytes => {
+            fs::write(&reserve, vec![0x52; 64 * 1024]).unwrap();
+            let filled = fill_until_enospc(&filler);
+            fs::remove_file(reserve).unwrap();
+            filled
+        }
+        Exhaustion::Inodes => {
+            inode_files = exhaust_inodes(&inode_filler);
+            inode_files.len()
+        }
+    };
     let failed = case.path().join("failed");
     let result = match operation {
         CopyOperation::Backup => Store::open(&source).unwrap().backup(&failed),
@@ -241,7 +289,10 @@ fn check_copy(root: &Path, format: Format, operation: CopyOperation) {
     assert_eq!(fs::read(source.join("commit.state")).unwrap(), anchor);
     assert_eq!(witness(&source, format), marker);
     assert_eq!(fs::read(&backup).unwrap(), backup_before);
-    fs::remove_file(filler).unwrap();
+    match exhaustion {
+        Exhaustion::Bytes => fs::remove_file(filler).unwrap(),
+        Exhaustion::Inodes => release_inodes(&inode_filler, inode_files),
+    }
     cleanup_abandoned_staging(case.path()).unwrap();
     let retry = case.path().join("retry");
     match operation {
@@ -267,7 +318,36 @@ fn check_copy(root: &Path, format: Format, operation: CopyOperation) {
     assert_eq!(fs::read(source.join("commit.state")).unwrap(), anchor);
     assert_eq!(witness(&source, format), marker);
     assert_eq!(fs::read(&backup).unwrap(), backup_before);
-    eprintln!("copy {format:?}/{operation:?}: filler={filled} failed safely and retry verified");
+    eprintln!(
+        "copy {format:?}/{operation:?}/{exhaustion:?}: filler={filled} failed safely and retry verified"
+    );
+}
+
+fn check_inode_exhausted_initialization(root: &Path) {
+    let case = tempfile::tempdir_in(root).unwrap();
+    let destination = case.path().join("new-store");
+    let filler = case.path().join("inode-filler");
+    fs::create_dir(&destination).unwrap();
+    let files = exhaust_inodes(&filler);
+    let count = files.len();
+    let error = match Store::open(&destination) {
+        Ok(_) => panic!("initialization unexpectedly succeeded without free inodes"),
+        Err(error) => error,
+    };
+    assert_enospc(&error);
+    release_inodes(&filler, files);
+    let store = Store::open(&destination).unwrap();
+    store.put(b"safe", b"recovered").unwrap();
+    drop(store);
+    assert_eq!(
+        Store::open(&destination)
+            .unwrap()
+            .get(b"safe")
+            .unwrap()
+            .as_deref(),
+        Some(&b"recovered"[..])
+    );
+    eprintln!("initialization/Inodes: filler={count} failed safely and retry verified");
 }
 
 #[test]
@@ -283,8 +363,11 @@ fn actual_tmpfs_enospc_preserves_source_and_recovery_evidence() {
             CopyOperation::Restore,
             CopyOperation::Upgrade,
         ] {
-            check_copy(&root, format, operation);
+            for exhaustion in [Exhaustion::Bytes, Exhaustion::Inodes] {
+                check_copy(&root, format, operation, exhaustion);
+            }
         }
     }
+    check_inode_exhausted_initialization(&root);
     assert_eq!(fs::read_dir(root).unwrap().count(), 0);
 }
