@@ -77,7 +77,7 @@ failures of the same syscall, arbitrary multiple failures or all failure-only
 paths.
 
 [`concurrent_eio_campaign.py`](../scripts/concurrent_eio_campaign.py) injects
-witness-write EIO while four independent writers run. It checks every observed
+witness-write or log-sync EIO while four independent writers run. It checks every observed
 acknowledgement and each failed request through both recovery paths. `strace`
 counts the selected injection ordinal per traced thread. A failed request can
 recover in full, and its outcome remains unknown. This does not model partial

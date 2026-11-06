@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from concurrent_eio_campaign import check_recovery, targets_witness, validate_receipts
+from concurrent_eio_campaign import check_recovery, targets_log_sync, targets_witness, validate_receipts
 
 
 class ConcurrentEioCampaignTests(unittest.TestCase):
@@ -43,6 +43,15 @@ class ConcurrentEioCampaignTests(unittest.TestCase):
         self.assertTrue(targets_witness(v3, root, 'v3'))
         self.assertFalse(targets_witness(v2.replace('commit.state', 'other'), root, 'v2'))
         self.assertFalse(targets_witness(v3.replace('user.db.commit.v3', 'other'), root, 'v3'))
+
+    def test_log_sync_must_match_format_and_source_log(self):
+        root = Path('/work/case')
+        v2 = '1 fdatasync(3</work/case/source/records.log>) = -1 EIO (INJECTED)'
+        v3 = '1 fsync(3</work/case/source/records.log>) = -1 EIO (INJECTED)'
+        self.assertTrue(targets_log_sync(v2, root, 'v2'))
+        self.assertTrue(targets_log_sync(v3, root, 'v3'))
+        self.assertFalse(targets_log_sync(v2, root, 'v3'))
+        self.assertFalse(targets_log_sync(v3.replace('records.log', 'commit.state'), root, 'v3'))
 
 
 if __name__ == '__main__':

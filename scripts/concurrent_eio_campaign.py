@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject real witness-write EIO while multiple disposable writers run."""
+"""Inject log or witness EIO while multiple disposable writers run."""
 import argparse
 import json
 import os
@@ -65,24 +65,41 @@ def targets_witness(line, root, format_name):
     return False
 
 
-def case(binary, fixture_binary, parent, format_name, backend, ordinal, order):
+def targets_log_sync(line, root, format_name):
+    call = 'fdatasync(' if format_name == 'v2' else 'fsync(' if format_name == 'v3' else None
+    return bool(call and call in line and f'<{root / "source" / "records.log"}>' in line)
+
+
+def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, order):
     with tempfile.TemporaryDirectory(prefix='concurrent-eio-case-', dir=parent) as directory:
         root = Path(directory)
         setup = base.run_probe(fixture_binary, 'setup', root, format_name)
         if setup != {'status': 'ready', 'format': format_name}:
             raise ValueError('unexpected fixture setup')
         before = base.snapshot(root, format_name)
-        call = 'pwrite64' if format_name == 'v2' else 'fsetxattr'
+        if fault == 'witness':
+            call = 'pwrite64' if format_name == 'v2' else 'fsetxattr'
+            trace_calls = 'pwrite64,fsetxattr,writev'
+            path_filter = []
+        elif fault == 'log-sync':
+            call = 'fdatasync' if format_name == 'v2' else 'fsync'
+            trace_calls = 'fsync,fdatasync,writev'
+            # The open path synchronizes a directory. Select the log itself so
+            # the injection reaches a writer's data sync, not fixture opening.
+            path_filter = ['-P', str(root / 'source' / 'records.log')]
+        else:
+            raise ValueError('unknown failure mode')
         trace = root / 'trace.txt'
         report = bounded(['strace', '-f', '-qq', '-yy', '-s', '128', '-o', str(trace),
-                          '-e', 'trace=pwrite64,fsetxattr,writev',
+                          *path_filter, '-e', 'trace=' + trace_calls,
                           '-e', f'inject={call}:error=EIO:when={ordinal}',
                           binary, 'attempt', str(root), backend])
         validate_receipts(report)
         lines = trace.read_text().splitlines()
         injected = [line for line in lines if '(INJECTED)' in line]
-        if not injected or any(not targets_witness(line, root, format_name) for line in injected):
-            raise ValueError('witness EIO was not observed on the expected source witness')
+        matches_target = targets_witness if fault == 'witness' else targets_log_sync
+        if not injected or any(not matches_target(line, root, format_name) for line in injected):
+            raise ValueError('EIO was not observed on the expected source file')
         after = base.snapshot(root, format_name)
         base.check_source(before, after, format_name, 'write')
         receipt_path = root / 'receipts.json'
@@ -94,7 +111,7 @@ def case(binary, fixture_binary, parent, format_name, backend, ordinal, order):
         base.check_source(before, final, format_name, 'write')
         groups = [line for line in lines if re.search(r'\bwritev\(', line)
                   and f'<{root / "source" / "records.log"}>' in line]
-        return {'format': format_name, 'backend': backend, 'ordinal_per_tracee': ordinal,
+        return {'format': format_name, 'backend': backend, 'fault': fault, 'ordinal_per_tracee': ordinal,
                 'recovery_order': order, 'receipts': report, 'verified': verified,
                 'injected_traces': injected, 'vectored_append_traces': groups,
                 'before': base.describe(before), 'after_attempt': base.describe(after),
@@ -129,8 +146,8 @@ def main():
         'host_platform': platform.platform(),
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', directory, '-o', 'TARGET,FSTYPE'], text=True)),
-        'scope': ('Four independent writers; strace injects a returned witness-write EIO at the '
-                  'first or second matching syscall per traced thread. Check all observed '
+        'scope': ('Four independent writers; strace injects a returned witness-write or log-sync '
+                  'EIO at the first or second matching syscall per traced thread. Check all observed '
                   'acknowledgements and each failed write after both recovery orders. '
                   'This does not inject partial writes or model power loss.'),
         'repetitions': args.repetitions, 'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -157,14 +174,17 @@ def main():
         for repetition in range(args.repetitions):
             for format_name in base.FORMATS:
                 for backend in ('ordinary', 'checkpoint'):
-                    for ordinal in (1, 2):
-                        for order in base.RECOVERY_ORDERS:
-                            result['current'] = {'repetition': repetition + 1, 'format': format_name,
-                                                 'backend': backend, 'ordinal': ordinal, 'order': order}
-                            save()
-                            measured = case(binary, fixture_binary, directory, format_name, backend, ordinal, order)
-                            result['cases'].append({'repetition': repetition + 1, **measured})
-                            save()
+                    for fault in ('witness', 'log-sync'):
+                        for ordinal in (1, 2):
+                            for order in base.RECOVERY_ORDERS:
+                                result['current'] = {'repetition': repetition + 1, 'format': format_name,
+                                                     'backend': backend, 'fault': fault,
+                                                     'ordinal': ordinal, 'order': order}
+                                save()
+                                measured = case(binary, fixture_binary, directory, format_name, backend,
+                                                fault, ordinal, order)
+                                result['cases'].append({'repetition': repetition + 1, **measured})
+                                save()
             print(f'repetition {repetition + 1}: {len(result["cases"])} completed cases', flush=True)
         result['current'] = None
         result['completed'] = True
