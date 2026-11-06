@@ -34,3 +34,18 @@ The [hosted recovery-fuzz workflow](https://github.com/Eta06/EMDA-DB/actions/run
 also passed all four shards on revision `a124651`, including the updated
 recovery targets and long starting seeds. Hosted and local runs are separate
 finite campaigns.
+
+## Post-witness-retry run
+
+After the witness interruption changes, clean revision
+`28e40acf3ac8043fa4f0b319ad55c83be26eedd1` was rebuilt in a separate target
+directory and run with address sanitizer for 90 seconds per target. The
+ordinary recovery fuzzer completed 36,950 executions and the checkpoint
+recovery fuzzer completed 7,658, without a finding or saved failure artifact.
+The configured maximum inputs remained 8,192 and 256 bytes respectively.
+
+The [run metadata](../benchmarks/results/2026-11-06-post-witness-recovery-fuzz.json)
+records source, seed, binary and log hashes; the [archive](../benchmarks/results/2026-11-06-post-witness-recovery-fuzz.tar.gz)
+contains both logs and generated corpora. These are finite serial campaigns on
+the same shared overlay; they do not inject I/O errors or establish physical
+power-loss or off-host-restore behavior.
