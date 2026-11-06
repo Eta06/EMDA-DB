@@ -68,6 +68,8 @@ The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON
 
 A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_2026_11_06.md) checks acknowledged workload values after fresh-process reopens through one million base keys, with observed memory, I/O and VM noise.
 
+A [SQLite restart comparison](docs/SQLITE_RESTART_RESOURCES_2026_11_06.md) adds a repeated three-way large-fixture run, including the different open and integrity-check semantics and long-tail samples.
+
 The [checkpoint landmark comparison](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) measures sparse in-memory lookup offsets that retain full-block verification, including their memory cost and mixed tails.
 
 The [managed replacement comparison](docs/MANAGED_REPLACEMENT_COMPARISON_2026_11_06.md) records a removed duplicate directory sync, paired checkpoint timings and their VM-noise limits.
