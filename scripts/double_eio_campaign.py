@@ -12,14 +12,15 @@ import time
 
 import sync_eio_campaign as base
 
-PRIMARY = base.SYSCALL_SETS['data'] + base.SYSCALL_SETS['namespace']
 SYNC = base.SYSCALL_SETS['sync']
+DATA_NAMESPACE = base.SYSCALL_SETS['data'] + base.SYSCALL_SETS['namespace']
+PRIMARY = DATA_NAMESPACE + SYNC
 CLEANUP = ('unlink', 'unlinkat', 'rmdir')
 SECONDARY = SYNC + CLEANUP
-TRACED = PRIMARY + SYNC
+TRACED = PRIMARY
 
 
-def calls_after_primary(lines, primary, root):
+def calls_after_primary(lines, primary, root, allow_same_second=False):
     """Find later syncs and fixture removals with per-syscall strace ordinals."""
     counts = dict.fromkeys(SECONDARY, 0)
     selected = {name: [] for name in SECONDARY}
@@ -31,16 +32,32 @@ def calls_after_primary(lines, primary, root):
         name = match.group(1)
         if name in counts:
             counts[name] += 1
-            if (seen_primary and name != primary
-                    and (name in SYNC or base.targets_fixture(line, name, root))):
+            if seen_primary and (name in SYNC or base.targets_fixture(line, name, root)):
                 selected[name].append(counts[name])
         if name == primary and '(INJECTED)' in line:
-            if seen_primary:
+            if seen_primary and not allow_same_second:
                 raise ValueError('primary EIO was injected more than once')
             seen_primary = True
     if not seen_primary:
         raise ValueError('primary EIO was not observed')
     return selected
+
+
+def injection_rules(syscall, ordinal, second):
+    if second is None:
+        return ['-e', f'inject={syscall}:error=EIO:when={ordinal}']
+    name, number = second
+    if name not in SECONDARY:
+        raise ValueError('invalid second failure syscall')
+    if name == syscall:
+        if number <= ordinal:
+            raise ValueError('same-syscall second failure must occur later')
+        # FIRST..LAST+STEP selects exactly these two ordinals, even if the
+        # process invokes this syscall again after the second failure.
+        when = f'{ordinal}..{number}+{number - ordinal}'
+        return ['-e', f'inject={syscall}:error=EIO:when={when}']
+    return ['-e', f'inject={syscall}:error=EIO:when={ordinal}',
+            '-e', f'inject={name}:error=EIO:when={number}']
 
 
 def tracer_for(second=None):
@@ -49,13 +66,7 @@ def tracer_for(second=None):
             raise ValueError('invalid double-fault configuration')
         trace_path = root / 'trace.txt'
         command = ['strace', '-f', '-qq', '-yy', '-s', '512', '-o', str(trace_path),
-                   '-e', 'trace=' + ','.join(TRACED),
-                   '-e', f'inject={syscall}:error=EIO:when={ordinal}']
-        if second:
-            name, number = second
-            if name not in SECONDARY or name == syscall:
-                raise ValueError('second failure must use a different selected syscall')
-            command += ['-e', f'inject={name}:error=EIO:when={number}']
+                   '-e', 'trace=' + ','.join(TRACED), *injection_rules(syscall, ordinal, second)]
         command += [binary, 'attempt', str(root), operation]
         run = subprocess.run(command, capture_output=True, text=True, timeout=60)
         if run.returncode:
@@ -76,7 +87,8 @@ def tracer_for(second=None):
         if second and second[0] in CLEANUP and not base.targets_fixture(injected[1], second[0], root):
             raise ValueError('secondary removal did not target the fixture')
         return {'outcome': outcome, 'counts': counts, 'eligible_ordinals': eligible,
-                'injected_traces': injected, 'calls_after_primary': calls_after_primary(lines, syscall, root)}
+                'injected_traces': injected, 'calls_after_primary': calls_after_primary(
+                    lines, syscall, root, allow_same_second=bool(second and second[0] == syscall))}
     return trace
 
 
@@ -86,6 +98,8 @@ def main():
     parser.add_argument('--binary', default='target/release/examples/sync_failure_probe')
     parser.add_argument('--output', required=True, help='new JSON result path')
     parser.add_argument('--max-primary', type=int, default=0, help='limit each primary syscall; 0 means all')
+    parser.add_argument('--primary-mode', choices=('data-namespace', 'sync', 'all'), default='data-namespace',
+                        help='which successful-path calls may receive the first EIO')
     parser.add_argument('--operation', choices=base.OPERATIONS, help='optional single-operation smoke check')
     parser.add_argument('--format', choices=base.FORMATS, help='optional single-format smoke check')
     args = parser.parse_args()
@@ -109,12 +123,13 @@ def main():
         'host_platform': platform.platform(),
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', directory, '-o', 'TARGET,FSTYPE'], text=True)),
-        'scope': ('For each selected fixture data or namespace call observed on the successful path, '
+        'scope': ('For each selected fixture data, namespace or sync call observed on the successful path, '
                   'inject one EIO. Discover sync and fixture-removal calls subsequently reached '
-                  'on that failure path, then inject a second EIO at each selected different '
-                  'syscall with each writable recovery order. Same-syscall pairs are excluded. '
+                  'on that failure path, then inject a second EIO at each selected later syscall '
+                  'with each writable recovery order, including the same sync or removal syscall. '
                   'This is a finite single-process model; it does not prove physical persistence.'),
-        'max_primary': args.max_primary,
+        'max_primary': args.max_primary, 'primary_mode': args.primary_mode,
+        'primary_syscalls': list({'data-namespace': DATA_NAMESPACE, 'sync': SYNC, 'all': PRIMARY}[args.primary_mode]),
         'formats': [args.format] if args.format else list(base.FORMATS),
         'operations': [args.operation] if args.operation else list(base.OPERATIONS),
         'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -149,7 +164,7 @@ def main():
                     case = {'format': format_name, 'operation': operation, 'control': control,
                             'primary_checks': []}
                     result['cases'].append(case)
-                    for syscall in PRIMARY:
+                    for syscall in result['primary_syscalls']:
                         ordinals = control['eligible_ordinals'][syscall]
                         if args.max_primary:
                             ordinals = ordinals[:args.max_primary]

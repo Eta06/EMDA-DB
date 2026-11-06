@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from double_eio_campaign import calls_after_primary
+from double_eio_campaign import calls_after_primary, injection_rules
 
 
 class DoubleEioCampaignTests(unittest.TestCase):
@@ -31,12 +31,21 @@ class DoubleEioCampaignTests(unittest.TestCase):
             calls_after_primary(['1 write(3</work/f>, "x", 1) = -1 EIO (INJECTED)',
                                  '1 write(3</work/f>, "x", 1) = -1 EIO (INJECTED)'], 'write', Path('/work'))
 
-    def test_same_syscall_pair_is_not_selected(self):
+    def test_same_syscall_pair_is_selected_and_bounded(self):
         lines = ['1 unlink("/work/case/a") = -1 EIO (INJECTED)',
                  '1 unlink("/work/case/b") = 0', '1 rmdir("/work/case/c") = 0']
         result = calls_after_primary(lines, 'unlink', Path('/work/case'))
-        self.assertEqual(result['unlink'], [])
+        self.assertEqual(result['unlink'], [2])
         self.assertEqual(result['rmdir'], [1])
+        self.assertEqual(injection_rules('unlink', 2, ('unlink', 5)),
+                         ['-e', 'inject=unlink:error=EIO:when=2..5+3'])
+        self.assertEqual(injection_rules('fsync', 4, ('fsync', 5)),
+                         ['-e', 'inject=fsync:error=EIO:when=4..5+1'])
+        with self.assertRaises(ValueError):
+            injection_rules('unlink', 2, ('unlink', 2))
+        injected_twice = [lines[0], lines[1].replace('= 0', '= -1 EIO (INJECTED)')]
+        self.assertEqual(calls_after_primary(injected_twice, 'unlink', Path('/work/case'),
+                                             allow_same_second=True)['unlink'], [2])
 
 
 if __name__ == '__main__':

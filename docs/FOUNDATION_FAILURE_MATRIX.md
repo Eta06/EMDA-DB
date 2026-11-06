@@ -67,14 +67,14 @@ syscall or combination of errors, model storage reordering or establish physical
 power-loss or off-host restore behavior.
 
 [`double_eio_campaign.py`](../scripts/double_eio_campaign.py) adds a separate
-two-error model. For each selected data or namespace error on a successful path,
+two-error model. For each selected data, namespace or synchronization error on a successful path,
 it discovers synchronization and fixture-removal calls subsequently reached
-on that error path; each selected different syscall is then failed in turn,
+on that error path; each selected later syscall is then failed in turn,
 with both recovery orders. A malformed marker left without a payload must be
 reported as skipped and remain unchanged; recognized payloads must be cleaned
-when errors stop. This covers some cleanup-failure combinations, not two
-failures of the same syscall, arbitrary multiple failures or all failure-only
-paths.
+when errors stop. It can select two failures of the same synchronization or
+removal syscall. This covers selected two-error combinations, not arbitrary
+multiple failures or all failure-only paths.
 
 [`concurrent_eio_campaign.py`](../scripts/concurrent_eio_campaign.py) injects
 witness-write or log-sync EIO while four independent writers run. It checks every observed
