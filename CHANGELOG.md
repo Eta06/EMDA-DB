@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check acknowledged writes from concurrent workers across process-kill races on V2/V3 and both writable recovery paths.
+
 - Check sampled SQLite values and checksums after a clean reopen in the direct key-value benchmark, outside the measured timings.
 
 - Extend the checkpoint-backed serial-history model with an independent write and a second reader, and permit longer local campaigns.
