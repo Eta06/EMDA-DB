@@ -66,6 +66,11 @@ and `--case-timeout`. The default matrix is unchanged. Each case initializes
 and verifies all of its keys outside the individual operation timers; setup
 can take much longer with durable per-key writes. A larger warm-key workload
 does not by itself measure cold recovery, total memory, or production SLOs.
+The runner creates an atomic partial report before preparing services and
+updates its active case. On a case timeout it terminates that case's own
+process group, including its adapter, and removes the owned case directory.
+Startup, case and cleanup failures remain in the report. An abrupt kill of the
+orchestrator itself can still leave its disposable containers or files behind.
 
 The crash check holds clients open, acknowledges 100 inserts, 10 replacements and 10 deletes, kills the server with SIGKILL, reopens the same data, and verifies 90 values and 10 absences. Each round uses fresh fixture data, rotates the backend order and retains failures as well as an interrupted run's current case. The output records source and binary hashes, runtime versions, settings and filesystem type; it refuses to overwrite an existing result. This check does not measure recovery latency and is not a simulated power cut, storage reordering test, or an exhaustive crash-point campaign.
 

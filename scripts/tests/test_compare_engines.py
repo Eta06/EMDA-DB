@@ -1,9 +1,17 @@
+import contextlib
+import io
+import json
+import signal
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compare_engines import CASES, configure_cases, validate_result
+import compare_engines
+from compare_engines import CASES, configure_cases, run_case_command, validate_result
 
 
 class EngineComparisonConfigurationTests(unittest.TestCase):
@@ -45,6 +53,80 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
         wrong = {**result, 'write': {**latency, 'count': latency['count'] - 1}}
         with self.assertRaisesRegex(ValueError, 'incomplete operations'):
             validate_result(wrong, 'prototype', case)
+
+    def test_timeout_terminates_the_owned_process_group(self):
+        process = MagicMock(pid=12345)
+        process.communicate.side_effect = [subprocess.TimeoutExpired('fixture', 1), ('', 'diagnostic')]
+        with patch.object(compare_engines.subprocess, 'Popen', return_value=process) as popen, \
+                patch.object(compare_engines.os, 'killpg') as killpg:
+            with self.assertRaisesRegex(RuntimeError, 'timed out'):
+                run_case_command(['fixture'], {}, 1)
+        self.assertTrue(popen.call_args.kwargs['start_new_session'])
+        killpg.assert_called_once_with(12345, signal.SIGKILL)
+        self.assertEqual(process.communicate.call_count, 2)
+
+    def test_startup_failure_is_recorded_and_all_services_are_cleaned(self):
+        closed = []
+
+        class Service:
+            def __init__(self, backend, parent, cpus):
+                self.backend = backend
+
+            def start(self):
+                raise RuntimeError('injected startup failure')
+
+            def close(self):
+                closed.append(self.backend)
+                if self.backend == 'postgres':
+                    raise RuntimeError('injected cleanup failure')
+
+            def redact(self, message):
+                return message
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            server = root / 'server'
+            server.write_bytes(b'fixture')
+            output = root / 'report.json'
+            args = ['compare_engines.py', '--directory', directory, '--server', str(server),
+                    '--output', str(output), '--backends', 'postgres', 'mongo', '--rounds', '2']
+            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
+                  patch.object(compare_engines.os, 'sched_setaffinity'),
+                  patch.object(compare_engines.importlib.metadata, 'version', return_value='test'),
+                  patch.object(compare_engines, 'snapshot', return_value={}),
+                  patch.object(compare_engines, 'LocalService', Service)):
+                with self.assertRaisesRegex(RuntimeError, 'startup failure'):
+                    compare_engines.main()
+            result = json.loads(output.read_text())
+            self.assertFalse(result['completed'])
+            self.assertIn('startup failure', result['failure'])
+            self.assertEqual(result['current']['stage'], 'start-service')
+            self.assertEqual([failure['backend'] for failure in result['cleanup_failures']], ['postgres'])
+            self.assertEqual(closed, ['postgres', 'mongo'])
+
+    def test_existing_output_is_not_replaced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'report.json'
+            output.write_text('prior result')
+            args = ['compare_engines.py', '--directory', directory, '--output', str(output)]
+            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
+                  contextlib.redirect_stderr(io.StringIO())):
+                with self.assertRaises(SystemExit):
+                    compare_engines.main()
+            self.assertEqual(output.read_text(), 'prior result')
+
+    def test_duplicate_service_is_rejected_before_it_can_leak_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'report.json'
+            args = ['compare_engines.py', '--directory', directory, '--output', str(output),
+                    '--backends', 'postgres', 'postgres']
+            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
+                  patch.object(compare_engines, 'LocalService') as service,
+                  contextlib.redirect_stderr(io.StringIO())):
+                with self.assertRaises(SystemExit):
+                    compare_engines.main()
+            service.assert_not_called()
+            self.assertFalse(output.exists())
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ are disposable and are removed in finally blocks. Results retain failed/noisy
 runs. See docs/BENCHMARKS.md for scope and durability configuration.
 """
 import argparse
+import contextlib
 import hashlib
 import importlib.metadata
 import json
@@ -14,8 +15,10 @@ import math
 import os
 from pathlib import Path
 import platform
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 from benchmarks.services import IMAGES, LocalService, docker
@@ -81,6 +84,22 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def run_case_command(command, environment, timeout):
+    """Stop only this case's process group on timeout, including its adapter."""
+    process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, start_new_session=True)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException as error:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate()
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise RuntimeError(f"workload timed out after {timeout} seconds: {stderr[-4000:]}") from error
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True)
@@ -104,7 +123,10 @@ def main():
         parser.error(str(error))
     allowed = os.sched_getaffinity(0)
     requested = parse_cpus(args.client_cpus) | parse_cpus(args.server_cpus) | parse_cpus(args.housekeeping_cpus)
-    if not requested <= allowed or args.rounds < 2 or not Path(args.directory).is_dir() or not 1 <= args.case_timeout <= 1800:
+    if (not requested <= allowed or args.rounds < 2 or len(args.backends) != len(set(args.backends))
+            or not Path(args.directory).is_dir()
+            or not 1 <= args.case_timeout <= 1800 or os.path.lexists(args.output)
+            or not Path(args.output).parent.is_dir()):
         parser.error("invalid CPU affinity, rounds, or data directory")
     if parse_cpus(args.client_cpus) & parse_cpus(args.server_cpus):
         parser.error("client and server CPU sets must be disjoint")
@@ -129,15 +151,31 @@ def main():
                      "notes": "No compilation, image pulls, cache drops, real-time priority, or disabled durability during measurement."},
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
         "initial_snapshot": snapshot(), "services": {}, "runs": [], "failures": [],
+        "completed": False, "failure": None, "current": None,
     }
     services = {}
     def save():
-        Path(args.output).write_text(json.dumps(result, indent=2) + "\n")
+        output = Path(args.output)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output.parent,
+                                         prefix=".engine-comparison-report-", delete=False) as file:
+            temporary = Path(file.name)
+            try:
+                json.dump(result, file, indent=2)
+                file.write("\n")
+                file.flush()
+                os.replace(temporary, output)
+            finally:
+                temporary.unlink(missing_ok=True)
+    with Path(args.output).open("x", encoding="utf-8") as file:
+        json.dump(result, file, indent=2)
+        file.write("\n")
     try:
         # Prepare stopped containers before the timed matrix; image downloads
         # are explicitly the caller's preparation step.
         for backend in args.backends:
             if backend in IMAGES:
+                result["current"] = {"stage": "prepare-service", "backend": backend}
+                save()
                 services[backend] = LocalService(backend, args.directory, args.server_cpus)
         for round_index in range(args.rounds):
             rotation = round_index % len(args.backends)
@@ -145,6 +183,8 @@ def main():
             for backend in order:
                 service = services.get(backend)
                 if service:
+                    result["current"] = {"stage": "start-service", "backend": backend, "round": round_index}
+                    save()
                     service.start()
                     result["services"][backend] = service.metadata()
                 env = os.environ.copy()
@@ -161,34 +201,57 @@ def main():
                             server_cpus = all_cpus if mode == "unrestricted" else args.server_cpus
                             if service:
                                 docker("update", "--cpuset-cpus", server_cpus, service.name)
-                            quiet = quiet_window()
-                            command = [sys.executable, "scripts/network_compare.py", backend, "--server", args.server,
-                                       "--directory", args.directory, "--client-cpus", client_cpus, "--server-cpus", server_cpus]
-                            for key, value in case.items():
-                                if key != "name":
-                                    command += ["--" + key.replace("_", "-"), str(value)]
-                            entry = {"backend": backend, "round": round_index, "mode": mode, "case": case,
-                                     "command": command, "pre_run_quiet": quiet}
-                            try:
-                                run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=args.case_timeout)
-                                if run.returncode:
-                                    raise RuntimeError(run.stderr[-4000:] or f"exit {run.returncode}")
-                                entry["result"] = validate_result(json.loads(run.stdout), backend, case)
-                            except Exception as error:
-                                entry["error"] = str(error)
-                                result["failures"].append({"backend": backend, "round": round_index, "case": case["name"], "error": str(error)})
-                            result["runs"].append(entry)
+                            result["current"] = {"stage": "quiet-check", "backend": backend,
+                                                 "round": round_index, "case": case["name"], "mode": mode}
                             save()
+                            quiet = quiet_window()
+                            with tempfile.TemporaryDirectory(prefix=".network-case-", dir=args.directory) as case_directory:
+                                command = [sys.executable, "scripts/network_compare.py", backend, "--server", args.server,
+                                           "--directory", case_directory, "--client-cpus", client_cpus, "--server-cpus", server_cpus]
+                                for key, value in case.items():
+                                    if key != "name":
+                                        command += ["--" + key.replace("_", "-"), str(value)]
+                                entry = {"backend": backend, "round": round_index, "mode": mode, "case": case,
+                                         "command": command, "pre_run_quiet": quiet}
+                                result["current"] = {"stage": "workload", "backend": backend,
+                                                     "round": round_index, "case": case["name"], "mode": mode}
+                                save()
+                                try:
+                                    run = run_case_command(command, env, args.case_timeout)
+                                    if run.returncode:
+                                        raise RuntimeError(run.stderr[-4000:] or f"exit {run.returncode}")
+                                    entry["result"] = validate_result(json.loads(run.stdout), backend, case)
+                                except Exception as error:
+                                    message = service.redact(str(error)) if service else str(error)
+                                    entry["error"] = message
+                                    result["failures"].append({"backend": backend, "round": round_index, "case": case["name"], "error": message})
+                                result["runs"].append(entry)
+                                save()
                     print(f"round={round_index + 1} backend={backend} runs={len(result['runs'])} failures={len(result['failures'])}", flush=True)
                 finally:
                     if service:
                         service.stop()
+        result["current"] = None
+        result["completed"] = True
+    except Exception as error:
+        result["failure"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        active_exception = sys.exc_info()[0] is not None
+        cleanup_failures = []
+        for name, service in services.items():
+            try:
+                service.close()
+            except Exception as error:
+                cleanup_failures.append({"backend": name, "error": service.redact(f"{type(error).__name__}: {error}")})
+        if cleanup_failures:
+            result["completed"] = False
+            result["cleanup_failures"] = cleanup_failures
         result["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         result["final_snapshot"] = snapshot()
         save()
-    finally:
-        for service in services.values():
-            service.close()
+        if cleanup_failures and not active_exception:
+            raise RuntimeError("one or more disposable services could not be cleaned up; see result")
     if result["failures"]:
         raise SystemExit("Some measurements failed; see the retained failures in the result file")
 
