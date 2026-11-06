@@ -1,0 +1,29 @@
+{
+  "revision": "298005a21ee7b33afe701ca791ee2846da86e5a9",
+  "git_status_before_run": "clean",
+  "target": "staging_cleanup",
+  "exit_code": 0,
+  "runs": 64687,
+  "fuzzer_seconds": 121,
+  "budget_seconds": 120,
+  "max_input_bytes": 64,
+  "timeout_seconds": 10,
+  "sanitizer": "address (cargo-fuzz default)",
+  "rustc": "1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "0.13.2",
+  "libfuzzer_seed": 2979776798,
+  "source_sha256": "5f65bcdbb37631e63dea64a986a6e943a04b81bb90aa4e02f6e3d8fe3470881f",
+  "binary_sha256": "e292094d7c9c61346fd9ad174dd76d0ba24d6cc815590e3ae335a8ab071a34e5",
+  "log_sha256": "e3d7846210def962a08b7ff8e6613d8364f13c9a5ea9bdf7d38697673113e412",
+  "seed_sha256": {
+    "preserved": "77db6c944d9088e4aca30a628301606e0e39a984aedd160fb3b39ae6e08fde72",
+    "recognized": "a1a47b752405bdefab10deb9e1b22eba078a006b99a50a96f78a11ec8d7fdc8c",
+    "unmarked": "659151cae97b9c48a7dd62b9f8a12acfe86832f759d278f8d144bf7264b8241b",
+    "unsafe-types": "13d63eb4577254556f71fe9dd9a1866cbaa48d975bcdb3cd9b8eea111b2a3500"
+  },
+  "command": "cargo +nightly-2026-11-03 fuzz run staging_cleanup CORPUS_COPY -- -max_total_time=120 -max_len=64 -timeout=10",
+  "filesystem": "Linux VM workspace overlay; temporary fixture directories",
+  "final_fuzzer_status": "#64687\tDONE   cov: 405 ft: 1473 corp: 133/1964b lim: 64 exec/s: 534 rss: 174Mb",
+  "log_tail": "#63557\tREDUCE cov: 405 ft: 1473 corp: 133/1964b lim: 64 exec/s: 538 rss: 174Mb L: 7/36 MS: 1 EraseBytes-\n#64687\tDONE   cov: 405 ft: 1473 corp: 133/1964b lim: 64 exec/s: 534 rss: 174Mb\n###### Recommended dictionary. ######\n\"\\001\\000\\000\\000\" # Uses: 504\n\"\\377\\377\\377\\377\" # Uses: 501\n\"2\\000\\000\\000\\000\\000\\000\\000\" # Uses: 447\n\"\\000\\000\" # Uses: 547\n\"\\001\\000\" # Uses: 540\n\"\\001I$\\222I$\\222J\" # Uses: 402\n\"\\275\\377\\377\\377\" # Uses: 426\n\".emda-stage-v1-x-\" # Uses: 286\n\"\\001\\000\\000\\000\\000\\000\\000\\000\" # Uses: 439\n\"\\005\\000\\000\\000\\000\\000\\000\\000\" # Uses: 391\n\"\\000\\021\\021\\021\\021\\021\\021\\021\" # Uses: 433\n\"r.data\" # Uses: 295\n\"\\000\\000\\000\\000\" # Uses: 197\n###### End of recommended dictionary. ######\nDone 64687 runs in 121 second(s)",
+  "scope": "Finite local model campaign with address sanitizer. It checks cleanup of generated trusted-directory fixtures and does not model power loss, synchronization failures, noncooperating mutations, or all possible names and schedules."
+}
