@@ -83,6 +83,7 @@ jobs:
           python3 scripts/double_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-double-sync.json" --primary-mode sync --all-sync-paths --operation checkpoint-compaction --format v3
           python3 scripts/verify_double_eio_results.py "$RUNNER_TEMP/eio-double-sync.json"
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-concurrent.json"
+          python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-concurrent.json" --error EINTR --repetitions 1
       - name: Preserve result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -102,6 +103,7 @@ jobs:
             ${{ runner.temp }}/eio-double-sync.json
             ${{ runner.temp }}/eio-double-sync.json.progress.json
             ${{ runner.temp }}/eio-concurrent.json
+            ${{ runner.temp }}/eintr-concurrent.json
           if-no-files-found: ignore
   interrupted-calls:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_eintr }}

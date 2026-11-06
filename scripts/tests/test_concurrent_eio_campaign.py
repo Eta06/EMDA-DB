@@ -25,6 +25,14 @@ class ConcurrentEioCampaignTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_receipts(no_errors)
 
+    def test_interruption_can_be_retried_without_losing_receipt_validation(self):
+        report = {'workers': [{'id': i, 'acknowledged': list(range(64)),
+                               'failed': None, 'error': None} for i in range(4)]}
+        validate_receipts(report, require_failed=False)
+        report['workers'][1]['acknowledged'].pop()
+        with self.assertRaises(ValueError):
+            validate_receipts(report, require_failed=False)
+
     def test_recovery_must_agree_on_which_uncertain_write_was_recovered(self):
         verified = [{'status': 'verified', 'backend': 'ordinary', 'acknowledged': 3,
                      'uncertain_present': [[0, 3]]},

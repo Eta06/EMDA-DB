@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject log or witness EIO while multiple disposable writers run."""
+"""Inject log or witness errors while multiple disposable writers run."""
 import argparse
 import json
 import os
@@ -31,7 +31,7 @@ def bounded(command):
     return json.loads(stdout)
 
 
-def validate_receipts(report):
+def validate_receipts(report, require_failed=True):
     workers = report.get('workers')
     if not isinstance(workers, list) or len(workers) != WORKERS:
         raise ValueError('unexpected writer count')
@@ -44,7 +44,7 @@ def validate_receipts(report):
                 or ((failed is None) != (worker.get('error') is None))
                 or (failed is None and len(acknowledged) != OPERATIONS)):
             raise ValueError('invalid writer receipt')
-    if all(worker['failed'] is None for worker in workers):
+    if require_failed and all(worker['failed'] is None for worker in workers):
         raise ValueError('injected EIO did not fail a writer')
 
 
@@ -70,7 +70,7 @@ def targets_log_sync(line, root, format_name):
     return bool(call and call in line and f'<{root / "source" / "records.log"}>' in line)
 
 
-def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, order):
+def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, order, error):
     with tempfile.TemporaryDirectory(prefix='concurrent-eio-case-', dir=parent) as directory:
         root = Path(directory)
         setup = base.run_probe(fixture_binary, 'setup', root, format_name)
@@ -92,14 +92,18 @@ def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, o
         trace = root / 'trace.txt'
         report = bounded(['strace', '-f', '-qq', '-yy', '-s', '128', '-o', str(trace),
                           *path_filter, '-e', 'trace=' + trace_calls,
-                          '-e', f'inject={call}:error=EIO:when={ordinal}',
+                          '-e', f'inject={call}:error={error}:when={ordinal}',
                           binary, 'attempt', str(root), backend])
-        validate_receipts(report)
+        # EINTR may be retried below the API, leaving every writer successful.
+        # EIO must continue to exercise an observed failure as before.
+        validate_receipts(report, require_failed=error == 'EIO')
         lines = trace.read_text().splitlines()
         injected = [line for line in lines if '(INJECTED)' in line]
         matches_target = targets_witness if fault == 'witness' else targets_log_sync
-        if not injected or any(not matches_target(line, root, format_name) for line in injected):
-            raise ValueError('EIO was not observed on the expected source file')
+        if not injected or any(not matches_target(line, root, format_name)
+                               or not re.search(r'= -1 ' + error + r'\b', line)
+                               for line in injected):
+            raise ValueError(f'{error} was not observed on the expected source file')
         after = base.snapshot(root, format_name)
         base.check_source(before, after, format_name, 'write')
         receipt_path = root / 'receipts.json'
@@ -125,6 +129,7 @@ def main():
     parser.add_argument('--fixture-binary', default='target/release/examples/sync_failure_probe')
     parser.add_argument('--output', required=True)
     parser.add_argument('--repetitions', type=int, default=3)
+    parser.add_argument('--error', choices=('EIO', 'EINTR'), default='EIO')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or not Path(args.fixture_binary).is_file() or os.path.lexists(args.output)
@@ -146,8 +151,9 @@ def main():
         'host_platform': platform.platform(),
         'filesystem': json.loads(subprocess.check_output(
             ['findmnt', '-J', '-T', directory, '-o', 'TARGET,FSTYPE'], text=True)),
+        'error': args.error,
         'scope': ('Four independent writers; strace injects a returned witness-write or log-sync '
-                  'EIO at the first or second matching syscall per traced thread. Check all observed '
+                  f'{args.error} at the first or second matching syscall per traced thread. Check all observed '
                   'acknowledgements and each failed write after both recovery orders. '
                   'This does not inject partial writes or model power loss.'),
         'repetitions': args.repetitions, 'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -182,7 +188,7 @@ def main():
                                                      'ordinal': ordinal, 'order': order}
                                 save()
                                 measured = case(binary, fixture_binary, directory, format_name, backend,
-                                                fault, ordinal, order)
+                                                fault, ordinal, order, args.error)
                                 result['cases'].append({'repetition': repetition + 1, **measured})
                                 save()
             print(f'repetition {repetition + 1}: {len(result["cases"])} completed cases', flush=True)
