@@ -74,6 +74,10 @@ disk/quota exhaustion. The separate isolated tmpfs check exercises real
 kernel `ENOSPC`.
 The filesystem workflow's manual `full_eintr` option runs the broader
 interrupted-call matrix on GitHub and preserves each syscall group's report.
+[`verify_one_shot_fs_results.py`](../scripts/verify_one_shot_fs_results.py)
+checks a completed one-shot report for every selected ordinal, both recovery
+orders and the requested returned errno. It checks retained summaries, not
+unobserved calls or authenticity of the report.
 
 [`double_eio_campaign.py`](../scripts/double_eio_campaign.py) adds a separate
 two-error model. For each selected data, namespace or synchronization error on a successful path,
