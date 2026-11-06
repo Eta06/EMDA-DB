@@ -65,3 +65,5 @@ python3 scripts/summarize_engines.py /path/to/new-results.json /path/to/summary.
 
 The earlier [ten-engine comparison](LOCAL_COMPARISON_2026_11_03.md) remains
 separate: its source revision and observations differ from this run.
+An additional [traced write-path diagnostic](FOUNDATION_WRITE_DIAGNOSTIC_2026_11_06.md)
+records selected synchronization and waiting calls; tracing perturbs timings.
