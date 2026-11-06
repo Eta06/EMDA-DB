@@ -19,6 +19,13 @@ checkpoint and relevant witness data were also checked. A negative-control
 test rejects a missing acknowledgement, and a driver test rejects recovery
 paths that report different uncertain writes even when their counts match.
 
+All 320 recorded injections were independently checked against the source's
+actual V2 `commit.state` descriptor or the V3 `user.db.commit.v3` attribute on
+`records.log`. The driver now enforces those exact targets. A subsequent
+[48-case clean run](../benchmarks/results/2026-11-06-concurrent-witness-targets.json.gz)
+on `41dc3cb` passed with 63 acknowledged writes recovered and 78 failed writes
+present after recovery. These case counts include both recovery orders.
+
 The [driver](../scripts/concurrent_eio_campaign.py) records the exact
 receipts, injected syscalls, selected vectored appends, hashes and recovery
 results. Its [GitHub workflow](../.github/workflows/sync-eio.yml) repeats a
