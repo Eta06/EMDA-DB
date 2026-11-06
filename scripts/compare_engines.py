@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -48,6 +49,32 @@ def configure_cases(names=None, key_count=None, noise_calibration=False):
         for case in selected:
             case["keys"] = key_count
     return selected
+
+
+def validate_result(result, backend, case):
+    multiplier = 4 if case["workload"] == "crud" else 1
+    expected = {"backend": backend, "workload": case["workload"], "clients": case["clients"],
+                "operations_per_client": case["operations"] * multiplier, "keys": case["keys"],
+                "write_percent": case["write_percent"], "value_bytes": case["value_bytes"],
+                "completed": case["clients"] * case["operations"] * multiplier}
+    if any(result.get(key) != value for key, value in expected.items()):
+        raise ValueError("benchmark result does not match the requested workload")
+    counts = []
+    for operation in ("read", "write", "create", "update", "delete"):
+        values = result.get(operation)
+        if not isinstance(values, dict) or type(values.get("count")) is not int or values["count"] < 0:
+            raise ValueError("benchmark result has invalid operation counts")
+        counts.append(values["count"])
+        if values["count"]:
+            percentiles = [values.get(name) for name in ("p50_us", "p95_us", "p99_us", "p99_9_us", "max_us")]
+            if (any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in percentiles)
+                    or percentiles != sorted(percentiles)):
+                raise ValueError("benchmark result has invalid latency quantiles")
+    throughput = result.get("ops_per_sec")
+    if (sum(counts) != expected["completed"] or type(throughput) not in (int, float)
+            or not math.isfinite(throughput) or throughput <= 0):
+        raise ValueError("benchmark result has incomplete operations or throughput")
+    return result
 
 
 def digest(path):
@@ -146,7 +173,7 @@ def main():
                                 run = subprocess.run(command, env=env, capture_output=True, text=True, timeout=args.case_timeout)
                                 if run.returncode:
                                     raise RuntimeError(run.stderr[-4000:] or f"exit {run.returncode}")
-                                entry["result"] = json.loads(run.stdout)
+                                entry["result"] = validate_result(json.loads(run.stdout), backend, case)
                             except Exception as error:
                                 entry["error"] = str(error)
                                 result["failures"].append({"backend": backend, "round": round_index, "case": case["name"], "error": str(error)})

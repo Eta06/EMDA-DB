@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compare_engines import CASES, configure_cases
+from compare_engines import CASES, configure_cases, validate_result
 
 
 class EngineComparisonConfigurationTests(unittest.TestCase):
@@ -27,6 +27,24 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
                        {'names': ['write_only'], 'noise_calibration': True}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 configure_cases(**kwargs)
+
+    def test_rejects_mismatched_or_incomplete_measured_results(self):
+        case = configure_cases(['write_only'], 100000)[0]
+        latency = {'count': case['clients'] * case['operations'], 'p50_us': 1, 'p95_us': 2,
+                   'p99_us': 3, 'p99_9_us': 4, 'max_us': 5}
+        result = {'backend': 'prototype', 'workload': 'mixed', 'clients': case['clients'],
+                  'operations_per_client': case['operations'], 'keys': case['keys'],
+                  'write_percent': 100, 'value_bytes': case['value_bytes'],
+                  'completed': case['clients'] * case['operations'], 'ops_per_sec': 12,
+                  'write': latency, 'read': {'count': 0}, 'create': {'count': 0},
+                  'update': {'count': 0}, 'delete': {'count': 0}}
+        self.assertIs(validate_result(result, 'prototype', case), result)
+        wrong = {**result, 'keys': 250}
+        with self.assertRaisesRegex(ValueError, 'requested workload'):
+            validate_result(wrong, 'prototype', case)
+        wrong = {**result, 'write': {**latency, 'count': latency['count'] - 1}}
+        with self.assertRaisesRegex(ValueError, 'incomplete operations'):
+            validate_result(wrong, 'prototype', case)
 
 
 if __name__ == '__main__':
