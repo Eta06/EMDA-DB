@@ -128,6 +128,58 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
             service.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_completed_and_timed_out_cases_preserve_reports_and_remove_fixtures(self):
+        for timed_out in (False, True):
+            with self.subTest(timed_out=timed_out), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                server = root / 'server'
+                server.write_bytes(b'fixture')
+                output = root / 'report.json'
+                directories = []
+                args = ['compare_engines.py', '--directory', directory, '--server', str(server),
+                        '--output', str(output), '--backends', 'prototype', '--rounds', '2',
+                        '--cases', 'write_only', '--key-count', '25']
+
+                def run(command, environment, timeout):
+                    path = Path(command[command.index('--directory') + 1])
+                    self.assertEqual(path.parent, root)
+                    self.assertTrue(path.is_dir())
+                    (path / 'owned-fixture').write_bytes(b'data')
+                    directories.append(path)
+                    report = json.loads(output.read_text())
+                    self.assertEqual(report['current']['stage'], 'workload')
+                    self.assertFalse(report['completed'])
+                    if timed_out:
+                        raise RuntimeError('injected timeout')
+                    latency = {'count': 3000, 'p50_us': 1, 'p95_us': 2,
+                               'p99_us': 3, 'p99_9_us': 4, 'max_us': 5}
+                    measured = {'backend': 'prototype', 'workload': 'mixed', 'clients': 4,
+                                'operations_per_client': 750, 'keys': 25, 'write_percent': 100,
+                                'value_bytes': 64, 'completed': 3000, 'ops_per_sec': 12,
+                                'write': latency, 'read': {'count': 0}, 'create': {'count': 0},
+                                'update': {'count': 0}, 'delete': {'count': 0}}
+                    return subprocess.CompletedProcess(command, 0, json.dumps(measured), '')
+
+                with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
+                      patch.object(compare_engines.os, 'sched_setaffinity'),
+                      patch.object(compare_engines.importlib.metadata, 'version', return_value='test'),
+                      patch.object(compare_engines, 'snapshot', return_value={}),
+                      patch.object(compare_engines, 'quiet_window', return_value={'quiet': True}),
+                      patch.object(compare_engines, 'run_case_command', side_effect=run),
+                      contextlib.redirect_stdout(io.StringIO())):
+                    if timed_out:
+                        with self.assertRaisesRegex(SystemExit, 'measurements failed'):
+                            compare_engines.main()
+                    else:
+                        compare_engines.main()
+                report = json.loads(output.read_text())
+                self.assertTrue(report['completed'])
+                self.assertIsNone(report['current'])
+                self.assertEqual(len(report['runs']), 2)
+                self.assertEqual(len(report['failures']), 2 if timed_out else 0)
+                self.assertEqual(len(directories), 2)
+                self.assertTrue(all(not path.exists() for path in directories))
+
 
 if __name__ == '__main__':
     unittest.main()
