@@ -29,3 +29,8 @@ retains the complete logs and resulting corpora. The overlay's backing device
 was not independently verified. These finite, serial-input fuzzers do not
 exhaust malformed inputs, model concurrent writers or I/O faults, simulate
 physical power loss, or perform an off-host restore.
+
+The [hosted recovery-fuzz workflow](https://github.com/Eta06/EMDA-DB/actions/runs/42163263653)
+also passed all four shards on revision `a124651`, including the updated
+recovery targets and long starting seeds. Hosted and local runs are separate
+finite campaigns.

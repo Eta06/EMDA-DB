@@ -1,0 +1,119 @@
+{
+  "revision": "8acec7d7ae742f0f79b8dde5598fdb070479e7f9",
+  "git_status": "",
+  "binary_sha256": "93422d87bf384377026f0c226157ee5968cf4100bb8d02e97dd5ddcd1854bfac",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "scope": "One selected V3 checkpoint compaction paired-EIO workload on a shared VM; compares report snapshot intervals only, not engine performance",
+  "runs": [
+    {
+      "run": 1,
+      "interval_seconds": 0,
+      "elapsed_seconds": 29.325270163011737,
+      "exit_code": 0,
+      "primary": 26,
+      "paired_cases": 208,
+      "same_syscall": 50,
+      "full_report_snapshots": 470,
+      "result_sha256": "0bb55512485433d173914472b8f876d43291fe4ac86bb5ebde556d69ff8122d2",
+      "progress": {
+        "revision": "8acec7d7ae742f0f79b8dde5598fdb070479e7f9",
+        "current": null,
+        "completed": true,
+        "failure": null
+      },
+      "stdout": "v3/checkpoint-compaction: 26 primary, 208 double failures\ndouble failures 208\n",
+      "stderr": ""
+    },
+    {
+      "run": 2,
+      "interval_seconds": 1,
+      "elapsed_seconds": 11.075269783992553,
+      "exit_code": 0,
+      "primary": 26,
+      "paired_cases": 208,
+      "same_syscall": 50,
+      "full_report_snapshots": 12,
+      "result_sha256": "38b46b2292e17a33e1f89742f2a0d45d142e35e8348eb833bd6b5801d9ff74a8",
+      "progress": {
+        "revision": "8acec7d7ae742f0f79b8dde5598fdb070479e7f9",
+        "current": null,
+        "completed": true,
+        "failure": null
+      },
+      "stdout": "v3/checkpoint-compaction: 26 primary, 208 double failures\ndouble failures 208\n",
+      "stderr": ""
+    },
+    {
+      "run": 3,
+      "interval_seconds": 1,
+      "elapsed_seconds": 11.136739631998353,
+      "exit_code": 0,
+      "primary": 26,
+      "paired_cases": 208,
+      "same_syscall": 50,
+      "full_report_snapshots": 12,
+      "result_sha256": "7d66d54c14f5a80f1d943007236f12f515217077903352b695d385648a6486a2",
+      "progress": {
+        "revision": "8acec7d7ae742f0f79b8dde5598fdb070479e7f9",
+        "current": null,
+        "completed": true,
+        "failure": null
+      },
+      "stdout": "v3/checkpoint-compaction: 26 primary, 208 double failures\ndouble failures 208\n",
+      "stderr": ""
+    },
+    {
+      "run": 4,
+      "interval_seconds": 0,
+      "elapsed_seconds": 24.50083919498138,
+      "exit_code": 0,
+      "primary": 26,
+      "paired_cases": 208,
+      "same_syscall": 50,
+      "full_report_snapshots": 470,
+      "result_sha256": "c90802d74b37c5e11049a9d85c0e68a9369272973d29109782d8c12e740262fc",
+      "progress": {
+        "revision": "8acec7d7ae742f0f79b8dde5598fdb070479e7f9",
+        "current": null,
+        "completed": true,
+        "failure": null
+      },
+      "stdout": "v3/checkpoint-compaction: 26 primary, 208 double failures\ndouble failures 208\n",
+      "stderr": ""
+    }
+  ],
+  "completed": true,
+  "kill_check": {
+    "revision": "8acec7d7ae742f0f79b8dde5598fdb070479e7f9",
+    "method": "SIGKILL of driver and its disposable subprocess group after observing a paired case; parse both outputs",
+    "driver_exit_code": -9,
+    "main_report_valid": true,
+    "progress_valid": true,
+    "main_current": {
+      "format": "v3",
+      "operation": "checkpoint-compaction",
+      "stage": "control"
+    },
+    "progress_current": {
+      "format": "v3",
+      "operation": "checkpoint-compaction",
+      "syscall": "fsync",
+      "ordinal": 2,
+      "second_syscall": "unlink",
+      "second_ordinal": 1,
+      "order": "ordinary-first",
+      "stage": "second"
+    },
+    "stdout": "",
+    "stderr": ""
+  },
+  "archive_sha256": "b722244cb181bdb6b2589e3ba3ecc0ed14e30234dd68b8d017d08e97ef72bd30"
+}
