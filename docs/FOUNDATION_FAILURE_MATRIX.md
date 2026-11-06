@@ -66,6 +66,13 @@ OS; they do not exhaust calls reached only on failure paths, inject every
 syscall or combination of errors, model storage reordering or establish physical
 power-loss or off-host restore behavior.
 
+The same driver also accepts `--error EINTR`, `ENOSPC` or `EDQUOT` for
+one-shot returned-error injection. An interrupted call may be retried and the
+operation may still succeed; successful outcomes must be visible on recovery.
+These synthetic return values do not deliver a real signal or create actual
+disk/quota exhaustion. The separate isolated tmpfs check exercises real
+kernel `ENOSPC`.
+
 [`double_eio_campaign.py`](../scripts/double_eio_campaign.py) adds a separate
 two-error model. For each selected data, namespace or synchronization error on a successful path,
 it discovers synchronization and fixture-removal calls subsequently reached

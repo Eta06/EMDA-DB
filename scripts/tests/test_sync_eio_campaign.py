@@ -6,10 +6,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sync_eio_campaign import (check_initialization, check_source, check_unrecognized_markers,
-                               stage_inventory, stage_markers, targets_fixture, traced_ordinals)
+                               reports_injected_error, stage_inventory, stage_markers, targets_fixture, traced_ordinals)
 
 
 class SyncEioCampaignTests(unittest.TestCase):
+    def test_injected_errno_must_match_the_requested_error(self):
+        line = '123 fsync(3</work/case/log>) = -1 EINTR (Interrupted system call) (INJECTED)'
+        self.assertTrue(reports_injected_error(line, 'EINTR'))
+        self.assertFalse(reports_injected_error(line, 'EIO'))
+        self.assertFalse(reports_injected_error(line.replace(' (INJECTED)', ''), 'EINTR'))
+        self.assertFalse(reports_injected_error('123 fsync(3</work/case/log>) = 0 (INJECTED)', 'EINTR'))
+
     def test_filtered_ordinals_include_unrelated_calls_in_the_counter(self):
         lines = [
             '123 write(1<pipe:[1]>, "status", 6) = 6',
