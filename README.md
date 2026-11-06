@@ -65,6 +65,8 @@ The [empty-log recovery report](docs/EMPTY_RECOVERY_COMPARISON_2026_11_04.md) re
 
 The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) measures reopen time, sampled process memory and point reads through 200,000 keys. The checkpoint-backed writer used less sampled memory but had slower sampled base-key reads than full-log recovery.
 
+A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_2026_11_06.md) checks acknowledged workload values after fresh-process reopens through one million base keys, with observed memory, I/O and VM noise.
+
 The [checkpoint landmark comparison](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) measures sparse in-memory lookup offsets that retain full-block verification, including their memory cost and mixed tails.
 
 The [managed replacement comparison](docs/MANAGED_REPLACEMENT_COMPARISON_2026_11_06.md) records a removed duplicate directory sync, paired checkpoint timings and their VM-noise limits.
