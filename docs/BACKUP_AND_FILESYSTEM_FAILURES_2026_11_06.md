@@ -105,6 +105,27 @@ primaries, including 38 same-syscall cases in total. The local workspace
 overlay's backing device was not verified. These are selected returned errors
 on a running OS, not all multiple-fault combinations or physical power loss.
 
+### Paired failures at publication ancestors
+
+On clean revision `1d9cac377028c4c1ab0911598c8013ebf5838c41`, a
+[further campaign](../benchmarks/results/2026-11-06-double-eio-sync-ancestors.json.gz)
+selected every `fsync` and `fdatasync` observed on each successful fixture
+path, including resolved publication ancestors. Across 26 format/operation
+controls, it checked 373 first-error probes and 1,606 paired-error cases;
+180 first errors targeted ancestors outside the fixture and 640 paired cases
+followed those ancestor errors. The pairs included 410 cases with two `fsync`
+errors. For each first error, every later synchronization or fixture-removal
+call observed on that failure path was failed in turn with both recovery
+orders. The new-store initialization target used the filesystem's default
+format in both reference-fixture groups.
+
+The [hosted workflow](https://github.com/Eta06/EMDA-DB/actions/runs/42163760740)
+passed its V3 checkpoint-compaction subset on ext4: 28 first-error probes,
+including 12 ancestor calls, and 218 paired cases, including 54 with two
+`fsync` errors. Its artifact retains the traces. These checks cover calls
+observed in the specified traces, not every possible filesystem failure,
+arbitrary subsequent failures, physical power loss or off-host restore.
+
 ### Atomic batches under returned errors
 
 On clean revision `bc1d325`, a further [recorded campaign](../benchmarks/results/2026-11-06-atomic-batch-eio.json.gz)
