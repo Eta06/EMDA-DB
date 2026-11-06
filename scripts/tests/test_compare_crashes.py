@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import sys
 import tempfile
@@ -29,7 +31,8 @@ class CrashComparisonTests(unittest.TestCase):
 
             args = ["compare_crashes.py", "--directory", directory, "--output", str(output),
                     "--server", str(server), "--rounds", "2", "--backends", "prototype", "sqlite"]
-            with patch.object(sys, "argv", args), patch.object(compare_crashes, "check", side_effect=check):
+            with (patch.object(sys, "argv", args), patch.object(compare_crashes, "check", side_effect=check),
+                  contextlib.redirect_stdout(io.StringIO())):
                 with self.assertRaisesRegex(SystemExit, "One or more crash checks failed"):
                     compare_crashes.main()
             result = json.loads(output.read_text())
@@ -49,7 +52,8 @@ class CrashComparisonTests(unittest.TestCase):
             output.write_text("prior result")
             args = ["compare_crashes.py", "--directory", directory, "--output", str(output),
                     "--server", str(server), "--backends", "prototype"]
-            with patch.object(sys, "argv", args), patch.object(compare_crashes, "check") as check:
+            with (patch.object(sys, "argv", args), patch.object(compare_crashes, "check") as check,
+                  contextlib.redirect_stderr(io.StringIO())):
                 with self.assertRaises(SystemExit):
                     compare_crashes.main()
                 check.assert_not_called()
