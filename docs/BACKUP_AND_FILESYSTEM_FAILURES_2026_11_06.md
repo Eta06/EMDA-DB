@@ -76,6 +76,14 @@ entries stay unchanged and have no payload, while still rejecting leftovers
 that cleanup should own. This checks the fixture's top-level staging namespace,
 not every nested entry or arbitrary combinations of the same syscall.
 
+The [hosted filesystem workflow](https://github.com/Eta06/EMDA-DB/actions/runs/42157059031)
+also passed on revision `9c8f07a`, using a Linux ext4 runner. Its uploaded
+artifact records 818 one-shot sync cases, 818 persistent-sync cases, 206 data,
+888 read, 682 open, 148 namespace and 990 paired-error cases. Thirty-two paired
+cases retained an unchanged malformed marker without its payload. These counts
+reflect the calls reached on that runner; they do not establish behavior on
+other filesystems, physical power loss or off-host recovery.
+
 ### Atomic batches under returned errors
 
 On clean revision `bc1d325`, a further [recorded campaign](../benchmarks/results/2026-11-06-atomic-batch-eio.json.gz)
