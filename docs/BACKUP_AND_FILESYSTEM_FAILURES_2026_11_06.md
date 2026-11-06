@@ -84,6 +84,27 @@ cases retained an unchanged malformed marker without its payload. These counts
 reflect the calls reached on that runner; they do not establish behavior on
 other filesystems, physical power loss or off-host recovery.
 
+### Repeated failures of the same syscall
+
+On clean revision `8a72ba6015b216712c4672ba49f1786dcb1af60a`, the
+[expanded paired-error campaign](../benchmarks/results/2026-11-06-double-eio-same-syscall.json.gz)
+ran 370 first-error probes and 1,956 paired-error recovery cases. The first
+failure targeted selected data, namespace or synchronization calls observed
+on a successful fixture path; the second targeted a later synchronization or
+fixture-removal call reached on that error path. Both writable recovery paths
+took turns opening first. Among the paired cases, 190 injected `fsync` twice
+and eight injected `unlink` twice. The other cases used different syscalls.
+Thirty-two cases preserved unchanged malformed marker-only remnants, with no
+unmarked top-level staging payload; other recognized leftovers were cleaned
+after injected errors stopped.
+
+The [hosted filesystem workflow](https://github.com/Eta06/EMDA-DB/actions/runs/42162383288)
+also passed the updated checks on ext4: its artifact records 998 paired cases
+for data/namespace primaries and 158 for V3 checkpoint-compaction sync
+primaries, including 38 same-syscall cases in total. The local workspace
+overlay's backing device was not verified. These are selected returned errors
+on a running OS, not all multiple-fault combinations or physical power loss.
+
 ### Atomic batches under returned errors
 
 On clean revision `bc1d325`, a further [recorded campaign](../benchmarks/results/2026-11-06-atomic-batch-eio.json.gz)
