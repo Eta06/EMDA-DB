@@ -202,15 +202,16 @@ def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persiste
 
 
 def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
-             order='ordinary-first', persistent=False, syscalls=SYSCALLS, fixture_only=False):
+             order='ordinary-first', persistent=False, syscalls=SYSCALLS, fixture_only=False,
+             tracer=traced_attempt):
     with tempfile.TemporaryDirectory(prefix='sync-eio-case-', dir=parent) as path:
         root = Path(path)
         setup = run_probe(binary, 'setup', root, format_name)
         if setup != {'status': 'ready', 'format': format_name}:
             raise ValueError('unexpected fixture setup')
         before = snapshot(root, format_name)
-        traced = traced_attempt(binary, root, operation, syscall, ordinal, persistent,
-                                syscalls, fixture_only)
+        traced = tracer(binary, root, operation, syscall, ordinal, persistent,
+                        syscalls, fixture_only)
         after = snapshot(root, format_name)
         check_source(before, after, format_name, operation)
         stages_before = stage_inventory(root)

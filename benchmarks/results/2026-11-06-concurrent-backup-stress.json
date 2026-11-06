@@ -1,0 +1,730 @@
+{
+  "revision": "373b00ae73161ec21dedca5a4b990eb939fc74ce",
+  "git_status": "",
+  "binary_sha256": "da6da2888a2dbf9d79858cddfbbb7c358f8edd2d9c772d8ec6e63dfa89c6e491",
+  "started_utc": "2026-11-06T02:52:51.849250+00:00",
+  "runs": [
+    {
+      "iteration": 1,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 9,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 2,
+          "completed_at_return": 11
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=7\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=9 completed_at_return=10\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=10\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=2 completed_at_return=11\n"
+    },
+    {
+      "iteration": 2,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 2
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 8,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 8
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 8
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=2\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=8 completed_at_return=10\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=8\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=11 completed_at_return=8\n"
+    },
+    {
+      "iteration": 3,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 5
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 4
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=10\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=11\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=5\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=4\n"
+    },
+    {
+      "iteration": 4,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 9
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 2
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 7
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=7\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=9\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=2\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=11 completed_at_return=7\n"
+    },
+    {
+      "iteration": 5,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 1
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 7,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 11
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=1\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=7 completed_at_return=11\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=10\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=11 completed_at_return=11\n"
+    },
+    {
+      "iteration": 6,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 6,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 2
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 9
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=7\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=6 completed_at_return=11\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=2\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=9\n"
+    },
+    {
+      "iteration": 7,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 6
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 6
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 9
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=6\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=7\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=6\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=11 completed_at_return=9\n"
+    },
+    {
+      "iteration": 8,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 8,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 9,
+          "completed_at_return": 6
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 8
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=11\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=8 completed_at_return=10\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=9 completed_at_return=6\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=8\n"
+    },
+    {
+      "iteration": 9,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 6
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 11
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=6\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=11\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=10\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=11\n"
+    },
+    {
+      "iteration": 10,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 11
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=10 completed_at_return=11\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=10\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=10\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=11\n"
+    },
+    {
+      "iteration": 11,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 3
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 4
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 9
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=3\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=11 completed_at_return=11\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=4\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=9\n"
+    },
+    {
+      "iteration": 12,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 3
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 9,
+          "completed_at_return": 6
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 5
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=3\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=7\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=9 completed_at_return=6\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=5\n"
+    },
+    {
+      "iteration": 13,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 8,
+          "completed_at_return": 11
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 4
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 9,
+          "completed_at_return": 11
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=10\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=8 completed_at_return=11\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=4\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=9 completed_at_return=11\n"
+    },
+    {
+      "iteration": 14,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 4
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 9
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 9
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 8,
+          "completed_at_return": 10
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=4\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=9\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=9\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=8 completed_at_return=10\n"
+    },
+    {
+      "iteration": 15,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 3
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 9,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 10
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=3\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=9 completed_at_return=7\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=10 completed_at_return=10\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=10\n"
+    },
+    {
+      "iteration": 16,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 9
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 9
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 3
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 12
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=10 completed_at_return=9\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=9\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=3\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=12\n"
+    },
+    {
+      "iteration": 17,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 8
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=10 completed_at_return=10\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=10 completed_at_return=8\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=10\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=11 completed_at_return=10\n"
+    },
+    {
+      "iteration": 18,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 9,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 4
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 8,
+          "completed_at_return": 11
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=10\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=9 completed_at_return=10\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=4\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=8 completed_at_return=11\n"
+    },
+    {
+      "iteration": 19,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 5
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 9,
+          "completed_at_return": 11
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=10\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=11 completed_at_return=7\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=12 completed_at_return=5\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=9 completed_at_return=11\n"
+    },
+    {
+      "iteration": 20,
+      "exit_code": 0,
+      "observations": [
+        {
+          "format": "v2",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 11,
+          "completed_at_return": 10
+        },
+        {
+          "format": "v2",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 12,
+          "completed_at_return": 7
+        },
+        {
+          "format": "v3",
+          "writer": "ordinary",
+          "rounds": 12,
+          "outstanding_at_return": 10,
+          "completed_at_return": 5
+        },
+        {
+          "format": "v3",
+          "writer": "checkpoint",
+          "rounds": 12,
+          "outstanding_at_return": 7,
+          "completed_at_return": 10
+        }
+      ],
+      "stdout": "\nrunning 1 test\ntest concurrent_backup_is_a_consistent_acknowledged_cut ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s\n\n",
+      "stderr": "format=v2 writer=ordinary rounds=12 outstanding_at_return=11 completed_at_return=10\nformat=v2 writer=checkpoint rounds=12 outstanding_at_return=12 completed_at_return=7\nformat=v3 writer=ordinary rounds=12 outstanding_at_return=10 completed_at_return=5\nformat=v3 writer=checkpoint rounds=12 outstanding_at_return=7 completed_at_return=10\n"
+    }
+  ],
+  "completed": true,
+  "finished_utc": "2026-11-06T02:52:54.164040+00:00"
+}

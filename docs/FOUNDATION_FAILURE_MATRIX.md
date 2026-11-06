@@ -64,6 +64,13 @@ OS; they do not exhaust calls reached only on failure paths, inject every
 syscall or combination of errors, model storage reordering or establish physical
 power-loss or off-host restore behavior.
 
+[`double_eio_campaign.py`](../scripts/double_eio_campaign.py) adds a separate
+two-error model. For each selected data or namespace error on a successful path,
+it discovers synchronization calls subsequently reached on that error path;
+each is then failed in turn, with both recovery orders. This covers some
+cleanup-failure combinations, not arbitrary multiple failures or all
+failure-only paths.
+
 ## Running the isolated ENOSPC check
 
 The ignored Linux test fills its filesystem to provoke a real kernel `ENOSPC`.

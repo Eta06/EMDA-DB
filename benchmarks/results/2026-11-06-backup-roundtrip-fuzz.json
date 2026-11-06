@@ -1,0 +1,23 @@
+{
+  "revision": "373b00ae73161ec21dedca5a4b990eb939fc74ce",
+  "git_status_at_launch": "clean",
+  "target": "backup_roundtrip",
+  "sanitizer": "address",
+  "toolchain": "nightly-2026-11-03",
+  "cargo_fuzz_version": "0.13.2",
+  "seed": 1375044,
+  "max_total_time_seconds": 180,
+  "reported_seconds": 181,
+  "executions": 5048,
+  "reported_peak_rss_mib": 350,
+  "input_length_limit": 98,
+  "final_fuzzer_generated_limit": 22,
+  "initial_seed_files": 4,
+  "final_corpus_files": 265,
+  "final_corpus_archive_sha256": "b6bbf8d8fabfb6f9861ac5a8d3022d7135615acc56b24f8bd1ceccb0d8817012",
+  "full_log_sha256": "3f129a649bbee952fb7f2bb92efd62ddfe9cf4566a656f2efcf2bdb8b6072de3",
+  "target_sha256": "8fc952d294c7f625483fec0c7c9fa114cb0ccc314c2a4c7a7b6ff5654d6bc229",
+  "binary_sha256": "880b4ac4bd02245be2fe63fb430f93522fe53959bf8100eb524065ce3c74e187",
+  "outcome": "completed without a finding",
+  "scope": "Serial generated mixed writes, checkpoint, backup, later source mutation, restore and model checks; not a crash, concurrent schedule, physical power-loss or off-host test."
+}
