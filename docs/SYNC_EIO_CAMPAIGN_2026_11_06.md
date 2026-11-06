@@ -41,3 +41,6 @@ calls reached only on failure paths, arbitrary concurrent schedules, storage
 reordering, physical power loss or off-host restore. A valid checksum is not
 authentication. See the [failure matrix](FOUNDATION_FAILURE_MATRIX.md#running-synchronization-eio-injection)
 for reproduction and the separately deferred validation.
+
+A [later campaign](SYNC_EIO_EXTENDED_2026_11_06.md) adds initialization,
+checkpoint-backed operations and repeated synchronization errors.
