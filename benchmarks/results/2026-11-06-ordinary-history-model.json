@@ -1,0 +1,25 @@
+{
+  "revision": "e2b56919e0affc9d3aca1ced8baaa576e6fa1d6a",
+  "git_status": "",
+  "command": [
+    "cargo",
+    "+stable",
+    "test",
+    "--release",
+    "--locked",
+    "--offline",
+    "--test",
+    "transaction_model",
+    "--",
+    "--nocapture"
+  ],
+  "histories": 4096,
+  "completed_utc": "2026-11-06T01:22:04.146237+00:00",
+  "duration_seconds": 20.037,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "exit_code": 0,
+  "stdout": "\nrunning 3 tests\ntest reference_model_rejects_a_fractured_successful_transaction ... ok\ntest reference_model_checks_compare_exchange_results ... ok\ntest concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.37s\n\n",
+  "stderr": "   Compiling database-engine v0.1.0 (/workspace/scratch/emda-restart-resource)\n    Finished `release` profile [optimized] target(s) in 0.63s\n     Running tests/transaction_model.rs (/workspace/database-engine/target/release/deps/transaction_model-b7227acc1bfd2dfb)\ncompare-exchange outcomes: mismatch=3232 success=864\n",
+  "test_binary_sha256": "d200d086c0e3084129afeaca70c3a7932251676662fce5bc0fc26c6309326ee2",
+  "limitations": "Finite eleven-operation histories on the running Linux VM, with clean reopen after each. This is not exhaustive scheduling, deadline-race, crash, or power-loss testing."
+}
