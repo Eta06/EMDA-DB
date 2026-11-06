@@ -1,0 +1,17 @@
+{
+  "revision": "2a265c4c5c680b29c879f231258189c158d429a6",
+  "git_status_before_run": "clean",
+  "repetitions": 20,
+  "cases": 320,
+  "recovered_cases": 320,
+  "fail_closed_cases": 0,
+  "observed_acknowledgements": 13520,
+  "source_sha256": "69b1060badece59d35ef79c53d70659943663fb3d8398bb145db37d808f063c8",
+  "test_binary_sha256": "a9f97dc2465aaa917499f3c8e7938894336bf83ae2f4f39b8a74217504bf3a42",
+  "log_sha256": "be1f3ff05ea87b0c7f7df3f466c7fd3e1661f4176d596d1467e6f1c9c54ed1c0",
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "profile": "release",
+  "exit_code": 0,
+  "command": "Repeat 20 times: cargo +stable test --release --locked --test concurrent_kill_history -- --nocapture",
+  "scope": "Four independent writers; process kills after observing 1, 8, 32 or 128 successful writes on V2/V3 and both writable backends. Both recovery paths check the observed acknowledgements. This is a running-OS process-kill race; unobserved acknowledgements, physical power loss and the presence of an in-flight write at each kill are not established."
+}
