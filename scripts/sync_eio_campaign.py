@@ -5,6 +5,7 @@ import errno
 import functools
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -13,6 +14,8 @@ import stat
 import subprocess
 import tempfile
 import time
+
+from campaign_report import ReportWriter
 
 SYSCALL_SETS = {
     'sync': ('fsync', 'fdatasync'),
@@ -294,6 +297,8 @@ def main():
     parser.add_argument('--output', required=True, help='new JSON result path')
     parser.add_argument('--max-ordinals', type=int, default=0,
                         help='limit each syscall per case; zero tests all baseline ordinals')
+    parser.add_argument('--snapshot-interval', type=float, default=1.0,
+                        help='minimum seconds between full snapshots; progress is saved per case')
     parser.add_argument('--persistent-errors', action='store_true',
                         help='continue returning EIO for that syscall after the selected ordinal')
     parser.add_argument('--error', dest='injected_error', choices=('EIO', 'EINTR', 'ENOSPC', 'EDQUOT'),
@@ -304,7 +309,8 @@ def main():
     parser.add_argument('--format', choices=FORMATS, help='optional single-format check')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output)
-            or not 0 <= args.max_ordinals <= 100):
+            or os.path.lexists(args.output + '.progress.json') or not 0 <= args.max_ordinals <= 100
+            or not math.isfinite(args.snapshot_interval) or not 0 <= args.snapshot_interval <= 60):
         parser.error('existing fixture directory and binary, new output, and valid ordinal limit required')
     if args.persistent_errors and (args.syscall_set != 'sync' or args.injected_error != 'EIO'):
         parser.error('persistent errors are supported only for synchronization EIO')
@@ -320,10 +326,12 @@ def main():
         'binary_sha256': digest(Path(binary).read_bytes()),
         'probe_sha256': digest(Path('examples/sync_failure_probe.rs').read_bytes()),
         'driver_sha256': digest(Path(__file__).read_bytes()),
+        'report_writer_sha256': digest(Path('scripts/campaign_report.py').read_bytes()),
         'cargo_lock_sha256': digest(Path('Cargo.lock').read_bytes()),
         'strace': subprocess.check_output(['strace', '--version'], text=True).splitlines()[0],
         'host_platform': platform.platform(),
         'max_ordinals': args.max_ordinals,
+        'snapshot_interval_seconds': args.snapshot_interval,
         'syscall_set': args.syscall_set,
         'fixture_paths_only': fixture_only,
         'formats': [args.format] if args.format else list(FORMATS),
@@ -351,17 +359,13 @@ def main():
         json.dump(result, file, indent=2)
         file.write('\n')
 
-    def save():
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
-                                         prefix='.sync-eio-report-', delete=False) as file:
-            temporary = Path(file.name)
-            try:
-                json.dump(result, file, indent=2)
-                file.write('\n')
-                file.flush()
-                os.replace(temporary, output)
-            finally:
-                temporary.unlink(missing_ok=True)
+    writer = ReportWriter(output, args.snapshot_interval)
+    with writer.progress.open('x', encoding='utf-8') as file:
+        json.dump({name: result.get(name) for name in ('revision', 'current', 'completed', 'failure')}, file)
+        file.write('\n')
+
+    def save(force=False):
+        writer.save(result, force=force)
 
     tracer = functools.partial(traced_attempt, injected_error=args.injected_error)
     try:
@@ -400,7 +404,7 @@ def main():
         raise
     finally:
         result['finished_utc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-        save()
+        save(force=True)
     print('total injections',sum(len(case['injections']) for case in result['cases']))
 
 
