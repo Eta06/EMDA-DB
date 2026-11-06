@@ -1,0 +1,17 @@
+{
+  "revision": "9d85d814d3b8d73a6cb030366d267566462c61f6",
+  "git_status_before_run": "clean",
+  "test": "checkpoint_transaction_model",
+  "histories": 4096,
+  "operations_per_history": 6,
+  "source_sha256": "345726fd3ae139414ef20b30811f425ca7e662ad16e518cfd728b722f9f727c2",
+  "test_binary_sha256": "9e98b69f4d99eceffc5e4f724a354fc2a26ef710e081a8d8a5f3eb045618b604",
+  "log_sha256": "9d7282103ca9e5726586f1e98d3c1c738c826ea8d0fc91553ea4c8426fb13480",
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "profile": "release",
+  "exit_code": 0,
+  "test_result": "2 passed; 0 failed",
+  "test_runtime_seconds": 28.95,
+  "command": "EMDA_CHECKPOINT_MODEL_HISTORIES=4096 cargo +stable test --release --locked --test checkpoint_transaction_model -- --nocapture",
+  "scope": "Finite six-operation concurrent histories with real-time serial-model checking, ordinary full recovery and checkpoint-backed reopening after each history. This does not exhaust schedules, model process death or power loss, or bound total memory."
+}
