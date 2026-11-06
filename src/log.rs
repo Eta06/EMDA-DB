@@ -72,7 +72,12 @@ pub(crate) enum InitializationPoint {
     MetadataDecided,
     HeaderWritten,
     LogSynced,
+    WitnessFileCreated,
+    WitnessWritten,
+    WitnessSynced,
+    WitnessDirectorySynced,
     WitnessCreated,
+    StoreDirectorySynced,
 }
 
 impl Log {
@@ -275,11 +280,23 @@ impl Log {
             initialization_hook(InitializationPoint::HeaderWritten)?;
             file.sync_all()?;
             initialization_hook(InitializationPoint::LogSynced)?;
-            let _ = Witness::create(path, id, LOG_HEADER_SIZE as u64)?;
+            let _ = Witness::create_with_hook(path, id, LOG_HEADER_SIZE as u64, |point| {
+                initialization_hook(match point {
+                    witness::CreationPoint::FileCreated => InitializationPoint::WitnessFileCreated,
+                    witness::CreationPoint::Written => InitializationPoint::WitnessWritten,
+                    witness::CreationPoint::FileSynced => InitializationPoint::WitnessSynced,
+                    witness::CreationPoint::DirectorySynced => {
+                        InitializationPoint::WitnessDirectorySynced
+                    }
+                })
+            })?;
             initialization_hook(InitializationPoint::WitnessCreated)?;
         }
         // Persist directory entries before acknowledging future writes.
         File::open(path)?.sync_all()?;
+        if created {
+            initialization_hook(InitializationPoint::StoreDirectorySynced)?;
+        }
         if let Some(max) = max_log_bytes {
             if file.metadata()?.len() > max {
                 return Err(io::Error::new(
@@ -511,7 +528,16 @@ impl Log {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn install_restore_witness(&self, directory: &Path) -> io::Result<()> {
+        self.install_restore_witness_with_hook(directory, |_| Ok(()))
+    }
+
+    pub(crate) fn install_restore_witness_with_hook(
+        &self,
+        directory: &Path,
+        hook: impl FnMut(witness::CreationPoint) -> io::Result<()>,
+    ) -> io::Result<()> {
         if let Some(id) = self.log_id {
             let length = self.file.len()?;
             let boundary = if self.metadata {
@@ -524,7 +550,7 @@ impl Log {
             } else {
                 length
             };
-            let _ = Witness::create(directory, id, boundary)?;
+            let _ = Witness::create_with_hook(directory, id, boundary, hook)?;
         }
         Ok(())
     }

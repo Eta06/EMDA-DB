@@ -485,6 +485,7 @@ impl OnlineStore {
                 ),
             )
         })?;
+        stage.publication_synchronized();
         hook(copy::Point::BeforeExchange)?;
         state.failed = true;
         compact_exchange::exchange(&source, &previous).map_err(|error| {

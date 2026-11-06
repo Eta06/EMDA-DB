@@ -104,6 +104,7 @@ pub(super) fn initialize_with_hooks(
             format!("automatic checkpoint configuration may exist: {error}"),
         )
     })?;
+    stage.publication_synchronized();
     if open_existing(store)? != Some(true) {
         return Err(invalid("automatic checkpoint configuration disappeared"));
     }
@@ -294,6 +295,7 @@ impl CheckpointStore {
                 format!("automatic checkpoint slot may exist: {error}"),
             )
         })?;
+        stage.publication_synchronized();
         let next_view = self.rollover_view(state, &indexes[next_slot], &digest)?;
         let next = selection::Selection::new(indexes[next_slot].clone(), digest)?;
         if let Err(error) = selection::publish(

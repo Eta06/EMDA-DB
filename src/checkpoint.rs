@@ -278,6 +278,7 @@ fn create_streaming_in_directory(
             format!("checkpoint may exist but directory synchronization failed: {error}"),
         )
     })?;
+    staging.publication_synchronized();
     Ok(checkpoint_digest)
 }
 
@@ -343,6 +344,7 @@ fn create_with_hooks(
             format!("checkpoint may exist but directory synchronization failed: {error}"),
         )
     })?;
+    staging.publication_synchronized();
     Ok(checkpoint_digest)
 }
 

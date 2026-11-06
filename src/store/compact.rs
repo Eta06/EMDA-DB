@@ -136,7 +136,9 @@ impl Store {
                 error.kind(),
                 format!("compacted store may exist but directory synchronization failed: {error}"),
             )
-        })
+        })?;
+        staging.publication_synchronized();
+        Ok(())
     }
 }
 

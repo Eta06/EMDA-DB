@@ -11,7 +11,12 @@ fn point(name: &str) -> InitializationPoint {
         "metadata-decided" => InitializationPoint::MetadataDecided,
         "header-written" => InitializationPoint::HeaderWritten,
         "log-synced" => InitializationPoint::LogSynced,
+        "witness-file-created" => InitializationPoint::WitnessFileCreated,
+        "witness-written" => InitializationPoint::WitnessWritten,
+        "witness-synced" => InitializationPoint::WitnessSynced,
+        "witness-directory-synced" => InitializationPoint::WitnessDirectorySynced,
         "witness-created" => InitializationPoint::WitnessCreated,
+        "store-directory-synced" => InitializationPoint::StoreDirectorySynced,
         _ => panic!("unknown initialization boundary"),
     }
 }
@@ -90,41 +95,90 @@ fn metadata(_: &Path) -> Option<Vec<u8>> {
 
 #[test]
 fn killed_initialization_never_silently_reopens_as_legacy() {
-    for name in [
-        "log-created",
-        "metadata-decided",
-        "header-written",
-        "log-synced",
-        "witness-created",
-    ] {
+    for name in INITIALIZATION_BOUNDARIES {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("store");
         kill_at_initialization_boundary(&path, name);
-        let log_path = path.join("records.log");
-        let before = std::fs::read(&log_path).unwrap();
-        let before_metadata = metadata(&log_path);
-        let witness_path = path.join("commit.state");
-        let before_witness = match std::fs::read(&witness_path) {
-            Ok(bytes) => Some(bytes),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => panic!("read commit witness: {error}"),
+        check_interrupted_initialization(&path, name);
+    }
+}
+
+const INITIALIZATION_BOUNDARIES: [&str; 10] = [
+    "log-created",
+    "metadata-decided",
+    "header-written",
+    "log-synced",
+    "witness-file-created",
+    "witness-written",
+    "witness-synced",
+    "witness-directory-synced",
+    "witness-created",
+    "store-directory-synced",
+];
+
+fn check_interrupted_initialization(path: &Path, name: &str) {
+    let log_path = path.join("records.log");
+    let before = std::fs::read(&log_path).unwrap();
+    let before_metadata = metadata(&log_path);
+    let witness_path = path.join("commit.state");
+    let before_witness = match std::fs::read(&witness_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => panic!("read commit witness: {error}"),
+    };
+    let opened = crate::test_support::retry_lock(|| Store::open(path));
+    if matches!(
+        name,
+        "witness-written"
+            | "witness-synced"
+            | "witness-directory-synced"
+            | "witness-created"
+            | "store-directory-synced"
+    ) {
+        let store = opened.unwrap();
+        assert_eq!(store.get(b"key").unwrap(), None);
+        store.transaction(|tx| tx.put(b"key", b"value")).unwrap();
+        drop(store);
+        let recovered = crate::test_support::retry_lock(|| Store::open(path)).unwrap();
+        assert_eq!(
+            recovered.get(b"key").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+    } else {
+        assert!(opened.is_err(), "{name}");
+        assert_eq!(std::fs::read(&log_path).unwrap(), before, "{name}");
+        assert_eq!(metadata(&log_path), before_metadata, "{name}");
+        assert_eq!(std::fs::read(&witness_path).ok(), before_witness, "{name}");
+    }
+}
+
+#[test]
+fn initialization_errors_at_every_boundary_preserve_or_reopen_witnessed_state() {
+    for name in INITIALIZATION_BOUNDARIES {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("store");
+        let requested = point(name);
+        let mut visited = Vec::new();
+        let result = Store::open_using(&path, |path, initialize| {
+            Log::open_with_initialization_hook(path, initialize, |current| {
+                visited.push(current);
+                if current == requested {
+                    Err(io::Error::other("injected initialization failure"))
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let error = match result {
+            Ok(_) => panic!("initialization unexpectedly succeeded at {name}"),
+            Err(error) => error,
         };
-        let opened = crate::test_support::retry_lock(|| Store::open(&path));
-        if name == "witness-created" {
-            let store = opened.unwrap();
-            assert_eq!(store.get(b"key").unwrap(), None);
-            store.transaction(|tx| tx.put(b"key", b"value")).unwrap();
-            drop(store);
-            let recovered = crate::test_support::retry_lock(|| Store::open(&path)).unwrap();
-            assert_eq!(
-                recovered.get(b"key").unwrap().as_deref(),
-                Some(&b"value"[..])
-            );
-        } else {
-            assert!(opened.is_err(), "{name}");
-            assert_eq!(std::fs::read(&log_path).unwrap(), before, "{name}");
-            assert_eq!(metadata(&log_path), before_metadata, "{name}");
-            assert_eq!(std::fs::read(&witness_path).ok(), before_witness, "{name}");
-        }
+        assert!(
+            error
+                .to_string()
+                .contains("injected initialization failure")
+        );
+        assert_eq!(visited.last(), Some(&requested));
+        check_interrupted_initialization(&path, name);
     }
 }

@@ -189,6 +189,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
             format!("compacted store may exist but directory synchronization failed: {error}"),
         )
     })?;
+    staging.publication_synchronized();
     Ok(digest)
 }
 

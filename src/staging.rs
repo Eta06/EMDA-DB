@@ -115,6 +115,8 @@ pub(crate) struct Stage {
     payload: PathBuf,
     kind: Kind,
     created: bool,
+    published: bool,
+    publication_synced: bool,
     preserve_on_drop: bool,
 }
 
@@ -157,6 +159,8 @@ impl Stage {
             payload,
             kind,
             created: false,
+            published: false,
+            publication_synced: false,
             preserve_on_drop: false,
         })
     }
@@ -240,37 +244,60 @@ impl Stage {
         // tempfile can fall back to linking and unlinking for file publication;
         // its fallback ignores an unlink failure. Keep responsibility for the
         // old name until Drop confirms it is gone or retains its marker.
+        self.published = true;
         Ok(())
     }
-}
 
-impl Drop for Stage {
-    fn drop(&mut self) {
+    /// Record that the parent sync completed after publication. This avoids
+    /// another sync if the old stage name was already absent at that point.
+    pub(crate) fn publication_synchronized(&mut self) {
+        debug_assert!(self.published);
+        self.publication_synced = true;
+    }
+
+    fn cleanup_on_drop_with_sync(&mut self, sync_parent: impl FnOnce(&File) -> io::Result<()>) {
+        if self.marker.is_none() {
+            return;
+        }
         if self.preserve_on_drop {
             if let Some(marker) = self.marker.take() {
                 let _ = marker.keep();
             }
             return;
         }
-        let removed = if self.created {
+        let (removed, needs_sync) = if self.created {
             let result = match self.kind {
                 Kind::File => fs::remove_file(&self.payload),
                 Kind::Directory | Kind::Retired => fs::remove_dir_all(&self.payload),
             };
-            result.is_ok() || result.is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            match result {
+                Ok(()) => (true, true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    (true, !self.publication_synced)
+                }
+                Err(_) => (false, false),
+            }
         } else {
-            true
+            (true, !self.publication_synced)
         };
+        // The marker must remain discoverable until the payload's removal or
+        // publication is durable. Otherwise a crash could persist marker
+        // deletion but resurrect its now-unmarked payload. A failed sync keeps
+        // the marker for a later explicit cleanup.
+        let removal_stable = removed && (!needs_sync || sync_parent(&self.parent.0).is_ok());
         if let Some(marker) = self.marker.take() {
-            if removed {
+            if removal_stable {
                 let _ = marker.close();
             } else {
-                // Retain ownership information if normal cleanup fails.
                 let _ = marker.keep();
             }
         }
-        // Access the guard to make its lifetime through marker removal clear.
-        let _ = &self.parent;
+    }
+}
+
+impl Drop for Stage {
+    fn drop(&mut self) {
+        self.cleanup_on_drop_with_sync(File::sync_all);
     }
 }
 
@@ -313,6 +340,8 @@ fn marker_kind(name: &OsStr) -> Option<Kind> {
 /// cleanup error may follow partial deletion; the directory is synchronized
 /// before return where possible, and callers may run cleanup again. This is not
 /// secure erasure, an automatic janitor, or a total disk-usage quota.
+/// An unchanged directory is not synchronized; a successful no-op does not
+/// establish that the filesystem supports directory synchronization.
 /// Retired-store markers are skipped: their replacement must be verified with
 /// `OnlineStore::cleanup_retired_staging` before their contents are removed.
 ///
@@ -351,6 +380,16 @@ fn cleanup_selected_with_sync(
     sync: impl FnOnce(&File) -> io::Result<()>,
     before_remove: impl FnMut() -> io::Result<()>,
 ) -> io::Result<StagingCleanup> {
+    cleanup_selected_with_syncs(parent, replacement_id, File::sync_all, sync, before_remove)
+}
+
+fn cleanup_selected_with_syncs(
+    parent: &Path,
+    replacement_id: Option<&[u8; 16]>,
+    mut sync_payload_removal: impl FnMut(&File) -> io::Result<()>,
+    sync: impl FnOnce(&File) -> io::Result<()>,
+    before_remove: impl FnMut() -> io::Result<()>,
+) -> io::Result<StagingCleanup> {
     check_path(parent)?;
     let guard = match ParentLock::exclusive(parent) {
         Ok(guard) => guard,
@@ -359,9 +398,10 @@ fn cleanup_selected_with_sync(
         }
         Err(error) => return Err(error),
     };
-    let result = cleanup_locked(parent, replacement_id, before_remove);
-    if replacement_id.is_some()
-        && matches!(&result, Ok(report) if report.removed_payloads == 0 && report.removed_markers == 0)
+    let result = cleanup_locked(parent, replacement_id, before_remove, || {
+        sync_payload_removal(&guard.0)
+    });
+    if matches!(&result, Ok(report) if report.removed_payloads == 0 && report.removed_markers == 0)
     {
         return result;
     }
@@ -380,6 +420,7 @@ fn cleanup_locked(
     parent: &Path,
     replacement_id: Option<&[u8; 16]>,
     mut before_remove: impl FnMut() -> io::Result<()>,
+    mut sync_payload_removal: impl FnMut() -> io::Result<()>,
 ) -> io::Result<StagingCleanup> {
     let mut report = StagingCleanup::default();
     for entry in fs::read_dir(parent)? {
@@ -461,6 +502,15 @@ fn cleanup_locked(
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+        // Synchronize the absence of the payload before unlinking its owner
+        // marker, even when it was already absent in the current namespace.
+        // If this fails, a retry can still identify any resurrected payload.
+        sync_payload_removal().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("staging payload removal may be incomplete; marker retained: {error}"),
+            )
+        })?;
         before_remove()?;
         fs::remove_file(marker)?;
         report.removed_markers += 1;
@@ -558,3 +608,6 @@ fn lock_safe_retired_payload(stage: &Path) -> io::Result<Option<Option<File>>> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ordering_tests;

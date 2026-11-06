@@ -115,20 +115,37 @@ pub(crate) struct Witness {
     offset: Mutex<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CreationPoint {
+    FileCreated,
+    Written,
+    FileSynced,
+    DirectorySynced,
+}
+
 impl Witness {
     pub(crate) fn open_readonly(directory: &Path, id: LogId) -> io::Result<(Self, u64)> {
         Self::from_io(Box::new(File::open(directory.join(NAME))?), id)
     }
 
-    pub(crate) fn create(directory: &Path, id: LogId, offset: u64) -> io::Result<Self> {
+    pub(crate) fn create_with_hook(
+        directory: &Path,
+        id: LogId,
+        offset: u64,
+        mut hook: impl FnMut(CreationPoint) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .open(directory.join(NAME))?;
+        hook(CreationPoint::FileCreated)?;
         FileExt::write_all_at(&file, &encode(&id, offset), 0)?;
+        hook(CreationPoint::Written)?;
         file.sync_all()?;
+        hook(CreationPoint::FileSynced)?;
         File::open(directory)?.sync_all()?;
+        hook(CreationPoint::DirectorySynced)?;
         Ok(Self {
             file: Box::new(file),
             id,
