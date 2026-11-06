@@ -26,6 +26,31 @@ actual V2 `commit.state` descriptor or the V3 `user.db.commit.v3` attribute on
 on `41dc3cb` passed with 63 acknowledged writes recovered and 78 failed writes
 present after recovery. These case counts include both recovery orders.
 
+## Concurrent log synchronization errors
+
+On clean revision `6663651a1e1ba6359118b1206b20946d5c9558ea`, the
+[expanded local campaign](../benchmarks/results/2026-11-06-concurrent-witness-and-sync-eio.json.gz)
+also injected an `EIO` into synchronization of the source `records.log`,
+using `fdatasync` on V2 and `fsync` on V3. A trace path filter excludes
+directory synchronization during opening, and the driver verifies the
+injection reached the actual source log. The first or second matching call
+per traced thread was selected. The test checks both recovery orders on both
+writable backends and uses four independent writers in one process.
+
+| Injected failure | Cases | Observed acknowledged writes recovered | Failed calls | Failed writes recovered |
+| --- | ---: | ---: | ---: | ---: |
+| Witness write | 320 | 472 | 1,280 | 489 |
+| Log synchronization | 320 | 472 | 1,280 | 485 |
+
+Every case recorded an injection at the intended file or metadata attribute.
+Both recovery paths agreed on the exact recovered failed-write identities;
+each case also checked its prior acknowledged data and reference fixtures.
+An ordinary-store multi-record vectored append appeared in 80 cases for each
+failure mode. These counts include both recovery orders and reflect sampled
+schedules on the workspace overlay, whose underlying device is not verified.
+An injected returned error is not a partial successful syscall or a physical
+power loss, and a recovered failed write does not mean it was acknowledged.
+
 The [driver](../scripts/concurrent_eio_campaign.py) records the exact
 receipts, injected syscalls, selected vectored appends, hashes and recovery
 results. Its [GitHub workflow](../.github/workflows/sync-eio.yml) repeats a
