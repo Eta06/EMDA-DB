@@ -1,12 +1,49 @@
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from double_eio_campaign import calls_after_primary, injection_rules, primary_ordinals, targets_fixture_or_ancestor_sync
+from double_eio_campaign import (ReportWriter, calls_after_primary, injection_rules,
+                                 primary_ordinals, targets_fixture_or_ancestor_sync)
 
 
 class DoubleEioCampaignTests(unittest.TestCase):
+    def test_partial_snapshot_can_lag_current_case_but_failure_forces_full_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'result.json'
+            writer = ReportWriter(output, 1.0)
+            result = {'revision': 'test', 'current': {'case': 1}, 'completed': False,
+                      'failure': None, 'cases': []}
+            clock = [10.0]
+            with patch('double_eio_campaign.time.monotonic', side_effect=lambda: clock[0]):
+                writer.save(result, force=True)
+                result['current'] = {'case': 2}
+                result['cases'].append({'passed': 1})
+                clock[0] = 10.5
+                writer.save(result)
+                self.assertEqual(json.loads(output.read_text())['current'], {'case': 1})
+                self.assertEqual(json.loads(writer.progress.read_text())['current'], {'case': 2})
+                result['failure'] = 'injected error'
+                writer.save(result, force=True)
+            final = json.loads(output.read_text())
+            self.assertEqual(final['current'], {'case': 2})
+            self.assertEqual(final['cases'], [{'passed': 1}])
+            self.assertEqual(final['failure'], 'injected error')
+            self.assertEqual(final['full_report_snapshots'], 2)
+            self.assertEqual(json.loads(writer.progress.read_text())['failure'], 'injected error')
+
+    def test_failed_serialization_preserves_previous_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'result.json'
+            output.write_text('previous report')
+            with self.assertRaises(TypeError):
+                ReportWriter._atomic_json(output, {'invalid': object()})
+            self.assertEqual(output.read_text(), 'previous report')
+            self.assertEqual(list(Path(directory).glob('.double-eio-report-*')), [])
+
     def test_cleanup_ordinals_count_synchronizations_before_the_first_fault(self):
         lines = [
             '1 fsync(3</work/case/file>) = 0',

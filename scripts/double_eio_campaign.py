@@ -2,6 +2,7 @@
 """Inject a filesystem EIO and then an error during later cleanup."""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -18,6 +19,41 @@ PRIMARY = DATA_NAMESPACE + SYNC
 CLEANUP = ('unlink', 'unlinkat', 'rmdir')
 SECONDARY = SYNC + CLEANUP
 TRACED = PRIMARY
+
+
+class ReportWriter:
+    """Keep current-case metadata while avoiding a full rewrite for every case."""
+    def __init__(self, output, interval):
+        self.output = Path(output)
+        self.progress = Path(str(output) + '.progress.json')
+        self.interval = interval
+        self.last_snapshot = None
+        self.snapshots = 0
+
+    @staticmethod
+    def _atomic_json(path, value):
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix='.double-eio-report-', delete=False) as file:
+            temporary = Path(file.name)
+            try:
+                json.dump(value, file, indent=2)
+                file.write('\n')
+                file.flush()
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+    def save(self, result, force=False):
+        # This small sidecar records the most recent case even between full
+        # snapshots. On a caught failure or normal exit the main file is forced.
+        self._atomic_json(self.progress, {'revision': result['revision'], 'current': result['current'],
+                                          'completed': result['completed'], 'failure': result['failure']})
+        now = time.monotonic()
+        if force or self.last_snapshot is None or now - self.last_snapshot >= self.interval:
+            self.snapshots += 1
+            result['full_report_snapshots'] = self.snapshots
+            self._atomic_json(self.output, result)
+            self.last_snapshot = time.monotonic()
 
 
 def calls_after_primary(lines, primary, root, allow_same_second=False):
@@ -120,11 +156,15 @@ def main():
                         help='which successful-path calls may receive the first EIO')
     parser.add_argument('--all-sync-paths', action='store_true',
                         help='also select synchronization calls on resolved ancestor directories')
+    parser.add_argument('--snapshot-interval', type=float, default=1.0,
+                        help='minimum seconds between full partial-report snapshots; 0 writes every time')
     parser.add_argument('--operation', choices=base.OPERATIONS, help='optional single-operation smoke check')
     parser.add_argument('--format', choices=base.FORMATS, help='optional single-format smoke check')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
-            or os.path.lexists(args.output) or not 0 <= args.max_primary <= 100
+            or os.path.lexists(args.output) or os.path.lexists(args.output + '.progress.json')
+            or not math.isfinite(args.snapshot_interval) or not 0 <= args.snapshot_interval <= 60
+            or not 0 <= args.max_primary <= 100
             or (args.all_sync_paths and args.primary_mode == 'data-namespace')):
         parser.error('existing fixture parent and binary, new output, and valid limit required')
     directory = str(Path(args.directory).resolve())
@@ -152,6 +192,7 @@ def main():
                   'the fixture unless all_sync_paths is enabled, which also selects resolved ancestors. '
                   'This is a finite single-process model; it does not prove physical persistence.'),
         'max_primary': args.max_primary, 'primary_mode': args.primary_mode, 'all_sync_paths': args.all_sync_paths,
+        'snapshot_interval_seconds': args.snapshot_interval,
         'primary_syscalls': list({'data-namespace': DATA_NAMESPACE, 'sync': SYNC, 'all': PRIMARY}[args.primary_mode]),
         'formats': [args.format] if args.format else list(base.FORMATS),
         'operations': [args.operation] if args.operation else list(base.OPERATIONS),
@@ -161,18 +202,15 @@ def main():
     with output.open('x', encoding='utf-8') as file:
         json.dump(result, file, indent=2)
         file.write('\n')
+    progress = Path(str(output) + '.progress.json')
+    with progress.open('x', encoding='utf-8') as file:
+        json.dump({'revision': result['revision'], 'current': None,
+                   'completed': False, 'failure': None}, file)
+        file.write('\n')
+    writer = ReportWriter(output, args.snapshot_interval)
 
-    def save():
-        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=output.parent,
-                                         prefix='.double-eio-report-', delete=False) as file:
-            temporary = Path(file.name)
-            try:
-                json.dump(result, file, indent=2)
-                file.write('\n')
-                file.flush()
-                os.replace(temporary, output)
-            finally:
-                temporary.unlink(missing_ok=True)
+    def save(force=False):
+        writer.save(result, force=force)
 
     try:
         with tempfile.TemporaryDirectory(prefix='double-eio-campaign-', dir=directory) as temp:
@@ -229,7 +267,7 @@ def main():
         raise
     finally:
         result['finished_utc'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-        save()
+        save(force=True)
     print('double failures', sum(len(item['second']) for case in result['cases']
                                  for item in case['primary_checks']))
 

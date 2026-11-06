@@ -73,6 +73,8 @@ jobs:
             ${{ runner.temp }}/eio-open.json
             ${{ runner.temp }}/eio-namespace.json
             ${{ runner.temp }}/eio-double.json
+            ${{ runner.temp }}/eio-double.json.progress.json
             ${{ runner.temp }}/eio-double-sync.json
+            ${{ runner.temp }}/eio-double-sync.json.progress.json
             ${{ runner.temp }}/eio-concurrent.json
           if-no-files-found: ignore

@@ -82,6 +82,13 @@ publication ancestors. The driver verifies the traced descriptor belongs to
 the fixture or one of its ancestors; the second error is chosen from later
 sync and fixture-removal calls on that error path.
 
+The paired-error driver writes a small `<output>.progress.json` sidecar for
+the current or most recent case and periodically snapshots its full results.
+It forces a complete snapshot on normal completion or a caught failure. After
+an abrupt driver termination, the main partial report can lag behind the
+sidecar; preserve both files. `--snapshot-interval 0` requests a full snapshot
+after every driver update.
+
 [`concurrent_eio_campaign.py`](../scripts/concurrent_eio_campaign.py) injects
 witness-write or log-sync EIO while four independent writers run. It checks every observed
 acknowledgement and each failed request through both recovery paths. `strace`
