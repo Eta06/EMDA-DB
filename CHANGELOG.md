@@ -4,6 +4,14 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add native macOS correctness CI and cross-check the library for Apple silicon with stable Rust and the minimum supported Rust version. V3 metadata witnesses remain Linux-only.
+
+- Gate Linux-only document compaction handoff tests and check that unsupported platforms reject those handoffs without changing the source data.
+
+- Extend filesystem-error injection to reads, opens, writes, namespace operations, atomic batches and selected pairs of failures during cleanup. Verify that unrecognized marker-only remnants remain unchanged and never hide an unmarked top-level payload.
+
+- Add concurrent backup and longer transaction-history models, plus a backup/restore reference-map fuzzer. Record the associated local recovery and failure campaigns with their scope and limitations.
+
 - Exercise repeated synchronization errors and verify staging ownership and cleanup after errors stop.
 
 - Add a Linux syscall-injection campaign for synchronization errors during initialization, ordinary and checkpoint-backed writes and maintenance, with recovery and publication checks.

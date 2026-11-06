@@ -139,6 +139,7 @@ fn acknowledged_document_and_index_survive_process_termination() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn document_indexes_survive_managed_checkpoint_compaction_and_reopen() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("live");
@@ -224,6 +225,7 @@ fn document_backup_restore_captures_one_consistent_version_on_both_backends() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn ordinary_compaction_preserves_document_and_unique_index_invariants() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("live");
@@ -242,4 +244,42 @@ fn ordinary_compaction_preserves_document_and_unique_index_invariants() {
     assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
     let old = retry_lock(|| Store::open(&previous)).unwrap();
     verify(&DocumentDatabase::new(&old));
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn unsupported_compaction_handoffs_preserve_documents_and_source_files() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("live");
+    let previous = root.path().join("previous");
+    let checkpoint = root.path().join("checkpoint");
+    let store = retry_lock(|| Store::open(&path)).unwrap();
+    let db = DocumentDatabase::new(&store);
+    setup(&db);
+    db.transaction(|tx| {
+        tx.insert("c", "acked", &json!({"n":7}))?;
+        tx.put_raw(b"receipt", b"acked")
+    })
+    .unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    let log = fs::read(path.join("records.log")).unwrap();
+    let witness = fs::read(path.join("commit.state")).unwrap();
+    assert!(matches!(store.compact_and_replace(&path, &previous),
+                     Err(ref error) if error.kind() == std::io::ErrorKind::Unsupported));
+    assert!(!previous.exists());
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness);
+    let ordinary = retry_lock(|| Store::open(&path)).unwrap();
+    verify(&DocumentDatabase::new(&ordinary));
+    drop(ordinary);
+    let checkpoint_store =
+        retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert!(matches!(checkpoint_store.compact_and_replace(&previous),
+                     Err(ref error) if error.kind() == std::io::ErrorKind::Unsupported));
+    assert!(!previous.exists());
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness);
+    let checkpoint_store =
+        retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    verify(&DocumentDatabase::with_checkpoint_store(&checkpoint_store));
 }
