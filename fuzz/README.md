@@ -20,6 +20,14 @@ The [recorded initial campaign](../benchmarks/results/2026-11-03-recovery-fuzz.j
 ran 127,313 inputs in 61 seconds without a detected crash. A scheduled and
 manually triggerable GitHub Actions workflow repeats a short campaign.
 
+The `staging_cleanup` target generates combinations of recognized file and
+directory markers, malformed and retired markers, missing payloads, unexpected
+types, symlinks and unrelated files. It checks cleanup counts, preservation of
+unrecognized entries and symlink targets, and idempotent repeat cleanup. Its
+seeds are in `fuzz/staging-cleanup-seeds`. It exercises a trusted directory on
+the running OS; it does not simulate synchronization failure, concurrent
+uncooperative changes or physical power loss.
+
 The `key_byte_limit` target compares single writes, deletions and ordered
 batches against a small reference model, checks rejected writes do not change
 the log, and repeatedly reopens with the same logical live-key byte cap. Its

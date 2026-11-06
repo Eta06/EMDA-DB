@@ -23,6 +23,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "staging_cleanup"
+path = "fuzz_targets/staging_cleanup.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "checkpoint"
 path = "fuzz_targets/checkpoint.rs"
 test = false
