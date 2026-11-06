@@ -1,0 +1,19 @@
+{
+  "revision": "46659ce140b692cb86f27af76391985a8dcfa820",
+  "baseline_revision": "dd5cfd09916b81a82676ef087aae52a5f570feee",
+  "scope": "Single-client diagnostic; traced syscall counts include setup, validation and reopen. Times under tracing are not latency results.",
+  "runs": [
+    {
+      "variant": "baseline",
+      "binary_sha256": "073c7e7c024bb9090e02fc59832977781d0fcc0a47b852ad20712da949288c08",
+      "digest": "3550dbe9a55b2c02793f6a59ef8f432d7ddfd0f7f734ea2639b1561a291f730e",
+      "trace": "% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.000144           5        27           fsync\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.000144           5        27           total\n"
+    },
+    {
+      "variant": "candidate",
+      "binary_sha256": "b25287373872f18a8ebc78b847d3e9fc39f4385699aca91bb530ab1295f2f1e1",
+      "digest": "3550dbe9a55b2c02793f6a59ef8f432d7ddfd0f7f734ea2639b1561a291f730e",
+      "trace": "% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.000905          34        26           fsync\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.000905          34        26           total\n"
+    }
+  ]
+}

@@ -67,6 +67,8 @@ The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON
 
 The [checkpoint landmark comparison](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) measures sparse in-memory lookup offsets that retain full-block verification, including their memory cost and mixed tails.
 
+The [managed replacement comparison](docs/MANAGED_REPLACEMENT_COMPARISON_2026_11_06.md) records a removed duplicate directory sync, paired checkpoint timings and their VM-noise limits.
+
 A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.
 
 A [streaming scan comparison](docs/STREAM_SCAN_COMPARISON_2026_11_04.md) measures the filtered-query change against its prior implementation and SQLite, including a repeat and VM noise.
