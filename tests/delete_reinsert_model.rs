@@ -316,3 +316,6 @@ fn deletion_reinsertion_and_reads_have_a_serial_history_after_recovery() {
         compared[0], compared[1]
     );
 }
+
+#[path = "delete_reinsert_model/long_history.rs"]
+mod long_history;
