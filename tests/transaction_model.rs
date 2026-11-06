@@ -1,5 +1,6 @@
 //! Concurrent transaction histories checked against a serial reference model.
 use database_engine::{BatchOperation, Store, TimedTransactionError, Transaction, TransactionMode};
+use std::collections::HashSet;
 use std::io::{self, ErrorKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Barrier, Mutex};
@@ -27,6 +28,54 @@ enum Operation {
     ReadBoth,
 }
 
+const MODEL_OPERATIONS: [Operation; 11] = [
+    Operation::Transfer {
+        from: 0,
+        read_set: false,
+        fifo: false,
+        timed: false,
+    },
+    Operation::Transfer {
+        from: 1,
+        read_set: true,
+        fifo: false,
+        timed: false,
+    },
+    Operation::Transfer {
+        from: 0,
+        read_set: true,
+        fifo: true,
+        timed: false,
+    },
+    Operation::Transfer {
+        from: 1,
+        read_set: false,
+        fifo: false,
+        timed: true,
+    },
+    Operation::Transfer {
+        from: 0,
+        read_set: true,
+        fifo: false,
+        timed: true,
+    },
+    Operation::Transfer {
+        from: 1,
+        read_set: true,
+        fifo: true,
+        timed: true,
+    },
+    Operation::SetBoth([5, 5]),
+    Operation::Put { key: 0, value: 2 },
+    Operation::CompareExchange {
+        key: 0,
+        expected: 3,
+        replacement: 7,
+    },
+    Operation::ReadBoth,
+    Operation::ReadBoth,
+];
+
 #[derive(Clone, Copy, Debug)]
 enum Outcome {
     Committed([u8; 2]),
@@ -45,52 +94,64 @@ struct Event {
 }
 
 fn explain(events: &[Event], used: u64, values: [u8; 2]) -> bool {
-    if used.count_ones() as usize == events.len() {
-        return true;
-    }
-    for (index, event) in events.iter().enumerate() {
-        let bit = 1_u64 << index;
-        if used & bit != 0
-            || events.iter().enumerate().any(|(other_index, other)| {
-                used & (1_u64 << other_index) == 0 && other.finished < event.started
-            })
-        {
-            continue;
-        }
-        let mut next = values;
-        match (event.operation, event.outcome) {
-            (Operation::Transfer { .. }, Outcome::Conflict) => {}
-            (Operation::Transfer { from, .. }, Outcome::Committed(observed))
-                if observed == values =>
-            {
-                let to = 1 - from;
-                if next[from] > 0 {
-                    next[from] -= 1;
-                    next[to] += 1;
-                }
-            }
-            (Operation::SetBoth(after), Outcome::Done) => next = after,
-            (Operation::Put { key, value }, Outcome::Done) => next[key] = value,
-            (
-                Operation::CompareExchange {
-                    key,
-                    expected,
-                    replacement,
-                },
-                Outcome::Compared(success),
-            ) if success == (values[key] == expected) => {
-                if success {
-                    next[key] = replacement;
-                }
-            }
-            (Operation::ReadBoth, Outcome::Read(observed)) if observed == values => {}
-            _ => continue,
-        }
-        if explain(events, used | bit, next) {
+    fn search(
+        events: &[Event],
+        used: u64,
+        values: [u8; 2],
+        visited: &mut HashSet<(u64, [u8; 2])>,
+    ) -> bool {
+        if used.count_ones() as usize == events.len() {
             return true;
         }
+        if !visited.insert((used, values)) {
+            return false;
+        }
+        for (index, event) in events.iter().enumerate() {
+            let bit = 1_u64 << index;
+            if used & bit != 0
+                || events.iter().enumerate().any(|(other_index, other)| {
+                    used & (1_u64 << other_index) == 0 && other.finished < event.started
+                })
+            {
+                continue;
+            }
+            let mut next = values;
+            match (event.operation, event.outcome) {
+                (Operation::Transfer { .. }, Outcome::Conflict) => {}
+                (Operation::Transfer { from, .. }, Outcome::Committed(observed))
+                    if observed == values =>
+                {
+                    let to = 1 - from;
+                    if next[from] > 0 {
+                        next[from] -= 1;
+                        next[to] += 1;
+                    }
+                }
+                (Operation::SetBoth(after), Outcome::Done) => next = after,
+                (Operation::Put { key, value }, Outcome::Done) => next[key] = value,
+                (
+                    Operation::CompareExchange {
+                        key,
+                        expected,
+                        replacement,
+                    },
+                    Outcome::Compared(success),
+                ) if success == (values[key] == expected) => {
+                    if success {
+                        next[key] = replacement;
+                    }
+                }
+                (Operation::ReadBoth, Outcome::Read(observed)) if observed == values => {}
+                _ => continue,
+            }
+            if search(events, used | bit, next, visited) {
+                return true;
+            }
+        }
+        false
     }
-    false
+    assert!(events.len() < u64::BITS as usize);
+    search(events, used, values, &mut HashSet::new())
 }
 
 fn read_pair(store: &Store) -> [u8; 2] {
@@ -233,53 +294,7 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         .map(|value| value.parse::<usize>().expect("invalid history count"))
         .unwrap_or(2048);
     assert!((1..=4096).contains(&histories));
-    let operations = [
-        Operation::Transfer {
-            from: 0,
-            read_set: false,
-            fifo: false,
-            timed: false,
-        },
-        Operation::Transfer {
-            from: 1,
-            read_set: true,
-            fifo: false,
-            timed: false,
-        },
-        Operation::Transfer {
-            from: 0,
-            read_set: true,
-            fifo: true,
-            timed: false,
-        },
-        Operation::Transfer {
-            from: 1,
-            read_set: false,
-            fifo: false,
-            timed: true,
-        },
-        Operation::Transfer {
-            from: 0,
-            read_set: true,
-            fifo: false,
-            timed: true,
-        },
-        Operation::Transfer {
-            from: 1,
-            read_set: true,
-            fifo: true,
-            timed: true,
-        },
-        Operation::SetBoth([5, 5]),
-        Operation::Put { key: 0, value: 2 },
-        Operation::CompareExchange {
-            key: 0,
-            expected: 3,
-            replacement: 7,
-        },
-        Operation::ReadBoth,
-        Operation::ReadBoth,
-    ];
+    let operations = MODEL_OPERATIONS;
     let mut compared = [0_usize; 2];
     for iteration in 0..histories {
         let directory = tempfile::tempdir().unwrap();
@@ -339,3 +354,7 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
         compared[0], compared[1]
     );
 }
+
+#[cfg(target_os = "linux")]
+#[path = "transaction_model/long_history.rs"]
+mod long_history;
