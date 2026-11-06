@@ -41,7 +41,8 @@ cargo test --release --locked --no-run --test enospc_tmpfs --message-format=json
 python3 scripts/run_enospc_container.py --cargo-json /path/to/enospc-build.jsonl --output /path/to/new-enospc-result.json
 ```
 
-The [dedicated GitHub workflow](../.github/workflows/enospc.yml) runs this
+A [five-run local campaign](../benchmarks/results/2026-11-06-tmpfs-enospc.json)
+completed 50 scenarios on `ae7ff03`. The [dedicated GitHub workflow](../.github/workflows/enospc.yml) runs this
 check on relevant changes. The normal Rust suite leaves it ignored because it
 requires the isolated filesystem. The test does not establish actual disk
 exhaustion behavior on all filesystems, physical power-loss durability or an
