@@ -20,6 +20,7 @@ name: Filesystem EIO checks
       - "examples/concurrent_eio_probe.rs"
       - "scripts/sync_eio_campaign.py"
       - "scripts/campaign_report.py"
+      - "scripts/campaign_fixtures.py"
       - "scripts/double_eio_campaign.py"
       - "scripts/verify_double_eio_results.py"
       - "scripts/verify_one_shot_fs_results.py"
@@ -38,6 +39,7 @@ name: Filesystem EIO checks
       - "scripts/tests/test_verify_sync_interrupt_results.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_campaign_report.py"
+      - "scripts/tests/test_campaign_fixtures.py"
       - "scripts/tests/test_double_eio_campaign.py"
       - "scripts/tests/test_verify_double_eio_results.py"
       - "scripts/tests/test_verify_one_shot_fs_results.py"
@@ -55,6 +57,7 @@ name: Filesystem EIO checks
       - "examples/concurrent_eio_probe.rs"
       - "scripts/sync_eio_campaign.py"
       - "scripts/campaign_report.py"
+      - "scripts/campaign_fixtures.py"
       - "scripts/double_eio_campaign.py"
       - "scripts/verify_double_eio_results.py"
       - "scripts/verify_one_shot_fs_results.py"
@@ -73,6 +76,7 @@ name: Filesystem EIO checks
       - "scripts/tests/test_verify_sync_interrupt_results.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_campaign_report.py"
+      - "scripts/tests/test_campaign_fixtures.py"
       - "scripts/tests/test_double_eio_campaign.py"
       - "scripts/tests/test_verify_double_eio_results.py"
       - "scripts/tests/test_verify_one_shot_fs_results.py"
@@ -131,6 +135,20 @@ jobs:
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-concurrent-transaction.json" --mode transaction --error EINTR --repetitions 1
           python3 scripts/verify_concurrent_eio_results.py "$RUNNER_TEMP/eintr-concurrent-transaction.json"
           python3 scripts/witness_retry_faults.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/witness-retry.json"
+      - name: Archive retained fault fixtures
+        if: always()
+        run: |
+          shopt -s nullglob
+          fixtures=("$RUNNER_TEMP"/short-write-case-* "$RUNNER_TEMP"/short-write-group-* "$RUNNER_TEMP"/sync-interrupt-case-*)
+          names=()
+          for fixture in "${fixtures[@]}"; do
+            if [[ -d "$fixture" && ! -L "$fixture" ]]; then
+              names+=("${fixture##*/}")
+            fi
+          done
+          if (( ${#names[@]} )); then
+            tar --xattrs --xattrs-include='user.db.commit.v3' -czf "$RUNNER_TEMP/retained-fault-fixtures.tar.gz" -C "$RUNNER_TEMP" -- "${names[@]}"
+          fi
       - name: Preserve result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -162,6 +180,7 @@ jobs:
             ${{ runner.temp }}/short-write.json.progress.json
             ${{ runner.temp }}/sync-interrupt.json
             ${{ runner.temp }}/sync-interrupt.json.progress.json
+            ${{ runner.temp }}/retained-fault-fixtures.tar.gz
             ${{ runner.temp }}/sync-eio-*.json.progress.json
             ${{ runner.temp }}/eio-*.json.progress.json
             ${{ runner.temp }}/eintr-*.json.progress.json

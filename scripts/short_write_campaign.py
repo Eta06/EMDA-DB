@@ -14,6 +14,7 @@ import tempfile
 import time
 
 from campaign_report import ReportWriter
+from campaign_fixtures import fault_fixture
 import concurrent_eio_campaign as concurrent
 import sync_eio_campaign as base
 
@@ -62,8 +63,7 @@ def attempt(binary, library, root, target, cap, mode, operation):
 
 
 def run_case(binary, library, directory, fmt, operation, target_name, cap, mode, order):
-    with tempfile.TemporaryDirectory(prefix='short-write-', dir=directory) as temporary:
-        root = Path(temporary)
+    with fault_fixture(directory, 'short-write-case-') as root:
         if base.run_probe(binary, 'setup', root, fmt) != {'status': 'ready', 'format': fmt}:
             raise ValueError('invalid setup result')
         before = base.snapshot(root, fmt)
@@ -106,8 +106,7 @@ def run_case(binary, library, directory, fmt, operation, target_name, cap, mode,
 
 
 def run_group_case(binary, fixture_binary, library, directory, fmt, cap, mode, order):
-    with tempfile.TemporaryDirectory(prefix='short-write-group-', dir=directory) as temporary:
-        root = Path(temporary)
+    with fault_fixture(directory, 'short-write-group-') as root:
         if base.run_probe(fixture_binary, 'setup', root, fmt) != {'status': 'ready', 'format': fmt}:
             raise ValueError('invalid setup result')
         before = base.snapshot(root, fmt)

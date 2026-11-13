@@ -38,6 +38,12 @@ fixtures existed. The group test briefly delays its first write to encourage
 queued writers and requires an intercepted `writev` rather than counting an
 unreached injection as a pass.
 
+If a case fails or is interrupted, the driver leaves its synthetic fixture in
+the specified fixture directory and reports its path on ordinary errors.
+The hosted workflow archives retained fixtures with the V3 witness xattr so
+they can be inspected alongside the partial report. Successful cases remove
+their disposable fixtures.
+
 The [hosted filesystem workflow](https://github.com/Eta06/EMDA-DB/actions/runs/43526938622)
 also passed all 224 cases on ext4 using clean revision
 `0b85b76d9e1a151a78eed1d67f53c835f321ed8f`. The independent verifier checked

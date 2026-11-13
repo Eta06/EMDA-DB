@@ -31,6 +31,16 @@ recorded matrix and outcomes; the probe checked actual contents before the
 disposable fixtures were removed. The hosted filesystem workflow repeats the
 same check with its current stable toolchain.
 
+The [hosted Linux run](https://github.com/Eta06/EMDA-DB/actions/runs/43528263333)
+passed all 48 cases on ext4 for clean revision
+`71200cb5095ca9a87edbb9ff38d9f4e037fa9f43`. The
+[retained report](../benchmarks/results/2026-11-14-sync-interrupt-hosted.json.gz)
+also passed the independent verifier.
+
+Unexpected failures retain the synthetic fixture and report its path; the
+hosted workflow archives retained fixtures, including the V3 witness xattr.
+Successful cases remove their disposable fixtures.
+
 This is a synthetic interruption and error on a running OS, not a delivered
 signal, physical power-loss test, off-host restore or proof of device
 persistence. It samples only the specified sync points and does not cover

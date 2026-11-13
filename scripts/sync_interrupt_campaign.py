@@ -13,6 +13,7 @@ import tempfile
 import time
 
 from campaign_report import ReportWriter
+from campaign_fixtures import fault_fixture
 import sync_eio_campaign as base
 
 
@@ -36,8 +37,7 @@ def check_trace(path, syscall, mode):
 
 
 def run_case(binary, library, directory, fmt, target, syscall, operation, mode, order):
-    with tempfile.TemporaryDirectory(prefix='sync-interrupt-', dir=directory) as temporary:
-        root = Path(temporary)
+    with fault_fixture(directory, 'sync-interrupt-case-') as root:
         if base.run_probe(binary, 'setup', root, fmt) != {'status': 'ready', 'format': fmt}:
             raise ValueError('invalid setup result')
         before = base.snapshot(root, fmt)
