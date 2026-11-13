@@ -98,3 +98,13 @@ checked the complete case matrix, receipt counts, uncertain-write identities,
 injected errno and target, and recorded reference-fixture hashes in both raw
 reports. It validates the recorded evidence; the probe performed the actual
 pair and source-prefix checks while the fixtures existed.
+
+The [hosted Linux workflow](https://github.com/Eta06/EMDA-DB/actions/runs/42176905971)
+passed on clean revision `f30605d154efefd6069a6537ae5f5adb157bea8c` using ext4.
+Its EIO transaction run recovered all 54 observed acknowledgements across 32
+cases; 32 of 128 failed calls were recovered as complete uncertain pairs. Its
+separate interruption run recovered all 8,192 successful transactions across
+32 cases. The independent verifier checked the retained
+[hosted reports](../benchmarks/results/2026-11-14-hosted-concurrent-transaction-faults.tar.gz).
+These are synthetic returned errors under sampled schedules, not physical
+power-loss tests.

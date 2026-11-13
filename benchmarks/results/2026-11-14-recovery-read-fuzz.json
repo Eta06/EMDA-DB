@@ -1,0 +1,32 @@
+{
+  "revision": "3d5ab773cead2e0751343298108bfe4c1aa16efd",
+  "git_status_before_campaign": "",
+  "git_status_after_campaign_before_archive": "",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "rustc": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "sanitizer": "address",
+  "requested_seconds": 120,
+  "reported_seconds": 121,
+  "executions": 230356,
+  "max_input_bytes": 8192,
+  "timeout_per_input_seconds": 10,
+  "starting_seed_archive": "benchmarks/results/2026-11-06-post-witness-recovery-fuzz.tar.gz",
+  "starting_seed_archive_sha256": "41ecaa83932650b679bbcc401f2151d7ed6b61a44a317a0a92374b24b76aba0c",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "fuzz_cargo_lock_sha256": "2f09025e1817fb64aae0497d7fcc1c0aa7a363f9cf138f68cda2f3e440e5ef45",
+  "fuzz_target_sha256": "a40b054cdc83276c0385d9a429059d6a34eafa295de7c13ee74b7d9747506993",
+  "binary_sha256": "c15f11d6fc82c543a04c44d43753c37de9584480ecb8f6f0745fb8916b5d23f8",
+  "log_sha256": "5998de2a5a1f11cdc18a60bdf8434b50c1975d90f1c5e9a42d4de3ba8c7fc9d1",
+  "archive_sha256": "3e25a5d39e23824016668137626c7878d9bb09f6f0e4d3989225dcec9b9373ef",
+  "output_corpus_files": 169,
+  "failure_artifacts": 0,
+  "exit_code": 0
+}

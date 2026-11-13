@@ -49,3 +49,22 @@ records source, seed, binary and log hashes; the [archive](../benchmarks/results
 contains both logs and generated corpora. These are finite serial campaigns on
 the same shared overlay; they do not inject I/O errors or establish physical
 power-loss or off-host-restore behavior.
+
+## Recovered-value and reopen checks
+
+The ordinary recovery target now requires recovered point reads and a scan to
+succeed, checks bytewise ordering and agreement between scan and point reads,
+and compares the recovered page and probe value after another open. The long
+V2 and V3 seed tests require nonempty recovered pages and check the same page
+after reopening.
+
+An address-sanitized run of clean revision
+`3d5ab773cead2e0751343298108bfe4c1aa16efd` completed 230,356 executions in
+121 seconds without a finding or failure artifact. It started with the 61
+ordinary-recovery corpus inputs from the earlier post-witness run, including
+valid long seeds, and allowed inputs up to 8,192 bytes. The
+[metadata](../benchmarks/results/2026-11-14-recovery-read-fuzz.json) records
+source, binary and log hashes; the [archive](../benchmarks/results/2026-11-14-recovery-read-fuzz.tar.gz)
+contains the resulting corpus and full log. This finite serial campaign ran on
+an overlay filesystem; it does not inject I/O errors or establish physical
+power-loss behavior or off-host restore.
