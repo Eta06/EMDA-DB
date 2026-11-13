@@ -79,6 +79,8 @@ An [admission comparison](docs/TRANSACTION_ADMISSION_COMPARISON_2026_11_04.md) r
 
 The [empty-log recovery report](docs/EMPTY_RECOVERY_COMPARISON_2026_11_04.md) records fail-closed initialization, fault and fuzz checks, and paired reopen measurements with observed VM noise.
 
+The [short-write report](docs/SHORT_WRITE_FAILURES_2026_11_14.md) records 224 selected Linux cases involving actual partial log or witness writes, subsequent retries or injected errors, and both recovery paths. Damaged evidence can require investigation or restore; these checks do not establish physical power-loss safety.
+
 The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) measures reopen time, sampled process memory and point reads through 200,000 keys. The checkpoint-backed writer used less sampled memory but had slower sampled base-key reads than full-log recovery.
 
 A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_2026_11_06.md) checks acknowledged workload values after fresh-process reopens through one million base keys, with observed memory, I/O and VM noise.
