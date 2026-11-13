@@ -320,8 +320,8 @@ fn concurrent_deadlines_preserve_atomic_documents_indexes_and_recovery() {
             // checkpoint-overlay limits. Cleanup happens after recovery checks.
             recovered_db
                 .transaction(|tx| {
-                    for writer in 0..WRITERS {
-                        if observed.present[writer] {
+                    for (writer, &present) in observed.present.iter().enumerate() {
+                        if present {
                             let id = document_id(writer);
                             assert!(tx.delete("records", &id)?);
                             tx.delete_raw(marker_key(&id).as_bytes())?;
