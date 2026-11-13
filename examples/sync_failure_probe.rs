@@ -264,12 +264,48 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
     Ok(())
 }
 
+// A torn log or witness must be rejected on both writable paths. The caller
+// snapshots the underlying files and metadata before and after this check.
+fn verify_rejected(root: &Path, order: &str) -> ProbeResult<()> {
+    let order = match order {
+        "ordinary-first" => ["ordinary", "checkpoint"],
+        "checkpoint-first" => ["checkpoint", "ordinary"],
+        _ => return Err("unknown recovery order".into()),
+    };
+    let digest: [u8; 32] = std::fs::read(root.join("checkpoint.digest"))?
+        .try_into()
+        .map_err(|_| "invalid checkpoint digest")?;
+    for backend in order {
+        let result = if backend == "ordinary" {
+            Store::open(root.join("source")).map(|_| ())
+        } else {
+            CheckpointStore::open(root.join("source"), root.join("checkpoint"), &digest).map(|_| ())
+        };
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
+            Err(error) => {
+                return Err(format!("{backend} returned unexpected error: {error}").into());
+            }
+            Ok(()) => return Err(format!("{backend} accepted torn evidence").into()),
+        }
+    }
+    let restored = root.join("verified-reference");
+    Store::restore(root.join("reference-backup"), &restored)?;
+    check_values(&Store::open(restored)?)?;
+    println!(
+        "{}",
+        json!({"status":"rejected", "recovery_order":order, "backup_verified":true})
+    );
+    Ok(())
+}
+
 fn main() -> ProbeResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
+        [command, root, order] if command == "verify-rejected" => verify_rejected(Path::new(root), order),
         _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <operation> | verify <root> <operation> <success|error> <ordinary-first|checkpoint-first>".into()),
     }
 }
@@ -331,5 +367,26 @@ mod tests {
             "checkpoint-first",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rejected_verifier_requires_corrupt_source_and_checks_both_paths() {
+        use std::io::Write;
+
+        for format in ["v2", "v3"] {
+            let root = tempfile::tempdir().unwrap();
+            setup(root.path(), format).unwrap();
+            assert!(verify_rejected(root.path(), "ordinary-first").is_err());
+            let log = root.path().join("source/records.log");
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log)
+                .unwrap()
+                .write_all(b"x")
+                .unwrap();
+            let evidence = std::fs::read(&log).unwrap();
+            verify_rejected(root.path(), "checkpoint-first").unwrap();
+            assert_eq!(std::fs::read(log).unwrap(), evidence);
+        }
     }
 }

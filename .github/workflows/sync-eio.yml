@@ -26,6 +26,9 @@ name: Filesystem EIO checks
       - "scripts/concurrent_eio_campaign.py"
       - "scripts/verify_concurrent_eio_results.py"
       - "scripts/witness_retry_faults.py"
+      - "scripts/short_write_campaign.py"
+      - "scripts/short_write_inject.c"
+      - "scripts/tests/test_short_write_campaign.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_campaign_report.py"
       - "scripts/tests/test_double_eio_campaign.py"
@@ -51,6 +54,9 @@ name: Filesystem EIO checks
       - "scripts/concurrent_eio_campaign.py"
       - "scripts/verify_concurrent_eio_results.py"
       - "scripts/witness_retry_faults.py"
+      - "scripts/short_write_campaign.py"
+      - "scripts/short_write_inject.c"
+      - "scripts/tests/test_short_write_campaign.py"
       - "scripts/tests/test_sync_eio_campaign.py"
       - "scripts/tests/test_campaign_report.py"
       - "scripts/tests/test_double_eio_campaign.py"
@@ -79,6 +85,7 @@ jobs:
       - name: Build and inject filesystem failures
         run: |
           cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe
+          python3 scripts/short_write_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/sync_failure_probe --concurrent-binary target/release/examples/concurrent_eio_probe --output "$RUNNER_TEMP/short-write.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-result.json"
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/sync-eio-result.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-persistent.json" --persistent-errors
@@ -134,6 +141,8 @@ jobs:
             ${{ runner.temp }}/eio-concurrent-transaction.json
             ${{ runner.temp }}/eintr-concurrent-transaction.json
             ${{ runner.temp }}/witness-retry.json
+            ${{ runner.temp }}/short-write.json
+            ${{ runner.temp }}/short-write.json.progress.json
             ${{ runner.temp }}/sync-eio-*.json.progress.json
             ${{ runner.temp }}/eio-*.json.progress.json
             ${{ runner.temp }}/eintr-*.json.progress.json
