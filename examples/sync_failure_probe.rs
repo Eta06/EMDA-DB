@@ -115,6 +115,70 @@ fn attempt(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn report_handle(
+    operation: &str,
+    outcome: io::Result<()>,
+    read_safe: impl FnOnce() -> io::Result<Option<Vec<u8>>>,
+    try_write: impl FnOnce() -> io::Result<()>,
+) -> ProbeResult<()> {
+    match outcome {
+        Ok(()) => {
+            if read_safe()?.as_deref() != Some(&b"acknowledged"[..]) {
+                return Err("successful operation lost acknowledged data".into());
+            }
+            println!("{}", json!({"status":"success", "operation":operation}));
+        }
+        Err(error) => {
+            let read_blocked = read_safe().is_err();
+            let write_blocked = try_write().is_err();
+            if !read_blocked || !write_blocked {
+                return Err("failed operation did not block subsequent access".into());
+            }
+            println!(
+                "{}",
+                json!({"status":"error", "operation":operation,
+                       "kind":format!("{:?}", error.kind()), "message":error.to_string(),
+                       "read_blocked":read_blocked, "write_blocked":write_blocked})
+            );
+        }
+    }
+    Ok(())
+}
+
+fn attempt_with_handle_check(root: &Path, operation: &str) -> ProbeResult<()> {
+    match operation {
+        "write" | "batch" => {
+            let store = Store::open(root.join("source"))?;
+            let outcome = if operation == "write" {
+                store.put(b"new", b"attempted")
+            } else {
+                store.write_batch(&batch())
+            };
+            report_handle(
+                operation,
+                outcome,
+                || store.get(b"safe"),
+                || store.put(b"after-error", b"must-not-write"),
+            )
+        }
+        "checkpoint-write" | "checkpoint-batch" => {
+            let store = checkpoint_store(root)?;
+            let outcome = if operation == "checkpoint-write" {
+                store.put(b"new", b"attempted")
+            } else {
+                store.write_batch(&batch())
+            };
+            report_handle(
+                operation,
+                outcome,
+                || store.get(b"safe"),
+                || store.put(b"after-error", b"must-not-write"),
+            )
+        }
+        _ => Err("unknown handle-check operation".into()),
+    }
+}
+
 fn inspect_source(
     get: impl Fn(&[u8]) -> io::Result<Option<Vec<u8>>>,
     operation: &str,
@@ -304,6 +368,7 @@ fn main() -> ProbeResult<()> {
     match args.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
+        [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
         [command, root, order] if command == "verify-rejected" => verify_rejected(Path::new(root), order),
         _ => Err("usage: sync_failure_probe setup <empty-root> <v2|v3> | attempt <root> <operation> | verify <root> <operation> <success|error> <ordinary-first|checkpoint-first>".into()),
@@ -313,6 +378,30 @@ fn main() -> ProbeResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handle_check_rejects_access_after_uncertain_failure() {
+        let failure = || io::Error::other("injected uncertain result");
+        assert!(
+            report_handle(
+                "write",
+                Err(failure()),
+                || Ok(Some(b"acknowledged".to_vec())),
+                || Err(failure()),
+            )
+            .is_err()
+        );
+        assert!(report_handle("write", Err(failure()), || Err(failure()), || Ok(()),).is_err());
+        assert!(
+            report_handle(
+                "write",
+                Err(failure()),
+                || Err(failure()),
+                || Err(failure()),
+            )
+            .is_ok()
+        );
+    }
 
     #[test]
     fn verifier_rejects_missing_data_and_partial_publication() {

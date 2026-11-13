@@ -45,13 +45,15 @@ def run_case(binary, library, directory, fmt, target, syscall, operation, mode, 
         env = os.environ.copy()
         env.update(LD_PRELOAD=str(library), EMDA_SYNC_TARGET=str(root / 'source' / target),
                    EMDA_SYNC_MODE=mode, EMDA_SYNC_TRACE=str(trace))
-        run = subprocess.run([str(binary), 'attempt', str(root), operation], env=env,
+        run = subprocess.run([str(binary), 'attempt-with-handle-check', str(root), operation], env=env,
                              capture_output=True, text=True, timeout=60)
         if run.returncode:
             raise RuntimeError(f'attempt failed: {run.stderr[-3000:]}')
         outcome = json.loads(run.stdout)
         if outcome.get('status') != mode or outcome.get('operation') != operation:
             raise ValueError(f'operation incorrectly reported its outcome: {outcome}')
+        if mode == 'error' and (outcome.get('read_blocked') is not True or outcome.get('write_blocked') is not True):
+            raise ValueError('the handle allowed access after an uncertain synchronization')
         events = check_trace(trace, syscall, mode)
         after = base.snapshot(root, fmt)
         base.check_source(before, after, fmt, operation)
