@@ -72,7 +72,26 @@ fuzz_target!(|data: &[u8]| {
                 !dangling_witness,
                 "a dangling witness must not permit fallback"
             );
-            let _ = store.get(b"probe");
+            let probe = store.get(b"probe").expect("read recovered probe");
+            let page = store.scan(None, None, 16).expect("scan recovered keys");
+            for pair in page.windows(2) {
+                assert!(pair[0].0 < pair[1].0, "recovered keys are not ordered");
+            }
+            for (key, value) in &page {
+                assert_eq!(
+                    store.get(key).expect("read recovered key").as_ref(),
+                    Some(value),
+                    "scan and point lookup disagree"
+                );
+            }
+            drop(store);
+            let reopened = Store::open(directory.path()).expect("reopen recovered store");
+            assert_eq!(reopened.get(b"probe").expect("read reopened probe"), probe);
+            assert_eq!(
+                reopened.scan(None, None, 16).expect("scan reopened keys"),
+                page,
+                "recovered page changed after reopening"
+            );
         }
         Err(error)
             if matches!(

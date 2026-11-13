@@ -32,6 +32,14 @@ fn verify_log_seed(data: &[u8], expected: &[(&[u8], &[u8])]) {
     for &(key, value) in expected {
         assert_eq!(store.get(key).unwrap().as_deref(), Some(value));
     }
+    let page = store.scan(None, None, 16).unwrap();
+    assert!(!page.is_empty(), "long seed must exercise recovered reads");
+    for (key, value) in &page {
+        assert_eq!(store.get(key).unwrap().as_ref(), Some(value));
+    }
+    drop(store);
+    let reopened = Store::open(root.path()).unwrap();
+    assert_eq!(reopened.scan(None, None, 16).unwrap(), page);
 }
 
 #[test]
