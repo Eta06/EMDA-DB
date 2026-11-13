@@ -38,6 +38,12 @@ fixtures existed. The group test briefly delays its first write to encourage
 queued writers and requires an intercepted `writev` rather than counting an
 unreached injection as a pass.
 
+The [hosted filesystem workflow](https://github.com/Eta06/EMDA-DB/actions/runs/43526938622)
+also passed all 224 cases on ext4 using clean revision
+`0b85b76d9e1a151a78eed1d67f53c835f321ed8f`. The independent verifier checked
+the retained [hosted report](../benchmarks/results/2026-11-14-short-write-hosted.json.gz),
+which has the same case and outcome counts as the local run.
+
 These are selected, synthetic userspace faults on a running OS; they do not
 cover every schedule, filesystem behavior, partial I/O form, physical power
 loss or off-host restore. The overlay's backing device was not independently
