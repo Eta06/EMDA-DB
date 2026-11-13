@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check recovered reads and reopening in the recovery fuzzer. Exercise short
+  file writes and completed synchronizations reported as interrupted, including
+  failed retries and preserved uncertain outcomes; retain failed test fixtures
+  for inspection. These checks do not establish physical power-loss safety.
+
 - Add native macOS correctness CI for stable Rust and the minimum supported Rust version on Apple silicon. V3 metadata witnesses remain Linux-only.
 
 - Gate Linux-only document compaction handoff tests and check that unsupported platforms reject those handoffs without changing the source data.
