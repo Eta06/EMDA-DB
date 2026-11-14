@@ -1,0 +1,58 @@
+{
+  "revision": "929a43c9ae0e17e0679db9652e11dd650b996714",
+  "git_status_at_start": "clean",
+  "command": "cargo +<toolchain> test [--release] --all-targets --locked -- --test-threads=4",
+  "runs": [
+    {
+      "toolchain": "stable",
+      "profile": "debug",
+      "test_binaries": 140,
+      "passed": 999,
+      "failed": 0,
+      "ignored": 1,
+      "log": "2026-11-14-automatic-configuration-merged-stable.log.gz",
+      "log_sha256": "bb038ea7d0055e7842faa7dea76c3aeac456b1caad182bc262069c9a0a4e4428",
+      "uncompressed_log_sha256": "4cf82001f55265a1fb9457a6801c3522892b36a0c111dda36b386ce05ec49cc7"
+    },
+    {
+      "toolchain": "1.85.0",
+      "profile": "debug",
+      "test_binaries": 140,
+      "passed": 999,
+      "failed": 0,
+      "ignored": 1,
+      "log": "2026-11-14-automatic-configuration-merged-msrv.log.gz",
+      "log_sha256": "790e0700b86e403616389b4710b2ccc51e1808ce32c8251cc9488c849096a358",
+      "uncompressed_log_sha256": "ef482520874c2b2e2e7f5abe1f8a0d5e3e558b4d9f56ebf752666125e7bfa54f"
+    },
+    {
+      "toolchain": "stable",
+      "profile": "release",
+      "test_binaries": 140,
+      "passed": 999,
+      "failed": 0,
+      "ignored": 1,
+      "log": "2026-11-14-automatic-configuration-merged-release.log.gz",
+      "log_sha256": "3f27704f7aba7d2b8c351612e57b80d0fdd7ca3ac5ce9436133ca61a75a49fd6",
+      "uncompressed_log_sha256": "d021aa33b61cd92851391444d7a3952f533939de78eb0fa96e65d112a560629d"
+    }
+  ],
+  "ignored_test": "actual_tmpfs_enospc_preserves_source_and_recovery_evidence",
+  "python": {
+    "command": "python3 -m unittest discover -s scripts/tests",
+    "passed": 139,
+    "log": "2026-11-14-automatic-configuration-merged-python.log.gz",
+    "log_sha256": "1052b45faa6962ab710637788d6f91c9f127566093bf561135dea91b52545cbf"
+  },
+  "rustc_stable": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "rustc_minimum": "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  }
+}

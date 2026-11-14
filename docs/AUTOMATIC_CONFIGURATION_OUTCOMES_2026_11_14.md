@@ -108,6 +108,14 @@ and [raw log](../benchmarks/results/2026-11-14-automatic-configuration-concurren
 record the run. These are coordinated in-process errors with normal reopen,
 not exhaustive scheduling, syscall fault injection or power-loss testing.
 
+After merging these checks, revision `929a43c9ae0e17e0679db9652e11dd650b996714`
+passed the complete local stable, Rust 1.85 and optimized stable all-target
+suites: 999 tests in each configuration. One guarded tmpfs ENOSPC test was
+ignored by each ordinary suite; the [separate hosted ENOSPC workflow](https://github.com/Eta06/EMDA-DB/actions/runs/43562806566)
+passed on that revision. All 139 Python verifier tests passed. The
+[merged-test record](../benchmarks/results/2026-11-14-automatic-configuration-merged-tests.json)
+links the retained logs and records toolchain and filesystem details.
+
 These checks use selected synthetic errors on a running Linux VM with an
 overlay filesystem of unknown backing. They do not cover partial syscalls,
 all error-only code paths, concurrent configuration callers, persistence
