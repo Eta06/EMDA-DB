@@ -102,13 +102,15 @@ jobs:
           sudo apt-get install -y strace
       - name: Build and inject filesystem failures
         run: |
-          cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe --example configuration_failure_probe
+          cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe --example configuration_failure_probe --example reclamation_failure_probe
           python3 scripts/handoff_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/handoff_failure_probe --output "$RUNNER_TEMP/handoff-eio.json" --format v2 --backend managed --syscall-set namespace
           python3 scripts/verify_handoff_eio_results.py "$RUNNER_TEMP/handoff-eio.json"
           python3 scripts/handoff_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/handoff_failure_probe --output "$RUNNER_TEMP/handoff-online-eio.json" --format v2 --backend online --syscall-set namespace
           python3 scripts/verify_handoff_eio_results.py "$RUNNER_TEMP/handoff-online-eio.json"
           python3 scripts/configuration_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/configuration_failure_probe --output "$RUNNER_TEMP/configuration-eio.json" --format v2 --operation re-enable --syscall-set namespace
           python3 scripts/verify_configuration_eio_results.py "$RUNNER_TEMP/configuration-eio.json"
+          python3 scripts/reclamation_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/reclamation_failure_probe --output "$RUNNER_TEMP/reclamation-eio.json" --format v2 --syscall-set namespace
+          python3 scripts/verify_reclamation_eio_results.py "$RUNNER_TEMP/reclamation-eio.json"
           python3 scripts/short_write_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/sync_failure_probe --concurrent-binary target/release/examples/concurrent_eio_probe --output "$RUNNER_TEMP/short-write.json"
           python3 scripts/verify_short_write_results.py "$RUNNER_TEMP/short-write.json"
           python3 scripts/sync_interrupt_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/sync_failure_probe --output "$RUNNER_TEMP/sync-interrupt.json"
@@ -204,6 +206,8 @@ jobs:
             ${{ runner.temp }}/handoff-online-eio.json.progress.json
             ${{ runner.temp }}/configuration-eio.json
             ${{ runner.temp }}/configuration-eio.json.progress.json
+            ${{ runner.temp }}/reclamation-eio.json
+            ${{ runner.temp }}/reclamation-eio.json.progress.json
             ${{ runner.temp }}/eio-double.json.progress.json
             ${{ runner.temp }}/eio-double-sync.json
             ${{ runner.temp }}/eio-double-sync.json.progress.json
