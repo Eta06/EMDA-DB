@@ -71,12 +71,22 @@ fn setup_legacy(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
-fn setup_managed(root: &Path) -> ProbeResult<()> {
+fn setup_managed(root: &Path, operation: &str) -> ProbeResult<()> {
     checkpoint_store(root)?.rollover_managed(root.join("previous-selected"))?;
-    println!(
-        "{}",
-        json!({"status":"ready", "operation":"checkpoint-managed-rollover-existing"})
-    );
+    println!("{}", json!({"status":"ready", "operation":operation}));
+    Ok(())
+}
+
+fn setup_managed_tail(root: &Path, operation: &str) -> ProbeResult<()> {
+    let store = if operation.ends_with("-existing") {
+        CheckpointStore::open_managed(root.join("source"))?
+    } else {
+        checkpoint_store(root)?
+    };
+    store.put(b"tail", b"acknowledged-tail")?;
+    let next_digest = store.checkpoint_to(root.join("expected-next"))?;
+    std::fs::write(root.join("next.digest"), next_digest)?;
+    println!("{}", json!({"status":"ready", "operation":operation}));
     Ok(())
 }
 
@@ -99,12 +109,14 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
         "checkpoint-backup" => checkpoint_store(root)?.backup(target),
         "checkpoint-compaction" => checkpoint_store(root)?.compact_to(target).map(|_| ()),
         "checkpoint-rollover" => checkpoint_store(root)?.rollover_to(target).map(|_| ()),
-        "checkpoint-managed-rollover" => {
+        "checkpoint-managed-rollover" | "checkpoint-managed-rollover-tail" => {
             checkpoint_store(root)?.rollover_managed(target).map(|_| ())
         }
-        "checkpoint-managed-rollover-existing" => CheckpointStore::open_managed(source)?
-            .rollover_managed(target)
-            .map(|_| ()),
+        "checkpoint-managed-rollover-existing" | "checkpoint-managed-rollover-tail-existing" => {
+            CheckpointStore::open_managed(source)?
+                .rollover_managed(target)
+                .map(|_| ())
+        }
         "initialize" => Store::open(target).map(|_| ()),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -150,7 +162,10 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
     use database_engine::PublicationFailure;
     if matches!(
         operation,
-        "checkpoint-managed-rollover" | "checkpoint-managed-rollover-existing"
+        "checkpoint-managed-rollover"
+            | "checkpoint-managed-rollover-existing"
+            | "checkpoint-managed-rollover-tail"
+            | "checkpoint-managed-rollover-tail-existing"
     ) {
         return attempt_managed_publication(root, operation);
     }
@@ -211,7 +226,7 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
 
 fn attempt_managed_publication(root: &Path, operation: &str) -> ProbeResult<()> {
     use database_engine::ManagedRolloverFailure;
-    let store = if operation == "checkpoint-managed-rollover-existing" {
+    let store = if operation.ends_with("-existing") {
         CheckpointStore::open_managed(root.join("source"))
     } else {
         checkpoint_store(root)
@@ -317,6 +332,11 @@ fn inspect_source(
     if get(b"safe")?.as_deref() != Some(&b"acknowledged"[..]) {
         return Err("acknowledged fixture values changed".into());
     }
+    if operation.contains("-rollover-tail")
+        && get(b"tail")?.as_deref() != Some(&b"acknowledged-tail"[..])
+    {
+        return Err("acknowledged managed suffix changed".into());
+    }
     let old_value = get(b"old")?;
     let new_value = get(b"new")?;
     let peer_value = get(b"new-peer")?;
@@ -368,8 +388,19 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
         .map_err(|_| "invalid checkpoint digest")?;
     let managed = matches!(
         operation,
-        "checkpoint-managed-rollover" | "checkpoint-managed-rollover-existing"
+        "checkpoint-managed-rollover"
+            | "checkpoint-managed-rollover-existing"
+            | "checkpoint-managed-rollover-tail"
+            | "checkpoint-managed-rollover-tail-existing"
     );
+    let has_tail = operation.contains("-rollover-tail");
+    let next_digest: [u8; 32] = if has_tail {
+        std::fs::read(root.join("next.digest"))?
+            .try_into()
+            .map_err(|_| "invalid next digest")?
+    } else {
+        digest
+    };
     let selection_visible = managed.then(|| root.join("source/checkpoint.selection").exists());
     let mut new_present = None;
     for backend in order {
@@ -472,25 +503,44 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
                 | "checkpoint-rollover"
                 | "checkpoint-managed-rollover"
                 | "checkpoint-managed-rollover-existing"
+                | "checkpoint-managed-rollover-tail"
+                | "checkpoint-managed-rollover-tail-existing"
         ) {
             // This digest was independently saved before the attempted copy.
-            let view = CheckpointView::open(root.join("source"), &target, &digest)?;
+            let view = CheckpointView::open(root.join("source"), &target, &next_digest)?;
             if view.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
                 || view.get(b"old")?.as_deref() != Some(&b"original"[..])
             {
                 return Err("published checkpoint has incorrect values".into());
             }
+            if has_tail && view.get(b"tail")?.as_deref() != Some(&b"acknowledged-tail"[..]) {
+                return Err("published checkpoint lost the acknowledged suffix".into());
+            }
         } else {
             return Err("unexpected result path".into());
         }
     }
-    if operation == "checkpoint-managed-rollover-existing" {
+    if managed && operation.ends_with("-existing") {
         let previous =
             CheckpointView::open(root.join("source"), root.join("previous-selected"), &digest)?;
         if previous.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
             || previous.get(b"old")?.as_deref() != Some(&b"original"[..])
+            || (has_tail && previous.get(b"tail")?.is_some())
         {
             return Err("previous managed checkpoint has incorrect values".into());
+        }
+    }
+    if has_tail {
+        let expected = CheckpointView::open(
+            root.join("source"),
+            root.join("expected-next"),
+            &next_digest,
+        )?;
+        if expected.get(b"tail")?.as_deref() != Some(&b"acknowledged-tail"[..])
+            || expected.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
+            || expected.get(b"old")?.as_deref() != Some(&b"original"[..])
+        {
+            return Err("trusted suffix checkpoint has incorrect values".into());
         }
     }
     let cleanup = cleanup_abandoned_staging(root)?;
@@ -552,7 +602,8 @@ fn main() -> ProbeResult<()> {
     match args.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "setup-legacy" => setup_legacy(Path::new(root), operation),
-        [command, root] if command == "setup-managed" => setup_managed(Path::new(root)),
+        [command, root, operation] if command == "setup-managed" => setup_managed(Path::new(root), operation),
+        [command, root, operation] if command == "setup-managed-tail" => setup_managed_tail(Path::new(root), operation),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation] if command == "attempt-publication" => attempt_publication(Path::new(root), operation),
         [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
@@ -629,11 +680,16 @@ mod tests {
         for operation in [
             "checkpoint-managed-rollover",
             "checkpoint-managed-rollover-existing",
+            "checkpoint-managed-rollover-tail",
+            "checkpoint-managed-rollover-tail-existing",
         ] {
             let root = tempfile::tempdir().unwrap();
             setup(root.path(), "v2").unwrap();
             if operation.ends_with("-existing") {
-                setup_managed(root.path()).unwrap();
+                setup_managed(root.path(), operation).unwrap();
+            }
+            if operation.contains("-rollover-tail") {
+                setup_managed_tail(root.path(), operation).unwrap();
             }
             action(root.path(), operation).unwrap();
             verify(root.path(), operation, "success", "ordinary-first").unwrap();

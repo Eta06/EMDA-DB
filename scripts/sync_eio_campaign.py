@@ -35,7 +35,8 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
 LEGACY_OPERATIONS = ('upgrade-legacy', 'upgrade-empty-legacy')
-MANAGED_OPERATIONS = ('checkpoint-managed-rollover', 'checkpoint-managed-rollover-existing')
+MANAGED_SUFFIX_OPERATIONS = ('checkpoint-managed-rollover-tail', 'checkpoint-managed-rollover-tail-existing')
+MANAGED_OPERATIONS = ('checkpoint-managed-rollover', 'checkpoint-managed-rollover-existing', *MANAGED_SUFFIX_OPERATIONS)
 PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy',
                           'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover')
 FORMATS = ('v2', 'v3')
@@ -113,9 +114,11 @@ def managed_selection_snapshot(root):
     if encoded_path not in targets:
         raise ValueError('managed selection refers to an unexpected checkpoint')
     selected_digest = data[12 + path_length:-32]
-    if selected_digest != (root / 'checkpoint.digest').read_bytes():
+    target = targets[encoded_path]
+    digest_file = 'next.digest' if target == 'result' and (root / 'next.digest').exists() else 'checkpoint.digest'
+    if selected_digest != (root / digest_file).read_bytes():
         raise ValueError('managed selection digest differs from trusted fixture')
-    return {'bytes': len(data), 'sha256': digest(data), 'checkpoint': targets[encoded_path],
+    return {'bytes': len(data), 'sha256': digest(data), 'checkpoint': target,
             'checkpoint_digest_sha256': digest(selected_digest)}
 
 
@@ -360,15 +363,23 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
             if run_probe(binary, 'setup-legacy', root, operation) != {'status': 'ready', 'operation': operation}:
                 raise ValueError('unexpected legacy fixture setup')
             legacy_before = legacy_snapshot(root)
-        if operation == 'checkpoint-managed-rollover-existing':
-            if run_probe(binary, 'setup-managed', root) != {'status': 'ready', 'operation': operation}:
+        if operation in MANAGED_OPERATIONS and operation.endswith('-existing'):
+            if run_probe(binary, 'setup-managed', root, operation) != {'status': 'ready', 'operation': operation}:
                 raise ValueError('unexpected managed fixture setup')
+        if operation in MANAGED_SUFFIX_OPERATIONS:
+            if run_probe(binary, 'setup-managed-tail', root, operation) != {'status': 'ready', 'operation': operation}:
+                raise ValueError('unexpected managed suffix fixture setup')
         before = snapshot(root, format_name)
         selection_before = managed_selection_snapshot(root) if operation in MANAGED_OPERATIONS else None
-        if operation in MANAGED_OPERATIONS and (selection_before is None) != (operation == 'checkpoint-managed-rollover'):
+        if operation in MANAGED_OPERATIONS and (selection_before is None) == operation.endswith('-existing'):
             raise ValueError('unexpected initial managed selection')
         previous_before = ((root / 'previous-selected').read_bytes()
-                           if operation == 'checkpoint-managed-rollover-existing' else None)
+                           if operation in MANAGED_OPERATIONS and operation.endswith('-existing') else None)
+        suffix_before = ({'checkpoint': (root / 'expected-next').read_bytes(), 'digest': (root / 'next.digest').read_bytes()}
+                         if operation in MANAGED_SUFFIX_OPERATIONS else None)
+        if suffix_before is not None and (len(suffix_before['digest']) != 32
+                                          or suffix_before['digest'] == before['checkpoint_digest']):
+            raise ValueError('managed suffix fixture did not produce a distinct checkpoint digest')
         traced = tracer(binary, root, operation, syscall, ordinal, persistent,
                         syscalls, fixture_only)
         after = snapshot(root, format_name)
@@ -376,6 +387,10 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         previous_after = ((root / 'previous-selected').read_bytes() if previous_before is not None else None)
         if previous_before != previous_after:
             raise ValueError('previous managed checkpoint changed during attempt')
+        suffix_after = ({'checkpoint': (root / 'expected-next').read_bytes(), 'digest': (root / 'next.digest').read_bytes()}
+                        if suffix_before is not None else None)
+        if suffix_before != suffix_after:
+            raise ValueError('trusted suffix checkpoint changed during attempt')
         check_source(before, after, format_name, operation)
         legacy_after = legacy_snapshot(root) if legacy_before is not None else None
         if legacy_before != legacy_after:
@@ -404,6 +419,10 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         previous_final = ((root / 'previous-selected').read_bytes() if previous_before is not None else None)
         if previous_before != previous_final:
             raise ValueError('previous managed checkpoint changed during verification')
+        suffix_final = ({'checkpoint': (root / 'expected-next').read_bytes(), 'digest': (root / 'next.digest').read_bytes()}
+                        if suffix_before is not None else None)
+        if suffix_before != suffix_final:
+            raise ValueError('trusted suffix checkpoint changed during verification')
         if operation in MANAGED_OPERATIONS:
             if selection_after != selection_final or verification.get('selection_visible') != (selection_after is not None):
                 raise ValueError('managed selection changed during verification')
@@ -443,7 +462,11 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
                                        'previous_after_verification_sha256': digest(previous_final) if previous_final is not None else None,
                                        'stages_before_cleanup': selection_stages_before,
                                        'stages_after_cleanup': selection_stages_after}
-                                      if operation in MANAGED_OPERATIONS else None)}
+                                      if operation in MANAGED_OPERATIONS else None),
+                'managed_suffix': ({'before': {key: digest(value) for key, value in suffix_before.items()},
+                                    'after_attempt': {key: digest(value) for key, value in suffix_after.items()},
+                                    'after_verification': {key: digest(value) for key, value in suffix_final.items()}}
+                                   if suffix_before is not None else None)}
 
 
 def main():
@@ -497,7 +520,7 @@ def main():
         'formats': [args.format] if args.format else list(FORMATS),
         'operations': [args.operation] if args.operation else list(PUBLICATION_OPERATIONS if args.publication_outcomes else OPERATIONS),
         'publication_outcomes': args.publication_outcomes,
-        'managed_selection_binding': 1,
+        'managed_selection_binding': 2 if args.operation in MANAGED_SUFFIX_OPERATIONS else 1,
         'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'injected_error': args.injected_error,
         'filesystem': json.loads(subprocess.check_output(

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from sync_eio_campaign import LEGACY_OPERATIONS, MANAGED_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
+from sync_eio_campaign import LEGACY_OPERATIONS, MANAGED_OPERATIONS, MANAGED_SUFFIX_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
 
 ORDERS = {'ordinary-first': ['ordinary', 'checkpoint'],
           'checkpoint-first': ['checkpoint', 'ordinary']}
@@ -19,7 +19,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def check_probe(probe, operation, order, syscall=None, error_name=None, publication=False, managed_binding=False):
+def check_probe(probe, operation, order, syscall=None, error_name=None, publication=False, managed_binding=0):
     require(probe['outcome']['operation'] == operation
             and probe['outcome']['status'] in ('success', 'error'), 'unexpected probe outcome')
     verified = probe['verification']
@@ -50,16 +50,28 @@ def check_probe(probe, operation, order, syscall=None, error_name=None, publicat
     if operation in MANAGED_OPERATIONS:
         selection = probe['managed_selection']
         before, after = selection['before'], selection['after_attempt']
-        require((before is None) == (operation == 'checkpoint-managed-rollover')
+        require((before is None) != operation.endswith('-existing')
                 and after == selection['after_verification']
                 and verified['selection_visible'] == (after is not None)
                 and not selection['stages_after_cleanup'], 'managed selection evidence changed')
+        suffix = None
+        if operation in MANAGED_SUFFIX_OPERATIONS:
+            require(managed_binding == 2, 'missing managed suffix binding version')
+            suffix = probe['managed_suffix']
+            reference = suffix['before']
+            require(all(isinstance(reference[name], str) and re.fullmatch(r'[0-9a-f]{64}', reference[name])
+                        for name in ('checkpoint', 'digest'))
+                    and reference['digest'] != probe['before']['checkpoint_digest_sha256']
+                    and suffix['after_attempt'] == reference and suffix['after_verification'] == reference,
+                    'trusted suffix checkpoint evidence changed')
         for state in (before, after):
             if state is not None:
+                expected_digest = (suffix['before']['digest'] if suffix and state['checkpoint'] == 'result'
+                                   else probe['before']['checkpoint_digest_sha256'])
                 require(type(state['bytes']) is int and state['bytes'] > 0
                         and isinstance(state['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', state['sha256'])
                         and (not managed_binding or
-                             state['checkpoint_digest_sha256'] == probe['before']['checkpoint_digest_sha256']),
+                             state['checkpoint_digest_sha256'] == expected_digest),
                         'invalid managed selection digest')
         previous = selection['previous_checkpoint_sha256']
         require((previous is None if before is None else
@@ -100,7 +112,7 @@ def verify(result):
     publication = result.get('publication_outcomes', False)
     require(type(publication) is bool, 'invalid publication-outcome mode')
     managed_binding = result.get('managed_selection_binding', 0)
-    require(type(managed_binding) is int and managed_binding in (0, 1), 'unknown managed selection binding version')
+    require(type(managed_binding) is int and managed_binding in (0, 1, 2), 'unknown managed selection binding version')
     if publication:
         require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover', *LEGACY_OPERATIONS, *MANAGED_OPERATIONS) for operation in operations),
                 'invalid publication operation')
@@ -116,7 +128,7 @@ def verify(result):
     for case in cases:
         operation = case['operation']
         control = case['control']
-        check_probe(control, operation, 'ordinary-first', publication=publication, managed_binding=bool(managed_binding))
+        check_probe(control, operation, 'ordinary-first', publication=publication, managed_binding=managed_binding)
         require(control['outcome']['status'] == 'success', 'control did not succeed')
         expected = []
         for syscall in SYSCALL_SETS[group]:
@@ -133,7 +145,7 @@ def verify(result):
         actual = [(item['syscall'], item['ordinal'], item['order']) for item in injections]
         require(Counter(actual) == Counter(expected), 'missing or duplicate selected injection')
         for item in injections:
-            check_probe(item, operation, item['order'], item['syscall'], error_name, publication, bool(managed_binding))
+            check_probe(item, operation, item['order'], item['syscall'], error_name, publication, managed_binding)
             outcomes[item['outcome']['status']] += 1
             total += 1
     return {'controls': len(cases), 'injections': total, 'outcomes': dict(outcomes), 'errno': error_name}

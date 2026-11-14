@@ -190,6 +190,23 @@ class OneShotCoverageTests(unittest.TestCase):
         broken['cases'][0]['injections'][1]['managed_selection']['after_attempt']['checkpoint'] = 'previous-selected'
         with self.assertRaisesRegex(ValueError, 'unexpected checkpoint'):
             verify(broken)
+        tail = copy.deepcopy(report)
+        tail_operation = 'checkpoint-managed-rollover-tail'
+        tail.update(operations=[tail_operation], managed_selection_binding=2)
+        tail['cases'][0]['operation'] = tail_operation
+        for value in [tail['cases'][0]['control'], *tail['cases'][0]['injections']]:
+            value['outcome']['operation'] = tail_operation
+            value['verification']['operation'] = tail_operation
+            for key in ('after_attempt', 'after_verification'):
+                if value['managed_selection'][key] is not None:
+                    value['managed_selection'][key]['checkpoint_digest_sha256'] = 'f' * 64
+            reference = {'checkpoint': 'e' * 64, 'digest': 'f' * 64}
+            value['managed_suffix'] = {'before': reference.copy(), 'after_attempt': reference.copy(),
+                                       'after_verification': reference.copy()}
+        self.assertEqual(verify(tail)['injections'], 2)
+        tail['cases'][0]['injections'][1]['managed_suffix']['after_attempt']['digest'] = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'trusted suffix checkpoint evidence changed'):
+            verify(tail)
 
 
 if __name__ == '__main__':

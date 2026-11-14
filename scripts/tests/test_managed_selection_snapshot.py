@@ -27,6 +27,12 @@ class ManagedSelectionSnapshotTests(unittest.TestCase):
             for label in ('previous-selected', 'result'):
                 selection.write_bytes(encoded_selection(root / label, trusted))
                 self.assertEqual(managed_selection_snapshot(root)['checkpoint'], label)
+            next_digest = b'c' * 32
+            (root / 'next.digest').write_bytes(next_digest)
+            selection.write_bytes(encoded_selection(root / 'previous-selected', trusted))
+            self.assertEqual(managed_selection_snapshot(root)['checkpoint'], 'previous-selected')
+            selection.write_bytes(encoded_selection(root / 'result', next_digest))
+            self.assertEqual(managed_selection_snapshot(root)['checkpoint'], 'result')
             selection.write_bytes(encoded_selection(root / 'unrelated', trusted))
             with self.assertRaisesRegex(ValueError, 'unexpected checkpoint'):
                 managed_selection_snapshot(root)
