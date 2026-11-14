@@ -69,7 +69,7 @@ impl CheckpointStore {
     /// Consumes this store and classifies candidate-copy and exchange
     /// failures. The handle is consumed even on error. A candidate can be
     /// partly configured, and no new checkpoint digest is returned on error;
-    /// reconcile affected paths before reopening or retrying.
+    /// coordinate access and reconcile affected paths before retrying.
     pub fn compact_and_replace_detailed(
         self,
         previous: impl AsRef<Path>,

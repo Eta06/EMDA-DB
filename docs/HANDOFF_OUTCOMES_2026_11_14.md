@@ -7,9 +7,10 @@ this call begins candidate publication, failure during candidate preparation
 before this call begins directory exchange, and failure after exchange may
 have begun. The methods consume the original handle even on failure. Existing
 paths and temporary artifacts can remain; a candidate can be partly
-configured, and no error returns a new checkpoint digest. Inspect and
-reconcile affected paths before reopening or retrying. These classifications
-do not establish source health, completed cleanup or an independent backup.
+configured, and no error returns a new checkpoint digest. Coordinate access
+and reopen affected paths for inspection and reconciliation before retrying.
+These classifications do not establish source health, completed cleanup or an
+independent backup.
 
 The ordinary handoff boundary test injects errors at preflight, after the
 candidate copy, before exchange, after exchange and during parent sync. The
@@ -28,3 +29,6 @@ Python tests passed. These tests use selected synthetic hooks and a running OS;
 they do not establish physical power-loss safety, independent off-host
 recovery or every filesystem failure ordering. Online compaction and other
 maintenance operations still have separate error boundaries.
+
+A [filesystem-fault campaign](HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md)
+checks selected actual syscall errors and recovery through both paths.

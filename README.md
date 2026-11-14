@@ -37,6 +37,7 @@ The [managed-rollover report](docs/MANAGED_ROLLOVER_OUTCOMES_2026_11_14.md) chec
 The [managed suffix report](docs/MANAGED_ROLLOVER_SUFFIX_FAILURES_2026_11_14.md) checks recovery of an acknowledged write after the previous checkpoint under injected errors.
 The [managed outcome model](docs/MANAGED_ROLLOVER_MODEL_2026_11_14.md) checks failed-handle behavior and mixed rollover histories.
 The [handoff outcome report](docs/HANDOFF_OUTCOMES_2026_11_14.md) records classified compaction failures and recovery checks.
+The [handoff filesystem-fault report](docs/HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md) checks selected errors across ordinary and checkpoint-backed stores.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
@@ -186,7 +187,7 @@ Both writable stores also provide `checkpoint_to_detailed` with the same publica
 
 `CheckpointStore::rollover_managed_detailed` separately classifies whether this call began checkpoint publication or selection publication. A selection-publication error disables the handle: reopen the visible managed selection, or recover with the previously trusted checkpoint or full log if no selection exists. A failed call returns no new digest. Neither classification establishes store health or cleanup.
 
-Both consuming `compact_and_replace_detailed` APIs distinguish failures before candidate publication, during candidate preparation, and after directory exchange may have begun. The original handle is consumed even on error. A candidate can be partly configured, and an uncertain exchange requires reconciliation of both paths before reopening; these results do not establish cleanup or store health.
+Both consuming `compact_and_replace_detailed` APIs distinguish failures before candidate publication, during candidate preparation, and after directory exchange may have begun. The original handle is consumed even on error. A candidate can be partly configured, and an uncertain exchange requires coordinated reopening and reconciliation of both paths; these results do not establish cleanup or store health.
 
 For example, a transaction can read and update multiple keys together:
 

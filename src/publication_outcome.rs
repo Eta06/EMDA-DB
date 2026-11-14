@@ -95,8 +95,9 @@ pub enum HandoffFailure {
     /// The candidate may exist or be partly configured, but this call did not
     /// begin the directory exchange. Reconcile it before retrying.
     CandidateOutcomeUnknown(io::Error),
-    /// The directory exchange may have happened. Inspect and reconcile both
-    /// paths before reopening; no new checkpoint digest is returned on error.
+    /// The directory exchange may have happened. Coordinate access and reopen
+    /// both paths to inspect and reconcile them before retrying. No new
+    /// checkpoint digest is returned on error.
     ExchangeOutcomeUnknown(io::Error),
 }
 

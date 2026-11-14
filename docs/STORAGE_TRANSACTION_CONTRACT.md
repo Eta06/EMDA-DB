@@ -100,9 +100,9 @@ The consuming ordinary and checkpoint-backed `compact_and_replace_detailed`
 methods distinguish failures before candidate publication, during candidate
 preparation and after exchange may have begun. Candidate uncertainty is
 conservative and can include failure before a candidate is published; that
-candidate may be partly configured. Exchange uncertainty requires inspecting
-both paths before reopening. The original handle is consumed even on failure,
-no failure returns a new checkpoint digest, and existing paths, staging
+candidate may be partly configured. Exchange uncertainty requires coordinated
+reopening and inspection of both paths. The original handle is consumed even
+on failure, no failure returns a new checkpoint digest, and existing paths, staging
 artifacts or an unhealthy source may remain. Online compaction and other
 maintenance operations do not yet provide equivalent classifications.
 

@@ -106,7 +106,7 @@ impl Store {
 
     /// Consumes this store and classifies failures by the candidate-copy and
     /// directory-exchange boundaries. The handle is consumed even on error;
-    /// inspect and reconcile the affected paths before reopening or retrying.
+    /// coordinate access and inspect the affected paths before retrying.
     pub fn compact_and_replace_detailed(
         self,
         source: impl AsRef<Path>,
