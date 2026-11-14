@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in managed-rollover failure outcomes that separately identify
+  attempts to publish the checkpoint and its persistent selection. A selection
+  publication failure still disables the handle until recovery.
+
 - Add opt-in publication outcomes for unmanaged checkpoint rollover. A failed
   post-publication switch retains the old view and returns no new digest.
 

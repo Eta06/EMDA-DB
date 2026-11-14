@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from sync_eio_campaign import LEGACY_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
+from sync_eio_campaign import LEGACY_OPERATIONS, MANAGED_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
 
 ORDERS = {'ordinary-first': ['ordinary', 'checkpoint'],
           'checkpoint-first': ['checkpoint', 'ordinary']}
@@ -39,9 +39,31 @@ def check_probe(probe, operation, order, syscall=None, error_name=None, publicat
                 and probe['after_attempt'] == before and probe['after_verification'] == before,
                 'copy changed source, checkpoint, or backup evidence')
     if publication:
-        from sync_eio_campaign import check_publication_outcome
+        from sync_eio_campaign import check_managed_publication_outcome, check_publication_outcome
         require('classification' in probe['outcome'], 'missing publication classification')
-        check_publication_outcome(probe['outcome'], verified)
+        if operation in MANAGED_OPERATIONS:
+            selection = probe['managed_selection']
+            check_managed_publication_outcome(probe['outcome'], verified, selection['before'], selection['after_attempt'])
+        else:
+            check_publication_outcome(probe['outcome'], verified)
+    if operation in MANAGED_OPERATIONS:
+        selection = probe['managed_selection']
+        before, after = selection['before'], selection['after_attempt']
+        require((before is None) == (operation == 'checkpoint-managed-rollover')
+                and after == selection['after_verification']
+                and verified['selection_visible'] == (after is not None)
+                and not selection['stages_after_cleanup'], 'managed selection evidence changed')
+        for state in (before, after):
+            if state is not None:
+                require(type(state['bytes']) is int and state['bytes'] > 0
+                        and isinstance(state['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', state['sha256']),
+                        'invalid managed selection digest')
+        previous = selection['previous_checkpoint_sha256']
+        require((previous is None if before is None else
+                 isinstance(previous, str) and re.fullmatch(r'[0-9a-f]{64}', previous))
+                and previous == selection['previous_after_attempt_sha256']
+                and previous == selection['previous_after_verification_sha256'],
+                'previous managed checkpoint evidence changed')
     if operation in LEGACY_OPERATIONS:
         states = probe['legacy_source']
         legacy = states['before']
@@ -75,7 +97,7 @@ def verify(result):
     publication = result.get('publication_outcomes', False)
     require(type(publication) is bool, 'invalid publication-outcome mode')
     if publication:
-        require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover', *LEGACY_OPERATIONS) for operation in operations),
+        require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover', *LEGACY_OPERATIONS, *MANAGED_OPERATIONS) for operation in operations),
                 'invalid publication operation')
     require(formats and operations and len(formats) == len(set(formats))
             and len(operations) == len(set(operations)), 'empty or duplicate campaign format or operation')

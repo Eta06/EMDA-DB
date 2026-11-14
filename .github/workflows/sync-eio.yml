@@ -111,7 +111,7 @@ jobs:
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/sync-eio-result.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-publication.json" --publication-outcomes --operation backup --format v2 --max-ordinals 3
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eio-publication.json"
-          for operation in checkpoint checkpoint-copy compaction checkpoint-compaction upgrade checkpoint-rollover upgrade-legacy upgrade-empty-legacy; do
+          for operation in checkpoint checkpoint-copy compaction checkpoint-compaction upgrade checkpoint-rollover checkpoint-managed-rollover checkpoint-managed-rollover-existing upgrade-legacy upgrade-empty-legacy; do
             python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-publication-$operation.json" --publication-outcomes --operation "$operation" --format v2 --max-ordinals 3
             python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eio-publication-$operation.json"
           done

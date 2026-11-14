@@ -730,12 +730,65 @@ impl CheckpointStore {
         )
     }
 
+    /// Creates and selects a managed checkpoint with separate conservative
+    /// failure classifications for checkpoint and selection publication.
+    /// A selection-publication failure disables this instance. Reopen the
+    /// visible selection, or recover with the previous trusted checkpoint or
+    /// full log if none exists. No failure returns a new checkpoint digest,
+    /// and classifications do not certify store health.
+    pub fn rollover_managed_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<[u8; 32], crate::ManagedRolloverFailure> {
+        self.rollover_managed_detailed_with_hooks(
+            destination.as_ref(),
+            |_| Ok(()),
+            || Ok(()),
+            selection::sync_ancestors,
+        )
+    }
+
+    fn rollover_managed_detailed_with_hooks(
+        &self,
+        destination: &Path,
+        sync_checkpoint_parent: impl FnOnce(&Path) -> io::Result<()>,
+        before_selection_rename: impl FnOnce() -> io::Result<()>,
+        sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 32], crate::ManagedRolloverFailure> {
+        crate::publication_outcome::track_managed(|tracker| {
+            self.rollover_managed_tracked(
+                destination,
+                sync_checkpoint_parent,
+                before_selection_rename,
+                sync_selection_parent,
+                Some(tracker),
+            )
+        })
+    }
+
     fn rollover_managed_with_hooks(
         &self,
         destination: &Path,
         sync_checkpoint_parent: impl FnOnce(&Path) -> io::Result<()>,
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        self.rollover_managed_tracked(
+            destination,
+            sync_checkpoint_parent,
+            before_selection_rename,
+            sync_selection_parent,
+            None,
+        )
+    }
+
+    fn rollover_managed_tracked(
+        &self,
+        destination: &Path,
+        sync_checkpoint_parent: impl FnOnce(&Path) -> io::Result<()>,
+        before_selection_rename: impl FnOnce() -> io::Result<()>,
+        sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: Option<&crate::publication_outcome::ManagedTracker>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let mut state = self.write()?;
@@ -762,7 +815,7 @@ impl CheckpointStore {
         }
         // Check path encoding and length before creating any checkpoint.
         selection::Selection::new(destination.clone(), [0; 32])?;
-        let digest = self.create_checkpoint(
+        let digest = self.create_checkpoint_tracked(
             &state,
             &destination,
             |parent| {
@@ -770,9 +823,13 @@ impl CheckpointStore {
                 selection::sync_ancestors(parent)
             },
             true,
+            tracker.map(|tracker| &tracker.checkpoint),
         )?;
         let next_view = self.rollover_view(&state, &destination, &digest)?;
         let next = selection::Selection::new(destination, digest)?;
+        if let Some(tracker) = tracker {
+            tracker.begin_selection();
+        }
         if let Err(error) = selection::publish(
             &self.path,
             &next,

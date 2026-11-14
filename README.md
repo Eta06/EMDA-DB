@@ -180,6 +180,8 @@ Both writable stores also provide `checkpoint_to_detailed` with the same publica
 
 `CheckpointStore::rollover_to_detailed` classifies publication during unmanaged checkpoint rollover. If it returns an error after publication, the prior view remains active, the destination may exist, and no new digest is returned. Managed rollover uses a separate API.
 
+`CheckpointStore::rollover_managed_detailed` separately classifies whether this call began checkpoint publication or selection publication. A selection-publication error disables the handle: reopen the visible managed selection, or recover with the previously trusted checkpoint or full log if no selection exists. A failed call returns no new digest. Neither classification establishes store health or cleanup.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

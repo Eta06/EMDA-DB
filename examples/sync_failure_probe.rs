@@ -71,6 +71,15 @@ fn setup_legacy(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn setup_managed(root: &Path) -> ProbeResult<()> {
+    checkpoint_store(root)?.rollover_managed(root.join("previous-selected"))?;
+    println!(
+        "{}",
+        json!({"status":"ready", "operation":"checkpoint-managed-rollover-existing"})
+    );
+    Ok(())
+}
+
 fn action(root: &Path, operation: &str) -> io::Result<()> {
     let source = root.join("source");
     let target = root.join("result");
@@ -90,6 +99,12 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
         "checkpoint-backup" => checkpoint_store(root)?.backup(target),
         "checkpoint-compaction" => checkpoint_store(root)?.compact_to(target).map(|_| ()),
         "checkpoint-rollover" => checkpoint_store(root)?.rollover_to(target).map(|_| ()),
+        "checkpoint-managed-rollover" => {
+            checkpoint_store(root)?.rollover_managed(target).map(|_| ())
+        }
+        "checkpoint-managed-rollover-existing" => CheckpointStore::open_managed(source)?
+            .rollover_managed(target)
+            .map(|_| ()),
         "initialize" => Store::open(target).map(|_| ()),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -133,6 +148,12 @@ fn attempt(root: &Path, operation: &str) -> ProbeResult<()> {
 
 fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
     use database_engine::PublicationFailure;
+    if matches!(
+        operation,
+        "checkpoint-managed-rollover" | "checkpoint-managed-rollover-existing"
+    ) {
+        return attempt_managed_publication(root, operation);
+    }
     let source = root.join("source");
     let target = root.join("result");
     let outcome = match operation {
@@ -177,6 +198,42 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
                 PublicationFailure::NotPublished(error) => ("not_published", error),
                 PublicationFailure::OutcomeUnknown(error) => ("unknown", error),
                 other => ("unknown", io::Error::other(other)),
+            };
+            println!(
+                "{}",
+                json!({"status":"error", "operation":operation,
+                "classification":classification, "kind":format!("{:?}",error.kind()), "message":error.to_string()})
+            );
+        }
+    }
+    Ok(())
+}
+
+fn attempt_managed_publication(root: &Path, operation: &str) -> ProbeResult<()> {
+    use database_engine::ManagedRolloverFailure;
+    let store = if operation == "checkpoint-managed-rollover-existing" {
+        CheckpointStore::open_managed(root.join("source"))
+    } else {
+        checkpoint_store(root)
+    };
+    let outcome = store
+        .map_err(ManagedRolloverFailure::NotPublished)
+        .and_then(|store| store.rollover_managed_detailed(root.join("result")));
+    match outcome {
+        Ok(_) => println!(
+            "{}",
+            json!({"status":"success", "operation":operation, "classification":null})
+        ),
+        Err(error) => {
+            let (classification, error) = match error {
+                ManagedRolloverFailure::NotPublished(error) => ("not_published", error),
+                ManagedRolloverFailure::CheckpointOutcomeUnknown(error) => {
+                    ("checkpoint_unknown", error)
+                }
+                ManagedRolloverFailure::SelectionOutcomeUnknown(error) => {
+                    ("selection_unknown", error)
+                }
+                other => ("selection_unknown", io::Error::other(other)),
             };
             println!(
                 "{}",
@@ -309,14 +366,22 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
     let digest: [u8; 32] = std::fs::read(root.join("checkpoint.digest"))?
         .try_into()
         .map_err(|_| "invalid checkpoint digest")?;
+    let managed = matches!(
+        operation,
+        "checkpoint-managed-rollover" | "checkpoint-managed-rollover-existing"
+    );
+    let selection_visible = managed.then(|| root.join("source/checkpoint.selection").exists());
     let mut new_present = None;
     for backend in order {
         let present = if backend == "ordinary" {
             let source = Store::open(root.join("source"))?;
             inspect_source(|key| source.get(key), operation, status)?
         } else {
-            let source =
-                CheckpointStore::open(root.join("source"), root.join("checkpoint"), &digest)?;
+            let source = if selection_visible == Some(true) {
+                CheckpointStore::open_managed(root.join("source"))?
+            } else {
+                CheckpointStore::open(root.join("source"), root.join("checkpoint"), &digest)?
+            };
             inspect_source(|key| source.get(key), operation, status)?
         };
         if new_present.is_some_and(|previous| previous != present) {
@@ -402,7 +467,11 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
             }
         } else if matches!(
             operation,
-            "checkpoint" | "checkpoint-copy" | "checkpoint-rollover"
+            "checkpoint"
+                | "checkpoint-copy"
+                | "checkpoint-rollover"
+                | "checkpoint-managed-rollover"
+                | "checkpoint-managed-rollover-existing"
         ) {
             // This digest was independently saved before the attempted copy.
             let view = CheckpointView::open(root.join("source"), &target, &digest)?;
@@ -415,12 +484,30 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
             return Err("unexpected result path".into());
         }
     }
+    if operation == "checkpoint-managed-rollover-existing" {
+        let previous =
+            CheckpointView::open(root.join("source"), root.join("previous-selected"), &digest)?;
+        if previous.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])
+            || previous.get(b"old")?.as_deref() != Some(&b"original"[..])
+        {
+            return Err("previous managed checkpoint has incorrect values".into());
+        }
+    }
     let cleanup = cleanup_abandoned_staging(root)?;
+    let selection_cleanup = if managed {
+        Some(cleanup_abandoned_staging(root.join("source"))?)
+    } else {
+        None
+    };
     println!(
         "{}",
         json!({"status":"verified","operation":operation,"target_visible":visible,
         "new_present":new_present.unwrap(),"recovery_order":order,"initialization_state":initialization_state,"cleanup_removed_markers":cleanup.removed_markers,
-        "cleanup_removed_payloads":cleanup.removed_payloads,"cleanup_skipped":cleanup.skipped})
+        "cleanup_removed_payloads":cleanup.removed_payloads,"cleanup_skipped":cleanup.skipped,
+        "selection_visible":selection_visible,
+        "selection_cleanup_removed_markers":selection_cleanup.as_ref().map(|value| value.removed_markers),
+        "selection_cleanup_removed_payloads":selection_cleanup.as_ref().map(|value| value.removed_payloads),
+        "selection_cleanup_skipped":selection_cleanup.as_ref().map(|value| value.skipped)})
     );
     Ok(())
 }
@@ -465,6 +552,7 @@ fn main() -> ProbeResult<()> {
     match args.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "setup-legacy" => setup_legacy(Path::new(root), operation),
+        [command, root] if command == "setup-managed" => setup_managed(Path::new(root)),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation] if command == "attempt-publication" => attempt_publication(Path::new(root), operation),
         [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
@@ -533,6 +621,24 @@ mod tests {
             std::fs::write(root.path().join("legacy/records.log"), b"changed").unwrap();
             let error = verify(root.path(), operation, "success", "ordinary-first").unwrap_err();
             assert!(error.to_string().contains("legacy source log changed"));
+        }
+    }
+
+    #[test]
+    fn managed_rollover_verifier_rejects_a_corrupt_visible_selection() {
+        for operation in [
+            "checkpoint-managed-rollover",
+            "checkpoint-managed-rollover-existing",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            setup(root.path(), "v2").unwrap();
+            if operation.ends_with("-existing") {
+                setup_managed(root.path()).unwrap();
+            }
+            action(root.path(), operation).unwrap();
+            verify(root.path(), operation, "success", "ordinary-first").unwrap();
+            std::fs::write(root.path().join("source/checkpoint.selection"), b"corrupt").unwrap();
+            assert!(verify(root.path(), operation, "error", "checkpoint-first").is_err());
         }
     }
 

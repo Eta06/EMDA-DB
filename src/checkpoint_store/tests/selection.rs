@@ -8,7 +8,7 @@ fn managed_rollovers_reopen_the_recorded_checkpoint_and_preserve_snapshots() {
     store.put(b"new", b"first").unwrap();
     let snapshot = store.snapshot().unwrap();
     let next = dir.path().join("managed-first");
-    store.rollover_managed(&next).unwrap();
+    store.rollover_managed_detailed(&next).unwrap();
     assert_eq!(store.overlay_keys().unwrap(), 0);
     store.put(b"new", b"second").unwrap();
     assert_eq!(
@@ -42,6 +42,105 @@ fn managed_rollovers_reopen_the_recorded_checkpoint_and_preserve_snapshots() {
         reopened.get(b"third").unwrap().as_deref(),
         Some(&b"value"[..])
     );
+}
+
+#[test]
+fn detailed_managed_rollover_classifies_each_publication_boundary() {
+    use crate::ManagedRolloverFailure;
+    for already_managed in [false, true] {
+        for failure in [
+            "reject",
+            "checkpoint-sync",
+            "checkpoint-open",
+            "selection-before",
+            "selection-after",
+        ] {
+            let (dir, path, checkpoint, digest) = fixture();
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            if already_managed {
+                store.rollover_managed(dir.path().join("first")).unwrap();
+            }
+            store.put(b"before", b"acknowledged").unwrap();
+            let selection_path = super::super::selection::path(&path);
+            let previous_selection = fs::read(&selection_path).ok();
+            let destination = if failure == "reject" {
+                dir.path().join("missing/next")
+            } else {
+                dir.path().join("next")
+            };
+            let result = store.rollover_managed_detailed_with_hooks(
+                &destination,
+                |parent| {
+                    if failure == "checkpoint-sync" {
+                        Err(io::Error::other("injected checkpoint sync failure"))
+                    } else {
+                        if failure == "checkpoint-open" {
+                            fs::remove_file(&destination)?;
+                        }
+                        File::open(parent)?.sync_all()
+                    }
+                },
+                || {
+                    if failure == "selection-before" {
+                        Err(io::Error::other("injected before selection rename"))
+                    } else {
+                        Ok(())
+                    }
+                },
+                |parent| {
+                    if failure == "selection-after" {
+                        Err(io::Error::other("injected selection sync failure"))
+                    } else {
+                        File::open(parent)?.sync_all()
+                    }
+                },
+            );
+            match failure {
+                "reject" => assert!(matches!(
+                    result,
+                    Err(ManagedRolloverFailure::NotPublished(_))
+                )),
+                "checkpoint-sync" | "checkpoint-open" => assert!(matches!(
+                    result,
+                    Err(ManagedRolloverFailure::CheckpointOutcomeUnknown(_))
+                )),
+                _ => assert!(matches!(
+                    result,
+                    Err(ManagedRolloverFailure::SelectionOutcomeUnknown(_))
+                )),
+            }
+            assert_eq!(
+                destination.exists(),
+                !matches!(failure, "reject" | "checkpoint-open")
+            );
+            let visible_selection = fs::read(&selection_path).ok();
+            assert_eq!(
+                visible_selection == previous_selection,
+                failure != "selection-after"
+            );
+            if failure.starts_with("selection-") {
+                assert!(store.get(b"before").is_err());
+                assert!(store.put(b"after", b"rejected").is_err());
+            } else {
+                assert_eq!(
+                    store.get(b"before").unwrap().as_deref(),
+                    Some(&b"acknowledged"[..])
+                );
+            }
+            drop(store);
+            let reopened = if visible_selection.is_some() {
+                retry_lock(|| CheckpointStore::open_managed(&path)).unwrap()
+            } else {
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap()
+            };
+            assert_eq!(
+                reopened.get(b"before").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+            assert_eq!(reopened.get(b"after").unwrap(), None);
+            reopened.put(b"resumed", b"value").unwrap();
+        }
+    }
 }
 
 #[test]

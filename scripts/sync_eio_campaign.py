@@ -35,6 +35,7 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
 LEGACY_OPERATIONS = ('upgrade-legacy', 'upgrade-empty-legacy')
+MANAGED_OPERATIONS = ('checkpoint-managed-rollover', 'checkpoint-managed-rollover-existing')
 PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy',
                           'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover')
 FORMATS = ('v2', 'v3')
@@ -90,6 +91,16 @@ def describe_legacy(state):
     return {'bytes': len(state['log']), **{
         name + '_sha256': digest(value) if value is not None else None
         for name, value in state.items()}}
+
+
+def managed_selection_snapshot(root):
+    selection = root / 'source' / 'checkpoint.selection'
+    if not os.path.lexists(selection):
+        return None
+    if not stat.S_ISREG(selection.lstat().st_mode):
+        raise ValueError('managed selection is not a regular file')
+    data = selection.read_bytes()
+    return {'bytes': len(data), 'sha256': digest(data)}
 
 
 def initialization_snapshot(root):
@@ -291,6 +302,28 @@ def check_publication_outcome(outcome, verification):
         raise ValueError('a not-published call left a visible destination')
 
 
+def check_managed_publication_outcome(outcome, verification, before, after):
+    classification = outcome.get('classification')
+    target = verification.get('target_visible')
+    selection = verification.get('selection_visible')
+    if type(target) is not bool or type(selection) is not bool:
+        raise ValueError('missing managed publication visibility')
+    if outcome['status'] == 'success':
+        if classification is not None or not target or not selection or before == after:
+            raise ValueError('invalid successful managed rollover')
+    elif classification == 'not_published':
+        if target or before != after:
+            raise ValueError('managed rollover published after a not-published result')
+    elif classification == 'checkpoint_unknown':
+        if before != after:
+            raise ValueError('selection changed before its publication began')
+    elif classification == 'selection_unknown':
+        if not target:
+            raise ValueError('selection publication began without its checkpoint')
+    else:
+        raise ValueError('invalid managed publication failure classification')
+
+
 def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
              order='ordinary-first', persistent=False, syscalls=SYSCALLS, fixture_only=False,
              tracer=traced_attempt, allow_unrecognized_markers=False):
@@ -304,16 +337,30 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
             if run_probe(binary, 'setup-legacy', root, operation) != {'status': 'ready', 'operation': operation}:
                 raise ValueError('unexpected legacy fixture setup')
             legacy_before = legacy_snapshot(root)
+        if operation == 'checkpoint-managed-rollover-existing':
+            if run_probe(binary, 'setup-managed', root) != {'status': 'ready', 'operation': operation}:
+                raise ValueError('unexpected managed fixture setup')
         before = snapshot(root, format_name)
+        selection_before = managed_selection_snapshot(root) if operation in MANAGED_OPERATIONS else None
+        if operation in MANAGED_OPERATIONS and (selection_before is None) != (operation == 'checkpoint-managed-rollover'):
+            raise ValueError('unexpected initial managed selection')
+        previous_before = ((root / 'previous-selected').read_bytes()
+                           if operation == 'checkpoint-managed-rollover-existing' else None)
         traced = tracer(binary, root, operation, syscall, ordinal, persistent,
                         syscalls, fixture_only)
         after = snapshot(root, format_name)
+        selection_after = managed_selection_snapshot(root) if operation in MANAGED_OPERATIONS else None
+        previous_after = ((root / 'previous-selected').read_bytes() if previous_before is not None else None)
+        if previous_before != previous_after:
+            raise ValueError('previous managed checkpoint changed during attempt')
         check_source(before, after, format_name, operation)
         legacy_after = legacy_snapshot(root) if legacy_before is not None else None
         if legacy_before != legacy_after:
             raise ValueError('legacy source log or witness changed during attempted upgrade')
         stages_before = stage_inventory(root)
         markers_before = stage_markers(root, stages_before)
+        selection_stages_before = stage_inventory(root / 'source') if operation in MANAGED_OPERATIONS else []
+        selection_markers_before = stage_markers(root / 'source', selection_stages_before)
         initial_target = initialization_snapshot(root) if operation == 'initialize' else None
         verification = run_probe(binary, 'verify', root, operation, traced['outcome']['status'], order)
         expected_order = ['ordinary', 'checkpoint'] if order == 'ordinary-first' else ['checkpoint', 'ordinary']
@@ -321,12 +368,31 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
                 or verification.get('recovery_order') != expected_order):
             raise ValueError('recovery verification did not complete')
         if 'classification' in traced['outcome']:
-            check_publication_outcome(traced['outcome'], verification)
+            if operation in MANAGED_OPERATIONS:
+                check_managed_publication_outcome(traced['outcome'], verification, selection_before, selection_after)
+            else:
+                check_publication_outcome(traced['outcome'], verification)
         final = snapshot(root, format_name)
         check_source(before, final, format_name, operation)
         legacy_final = legacy_snapshot(root) if legacy_before is not None else None
         if legacy_before != legacy_final:
             raise ValueError('legacy source log or witness changed during verification')
+        selection_final = managed_selection_snapshot(root) if operation in MANAGED_OPERATIONS else None
+        previous_final = ((root / 'previous-selected').read_bytes() if previous_before is not None else None)
+        if previous_before != previous_final:
+            raise ValueError('previous managed checkpoint changed during verification')
+        if operation in MANAGED_OPERATIONS:
+            if selection_after != selection_final or verification.get('selection_visible') != (selection_after is not None):
+                raise ValueError('managed selection changed during verification')
+            selection_stages_after = stage_inventory(root / 'source')
+            if selection_stages_after:
+                if not allow_unrecognized_markers:
+                    raise ValueError(f'managed staging names remain after cleanup: {selection_stages_after}')
+                check_unrecognized_markers(root / 'source', selection_markers_before, selection_stages_after)
+                if verification.get('selection_cleanup_skipped', 0) < len(selection_stages_after):
+                    raise ValueError('managed cleanup did not report preserved malformed markers')
+        else:
+            selection_stages_after = []
         final_target = initialization_snapshot(root) if operation == 'initialize' else None
         if operation == 'initialize':
             check_initialization(initial_target, final_target)
@@ -346,7 +412,15 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
                 'legacy_source': ({'before': describe_legacy(legacy_before),
                                    'after_attempt': describe_legacy(legacy_after),
                                    'after_verification': describe_legacy(legacy_final)}
-                                  if legacy_before is not None else None)}
+                                  if legacy_before is not None else None),
+                'managed_selection': ({'before': selection_before, 'after_attempt': selection_after,
+                                       'after_verification': selection_final,
+                                       'previous_checkpoint_sha256': digest(previous_before) if previous_before is not None else None,
+                                       'previous_after_attempt_sha256': digest(previous_after) if previous_after is not None else None,
+                                       'previous_after_verification_sha256': digest(previous_final) if previous_final is not None else None,
+                                       'stages_before_cleanup': selection_stages_before,
+                                       'stages_after_cleanup': selection_stages_after}
+                                      if operation in MANAGED_OPERATIONS else None)}
 
 
 def main():
@@ -364,7 +438,7 @@ def main():
                         default='EIO', help='returned errno to inject; EIO is the default')
     parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync',
                         help='sync (default), data writes/metadata, reads, opens, or namespace operations')
-    parser.add_argument('--operation', choices=(*OPERATIONS, 'checkpoint-copy', *LEGACY_OPERATIONS), help='optional single-operation check')
+    parser.add_argument('--operation', choices=(*OPERATIONS, 'checkpoint-copy', *LEGACY_OPERATIONS, *MANAGED_OPERATIONS), help='optional single-operation check')
     parser.add_argument('--publication-outcomes', action='store_true',
                         help='exercise detailed copy-publication classifications')
     parser.add_argument('--format', choices=FORMATS, help='optional single-format check')
@@ -375,7 +449,7 @@ def main():
         parser.error('existing fixture directory and binary, new output, and valid ordinal limit required')
     if args.persistent_errors and (args.syscall_set != 'sync' or args.injected_error != 'EIO'):
         parser.error('persistent errors are supported only for synchronization EIO')
-    if args.publication_outcomes and args.operation and args.operation not in (*PUBLICATION_OPERATIONS, *LEGACY_OPERATIONS):
+    if args.publication_outcomes and args.operation and args.operation not in (*PUBLICATION_OPERATIONS, *LEGACY_OPERATIONS, *MANAGED_OPERATIONS):
         parser.error('unsupported publication-outcome operation')
     binary = str(Path(args.binary).resolve())
     directory = str(Path(args.directory).resolve())

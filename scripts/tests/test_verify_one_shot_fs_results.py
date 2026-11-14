@@ -132,6 +132,59 @@ class OneShotCoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'legacy source log or witness changed'):
                 verify(report)
 
+    def test_managed_rollover_classifies_checkpoint_and_selection_separately(self):
+        report = fixture()
+        operation = 'checkpoint-managed-rollover'
+        report.update(publication_outcomes=True, operations=[operation])
+        case = report['cases'][0]
+        case['operation'] = operation
+        selected = {'bytes': 80, 'sha256': 'a' * 64}
+        for value in [case['control'], *case['injections']]:
+            value['outcome'].update(operation=operation, classification=None)
+            value['verification'].update(operation=operation, target_visible=True, selection_visible=True)
+            value['managed_selection'] = {'before': None, 'after_attempt': selected.copy(),
+                                          'after_verification': selected.copy(),
+                                          'previous_checkpoint_sha256': None,
+                                          'previous_after_attempt_sha256': None,
+                                          'previous_after_verification_sha256': None,
+                                          'stages_after_cleanup': []}
+        first, second = case['injections']
+        first['outcome'].update(status='error', classification='checkpoint_unknown')
+        first['verification']['selection_visible'] = False
+        first['managed_selection'].update(after_attempt=None, after_verification=None)
+        second['outcome'].update(status='error', classification='selection_unknown')
+        self.assertEqual(verify(report)['injections'], 2)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][0]['verification']['selection_visible'] = True
+        broken['cases'][0]['injections'][0]['managed_selection'].update(
+            after_attempt=selected.copy(), after_verification=selected.copy())
+        with self.assertRaisesRegex(ValueError, 'selection changed before'):
+            verify(broken)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][1]['verification']['target_visible'] = False
+        with self.assertRaisesRegex(ValueError, 'without its checkpoint'):
+            verify(broken)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][1]['managed_selection']['after_verification']['sha256'] = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'selection evidence changed'):
+            verify(broken)
+        existing = copy.deepcopy(report)
+        existing_operation = 'checkpoint-managed-rollover-existing'
+        existing['operations'] = [existing_operation]
+        existing['cases'][0]['operation'] = existing_operation
+        old = {'bytes': 80, 'sha256': 'c' * 64}
+        for value in [existing['cases'][0]['control'], *existing['cases'][0]['injections']]:
+            value['outcome']['operation'] = existing_operation
+            value['verification'].update(operation=existing_operation, selection_visible=True)
+            value['managed_selection'].update(before=old.copy(), previous_checkpoint_sha256='d' * 64,
+                previous_after_attempt_sha256='d' * 64, previous_after_verification_sha256='d' * 64)
+        existing['cases'][0]['injections'][0]['managed_selection'].update(
+            after_attempt=old.copy(), after_verification=old.copy())
+        self.assertEqual(verify(existing)['injections'], 2)
+        existing['cases'][0]['injections'][0]['managed_selection']['previous_after_attempt_sha256'] = 'e' * 64
+        with self.assertRaisesRegex(ValueError, 'previous managed checkpoint evidence changed'):
+            verify(existing)
+
 
 if __name__ == '__main__':
     unittest.main()

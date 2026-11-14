@@ -86,7 +86,16 @@ may create a source lock file even if the copy fails.
 rollover: if the call fails after publication, the prior view remains active,
 the destination may exist and no new digest is returned. This classification
 does not establish store health. Managed rollover, compact-and-replace
-handoffs and other maintenance publications do not yet provide it.
+handoffs and other maintenance publications require different boundaries.
+`rollover_managed_detailed` distinguishes a call that did not begin either
+publication from an uncertain checkpoint publication and an uncertain
+selection publication. The checkpoint-uncertain result means this call did
+not begin selection publication. The selection-uncertain result disables the
+handle; reopen and reconcile the visible selection, or explicitly recover
+from the previous trusted checkpoint or full log if none exists. Pre-existing
+files and staging artifacts can exist in any case, no error returns the new
+digest, and the classifications do not establish store health. Other
+maintenance handoffs do not yet provide equivalent classifications.
 
 ## Current prototype: one store in one process
 
