@@ -7,7 +7,8 @@ failure after candidate publication may have begun but before exchange is
 attempted, and failure after exchange may have begun. The handle is not
 consumed. An exchange-uncertain failure disables it; coordinate callers, drop
 it, and reopen both paths to reconcile before retrying. The existing online
-reclamation API retains its separate error type.
+reclamation API retains its separate error type; its newer [detailed variant](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md)
+also classifies the handoff stage.
 
 Other callbacks can write while the copy is prepared. A candidate left after
 failure may omit later source writes and must not be assumed to be a current

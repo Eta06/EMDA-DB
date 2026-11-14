@@ -162,6 +162,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   checks both visible paths and disabled handles under selected returned errors.
   A short [reference-model campaign](ONLINE_HANDOFF_MODEL_2026_11_14.md)
   mixes successful handoffs, rejected destinations and invalid options.
+- [x] Add opt-in handoff classifications to online reclamation while
+  preserving its separate post-handoff cleanup failure. [Boundary and model
+  checks](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md) record the scope.
 - [x] Classify automatic-checkpoint configuration publication for first
   enable, re-enable and disable. A pre-publication classification does not
   certify handle health. [Recovery and fault checks](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md)

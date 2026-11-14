@@ -39,6 +39,7 @@ The [managed outcome model](docs/MANAGED_ROLLOVER_MODEL_2026_11_14.md) checks fa
 The [handoff outcome report](docs/HANDOFF_OUTCOMES_2026_11_14.md) records classified compaction failures and recovery checks.
 The [handoff filesystem-fault report](docs/HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md) checks selected errors across ordinary and checkpoint-backed stores.
 The [online handoff report](docs/ONLINE_HANDOFF_OUTCOMES_2026_11_14.md) records its distinct failure and concurrent-write behavior.
+The [online reclamation outcome report](docs/ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md) records classified handoff and cleanup failures.
 The [online handoff fault report](docs/ONLINE_HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md) checks returned filesystem errors, path recovery and disabled handles.
 The [online handoff model](docs/ONLINE_HANDOFF_MODEL_2026_11_14.md) checks mixed compaction histories against a replayable reference model.
 The [automatic-checkpoint configuration report](docs/AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md) checks classified failures, recovery and local backup restoration.

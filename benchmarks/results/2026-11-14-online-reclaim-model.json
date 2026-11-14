@@ -1,0 +1,47 @@
+{
+  "revision": "70eda753ad5c901eb1f788d0ce5d672eec59f8e2",
+  "run_command": "cargo +nightly-2026-11-03 fuzz run online_compaction <corpus> -- -max_total_time=90 -max_len=96 -timeout=15 -seed=1142026",
+  "rustc": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "cargo-fuzz 0.13.2",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "binary_sha256": "c0aef3b255439e07bf91c13574f98af68b0b8ebb2f10b10f5f908f64b4ac6f69",
+  "target_sha256": "fd074c1b637ebda891cf465cabbb4c076a2cd776f88496cb3212eae4917505e2",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "fuzz_lock_sha256": "2f09025e1817fb64aae0497d7fcc1c0aa7a363f9cf138f68cda2f3e440e5ef45",
+  "seed_sha256": {
+    "detailed-collision": "d0642fc78f93a7bd7b97f2352d264e365d942e68e2a19c58cf5749d12a6d808f",
+    "detailed-reclaim": "19ed5cd33d52e3d38151413f60ff50e70bdc45a075d64514f4c7b6c68d51c94e",
+    "mixed": "c9473d360bacf20fd5b169808d778c095c8e74d248213cae0b5f2b96f69ec519",
+    "reclaim": "f824abad0966eb30de6ef5cf3c95e64cacb96bc47924be7d2cb5530d18d128d2",
+    "v2-detailed": "78a51fe55d4e332a34cd2e83f0140caa85f146d69908d0fb5fa7ce5eddc44156",
+    "v2-detailed-reclaim": "4c8f5773999d3c941bc6d1e0a0bd71a0699113ae3163cc9207af9430d79e5794"
+  },
+  "libfuzzer_seed": 1142026,
+  "completed_runs": 4611,
+  "elapsed_seconds_reported": 91,
+  "coverage_counters": 2451,
+  "feature_count": 11108,
+  "libfuzzer_final_corpus_count": 245,
+  "final_corpus_files": 245,
+  "forced_v2_initial_files": 53,
+  "default_initial_files": 192,
+  "configured_max_len": 96,
+  "last_reported_length_limit": 24,
+  "raw_log": "2026-11-14-online-reclaim-model.log.gz",
+  "replay_corpus": "2026-11-14-online-reclaim-model-corpus.tar.gz",
+  "fixed_seed_log": "2026-11-14-online-reclaim-model-fixed-seeds.log.gz",
+  "replay": {
+    "loaded_corpus_files": 245,
+    "reported_runs": 247,
+    "elapsed_seconds_reported": 4,
+    "raw_log": "2026-11-14-online-reclaim-model-replay.log.gz"
+  }
+}
