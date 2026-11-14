@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in generic staging-cleanup outcomes that distinguish calls which
+  began no removals from failures after removal may have started.
+
 - Exercise process termination at detailed managed-rebuild checkpoint and
   selection publication points, including acknowledged suffix recovery.
 

@@ -66,7 +66,10 @@ pub use recovered_view::{
     RecoveredCheckpointView, RecoveredViewLimits,
 };
 pub use snapshot_reaper::{SnapshotReaper, SnapshotReaperStatus};
-pub use staging::{StagingCleanup, cleanup_abandoned_staging};
+pub use staging::{
+    StagingCleanup, StagingCleanupFailure, cleanup_abandoned_staging,
+    cleanup_abandoned_staging_detailed,
+};
 pub use store::{
     COMPACTED_CHECKPOINT_FILE, Entry, GroupCommitStatus, MAX_ACTIVE_SNAPSHOTS,
     MAX_GROUP_COMMIT_BUFFERED_BYTES, MAX_GROUP_COMMIT_BUFFERED_RECORDS, MAX_SCAN_BYTES,

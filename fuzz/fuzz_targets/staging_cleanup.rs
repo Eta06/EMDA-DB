@@ -1,6 +1,8 @@
 #![no_main]
 //! Model recognized, malformed, retired and unrelated staging entries.
-use database_engine::cleanup_abandoned_staging;
+use database_engine::{
+    StagingCleanupFailure, cleanup_abandoned_staging, cleanup_abandoned_staging_detailed,
+};
 use libfuzzer_sys::fuzz_target;
 use std::ffi::OsString;
 use std::fs;
@@ -120,7 +122,20 @@ fuzz_target!(|data: &[u8]| {
         ));
     }
 
-    let report = cleanup_abandoned_staging(root.path()).expect("cleanup fixture");
+    if data[0] & 0x40 != 0 {
+        let missing = root.path().join("missing-parent");
+        assert!(matches!(
+            cleanup_abandoned_staging_detailed(&missing),
+            Err(StagingCleanupFailure::NotStarted(_))
+        ));
+        assert!(!missing.exists());
+    }
+    let detailed_first = data[0] & 0x80 != 0;
+    let report = if detailed_first {
+        cleanup_abandoned_staging_detailed(root.path()).expect("detailed cleanup fixture")
+    } else {
+        cleanup_abandoned_staging(root.path()).expect("cleanup fixture")
+    };
     assert_eq!(report.removed_markers, removed_markers);
     assert_eq!(report.removed_payloads, removed_payloads);
     assert_eq!(report.skipped, skipped);
@@ -138,7 +153,11 @@ fuzz_target!(|data: &[u8]| {
         b"preserve unrelated content"
     );
     let after = snapshot(root.path());
-    let again = cleanup_abandoned_staging(root.path()).expect("repeat cleanup");
+    let again = if detailed_first {
+        cleanup_abandoned_staging(root.path()).expect("repeat cleanup")
+    } else {
+        cleanup_abandoned_staging_detailed(root.path()).expect("repeat detailed cleanup")
+    };
     assert_eq!(again.removed_markers, 0);
     assert_eq!(again.removed_payloads, 0);
     assert_eq!(snapshot(root.path()), after);

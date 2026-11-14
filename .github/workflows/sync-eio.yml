@@ -21,6 +21,7 @@ name: Filesystem EIO checks
       - "examples/handoff_failure_probe.rs"
       - "examples/configuration_failure_probe.rs"
       - "examples/reclamation_failure_probe.rs"
+      - "examples/staging_cleanup_failure_probe.rs"
       - "scripts/sync_eio_campaign.py"
       - "scripts/campaign_report.py"
       - "scripts/campaign_fixtures.py"
@@ -34,6 +35,8 @@ name: Filesystem EIO checks
       - "scripts/verify_configuration_eio_results.py"
       - "scripts/reclamation_eio_campaign.py"
       - "scripts/verify_reclamation_eio_results.py"
+      - "scripts/staging_cleanup_eio_campaign.py"
+      - "scripts/verify_staging_cleanup_eio_results.py"
       - "scripts/verify_concurrent_eio_results.py"
       - "scripts/witness_retry_faults.py"
       - "scripts/short_write_campaign.py"
@@ -57,6 +60,7 @@ name: Filesystem EIO checks
       - "scripts/tests/test_verify_handoff_eio_results.py"
       - "scripts/tests/test_verify_configuration_eio_results.py"
       - "scripts/tests/test_verify_reclamation_eio_results.py"
+      - "scripts/tests/test_verify_staging_cleanup_eio_results.py"
       - "scripts/tests/test_sync_eio_workflow_paths.py"
       - "scripts/tests/test_witness_retry_faults.py"
   pull_request:
@@ -71,6 +75,7 @@ name: Filesystem EIO checks
       - "examples/handoff_failure_probe.rs"
       - "examples/configuration_failure_probe.rs"
       - "examples/reclamation_failure_probe.rs"
+      - "examples/staging_cleanup_failure_probe.rs"
       - "scripts/sync_eio_campaign.py"
       - "scripts/campaign_report.py"
       - "scripts/campaign_fixtures.py"
@@ -84,6 +89,8 @@ name: Filesystem EIO checks
       - "scripts/verify_configuration_eio_results.py"
       - "scripts/reclamation_eio_campaign.py"
       - "scripts/verify_reclamation_eio_results.py"
+      - "scripts/staging_cleanup_eio_campaign.py"
+      - "scripts/verify_staging_cleanup_eio_results.py"
       - "scripts/verify_concurrent_eio_results.py"
       - "scripts/witness_retry_faults.py"
       - "scripts/short_write_campaign.py"
@@ -107,6 +114,7 @@ name: Filesystem EIO checks
       - "scripts/tests/test_verify_handoff_eio_results.py"
       - "scripts/tests/test_verify_configuration_eio_results.py"
       - "scripts/tests/test_verify_reclamation_eio_results.py"
+      - "scripts/tests/test_verify_staging_cleanup_eio_results.py"
       - "scripts/tests/test_sync_eio_workflow_paths.py"
       - "scripts/tests/test_witness_retry_faults.py"
 
@@ -128,7 +136,11 @@ jobs:
           sudo apt-get install -y strace
       - name: Build and inject filesystem failures
         run: |
-          cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe --example configuration_failure_probe --example reclamation_failure_probe
+          cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe --example configuration_failure_probe --example reclamation_failure_probe --example staging_cleanup_failure_probe
+          for group in sync namespace; do
+            python3 scripts/staging_cleanup_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/staging_cleanup_failure_probe --output "$RUNNER_TEMP/staging-cleanup-eio-$group.json" --syscall-set "$group" --max-ordinals 3
+            python3 scripts/verify_staging_cleanup_eio_results.py "$RUNNER_TEMP/staging-cleanup-eio-$group.json"
+          done
           python3 scripts/handoff_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/handoff_failure_probe --output "$RUNNER_TEMP/handoff-eio.json" --format v2 --backend managed --syscall-set namespace
           python3 scripts/verify_handoff_eio_results.py "$RUNNER_TEMP/handoff-eio.json"
           python3 scripts/handoff_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/handoff_failure_probe --output "$RUNNER_TEMP/handoff-online-eio.json" --format v2 --backend online --syscall-set namespace
@@ -234,6 +246,8 @@ jobs:
             ${{ runner.temp }}/configuration-eio.json.progress.json
             ${{ runner.temp }}/reclamation-eio.json
             ${{ runner.temp }}/reclamation-eio.json.progress.json
+            ${{ runner.temp }}/staging-cleanup-eio-*.json
+            ${{ runner.temp }}/staging-cleanup-eio-*.json.progress.json
             ${{ runner.temp }}/eio-double.json.progress.json
             ${{ runner.temp }}/eio-double-sync.json
             ${{ runner.temp }}/eio-double-sync.json.progress.json

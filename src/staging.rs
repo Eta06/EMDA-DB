@@ -330,6 +330,41 @@ pub struct StagingCleanup {
     pub skipped: usize,
 }
 
+/// A failed explicit generic staging cleanup, classified by this call's
+/// removal attempts. Existing stages and unrelated files may still exist in
+/// either case. The error does not certify directory durability, cleanup of
+/// every stage, source health, or an independent backup. Panics unwind instead
+/// of returning a classification.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum StagingCleanupFailure {
+    /// This call began no payload or ownership-marker removal. Synchronization
+    /// or other non-removal effects may still have occurred.
+    NotStarted(io::Error),
+    /// This call may have removed a payload, marker, or part of a directory.
+    /// Inspect the trusted directory before deciding how to resume cleanup.
+    OutcomeUnknown(io::Error),
+}
+
+impl std::fmt::Display for StagingCleanupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotStarted(error) => write!(formatter, "staging removal not started: {error}"),
+            Self::OutcomeUnknown(error) => {
+                write!(formatter, "staging removal outcome unknown: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StagingCleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotStarted(error) | Self::OutcomeUnknown(error) => Some(error),
+        }
+    }
+}
+
 fn marker_kind(name: &OsStr) -> Option<Kind> {
     let name = name.to_str()?;
     let (kind, remainder) = if let Some(rest) = name.strip_prefix(FILE_PREFIX) {
@@ -366,6 +401,39 @@ fn marker_kind(name: &OsStr) -> Option<Kind> {
 /// Published destinations are outside the reserved namespace and are untouched.
 pub fn cleanup_abandoned_staging(parent: impl AsRef<Path>) -> io::Result<StagingCleanup> {
     cleanup_with_sync(parent.as_ref(), File::sync_all)
+}
+
+/// Removes recognized generic stages with a conservative removal outcome on
+/// failure. The same trusted-directory, cooperative-locking, marker, and
+/// durability requirements as [`cleanup_abandoned_staging`] apply. A
+/// `NotStarted` error only concerns this call's removal attempts; `OutcomeUnknown`
+/// requires inspecting the directory before resuming. Neither result protects
+/// against external mutation or establishes source health or secure erasure.
+pub fn cleanup_abandoned_staging_detailed(
+    parent: impl AsRef<Path>,
+) -> Result<StagingCleanup, StagingCleanupFailure> {
+    cleanup_detailed_with_hooks(parent.as_ref(), File::sync_all, File::sync_all, || Ok(()))
+}
+
+fn cleanup_detailed_with_hooks(
+    parent: &Path,
+    sync_payload_removal: impl FnMut(&File) -> io::Result<()>,
+    sync_parent: impl FnOnce(&File) -> io::Result<()>,
+    mut before_remove: impl FnMut() -> io::Result<()>,
+) -> Result<StagingCleanup, StagingCleanupFailure> {
+    let mut removal_started = false;
+    cleanup_selected_with_syncs(parent, None, sync_payload_removal, sync_parent, || {
+        before_remove()?;
+        removal_started = true;
+        Ok(())
+    })
+    .map_err(|error| {
+        if removal_started {
+            StagingCleanupFailure::OutcomeUnknown(error)
+        } else {
+            StagingCleanupFailure::NotStarted(error)
+        }
+    })
 }
 
 fn cleanup_with_sync(
@@ -628,3 +696,6 @@ mod tests;
 
 #[cfg(test)]
 mod ordering_tests;
+
+#[cfg(test)]
+mod cleanup_outcome_tests;
