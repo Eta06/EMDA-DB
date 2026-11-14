@@ -42,7 +42,7 @@ pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES
 
 use crate::{
     CancellationToken, CheckpointStore, CheckpointTransactionMode, ControlledTransactionError,
-    Store, TimedTransactionError, TransactionMode,
+    Store, TimedTransactionError, TransactionFailure, TransactionMode,
 };
 use serde_json::Value;
 use std::io;
@@ -200,6 +200,51 @@ impl<'a> DocumentDatabase<'a> {
                     DocumentTransactionMode::ReadSetFifo => CheckpointTransactionMode::ReadSetFifo,
                 };
                 store.transaction_controlled(cancellation, deadline, mode, |tx| {
+                    let mut transaction = DocumentTransaction::checkpoint(tx);
+                    let result = action(&mut transaction);
+                    transaction.finish(result)
+                })
+            }
+        }
+    }
+
+    /// Runs document and raw-key work with structured transaction outcomes.
+    ///
+    /// Callback failures include a document mutation failure detected while
+    /// finishing staging. Confirmed aborts apply only to this transaction's
+    /// staged changes; independent writes and other callback effects remain.
+    /// Reconcile unknown outcomes before retry; recovery alone may not show
+    /// whether a particular operation took effect. Deadlines and cancellation
+    /// are cooperative, and panics unwind instead of returning a failure.
+    pub fn transaction_detailed<T>(
+        &self,
+        mode: DocumentTransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&CancellationToken>,
+        action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> io::Result<T>,
+    ) -> Result<T, TransactionFailure> {
+        match self.backend {
+            Backend::Store(store) => {
+                let mode = match mode {
+                    DocumentTransactionMode::Conservative => TransactionMode::Conservative,
+                    DocumentTransactionMode::ReadSet => TransactionMode::ReadSet,
+                    DocumentTransactionMode::ReadSetFifo => TransactionMode::ReadSetFifo,
+                };
+                store.transaction_detailed(mode, deadline, cancellation, |tx| {
+                    let mut transaction = DocumentTransaction::ordinary(tx);
+                    let result = action(&mut transaction);
+                    transaction.finish(result)
+                })
+            }
+            Backend::Checkpoint(store) => {
+                let mode = match mode {
+                    DocumentTransactionMode::Conservative => {
+                        CheckpointTransactionMode::Conservative
+                    }
+                    DocumentTransactionMode::ReadSet => CheckpointTransactionMode::ReadSet,
+                    DocumentTransactionMode::ReadSetFifo => CheckpointTransactionMode::ReadSetFifo,
+                };
+                store.transaction_detailed(mode, deadline, cancellation, |tx| {
                     let mut transaction = DocumentTransaction::checkpoint(tx);
                     let result = action(&mut transaction);
                     transaction.finish(result)

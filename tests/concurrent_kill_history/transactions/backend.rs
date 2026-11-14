@@ -1,6 +1,21 @@
 //! Transaction adapters for both writable paths.
 use super::*;
-use database_engine::{CheckpointTransaction, Transaction};
+use database_engine::{
+    CheckpointTransaction, CheckpointTransactionMode, Transaction, TransactionFailure,
+    TransactionMode,
+};
+
+fn detailed<T>(result: Result<T, TransactionFailure>) -> io::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(
+            TransactionFailure::Callback(error)
+            | TransactionFailure::Rejected(error)
+            | TransactionFailure::OutcomeUnknown(error),
+        ) => Err(error),
+        Err(other) => panic!("unexpected detailed transaction result: {other:?}"),
+    }
+}
 
 trait TransactionOps {
     fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>>;
@@ -43,6 +58,16 @@ pub(super) trait TransactionStore: TestStore {
 impl TransactionStore for Store {
     fn increment(&self, worker: usize, sequence: usize) -> io::Result<u64> {
         let key = marker_key(worker, sequence);
+        if sequence % 2 == 1 {
+            let mode = match worker % 3 {
+                0 => TransactionMode::Conservative,
+                1 => TransactionMode::ReadSet,
+                _ => TransactionMode::ReadSetFifo,
+            };
+            return detailed(
+                self.transaction_detailed(mode, None, None, |tx| stage_increment(tx, &key)),
+            );
+        }
         match worker % 3 {
             0 => self.transaction(|tx| stage_increment(tx, &key)),
             1 => self.transaction_with_read_set(|tx| stage_increment(tx, &key)),
@@ -64,6 +89,17 @@ impl TransactionStore for Store {
 impl TransactionStore for CheckpointStore {
     fn increment(&self, worker: usize, sequence: usize) -> io::Result<u64> {
         let key = marker_key(worker, sequence);
+        if sequence % 2 == 1 {
+            let mode = match worker {
+                0 => CheckpointTransactionMode::Conservative,
+                1 => CheckpointTransactionMode::ReadSet,
+                2 => CheckpointTransactionMode::ReadSetFifo,
+                _ => CheckpointTransactionMode::Fifo,
+            };
+            return detailed(
+                self.transaction_detailed(mode, None, None, |tx| stage_increment(tx, &key)),
+            );
+        }
         match worker {
             0 => self.transaction(|tx| stage_increment(tx, &key)),
             1 => self.transaction_with_read_set(|tx| stage_increment(tx, &key)),

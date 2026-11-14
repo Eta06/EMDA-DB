@@ -183,6 +183,63 @@ fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
     }
 }
 
+#[test]
+fn detailed_transactions_report_uncertain_commit_failures_even_for_documents() {
+    for fault_kind in 0..4 {
+        for document in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(
+                dir.path().join("records.log"),
+                include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+            )
+            .unwrap();
+            fs::write(
+                dir.path().join("commit.state"),
+                include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+            )
+            .unwrap();
+            let fault = Arc::new(Mutex::new(None));
+            let store = open_versioned_fault_store(dir.path(), Arc::clone(&fault)).unwrap();
+            store.put(b"safe", b"committed").unwrap();
+            *fault.lock().unwrap() = Some(match fault_kind {
+                0 => Fault::PartialAppend(0),
+                1 => Fault::SyncBefore,
+                2 => Fault::SyncAfter,
+                _ => Fault::SyncWouldBlock,
+            });
+            let error = if document {
+                crate::DocumentDatabase::new(&store)
+                    .transaction_detailed(
+                        crate::DocumentTransactionMode::Conservative,
+                        None,
+                        None,
+                        |tx| tx.put_raw(b"unknown", b"value"),
+                    )
+                    .unwrap_err()
+            } else {
+                store
+                    .transaction_detailed(crate::TransactionMode::Conservative, None, None, |tx| {
+                        tx.put(b"unknown", b"value")
+                    })
+                    .unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                crate::TransactionFailure::OutcomeUnknown(_)
+            ));
+            assert!(store.get(b"safe").is_err());
+            drop(store);
+            let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
+            assert_eq!(
+                reopened.get(b"safe").unwrap().as_deref(),
+                Some(&b"committed"[..])
+            );
+            let expected = (fault_kind != 0).then_some(&b"value"[..]);
+            assert_eq!(reopened.get(b"unknown").unwrap().as_deref(), expected);
+        }
+    }
+}
+
 pub(super) fn open_fault_store(
     dir: &TempDir,
     fault: Arc<Mutex<Option<Fault>>>,

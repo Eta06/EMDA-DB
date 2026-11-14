@@ -86,6 +86,25 @@ class ConcurrentReportVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'EAGAIN case did not report a failed writer'):
             verify(report)
 
+    def test_detailed_confirmed_aborts_must_not_recover(self):
+        report = fixture()
+        report['mode'] = 'detailed'
+        for case in report['cases']:
+            for worker in case['receipts']['workers']:
+                worker['classification'] = 'unknown' if worker['id'] == 0 else 'not_submitted'
+            for checked in case['verified']:
+                checked['mode'] = 'detailed'
+        result = verify(report)
+        self.assertEqual((result['confirmed_aborts'], result['unknown_calls']), (96, 32))
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['receipts']['workers'][0]['classification'] = 'not_submitted'
+        with self.assertRaisesRegex(ValueError, 'invalid or inconsistent uncertain outcomes'):
+            verify(broken)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['receipts']['workers'][0]['classification'] = 'unrecognized'
+        with self.assertRaisesRegex(ValueError, 'invalid detailed failure classification'):
+            verify(broken)
+
 
 if __name__ == '__main__':
     unittest.main()

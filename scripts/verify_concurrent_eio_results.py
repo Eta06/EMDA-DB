@@ -15,7 +15,7 @@ def verify(report):
     error = report.get('error')
     mode = report.get('mode')
     repetitions = report.get('repetitions')
-    if error not in ('EIO', 'EINTR', 'EAGAIN') or mode not in ('single', 'transaction') or type(repetitions) is not int or not 1 <= repetitions <= 20:
+    if error not in ('EIO', 'EINTR', 'EAGAIN') or mode not in ('single', 'transaction', 'detailed') or type(repetitions) is not int or not 1 <= repetitions <= 20:
         raise ValueError('invalid campaign configuration')
     expected = set(itertools.product(range(1, repetitions + 1), ('v2', 'v3'),
                                      ('ordinary', 'checkpoint'), ('witness', 'log-sync'),
@@ -35,6 +35,7 @@ def verify(report):
             raise ValueError('invalid worker receipts')
         acknowledged = 0
         failed = set()
+        confirmed_aborts = set()
         for index, worker in enumerate(workers):
             values = worker.get('acknowledged')
             failure = worker.get('failed')
@@ -49,6 +50,15 @@ def verify(report):
             acknowledged += len(values)
             if failure is not None:
                 failed.add((index, failure))
+            classification = worker.get('classification')
+            if mode == 'detailed':
+                if ((failure is None and classification is not None)
+                        or (failure is not None and classification not in ('not_submitted', 'unknown'))):
+                    raise ValueError('invalid detailed failure classification')
+                if classification == 'not_submitted':
+                    confirmed_aborts.add((index, failure))
+            elif classification is not None:
+                raise ValueError('unexpected failure classification')
         if error in ('EIO', 'EAGAIN') and not failed:
             raise ValueError(f'{error} case did not report a failed writer')
         if error == 'EAGAIN' and not any(
@@ -71,7 +81,7 @@ def verify(report):
             try:
                 positions = [tuple(position) for position in uncertain]
                 valid = all(len(position) == 2 and all(type(n) is int for n in position)
-                            and position in failed for position in positions)
+                            and position in failed and position not in confirmed_aborts for position in positions)
                 valid = valid and len(set(positions)) == len(positions)
             except (TypeError, ValueError):
                 valid = False
@@ -104,6 +114,9 @@ def verify(report):
         totals['cases'] += 1
         totals['acknowledgements'] += acknowledged
         totals['failed_calls'] += len(failed)
+        if mode == 'detailed':
+            totals['confirmed_aborts'] += len(confirmed_aborts)
+            totals['unknown_calls'] += len(failed) - len(confirmed_aborts)
         totals['uncertain_present'] += len(recovered)
         totals['injections'] += len(traces)
     if seen != expected:

@@ -126,6 +126,64 @@ fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
 }
 
 #[test]
+fn detailed_transactions_preserve_unknown_outcomes_after_append_or_sync_failure() {
+    for fault_kind in 0..5 {
+        for document in [false, true] {
+            let (_dir, path, checkpoint, digest) = fixture();
+            let mut store =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            store.log.replace_io_for_test(Box::new(FaultLog {
+                file,
+                fault: match fault_kind {
+                    0 => LogFault::Partial(0),
+                    1 => LogFault::SyncBefore,
+                    2 => LogFault::SyncAfter,
+                    3 => LogFault::SyncTimeout,
+                    _ => LogFault::SyncWouldBlock,
+                },
+            }));
+            let error = if document {
+                crate::DocumentDatabase::with_checkpoint_store(&store)
+                    .transaction_detailed(
+                        crate::DocumentTransactionMode::Conservative,
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(30)),
+                        None,
+                        |tx| tx.put_raw(b"unknown", b"value"),
+                    )
+                    .unwrap_err()
+            } else {
+                store
+                    .transaction_detailed(
+                        crate::CheckpointTransactionMode::Conservative,
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(30)),
+                        None,
+                        |tx| tx.put(b"unknown", b"value"),
+                    )
+                    .unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                crate::TransactionFailure::OutcomeUnknown(_)
+            ));
+            assert!(store.get(b"base").is_err());
+            drop(store);
+            let reopened = retry_lock(|| Store::open(&path)).unwrap();
+            assert_eq!(
+                reopened.get(b"base").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+            let expected = (fault_kind != 0).then_some(&b"value"[..]);
+            assert_eq!(reopened.get(b"unknown").unwrap().as_deref(), expected);
+        }
+    }
+}
+
+#[test]
 fn every_partial_witness_write_and_sync_failure_poison_until_reopen() {
     let faults = (0..=witness::WITNESS_SIZE)
         .map(WitnessFault::Partial)

@@ -673,6 +673,72 @@ fn cancellation_during_checkpoint_sync_preserves_success_or_unknown_io_outcome()
 }
 
 #[test]
+fn detailed_cancellation_during_sync_keeps_success_or_unknown_outcome() {
+    use crate::{CancellationToken, CheckpointTransactionMode, TransactionFailure};
+    use std::sync::{Arc, Mutex, mpsc};
+    use std::time::Duration;
+    for failure in [
+        None,
+        Some(io::ErrorKind::Other),
+        Some(io::ErrorKind::Interrupted),
+    ] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        let (entered_send, entered_receive) = mpsc::channel();
+        let (resume_send, resume_receive) = mpsc::channel();
+        store.log.replace_io_for_test(Box::new(BlockingSyncLog {
+            file,
+            entered: entered_send,
+            resume: Mutex::new(resume_receive),
+            failure,
+        }));
+        let store = Arc::new(store);
+        let writing = Arc::clone(&store);
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let worker = std::thread::spawn(move || {
+            writing.transaction_detailed(
+                CheckpointTransactionMode::Fifo,
+                None,
+                Some(&worker_token),
+                |tx| {
+                    tx.put(b"left", b"one")?;
+                    tx.put(b"right", b"two")
+                },
+            )
+        });
+        let entered = entered_receive.recv_timeout(Duration::from_secs(10));
+        token.cancel();
+        let _ = resume_send.send(());
+        let result = worker.join().unwrap();
+        entered.expect("transaction did not enter synchronization");
+        if let Some(kind) = failure {
+            assert!(
+                matches!(result, Err(TransactionFailure::OutcomeUnknown(ref error)) if error.kind() == kind)
+            );
+            failed_instance_rejects_all_operations(&store, &path);
+        } else {
+            result.unwrap();
+        }
+        drop(store);
+        let recovered = retry_lock(|| Store::open(&path)).unwrap();
+        let values = recovered.get_many(&[b"left", b"right"]).unwrap();
+        assert!(
+            values == vec![None, None]
+                || values == vec![Some(b"one".to_vec()), Some(b"two".to_vec())]
+        );
+        if failure.is_none() {
+            assert_eq!(values, vec![Some(b"one".to_vec()), Some(b"two".to_vec())]);
+        }
+    }
+}
+
+#[test]
 fn sync_timeout_is_an_unknown_operation_error_not_confirmed_expiry() {
     use crate::{CheckpointTransactionMode, TimedTransactionError};
     use std::time::{Duration, Instant};

@@ -342,7 +342,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, false, None, None)
+        self.run_transaction(action, false, false, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -357,7 +357,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, true, None, None)
+        self.run_transaction(action, false, true, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -376,7 +376,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, false, None, None)
+        self.run_transaction(action, true, false, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -387,7 +387,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, true, None, None)
+        self.run_transaction(action, true, true, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -415,7 +415,7 @@ impl CheckpointStore {
             mode,
             CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
         );
-        self.run_transaction(action, read_set, fifo, Some(deadline), None)
+        self.run_transaction(action, read_set, fifo, Some(deadline), None, None)
     }
 
     /// Runs a selected mode with cooperative cancellation and an optional
@@ -441,8 +441,44 @@ impl CheckpointStore {
             mode,
             CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
         );
-        self.run_transaction(action, read_set, fifo, deadline, Some(cancellation))
+        self.run_transaction(action, read_set, fifo, deadline, Some(cancellation), None)
             .map_err(crate::cancellation::classify)
+    }
+
+    /// Runs a transaction with optional controls and structured failure outcomes.
+    ///
+    /// Rejection, callback failure, cancellation and expiry guarantee only
+    /// that this transaction's staged writes were not submitted. Callback
+    /// side effects and independent writes are not rolled back. An unknown
+    /// outcome requires reconciliation before retry and can conservatively
+    /// include pre-append failures and failures during automatic checkpoint
+    /// maintenance. Recovery alone may not identify whether a particular
+    /// operation took effect. Panics unwind.
+    pub fn transaction_detailed<T>(
+        &self,
+        mode: CheckpointTransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> Result<T, crate::TransactionFailure> {
+        let read_set = matches!(
+            mode,
+            CheckpointTransactionMode::ReadSet | CheckpointTransactionMode::ReadSetFifo
+        );
+        let fifo = matches!(
+            mode,
+            CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
+        );
+        let tracker = crate::transaction_outcome::Tracker::new();
+        self.run_transaction(
+            action,
+            read_set,
+            fifo,
+            deadline,
+            cancellation,
+            Some(&tracker),
+        )
+        .map_err(|error| tracker.classify(error))
     }
 
     fn run_transaction<T>(
@@ -452,6 +488,7 @@ impl CheckpointStore {
         fifo: bool,
         deadline: Option<Instant>,
         cancellation: Option<&crate::CancellationToken>,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> Result<T, TimedTransactionError> {
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
@@ -495,7 +532,13 @@ impl CheckpointStore {
             staged: BTreeMap::new(),
             encoded_bytes: 4,
         };
+        if let Some(tracker) = tracker {
+            tracker.callback();
+        }
         let result = action(&mut transaction)?;
+        if let Some(tracker) = tracker {
+            tracker.before_commit();
+        }
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         let operations = transaction
@@ -536,6 +579,9 @@ impl CheckpointStore {
                 .collect::<Vec<_>>();
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
+            if let Some(tracker) = tracker {
+                tracker.commit();
+            }
             self.commit_until(
                 &mut state,
                 Operation::Batch,

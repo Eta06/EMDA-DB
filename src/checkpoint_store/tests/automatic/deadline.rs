@@ -149,3 +149,56 @@ fn transaction_cancellation_during_automatic_rollover_prevents_append() {
     );
     assert_eq!(reopened.get(b"b").unwrap(), None);
 }
+
+#[test]
+fn detailed_cancellation_during_automatic_rollover_is_a_confirmed_abort() {
+    use crate::{CancellationToken, TransactionFailure};
+    use std::sync::Arc;
+    let (_dir, path, mut store) = managed_fixture(1024, 1, 64);
+    store.enable_automatic_checkpoints().unwrap();
+    store.put(b"a", b"acknowledged").unwrap();
+    let original_log = fs::read(path.join("records.log")).unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    store.log.replace_io_for_test(Box::new(PausingLog {
+        file,
+        armed: AtomicBool::new(true),
+        entered: entered_tx,
+        resume: Mutex::new(resume_rx),
+    }));
+    let store = Arc::new(store);
+    let token = CancellationToken::new();
+    let result = std::thread::scope(|scope| {
+        let store = Arc::clone(&store);
+        let worker_token = token.clone();
+        let worker = scope.spawn(move || {
+            store.transaction_detailed(
+                CheckpointTransactionMode::Conservative,
+                None,
+                Some(&worker_token),
+                |tx| tx.put(b"b", b"must-not-commit"),
+            )
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        token.cancel();
+        let _ = resume_tx.send(());
+        let result = worker.join().unwrap();
+        entered.expect("automatic rollover did not reach the pause");
+        result
+    });
+    assert!(matches!(result, Err(TransactionFailure::Cancelled)));
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), original_log);
+    assert_eq!(store.get(b"b").unwrap(), None);
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+    assert_eq!(
+        reopened.get(b"a").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    assert_eq!(reopened.get(b"b").unwrap(), None);
+}

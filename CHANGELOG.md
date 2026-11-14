@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in `transaction_detailed` on both writable stores and the document
+  interface. It distinguishes callback/staging failures, pre-submission
+  rejections, confirmed cancellation/deadline expiry and uncertain commit
+  outcomes. Commit-path failures are conservative and can include rejections
+  before append. Existing transaction APIs retain their prior error types.
+
 - Release read-only checkpoint-view witness and anchor handles after validation,
   while retaining the writable store's witness checks. A versioned log without
   its witness rejects attempts to append, synchronize or verify as a writer.

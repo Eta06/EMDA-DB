@@ -16,6 +16,77 @@ struct Metadata {
     fault: Fault,
 }
 
+#[test]
+fn detailed_transactions_treat_v3_witness_failures_as_unknown_outcomes() {
+    for fault in [
+        Fault::WriteBefore,
+        Fault::WriteAfter,
+        Fault::SyncBefore,
+        Fault::SyncAfter,
+    ] {
+        for document in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let checkpoint = root.path().join("checkpoint");
+            let ordinary = Store::open(&path).unwrap();
+            ordinary.put(b"base", b"acknowledged").unwrap();
+            let digest = ordinary.checkpoint_to(&checkpoint).unwrap();
+            drop(ordinary);
+            let mut store =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            let header = fs::read(path.join("records.log")).unwrap();
+            let id = crate::metadata_witness::parse_header(
+                header[..witness::LOG_HEADER_SIZE].try_into().unwrap(),
+            )
+            .unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            store.log.attach_test_witness(Witness::for_test(
+                Box::new(Metadata { file, fault }),
+                id,
+                header.len() as u64,
+            ));
+            let error = if document {
+                crate::DocumentDatabase::with_checkpoint_store(&store)
+                    .transaction_detailed(
+                        crate::DocumentTransactionMode::Conservative,
+                        None,
+                        None,
+                        |tx| tx.put_raw(b"unknown", b"value"),
+                    )
+                    .unwrap_err()
+            } else {
+                store
+                    .transaction_detailed(
+                        crate::CheckpointTransactionMode::Conservative,
+                        None,
+                        None,
+                        |tx| tx.put(b"unknown", b"value"),
+                    )
+                    .unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                crate::TransactionFailure::OutcomeUnknown(_)
+            ));
+            assert!(store.get(b"base").is_err());
+            drop(store);
+            let reopened = retry_lock(|| Store::open(&path)).unwrap();
+            assert_eq!(
+                reopened.get(b"base").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+            assert_eq!(
+                reopened.get(b"unknown").unwrap().as_deref(),
+                Some(&b"value"[..])
+            );
+        }
+    }
+}
+
 impl WitnessIo for Metadata {
     fn len(&self) -> io::Result<u64> {
         Ok(witness::WITNESS_SIZE as u64)

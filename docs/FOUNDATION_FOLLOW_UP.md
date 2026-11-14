@@ -92,7 +92,17 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [ ] Keep write acknowledgement, unknown outcomes, corruption handling and compatibility limitations aligned with `STORAGE_TRANSACTION_CONTRACT.md` as behavior changes.
 - [x] Distinguish directly returned pre-commit transaction conflicts from other `WouldBlock` errors using `is_transaction_conflict`. Checks cover ordinary, checkpoint and document transactions, callback and admission errors, and injected `WouldBlock` synchronization failures whose writes can later recover. The marker does not classify every failure or roll back callback side effects.
 - [x] Record [read-set fuzzing and a local transaction comparison](TRANSACTION_CONFLICT_SAFETY_2026_11_14.md) after adding conflict markers. The finite model and small, noisy SQLite comparison do not establish exhaustive correctness or a general speed ranking.
-- [ ] Specify broader structured outcomes for confirmed pre-submission rejection, callback errors and uncertain commit failures across all APIs. The conflict marker alone does not classify other errors and can be lost if an error is wrapped.
+- [x] Add opt-in structured transaction outcomes for both writable stores and
+  the document transaction interface, distinguishing callback/staging errors,
+  engine rejection, cancellation, expiry and uncertain commit outcomes.
+  Selected V2/V3 append and synchronization failures, cancellation races and
+  automatic rollover are covered. Commit-path quota rejections can be
+  classified conservatively as unknown; external callback effects are not
+  rolled back, and panics do not return a classified result.
+- [ ] Specify broader structured outcomes for direct mutations, maintenance,
+  backup and restore APIs, and refine confirmed pre-submission classification
+  inside the commit path. Existing error types are unchanged and an unknown
+  outcome cannot safely be retried solely from its error kind.
 
 ## Priority 1: durable storage and core operations
 

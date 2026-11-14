@@ -17,6 +17,23 @@ the same kind. A false result does not itself classify the outcome, and error
 wrapping can discard the marker. Retrying a callback can repeat its independent
 writes and other external effects; those are never rolled back by the engine.
 
+The opt-in `transaction_detailed` methods on both writable stores and the
+document interface also return a `TransactionFailure` distinguishing
+callback/staging errors, engine rejection, cancellation, deadline expiry and
+an unknown commit outcome. The first four mean this transaction did not submit
+its staged writes, not that independent callback effects or earlier writes
+were rolled back. A callback that forwards another operation's cancellation or
+conflict error remains a callback failure. Once the transaction enters the
+commit path, non-control errors are conservatively unknown even when the
+underlying failure actually precedes append (for example, certain quota
+rejections). A confirmed pre-append cancellation or expiry during automatic
+checkpoint maintenance remains a confirmed abort; maintenance itself may
+have completed. A started commit can succeed after cancellation, or fail with
+an unknown outcome. Reconcile an unknown outcome before retrying: recovery
+alone may not identify whether a particular request was applied. Panics
+unwind rather than returning a classified result. Other mutation APIs have not
+yet gained this structured classification.
+
 ## Current prototype: one store in one process
 
 ### Successful writes and ordering

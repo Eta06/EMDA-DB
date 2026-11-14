@@ -33,7 +33,7 @@ def bounded(command):
     return json.loads(stdout)
 
 
-def validate_receipts(report, require_failed=True):
+def validate_receipts(report, require_failed=True, mode=None):
     workers = report.get('workers')
     if not isinstance(workers, list) or len(workers) != WORKERS:
         raise ValueError('unexpected writer count')
@@ -46,6 +46,12 @@ def validate_receipts(report, require_failed=True):
                 or ((failed is None) != (worker.get('error') is None))
                 or (failed is None and len(acknowledged) != OPERATIONS)):
             raise ValueError('invalid writer receipt')
+        classification = worker.get('classification')
+        if mode == 'detailed':
+            if (failed is None and classification is not None) or (failed is not None and classification not in ('not_submitted', 'unknown')):
+                raise ValueError('invalid detailed failure classification')
+        elif mode is not None and classification is not None:
+            raise ValueError('unexpected failure classification')
     if require_failed and all(worker['failed'] is None for worker in workers):
         raise ValueError('injected filesystem error did not fail a writer')
 
@@ -99,7 +105,7 @@ def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, o
                           binary, 'attempt', str(root), backend, mode])
         # EINTR may be retried below the API, leaving every writer successful.
         # EIO and EAGAIN must reach the API as a failed request.
-        validate_receipts(report, require_failed=error in ('EIO', 'EAGAIN'))
+        validate_receipts(report, require_failed=error in ('EIO', 'EAGAIN'), mode=mode)
         if error == 'EAGAIN' and not any(
                 isinstance(worker.get('error'), str) and worker['error'].startswith('WouldBlock: ')
                 for worker in report['workers']):
@@ -139,7 +145,7 @@ def main():
     parser.add_argument('--snapshot-interval', type=float, default=1.0,
                         help='minimum seconds between full snapshots; progress is saved per case')
     parser.add_argument('--error', choices=('EIO', 'EINTR', 'EAGAIN'), default='EIO')
-    parser.add_argument('--mode', choices=('single', 'transaction'), default='single')
+    parser.add_argument('--mode', choices=('single', 'transaction', 'detailed'), default='single')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or not Path(args.fixture_binary).is_file() or os.path.lexists(args.output)

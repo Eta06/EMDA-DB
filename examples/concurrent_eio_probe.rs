@@ -1,5 +1,8 @@
 //! Concurrent acknowledged writes and recovery for the Linux EIO driver.
-use database_engine::{CheckpointStore, Store, is_transaction_conflict};
+use database_engine::{
+    CheckpointStore, CheckpointTransactionMode, Store, TransactionFailure, TransactionMode,
+    is_transaction_conflict,
+};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
@@ -11,6 +14,8 @@ const OPERATIONS: usize = 64;
 trait Backend: Send + Sync {
     fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()>;
     fn put_transaction(&self, key: &[u8], peer: &[u8], value: &[u8]) -> io::Result<()>;
+    fn put_detailed(&self, key: &[u8], peer: &[u8], value: &[u8])
+    -> Result<(), TransactionFailure>;
     fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>>;
 }
 impl Backend for Store {
@@ -20,6 +25,19 @@ impl Backend for Store {
     fn put_transaction(&self, key: &[u8], peer: &[u8], value: &[u8]) -> io::Result<()> {
         retry_idempotent_transaction(|| {
             self.transaction_with_read_set(|tx| {
+                tx.put(key, value)?;
+                tx.put(peer, value)
+            })
+        })
+    }
+    fn put_detailed(
+        &self,
+        key: &[u8],
+        peer: &[u8],
+        value: &[u8],
+    ) -> Result<(), TransactionFailure> {
+        retry_detailed(|| {
+            self.transaction_detailed(TransactionMode::ReadSet, None, None, |tx| {
                 tx.put(key, value)?;
                 tx.put(peer, value)
             })
@@ -41,9 +59,41 @@ impl Backend for CheckpointStore {
             })
         })
     }
+    fn put_detailed(
+        &self,
+        key: &[u8],
+        peer: &[u8],
+        value: &[u8],
+    ) -> Result<(), TransactionFailure> {
+        retry_detailed(|| {
+            self.transaction_detailed(CheckpointTransactionMode::ReadSet, None, None, |tx| {
+                tx.put(key, value)?;
+                tx.put(peer, value)
+            })
+        })
+    }
     fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         CheckpointStore::get(self, key)
     }
+}
+
+fn retry_detailed(
+    mut action: impl FnMut() -> Result<(), TransactionFailure>,
+) -> Result<(), TransactionFailure> {
+    for _ in 0..100_000 {
+        match action() {
+            Err(TransactionFailure::Rejected(error) | TransactionFailure::Callback(error))
+                if is_transaction_conflict(&error) =>
+            {
+                std::thread::yield_now()
+            }
+            result => return result,
+        }
+    }
+    Err(TransactionFailure::Rejected(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "transaction conflict retry limit",
+    )))
 }
 
 // Retry only the engine's explicit pre-commit conflict marker. An I/O error
@@ -65,12 +115,14 @@ fn retry_idempotent_transaction(mut action: impl FnMut() -> io::Result<()>) -> i
 enum Mode {
     Single,
     Transaction,
+    Detailed,
 }
 impl Mode {
     fn parse(value: &str) -> io::Result<Self> {
         match value {
             "single" => Ok(Self::Single),
             "transaction" => Ok(Self::Transaction),
+            "detailed" => Ok(Self::Detailed),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown write mode",
@@ -81,6 +133,7 @@ impl Mode {
         match self {
             Self::Single => "single",
             Self::Transaction => "transaction",
+            Self::Detailed => "detailed",
         }
     }
 }
@@ -91,6 +144,8 @@ struct Worker {
     acknowledged: Vec<usize>,
     failed: Option<usize>,
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    classification: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 struct Report {
@@ -140,22 +195,38 @@ fn attempt(root: &Path, backend: &str, mode: Mode) -> io::Result<()> {
                     acknowledged: Vec::new(),
                     failed: None,
                     error: None,
+                    classification: None,
                 };
                 barrier.wait();
                 for sequence in 0..OPERATIONS {
                     let key = key(id, sequence);
                     let value = value(id, sequence);
-                    let result = match mode {
-                        Mode::Single => store.put(&key, &value),
-                        Mode::Transaction => {
-                            store.put_transaction(&key, &peer_key(id, sequence), &value)
-                        }
+                    let result: Result<(), (io::Error, Option<&str>)> = match mode {
+                        Mode::Single => store.put(&key, &value).map_err(|error| (error, None)),
+                        Mode::Transaction => store
+                            .put_transaction(&key, &peer_key(id, sequence), &value)
+                            .map_err(|error| (error, None)),
+                        Mode::Detailed => store
+                            .put_detailed(&key, &peer_key(id, sequence), &value)
+                            .map_err(|error| match error {
+                                TransactionFailure::Callback(error)
+                                | TransactionFailure::Rejected(error) => {
+                                    (error, Some("not_submitted"))
+                                }
+                                TransactionFailure::OutcomeUnknown(error) => {
+                                    (error, Some("unknown"))
+                                }
+                                other => panic!(
+                                    "unexpected detailed outcome without controls: {other:?}"
+                                ),
+                            }),
                     };
                     match result {
                         Ok(()) => worker.acknowledged.push(sequence),
-                        Err(error) => {
+                        Err((error, classification)) => {
                             worker.failed = Some(sequence);
                             worker.error = Some(format!("{:?}: {error}", error.kind()));
+                            worker.classification = classification.map(str::to_string);
                             break;
                         }
                     }
@@ -204,6 +275,16 @@ fn verify(root: &Path, backend: &str, receipts: &Path, mode: Mode) -> io::Result
                 .is_some_and(|seq| seq != worker.acknowledged.len())
             || worker.failed.is_some_and(|seq| seq >= OPERATIONS)
             || worker.failed.is_some() != worker.error.is_some()
+            || (matches!(mode, Mode::Detailed)
+                && worker.failed.is_some()
+                && !matches!(
+                    worker.classification.as_deref(),
+                    Some("not_submitted" | "unknown")
+                ))
+            || (matches!(mode, Mode::Detailed)
+                && worker.failed.is_none()
+                && worker.classification.is_some())
+            || (!matches!(mode, Mode::Detailed) && worker.classification.is_some())
             || (worker.failed.is_none() && worker.acknowledged.len() != OPERATIONS)
             || worker.acknowledged.len() > OPERATIONS
         {
@@ -214,7 +295,9 @@ fn verify(root: &Path, backend: &str, receipts: &Path, mode: Mode) -> io::Result
         }
         for sequence in 0..OPERATIONS {
             let actual = store.get(&key(id, sequence))?;
-            if matches!(mode, Mode::Transaction) && store.get(&peer_key(id, sequence))? != actual {
+            if matches!(mode, Mode::Transaction | Mode::Detailed)
+                && store.get(&peer_key(id, sequence))? != actual
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "fractured transaction",
@@ -229,6 +312,12 @@ fn verify(root: &Path, backend: &str, receipts: &Path, mode: Mode) -> io::Result
                     ));
                 }
             } else if worker.failed == Some(sequence) {
+                if worker.classification.as_deref() == Some("not_submitted") && actual.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "confirmed abort was recovered",
+                    ));
+                }
                 if actual.as_ref().is_some_and(|found| found != &expected) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -275,7 +364,7 @@ fn main() -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: concurrent_eio_probe attempt <root> <backend> [single|transaction] | verify <root> <backend> <receipts> [single|transaction]",
+            "usage: concurrent_eio_probe attempt <root> <backend> [single|transaction|detailed] | verify <root> <backend> <receipts> [single|transaction|detailed]",
         )),
     }
 }
@@ -302,6 +391,7 @@ mod tests {
                     acknowledged: if id == 0 { vec![0] } else { Vec::new() },
                     failed: Some(usize::from(id == 0)),
                     error: Some("synthetic error".into()),
+                    classification: None,
                 })
                 .collect(),
         };
@@ -340,13 +430,14 @@ mod tests {
         store.put(b"old", b"original").unwrap();
         let digest = store.checkpoint_to(&checkpoint).unwrap();
         std::fs::write(root.path().join("checkpoint.digest"), digest).unwrap();
-        let report = Report {
+        let mut report = Report {
             workers: (0..WORKERS)
                 .map(|id| Worker {
                     id,
                     acknowledged: Vec::new(),
                     failed: Some(0),
                     error: Some("synthetic error".into()),
+                    classification: None,
                 })
                 .collect(),
         };
@@ -360,6 +451,19 @@ mod tests {
         drop(store);
         verify(root.path(), "ordinary", &receipts, Mode::Transaction).unwrap();
         verify(root.path(), "checkpoint", &receipts, Mode::Transaction).unwrap();
+        for worker in &mut report.workers {
+            worker.classification = Some("not_submitted".into());
+        }
+        std::fs::write(&receipts, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(verify(root.path(), "ordinary", &receipts, Mode::Detailed).is_err());
+        report.workers[0].classification = Some("unknown".into());
+        std::fs::write(&receipts, serde_json::to_vec(&report).unwrap()).unwrap();
+        verify(root.path(), "ordinary", &receipts, Mode::Detailed).unwrap();
+        verify(root.path(), "checkpoint", &receipts, Mode::Detailed).unwrap();
+        for worker in &mut report.workers {
+            worker.classification = None;
+        }
+        std::fs::write(&receipts, serde_json::to_vec(&report).unwrap()).unwrap();
         let store = Store::open(&source).unwrap();
         store.delete(&key(0, 0)).unwrap();
         store.delete(&peer_key(0, 0)).unwrap();

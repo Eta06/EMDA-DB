@@ -2,7 +2,7 @@
 use database_engine::{
     BatchOperation, CancellationToken, CheckpointStore, CheckpointTransaction,
     CheckpointTransactionMode, ControlledTransactionError, Store, TimedTransactionError,
-    Transaction, TransactionMode, is_transaction_conflict,
+    Transaction, TransactionFailure, TransactionMode, is_transaction_conflict,
 };
 use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -119,6 +119,16 @@ fn controlled<T>(result: Result<T, ControlledTransactionError>) -> io::Result<T>
     }
 }
 
+fn detailed<T>(result: Result<T, TransactionFailure>) -> io::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(TransactionFailure::Rejected(error) | TransactionFailure::Callback(error)) => {
+            Err(error)
+        }
+        Err(other) => panic!("unexpected detailed transaction result: {other:?}"),
+    }
+}
+
 impl Engine {
     fn transact(&self, operation: Operation, mode: usize, api: usize) -> io::Result<State> {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -145,10 +155,16 @@ impl Engine {
                     1 => timed(
                         store.transaction_until(deadline, mode, |tx| transaction(tx, operation)),
                     ),
-                    _ => controlled(store.transaction_controlled(
+                    2 => controlled(store.transaction_controlled(
                         &cancellation,
                         Some(deadline),
                         mode,
+                        |tx| transaction(tx, operation),
+                    )),
+                    _ => detailed(store.transaction_detailed(
+                        mode,
+                        Some(deadline),
+                        Some(&cancellation),
                         |tx| transaction(tx, operation),
                     )),
                 }
@@ -178,10 +194,16 @@ impl Engine {
                     1 => timed(
                         store.transaction_until(deadline, mode, |tx| transaction(tx, operation)),
                     ),
-                    _ => controlled(store.transaction_controlled(
+                    2 => controlled(store.transaction_controlled(
                         &cancellation,
                         Some(deadline),
                         mode,
+                        |tx| transaction(tx, operation),
+                    )),
+                    _ => detailed(store.transaction_detailed(
+                        mode,
+                        Some(deadline),
+                        Some(&cancellation),
                         |tx| transaction(tx, operation),
                     )),
                 }
@@ -195,7 +217,7 @@ impl Engine {
                 let mode = (iteration / 4
                     + usize::from(matches!(operation, Operation::PointTransaction)))
                     % 4;
-                match self.transact(operation, mode, iteration / 12 % 3) {
+                match self.transact(operation, mode, iteration / 12 % 4) {
                     Ok(observed) => Outcome::Transaction(observed),
                     Err(error) if is_transaction_conflict(&error) => Outcome::Conflict,
                     Err(error) => panic!("unexpected transaction error: {error}"),

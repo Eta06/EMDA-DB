@@ -319,7 +319,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, false, None, None)
+        self.run_transaction(action, false, false, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -335,7 +335,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, false, None, None)
+        self.run_transaction(action, true, false, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -350,7 +350,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, true, None, None)
+        self.run_transaction(action, true, true, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -379,7 +379,7 @@ impl Store {
             TransactionMode::ReadSet => (true, false),
             TransactionMode::ReadSetFifo => (true, true),
         };
-        self.run_transaction(action, track_reads, fifo, Some(deadline), None)
+        self.run_transaction(action, track_reads, fifo, Some(deadline), None, None)
     }
 
     /// Runs a transaction with cooperative cancellation and an optional
@@ -402,8 +402,49 @@ impl Store {
             TransactionMode::ReadSet => (true, false),
             TransactionMode::ReadSetFifo => (true, true),
         };
-        self.run_transaction(action, track_reads, fifo, deadline, Some(cancellation))
-            .map_err(crate::cancellation::classify)
+        self.run_transaction(
+            action,
+            track_reads,
+            fifo,
+            deadline,
+            Some(cancellation),
+            None,
+        )
+        .map_err(crate::cancellation::classify)
+    }
+
+    /// Runs a transaction with optional controls and structured failure outcomes.
+    ///
+    /// Rejection, callback failure, cancellation and expiry guarantee only
+    /// that this transaction's staged writes were not submitted. Callback
+    /// side effects and independent writes are not rolled back. An unknown
+    /// outcome requires reconciliation before retry and can conservatively
+    /// include pre-append failures. Recovery alone may not identify whether
+    /// a particular operation took effect.
+    /// Existing modes, limits and control timing are unchanged. Panics unwind
+    /// instead of returning a structured failure.
+    pub fn transaction_detailed<T>(
+        &self,
+        mode: TransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+        action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
+    ) -> Result<T, crate::TransactionFailure> {
+        let (track_reads, fifo) = match mode {
+            TransactionMode::Conservative => (false, false),
+            TransactionMode::ReadSet => (true, false),
+            TransactionMode::ReadSetFifo => (true, true),
+        };
+        let tracker = crate::transaction_outcome::Tracker::new();
+        self.run_transaction(
+            action,
+            track_reads,
+            fifo,
+            deadline,
+            cancellation,
+            Some(&tracker),
+        )
+        .map_err(|error| tracker.classify(error))
     }
 
     fn run_transaction<T>(
@@ -413,6 +454,7 @@ impl Store {
         fifo: bool,
         deadline: Option<Instant>,
         cancellation: Option<&crate::CancellationToken>,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> Result<T, TimedTransactionError> {
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
@@ -438,7 +480,13 @@ impl Store {
             read_set: track_reads.then(|| Mutex::new(super::read_set::ReadSet::default())),
             cancellation: cancellation.cloned(),
         };
+        if let Some(tracker) = tracker {
+            tracker.callback();
+        }
         let result = action(&mut txn)?;
+        if let Some(tracker) = tracker {
+            tracker.before_commit();
+        }
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         // Opt-in FIFO admission does not replace the writer barrier protecting
@@ -518,6 +566,9 @@ impl Store {
             let payload = encode_payload(&operations)?;
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
+            if let Some(tracker) = tracker {
+                tracker.commit();
+            }
             self.write_batch_locked(&operations, &payload)?;
         } else {
             check_deadline(deadline)?;

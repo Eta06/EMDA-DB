@@ -28,6 +28,7 @@ mod store;
 mod test_support;
 mod transaction_budget;
 mod transaction_conflict;
+mod transaction_outcome;
 mod witness;
 
 pub use cancellation::{CancellationToken, ControlledTransactionError};
@@ -74,3 +75,4 @@ pub use store::{
 };
 pub use transaction_budget::{MAX_ACTIVE_TRANSACTIONS, TransactionBudgetStatus};
 pub use transaction_conflict::is_transaction_conflict;
+pub use transaction_outcome::TransactionFailure;

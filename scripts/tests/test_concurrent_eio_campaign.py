@@ -33,6 +33,15 @@ class ConcurrentEioCampaignTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_receipts(report, require_failed=False)
 
+    def test_detailed_failures_require_a_valid_classification(self):
+        report = {'workers': [{'id': i, 'acknowledged': [0, 1], 'failed': 2,
+                               'error': 'synthetic EIO', 'classification': 'unknown'} for i in range(4)]}
+        report['workers'][1]['classification'] = 'not_submitted'
+        validate_receipts(report, mode='detailed')
+        report['workers'][0]['classification'] = 'invalid'
+        with self.assertRaisesRegex(ValueError, 'invalid detailed failure classification'):
+            validate_receipts(report, mode='detailed')
+
     def test_recovery_must_agree_on_which_uncertain_write_was_recovered(self):
         verified = [{'status': 'verified', 'backend': 'ordinary', 'acknowledged': 3,
                      'uncertain_present': [[0, 3]]},

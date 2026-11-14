@@ -181,6 +181,58 @@ fn metadata_failures_and_panics_never_acknowledge_and_poison_the_store() {
 }
 
 #[test]
+fn detailed_transactions_treat_v3_witness_failures_as_unknown_outcomes() {
+    for fault in [
+        Fault::WriteBefore,
+        Fault::WriteAfter,
+        Fault::SyncBefore,
+        Fault::SyncTimeout,
+        Fault::SyncAfter,
+    ] {
+        for document in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let armed = Arc::new(AtomicBool::new(false));
+            let (entered, _) = mpsc::channel();
+            let (_, resume) = mpsc::channel();
+            let store = store(dir.path(), fault, Arc::clone(&armed), entered, resume);
+            store.put(b"safe", b"committed").unwrap();
+            armed.store(true, Ordering::Release);
+            let error = if document {
+                crate::DocumentDatabase::new(&store)
+                    .transaction_detailed(
+                        crate::DocumentTransactionMode::Conservative,
+                        None,
+                        None,
+                        |tx| tx.put_raw(b"unknown", b"value"),
+                    )
+                    .unwrap_err()
+            } else {
+                store
+                    .transaction_detailed(crate::TransactionMode::Conservative, None, None, |tx| {
+                        tx.put(b"unknown", b"value")
+                    })
+                    .unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                crate::TransactionFailure::OutcomeUnknown(_)
+            ));
+            assert!(store.get(b"safe").is_err());
+            drop(store);
+            let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
+            assert_eq!(
+                reopened.get(b"safe").unwrap().as_deref(),
+                Some(&b"committed"[..])
+            );
+            assert_eq!(
+                reopened.get(b"unknown").unwrap().as_deref(),
+                Some(&b"value"[..])
+            );
+        }
+    }
+}
+
+#[test]
 fn metadata_fsync_must_complete_before_publication_or_acknowledgement() {
     let dir = tempfile::tempdir().unwrap();
     let armed = Arc::new(AtomicBool::new(false));
@@ -316,6 +368,66 @@ fn cancellation_during_fsync_preserves_success_or_unknown_io_outcome() {
                 assert!(store.get(b"a").is_err());
             }
             _ => unreachable!(),
+        }
+        drop(store);
+        let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
+        let values = reopened.get_many(&[b"a", b"b"]).unwrap();
+        assert!(
+            values == vec![Some(b"old".to_vec()), Some(b"old".to_vec())]
+                || values == vec![Some(b"new".to_vec()), Some(b"new".to_vec())]
+        );
+        if matches!(fault, Fault::Block) {
+            assert_eq!(values, vec![Some(b"new".to_vec()), Some(b"new".to_vec())]);
+        }
+    }
+}
+
+#[test]
+fn detailed_cancellation_during_fsync_keeps_success_or_unknown_outcome() {
+    use crate::{CancellationToken, TransactionFailure};
+    for fault in [
+        Fault::Block,
+        Fault::BlockThenSyncError,
+        Fault::BlockThenInterrupted,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let store = Arc::new(store(
+            dir.path(),
+            fault,
+            Arc::clone(&armed),
+            entered_tx,
+            resume_rx,
+        ));
+        store.put(b"a", b"old").unwrap();
+        store.put(b"b", b"old").unwrap();
+        armed.store(true, Ordering::Release);
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let writing = Arc::clone(&store);
+        let worker = thread::spawn(move || {
+            writing.transaction_detailed(
+                TransactionMode::ReadSet,
+                None,
+                Some(&worker_token),
+                |tx| {
+                    tx.put(b"a", b"new")?;
+                    tx.put(b"b", b"new")
+                },
+            )
+        });
+        let entered = entered_rx.recv_timeout(Duration::from_secs(10));
+        token.cancel();
+        let _ = resume_tx.send(());
+        let result = worker.join().unwrap();
+        entered.expect("transaction did not enter metadata synchronization");
+        if matches!(fault, Fault::Block) {
+            result.unwrap();
+        } else {
+            assert!(matches!(result, Err(TransactionFailure::OutcomeUnknown(_))));
+            assert!(store.get(b"a").is_err());
         }
         drop(store);
         let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
