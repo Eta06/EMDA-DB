@@ -102,7 +102,9 @@ jobs:
           sudo apt-get install -y strace
       - name: Build and inject filesystem failures
         run: |
-          cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe
+          cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe
+          python3 scripts/handoff_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/handoff_failure_probe --output "$RUNNER_TEMP/handoff-eio.json" --format v2 --backend managed --syscall-set namespace
+          python3 scripts/verify_handoff_eio_results.py "$RUNNER_TEMP/handoff-eio.json"
           python3 scripts/short_write_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/sync_failure_probe --concurrent-binary target/release/examples/concurrent_eio_probe --output "$RUNNER_TEMP/short-write.json"
           python3 scripts/verify_short_write_results.py "$RUNNER_TEMP/short-write.json"
           python3 scripts/sync_interrupt_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/sync_failure_probe --output "$RUNNER_TEMP/sync-interrupt.json"
@@ -192,6 +194,8 @@ jobs:
             ${{ runner.temp }}/eio-publication-checkpoint*.json
             ${{ runner.temp }}/eio-publication-compaction*.json
             ${{ runner.temp }}/eio-publication-upgrade*.json
+            ${{ runner.temp }}/handoff-eio.json
+            ${{ runner.temp }}/handoff-eio.json.progress.json
             ${{ runner.temp }}/eio-double.json.progress.json
             ${{ runner.temp }}/eio-double-sync.json
             ${{ runner.temp }}/eio-double-sync.json.progress.json
