@@ -74,6 +74,14 @@ does not compare SQLite against this candidate on the same fixture.
   includes the corpora and logs; the manifest records the binaries' hashes,
   seeds' run details and per-target counts. These are finite serial model runs,
   not a proof of all concurrent schedules.
+- A later run on clean `f34f1d6` checked [96 concurrent transaction cases](../benchmarks/results/2026-11-14-shared-checkpoint-view-concurrent-eagain.json.gz)
+  with injected `EAGAIN`, [224 short-write cases](../benchmarks/results/2026-11-14-shared-checkpoint-view-short-write.json.gz),
+  and [48 interrupted-sync cases](../benchmarks/results/2026-11-14-shared-checkpoint-view-sync-interrupt.json.gz).
+  Independent verifiers passed. The transaction run recovered all 159
+  acknowledged pairs and found 96 of 384 failed calls present as complete
+  uncertain pairs; the short-write run includes deliberately rejected recovery
+  for partial records. These tests sample schedules and returned or intercepted
+  syscall behavior, not physical power failures.
 
 For example, extract the fault archive and run
 `python3 scripts/verify_one_shot_fs_results.py <extracted-report>` for each

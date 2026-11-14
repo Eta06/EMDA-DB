@@ -340,5 +340,26 @@
     "sha256": "24563acc888f7f01c42ab75278a31c46ac451b6cd6d0a3d1f8d2ee384e3c008a",
     "passed": 1,
     "failure": null
-  }
+  },
+  "post_commit_campaign_revision": "f34f1d60f32c3f29b047c2392926df30caf97299",
+  "post_commit_campaigns": [
+    {
+      "type": "concurrent-eagain",
+      "file": "2026-11-14-shared-checkpoint-view-concurrent-eagain.json.gz",
+      "sha256": "0405b2df55d05c41966c2e93108dae9fc723e9785dfc65883012f8652bae7c83",
+      "uncompressed_sha256": "2bd7a73ab9657462f46a76ef2c138f31d4cf0c95756263aee9506484d2ceafb5"
+    },
+    {
+      "type": "short-write",
+      "file": "2026-11-14-shared-checkpoint-view-short-write.json.gz",
+      "sha256": "e1fe44ce5290950b8bc000be08ece21b12fb25e8909f4bd2de0cec08c1750379",
+      "uncompressed_sha256": "0d1ca530518e72708fe25603087cd7297cca2696ac0dfb3e18c4b6e1ce86dee2"
+    },
+    {
+      "type": "sync-interrupt",
+      "file": "2026-11-14-shared-checkpoint-view-sync-interrupt.json.gz",
+      "sha256": "55fb120069dac0d6f99c453ba3ba68016d8865c92bf7de9485c027bd7c4814c9",
+      "uncompressed_sha256": "57964170fc5b49a5a4c3a90b1ec861b542f65db2aa9d83426c759ca8f94a01ff"
+    }
+  ]
 }
