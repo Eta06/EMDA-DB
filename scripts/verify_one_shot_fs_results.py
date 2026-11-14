@@ -42,7 +42,7 @@ def verify(result):
     require(group in SYSCALL_SETS and result['fixture_paths_only'] == (group != 'sync'),
             'unknown syscall group or path-selection mode')
     error_name = result.get('injected_error', 'EIO')
-    require(error_name in ('EIO', 'EINTR', 'ENOSPC', 'EDQUOT'), 'unknown injected errno')
+    require(error_name in ('EIO', 'EINTR', 'EAGAIN', 'ENOSPC', 'EDQUOT'), 'unknown injected errno')
     formats, operations = result['formats'], result['operations']
     require(formats and operations and len(formats) == len(set(formats))
             and len(operations) == len(set(operations)), 'empty or duplicate campaign format or operation')

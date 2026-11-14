@@ -49,6 +49,16 @@ class OneShotCoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'omitted an observed call'):
             verify(broken)
 
+    def test_eagain_requires_the_same_errno_in_every_injected_trace(self):
+        report = fixture()
+        report['injected_error'] = 'EAGAIN'
+        for injection in report['cases'][0]['injections']:
+            injection['injected_traces'][0] = '1 fsync(3</work>) = -1 EAGAIN (INJECTED)'
+        self.assertEqual(verify(report)['errno'], 'EAGAIN')
+        report['cases'][0]['injections'][1]['injected_traces'][0] = '1 fsync(3</work>) = -1 EIO (INJECTED)'
+        with self.assertRaisesRegex(ValueError, 'errno differs'):
+            verify(report)
+
     def test_wrong_errno_and_incomplete_run_are_rejected(self):
         broken = fixture()
         broken['completed'] = False

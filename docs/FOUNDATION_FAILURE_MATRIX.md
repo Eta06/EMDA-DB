@@ -66,7 +66,7 @@ OS; they do not exhaust calls reached only on failure paths, inject every
 syscall or combination of errors, model storage reordering or establish physical
 power-loss or off-host restore behavior.
 
-The same driver also accepts `--error EINTR`, `ENOSPC` or `EDQUOT` for
+The same driver also accepts `--error EINTR`, `EAGAIN`, `ENOSPC` or `EDQUOT` for
 one-shot returned-error injection. An interrupted call may be retried and the
 operation may still succeed; successful outcomes must be visible on recovery.
 These synthetic return values do not deliver a real signal or create actual

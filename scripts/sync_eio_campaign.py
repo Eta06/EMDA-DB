@@ -301,7 +301,7 @@ def main():
                         help='minimum seconds between full snapshots; progress is saved per case')
     parser.add_argument('--persistent-errors', action='store_true',
                         help='continue returning EIO for that syscall after the selected ordinal')
-    parser.add_argument('--error', dest='injected_error', choices=('EIO', 'EINTR', 'ENOSPC', 'EDQUOT'),
+    parser.add_argument('--error', dest='injected_error', choices=('EIO', 'EINTR', 'EAGAIN', 'ENOSPC', 'EDQUOT'),
                         default='EIO', help='returned errno to inject; EIO is the default')
     parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync',
                         help='sync (default), data writes/metadata, reads, opens, or namespace operations')
