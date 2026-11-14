@@ -99,6 +99,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   automatic rollover are covered. Commit-path quota rejections can be
   classified conservatively as unknown; external callback effects are not
   rolled back, and panics do not return a classified result.
+- [x] Check [160 injected concurrent filesystem-fault cases and 160
+  process-kill cases](DETAILED_TRANSACTION_OUTCOMES_2026_11_14.md) with the
+  new interface, plus 8,192 mixed concurrent histories across overlay and
+  tmpfs. The checks are finite
+  and do not establish physical power-loss behavior or an off-host restore.
 - [ ] Specify broader structured outcomes for direct mutations, maintenance,
   backup and restore APIs, and refine confirmed pre-submission classification
   inside the commit path. Existing error types are unchanged and an unknown

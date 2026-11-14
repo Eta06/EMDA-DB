@@ -22,6 +22,7 @@ The [long key-value history](docs/LONG_SERIAL_HISTORY_2026_11_06.md) checks succ
 The [mixed transaction histories](docs/LONG_TRANSACTION_SERIAL_2026_11_06.md) check longer sequences of concurrent transactions, batches and direct operations on both writable paths; they also record conflicts in deliberately contended tests.
 
 The [mixed-operation serial model](docs/MIXED_TRANSACTION_HISTORY_2026_11_14.md) adds concurrent missing-key and range reads, deletes and conditional writes, with clean recovery checks on both writable paths.
+The [structured transaction outcome report](docs/DETAILED_TRANSACTION_OUTCOMES_2026_11_14.md) records failure classification, concurrent recovery tests and local transaction comparisons with SQLite.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
