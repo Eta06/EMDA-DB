@@ -184,6 +184,105 @@ fn detailed_transactions_preserve_unknown_outcomes_after_append_or_sync_failure(
 }
 
 #[test]
+fn detailed_direct_mutations_keep_uncertain_outcomes_after_append_or_sync_failure() {
+    for operation in 0..6 {
+        for fault_kind in 0..6 {
+            let (_dir, path, checkpoint, digest) = fixture();
+            let mut store =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            store.put(b"target", &0_i64.to_le_bytes()).unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            store.log.replace_io_for_test(Box::new(FaultLog {
+                file,
+                fault: match fault_kind {
+                    0 => LogFault::Partial(0),
+                    1 => LogFault::SyncBefore,
+                    2 => LogFault::SyncAfter,
+                    3 => LogFault::SyncTimeout,
+                    4 => LogFault::SyncWouldBlock,
+                    _ => LogFault::Partial(1),
+                },
+            }));
+            let result = match operation {
+                0 => store.put_detailed(b"target", b"new"),
+                1 => store.delete_detailed(b"target"),
+                2 => store
+                    .compare_exchange_detailed(b"target", Some(&0_i64.to_le_bytes()), Some(b"new"))
+                    .map(|changed| assert!(changed)),
+                3 => store
+                    .increment_i64_detailed(b"target", 1)
+                    .map(|value| assert_eq!(value, 1)),
+                4 => store.write_batch_detailed(&[
+                    crate::BatchOperation::Put {
+                        key: b"target",
+                        value: b"new",
+                    },
+                    crate::BatchOperation::Put {
+                        key: b"peer",
+                        value: b"new",
+                    },
+                ]),
+                _ => store
+                    .compare_exchange_batch_detailed(
+                        &[(b"target", Some(&0_i64.to_le_bytes()))],
+                        &[
+                            crate::BatchOperation::Put {
+                                key: b"target",
+                                value: b"new",
+                            },
+                            crate::BatchOperation::Put {
+                                key: b"peer",
+                                value: b"new",
+                            },
+                        ],
+                    )
+                    .map(|changed| assert!(changed)),
+            };
+            assert!(matches!(
+                result,
+                Err(crate::MutationFailure::OutcomeUnknown(_))
+            ));
+            assert!(store.get(b"base").is_err());
+            drop(store);
+            if fault_kind == 5 {
+                let log = path.join("records.log");
+                let torn = fs::read(&log).unwrap();
+                let error = retry_lock(|| Store::open(&path)).err().unwrap();
+                assert!(matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ));
+                assert_eq!(fs::read(log).unwrap(), torn);
+                continue;
+            }
+            let recovered = retry_lock(|| Store::open(&path)).unwrap();
+            assert_eq!(
+                recovered.get(b"base").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+            let expected = if fault_kind == 0 {
+                Some(0_i64.to_le_bytes().to_vec())
+            } else {
+                match operation {
+                    1 => None,
+                    3 => Some(1_i64.to_le_bytes().to_vec()),
+                    _ => Some(b"new".to_vec()),
+                }
+            };
+            assert_eq!(recovered.get(b"target").unwrap(), expected);
+            assert_eq!(
+                recovered.get(b"peer").unwrap(),
+                (operation >= 4 && fault_kind != 0).then(|| b"new".to_vec())
+            );
+        }
+    }
+}
+
+#[test]
 fn every_partial_witness_write_and_sync_failure_poison_until_reopen() {
     let faults = (0..=witness::WITNESS_SIZE)
         .map(WitnessFault::Partial)

@@ -1,7 +1,7 @@
 //! Concurrent acknowledged writes and recovery for the Linux EIO driver.
 use database_engine::{
-    CheckpointStore, CheckpointTransactionMode, Store, TransactionFailure, TransactionMode,
-    is_transaction_conflict,
+    CheckpointStore, CheckpointTransactionMode, MutationFailure, Store, TransactionFailure,
+    TransactionMode, is_transaction_conflict,
 };
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -13,6 +13,7 @@ const OPERATIONS: usize = 64;
 
 trait Backend: Send + Sync {
     fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()>;
+    fn put_mutation_detailed(&self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure>;
     fn put_transaction(&self, key: &[u8], peer: &[u8], value: &[u8]) -> io::Result<()>;
     fn put_detailed(&self, key: &[u8], peer: &[u8], value: &[u8])
     -> Result<(), TransactionFailure>;
@@ -21,6 +22,9 @@ trait Backend: Send + Sync {
 impl Backend for Store {
     fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
         Store::put(self, key, value)
+    }
+    fn put_mutation_detailed(&self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
+        Store::put_detailed(self, key, value)
     }
     fn put_transaction(&self, key: &[u8], peer: &[u8], value: &[u8]) -> io::Result<()> {
         retry_idempotent_transaction(|| {
@@ -50,6 +54,9 @@ impl Backend for Store {
 impl Backend for CheckpointStore {
     fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
         CheckpointStore::put(self, key, value)
+    }
+    fn put_mutation_detailed(&self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
+        CheckpointStore::put_detailed(self, key, value)
     }
     fn put_transaction(&self, key: &[u8], peer: &[u8], value: &[u8]) -> io::Result<()> {
         retry_idempotent_transaction(|| {
@@ -116,6 +123,7 @@ enum Mode {
     Single,
     Transaction,
     Detailed,
+    Mutation,
 }
 impl Mode {
     fn parse(value: &str) -> io::Result<Self> {
@@ -123,6 +131,7 @@ impl Mode {
             "single" => Ok(Self::Single),
             "transaction" => Ok(Self::Transaction),
             "detailed" => Ok(Self::Detailed),
+            "mutation" => Ok(Self::Mutation),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown write mode",
@@ -134,6 +143,7 @@ impl Mode {
             Self::Single => "single",
             Self::Transaction => "transaction",
             Self::Detailed => "detailed",
+            Self::Mutation => "mutation",
         }
     }
 }
@@ -220,6 +230,19 @@ fn attempt(root: &Path, backend: &str, mode: Mode) -> io::Result<()> {
                                     "unexpected detailed outcome without controls: {other:?}"
                                 ),
                             }),
+                        Mode::Mutation => {
+                            store
+                                .put_mutation_detailed(&key, &value)
+                                .map_err(|error| match error {
+                                    MutationFailure::Rejected(error) => {
+                                        (error, Some("not_submitted"))
+                                    }
+                                    MutationFailure::OutcomeUnknown(error) => {
+                                        (error, Some("unknown"))
+                                    }
+                                    other => panic!("unexpected mutation outcome: {other:?}"),
+                                })
+                        }
                     };
                     match result {
                         Ok(()) => worker.acknowledged.push(sequence),
@@ -275,16 +298,16 @@ fn verify(root: &Path, backend: &str, receipts: &Path, mode: Mode) -> io::Result
                 .is_some_and(|seq| seq != worker.acknowledged.len())
             || worker.failed.is_some_and(|seq| seq >= OPERATIONS)
             || worker.failed.is_some() != worker.error.is_some()
-            || (matches!(mode, Mode::Detailed)
+            || (matches!(mode, Mode::Detailed | Mode::Mutation)
                 && worker.failed.is_some()
                 && !matches!(
                     worker.classification.as_deref(),
                     Some("not_submitted" | "unknown")
                 ))
-            || (matches!(mode, Mode::Detailed)
+            || (matches!(mode, Mode::Detailed | Mode::Mutation)
                 && worker.failed.is_none()
                 && worker.classification.is_some())
-            || (!matches!(mode, Mode::Detailed) && worker.classification.is_some())
+            || (!matches!(mode, Mode::Detailed | Mode::Mutation) && worker.classification.is_some())
             || (worker.failed.is_none() && worker.acknowledged.len() != OPERATIONS)
             || worker.acknowledged.len() > OPERATIONS
         {
@@ -364,7 +387,7 @@ fn main() -> io::Result<()> {
         ),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: concurrent_eio_probe attempt <root> <backend> [single|transaction|detailed] | verify <root> <backend> <receipts> [single|transaction|detailed]",
+            "usage: concurrent_eio_probe attempt <root> <backend> [single|transaction|detailed|mutation] | verify <root> <backend> <receipts> [single|transaction|detailed|mutation]",
         )),
     }
 }
@@ -456,10 +479,13 @@ mod tests {
         }
         std::fs::write(&receipts, serde_json::to_vec(&report).unwrap()).unwrap();
         assert!(verify(root.path(), "ordinary", &receipts, Mode::Detailed).is_err());
+        assert!(verify(root.path(), "ordinary", &receipts, Mode::Mutation).is_err());
         report.workers[0].classification = Some("unknown".into());
         std::fs::write(&receipts, serde_json::to_vec(&report).unwrap()).unwrap();
         verify(root.path(), "ordinary", &receipts, Mode::Detailed).unwrap();
         verify(root.path(), "checkpoint", &receipts, Mode::Detailed).unwrap();
+        verify(root.path(), "ordinary", &receipts, Mode::Mutation).unwrap();
+        verify(root.path(), "checkpoint", &receipts, Mode::Mutation).unwrap();
         for worker in &mut report.workers {
             worker.classification = None;
         }

@@ -4,6 +4,41 @@ use std::cell::Cell;
 use std::fmt;
 use std::io;
 
+/// A failed direct mutation, classified for that call only.
+///
+/// A rejection does not resolve previous uncertain writes or establish store
+/// health. An unknown outcome must be reconciled before retrying a mutation.
+/// Panics unwind instead of returning this value.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum MutationFailure {
+    /// This mutation was not submitted. Independent maintenance or earlier
+    /// operations may have effects or uncertain outcomes.
+    Rejected(io::Error),
+    /// This mutation may have been submitted. Some coordinator errors before
+    /// append are conservatively classified as unknown.
+    OutcomeUnknown(io::Error),
+}
+
+impl fmt::Display for MutationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rejected(error) => {
+                write!(formatter, "mutation rejected before submission: {error}")
+            }
+            Self::OutcomeUnknown(error) => write!(formatter, "mutation outcome unknown: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for MutationFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rejected(error) | Self::OutcomeUnknown(error) => Some(error),
+        }
+    }
+}
+
 /// A failed transaction, classified by what the engine knows about its own
 /// staged writes. Independent operations and external callback effects are
 /// never rolled back. Panics do not return a `TransactionFailure`.
@@ -68,6 +103,13 @@ enum Phase {
 
 pub(crate) struct Tracker(Cell<Phase>);
 
+pub(crate) fn mutation<T>(
+    action: impl FnOnce(&Tracker) -> io::Result<T>,
+) -> Result<T, MutationFailure> {
+    let tracker = Tracker::new();
+    action(&tracker).map_err(|error| tracker.classify_mutation(error))
+}
+
 impl Tracker {
     pub(crate) fn new() -> Self {
         Self(Cell::new(Phase::BeforeCallback))
@@ -99,6 +141,14 @@ impl Tracker {
                 TransactionFailure::OutcomeUnknown(error)
             }
             ControlledTransactionError::Operation(error) => TransactionFailure::Rejected(error),
+        }
+    }
+
+    pub(crate) fn classify_mutation(&self, error: io::Error) -> MutationFailure {
+        if self.0.get() == Phase::Commit {
+            MutationFailure::OutcomeUnknown(error)
+        } else {
+            MutationFailure::Rejected(error)
         }
     }
 }

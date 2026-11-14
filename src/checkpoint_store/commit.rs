@@ -13,8 +13,19 @@ impl CheckpointStore {
         key: &[u8],
         value: &[u8],
         touched: &[&[u8]],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
-        match self.commit_until(state, operation, key, value, touched, Default::default()) {
+        match self.commit_until(
+            state,
+            operation,
+            key,
+            value,
+            touched,
+            crate::cancellation::CommitControl {
+                tracker,
+                ..Default::default()
+            },
+        ) {
             Ok(()) => Ok(()),
             Err(crate::TimedTransactionError::Operation(error)) => Err(error),
             Err(crate::TimedTransactionError::DeadlineExceeded) => {

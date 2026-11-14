@@ -87,6 +87,100 @@ fn detailed_transactions_treat_v3_witness_failures_as_unknown_outcomes() {
     }
 }
 
+#[test]
+fn detailed_direct_mutations_treat_v3_witness_failures_as_unknown() {
+    for operation in 0..6 {
+        for fault in [
+            Fault::WriteBefore,
+            Fault::WriteAfter,
+            Fault::SyncBefore,
+            Fault::SyncAfter,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let checkpoint = root.path().join("checkpoint");
+            let ordinary = Store::open(&path).unwrap();
+            ordinary.put(b"base", b"acknowledged").unwrap();
+            ordinary.put(b"target", &0_i64.to_le_bytes()).unwrap();
+            let digest = ordinary.checkpoint_to(&checkpoint).unwrap();
+            drop(ordinary);
+            let mut store =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            let header = fs::read(path.join("records.log")).unwrap();
+            let id = crate::metadata_witness::parse_header(
+                header[..witness::LOG_HEADER_SIZE].try_into().unwrap(),
+            )
+            .unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            store.log.attach_test_witness(Witness::for_test(
+                Box::new(Metadata { file, fault }),
+                id,
+                header.len() as u64,
+            ));
+            let result = match operation {
+                0 => store.put_detailed(b"target", b"new"),
+                1 => store.delete_detailed(b"target"),
+                2 => store
+                    .compare_exchange_detailed(b"target", Some(&0_i64.to_le_bytes()), Some(b"new"))
+                    .map(|changed| assert!(changed)),
+                3 => store
+                    .increment_i64_detailed(b"target", 1)
+                    .map(|value| assert_eq!(value, 1)),
+                4 => store.write_batch_detailed(&[
+                    crate::BatchOperation::Put {
+                        key: b"target",
+                        value: b"new",
+                    },
+                    crate::BatchOperation::Put {
+                        key: b"peer",
+                        value: b"new",
+                    },
+                ]),
+                _ => store
+                    .compare_exchange_batch_detailed(
+                        &[(b"target", Some(&0_i64.to_le_bytes()))],
+                        &[
+                            crate::BatchOperation::Put {
+                                key: b"target",
+                                value: b"new",
+                            },
+                            crate::BatchOperation::Put {
+                                key: b"peer",
+                                value: b"new",
+                            },
+                        ],
+                    )
+                    .map(|changed| assert!(changed)),
+            };
+            assert!(matches!(
+                result,
+                Err(crate::MutationFailure::OutcomeUnknown(_))
+            ));
+            assert!(store.get(b"base").is_err());
+            drop(store);
+            let recovered = retry_lock(|| Store::open(&path)).unwrap();
+            assert_eq!(
+                recovered.get(b"base").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+            let expected = match operation {
+                1 => None,
+                3 => Some(1_i64.to_le_bytes().to_vec()),
+                _ => Some(b"new".to_vec()),
+            };
+            assert_eq!(recovered.get(b"target").unwrap(), expected);
+            assert_eq!(
+                recovered.get(b"peer").unwrap(),
+                (operation >= 4).then(|| b"new".to_vec())
+            );
+        }
+    }
+}
+
 impl WitnessIo for Metadata {
     fn len(&self) -> io::Result<u64> {
         Ok(witness::WITNESS_SIZE as u64)

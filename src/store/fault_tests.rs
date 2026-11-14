@@ -240,6 +240,92 @@ fn detailed_transactions_report_uncertain_commit_failures_even_for_documents() {
     }
 }
 
+#[test]
+fn detailed_direct_mutations_never_classify_append_or_sync_failures_as_rejected() {
+    for operation in 0..5 {
+        for fault_kind in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(
+                dir.path().join("records.log"),
+                include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+            )
+            .unwrap();
+            fs::write(
+                dir.path().join("commit.state"),
+                include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+            )
+            .unwrap();
+            let fault = Arc::new(Mutex::new(None));
+            let store = open_versioned_fault_store(dir.path(), Arc::clone(&fault)).unwrap();
+            store.put(b"safe", b"committed").unwrap();
+            store.put(b"target", &0_i64.to_le_bytes()).unwrap();
+            *fault.lock().unwrap() = Some(match fault_kind {
+                0 => Fault::PartialAppend(0),
+                1 => Fault::SyncBefore,
+                2 => Fault::SyncAfter,
+                3 => Fault::SyncWouldBlock,
+                _ => Fault::PartialAppend(1),
+            });
+            let result = match operation {
+                0 => store.put_detailed(b"target", b"new"),
+                1 => store.delete_detailed(b"target"),
+                2 => store
+                    .compare_exchange_detailed(b"target", Some(&0_i64.to_le_bytes()), Some(b"new"))
+                    .map(|changed| assert!(changed)),
+                3 => store
+                    .increment_i64_detailed(b"target", 1)
+                    .map(|value| assert_eq!(value, 1)),
+                _ => store.write_batch_detailed(&[
+                    crate::BatchOperation::Put {
+                        key: b"target",
+                        value: b"new",
+                    },
+                    crate::BatchOperation::Put {
+                        key: b"peer",
+                        value: b"new",
+                    },
+                ]),
+            };
+            assert!(matches!(
+                result,
+                Err(crate::MutationFailure::OutcomeUnknown(_))
+            ));
+            assert!(store.get(b"safe").is_err());
+            drop(store);
+            if fault_kind == 4 {
+                let path = dir.path().join("records.log");
+                let torn = fs::read(&path).unwrap();
+                let error = retry_lock(|| Store::open(dir.path())).err().unwrap();
+                assert!(matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ));
+                assert_eq!(fs::read(path).unwrap(), torn);
+                continue;
+            }
+            let recovered = retry_lock(|| Store::open(dir.path())).unwrap();
+            assert_eq!(
+                recovered.get(b"safe").unwrap().as_deref(),
+                Some(&b"committed"[..])
+            );
+            let expected = if fault_kind == 0 {
+                Some(0_i64.to_le_bytes().to_vec())
+            } else {
+                match operation {
+                    1 => None,
+                    3 => Some(1_i64.to_le_bytes().to_vec()),
+                    _ => Some(b"new".to_vec()),
+                }
+            };
+            assert_eq!(recovered.get(b"target").unwrap(), expected);
+            assert_eq!(
+                recovered.get(b"peer").unwrap(),
+                (operation == 4 && fault_kind != 0).then(|| b"new".to_vec())
+            );
+        }
+    }
+}
+
 pub(super) fn open_fault_store(
     dir: &TempDir,
     fault: Arc<Mutex<Option<Fault>>>,

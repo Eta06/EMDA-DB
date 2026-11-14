@@ -47,7 +47,7 @@ def validate_receipts(report, require_failed=True, mode=None):
                 or (failed is None and len(acknowledged) != OPERATIONS)):
             raise ValueError('invalid writer receipt')
         classification = worker.get('classification')
-        if mode == 'detailed':
+        if mode in ('detailed', 'mutation'):
             if (failed is None and classification is not None) or (failed is not None and classification not in ('not_submitted', 'unknown')):
                 raise ValueError('invalid detailed failure classification')
         elif mode is not None and classification is not None:
@@ -145,7 +145,7 @@ def main():
     parser.add_argument('--snapshot-interval', type=float, default=1.0,
                         help='minimum seconds between full snapshots; progress is saved per case')
     parser.add_argument('--error', choices=('EIO', 'EINTR', 'EAGAIN'), default='EIO')
-    parser.add_argument('--mode', choices=('single', 'transaction', 'detailed'), default='single')
+    parser.add_argument('--mode', choices=('single', 'transaction', 'detailed', 'mutation'), default='single')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
             or not Path(args.fixture_binary).is_file() or os.path.lexists(args.output)

@@ -105,6 +105,19 @@ class ConcurrentReportVerificationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid detailed failure classification'):
             verify(broken)
 
+    def test_mutation_confirmed_aborts_must_not_recover(self):
+        report = fixture()
+        report['mode'] = 'mutation'
+        for case in report['cases']:
+            for worker in case['receipts']['workers']:
+                worker['classification'] = 'unknown' if worker['id'] == 0 else 'not_submitted'
+            for checked in case['verified']:
+                checked['mode'] = 'mutation'
+        self.assertEqual(verify(report)['confirmed_aborts'], 96)
+        report['cases'][0]['receipts']['workers'][0]['classification'] = 'not_submitted'
+        with self.assertRaisesRegex(ValueError, 'invalid or inconsistent uncertain outcomes'):
+            verify(report)
+
 
 if __name__ == '__main__':
     unittest.main()

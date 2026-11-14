@@ -412,12 +412,27 @@ impl Store {
 
     /// Replaces the value at `key`; synchronization completes before success.
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
-        self.append(Operation::Put, key, value)
+        self.append(Operation::Put, key, value, None)
+    }
+
+    /// Replaces a key with structured rejection or uncertain-outcome errors.
+    /// See [`crate::MutationFailure`] for retry and prior-failure limitations.
+    pub fn put_detailed(&self, key: &[u8], value: &[u8]) -> Result<(), crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.append(Operation::Put, key, value, Some(tracker))
+        })
     }
 
     /// Deletes a key. Deleting an absent key is valid and is persisted.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
-        self.append(Operation::Delete, key, &[])
+        self.append(Operation::Delete, key, &[], None)
+    }
+
+    /// Deletes a key with structured rejection or uncertain-outcome errors.
+    pub fn delete_detailed(&self, key: &[u8]) -> Result<(), crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.append(Operation::Delete, key, &[], Some(tracker))
+        })
     }
 
     /// Atomically replaces or deletes one key if its value matches `expected`.
@@ -431,6 +446,29 @@ impl Store {
         key: &[u8],
         expected: Option<&[u8]>,
         replacement: Option<&[u8]>,
+    ) -> io::Result<bool> {
+        self.compare_exchange_tracked(key, expected, replacement, None)
+    }
+
+    /// Performs compare-exchange with structured mutation failures. A
+    /// mismatch returns `Ok(false)` without submitting a mutation.
+    pub fn compare_exchange_detailed(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        replacement: Option<&[u8]>,
+    ) -> Result<bool, crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.compare_exchange_tracked(key, expected, replacement, Some(tracker))
+        })
+    }
+
+    fn compare_exchange_tracked(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        replacement: Option<&[u8]>,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<bool> {
         let (operation, value) = match replacement {
             Some(value) => (Operation::Put, value),
@@ -448,7 +486,7 @@ impl Store {
         if self.get_validated(key)?.as_deref() != expected {
             return Ok(false);
         }
-        self.commit_limited(operation, key, value)?;
+        self.commit_limited_tracked(operation, key, value, tracker)?;
         Ok(true)
     }
 
@@ -459,6 +497,27 @@ impl Store {
     /// The new value is synchronized before it is returned; a write I/O error
     /// can leave the outcome uncertain.
     pub fn increment_i64(&self, key: &[u8], delta: i64) -> io::Result<i64> {
+        self.increment_i64_tracked(key, delta, None)
+    }
+
+    /// Increments an integer with structured rejection or unknown-outcome
+    /// errors. Do not blindly retry an unknown increment.
+    pub fn increment_i64_detailed(
+        &self,
+        key: &[u8],
+        delta: i64,
+    ) -> Result<i64, crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.increment_i64_tracked(key, delta, Some(tracker))
+        })
+    }
+
+    fn increment_i64_tracked(
+        &self,
+        key: &[u8],
+        delta: i64,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<i64> {
         record::validate_key(key)?;
         let _admission = self.direct_writes.acquire()?;
         let _writer = self
@@ -480,7 +539,7 @@ impl Store {
         let next = current.checked_add(delta).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
-        self.commit_limited(Operation::Put, key, &next.to_le_bytes())?;
+        self.commit_limited_tracked(Operation::Put, key, &next.to_le_bytes(), tracker)?;
         Ok(next)
     }
 
@@ -595,7 +654,13 @@ impl Store {
         backup::upgrade_format(&self.log, destination.as_ref())
     }
 
-    fn append(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
+    fn append(
+        &self,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<()> {
         record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
         if operation == Operation::Put
@@ -612,7 +677,7 @@ impl Store {
                 .map_err(|_| io::Error::other("write barrier poisoned"))?;
             let exists = self.read()?.index.contains_key(key);
             if exists {
-                return self.commit_with_log_quota(operation, key, value);
+                return self.commit_with_log_quota_tracked(operation, key, value, tracker);
             }
         }
         if self.max_live_keys.is_some() || self.max_live_key_bytes.is_some() {
@@ -620,21 +685,17 @@ impl Store {
                 .writes
                 .write()
                 .map_err(|_| io::Error::other("write barrier poisoned"))?;
-            return self.commit_limited(operation, key, value);
+            return self.commit_limited_tracked(operation, key, value, tracker);
         }
         let _writer = self
             .writes
             .read()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        self.commit_with_log_quota(operation, key, value)
+        self.commit_with_log_quota_tracked(operation, key, value, tracker)
     }
 
     // Membership-changing and compound writes hold the exclusive barrier
     // through the check and append, preventing key quota oversubscription.
-    fn commit_limited(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
-        self.commit_limited_tracked(operation, key, value, None)
-    }
-
     fn commit_limited_tracked(
         &self,
         operation: Operation,
@@ -685,15 +746,6 @@ impl Store {
             self.live_key_bytes.store(bytes, Ordering::Relaxed);
         }
         Ok(())
-    }
-
-    fn commit_with_log_quota(
-        &self,
-        operation: Operation,
-        key: &[u8],
-        value: &[u8],
-    ) -> io::Result<()> {
-        self.commit_with_log_quota_tracked(operation, key, value, None)
     }
 
     fn commit_with_log_quota_tracked(

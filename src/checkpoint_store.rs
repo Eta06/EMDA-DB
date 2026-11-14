@@ -847,18 +847,39 @@ impl CheckpointStore {
 
     /// Replaces a key and synchronizes the mutation before returning.
     pub fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
-        record::validate(Operation::Put, key, value)?;
-        let _admission = self.direct_writes.acquire()?;
-        let mut state = self.write()?;
-        self.commit(&mut state, Operation::Put, key, value, &[key])
+        self.mutate_tracked(Operation::Put, key, value, None)
+    }
+
+    /// Replaces a key with structured rejection or uncertain-outcome errors.
+    pub fn put_detailed(&self, key: &[u8], value: &[u8]) -> Result<(), crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.mutate_tracked(Operation::Put, key, value, Some(tracker))
+        })
     }
 
     /// Deletes a key, including an absent key, as a synchronized mutation.
     pub fn delete(&self, key: &[u8]) -> io::Result<()> {
-        record::validate(Operation::Delete, key, &[])?;
+        self.mutate_tracked(Operation::Delete, key, &[], None)
+    }
+
+    /// Deletes a key with structured rejection or uncertain-outcome errors.
+    pub fn delete_detailed(&self, key: &[u8]) -> Result<(), crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.mutate_tracked(Operation::Delete, key, &[], Some(tracker))
+        })
+    }
+
+    fn mutate_tracked(
+        &self,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<()> {
+        record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
-        self.commit(&mut state, Operation::Delete, key, &[], &[key])
+        self.commit(&mut state, operation, key, value, &[key], tracker)
     }
 
     /// Conditionally replaces or deletes one key atomically against all writes.
@@ -868,6 +889,29 @@ impl CheckpointStore {
         key: &[u8],
         expected: Option<&[u8]>,
         replacement: Option<&[u8]>,
+    ) -> io::Result<bool> {
+        self.compare_exchange_tracked(key, expected, replacement, None)
+    }
+
+    /// Performs compare-exchange with structured mutation failures. A
+    /// mismatch returns `Ok(false)` without submitting a mutation.
+    pub fn compare_exchange_detailed(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        replacement: Option<&[u8]>,
+    ) -> Result<bool, crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.compare_exchange_tracked(key, expected, replacement, Some(tracker))
+        })
+    }
+
+    fn compare_exchange_tracked(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        replacement: Option<&[u8]>,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<bool> {
         let (operation, value) = match replacement {
             Some(value) => (Operation::Put, value),
@@ -879,13 +923,34 @@ impl CheckpointStore {
         if state.view.get(key)?.as_deref() != expected {
             return Ok(false);
         }
-        self.commit(&mut state, operation, key, value, &[key])?;
+        self.commit(&mut state, operation, key, value, &[key], tracker)?;
         Ok(true)
     }
 
     /// Atomically adds to a little-endian signed 64-bit value, starting at zero.
     /// Invalid lengths and overflow fail without appending a record.
     pub fn increment_i64(&self, key: &[u8], delta: i64) -> io::Result<i64> {
+        self.increment_i64_tracked(key, delta, None)
+    }
+
+    /// Increments an integer with structured rejection or unknown-outcome
+    /// errors. Do not blindly retry an unknown increment.
+    pub fn increment_i64_detailed(
+        &self,
+        key: &[u8],
+        delta: i64,
+    ) -> Result<i64, crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.increment_i64_tracked(key, delta, Some(tracker))
+        })
+    }
+
+    fn increment_i64_tracked(
+        &self,
+        key: &[u8],
+        delta: i64,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<i64> {
         record::validate_key(key)?;
         let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
@@ -901,13 +966,38 @@ impl CheckpointStore {
         let next = current.checked_add(delta).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
-        self.commit(&mut state, Operation::Put, key, &next.to_le_bytes(), &[key])?;
+        self.commit(
+            &mut state,
+            Operation::Put,
+            key,
+            &next.to_le_bytes(),
+            &[key],
+            tracker,
+        )?;
         Ok(next)
     }
 
     /// Applies a blind ordered batch atomically as one synchronized record.
     /// This is not a read-modify-write transaction.
     pub fn write_batch(&self, operations: &[BatchOperation<'_>]) -> io::Result<()> {
+        self.write_batch_tracked(operations, None)
+    }
+
+    /// Applies a blind atomic batch with structured mutation failures.
+    pub fn write_batch_detailed(
+        &self,
+        operations: &[BatchOperation<'_>],
+    ) -> Result<(), crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.write_batch_tracked(operations, Some(tracker))
+        })
+    }
+
+    fn write_batch_tracked(
+        &self,
+        operations: &[BatchOperation<'_>],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<()> {
         let _admission = self.direct_writes.acquire()?;
         let mut state = self.write()?;
         let payload = encode_payload(operations)?;
@@ -915,7 +1005,7 @@ impl CheckpointStore {
             .iter()
             .map(|operation| operation.fields().1)
             .collect::<Vec<_>>();
-        self.commit(&mut state, Operation::Batch, &[0], &payload, &keys)
+        self.commit(&mut state, Operation::Batch, &[0], &payload, &keys, tracker)
     }
 
     /// Atomically applies a blind batch if all point-value conditions match.
@@ -928,6 +1018,27 @@ impl CheckpointStore {
         &self,
         conditions: &[(&[u8], Option<&[u8]>)],
         operations: &[BatchOperation<'_>],
+    ) -> io::Result<bool> {
+        self.compare_exchange_batch_tracked(conditions, operations, None)
+    }
+
+    /// Conditionally applies an atomic batch with structured mutation errors.
+    /// A condition mismatch returns `Ok(false)` without submitting a batch.
+    pub fn compare_exchange_batch_detailed(
+        &self,
+        conditions: &[(&[u8], Option<&[u8]>)],
+        operations: &[BatchOperation<'_>],
+    ) -> Result<bool, crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.compare_exchange_batch_tracked(conditions, operations, Some(tracker))
+        })
+    }
+
+    fn compare_exchange_batch_tracked(
+        &self,
+        conditions: &[(&[u8], Option<&[u8]>)],
+        operations: &[BatchOperation<'_>],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<bool> {
         if conditions.len() > MAX_SCAN_ENTRIES {
             return Err(io::Error::new(
@@ -961,7 +1072,7 @@ impl CheckpointStore {
             .iter()
             .map(|operation| operation.fields().1)
             .collect::<Vec<_>>();
-        self.commit(&mut state, Operation::Batch, &[0], &payload, &keys)?;
+        self.commit(&mut state, Operation::Batch, &[0], &payload, &keys, tracker)?;
         Ok(true)
     }
 }

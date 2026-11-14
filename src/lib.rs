@@ -75,4 +75,4 @@ pub use store::{
 };
 pub use transaction_budget::{MAX_ACTIVE_TRANSACTIONS, TransactionBudgetStatus};
 pub use transaction_conflict::is_transaction_conflict;
-pub use transaction_outcome::TransactionFailure;
+pub use transaction_outcome::{MutationFailure, TransactionFailure};

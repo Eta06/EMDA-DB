@@ -13,6 +13,24 @@ impl Store {
     /// records, which older software cannot read. This is a blind atomic write,
     /// not a read-modify-write transaction or snapshot isolation.
     pub fn write_batch(&self, operations: &[BatchOperation<'_>]) -> io::Result<()> {
+        self.write_batch_tracked(operations, None)
+    }
+
+    /// Applies a blind atomic batch with structured mutation failures.
+    pub fn write_batch_detailed(
+        &self,
+        operations: &[BatchOperation<'_>],
+    ) -> Result<(), crate::MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.write_batch_tracked(operations, Some(tracker))
+        })
+    }
+
+    fn write_batch_tracked(
+        &self,
+        operations: &[BatchOperation<'_>],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<()> {
         let _admission = self.direct_writes.acquire()?;
         let _writer = self
             .writes
@@ -22,7 +40,7 @@ impl Store {
         // exclusive barrier, so concurrent callers cannot each allocate a
         // full batch before entering coordinator admission.
         let payload = encode_payload(operations)?;
-        self.write_batch_locked(operations, &payload, None)
+        self.write_batch_locked(operations, &payload, tracker)
     }
 
     // Caller holds the exclusive writes barrier through durable publication.

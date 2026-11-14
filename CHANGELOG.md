@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in structured failures to direct key-value puts, deletes,
+  compare-exchange, integer increments and atomic batches on both stores,
+  including checkpoint conditional batches. Rejection concerns only the
+  current mutation; an unknown outcome requires reconciliation before retry.
+
 - Classify configured transaction log, live-key and checkpoint suffix limit
   failures as rejected before submission in the opt-in detailed interface;
   checkpoint maintenance may still have independent effects.

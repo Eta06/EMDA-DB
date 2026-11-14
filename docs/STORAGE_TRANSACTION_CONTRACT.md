@@ -33,8 +33,19 @@ maintenance concerns only staged transaction writes: maintenance itself may
 have completed or have an uncertain result. A started commit can succeed after cancellation, or fail with
 an unknown outcome. Reconcile an unknown outcome before retrying: recovery
 alone may not identify whether a particular request was applied. Panics
-unwind rather than returning a classified result. Other mutation APIs have not
-yet gained this structured classification.
+unwind rather than returning a classified result.
+
+Both writable stores offer opt-in detailed put, delete, compare-exchange,
+integer increment and blind batch operations; the checkpoint store also has a
+detailed conditional batch. `MutationFailure::Rejected` means the current
+mutation was not submitted. It does not establish store health or resolve an
+earlier uncertain write, and checkpoint maintenance may have independent
+effects. `OutcomeUnknown` means this mutation may have been submitted and must
+be reconciled before retry; ordinary coordinator failures can be classified
+unknown even before append. Conditional mismatches return `Ok(false)` without
+submitting a mutation. Existing methods retain their error types, and document
+convenience mutations, maintenance, backup and restore do not yet offer this
+structured classification.
 
 ## Current prototype: one store in one process
 

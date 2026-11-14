@@ -15,7 +15,7 @@ def verify(report):
     error = report.get('error')
     mode = report.get('mode')
     repetitions = report.get('repetitions')
-    if error not in ('EIO', 'EINTR', 'EAGAIN') or mode not in ('single', 'transaction', 'detailed') or type(repetitions) is not int or not 1 <= repetitions <= 20:
+    if error not in ('EIO', 'EINTR', 'EAGAIN') or mode not in ('single', 'transaction', 'detailed', 'mutation') or type(repetitions) is not int or not 1 <= repetitions <= 20:
         raise ValueError('invalid campaign configuration')
     expected = set(itertools.product(range(1, repetitions + 1), ('v2', 'v3'),
                                      ('ordinary', 'checkpoint'), ('witness', 'log-sync'),
@@ -51,7 +51,7 @@ def verify(report):
             if failure is not None:
                 failed.add((index, failure))
             classification = worker.get('classification')
-            if mode == 'detailed':
+            if mode in ('detailed', 'mutation'):
                 if ((failure is None and classification is not None)
                         or (failure is not None and classification not in ('not_submitted', 'unknown'))):
                     raise ValueError('invalid detailed failure classification')
@@ -114,7 +114,7 @@ def verify(report):
         totals['cases'] += 1
         totals['acknowledgements'] += acknowledged
         totals['failed_calls'] += len(failed)
-        if mode == 'detailed':
+        if mode in ('detailed', 'mutation'):
             totals['confirmed_aborts'] += len(confirmed_aborts)
             totals['unknown_calls'] += len(failed) - len(confirmed_aborts)
         totals['uncertain_present'] += len(recovered)

@@ -38,6 +38,7 @@ class ConcurrentEioCampaignTests(unittest.TestCase):
                                'error': 'synthetic EIO', 'classification': 'unknown'} for i in range(4)]}
         report['workers'][1]['classification'] = 'not_submitted'
         validate_receipts(report, mode='detailed')
+        validate_receipts(report, mode='mutation')
         report['workers'][0]['classification'] = 'invalid'
         with self.assertRaisesRegex(ValueError, 'invalid detailed failure classification'):
             validate_receipts(report, mode='detailed')

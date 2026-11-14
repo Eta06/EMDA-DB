@@ -109,10 +109,15 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   new interface, plus 8,192 mixed concurrent histories across overlay and
   tmpfs. The checks are finite
   and do not establish physical power-loss behavior or an off-host restore.
-- [ ] Specify broader structured outcomes for direct mutations, maintenance,
-  backup and restore APIs, and refine confirmed pre-submission classification
-  inside the commit path. Existing error types are unchanged and an unknown
-  outcome cannot safely be retried solely from its error kind.
+- [x] Add opt-in structured outcomes to direct key-value puts, deletes,
+  compare-exchange, integer increments and batches on both writable paths,
+  including checkpoint conditional batches. A rejected call says nothing
+  about an earlier uncertain write, and ordinary coordinator failures can
+  remain conservatively unknown before append.
+- [ ] Specify structured outcomes for document convenience mutations,
+  maintenance, backup and restore APIs, and refine confirmed pre-submission
+  classification inside the ordinary commit coordinator. Existing error types
+  are unchanged and unknown outcomes cannot be retried solely from error kind.
 
 ## Priority 1: durable storage and core operations
 
