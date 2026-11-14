@@ -151,6 +151,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add opt-in classifications for the consuming ordinary and checkpoint
   compaction handoffs. Candidate and exchange failures remain conservative;
   the original handle is consumed even when the method returns an error.
+  [Boundary checks](HANDOFF_OUTCOMES_2026_11_14.md) record the tested scope.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.
