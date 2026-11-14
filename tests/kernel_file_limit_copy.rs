@@ -11,6 +11,9 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 
 mod kernel_file_limit_common;
+mod support;
+
+use support::retry_lock;
 
 const XATTR: &str = "user.db.commit.v3";
 const READY: &str = "EMDA_COPY_FILE_LIMIT_READY";
@@ -93,7 +96,7 @@ fn kernel_file_limit_copy_child() {
     let source = if operation == "restore" {
         None
     } else {
-        Some(Store::open(root.join("source")).unwrap())
+        Some(retry_lock(|| Store::open(root.join("source"))).unwrap())
     };
     let limit = std::env::var("EMDA_COPY_LIMIT_BYTES")
         .unwrap()
@@ -146,7 +149,7 @@ fn file_size_failures_never_publish_partial_copies_and_allow_retry() {
                         )
                         .unwrap();
                     }
-                    let store = Store::open(&source).unwrap();
+                    let store = retry_lock(|| Store::open(&source)).unwrap();
                     store.put(b"safe", b"acknowledged").unwrap();
                     store.put(b"large", LARGE_VALUE).unwrap();
                     store.backup(&backup).unwrap();
@@ -207,22 +210,22 @@ fn file_size_failures_never_publish_partial_copies_and_allow_retry() {
                     let retry = root.path().join("retry");
                     match operation {
                         Operation::Backup => {
-                            let store = Store::open(&source).unwrap();
+                            let store = retry_lock(|| Store::open(&source)).unwrap();
                             store.backup(&retry).unwrap();
                             drop(store);
                             let restored = root.path().join("restored");
                             Store::restore(&retry, &restored).unwrap();
-                            verify(&Store::open(restored).unwrap());
+                            verify(&retry_lock(|| Store::open(&restored)).unwrap());
                         }
                         Operation::Restore => {
                             Store::restore(&backup, &retry).unwrap();
-                            verify(&Store::open(&retry).unwrap());
+                            verify(&retry_lock(|| Store::open(&retry)).unwrap());
                         }
                         Operation::Upgrade => {
-                            let store = Store::open(&source).unwrap();
+                            let store = retry_lock(|| Store::open(&source)).unwrap();
                             store.upgrade_format(&retry).unwrap();
                             drop(store);
-                            verify(&Store::open(&retry).unwrap());
+                            verify(&retry_lock(|| Store::open(&retry)).unwrap());
                         }
                     }
                     assert_eq!(fs::read(&log_path).unwrap(), before, "{context}");
