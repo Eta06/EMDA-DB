@@ -62,6 +62,7 @@ fn pause_automatic_rollover() -> io::Result<()> {
 }
 
 mod basic;
+mod concurrency;
 mod crash;
 mod deadline;
 mod faults;
