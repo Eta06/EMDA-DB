@@ -8,6 +8,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
   while retaining the writable store's witness checks. A versioned log without
   its witness rejects attempts to append, synchronize or verify as a writer.
 
+- Share the V3 checkpoint writer's log handle with its metadata witness to
+  reduce descriptor use while preserving full synchronization. V2 is unchanged.
+
 - Add `is_transaction_conflict` for directly returned pre-commit conflict
   errors, distinguishing them from other `WouldBlock` errors whose outcomes
   can be uncertain. The helper does not roll back callback side effects.

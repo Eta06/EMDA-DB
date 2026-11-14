@@ -1,0 +1,64 @@
+{
+  "revision": "8969bdd24f3cc01de4179096385384c71a6f1bd5",
+  "git_status": "",
+  "compiler": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "toolchain": "nightly-2026-11-03",
+  "sanitizer": "address",
+  "runs": [
+    {
+      "target": "checkpoint_exchange",
+      "seed": 1473964026,
+      "initial_files": 5,
+      "initial_max_bytes": 63,
+      "executions": 1743,
+      "seconds": 61,
+      "final_files": 228,
+      "final_length_limit": 63,
+      "max_len_flag": 64,
+      "binary_sha256": "acdba0700f293a941468d96419d0b762f712440cea6edd5cda7fd80aa026fabf",
+      "log_sha256": "8daa6adf475aa6a6538239adcb1bc1f353b55a986e94db0b25caaf16db7662fb"
+    },
+    {
+      "target": "checkpoint_store",
+      "seed": 2667117733,
+      "initial_files": 17,
+      "initial_max_bytes": 99,
+      "executions": 5158,
+      "seconds": 61,
+      "final_files": 631,
+      "final_length_limit": 99,
+      "max_len_flag": 128,
+      "binary_sha256": "1b741c646a7649a7a9f30bc7c52dde57d1b408d1ddbed9c08088e406fbcba740",
+      "log_sha256": "52efbe024f94a6f11491d9c44b7136e5e2efde02dc38167b611be2b53dc1c697"
+    }
+  ],
+  "starting_sha256": {
+    "fd-opt-exchange-long-start": {
+      "long-sequence-0": "1a4a9d509e028a3ef6e73e2bf33f95996f89e78abece496d36c102f4d4f17495",
+      "long-sequence-1": "50430f94dc584e7ec6cc88c34a2628b7a352b685cd35c8304a513149267a6fbb",
+      "long-sequence-2": "e712801b231c514bab58be06aca9939a2b4b4b6dc4a8c5ef988c4e908df95150",
+      "long-sequence-3": "e3dd251990cfac6f8c843e90c2857a8e922624669157399bf5f976b61781bd81",
+      "reopen": "90110e095c38036be24821ee726e18749cfee0f33877acd537fb895545032f26"
+    },
+    "shared-witness-store-start": {
+      "batch-reopen": "62a7f67e38769d6e102f15bf5465cade3db5ae8187f25719330878829dab60dd",
+      "compaction": "7d9036e0e1f0271bdc194501f33c2523e7d53bb41a83388c656124cc103e42aa",
+      "conditional-batch": "e4b71ea911bf5f22a240ae58e36595c85d975cd2c713354274656c2d84b84b3d",
+      "duplicate": "1a3d02ba18a6f7668f7a0d2fde5cae1c764db48704eb1912544a8f29e56f317d",
+      "live-rollover": "1d37544f16540db83b9bf4e5db9d2f28db72e4c7c48efbc997da8642fdac40b7",
+      "log-cap": "6dad8532767b0b046c728028418380f490e87f294637173bb61b43b7ca292e01",
+      "long-sequence-0": "5a5823b9df6396327c0dc2108aa843683f997ce6ce9297e12612f240a22a1853",
+      "long-sequence-1": "97ad3d0611042244531cfc5d734f8335aeb73bed401e073161e19ba4b925c86c",
+      "long-sequence-2": "c00ebefe3b66049fa60ec8e59e03499c7abf9c98dc55c54ca7a06a613d5eefd7",
+      "long-sequence-3": "5ca3f14077652fee0803a005b96e43e94b94b02ba81816592fd1e629e10ca862",
+      "quota": "d621fee9c61e6cba49ea8e63641d9baa80b4900157eb328cef16efaced6d9222",
+      "rollover": "1cb6945505b3f2ebc8fdaa1e4b48aa821c0b085bddaaf6aa2841b5c26807f51a",
+      "snapshot-rollover": "56b03bef62e4e637bf97136dd35721e83e90763be0a75bd5df31768d5667e310",
+      "transaction": "7b0e6c4ec2ae2ea10f9e5b2f1a34191543304601b8f070505988250b509e6a2e",
+      "transaction-deadline": "b2c0d9c15d3d1c59ca36baeea0145f19845b64c9101d9e4806a1a22ace2292fd",
+      "transaction-fifo": "5828a248b8e3becec2d86f321e3a0766abce21a37e6132327d7d59a4fe354f2c",
+      "transaction-read-set": "643f7bc548ffb339ad12c13241820d957f070ce4db1c18aefa65d0a57324adee"
+    }
+  },
+  "limitations": "Finite Linux serial models; no physical power loss, exhaustive scheduling or off-host restore."
+}

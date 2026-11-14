@@ -1,0 +1,13 @@
+{
+  "revision": "3cb529eea17cb5cc3ba417057e0e39078d7c0b95",
+  "git_status": "",
+  "command": "cargo +stable test --release --locked --test checkpoint_fd_exhaustion",
+  "compiler": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "repetitions": 25,
+  "v2_and_v3_cases": 50,
+  "stores_per_case": 12,
+  "parent_recovery_opens": 1200,
+  "binary_sha256": "5c998dc8dbb6509ca3163487bd1ad2e11efa35bbc2c19fe0becddbf689d21896",
+  "log_sha256": "15e724ab8a5f46453dca39ad44c6d6f0a1653211baf2ab26b16683aa64cc3fe7",
+  "limitations": "Process-local RLIMIT_NOFILE failures and clean reopens on Linux; no physical power loss, hosted service or project-wide resource quotas."
+}

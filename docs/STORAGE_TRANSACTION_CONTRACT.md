@@ -55,6 +55,10 @@ writes and other external effects; those are never rolled back by the engine.
   rules; an internal versioned log lacking its witness cannot be used to append,
   synchronize or verify as a writer. This does not change the lock, corruption,
   durability or snapshot guarantees described here.
+- A V3 checkpoint writer shares ownership of its open log handle with its
+  metadata witness. The witness still verifies and updates the boundary and
+  requires a full `fsync` before acknowledgement; sharing the handle does not
+  change its failure or recovery semantics. V2 keeps its separate witness file.
 
 - `snapshot_budget_status` and `set_snapshot_budget_limits` expose per-open aggregate snapshot reservation limits and counts. Ordinary-store limits cover active reservations, logical keys and key bytes, including transaction snapshots, standalone document point-read slots and the snapshot used during online compaction. Checkpoint-store limits cover active checkpoint snapshots, copied block-directory entries, overlay keys and overlay-key bytes. Zero can reject new operations using the corresponding budget. Limits cannot exceed the existing hard maxima; a reduction below active reservations returns `WouldBlock` without changing any limit. Existing reservations remain valid, and expired views remain counted until reaped, cancelled or dropped. Supported in-process compaction handoffs preserve the limits; reopening resets them. Counts are logical and exclude returned values, allocator overhead, other resources and other stores; they are not total-memory or persistent project quotas.
 

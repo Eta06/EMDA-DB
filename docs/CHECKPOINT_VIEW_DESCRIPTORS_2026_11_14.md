@@ -1,5 +1,8 @@
 # Checkpoint view descriptor reduction
 
+A [later V3 writer-handle change](CHECKPOINT_SHARED_WITNESS_2026_11_14.md)
+reduced the same 100-store sample by another 100 descriptors.
+
 The multi-store baseline found that the checkpoint-backed writer held eight
 descriptors per open V3 database. A read-only checkpoint view kept its own
 commit-witness and identity-anchor handles after validating the checkpoint,
