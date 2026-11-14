@@ -18,7 +18,7 @@ trait BackupWriter: Send + Sync {
         value: &[u8],
         transaction: bool,
     ) -> io::Result<()>;
-    fn backup(&self, destination: &Path) -> io::Result<()>;
+    fn backup(&self, destination: &Path, detailed: bool) -> io::Result<()>;
 }
 
 impl BackupWriter for Store {
@@ -42,8 +42,12 @@ impl BackupWriter for Store {
             ])
         }
     }
-    fn backup(&self, destination: &Path) -> io::Result<()> {
-        Store::backup(self, destination)
+    fn backup(&self, destination: &Path, detailed: bool) -> io::Result<()> {
+        if detailed {
+            Store::backup_detailed(self, destination).map_err(io::Error::other)
+        } else {
+            Store::backup(self, destination)
+        }
     }
 }
 
@@ -68,8 +72,12 @@ impl BackupWriter for CheckpointStore {
             ])
         }
     }
-    fn backup(&self, destination: &Path) -> io::Result<()> {
-        CheckpointStore::backup(self, destination)
+    fn backup(&self, destination: &Path, detailed: bool) -> io::Result<()> {
+        if detailed {
+            CheckpointStore::backup_detailed(self, destination).map_err(io::Error::other)
+        } else {
+            CheckpointStore::backup(self, destination)
+        }
     }
 }
 
@@ -167,7 +175,8 @@ fn check_case(v2: bool, checkpoint_writer: bool) {
             start.send(round).unwrap();
         }
         let backup = root.path().join(format!("backup-{round}"));
-        store.backup(&backup).unwrap();
+        let detailed = round % 2 == 1;
+        store.backup(&backup, detailed).unwrap();
         let upper = acknowledged
             .iter()
             .map(|count| count.load(Ordering::Acquire))
@@ -182,7 +191,11 @@ fn check_case(v2: bool, checkpoint_writer: bool) {
         }
 
         let restored = root.path().join(format!("restored-{round}"));
-        Store::restore(&backup, &restored).unwrap();
+        if detailed {
+            Store::restore_detailed(&backup, &restored).unwrap();
+        } else {
+            Store::restore(&backup, &restored).unwrap();
+        }
         let snapshot = Store::open(&restored).unwrap();
         for writer in 0..WRITERS {
             let (first, second) = keys(writer);
