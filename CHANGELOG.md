@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in offline managed-selection rebuild outcomes that distinguish
+  checkpoint and selection publication attempts. Full-log recovery can have
+  independent effects even when neither publication begins.
+
 - Reuse the V3 checkpoint writer's log handle for its validated read view when
   their file identities match. Identity uncertainty keeps the independent view;
   V2, witness synchronization and the on-disk formats are unchanged.

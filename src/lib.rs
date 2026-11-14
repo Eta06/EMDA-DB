@@ -57,7 +57,8 @@ pub use document::{
     SchemaStep,
 };
 pub use publication_outcome::{
-    HandoffFailure, ManagedRolloverFailure, OnlineHandoffFailure, PublicationFailure,
+    HandoffFailure, ManagedRebuildFailure, ManagedRolloverFailure, OnlineHandoffFailure,
+    PublicationFailure,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{

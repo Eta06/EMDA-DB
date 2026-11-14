@@ -28,6 +28,29 @@ impl CheckpointStore {
         )
     }
 
+    /// Rebuilds managed selection with separate conservative classifications
+    /// for checkpoint and selection publication. This releases the store lock
+    /// before returning, including on errors; coordinate other writers before
+    /// inspecting or reopening either path. Full-log recovery may synchronize
+    /// an unacknowledged tail even if no publication begins. No failure returns
+    /// a new digest or certifies source health or cleanup.
+    pub fn rebuild_managed_selection_detailed(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        crate::publication_outcome::track_managed_rebuild(|tracker| {
+            Self::rebuild_managed_using(
+                path.as_ref(),
+                destination.as_ref(),
+                |path| crate::Store::open(path),
+                selection::sync_ancestors,
+                || Ok(()),
+                selection::sync_ancestors,
+                Some(tracker),
+            )
+        })
+    }
+
     /// Rebuilds using optional full-log and live-key limits during recovery.
     /// The log limit counts the whole file. Key count and key-byte limits
     /// apply to every replayed historical state, not just the current state.
@@ -54,7 +77,38 @@ impl CheckpointStore {
             selection::sync_ancestors,
             || Ok(()),
             selection::sync_ancestors,
+            None,
         )
+    }
+
+    /// Rebuilds with full-log and historical live-key limits, and returns
+    /// structured publication outcomes. The limits have the same semantics
+    /// as `rebuild_managed_selection_with_limits` and are not persisted.
+    pub fn rebuild_managed_selection_with_limits_detailed(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        max_log_bytes: Option<u64>,
+        max_live_keys: Option<usize>,
+        max_live_key_bytes: Option<usize>,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        crate::publication_outcome::track_managed_rebuild(|tracker| {
+            Self::rebuild_managed_using(
+                path.as_ref(),
+                destination.as_ref(),
+                |path| {
+                    crate::Store::open_with_resource_limits(
+                        path,
+                        max_log_bytes,
+                        max_live_keys,
+                        max_live_key_bytes,
+                    )
+                },
+                selection::sync_ancestors,
+                || Ok(()),
+                selection::sync_ancestors,
+                Some(tracker),
+            )
+        })
     }
 
     pub(super) fn rebuild_managed_with_hooks(
@@ -86,16 +140,18 @@ impl CheckpointStore {
             sync_checkpoint_ancestors,
             before_selection_rename,
             sync_selection_parent,
+            None,
         )
     }
 
-    fn rebuild_managed_using(
+    pub(super) fn rebuild_managed_using(
         path: &Path,
         destination: &Path,
         open_store: impl FnOnce(&Path) -> io::Result<crate::Store>,
         sync_checkpoint_ancestors: impl FnOnce(&Path) -> io::Result<()>,
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: Option<&crate::publication_outcome::ManagedTracker>,
     ) -> io::Result<[u8; 32]> {
         let path = fs::canonicalize(path)?;
         // This is recovery, never creation or initialization of a new store.
@@ -127,7 +183,21 @@ impl CheckpointStore {
         // Refuse to overwrite unknown, damaged, symlink or non-file metadata.
         // A valid but stale selection need not have an accessible checkpoint.
         selection::load(&path)?;
-        let digest = store.checkpoint_to_with_sync(&destination, sync_checkpoint_ancestors)?;
+        let digest = if let Some(tracker) = tracker {
+            match store.checkpoint_to_detailed_with_sync(&destination, sync_checkpoint_ancestors) {
+                Ok(digest) => {
+                    tracker.checkpoint.begin_publication();
+                    digest
+                }
+                Err(crate::PublicationFailure::NotPublished(error)) => return Err(error),
+                Err(crate::PublicationFailure::OutcomeUnknown(error)) => {
+                    tracker.checkpoint.begin_publication();
+                    return Err(error);
+                }
+            }
+        } else {
+            store.checkpoint_to_with_sync(&destination, sync_checkpoint_ancestors)?
+        };
         let lock = store.duplicate_store_lock()?;
         let view =
             CheckpointView::open_locked(&path, &destination, &digest, lock).map_err(|error| {
@@ -143,6 +213,9 @@ impl CheckpointStore {
         }
         drop(view);
         let next = selection::Selection::new(destination, digest)?;
+        if let Some(tracker) = tracker {
+            tracker.begin_selection();
+        }
         selection::publish(&path, &next, before_selection_rename, sync_selection_parent)
             .map_err(|error| io::Error::new(error.kind(), format!("managed selection publication may have occurred; recovery required: {error}")))?;
         Ok(digest)

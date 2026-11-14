@@ -603,7 +603,7 @@ impl Store {
         self.checkpoint_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
-    fn checkpoint_to_detailed_with_sync(
+    pub(crate) fn checkpoint_to_detailed_with_sync(
         &self,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,

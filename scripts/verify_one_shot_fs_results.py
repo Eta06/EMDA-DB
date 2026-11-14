@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from sync_eio_campaign import LEGACY_OPERATIONS, MANAGED_OPERATIONS, MANAGED_SUFFIX_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
+from sync_eio_campaign import LEGACY_OPERATIONS, MANAGED_OPERATIONS, MANAGED_REBUILD_OPERATIONS, MANAGED_SUFFIX_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
 
 ORDERS = {'ordinary-first': ['ordinary', 'checkpoint'],
           'checkpoint-first': ['checkpoint', 'ordinary']}
@@ -115,6 +115,9 @@ def verify(result):
     require(type(managed_binding) is int and managed_binding in (0, 1, 2), 'unknown managed selection binding version')
     managed_handle = result.get('managed_handle_check', 0)
     require(type(managed_handle) is int and managed_handle in (0, 1), 'unknown managed handle check version')
+    if publication and any(operation in MANAGED_REBUILD_OPERATIONS for operation in operations):
+        require(all(operation in MANAGED_REBUILD_OPERATIONS for operation in operations)
+                and managed_handle == 0, 'offline rebuild cannot report an open handle check')
     if publication:
         require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover', *LEGACY_OPERATIONS, *MANAGED_OPERATIONS) for operation in operations),
                 'invalid publication operation')

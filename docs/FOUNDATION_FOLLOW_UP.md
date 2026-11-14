@@ -196,6 +196,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   refine safe classifications where further boundaries can be proven.
   Existing error types are unchanged and unknown outcomes cannot be retried
   solely from error kind.
+- [x] Add opt-in structured outcomes for offline managed-selection rebuild,
+  including the limited variant. The result distinguishes checkpoint and
+  selection publication attempts; full-log recovery can still adopt an
+  unacknowledged complete tail before publication, and callers must coordinate
+  other writers after the rebuild releases its lock.
 
 ## Priority 1: durable storage and core operations
 

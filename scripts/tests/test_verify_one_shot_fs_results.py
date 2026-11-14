@@ -170,6 +170,18 @@ class OneShotCoverageTests(unittest.TestCase):
         del broken['cases'][0]['injections'][1]['outcome']['handle_after_selection_failure']
         with self.assertRaisesRegex(ValueError, 'did not block later handle access'):
             verify(broken)
+        rebuild = copy.deepcopy(report)
+        operation = 'checkpoint-managed-rebuild'
+        rebuild.update(operations=[operation], managed_handle_check=0)
+        rebuild['cases'][0]['operation'] = operation
+        for value in [rebuild['cases'][0]['control'], *rebuild['cases'][0]['injections']]:
+            value['outcome']['operation'] = operation
+            value['outcome'].pop('handle_after_selection_failure', None)
+            value['verification']['operation'] = operation
+        self.assertEqual(verify(rebuild)['injections'], 2)
+        rebuild['managed_handle_check'] = 1
+        with self.assertRaisesRegex(ValueError, 'offline rebuild cannot report an open handle check'):
+            verify(rebuild)
         broken = copy.deepcopy(report)
         broken['cases'][0]['injections'][1]['managed_selection']['after_verification']['sha256'] = 'b' * 64
         with self.assertRaisesRegex(ValueError, 'selection evidence changed'):

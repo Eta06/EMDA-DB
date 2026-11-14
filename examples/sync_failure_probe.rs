@@ -117,6 +117,9 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
                 .rollover_managed(target)
                 .map(|_| ())
         }
+        "checkpoint-managed-rebuild" | "checkpoint-managed-rebuild-existing" => {
+            CheckpointStore::rebuild_managed_selection(source, target).map(|_| ())
+        }
         "initialize" => Store::open(target).map(|_| ()),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -160,6 +163,12 @@ fn attempt(root: &Path, operation: &str) -> ProbeResult<()> {
 
 fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
     use database_engine::PublicationFailure;
+    if matches!(
+        operation,
+        "checkpoint-managed-rebuild" | "checkpoint-managed-rebuild-existing"
+    ) {
+        return attempt_rebuild_publication(root, operation);
+    }
     if matches!(
         operation,
         "checkpoint-managed-rollover"
@@ -213,6 +222,38 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
                 PublicationFailure::NotPublished(error) => ("not_published", error),
                 PublicationFailure::OutcomeUnknown(error) => ("unknown", error),
                 other => ("unknown", io::Error::other(other)),
+            };
+            println!(
+                "{}",
+                json!({"status":"error", "operation":operation,
+                "classification":classification, "kind":format!("{:?}",error.kind()), "message":error.to_string()})
+            );
+        }
+    }
+    Ok(())
+}
+
+fn attempt_rebuild_publication(root: &Path, operation: &str) -> ProbeResult<()> {
+    use database_engine::ManagedRebuildFailure;
+    let outcome = CheckpointStore::rebuild_managed_selection_detailed(
+        root.join("source"),
+        root.join("result"),
+    );
+    match outcome {
+        Ok(_) => println!(
+            "{}",
+            json!({"status":"success", "operation":operation, "classification":null})
+        ),
+        Err(error) => {
+            let (classification, error) = match error {
+                ManagedRebuildFailure::NotPublished(error) => ("not_published", error),
+                ManagedRebuildFailure::CheckpointOutcomeUnknown(error) => {
+                    ("checkpoint_unknown", error)
+                }
+                ManagedRebuildFailure::SelectionOutcomeUnknown(error) => {
+                    ("selection_unknown", error)
+                }
+                other => ("selection_unknown", io::Error::other(other)),
             };
             println!(
                 "{}",
@@ -411,6 +452,8 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
             | "checkpoint-managed-rollover-existing"
             | "checkpoint-managed-rollover-tail"
             | "checkpoint-managed-rollover-tail-existing"
+            | "checkpoint-managed-rebuild"
+            | "checkpoint-managed-rebuild-existing"
     );
     let has_tail = operation.contains("-rollover-tail");
     let next_digest: [u8; 32] = if has_tail {
@@ -524,6 +567,8 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
                 | "checkpoint-managed-rollover-existing"
                 | "checkpoint-managed-rollover-tail"
                 | "checkpoint-managed-rollover-tail-existing"
+                | "checkpoint-managed-rebuild"
+                | "checkpoint-managed-rebuild-existing"
         ) {
             // This digest was independently saved before the attempted copy.
             let view = CheckpointView::open(root.join("source"), &target, &next_digest)?;
@@ -701,6 +746,8 @@ mod tests {
             "checkpoint-managed-rollover-existing",
             "checkpoint-managed-rollover-tail",
             "checkpoint-managed-rollover-tail-existing",
+            "checkpoint-managed-rebuild",
+            "checkpoint-managed-rebuild-existing",
         ] {
             let root = tempfile::tempdir().unwrap();
             setup(root.path(), "v2").unwrap();

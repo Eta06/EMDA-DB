@@ -36,7 +36,9 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
 LEGACY_OPERATIONS = ('upgrade-legacy', 'upgrade-empty-legacy')
 MANAGED_SUFFIX_OPERATIONS = ('checkpoint-managed-rollover-tail', 'checkpoint-managed-rollover-tail-existing')
-MANAGED_OPERATIONS = ('checkpoint-managed-rollover', 'checkpoint-managed-rollover-existing', *MANAGED_SUFFIX_OPERATIONS)
+MANAGED_REBUILD_OPERATIONS = ('checkpoint-managed-rebuild', 'checkpoint-managed-rebuild-existing')
+MANAGED_OPERATIONS = ('checkpoint-managed-rollover', 'checkpoint-managed-rollover-existing',
+                      *MANAGED_SUFFIX_OPERATIONS, *MANAGED_REBUILD_OPERATIONS)
 PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy',
                           'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover')
 FORMATS = ('v2', 'v3')
@@ -409,7 +411,8 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
             raise ValueError('recovery verification did not complete')
         if 'classification' in traced['outcome']:
             if operation in MANAGED_OPERATIONS:
-                check_managed_publication_outcome(traced['outcome'], verification, selection_before, selection_after)
+                check_managed_publication_outcome(traced['outcome'], verification, selection_before, selection_after,
+                                                  require_handle=operation not in MANAGED_REBUILD_OPERATIONS)
             else:
                 check_publication_outcome(traced['outcome'], verification)
         final = snapshot(root, format_name)
@@ -523,7 +526,9 @@ def main():
         'operations': [args.operation] if args.operation else list(PUBLICATION_OPERATIONS if args.publication_outcomes else OPERATIONS),
         'publication_outcomes': args.publication_outcomes,
         'managed_selection_binding': 2 if args.operation in MANAGED_SUFFIX_OPERATIONS else 1,
-        'managed_handle_check': 1,
+        # An offline rebuild releases its store lock and has no open handle to
+        # poison. Rollover reports still require the blocked-handle check.
+        'managed_handle_check': 0 if args.operation in MANAGED_REBUILD_OPERATIONS else 1,
         'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'injected_error': args.injected_error,
         'filesystem': json.loads(subprocess.check_output(

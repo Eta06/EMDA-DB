@@ -1,5 +1,5 @@
 #![no_main]
-use database_engine::{CheckpointStore, ManagedRolloverFailure, Store};
+use database_engine::{CheckpointStore, ManagedRebuildFailure, ManagedRolloverFailure, Store};
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
 
@@ -99,7 +99,14 @@ fuzz_target!(|data: &[u8]| {
                 assert!(CheckpointStore::open_managed(&path).is_err());
                 assert!(CheckpointStore::open(&path, &initial, &digest).is_err());
                 let rejected = root.path().join(format!("rejected-{generation}"));
-                assert!(CheckpointStore::rebuild_managed_selection(&path, &rejected).is_err());
+                if bytes[2] & 2 != 0 {
+                    assert!(matches!(
+                        CheckpointStore::rebuild_managed_selection_detailed(&path, &rejected),
+                        Err(ManagedRebuildFailure::NotPublished(_))
+                    ));
+                } else {
+                    assert!(CheckpointStore::rebuild_managed_selection(&path, &rejected).is_err());
+                }
                 assert!(!rejected.exists());
                 std::fs::write(&selection, original).expect("restore selection");
                 store = CheckpointStore::open_managed(&path).expect("reopen valid selection");
@@ -111,11 +118,14 @@ fuzz_target!(|data: &[u8]| {
                 check(&store, &model);
                 drop(store);
                 generation += 1;
-                CheckpointStore::rebuild_managed_selection(
-                    &path,
-                    root.path().join(format!("managed-{generation}")),
-                )
-                .expect("rebuild selection");
+                let next = root.path().join(format!("managed-{generation}"));
+                if bytes[2] & 1 != 0 {
+                    CheckpointStore::rebuild_managed_selection_detailed(&path, &next)
+                        .expect("detailed rebuild selection");
+                } else {
+                    CheckpointStore::rebuild_managed_selection(&path, &next)
+                        .expect("rebuild selection");
+                }
                 store = CheckpointStore::open_managed(&path).expect("reopen rebuilt selection");
                 assert_eq!(store.overlay_keys().expect("empty suffix"), 0);
             }
@@ -132,22 +142,42 @@ fuzz_target!(|data: &[u8]| {
                 let cap = if denied { peak_keys - 1 } else { peak_keys };
                 // All generated keys have one byte, so the count and
                 // key-byte historical peaks are equal in this model.
-                let result = CheckpointStore::rebuild_managed_selection_with_limits(
-                    &path,
-                    &next,
-                    Some(log_length),
-                    Some(cap),
-                    Some(cap),
-                );
+                if bytes[2] & 2 != 0 {
+                    let result = CheckpointStore::rebuild_managed_selection_with_limits_detailed(
+                        &path,
+                        &next,
+                        Some(log_length),
+                        Some(cap),
+                        Some(cap),
+                    );
+                    if denied {
+                        assert!(matches!(
+                            result,
+                            Err(ManagedRebuildFailure::NotPublished(_))
+                        ));
+                    } else {
+                        result.expect("limited detailed rebuild");
+                    }
+                } else {
+                    let result = CheckpointStore::rebuild_managed_selection_with_limits(
+                        &path,
+                        &next,
+                        Some(log_length),
+                        Some(cap),
+                        Some(cap),
+                    );
+                    if denied {
+                        assert!(result.is_err());
+                    } else {
+                        result.expect("limited rebuild");
+                    }
+                }
                 if denied {
-                    assert!(result.is_err());
                     assert!(!next.exists());
                     assert_eq!(
                         std::fs::read(&selection).expect("selection"),
                         selection_before
                     );
-                } else {
-                    result.expect("limited rebuild");
                 }
                 store = CheckpointStore::open_managed(&path).expect("reopen after limited rebuild");
                 if !denied {
@@ -182,6 +212,23 @@ fuzz_target!(|data: &[u8]| {
                         .collect::<Vec<_>>()
                 );
                 drop(snapshot);
+                if bytes[1] & 2 != 0 {
+                    drop(store);
+                    assert!(matches!(
+                        CheckpointStore::rebuild_managed_selection_detailed(&path, &blocked),
+                        Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(_))
+                    ));
+                    assert_eq!(
+                        std::fs::read(&blocked).expect("sentinel after rebuild"),
+                        b"pre-existing checkpoint"
+                    );
+                    assert_eq!(
+                        std::fs::read(&selection).expect("selection after rebuild"),
+                        previous
+                    );
+                    store = CheckpointStore::open_managed(&path)
+                        .expect("reopen after rebuild collision");
+                }
                 if bytes[1] & 1 != 0 {
                     drop(store);
                     store = CheckpointStore::open_managed(&path).expect("reopen after collision");
@@ -203,6 +250,20 @@ fuzz_target!(|data: &[u8]| {
                     std::fs::read(&selection).expect("selection after"),
                     previous
                 );
+                if bytes[1] & 2 != 0 {
+                    drop(store);
+                    assert!(matches!(
+                        CheckpointStore::rebuild_managed_selection_detailed(&path, &missing),
+                        Err(ManagedRebuildFailure::NotPublished(_))
+                    ));
+                    assert!(!missing.exists());
+                    assert_eq!(
+                        std::fs::read(&selection).expect("selection after rebuild"),
+                        previous
+                    );
+                    store = CheckpointStore::open_managed(&path)
+                        .expect("reopen after rebuild rejection");
+                }
                 if bytes[1] & 1 != 0 {
                     drop(store);
                     store = CheckpointStore::open_managed(&path).expect("reopen after rejection");

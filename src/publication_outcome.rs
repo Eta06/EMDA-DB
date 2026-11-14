@@ -82,6 +82,59 @@ impl std::error::Error for ManagedRolloverFailure {
     }
 }
 
+/// A failed offline managed-selection rebuild, classified by this call's two
+/// publication attempts. Full-log recovery may have adopted and synchronized
+/// an unacknowledged tail before either publication begins. Existing paths and
+/// staging artifacts may remain; these variants do not certify source health,
+/// cleanup, or an independently recoverable checkpoint. The rebuild releases
+/// its store lock before returning, so callers must coordinate other writers.
+/// Panics unwind instead of returning a classification.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ManagedRebuildFailure {
+    /// This call began neither checkpoint nor selection publication.
+    NotPublished(io::Error),
+    /// This call may have published the checkpoint, but did not begin
+    /// selection publication. No new digest is returned on failure.
+    CheckpointOutcomeUnknown(io::Error),
+    /// Selection publication may have occurred. Coordinate other writers and
+    /// reopen the visible selection, or use trusted prior metadata or full-log
+    /// recovery if needed. No new digest is returned on failure.
+    SelectionOutcomeUnknown(io::Error),
+}
+
+impl fmt::Display for ManagedRebuildFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPublished(error) => {
+                write!(formatter, "rebuild publication not started: {error}")
+            }
+            Self::CheckpointOutcomeUnknown(error) => {
+                write!(
+                    formatter,
+                    "rebuild checkpoint publication outcome unknown: {error}"
+                )
+            }
+            Self::SelectionOutcomeUnknown(error) => {
+                write!(
+                    formatter,
+                    "rebuild selection publication outcome unknown: {error}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ManagedRebuildFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotPublished(error)
+            | Self::CheckpointOutcomeUnknown(error)
+            | Self::SelectionOutcomeUnknown(error) => Some(error),
+        }
+    }
+}
+
 /// A failed consuming compaction handoff, classified by this call's
 /// publication attempts. The original handle is consumed in every case.
 /// Existing paths and temporary artifacts may remain; these outcomes do not
@@ -254,6 +307,20 @@ pub(crate) fn track_managed<T>(
             ManagedRolloverFailure::CheckpointOutcomeUnknown(error)
         } else {
             ManagedRolloverFailure::NotPublished(error)
+        }
+    })
+}
+
+pub(crate) fn track_managed_rebuild<T>(
+    action: impl FnOnce(&ManagedTracker) -> io::Result<T>,
+) -> Result<T, ManagedRebuildFailure> {
+    track_managed(action).map_err(|failure| match failure {
+        ManagedRolloverFailure::NotPublished(error) => ManagedRebuildFailure::NotPublished(error),
+        ManagedRolloverFailure::CheckpointOutcomeUnknown(error) => {
+            ManagedRebuildFailure::CheckpointOutcomeUnknown(error)
+        }
+        ManagedRolloverFailure::SelectionOutcomeUnknown(error) => {
+            ManagedRebuildFailure::SelectionOutcomeUnknown(error)
         }
     })
 }
