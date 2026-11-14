@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate a completed interrupted-sync report's case matrix and outcomes."""
 import argparse
+import gzip
 import errno
 import itertools
 import json
@@ -66,11 +67,17 @@ def verify(report):
             'uncertain_failures': sum(case['mode'] == 'error' for case in cases)}
 
 
+def load_report(path):
+    opener = gzip.open if path.suffix == '.gz' else open
+    with opener(path, 'rt', encoding='utf-8') as file:
+        return json.load(file)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('report', type=Path)
     args = parser.parse_args()
-    print(json.dumps(verify(json.loads(args.report.read_text())), sort_keys=True))
+    print(json.dumps(verify(load_report(args.report)), sort_keys=True))
 
 
 if __name__ == '__main__':
