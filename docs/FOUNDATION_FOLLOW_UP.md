@@ -160,6 +160,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   [Boundary checks](ONLINE_HANDOFF_OUTCOMES_2026_11_14.md) record the scope.
   A [filesystem-fault campaign](ONLINE_HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md)
   checks both visible paths and disabled handles under selected returned errors.
+  A short [reference-model campaign](ONLINE_HANDOFF_MODEL_2026_11_14.md)
+  mixes successful handoffs, rejected destinations and invalid options.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

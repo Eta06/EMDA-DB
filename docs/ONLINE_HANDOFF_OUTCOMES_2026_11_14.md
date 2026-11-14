@@ -25,6 +25,8 @@ filesystem falls back to V2.
 
 A subsequent [filesystem-fault campaign](ONLINE_HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md)
 checks actual returned syscall errors and both possible recovery paths.
+A short [reference-model run](ONLINE_HANDOFF_MODEL_2026_11_14.md) mixes
+successful and rejected handoffs with writes, snapshots and reopens.
 
 Stable, Rust 1.85 and optimized stable all-target suites each passed 993 tests
 with four test threads. Both all-target Clippy checks, formatting and 135
