@@ -123,6 +123,11 @@ workflow](https://github.com/Eta06/EMDA-DB/actions/runs/43565157618) passed on
 that revision. The [merged-test record](../benchmarks/results/2026-11-14-reclaim-merged-tests.json)
 links the retained logs and records toolchain and filesystem details.
 
+The filesystem-fault workflow's push and pull-request filters now include the
+handoff, configuration and reclamation probes and their drivers and
+verifiers. A Python check compares the workflow's executed examples and
+scripts against both trigger lists, including a missing-path regression case.
+
 ## Reference model
 
 The existing online-compaction model now alternates the original and detailed
