@@ -166,6 +166,150 @@ fn automatic_rollover_serializes_concurrent_writes() {
 }
 
 #[test]
+fn automatic_configuration_races_preserve_atomic_writes_and_recovery() {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::Duration;
+
+    fn default_fixture() -> (tempfile::TempDir, std::path::PathBuf, CheckpointStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let checkpoint = dir.path().join("checkpoint");
+        let initial = Store::open(&path).unwrap();
+        initial.put(b"base", b"acknowledged").unwrap();
+        let digest = initial.checkpoint_to(&checkpoint).unwrap();
+        drop(initial);
+        let store = retry_lock(|| {
+            CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 1_048_576, 256, 65_536)
+        })
+        .unwrap();
+        store.rollover_managed(dir.path().join("selected")).unwrap();
+        (dir, path, store)
+    }
+
+    for use_default_format in [false, true] {
+        let (_dir, path, store) = if use_default_format {
+            default_fixture()
+        } else {
+            managed_fixture(1_048_576, 256, 65_536)
+        };
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(6));
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+        let (resume_tx, resume_rx) = mpsc::sync_channel(0);
+        let mut first_writer_sync = Some((ready_tx, resume_rx));
+        std::thread::scope(|scope| {
+            for worker in 0..3 {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                let sync = if worker == 0 {
+                    first_writer_sync.take()
+                } else {
+                    None
+                };
+                scope.spawn(move || {
+                    barrier.wait();
+                    for sequence in 0..8 {
+                        let first = format!("w{worker}-{sequence:02}-a");
+                        let second = format!("w{worker}-{sequence:02}-b");
+                        store
+                            .write_batch_detailed(&[
+                                BatchOperation::Put {
+                                    key: first.as_bytes(),
+                                    value: b"pair",
+                                },
+                                BatchOperation::Put {
+                                    key: second.as_bytes(),
+                                    value: b"pair",
+                                },
+                            ])
+                            .unwrap();
+                        if sequence == 0 {
+                            if let Some((ready, resume)) = &sync {
+                                ready.send(()).unwrap();
+                                resume.recv_timeout(Duration::from_secs(10)).unwrap();
+                            }
+                        }
+                        std::thread::yield_now();
+                    }
+                });
+            }
+            for worker in 0..2 {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for sequence in 0..16 {
+                        if (worker + sequence) % 2 == 0 {
+                            store.enable_automatic_checkpoints_detailed().unwrap();
+                        } else {
+                            store.disable_automatic_checkpoints_detailed().unwrap();
+                        }
+                        std::thread::yield_now();
+                    }
+                });
+            }
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            scope.spawn(move || {
+                barrier.wait();
+                ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                let interim: BTreeMap<_, _> =
+                    store.scan(None, None, 256).unwrap().into_iter().collect();
+                assert_eq!(
+                    interim.get(b"w0-00-a".as_slice()).map(Vec::as_slice),
+                    Some(&b"pair"[..])
+                );
+                assert_eq!(
+                    interim.get(b"w0-00-b".as_slice()).map(Vec::as_slice),
+                    Some(&b"pair"[..])
+                );
+                assert!(!interim.contains_key(b"w0-01-a".as_slice()));
+                assert!(!interim.contains_key(b"w0-01-b".as_slice()));
+                resume_tx.send(()).unwrap();
+                for _ in 0..24 {
+                    let rows: BTreeMap<_, _> =
+                        store.scan(None, None, 256).unwrap().into_iter().collect();
+                    assert_eq!(
+                        rows.get(b"base".as_slice()).map(Vec::as_slice),
+                        Some(&b"acknowledged"[..])
+                    );
+                    for worker in 0..3 {
+                        for sequence in 0..8 {
+                            let first = format!("w{worker}-{sequence:02}-a");
+                            let second = format!("w{worker}-{sequence:02}-b");
+                            assert_eq!(rows.get(first.as_bytes()), rows.get(second.as_bytes()));
+                            if let Some(value) = rows.get(first.as_bytes()) {
+                                assert_eq!(value, b"pair");
+                            }
+                        }
+                    }
+                    std::thread::yield_now();
+                }
+            });
+        });
+        let before_reopen = store.scan(None, None, 256).unwrap();
+        let enabled = store.automatic_checkpoints_enabled().unwrap();
+        let mut expected = BTreeMap::from([(b"base".to_vec(), b"acknowledged".to_vec())]);
+        for worker in 0..3 {
+            for sequence in 0..8 {
+                for suffix in ['a', 'b'] {
+                    expected.insert(
+                        format!("w{worker}-{sequence:02}-{suffix}").into_bytes(),
+                        b"pair".to_vec(),
+                    );
+                }
+            }
+        }
+        assert_eq!(before_reopen, expected.into_iter().collect::<Vec<_>>());
+        drop(store);
+        let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(reopened.automatic_checkpoints_enabled().unwrap(), enabled);
+        assert_eq!(reopened.scan(None, None, 256).unwrap(), before_reopen);
+    }
+}
+
+#[test]
 fn automatic_checkpoint_configuration_can_be_disabled_and_reenabled_across_reopens() {
     let (_dir, path, store) = managed_fixture(1024, 1, 64);
     store.enable_automatic_checkpoints().unwrap();
