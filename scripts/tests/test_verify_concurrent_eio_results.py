@@ -72,7 +72,12 @@ class ConcurrentReportVerificationTests(unittest.TestCase):
         report['error'] = 'EAGAIN'
         for case in report['cases']:
             case['injected_traces'] = [line.replace('EIO', 'EAGAIN') for line in case['injected_traces']]
+            case['receipts']['workers'][0]['error'] = 'WouldBlock: synthetic error'
         self.assertEqual(verify(report)['failed_calls'], 128)
+        wrong_kind = copy.deepcopy(report)
+        wrong_kind['cases'][0]['receipts']['workers'][0]['error'] = 'Other: synthetic error'
+        with self.assertRaisesRegex(ValueError, 'EAGAIN case did not return a WouldBlock error'):
+            verify(wrong_kind)
         case = report['cases'][0]
         for worker in case['receipts']['workers']:
             worker.update(acknowledged=list(range(64)), failed=None, error=None)

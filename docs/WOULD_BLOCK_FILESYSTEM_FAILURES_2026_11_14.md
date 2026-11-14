@@ -42,3 +42,27 @@ python3 scripts/verify_one_shot_fs_results.py benchmarks/results/2026-11-14-eaga
 The filesystem workflow also runs and archives a smaller V3 batch subset for
 these six syscall groups on relevant changes. Its results are separate from
 the local campaigns above.
+
+## Concurrent transaction failures
+
+On clean revision `592d7ea85f0694cd3efbc748b8ff17f41adef07e`, a separate
+[320-case campaign](../benchmarks/results/2026-11-14-eagain-concurrent-transaction.json.gz)
+ran four transaction writers while `strace` injected `EAGAIN` into log sync or
+witness updates. It covered V2/V3, ordinary/checkpoint-backed writers, two
+selected syscall ordinals per traced thread, and both recovery orders, repeated
+ten times. The probe retries only engine-marked transaction conflicts; the
+report verifier requires a `WouldBlock` failure in every injected case.
+
+Recovery checked all 557 acknowledged transactions and the atomic pair of
+keys in each failed request. All 1,280 workers eventually reported a failed
+request; 320 failures returned `WouldBlock`, and the other 960 returned an
+`Other` error. Exactly one complete failed transaction per case, 320 total,
+was present after reopening. A failed request can therefore have taken effect;
+its error kind alone must not trigger a retry. This is a finite synthetic
+returned-error campaign on a running Linux VM, not a physical power-loss or
+exhaustive concurrency test. The filesystem workflow reruns one repetition
+and archives its own report.
+
+```sh
+python3 scripts/verify_concurrent_eio_results.py benchmarks/results/2026-11-14-eagain-concurrent-transaction.json.gz
+```

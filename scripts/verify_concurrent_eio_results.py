@@ -2,6 +2,7 @@
 """Independently check a completed concurrent filesystem-fault report."""
 import argparse
 import collections
+import gzip
 import itertools
 import json
 import re
@@ -50,6 +51,10 @@ def verify(report):
                 failed.add((index, failure))
         if error in ('EIO', 'EAGAIN') and not failed:
             raise ValueError(f'{error} case did not report a failed writer')
+        if error == 'EAGAIN' and not any(
+                isinstance(worker.get('error'), str) and worker['error'].startswith('WouldBlock: ')
+                for worker in workers):
+            raise ValueError('EAGAIN case did not return a WouldBlock error')
 
         checks = case.get('verified')
         expected_backends = ('ordinary', 'checkpoint') if order == 'ordinary-first' else ('checkpoint', 'ordinary')
@@ -110,7 +115,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('report', type=Path)
     args = parser.parse_args()
-    with args.report.open(encoding='utf-8') as file:
+    opener = gzip.open if args.report.suffix == '.gz' else open
+    with opener(args.report, 'rt', encoding='utf-8') as file:
         result = json.load(file)
     print(json.dumps(verify(result), sort_keys=True))
 

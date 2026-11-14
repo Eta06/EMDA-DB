@@ -100,6 +100,10 @@ def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, o
         # EINTR may be retried below the API, leaving every writer successful.
         # EIO and EAGAIN must reach the API as a failed request.
         validate_receipts(report, require_failed=error in ('EIO', 'EAGAIN'))
+        if error == 'EAGAIN' and not any(
+                isinstance(worker.get('error'), str) and worker['error'].startswith('WouldBlock: ')
+                for worker in report['workers']):
+            raise ValueError('no writer returned the injected WouldBlock error')
         lines = trace.read_text().splitlines()
         injected = [line for line in lines if '(INJECTED)' in line]
         matches_target = targets_witness if fault == 'witness' else targets_log_sync
