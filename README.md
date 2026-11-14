@@ -170,6 +170,8 @@ Both writable stores provide `backup_detailed`, and `Store::restore_detailed` re
 
 Both writable stores also provide `checkpoint_to_detailed` with the same publication classification. A successful call returns a digest that must be retained in trusted metadata separately; an uncertain failure does not return that digest. A checkpoint contains index data rather than an independent backup, and its visible presence does not establish source health or durability.
 
+`compact_to_detailed` on both writable stores classifies publication of a separate compacted copy. The checkpoint-backed version returns a digest on success that needs separately trusted metadata; an uncertain failure does not return the digest. A pre-existing destination or temporary staging artifacts can remain. In-place handoffs have separate semantics.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

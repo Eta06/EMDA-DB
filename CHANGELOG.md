@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in publication outcomes to separate compacted copies on both
+  writable stores. An uncertain checkpoint-backed copy does not return its digest.
+
 - Add opt-in publication outcomes to independent checkpoint copies on both
   writable stores. An uncertain failure does not return the trusted digest.
 

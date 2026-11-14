@@ -78,6 +78,31 @@ impl Store {
         self.compact_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Creates a compacted copy with structured destination-publication
+    /// failures. A pre-existing destination or staging artifacts may remain;
+    /// an uncertain outcome needs reconciliation before retrying.
+    pub fn compact_to_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), crate::PublicationFailure> {
+        self.compact_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
+    }
+
+    fn compact_to_detailed_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.compact_to_using_tracked(
+                destination,
+                sync_parent,
+                copy_live_records,
+                Some(tracker),
+            )
+        })
+    }
+
     fn compact_to_with_sync(
         &self,
         destination: &Path,
@@ -91,6 +116,16 @@ impl Store {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         copy: impl FnOnce(&Log, &BTreeMap<Vec<u8>, ValueLocation>, &Log) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.compact_to_using_tracked(destination, sync_parent, copy, None)
+    }
+
+    fn compact_to_using_tracked(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        copy: impl FnOnce(&Log, &BTreeMap<Vec<u8>, ValueLocation>, &Log) -> io::Result<()>,
+        tracker: Option<&crate::publication_outcome::Tracker>,
     ) -> io::Result<()> {
         let _writer = self
             .writes
@@ -130,6 +165,9 @@ impl Store {
         }
         close_private_store(verified)?;
         File::open(staging.path())?.sync_all()?;
+        if let Some(tracker) = tracker {
+            tracker.begin_publication();
+        }
         staging.publish(destination)?;
         sync_parent(parent).map_err(|error| {
             io::Error::new(
@@ -150,6 +188,24 @@ mod tests {
     use std::os::unix::fs::FileExt;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn detailed_compaction_reports_unknown_after_parent_sync_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let source = Store::open(root.path().join("source")).unwrap();
+        source.put(b"key", b"value").unwrap();
+        let destination = root.path().join("copy");
+        let result = source.compact_to_detailed_with_sync(&destination, |_| {
+            Err(io::Error::other("injected parent sync failure"))
+        });
+        assert!(matches!(
+            result,
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert_eq!(source.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+        let copy = crate::test_support::retry_lock(|| Store::open(&destination)).unwrap();
+        assert_eq!(copy.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+    }
 
     #[test]
     fn private_store_lock_release_is_not_delayed_by_a_duplicate_descriptor() {

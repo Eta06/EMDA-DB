@@ -30,7 +30,6 @@ pub use commit::{
 };
 pub use compact_stream::COMPACTED_CHECKPOINT_FILE;
 pub(crate) use compact_stream::compact_checkpoint;
-#[cfg(test)]
 pub(crate) use compact_stream::compact_checkpoint_with_hooks;
 use log_quota::LogQuota;
 pub use online::{

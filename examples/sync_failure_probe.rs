@@ -134,6 +134,12 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
         "checkpoint-copy" => checkpoint_store(root)
             .map_err(PublicationFailure::NotPublished)
             .and_then(|store| store.checkpoint_to_detailed(target).map(|_| ())),
+        "compaction" => Store::open(source)
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.compact_to_detailed(target)),
+        "checkpoint-compaction" => checkpoint_store(root)
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.compact_to_detailed(target).map(|_| ())),
         _ => return Err("unknown publication operation".into()),
     };
     match outcome {

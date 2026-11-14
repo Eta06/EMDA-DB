@@ -73,8 +73,12 @@ checkpoint copy. It returns the same publication classifications, and its
 successful result is a digest the caller must retain in separately trusted
 metadata. An uncertain failure returns no digest and can leave a visible file;
 reconcile it before retrying. A checkpoint is not an independent backup.
-Rollover, compaction, upgrade and other maintenance publications do not yet
-provide this classification.
+`compact_to_detailed` classifies publication of a separate compacted copy on
+both writable stores. The checkpoint-backed result returns a digest on success,
+which must be retained separately in trusted metadata; an uncertain failure
+does not return it. Neither classification establishes source health or
+cleanup. Rollover, compact-and-replace handoffs, upgrade and other maintenance
+publications do not yet provide this classification.
 
 ## Current prototype: one store in one process
 

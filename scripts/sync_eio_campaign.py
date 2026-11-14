@@ -34,7 +34,8 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-write', 'checkpoint-batch', 'checkpoint-backup', 'checkpoint-compaction',
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
-PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy')
+PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy',
+                          'compaction', 'checkpoint-compaction')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(' + '|'.join(sorted(
@@ -324,7 +325,7 @@ def main():
                         help='sync (default), data writes/metadata, reads, opens, or namespace operations')
     parser.add_argument('--operation', choices=(*OPERATIONS, 'checkpoint-copy'), help='optional single-operation check')
     parser.add_argument('--publication-outcomes', action='store_true',
-                        help='exercise detailed backup, restore and checkpoint publication classifications')
+                        help='exercise detailed copy-publication classifications')
     parser.add_argument('--format', choices=FORMATS, help='optional single-format check')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output)
@@ -334,7 +335,7 @@ def main():
     if args.persistent_errors and (args.syscall_set != 'sync' or args.injected_error != 'EIO'):
         parser.error('persistent errors are supported only for synchronization EIO')
     if args.publication_outcomes and args.operation and args.operation not in PUBLICATION_OPERATIONS:
-        parser.error('publication outcomes support backup, restore and checkpoint copy operations only')
+        parser.error('publication outcomes support backup, restore, checkpoint and compaction copies only')
     binary = str(Path(args.binary).resolve())
     directory = str(Path(args.directory).resolve())
     syscalls = SYSCALL_SETS[args.syscall_set]

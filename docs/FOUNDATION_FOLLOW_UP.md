@@ -124,6 +124,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add publication classifications for independent checkpoint copies on
   both writable paths. A successful digest still needs separately trusted
   metadata; an uncertain failure does not return it.
+- [x] Add publication classifications for separate compacted copies on both
+  writable paths. The checkpoint-backed copy returns its separately trusted
+  digest only on success; compact-and-replace remains a distinct operation.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

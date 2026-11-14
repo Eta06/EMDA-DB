@@ -1,5 +1,28 @@
 use super::*;
 
+#[test]
+fn detailed_checkpoint_compaction_reports_unknown_after_parent_sync_failure() {
+    let (root, path, checkpoint, digest) = fixture();
+    let source = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let destination = root.path().join("copy");
+    let result = source.compact_to_detailed_with_sync(&destination, |_| {
+        Err(io::Error::other("injected parent sync failure"))
+    });
+    assert!(matches!(
+        result,
+        Err(crate::PublicationFailure::OutcomeUnknown(_))
+    ));
+    assert_eq!(
+        source.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    let copy = retry_lock(|| Store::open(&destination)).unwrap();
+    assert_eq!(
+        copy.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}
+
 fn pause_compaction() -> io::Result<()> {
     println!("CHECKPOINT_COMPACTION_BOUNDARY_REACHED");
     io::stdout().flush()?;

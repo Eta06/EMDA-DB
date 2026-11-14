@@ -524,10 +524,51 @@ impl CheckpointStore {
     /// source remains unchanged and later source writes are not in the copy.
     /// An error after publication can leave an uncertain destination.
     pub fn compact_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
-        self.check_selection_destination(destination.as_ref())?;
+        self.compact_to_using(destination.as_ref(), crate::store::compact_checkpoint)
+    }
+
+    /// Creates a compacted copy with structured destination-publication
+    /// failures. Its returned checkpoint digest requires separately trusted
+    /// metadata; an uncertain failure does not return that digest.
+    pub fn compact_to_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        self.compact_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
+    }
+
+    fn compact_to_detailed_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.compact_to_using(destination, |log, view, count, destination| {
+                crate::store::compact_checkpoint_with_hooks(
+                    log,
+                    view,
+                    count,
+                    destination,
+                    sync_parent,
+                    || {
+                        tracker.begin_publication();
+                        Ok(())
+                    },
+                    |_| Ok(()),
+                )
+            })
+        })
+    }
+
+    fn compact_to_using(
+        &self,
+        destination: &Path,
+        create: impl FnOnce(&Log, &RecoveredCheckpointView, u64, &Path) -> io::Result<[u8; 32]>,
+    ) -> io::Result<[u8; 32]> {
+        self.check_selection_destination(destination)?;
         let state = self.read()?;
         let (count, _) = self.verify_for_checkpoint(&state)?;
-        crate::store::compact_checkpoint(&self.log, &state.view, count, destination.as_ref())
+        create(&self.log, &state.view, count, destination)
     }
 
     fn backup_using(
