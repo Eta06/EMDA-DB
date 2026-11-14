@@ -357,7 +357,7 @@ fn concurrent(db: &DocumentDatabase<'_>) {
                         ) {
                             Ok(true) => break,
                             Err(error)
-                                if error.kind() == ErrorKind::WouldBlock
+                                if database_engine::is_transaction_conflict(&error)
                                     && Instant::now() < deadline =>
                             {
                                 std::thread::yield_now()

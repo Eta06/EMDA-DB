@@ -185,7 +185,7 @@ fn concurrent_unique_inserts_have_one_winner() {
                     &json!({"email":"same@example.test"}),
                 ) {
                     Ok(()) => break true,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                    Err(error) if database_engine::is_transaction_conflict(&error) => continue,
                     Err(error) if error.kind() == io::ErrorKind::AlreadyExists => break false,
                     Err(error) => panic!("unexpected insert error: {error}"),
                 }
@@ -562,7 +562,7 @@ fn concurrent_atomic_increments_survive_reopen() {
                         false,
                     ) {
                         Ok(true) => break,
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                        Err(error) if database_engine::is_transaction_conflict(&error) => continue,
                         result => panic!("unexpected update result: {result:?}"),
                     }
                 }

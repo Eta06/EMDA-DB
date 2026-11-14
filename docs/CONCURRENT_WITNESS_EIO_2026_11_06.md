@@ -72,8 +72,9 @@ used transactions to write unique pairs of keys with matching values. The
 verifier requires both halves of each acknowledged or uncertain transaction to
 be present together or absent together; it also checks all earlier
 acknowledged data and requires the two recovery paths to agree on exactly
-which failed transactions are present. The test retries `WouldBlock` only
-because these specific writes repeat the same keys and values; an arbitrary
+which failed transactions are present. The historical test retried `WouldBlock`
+only because those specific writes repeat the same keys and values. The current
+probe retries only explicitly marked pre-commit conflicts; an arbitrary
 transaction with an operation error must not be assumed safe to retry.
 
 Twenty repetitions of the [EIO campaign](../benchmarks/results/2026-11-06-concurrent-transaction-eio.json.gz)

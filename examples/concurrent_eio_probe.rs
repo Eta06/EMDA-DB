@@ -1,5 +1,5 @@
 //! Concurrent acknowledged writes and recovery for the Linux EIO driver.
-use database_engine::{CheckpointStore, Store};
+use database_engine::{CheckpointStore, Store, is_transaction_conflict};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::Path;
@@ -46,14 +46,12 @@ impl Backend for CheckpointStore {
     }
 }
 
-// WouldBlock can include an uncertain I/O result, not only a conflict. This
-// workload retries only because both writes use the same unique keys and
-// values on every attempt; callers cannot assume arbitrary transactions safe
-// to retry after an operation error.
+// Retry only the engine's explicit pre-commit conflict marker. An I/O error
+// with the same WouldBlock kind can have an uncertain outcome.
 fn retry_idempotent_transaction(mut action: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     for _ in 0..100_000 {
         match action() {
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::thread::yield_now(),
+            Err(error) if is_transaction_conflict(&error) => std::thread::yield_now(),
             result => return result,
         }
     }

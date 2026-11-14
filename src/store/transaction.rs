@@ -301,7 +301,10 @@ impl Store {
     /// The callback runs without holding the writer barrier, on a bounded
     /// initial snapshot. If *any* other mutation publishes before validation,
     /// this call returns `WouldBlock` without writing the staged changes. The
-    /// caller may retry, but the callback is never automatically rerun. A
+    /// caller may retry a confirmed conflict, but the callback is never
+    /// automatically rerun. Use [`crate::is_transaction_conflict`] on the
+    /// directly returned error: `WouldBlock` alone can also be an uncertain
+    /// commit I/O error. A
     /// callback error/panic discards staged changes; external side effects are
     /// not rolled back. Use the transaction's methods for transactional reads.
     ///
@@ -492,8 +495,7 @@ impl Store {
                 current.generation == txn.snapshot.generation
             };
             if !valid {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
+                return Err(crate::transaction_conflict::conflict(
                     "transaction conflict: observed state changed since snapshot",
                 )
                 .into());

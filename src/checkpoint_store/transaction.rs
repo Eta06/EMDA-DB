@@ -24,8 +24,9 @@ pub enum CheckpointTransactionMode {
 ///
 /// Reads and scans see staged changes. The conservative modes conflict on any
 /// intervening write. Read-set modes validate observed points and complete
-/// scan ranges. Callers must retry a conflicted callback themselves and manage
-/// any external side effects.
+/// scan ranges. Callers can identify a directly returned pre-commit conflict
+/// with [`crate::is_transaction_conflict`] and manage callback side effects
+/// themselves. A `WouldBlock` kind alone does not establish a conflict.
 pub struct CheckpointTransaction<'a> {
     store: &'a CheckpointStore,
     generation: u64,
@@ -327,7 +328,9 @@ impl CheckpointStore {
     ///
     /// The callback runs without holding the store lock. Reads and the final
     /// commit fail with `WouldBlock` if any successful mutation intervenes;
-    /// no automatic retry is performed. Successful writes are one synchronized
+    /// no automatic retry is performed. Use [`crate::is_transaction_conflict`]
+    /// to identify a directly returned conflict; `WouldBlock` alone can be an
+    /// uncertain I/O error. Successful writes are one synchronized
     /// atomic batch. Callback errors discard staged writes; external effects
     /// are not rolled back. A commit I/O failure has an unknown outcome and
     /// makes this store instance unusable until recovery. The per-transaction
@@ -561,8 +564,7 @@ fn check_deadline(deadline: Option<Instant>) -> Result<(), TimedTransactionError
 }
 
 pub(super) fn conflict() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::WouldBlock,
+    crate::transaction_conflict::conflict(
         "checkpoint transaction conflict: a write committed since the transaction began",
     )
 }

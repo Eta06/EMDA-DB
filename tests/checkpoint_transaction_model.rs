@@ -3,7 +3,6 @@ use database_engine::{
     BatchOperation, CheckpointStore, CheckpointTransaction, CheckpointTransactionMode, Store,
     TimedTransactionError,
 };
-use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
@@ -118,7 +117,7 @@ fn execute(store: &CheckpointStore, operation: usize, iteration: usize) -> Outco
             };
             match result {
                 Ok(observed) => Outcome::Transaction(Some(observed)),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                Err(error) if database_engine::is_transaction_conflict(&error) => {
                     Outcome::Transaction(None)
                 }
                 Err(error) => panic!("unexpected transaction error: {error}"),

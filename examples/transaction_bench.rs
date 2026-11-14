@@ -1,14 +1,38 @@
 //! Disposable serializable two-key transaction benchmark.
-use database_engine::{CheckpointStore, CheckpointTransaction, Store, Transaction};
+use database_engine::{
+    CheckpointStore, CheckpointTransaction, Store, Transaction, is_transaction_conflict,
+};
 use rusqlite::{Connection, TransactionBehavior, params};
 use std::error::Error;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::path::Path;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 
 type BenchResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn does_not_retry_an_unclassified_would_block_error() {
+        let mut attempts = 0;
+        let mut conflicts = 0;
+        let result = retry(
+            || {
+                attempts += 1;
+                Err(io::ErrorKind::WouldBlock.into())
+            },
+            &mut conflicts,
+            1,
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+        assert_eq!(conflicts, 0);
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -90,7 +114,7 @@ fn retry(
     loop {
         match action() {
             Ok(()) => return Ok(()),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+            Err(error) if is_transaction_conflict(&error) => {
                 *conflicts += 1;
                 if *conflicts > operations * 100_000 {
                     return Err("retry limit exceeded".into());

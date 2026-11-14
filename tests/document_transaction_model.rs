@@ -251,7 +251,7 @@ fn execute(db: &DocumentDatabase<'_>, operation: Operation, mode: usize) -> Outc
         Ok(outcome) => outcome,
         Err(ControlledTransactionError::Cancelled) => Outcome::Cancelled,
         Err(ControlledTransactionError::Operation(error))
-            if error.kind() == ErrorKind::WouldBlock =>
+            if database_engine::is_transaction_conflict(&error) =>
         {
             Outcome::Conflict
         }

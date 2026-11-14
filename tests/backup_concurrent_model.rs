@@ -135,8 +135,7 @@ fn check_case(v2: bool, checkpoint_writer: bool) {
                         store.update(&first, &second, &round.to_le_bytes(), round % 2 != 0);
                     match &result {
                         Err(error)
-                            if error.kind() == io::ErrorKind::WouldBlock
-                                && error.to_string().contains("transaction conflict")
+                            if database_engine::is_transaction_conflict(error)
                                 && conflicts < 64 =>
                         {
                             conflicts += 1;

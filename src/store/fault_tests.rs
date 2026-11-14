@@ -32,6 +32,7 @@ pub(super) enum Fault {
     PanicAfterAppend(usize),
     SyncBefore,
     SyncAfter,
+    SyncWouldBlock,
     ShortRead(usize),
     ShortReadAfter(usize, usize),
 }
@@ -103,7 +104,12 @@ impl LogIo for FaultIo {
     }
 
     fn sync_data(&self) -> io::Result<()> {
-        match self.take_matching(|f| matches!(f, Fault::SyncBefore | Fault::SyncAfter)) {
+        match self.take_matching(|f| {
+            matches!(
+                f,
+                Fault::SyncBefore | Fault::SyncAfter | Fault::SyncWouldBlock
+            )
+        }) {
             Some(Fault::SyncBefore) => Err(io::Error::other(
                 "injected sync failure before synchronization",
             )),
@@ -113,8 +119,56 @@ impl LogIo for FaultIo {
                     "injected sync failure after synchronization",
                 ))
             }
+            Some(Fault::SyncWouldBlock) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "injected sync failure",
+            )),
             _ => self.file.sync_data(),
         }
+    }
+}
+
+#[test]
+fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
+    for timed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("records.log"),
+            include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("commit.state"),
+            include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+        )
+        .unwrap();
+        let fault = Arc::new(Mutex::new(None));
+        let store = open_versioned_fault_store(dir.path(), Arc::clone(&fault)).unwrap();
+        store.put(b"safe", b"committed").unwrap();
+        *fault.lock().unwrap() = Some(Fault::SyncWouldBlock);
+        let error = if timed {
+            match store.transaction_until(
+                std::time::Instant::now() + Duration::from_secs(10),
+                crate::TransactionMode::Conservative,
+                |tx| tx.put(b"unknown", b"value"),
+            ) {
+                Err(crate::TimedTransactionError::Operation(error)) => error,
+                other => panic!("expected uncertain operation error: {other:?}"),
+            }
+        } else {
+            store
+                .transaction(|tx| tx.put(b"unknown", b"value"))
+                .unwrap_err()
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(!crate::is_transaction_conflict(&error));
+        assert!(store.get(b"safe").is_err());
+        drop(store);
+        let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
+        assert_eq!(
+            reopened.get(b"unknown").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
     }
 }
 
@@ -133,7 +187,6 @@ pub(super) fn open_fault_store(
     })
 }
 
-#[cfg(target_os = "linux")]
 pub(super) fn open_versioned_fault_store(
     path: &Path,
     fault: Arc<Mutex<Option<Fault>>>,

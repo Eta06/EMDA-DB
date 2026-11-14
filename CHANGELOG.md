@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `is_transaction_conflict` for directly returned pre-commit conflict
+  errors, distinguishing them from other `WouldBlock` errors whose outcomes
+  can be uncertain. The helper does not roll back callback side effects.
+
 - Check recovered reads and reopening in the recovery fuzzer. Exercise short
   file writes and completed synchronizations reported as interrupted, including
   failed retries and preserved uncertain outcomes; retain failed test fixtures

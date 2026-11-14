@@ -1,8 +1,8 @@
 //! Closed-loop reader and transaction contention over a preloaded index.
-use database_engine::{BatchOperation, Store};
+use database_engine::{BatchOperation, Store, is_transaction_conflict};
 use serde_json::json;
 use std::error::Error;
-use std::io::{self, ErrorKind, Read};
+use std::io::{self, Read};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
@@ -136,7 +136,7 @@ fn main() -> Result<()> {
                         tx.put(&second, &next)
                     }) {
                         Ok(()) => break,
-                        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        Err(error) if is_transaction_conflict(&error) => {
                             conflicts += 1;
                             if conflicts > (operations as u64) * 100_000 {
                                 return Err("retry limit exceeded".into());

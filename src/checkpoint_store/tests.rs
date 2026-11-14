@@ -49,6 +49,7 @@ enum LogFault {
     SyncBefore,
     SyncAfter,
     SyncTimeout,
+    SyncWouldBlock,
 }
 
 struct FaultLog {
@@ -81,6 +82,10 @@ impl LogIo for FaultLog {
             LogFault::SyncTimeout => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "injected log sync timeout",
+            )),
+            LogFault::SyncWouldBlock => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "injected log sync failure",
             )),
             LogFault::SyncAfter => {
                 self.file.sync_data()?;

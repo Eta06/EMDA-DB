@@ -27,6 +27,7 @@ mod store;
 #[cfg(test)]
 mod test_support;
 mod transaction_budget;
+mod transaction_conflict;
 mod witness;
 
 pub use cancellation::{CancellationToken, ControlledTransactionError};
@@ -72,3 +73,4 @@ pub use store::{
     Snapshot, SnapshotBudgetStatus, Store, TimedTransactionError, Transaction, TransactionMode,
 };
 pub use transaction_budget::{MAX_ACTIVE_TRANSACTIONS, TransactionBudgetStatus};
+pub use transaction_conflict::is_transaction_conflict;

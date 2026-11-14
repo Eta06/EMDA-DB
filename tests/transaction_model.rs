@@ -1,7 +1,7 @@
 //! Concurrent transaction histories checked against a serial reference model.
 use database_engine::{BatchOperation, Store, TimedTransactionError, Transaction, TransactionMode};
 use std::collections::HashSet;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Barrier, Mutex};
 use std::thread;
@@ -209,7 +209,7 @@ fn execute(store: &Store, operation: Operation) -> Outcome {
             store.transaction(|tx| transfer(tx, from))
         } {
             Ok(before) => Outcome::Committed(before),
-            Err(error) if error.kind() == ErrorKind::WouldBlock => Outcome::Conflict,
+            Err(error) if database_engine::is_transaction_conflict(&error) => Outcome::Conflict,
             Err(error) => panic!("unexpected transaction error: {error}"),
         },
         Operation::SetBoth(after) => {

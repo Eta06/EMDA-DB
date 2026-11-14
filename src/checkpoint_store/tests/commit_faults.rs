@@ -48,7 +48,10 @@ fn every_partial_append_and_sync_failure_poison_until_reopen() {
         drop(store);
         let complete = match fault {
             LogFault::Partial(n) | LogFault::Panic(n) => n == 0 || n >= length,
-            LogFault::SyncBefore | LogFault::SyncAfter | LogFault::SyncTimeout => true,
+            LogFault::SyncBefore
+            | LogFault::SyncAfter
+            | LogFault::SyncTimeout
+            | LogFault::SyncWouldBlock => true,
         };
         let reopened = retry_lock(|| Store::open(&path));
         if complete {
@@ -68,6 +71,46 @@ fn every_partial_append_and_sync_failure_poison_until_reopen() {
                 io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
             ));
         }
+    }
+}
+
+#[test]
+fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
+    for timed in [false, true] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        store.log.replace_io_for_test(Box::new(FaultLog {
+            file,
+            fault: LogFault::SyncWouldBlock,
+        }));
+        let error = if timed {
+            match store.transaction_until(
+                std::time::Instant::now() + std::time::Duration::from_secs(10),
+                crate::CheckpointTransactionMode::Conservative,
+                |tx| tx.put(b"unknown", b"value"),
+            ) {
+                Err(crate::TimedTransactionError::Operation(error)) => error,
+                other => panic!("expected uncertain operation error: {other:?}"),
+            }
+        } else {
+            store
+                .transaction(|tx| tx.put(b"unknown", b"value"))
+                .unwrap_err()
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(!crate::is_transaction_conflict(&error));
+        assert!(store.get(b"base").is_err());
+        drop(store);
+        let reopened = retry_lock(|| Store::open(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"unknown").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
     }
 }
 

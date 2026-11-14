@@ -405,7 +405,7 @@ fn concurrent_scalar_updates_retry_conflicts_without_lost_writes() {
                                 false,
                             ) {
                                 Ok(true) => break,
-                                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                                Err(error) if database_engine::is_transaction_conflict(&error) => {
                                     std::thread::yield_now()
                                 }
                                 other => panic!("unexpected update result: {other:?}"),

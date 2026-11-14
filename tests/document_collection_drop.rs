@@ -317,7 +317,7 @@ fn concurrent_drop_workers(db: &DocumentDatabase<'_>) {
                                     return (removed, true);
                                 }
                             }
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            Err(error) if database_engine::is_transaction_conflict(&error) => {
                                 thread::yield_now()
                             }
                             Err(error) if error.kind() == io::ErrorKind::NotFound => {

@@ -181,10 +181,7 @@ fn check_case(v2: bool, checkpoint_writer: bool) {
                                 committed = true;
                                 break;
                             }
-                            Err(error)
-                                if error.kind() == io::ErrorKind::WouldBlock
-                                    && error.to_string().contains("transaction conflict") =>
-                            {
+                            Err(error) if database_engine::is_transaction_conflict(&error) => {
                                 conflicts.fetch_add(1, Ordering::Relaxed);
                                 thread::yield_now();
                             }

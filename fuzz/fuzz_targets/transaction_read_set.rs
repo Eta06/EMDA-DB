@@ -2,7 +2,7 @@
 use database_engine::{Store, TimedTransactionError, Transaction, TransactionMode};
 use libfuzzer_sys::fuzz_target;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, ErrorKind};
+use std::io;
 use std::time::{Duration, Instant};
 
 type Model = BTreeMap<u8, (u64, u8)>;
@@ -136,7 +136,9 @@ fuzz_target!(|data: &[u8]| {
             }
         }
     } else {
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::WouldBlock);
+        assert!(database_engine::is_transaction_conflict(
+            &result.unwrap_err()
+        ));
     }
     for key in b'a'..=b'h' {
         assert_eq!(

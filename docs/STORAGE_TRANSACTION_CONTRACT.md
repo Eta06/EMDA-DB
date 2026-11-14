@@ -6,6 +6,17 @@ This document separates **current prototype behavior** from **design targets tha
 
 No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force for the feature. This rule also protects the prototype's documented behavior; the absence of a production guarantee is not permission to weaken its write synchronization, coordination, corruption detection, or recovery behavior. This applies to zero-copy access, caching, memory mapping, async I/O, compression, group commit, SIMD, assembly, and adaptive storage alike. The faster path must preserve the same contract, fail safely, and pass the same correctness and fault tests. Benchmarks compare equivalent guarantees; disabling synchronization or weakening isolation to obtain a better number does not meet this rule.
 
+## Identifying transaction conflicts
+
+`is_transaction_conflict(&error)` identifies the engine's directly returned
+pre-commit transaction conflict marker on ordinary and checkpoint-backed
+transactions and document operations. A confirmed conflict has not submitted
+that transaction's staged changes. The `WouldBlock` kind alone is not enough:
+admission, a callback or an I/O error with an uncertain commit outcome can use
+the same kind. A false result does not itself classify the outcome, and error
+wrapping can discard the marker. Retrying a callback can repeat its independent
+writes and other external effects; those are never rolled back by the engine.
+
 ## Current prototype: one store in one process
 
 ### Successful writes and ordering

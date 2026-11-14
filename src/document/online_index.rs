@@ -182,7 +182,9 @@ impl DocumentTransaction<'_, '_> {
 
     /// Scans at most `limit` documents and persists progress atomically. An
     /// empty page publishes the completed index. Conflicting writes can make
-    /// the transaction return `WouldBlock`; retry the entire step.
+    /// the transaction return a conflict. Use [`crate::is_transaction_conflict`]
+    /// on the directly returned error before retrying the entire step; a
+    /// `WouldBlock` I/O error can instead have an uncertain outcome.
     pub fn advance_index_build(
         &mut self,
         collection: &str,
