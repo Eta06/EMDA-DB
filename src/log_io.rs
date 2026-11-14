@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::{self, IoSlice, Write};
 use std::os::unix::fs::FileExt;
+use std::sync::Arc;
 
 pub(crate) trait LogIo: Send + Sync {
     fn len(&self) -> io::Result<u64>;
@@ -39,6 +40,30 @@ impl LogIo for File {
 
     fn sync_data(&self) -> io::Result<()> {
         File::sync_data(self)
+    }
+}
+
+// Sharing ownership keeps one descriptor while the log and its metadata
+// witness refer to the same open file description.
+impl LogIo for Arc<File> {
+    fn len(&self) -> io::Result<u64> {
+        LogIo::len(self.as_ref())
+    }
+
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        LogIo::read_exact_at(self.as_ref(), buffer, offset)
+    }
+
+    fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
+        LogIo::append_all(self.as_ref(), bytes)
+    }
+
+    fn append_vectored(&self, buffers: &mut [IoSlice<'_>]) -> io::Result<()> {
+        LogIo::append_vectored(self.as_ref(), buffers)
+    }
+
+    fn sync_data(&self) -> io::Result<()> {
+        LogIo::sync_data(self.as_ref())
     }
 }
 

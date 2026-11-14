@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, IoSlice, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ValueLocation {
@@ -89,10 +90,12 @@ impl Log {
         expected: u64,
         expected_len: u64,
     ) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(path.join("records.log"))?;
+        let file = Arc::new(
+            OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(path.join("records.log"))?,
+        );
         let (id, metadata) = log_identity(&file)?;
         let id = id.ok_or_else(|| {
             io::Error::new(
@@ -110,7 +113,7 @@ impl Log {
             if initial != LOG_HEADER_SIZE as u64 {
                 return Err(record::invalid_data("invalid metadata log identity anchor"));
             }
-            let (witness, boundary) = metadata_witness::open(file.try_clone()?, id)?;
+            let (witness, boundary) = metadata_witness::open_shared(Arc::clone(&file), id)?;
             (Some(anchor), witness, boundary)
         } else {
             let (witness, boundary) = Witness::open(path, id)?;
