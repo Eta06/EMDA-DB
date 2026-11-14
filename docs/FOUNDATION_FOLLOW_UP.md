@@ -165,7 +165,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Classify automatic-checkpoint configuration publication for first
   enable, re-enable and disable. A pre-publication classification does not
   certify handle health. [Recovery and fault checks](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md)
-  retain their coverage and limitations.
+  retain their coverage and limitations. A [concurrent configuration test](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md#concurrent-configuration-and-atomic-batches)
+  checks scans, atomic batches and reopening under sampled schedules.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

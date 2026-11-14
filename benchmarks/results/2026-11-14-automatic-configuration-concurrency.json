@@ -1,0 +1,30 @@
+{
+  "revision": "e4534dfef49c8ec69e082a946276d3d95b41f00f",
+  "test": "automatic_configuration_races_preserve_atomic_writes_and_recovery",
+  "command": "cargo +stable test --release --locked --lib automatic_configuration_races_preserve_atomic_writes_and_recovery -- --test-threads=1",
+  "repetitions": 100,
+  "fixture_runs": 200,
+  "formats": "forced V2 and filesystem default; default was V3 on this Linux filesystem",
+  "threads_per_fixture": 6,
+  "atomic_two_key_batches_per_fixture": 24,
+  "configuration_calls_per_fixture": 32,
+  "regular_scans_per_fixture": 24,
+  "interim_scans_per_fixture": 1,
+  "notes": "No injected faults, process kills or physical power failure; limits avoid automatic rollover. Scheduling beyond the coordinated interim scan is not exhaustive.",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "minimum_rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+  "test_source_sha256": "cb92473a82e32cedf426640b93ef8d9f66fb998f0f70fd03735483005e8886ae",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "raw_log": "2026-11-14-automatic-configuration-concurrency.log.gz",
+  "raw_log_sha256": "63d2b17f6895800b1a131dc73847075f9d1e8c02095d6f4a626b262a44242837",
+  "uncompressed_log_sha256": "4688e2485f5086a161e2e7afae6224b718e6f7837734cbf2db927d5ea0966bf0"
+}

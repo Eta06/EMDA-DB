@@ -52,6 +52,26 @@ each ordinary suite. Both all-target Clippy checks passed. The probe's test and
 example Clippy checks passed on both toolchains, and 139 Python tests passed.
 The GitHub EIO workflow includes a small V2 re-enable namespace-failure check.
 
+## Concurrent configuration and atomic batches
+
+Revision `e4534dfef49c8ec69e082a946276d3d95b41f00f` adds a test with three
+writers submitting two-key atomic batches, two callers enabling or disabling
+automatic checkpoints, and a concurrent scanner. A coordinated interim scan
+observes the first acknowledged pair while that writer's later batches have
+not yet started. Scans check that each pair is either fully present or fully
+absent; after all threads finish, the test compares the entire acknowledged
+key set and the observed configuration against the reopened store.
+
+The test passed on stable Rust and Rust 1.85. One hundred optimized repetitions
+passed on the local Linux overlay filesystem, totaling 200 fixtures across
+forced V2 and the default format (V3 here). Each fixture attempts 24 atomic
+batches, 32 configuration calls and 25 scans. The [metadata](../benchmarks/results/2026-11-14-automatic-configuration-concurrency.json)
+and [raw log](../benchmarks/results/2026-11-14-automatic-configuration-concurrency.log.gz)
+record the run. Both all-target Clippy checks passed for this revision.
+The test uses sufficiently high suffix limits that it does not exercise
+automatic rollover. It samples scheduling, uses normal close and reopen, and
+does not inject faults or establish physical power-loss safety.
+
 These checks use selected synthetic errors on a running Linux VM with an
 overlay filesystem of unknown backing. They do not cover partial syscalls,
 all error-only code paths, concurrent configuration callers, persistence
