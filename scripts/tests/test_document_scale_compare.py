@@ -33,6 +33,23 @@ class ScaleComparisonTests(unittest.TestCase):
         self.assertIn(("before-planned", "prototype-planned", "old"), large)
         self.assertFalse(any(entry[0] == "scan" for entry in large))
 
+    def test_detailed_comparison_requires_the_requested_api(self):
+        targets = targets_for_size(100, "new", None, False, True)
+        self.assertEqual(targets, [("standard", "prototype", "new"),
+                                   ("detailed", "prototype-detailed", "new"),
+                                   ("sqlite", "sqlite", "new")])
+        result = self.result()
+        with self.assertRaises(ValueError):
+            validate_result(result, "prototype-detailed", 100, 2)
+        result["mutation_api"] = "detailed"
+        result["query_mode"] = "index"
+        validate_result(result, "prototype-detailed", 100, 2)
+        result["query_mode"] = "scan"
+        with self.assertRaises(ValueError):
+            validate_result(result, "prototype-detailed", 100, 2)
+        with self.assertRaises(ValueError):
+            validate_result(result, "prototype", 100, 2)
+
     def test_rejects_failed_reopen_or_missing_samples(self):
         for change in ("reopen", "samples", "size", "invalid_sample", "rate", "format"):
             result = self.result()

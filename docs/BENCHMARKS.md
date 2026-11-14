@@ -324,6 +324,11 @@ The [document comparison report](DOCUMENT_COMPARISON_2026_11_04.md) records a fo
 
 `scripts/document_scale_compare.py` repeats the in-process prototype and SQLite document workload with a configurable nonempty indexed collection. The release example inserts the baseline in 32-document transactions, times create/read/replace/indexed-lookup/delete cycles for separate transient documents, then reopens and checks every baseline document; the prototype also traverses its email index, and SQLite runs `integrity_check`. The script rotates engine order, validates every sample count, retains raw results and failures, and records VM/cgroup noise. Prototype log format, process high-water RSS and file sizes are recorded; process RSS excludes page cache and is not a total-memory or project quota. Setup and verification are outside the individual operation timers but inside telemetry windows. Optionally provide `--baseline-binary /path/to/older/document_bench` to rotate an older prototype binary, the current prototype and SQLite for a before/after comparison. This is a single-client test of different document implementations, not a distributed-system comparison or physical power-loss test.
 
+Use `--compare-detailed` to rotate standard and structured document mutation
+calls from the same binary alongside SQLite. Both prototype paths keep the
+same synchronization; SQLite uses its own JSON adapter and WAL/FULL. This
+option cannot be combined with `--compare-plans` or `--baseline-binary`.
+
 ```sh
 cargo build --release --locked --example document_bench
 python3 scripts/document_scale_compare.py --directory /path/on/test/filesystem \

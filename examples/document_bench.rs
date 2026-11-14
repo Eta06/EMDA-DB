@@ -63,6 +63,7 @@ fn prototype(
     iterations: usize,
     preload: usize,
     query_mode: QueryMode,
+    detailed: bool,
 ) -> Result<Value> {
     let root = tempfile::tempdir_in(parent)?;
     let path = root.path().join("store");
@@ -119,14 +120,22 @@ fn prototype(
             ..Default::default()
         };
         timed(&mut times, "create", record, || {
-            Ok(db.insert("docs", &id, &first)?)
+            if detailed {
+                Ok(db.insert_detailed("docs", &id, &first)?)
+            } else {
+                Ok(db.insert("docs", &id, &first)?)
+            }
         })?;
         let found = timed(&mut times, "read", record, || Ok(db.get("docs", &id)?))?;
         if found.as_ref() != Some(&first) {
             return Err("prototype read mismatch".into());
         }
         timed(&mut times, "update", record, || {
-            Ok(db.replace("docs", &id, &second, false)?)
+            if detailed {
+                Ok(db.replace_detailed("docs", &id, &second, false)?)
+            } else {
+                Ok(db.replace("docs", &id, &second, false)?)
+            }
         })?;
         let found = timed(&mut times, "indexed_query", record, || {
             Ok(match query_mode {
@@ -148,7 +157,13 @@ fn prototype(
         if found.len() != 1 || found[0].id != id || found[0].document != second {
             return Err("prototype indexed query mismatch".into());
         }
-        if !timed(&mut times, "delete", record, || Ok(db.delete("docs", &id)?))? {
+        if !timed(&mut times, "delete", record, || {
+            if detailed {
+                Ok(db.delete_detailed("docs", &id)?)
+            } else {
+                Ok(db.delete("docs", &id)?)
+            }
+        })? {
             return Err("prototype delete mismatch".into());
         }
         if record {
@@ -192,7 +207,7 @@ fn prototype(
         .map(|(name, values)| ((*name).to_owned(), samples(values)))
         .collect::<BTreeMap<_, _>>();
     Ok(
-        json!({"engine":"document-prototype","query_mode":match query_mode { QueryMode::ExplicitIndex => "index", QueryMode::Planned => "planned", QueryMode::CollectionScan => "scan" },"cycles":iterations,"warmup_cycles":WARMUP,"preloaded_documents":preload,"prepare_us":prepare_us,"peak_rss_kib":peak_rss_kib(),"log_bytes":log_bytes,"log_format":format,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"underlying witnessed store sync before acknowledgement","transport":"in-process Rust"}),
+        json!({"engine":"document-prototype","mutation_api":if detailed {"detailed"} else {"standard"},"query_mode":match query_mode { QueryMode::ExplicitIndex => "index", QueryMode::Planned => "planned", QueryMode::CollectionScan => "scan" },"cycles":iterations,"warmup_cycles":WARMUP,"preloaded_documents":preload,"prepare_us":prepare_us,"peak_rss_kib":peak_rss_kib(),"log_bytes":log_bytes,"log_format":format,"wall_ops_per_sec":iterations as f64*5.0*1e9/measured as f64,"latency":result,"reopen_verified":true,"durability":"underlying witnessed store sync before acknowledgement","transport":"in-process Rust"}),
     )
 }
 
@@ -317,7 +332,7 @@ fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [engine, parent, iterations, rest @ ..] = args.as_slice() else {
         return Err(
-            "usage: document_bench <prototype|prototype-index|prototype-planned|prototype-scan|sqlite> <existing-directory> <cycles> [preloaded-documents]".into(),
+            "usage: document_bench <prototype|prototype-detailed|prototype-index|prototype-planned|prototype-scan|sqlite> <existing-directory> <cycles> [preloaded-documents]".into(),
         );
     };
     let parent = Path::new(parent);
@@ -341,12 +356,19 @@ fn main() -> Result<()> {
     }
     let result = match engine.as_str() {
         "prototype" | "prototype-index" => {
-            prototype(parent, iterations, preload, QueryMode::ExplicitIndex)?
+            prototype(parent, iterations, preload, QueryMode::ExplicitIndex, false)?
         }
-        "prototype-planned" => prototype(parent, iterations, preload, QueryMode::Planned)?,
-        "prototype-scan" if preload < 1024 => {
-            prototype(parent, iterations, preload, QueryMode::CollectionScan)?
+        "prototype-detailed" => {
+            prototype(parent, iterations, preload, QueryMode::ExplicitIndex, true)?
         }
+        "prototype-planned" => prototype(parent, iterations, preload, QueryMode::Planned, false)?,
+        "prototype-scan" if preload < 1024 => prototype(
+            parent,
+            iterations,
+            preload,
+            QueryMode::CollectionScan,
+            false,
+        )?,
         "prototype-scan" => {
             return Err("scan benchmark needs fewer than 1024 preloaded documents".into());
         }

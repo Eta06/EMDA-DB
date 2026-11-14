@@ -22,7 +22,7 @@ def sha256(path):
 
 def validate_result(result, backend, size, cycles):
     expected = "sqlite-json" if backend == "sqlite" else "document-prototype"
-    if backend not in ("prototype", "prototype-index", "prototype-planned", "prototype-scan", "sqlite"):
+    if backend not in ("prototype", "prototype-detailed", "prototype-index", "prototype-planned", "prototype-scan", "sqlite"):
         raise ValueError("unknown benchmark backend")
     if (result.get("engine") != expected or result.get("preloaded_documents") != size
             or result.get("cycles") != cycles or result.get("reopen_verified") is not True):
@@ -33,6 +33,10 @@ def validate_result(result, backend, size, cycles):
     expected_mode = {"prototype-index": "index", "prototype-planned": "planned", "prototype-scan": "scan"}.get(backend)
     if expected_mode and result.get("query_mode") != expected_mode:
         raise ValueError("prototype used the wrong query mode")
+    if backend == "prototype-detailed" and (result.get("mutation_api") != "detailed" or result.get("query_mode") != "index"):
+        raise ValueError("prototype used the wrong detailed mutation or query mode")
+    if backend == "prototype" and result.get("mutation_api", "standard") != "standard":
+        raise ValueError("prototype used the wrong standard mutation mode")
     if backend != "sqlite" and result.get("log_format") not in ("V2", "V3"):
         raise ValueError("missing or unsupported prototype log format")
     if backend == "sqlite" and "USING INDEX" not in result.get("query_plan", ""):
@@ -45,7 +49,10 @@ def validate_result(result, backend, size, cycles):
             raise ValueError(f"invalid {operation} sample")
 
 
-def targets_for_size(size, binary, baseline_binary, compare_plans):
+def targets_for_size(size, binary, baseline_binary, compare_plans, compare_detailed=False):
+    if compare_detailed:
+        return [("standard", "prototype", binary), ("detailed", "prototype-detailed", binary),
+                ("sqlite", "sqlite", binary)]
     if compare_plans:
         targets = [("planned", "prototype-planned", binary),
                    ("explicit", "prototype-index", binary), ("sqlite", "sqlite", binary)]
@@ -66,6 +73,7 @@ def main():
     parser.add_argument("--binary", required=True)
     parser.add_argument("--baseline-binary")
     parser.add_argument("--compare-plans", action="store_true", help="compare scans, planned and explicit-index queries, and SQLite")
+    parser.add_argument("--compare-detailed", action="store_true", help="compare standard and detailed mutations from the same binary with SQLite")
     parser.add_argument("--output", required=True)
     parser.add_argument("--sizes", default="0,100,1000,3000")
     parser.add_argument("--rounds", type=int, default=4)
@@ -80,6 +88,7 @@ def main():
             or (args.baseline_binary is not None and not Path(args.baseline_binary).is_file())
             or os.path.lexists(args.output) or len(allowed) < 2 or not sizes
             or len(set(sizes)) != len(sizes) or any(not 0 <= size <= 5000 for size in sizes)
+            or (args.compare_detailed and (args.compare_plans or args.baseline_binary is not None))
             or not 2 <= args.rounds <= 50 or not 1 <= args.cycles <= 100000):
         parser.error("invalid paths, CPU availability, sizes, rounds or cycle count")
     benchmark_cpu, driver_cpu = allowed[0], allowed[-1]
@@ -99,6 +108,8 @@ def main():
     }
     if args.compare_plans:
         report["scope"] = "Single client; prototype complete scan, rule-based unique-equality plan, optional previous planned binary, explicit index lookup, and SQLite expression-index lookup. SQLite returns JSON text; the prototype decodes and validates JSON. Scan runs are omitted when the collection exceeds the 1024-document limit. Preparation and recovery verification are outside operation timers but included in telemetry. Not a concurrency, power-loss or universal ranking."
+    if args.compare_detailed:
+        report["scope"] += " Prototype runs alternate standard and detailed mutation APIs from the same binary; both retain synchronized writes."
     output = Path(args.output)
     with output.open("x", encoding="utf-8") as file:
         json.dump(report, file, indent=2)
@@ -108,7 +119,7 @@ def main():
         output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
     for size_index, size in enumerate(sizes):
-        targets = targets_for_size(size, args.binary, args.baseline_binary, args.compare_plans)
+        targets = targets_for_size(size, args.binary, args.baseline_binary, args.compare_plans, args.compare_detailed)
         for round_index in range(args.rounds):
             rotation = (size_index + round_index) % len(targets)
             order = targets[rotation:] + targets[:rotation]
