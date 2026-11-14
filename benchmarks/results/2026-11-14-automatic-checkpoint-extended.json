@@ -1,0 +1,54 @@
+{
+  "revision": "47d4d05eb089fa3be562c833bf3e5eaebde679f8",
+  "run_command": "cargo +nightly-2026-11-03 fuzz run automatic_checkpoint <corpus> -- -max_total_time=180 -max_len=128 -timeout=15 -seed=1142047",
+  "initial_corpus_files": 390,
+  "initial_corpus_archive_sha256": "1cbe9e256176b6f4c5af637f862f3fa8615e950449c6d5a250696e239ad818a8",
+  "rustc": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "cargo-fuzz 0.13.2",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "binary_sha256": "b13873fcb03ff34f01ef0ea612129d1e657038cec394b2ab034d090a94521f49",
+  "target_sha256": "fe407500d37e8dd20ecdbf769befd2b6fa389caafbae22ebf65f653ae983917a",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "fuzz_lock_sha256": "2f09025e1817fb64aae0497d7fcc1c0aa7a363f9cf138f68cda2f3e440e5ef45",
+  "fixed_long_seeds": {
+    "long-default": {
+      "sha256": "48799610f0e7d232f70299678aef487c502c9e1ad52fe6b2212dc1937ab32bf2",
+      "bytes": 124,
+      "operations": 41
+    },
+    "long-v2": {
+      "sha256": "13845e171a410cf473dc3f569cc3c87a0ca620a21b159a30377cc04a508225e6",
+      "bytes": 124,
+      "operations": 41
+    }
+  },
+  "libfuzzer_seed": 1142047,
+  "completed_runs": 19104,
+  "elapsed_seconds_reported": 181,
+  "coverage_counters": 3618,
+  "feature_count": 16103,
+  "libfuzzer_final_corpus_count": 412,
+  "final_corpus_files": 570,
+  "forced_v2_initial_files": 236,
+  "default_initial_files": 334,
+  "precondition_check_files": 278,
+  "configured_max_len": 128,
+  "last_reported_length_limit": 54,
+  "raw_log": "2026-11-14-automatic-checkpoint-extended.log.gz",
+  "replay_corpus": "2026-11-14-automatic-checkpoint-extended-corpus.tar.gz",
+  "fixed_seed_log": "2026-11-14-automatic-checkpoint-extended-long-seeds.log.gz",
+  "replay": {
+    "loaded_corpus_files": 570,
+    "reported_runs": 572,
+    "elapsed_seconds_reported": 7,
+    "raw_log": "2026-11-14-automatic-checkpoint-extended-replay.log.gz"
+  }
+}

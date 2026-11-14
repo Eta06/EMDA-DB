@@ -147,6 +147,20 @@ directory and run:
 cargo +nightly-2026-11-03 fuzz run automatic_checkpoint ./extracted-corpus -- -runs=390 -max_len=128 -timeout=15
 ```
 
+A further 180-second campaign on revision
+`47d4d05eb089fa3be562c833bf3e5eaebde679f8` started from that saved corpus and
+completed **19,104 inputs** without a finding, reaching a 54-byte generation
+limit. The [metadata](../benchmarks/results/2026-11-14-automatic-checkpoint-extended.json),
+[raw log](../benchmarks/results/2026-11-14-automatic-checkpoint-extended.log.gz),
+[corpus](../benchmarks/results/2026-11-14-automatic-checkpoint-extended-corpus.tar.gz)
+and [replay log](../benchmarks/results/2026-11-14-automatic-checkpoint-extended-replay.log.gz)
+are retained; replaying its 570 files completed 572 reported runs. Two
+additional fixed 124-byte histories, each with 41 operations, passed for
+[V2](../fuzz/automatic-checkpoint-seeds/long-v2) and the
+[default format](../fuzz/automatic-checkpoint-seeds/long-default). They are
+retained as seeds for later runs. These checks have the same serial, no-fault
+and physical-power-loss limitations described above.
+
 These checks use selected synthetic errors on a running Linux VM with an
 overlay filesystem of unknown backing. They do not cover partial syscalls,
 all error-only code paths, concurrent configuration callers, persistence
