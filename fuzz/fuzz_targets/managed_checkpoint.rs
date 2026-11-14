@@ -1,5 +1,5 @@
 #![no_main]
-use database_engine::{CheckpointStore, Store};
+use database_engine::{CheckpointStore, ManagedRolloverFailure, Store};
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
 
@@ -31,13 +31,19 @@ fuzz_target!(|data: &[u8]| {
     let mut store = CheckpointStore::open(&path, &initial, &digest).expect("open");
     let mut generation = 0_usize;
     let mut peak_keys = model.len();
-    store
-        .rollover_managed(root.path().join("managed-0"))
-        .expect("first managed selection");
+    if data.first().is_some_and(|byte| byte & 1 != 0) {
+        store
+            .rollover_managed_detailed(root.path().join("managed-0"))
+            .expect("first detailed managed selection");
+    } else {
+        store
+            .rollover_managed(root.path().join("managed-0"))
+            .expect("first managed selection");
+    }
     let selection = path.join("checkpoint.selection");
     for bytes in data.chunks_exact(3) {
         let key = vec![b'a' + bytes[1] % 8];
-        match bytes[0] % 8 {
+        match bytes[0] % 10 {
             0 => {
                 let value = vec![bytes[2]; usize::from(bytes[2] % 5)];
                 store.put(&key, &value).expect("put");
@@ -51,9 +57,14 @@ fuzz_target!(|data: &[u8]| {
                 generation += 1;
                 let before = model.clone();
                 let snapshot = store.snapshot().expect("snapshot");
-                store
-                    .rollover_managed(root.path().join(format!("managed-{generation}")))
-                    .expect("rollover");
+                let next = root.path().join(format!("managed-{generation}"));
+                if bytes[2] & 1 != 0 {
+                    store
+                        .rollover_managed_detailed(next)
+                        .expect("detailed rollover");
+                } else {
+                    store.rollover_managed(next).expect("rollover");
+                }
                 assert_eq!(
                     snapshot.scan(None, None, 100).expect("snapshot scan"),
                     before.into_iter().collect::<Vec<_>>()
@@ -95,7 +106,7 @@ fuzz_target!(|data: &[u8]| {
                 store = CheckpointStore::open_managed(&path).expect("reopen rebuilt selection");
                 assert_eq!(store.overlay_keys().expect("empty suffix"), 0);
             }
-            _ => {
+            7 => {
                 check(&store, &model);
                 drop(store);
                 generation += 1;
@@ -128,6 +139,60 @@ fuzz_target!(|data: &[u8]| {
                 store = CheckpointStore::open_managed(&path).expect("reopen after limited rebuild");
                 if !denied {
                     assert_eq!(store.overlay_keys().expect("empty suffix"), 0);
+                }
+            }
+            8 => {
+                generation += 1;
+                let blocked = root.path().join(format!("blocked-{generation}"));
+                std::fs::write(&blocked, b"pre-existing checkpoint").expect("sentinel");
+                let previous = std::fs::read(&selection).expect("selection");
+                let snapshot = store.snapshot().expect("snapshot before collision");
+                assert!(matches!(
+                    store.rollover_managed_detailed(&blocked),
+                    Err(ManagedRolloverFailure::CheckpointOutcomeUnknown(_))
+                ));
+                assert_eq!(
+                    std::fs::read(&blocked).expect("sentinel after"),
+                    b"pre-existing checkpoint"
+                );
+                assert_eq!(
+                    std::fs::read(&selection).expect("selection after"),
+                    previous
+                );
+                assert_eq!(
+                    snapshot
+                        .scan(None, None, 100)
+                        .expect("snapshot after collision"),
+                    model
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect::<Vec<_>>()
+                );
+                drop(snapshot);
+                if bytes[1] & 1 != 0 {
+                    drop(store);
+                    store = CheckpointStore::open_managed(&path).expect("reopen after collision");
+                }
+            }
+            _ => {
+                generation += 1;
+                let missing = root
+                    .path()
+                    .join(format!("missing-{generation}"))
+                    .join("checkpoint");
+                let previous = std::fs::read(&selection).expect("selection");
+                assert!(matches!(
+                    store.rollover_managed_detailed(&missing),
+                    Err(ManagedRolloverFailure::NotPublished(_))
+                ));
+                assert!(!missing.exists());
+                assert_eq!(
+                    std::fs::read(&selection).expect("selection after"),
+                    previous
+                );
+                if bytes[1] & 1 != 0 {
+                    drop(store);
+                    store = CheckpointStore::open_managed(&path).expect("reopen after rejection");
                 }
             }
         }
