@@ -29,6 +29,14 @@ cleaned under the existing staging rules.
 This first campaign verifies that the visible selection opens, but does not
 independently parse its path to prove that it points to the intended checkpoint.
 
+A [repeat on revision `287a15b`](../benchmarks/results/2026-11-14-managed-rollover-selection-binding.json.gz)
+adds an independent parser for the selection record. It checks the record
+checksum, verifies that the path names the expected previous or new checkpoint,
+and compares the selected digest to the separately saved fixture digest. The
+repeat covered 904 injections with the same outcome counts below. A report's
+`managed_selection_binding` value of `1` denotes these stronger checks;
+earlier reports lack that binding check.
+
 The campaigns injected EIO into selected observed sync, data-write, read,
 open and namespace calls, and EAGAIN into sync calls:
 
@@ -45,6 +53,21 @@ prevent the operation. Additional deterministic tests inject failures before
 and after the selection rename and during checkpoint verification, check the
 disabled handle where applicable, and reopen the appropriate selection.
 
+The first stable all-target suite stopped at an existing file-size-limit test:
+its child got `WouldBlock` while opening an isolated source before applying
+the file-size limit. This is consistent with a transient inherited advisory
+lock during a concurrent fork, but that holder was not captured. The fixture
+now retries only `WouldBlock` for up to five seconds; deliberate lock-exclusion
+assertions are unchanged. Twenty repeated runs of that test passed after the
+fixture change. The [original failed log](../benchmarks/results/2026-11-14-managed-rollover-initial-stable-failure.log.gz)
+is retained with the evidence.
+
+After the fixture change, the stable all-target suite passed 986 tests with
+four test threads. The Rust 1.85 and optimized stable all-target suites each
+passed 986 tests before that test-only change; the affected file-size-limit
+test was rerun successfully on both configurations afterwards. Both all-target
+Clippy checks and 132 Python tests also passed.
+
 These synthetic returned errors do not exhaust failure-only calls, partial
 syscalls, concurrent schedules or persistence ordering. The workspace used an
 overlay of unknown backing while the operating system remained running. A
@@ -58,7 +81,7 @@ To recheck the retained coverage, classifications and recorded hashes:
 PYTHONPATH=scripts python3 - <<'PY'
 import gzip, json
 from verify_one_shot_fs_results import verify
-with gzip.open('benchmarks/results/2026-11-14-managed-rollover-publication-faults.json.gz', 'rt') as source:
+with gzip.open('benchmarks/results/2026-11-14-managed-rollover-selection-binding.json.gz', 'rt') as source:
     bundle = json.load(source)
 print(sum(verify(entry['report'])['injections'] for entry in bundle['reports']))
 PY
