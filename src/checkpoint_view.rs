@@ -219,7 +219,7 @@ impl CheckpointView {
         max_log_bytes: Option<u64>,
     ) -> io::Result<Self> {
         limits.validate()?;
-        let (log, boundary) = Log::open_checkpoint_view(path)?;
+        let (mut log, boundary) = Log::open_checkpoint_view(path)?;
         Self::check_log_limit(&log, max_log_bytes)?;
         let checkpoint = File::open(checkpoint)?;
         let mut blocks = Vec::new();
@@ -281,6 +281,7 @@ impl CheckpointView {
             blocks.push(block.finish());
         }
         let has_tail = Self::check_log_limit(&log, max_log_bytes)? > prefix;
+        log.release_view_witness()?;
         Ok(Self {
             log: Arc::new(log),
             checkpoint,

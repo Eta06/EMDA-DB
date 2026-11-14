@@ -474,6 +474,7 @@ impl Log {
         &self,
         records: impl ExactSizeIterator<Item = AppendRecord<'a>>,
     ) -> io::Result<Vec<ValueLocation>> {
+        self.require_attached_witness()?;
         let mut offset = self.file.len()?;
         if let Some(anchor) = &self.anchor {
             anchor.verify(LOG_HEADER_SIZE as u64)?;
@@ -512,6 +513,7 @@ impl Log {
     }
 
     pub(crate) fn sync_data(&self) -> io::Result<()> {
+        self.require_attached_witness()?;
         // V3's witness uses fsync on the log inode, covering data AND xattrs.
         // V2 still requires log fdatasync followed by the external witness sync.
         if self.metadata {
@@ -563,6 +565,25 @@ impl Log {
         self.log_id
     }
 
+    // A validated checkpoint view only reads immutable log locations. It keeps
+    // the captured boundary separately and does not use these descriptors after
+    // validation. An active writer keeps its own full witness and identity.
+    pub(crate) fn release_view_witness(&mut self) -> io::Result<()> {
+        if self.log_id.is_none() || self.witness.is_none() {
+            return Err(io::Error::other("checkpoint view has no commit witness"));
+        }
+        self.witness = None;
+        self.anchor = None;
+        Ok(())
+    }
+
+    fn require_attached_witness(&self) -> io::Result<()> {
+        if self.log_id.is_some() && self.witness.is_none() {
+            return Err(io::Error::other("log has no attached commit witness"));
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn attach_test_witness(&mut self, witness: Witness) {
         self.witness = Some(witness);
@@ -574,6 +595,7 @@ impl Log {
     }
 
     pub(crate) fn verify_witness(&self) -> io::Result<()> {
+        self.require_attached_witness()?;
         if log_identity(self.file.as_ref())? != (self.log_id, self.metadata) {
             return Err(record::invalid_data(
                 "log identity changed while the store was open",
