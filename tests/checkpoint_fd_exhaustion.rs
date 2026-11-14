@@ -149,6 +149,34 @@ fn exhausted_open_can_retry_without_losing_existing_stores() {
                     Some(&b"acknowledged"[..])
                 );
             }
+            drop(store);
+            let directory = project(root.path(), index);
+            let digest: [u8; 32] = fs::read(directory.join("digest"))
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let recovered = CheckpointStore::open(
+                directory.join("store"),
+                directory.join("checkpoint"),
+                &digest,
+            )
+            .unwrap();
+            assert_eq!(
+                recovered.get(b"safe").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+            if index == 0 {
+                assert_eq!(
+                    recovered.get(b"during-exhaustion").unwrap().as_deref(),
+                    Some(&b"acknowledged"[..])
+                );
+            }
+            if index == retried {
+                assert_eq!(
+                    recovered.get(b"after-retry").unwrap().as_deref(),
+                    Some(&b"acknowledged"[..])
+                );
+            }
         }
     }
 }
