@@ -12,7 +12,7 @@ import time
 import sync_eio_campaign as common
 from campaign_report import ReportWriter
 
-BACKENDS = ('ordinary', 'checkpoint', 'managed')
+BACKENDS = ('ordinary', 'checkpoint', 'managed', 'online')
 FORMATS = ('v2', 'v3')
 ORDERS = ('source-first', 'target-first')
 
@@ -60,6 +60,8 @@ def check_outcome(outcome, verified):
     elif classification == 'exchange_unknown':
         if not target:
             raise ValueError('exchange attempt lacked a published candidate')
+        if verified['operation'] == 'online' and outcome.get('handle_after_exchange_failure') != 'blocked':
+            raise ValueError('exchange failure did not block online handle access')
     else:
         raise ValueError('invalid handoff failure classification')
 

@@ -1,5 +1,8 @@
 //! Disposable fixtures for compaction-handoff filesystem fault campaigns.
-use database_engine::{CheckpointStore, Entry, HandoffFailure, Store, cleanup_abandoned_staging};
+use database_engine::{
+    CheckpointStore, Entry, HandoffFailure, OnlineHandoffFailure, OnlineStore, Store,
+    cleanup_abandoned_staging,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -19,7 +22,7 @@ fn setup(root: &Path, format: &str, backend: &str) -> ProbeResult<()> {
     if !root.is_dir() || fs::read_dir(root)?.next().is_some() {
         return Err("fixture root must be an existing empty directory".into());
     }
-    if !matches!(backend, "ordinary" | "checkpoint" | "managed") {
+    if !matches!(backend, "ordinary" | "checkpoint" | "managed" | "online") {
         return Err("unknown backend".into());
     }
     let source = root.join("source");
@@ -71,6 +74,9 @@ fn setup(root: &Path, format: &str, backend: &str) -> ProbeResult<()> {
 }
 
 fn attempt(root: &Path, backend: &str) -> ProbeResult<()> {
+    if backend == "online" {
+        return attempt_online(root);
+    }
     let source = root.join("source");
     let target = root.join("result");
     let outcome = match backend {
@@ -116,6 +122,54 @@ fn attempt(root: &Path, backend: &str) -> ProbeResult<()> {
                 "{}",
                 json!({"status":"error", "operation":backend, "classification":classification,
                 "kind":format!("{:?}",error.kind()), "message":error.to_string()})
+            );
+        }
+    }
+    Ok(())
+}
+
+fn attempt_online(root: &Path) -> ProbeResult<()> {
+    let mut handle_after_exchange_failure = None;
+    let outcome = match OnlineStore::open(root.join("source")) {
+        Ok(store) => {
+            let outcome =
+                store.compact_and_replace_detailed(root.join("result"), &Default::default());
+            if matches!(
+                &outcome,
+                Err(OnlineHandoffFailure::ExchangeOutcomeUnknown(_))
+            ) {
+                let read_blocked = store.with_store(|db| db.get(b"safe")).is_err();
+                let write_blocked = store
+                    .with_store(|db| db.put(b"after-exchange-error", b"must-not-write"))
+                    .is_err();
+                if !read_blocked || !write_blocked {
+                    return Err("exchange failure did not block online handle access".into());
+                }
+                handle_after_exchange_failure = Some("blocked");
+            }
+            outcome.map(|_| ())
+        }
+        Err(error) => Err(OnlineHandoffFailure::NotPublished(error)),
+    };
+    match outcome {
+        Ok(()) => println!(
+            "{}",
+            json!({"status":"success", "operation":"online", "classification":null})
+        ),
+        Err(error) => {
+            let (classification, error) = match error {
+                OnlineHandoffFailure::NotPublished(error) => ("not_published", error),
+                OnlineHandoffFailure::CandidateOutcomeUnknown(error) => {
+                    ("candidate_unknown", error)
+                }
+                OnlineHandoffFailure::ExchangeOutcomeUnknown(error) => ("exchange_unknown", error),
+                other => ("exchange_unknown", io::Error::other(other)),
+            };
+            println!(
+                "{}",
+                json!({"status":"error", "operation":"online", "classification":classification,
+                "kind":format!("{:?}",error.kind()), "message":error.to_string(),
+                "handle_after_exchange_failure":handle_after_exchange_failure})
             );
         }
     }
@@ -235,7 +289,7 @@ mod tests {
 
     #[test]
     fn verifier_rejects_changed_values_for_all_handoff_backends() {
-        for backend in ["ordinary", "checkpoint", "managed"] {
+        for backend in ["ordinary", "checkpoint", "managed", "online"] {
             let root = tempfile::tempdir().unwrap();
             setup(root.path(), "v2", backend).unwrap();
             attempt(root.path(), backend).unwrap();

@@ -87,6 +87,21 @@ class HandoffCoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'staging cleanup incomplete'):
             verify(report)
 
+    def test_online_exchange_uncertainty_requires_a_blocked_handle(self):
+        report = fixture()
+        report['backends'] = ['online']
+        case = report['cases'][0]
+        case['backend'] = 'online'
+        for value in [case['control'], *case['injections']]:
+            value['outcome']['operation'] = 'online'
+            value['verification']['operation'] = 'online'
+        injection = case['injections'][0]
+        injection['outcome'].update(classification='exchange_unknown', handle_after_exchange_failure='blocked')
+        self.assertEqual(verify(report)['injections'], 2)
+        del injection['outcome']['handle_after_exchange_failure']
+        with self.assertRaisesRegex(ValueError, 'did not block online handle access'):
+            verify(report)
+
 
 if __name__ == '__main__':
     unittest.main()
