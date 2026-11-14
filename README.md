@@ -27,6 +27,8 @@ The [submission-boundary follow-up](docs/TRANSACTION_SUBMISSION_BOUNDARY_2026_11
 The [direct-mutation outcome report](docs/DIRECT_MUTATION_OUTCOMES_2026_11_14.md) records classification checks, process-kill recovery and local write measurements.
 The [backup publication report](docs/BACKUP_PUBLICATION_OUTCOMES_2026_11_14.md) records failure classifications, filesystem-fault checks and their limits.
 The [document mutation report](docs/DOCUMENT_MUTATION_OUTCOMES_2026_11_14.md) records structured outcomes, index recovery checks and local SQLite comparisons.
+The [coordinator admission report](docs/COORDINATOR_ADMISSION_OUTCOMES_2026_11_14.md) records which failures are confirmed before queuing and the tested limits.
+The [transaction snapshot report](docs/TRANSACTION_SNAPSHOT_RELEASE_2026_11_14.md) records a measured copy reduction, concurrent and recovery checks, and benchmark limitations.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.

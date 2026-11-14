@@ -129,7 +129,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Classify ordinary group-commit admission and other failures before queue
   insertion as rejected for the current detailed mutation or transaction.
   A queued request remains unknown on failure; independent earlier writes may
-  still be uncertain, and rejection does not establish store health.
+  still be uncertain, and rejection does not establish store health. [Local
+  concurrency and performance evidence](COORDINATOR_ADMISSION_OUTCOMES_2026_11_14.md)
+  records the scope.
 - [ ] Specify structured outcomes for other maintenance publications and
   refine safe classifications where further boundaries can be proven.
   Existing error types are unchanged and unknown outcomes cannot be retried
@@ -192,7 +194,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Release an ordinary transaction's private snapshot after validation while
   retaining the writer barrier, before committing. Other snapshots remain valid;
   the transaction's active admission remains held until it finishes. This can
-  avoid a full index copy when no other reader retains that root.
+  avoid a full index copy when no other reader retains that root. [Comparisons
+  and recovery checks](TRANSACTION_SNAPSHOT_RELEASE_2026_11_14.md) record the
+  observed behavior and limitations.
 - [x] Add bounded, process-local read-only snapshots with stable paginated scans; each snapshot is released on drop and borrows the store.
 - [x] Add checkpoint-backed read-only snapshots that copy bounded block-directory and suffix-overlay metadata, preserve captured reads across writes and rollover, and release their reservations on cancellation, drop, creation errors and panics. A short [reference-model run](../benchmarks/results/2026-11-04-checkpoint-snapshot-fuzz.json) exercised 10,633 inputs. Aggregate block, key and key-byte limits apply; expired idle views are reclaimed by later snapshot admission or explicit reaping.
 - [x] Reclaim expired idle checkpoint snapshots on later admission or explicit reaping without interrupting in-progress reads. A short [checkpoint-store model run](../benchmarks/results/2026-11-04-checkpoint-reaper-fuzz.json) exercised 10,906 inputs; it does not exercise expiry races, which have targeted tests.
