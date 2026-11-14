@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in publication outcomes for unmanaged checkpoint rollover. A failed
+  post-publication switch retains the old view and returns no new digest.
+
 - Add opt-in publication outcomes for format and legacy-copy upgrades,
   including independently verified empty legacy stores.
 

@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::io;
 
-/// A failed copy publication, classified by this call's publication attempt.
+/// A failed publication, classified by this call's destination attempt.
 ///
 /// A pre-existing destination may exist in either case. Temporary staging
 /// artifacts can also remain after failures; these variants do not certify

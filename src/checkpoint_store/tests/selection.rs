@@ -16,6 +16,10 @@ fn managed_rollovers_reopen_the_recorded_checkpoint_and_preserve_snapshots() {
         Some(&b"first"[..])
     );
     assert!(store.rollover_to(dir.path().join("unmanaged")).is_err());
+    assert!(matches!(
+        store.rollover_to_detailed(dir.path().join("unmanaged")),
+        Err(crate::PublicationFailure::NotPublished(_))
+    ));
     assert!(!dir.path().join("unmanaged").exists());
     drop(snapshot);
     drop(store);

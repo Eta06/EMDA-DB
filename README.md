@@ -176,6 +176,8 @@ Both writable stores also provide `checkpoint_to_detailed` with the same publica
 
 `Store::upgrade_format_detailed`, `upgrade_legacy_detailed` and `upgrade_empty_legacy_detailed` classify destination publication for format upgrades. A legacy upgrade cannot detect data lost before the upgrade. The empty-legacy operation requires independent confirmation that the source is intended to be empty and may create a source lock file.
 
+`CheckpointStore::rollover_to_detailed` classifies publication during unmanaged checkpoint rollover. If it returns an error after publication, the prior view remains active, the destination may exist, and no new digest is returned. Managed rollover uses a separate API.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

@@ -645,10 +645,40 @@ impl CheckpointStore {
         self.rollover_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Creates and adopts an unmanaged checkpoint with structured publication
+    /// failures. An error after publication keeps the prior view active, but
+    /// the destination may exist and the digest is not returned. Reconcile an
+    /// uncertain outcome before retrying; managed stores use their own API.
+    pub fn rollover_to_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        self.rollover_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
+    }
+
+    fn rollover_to_detailed_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.rollover_to_tracked(destination, sync_parent, Some(tracker))
+        })
+    }
+
     fn rollover_to_with_sync(
         &self,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        self.rollover_to_tracked(destination, sync_parent, None)
+    }
+
+    fn rollover_to_tracked(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: Option<&crate::publication_outcome::Tracker>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let mut state = self.write()?;
@@ -658,7 +688,8 @@ impl CheckpointStore {
                 "managed stores require rollover_managed",
             ));
         }
-        let digest = self.create_checkpoint(&state, destination, sync_parent, true)?;
+        let digest =
+            self.create_checkpoint_tracked(&state, destination, sync_parent, true, tracker)?;
         let next_view = self.rollover_view(&state, destination, &digest)?;
         state.view = next_view;
         state.overlay_key_bytes = 0;

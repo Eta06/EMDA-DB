@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn detailed_rollover_keeps_old_view_after_sync_or_switch_failure() {
+    for failure in ["sync", "switch"] {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        store.put(b"new", b"value").unwrap();
+        let old_tail = store.tail_bytes().unwrap();
+        let destination = dir.path().join("next");
+        let result = store.rollover_to_detailed_with_sync(&destination, |parent| {
+            if failure == "sync" {
+                Err(io::Error::other("injected parent sync failure"))
+            } else {
+                fs::write(&destination, b"corrupt published checkpoint")?;
+                File::open(parent)?.sync_all()
+            }
+        });
+        assert!(matches!(
+            result,
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert!(destination.exists());
+        assert_eq!(store.tail_bytes().unwrap(), old_tail);
+        assert_eq!(store.get(b"new").unwrap().as_deref(), Some(&b"value"[..]));
+        store.put(b"later", b"safe").unwrap();
+        drop(store);
+        let recovered = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        assert_eq!(
+            recovered.get(b"new").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+        assert_eq!(
+            recovered.get(b"later").unwrap().as_deref(),
+            Some(&b"safe"[..])
+        );
+    }
+}
+
+#[test]
 fn detailed_streamed_checkpoint_sync_failure_is_unknown_and_source_remains_usable() {
     let (dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();

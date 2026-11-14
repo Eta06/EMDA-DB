@@ -81,9 +81,12 @@ cleanup. `upgrade_format_detailed`, `upgrade_legacy_detailed` and
 `upgrade_empty_legacy_detailed` classify destination publication for upgrade
 copies. A legacy upgrade cannot detect previous data loss, and the empty-legacy
 variant requires independent confirmation that the source should be empty; it
-may create a source lock file even if the copy fails. Rollover,
-compact-and-replace handoffs and other maintenance publications do not yet
-provide this classification.
+may create a source lock file even if the copy fails.
+`CheckpointStore::rollover_to_detailed` classifies unmanaged checkpoint
+rollover: if the call fails after publication, the prior view remains active,
+the destination may exist and no new digest is returned. This classification
+does not establish store health. Managed rollover, compact-and-replace
+handoffs and other maintenance publications do not yet provide it.
 
 ## Current prototype: one store in one process
 

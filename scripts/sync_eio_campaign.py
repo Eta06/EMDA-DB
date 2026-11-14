@@ -35,7 +35,7 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
 PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy',
-                          'compaction', 'checkpoint-compaction', 'upgrade')
+                          'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(' + '|'.join(sorted(
@@ -335,7 +335,7 @@ def main():
     if args.persistent_errors and (args.syscall_set != 'sync' or args.injected_error != 'EIO'):
         parser.error('persistent errors are supported only for synchronization EIO')
     if args.publication_outcomes and args.operation and args.operation not in PUBLICATION_OPERATIONS:
-        parser.error('publication outcomes support backup, restore, checkpoint, compaction and upgrade copies only')
+        parser.error('unsupported publication-outcome operation')
     binary = str(Path(args.binary).resolve())
     directory = str(Path(args.directory).resolve())
     syscalls = SYSCALL_SETS[args.syscall_set]
