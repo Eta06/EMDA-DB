@@ -171,25 +171,9 @@ fn automatic_configuration_races_preserve_atomic_writes_and_recovery() {
     use std::sync::{Arc, Barrier, mpsc};
     use std::time::Duration;
 
-    fn default_fixture() -> (tempfile::TempDir, std::path::PathBuf, CheckpointStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("store");
-        let checkpoint = dir.path().join("checkpoint");
-        let initial = Store::open(&path).unwrap();
-        initial.put(b"base", b"acknowledged").unwrap();
-        let digest = initial.checkpoint_to(&checkpoint).unwrap();
-        drop(initial);
-        let store = retry_lock(|| {
-            CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 1_048_576, 256, 65_536)
-        })
-        .unwrap();
-        store.rollover_managed(dir.path().join("selected")).unwrap();
-        (dir, path, store)
-    }
-
     for use_default_format in [false, true] {
         let (_dir, path, store) = if use_default_format {
-            default_fixture()
+            managed_default_fixture(1_048_576, 256, 65_536)
         } else {
             managed_fixture(1_048_576, 256, 65_536)
         };
@@ -306,6 +290,130 @@ fn automatic_configuration_races_preserve_atomic_writes_and_recovery() {
         let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
         assert_eq!(reopened.automatic_checkpoints_enabled().unwrap(), enabled);
         assert_eq!(reopened.scan(None, None, 256).unwrap(), before_reopen);
+    }
+}
+
+#[test]
+fn configuration_races_with_required_rollovers_preserve_acknowledged_batches() {
+    use crate::MutationFailure;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Barrier};
+
+    for use_default_format in [false, true] {
+        let (_dir, path, store) = if use_default_format {
+            managed_default_fixture(4096, 2, 64)
+        } else {
+            managed_fixture(4096, 2, 64)
+        };
+        store.enable_automatic_checkpoints_detailed().unwrap();
+        let selection_before = fs::read(path.join("checkpoint.selection")).unwrap();
+        let store = Arc::new(store);
+        let barrier = Arc::new(Barrier::new(5));
+        std::thread::scope(|scope| {
+            for worker in 0..3 {
+                let store = Arc::clone(&store);
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    for sequence in 0..4 {
+                        let first = format!("r{worker}-{sequence}-a");
+                        let second = format!("r{worker}-{sequence}-b");
+                        let operations = [
+                            BatchOperation::Put {
+                                key: first.as_bytes(),
+                                value: b"pair",
+                            },
+                            BatchOperation::Put {
+                                key: second.as_bytes(),
+                                value: b"pair",
+                            },
+                        ];
+                        let mut rejections = 0;
+                        loop {
+                            match store.write_batch_detailed(&operations) {
+                                Ok(()) => break,
+                                Err(MutationFailure::Rejected(error))
+                                    if error.to_string().contains(
+                                        "checkpoint suffix key limit would be exceeded",
+                                    ) =>
+                                {
+                                    rejections += 1;
+                                    assert!(rejections < 256, "configuration did not settle");
+                                    store.enable_automatic_checkpoints_detailed().unwrap();
+                                }
+                                other => panic!("unexpected batch outcome: {other:?}"),
+                            }
+                            std::thread::yield_now();
+                        }
+                    }
+                });
+            }
+            let toggle_store = Arc::clone(&store);
+            let toggle_barrier = Arc::clone(&barrier);
+            scope.spawn(move || {
+                toggle_barrier.wait();
+                for sequence in 0..16 {
+                    if sequence % 2 == 0 {
+                        toggle_store
+                            .disable_automatic_checkpoints_detailed()
+                            .unwrap();
+                    } else {
+                        toggle_store
+                            .enable_automatic_checkpoints_detailed()
+                            .unwrap();
+                    }
+                    std::thread::yield_now();
+                }
+            });
+            let scan_store = Arc::clone(&store);
+            let scan_barrier = Arc::clone(&barrier);
+            scope.spawn(move || {
+                scan_barrier.wait();
+                for _ in 0..24 {
+                    let rows: BTreeMap<_, _> = scan_store
+                        .scan(None, None, 128)
+                        .unwrap()
+                        .into_iter()
+                        .collect();
+                    for worker in 0..3 {
+                        for sequence in 0..4 {
+                            let first = format!("r{worker}-{sequence}-a");
+                            let second = format!("r{worker}-{sequence}-b");
+                            assert_eq!(rows.get(first.as_bytes()), rows.get(second.as_bytes()));
+                            if let Some(value) = rows.get(first.as_bytes()) {
+                                assert_eq!(value, b"pair");
+                            }
+                        }
+                    }
+                    std::thread::yield_now();
+                }
+            });
+        });
+        let mut expected = BTreeMap::from([(b"base".to_vec(), b"acknowledged".to_vec())]);
+        for worker in 0..3 {
+            for sequence in 0..4 {
+                for suffix in ['a', 'b'] {
+                    expected.insert(
+                        format!("r{worker}-{sequence}-{suffix}").into_bytes(),
+                        b"pair".to_vec(),
+                    );
+                }
+            }
+        }
+        let rows = store.scan(None, None, 128).unwrap();
+        assert_eq!(rows, expected.into_iter().collect::<Vec<_>>());
+        assert_ne!(
+            fs::read(path.join("checkpoint.selection")).unwrap(),
+            selection_before
+        );
+        let enabled = store.automatic_checkpoints_enabled().unwrap();
+        drop(store);
+        let reopened = retry_lock(|| {
+            CheckpointStore::open_managed_with_resource_limits(&path, 4096, 2, 64, None)
+        })
+        .unwrap();
+        assert_eq!(reopened.automatic_checkpoints_enabled().unwrap(), enabled);
+        assert_eq!(reopened.scan(None, None, 128).unwrap(), rows);
     }
 }
 

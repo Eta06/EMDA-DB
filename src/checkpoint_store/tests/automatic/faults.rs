@@ -201,29 +201,11 @@ fn automatic_enable_publication_errors_leave_recoverable_configuration() {
 fn detailed_automatic_configuration_classifies_publication_boundaries() {
     use crate::PublicationFailure;
 
-    fn default_format_fixture() -> (tempfile::TempDir, std::path::PathBuf, CheckpointStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("store");
-        let checkpoint = dir.path().join("checkpoint");
-        let initial = Store::open(&path).unwrap();
-        initial.put(b"base", b"acknowledged").unwrap();
-        let digest = initial.checkpoint_to(&checkpoint).unwrap();
-        drop(initial);
-        let store = retry_lock(|| {
-            CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 1024, 1, 64)
-        })
-        .unwrap();
-        store
-            .rollover_managed(dir.path().join("initial-managed"))
-            .unwrap();
-        (dir, path, store)
-    }
-
     for use_default_format in [false, true] {
         for operation in ["initial-enable", "re-enable", "disable"] {
             for after_publication in [false, true] {
                 let (_dir, path, store) = if use_default_format {
-                    default_format_fixture()
+                    managed_default_fixture(1024, 1, 64)
                 } else {
                     managed_fixture(1024, 1, 64)
                 };
