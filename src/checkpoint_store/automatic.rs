@@ -74,19 +74,25 @@ pub(super) fn open_existing(store: &Path) -> io::Result<Option<bool>> {
     Ok(Some(enabled))
 }
 
-fn initialize(store: &Path) -> io::Result<()> {
-    initialize_with_hooks(store, || Ok(()), crate::directory::sync_existing)
-}
-
+#[cfg(test)]
 pub(super) fn initialize_with_hooks(
     store: &Path,
     before_publish: impl FnOnce() -> io::Result<()>,
     sync_store_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
+    initialize_with_hooks_tracked(store, before_publish, sync_store_parent, None)
+}
+
+fn initialize_with_hooks_tracked(
+    store: &Path,
+    before_publish: impl FnOnce() -> io::Result<()>,
+    sync_store_parent: impl FnOnce(&Path) -> io::Result<()>,
+    tracker: Option<&crate::publication_outcome::Tracker>,
+) -> io::Result<()> {
     match open_existing(store)? {
         Some(true) => return Ok(()),
         Some(false) => {
-            return publish_configuration(store, true, || Ok(()), crate::directory::sync_existing);
+            return publish_configuration(store, true, before_publish, sync_store_parent, tracker);
         }
         None => {}
     }
@@ -97,6 +103,9 @@ pub(super) fn initialize_with_hooks(
     let mut stage = crate::staging::Stage::directory(store)?;
     write_marker(stage.path(), ROOT_ENABLED)?;
     before_publish()?;
+    if let Some(tracker) = tracker {
+        tracker.begin_publication();
+    }
     stage.publish(&destination)?;
     sync_store_parent(store).map_err(|error| {
         io::Error::new(
@@ -116,6 +125,7 @@ pub(super) fn publish_configuration(
     enabled: bool,
     before_rename: impl FnOnce() -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    tracker: Option<&crate::publication_outcome::Tracker>,
 ) -> io::Result<()> {
     let root = root(store);
     crate::cleanup_abandoned_staging(&root)?;
@@ -124,6 +134,9 @@ pub(super) fn publish_configuration(
     file.sync_all()?;
     drop(file);
     before_rename()?;
+    if let Some(tracker) = tracker {
+        tracker.begin_publication();
+    }
     stage.replace_file(&root.join(OWNER))?;
     sync_parent(&root)?;
     stage.publication_synchronized();
@@ -142,6 +155,31 @@ impl CheckpointStore {
     /// mutation is submitted. A selection-publication error poisons the store
     /// until it is reopened. This does not bound total memory or disk usage.
     pub fn enable_automatic_checkpoints(&self) -> io::Result<()> {
+        self.enable_automatic_checkpoints_tracked(None, || Ok(()), crate::directory::sync_existing)
+    }
+
+    /// Like [`Self::enable_automatic_checkpoints`], with a conservative
+    /// classification of this call's configuration-publication attempt.
+    /// `NotPublished` does not certify store health or cleanup; existing
+    /// configuration may still be present. After `OutcomeUnknown`, reopen and
+    /// inspect the configuration before retrying. Errors can disable the
+    /// handle even before publication begins.
+    pub fn enable_automatic_checkpoints_detailed(&self) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.enable_automatic_checkpoints_tracked(
+                Some(tracker),
+                || Ok(()),
+                crate::directory::sync_existing,
+            )
+        })
+    }
+
+    pub(super) fn enable_automatic_checkpoints_tracked(
+        &self,
+        tracker: Option<&crate::publication_outcome::Tracker>,
+        before_publish: impl FnOnce() -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut state = self.write()?;
         if state.selection.is_none() {
             return Err(io::Error::new(
@@ -158,7 +196,9 @@ impl CheckpointStore {
                 ));
             }
         } else {
-            if let Err(error) = initialize(&self.path) {
+            if let Err(error) =
+                initialize_with_hooks_tracked(&self.path, before_publish, sync_parent, tracker)
+            {
                 state.failed = true;
                 return Err(io::Error::new(
                     error.kind(),
@@ -176,11 +216,36 @@ impl CheckpointStore {
     /// slots are retained because the current selection or snapshots may
     /// still reference them. Re-enabling resumes safe slot reuse.
     pub fn disable_automatic_checkpoints(&self) -> io::Result<()> {
-        self.disable_automatic_checkpoints_with_hooks(|| Ok(()), crate::directory::sync_existing)
+        self.disable_automatic_checkpoints_tracked(None, || Ok(()), crate::directory::sync_existing)
     }
 
+    /// Like [`Self::disable_automatic_checkpoints`], with a conservative
+    /// classification of this call's configuration-publication attempt.
+    /// `NotPublished` does not certify store health or cleanup. After
+    /// `OutcomeUnknown`, reopen and inspect the configuration before retrying.
+    /// Errors can disable the handle even before publication begins.
+    pub fn disable_automatic_checkpoints_detailed(&self) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.disable_automatic_checkpoints_tracked(
+                Some(tracker),
+                || Ok(()),
+                crate::directory::sync_existing,
+            )
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn disable_automatic_checkpoints_with_hooks(
         &self,
+        before_rename: impl FnOnce() -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.disable_automatic_checkpoints_tracked(None, before_rename, sync_parent)
+    }
+
+    pub(super) fn disable_automatic_checkpoints_tracked(
+        &self,
+        tracker: Option<&crate::publication_outcome::Tracker>,
         before_rename: impl FnOnce() -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<()> {
@@ -193,7 +258,8 @@ impl CheckpointStore {
                     "automatic checkpoint configuration is missing, invalid or changed",
                 ));
             }
-            if let Err(error) = publish_configuration(&self.path, false, before_rename, sync_parent)
+            if let Err(error) =
+                publish_configuration(&self.path, false, before_rename, sync_parent, tracker)
             {
                 state.failed = true;
                 return Err(io::Error::new(

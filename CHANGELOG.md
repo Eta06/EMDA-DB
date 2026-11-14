@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in automatic-checkpoint enable/disable publication outcomes. The
+  result classifies this call's configuration attempt without establishing
+  store health; a publication-uncertain failure requires reopening.
+
 - Add opt-in publication and exchange failure classifications for guarded
   online compaction. An exchange-uncertain result disables the online handle.
 

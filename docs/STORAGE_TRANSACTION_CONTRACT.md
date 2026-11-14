@@ -96,6 +96,15 @@ from the previous trusted checkpoint or full log if none exists. Pre-existing
 files and staging artifacts can exist in any case, no error returns the new
 digest, and the classifications do not establish store health.
 
+`enable_automatic_checkpoints_detailed` and
+`disable_automatic_checkpoints_detailed` classify whether this call began
+publishing the persistent automatic-checkpoint configuration. An existing
+configuration may be present and staging artifacts may remain in either case.
+`NotPublished` does not prove the handle is healthy: validation and other
+pre-publication failures can disable it. After `OutcomeUnknown`, coordinate
+callers, drop the disabled handle, reopen and inspect the configuration before
+retrying. The classification does not resolve an earlier uncertain operation.
+
 The consuming ordinary and checkpoint-backed `compact_and_replace_detailed`
 methods distinguish failures before candidate publication, during candidate
 preparation and after exchange may have begun. Candidate uncertainty is

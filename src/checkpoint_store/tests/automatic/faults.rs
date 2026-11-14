@@ -198,6 +198,141 @@ fn automatic_enable_publication_errors_leave_recoverable_configuration() {
 }
 
 #[test]
+fn detailed_automatic_configuration_classifies_publication_boundaries() {
+    use crate::PublicationFailure;
+
+    fn default_format_fixture() -> (tempfile::TempDir, std::path::PathBuf, CheckpointStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let checkpoint = dir.path().join("checkpoint");
+        let initial = Store::open(&path).unwrap();
+        initial.put(b"base", b"acknowledged").unwrap();
+        let digest = initial.checkpoint_to(&checkpoint).unwrap();
+        drop(initial);
+        let store = retry_lock(|| {
+            CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 1024, 1, 64)
+        })
+        .unwrap();
+        store
+            .rollover_managed(dir.path().join("initial-managed"))
+            .unwrap();
+        (dir, path, store)
+    }
+
+    for use_default_format in [false, true] {
+        for operation in ["initial-enable", "re-enable", "disable"] {
+            for after_publication in [false, true] {
+                let (_dir, path, store) = if use_default_format {
+                    default_format_fixture()
+                } else {
+                    managed_fixture(1024, 1, 64)
+                };
+                if operation != "initial-enable" {
+                    store.enable_automatic_checkpoints_detailed().unwrap();
+                }
+                if operation == "re-enable" {
+                    store.disable_automatic_checkpoints_detailed().unwrap();
+                }
+                store.put(b"ack", b"preserved").unwrap();
+                let log_before = fs::read(path.join("records.log")).unwrap();
+                let configuration = crate::checkpoint_store::automatic::root(&path).join("owner");
+                let marker_before = fs::read(&configuration).ok();
+                let result = crate::publication_outcome::track(|tracker| {
+                    let before = || {
+                        if after_publication {
+                            Ok(())
+                        } else {
+                            Err(io::Error::other("injected before publication"))
+                        }
+                    };
+                    let sync = |parent: &std::path::Path| {
+                        if after_publication {
+                            Err(io::Error::other("injected parent sync"))
+                        } else {
+                            crate::directory::sync_existing(parent)
+                        }
+                    };
+                    if operation == "disable" {
+                        store.disable_automatic_checkpoints_tracked(Some(tracker), before, sync)
+                    } else {
+                        store.enable_automatic_checkpoints_tracked(Some(tracker), before, sync)
+                    }
+                });
+                if after_publication {
+                    assert!(matches!(result, Err(PublicationFailure::OutcomeUnknown(_))));
+                } else {
+                    assert!(matches!(result, Err(PublicationFailure::NotPublished(_))));
+                    assert_eq!(fs::read(&configuration).ok(), marker_before);
+                }
+                assert!(store.get(b"ack").is_err());
+                assert!(store.put(b"unexpected", b"value").is_err());
+                assert_eq!(fs::read(path.join("records.log")).unwrap(), log_before);
+                drop(store);
+
+                let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+                let enabled_before = operation == "disable";
+                let enabled_after = operation != "disable";
+                assert_eq!(
+                    reopened.automatic_checkpoints_enabled().unwrap(),
+                    if after_publication {
+                        enabled_after
+                    } else {
+                        enabled_before
+                    }
+                );
+                assert_eq!(
+                    reopened.get(b"ack").unwrap().as_deref(),
+                    Some(&b"preserved"[..])
+                );
+                assert_eq!(reopened.get(b"unexpected").unwrap(), None);
+            }
+        }
+    }
+}
+
+#[test]
+fn detailed_automatic_configuration_reports_preconditions_and_idempotence() {
+    use crate::PublicationFailure;
+
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert!(matches!(
+        store.enable_automatic_checkpoints_detailed(),
+        Err(PublicationFailure::NotPublished(_))
+    ));
+    assert!(!crate::checkpoint_store::automatic::root(&path).exists());
+    assert_eq!(
+        store.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    store.disable_automatic_checkpoints_detailed().unwrap();
+    drop(store);
+
+    let (_dir, path, store) = managed_fixture(1024, 1, 64);
+    store.enable_automatic_checkpoints_detailed().unwrap();
+    store.enable_automatic_checkpoints_detailed().unwrap();
+    store.disable_automatic_checkpoints_detailed().unwrap();
+    store.disable_automatic_checkpoints_detailed().unwrap();
+    store.enable_automatic_checkpoints_detailed().unwrap();
+    fs::write(
+        crate::checkpoint_store::automatic::root(&path).join("owner"),
+        b"corrupt",
+    )
+    .unwrap();
+    assert!(matches!(
+        store.enable_automatic_checkpoints_detailed(),
+        Err(PublicationFailure::NotPublished(_))
+    ));
+    assert!(store.get(b"base").is_err());
+    drop(store);
+    assert!(retry_lock(|| CheckpointStore::open_managed(&path)).is_err());
+    assert_eq!(
+        fs::read(crate::checkpoint_store::automatic::root(&path).join("owner")).unwrap(),
+        b"corrupt"
+    );
+}
+
+#[test]
 fn automatic_rollover_refuses_symlink_slots_without_touching_target() {
     use std::os::unix::fs::symlink;
     let (dir, path, store) = managed_fixture(1024, 1, 64);
