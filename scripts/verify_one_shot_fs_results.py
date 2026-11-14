@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from sync_eio_campaign import RECOVERY_ORDERS, SYSCALL_SETS
+from sync_eio_campaign import LEGACY_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
 
 ORDERS = {'ordinary-first': ['ordinary', 'checkpoint'],
           'checkpoint-first': ['checkpoint', 'ordinary']}
@@ -25,10 +25,34 @@ def check_probe(probe, operation, order, syscall=None, error_name=None, publicat
     verified = probe['verification']
     require(verified['status'] == 'verified' and verified['operation'] == operation
             and verified['recovery_order'] == ORDERS[order], 'missing recovery verification')
+    if operation not in WRITES:
+        before = probe['before']
+        digest_fields = ('log_sha256', 'witness_sha256', 'backup_sha256',
+                         'checkpoint_sha256', 'checkpoint_digest_sha256')
+        require(all(isinstance(before[name], str) and re.fullmatch(r'[0-9a-f]{64}', before[name])
+                    for name in digest_fields)
+                and (before['metadata_sha256'] is None or
+                     isinstance(before['metadata_sha256'], str) and
+                     re.fullmatch(r'[0-9a-f]{64}', before['metadata_sha256']))
+                and all(type(before[name]) is int and before[name] >= 0
+                        for name in ('log_bytes', 'backup_bytes'))
+                and probe['after_attempt'] == before and probe['after_verification'] == before,
+                'copy changed source, checkpoint, or backup evidence')
     if publication:
         from sync_eio_campaign import check_publication_outcome
         require('classification' in probe['outcome'], 'missing publication classification')
         check_publication_outcome(probe['outcome'], verified)
+    if operation in LEGACY_OPERATIONS:
+        states = probe['legacy_source']
+        legacy = states['before']
+        length = legacy['bytes']
+        require(type(length) is int and (length == 0 if operation == 'upgrade-empty-legacy' else length > 0),
+                'invalid legacy source length')
+        before = legacy['log_sha256']
+        require(isinstance(before, str) and re.fullmatch(r'[0-9a-f]{64}', before)
+                and legacy['witness_sha256'] is None and legacy['metadata_sha256'] is None
+                and states['after_attempt'] == legacy and states['after_verification'] == legacy,
+                'legacy source log or witness changed or digest missing')
     traces = probe['injected_traces']
     require(len(traces) == int(syscall is not None), 'wrong number of recorded injections')
     if syscall is not None:
@@ -51,7 +75,7 @@ def verify(result):
     publication = result.get('publication_outcomes', False)
     require(type(publication) is bool, 'invalid publication-outcome mode')
     if publication:
-        require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover') for operation in operations),
+        require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover', *LEGACY_OPERATIONS) for operation in operations),
                 'invalid publication operation')
     require(formats and operations and len(formats) == len(set(formats))
             and len(operations) == len(set(operations)), 'empty or duplicate campaign format or operation')

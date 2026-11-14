@@ -8,8 +8,12 @@ from verify_one_shot_fs_results import verify
 
 
 def probe(order, injected):
+    state = {name + '_sha256': 'a' * 64 for name in
+             ('log', 'witness', 'backup', 'checkpoint', 'checkpoint_digest')}
+    state.update(metadata_sha256=None, log_bytes=12, backup_bytes=20)
     return {'outcome': {'operation': 'write', 'status': 'success'},
             'verification': {'operation': 'write', 'status': 'verified', 'recovery_order': order},
+            'before': state.copy(), 'after_attempt': state.copy(), 'after_verification': state.copy(),
             'injected_traces': (['1 fsync(3</work>) = -1 EINTR (Interrupted system call) (INJECTED)']
                                 if injected else [])}
 
@@ -100,6 +104,33 @@ class OneShotCoverageTests(unittest.TestCase):
         del broken['cases'][0]['injections'][0]['outcome']['classification']
         with self.assertRaisesRegex(ValueError, 'missing publication classification'):
             verify(broken)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][0]['after_attempt']['backup_sha256'] = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'copy changed source'):
+            verify(broken)
+
+    def test_legacy_reports_require_unchanged_source_digest(self):
+        for operation, size in [('upgrade-legacy', 32), ('upgrade-empty-legacy', 0)]:
+            report = fixture()
+            report['publication_outcomes'] = True
+            report['operations'] = [operation]
+            case = report['cases'][0]
+            case['operation'] = operation
+            for value in [case['control'], *case['injections']]:
+                value['outcome'].update(operation=operation, classification=None)
+                value['verification'].update(operation=operation, target_visible=True)
+                state = {'bytes': size, 'log_sha256': 'a' * 64,
+                         'witness_sha256': None, 'metadata_sha256': None}
+                value['legacy_source'] = {'before': state.copy(), 'after_attempt': state.copy(),
+                                          'after_verification': state.copy()}
+            self.assertEqual(verify(report)['injections'], 2)
+            report['cases'][0]['injections'][0]['legacy_source']['after_attempt']['log_sha256'] = 'b' * 64
+            with self.assertRaisesRegex(ValueError, 'legacy source log or witness changed'):
+                verify(report)
+            report['cases'][0]['injections'][0]['legacy_source']['after_attempt'] = state.copy()
+            report['cases'][0]['injections'][0]['legacy_source']['after_verification']['metadata_sha256'] = 'c' * 64
+            with self.assertRaisesRegex(ValueError, 'legacy source log or witness changed'):
+                verify(report)
 
 
 if __name__ == '__main__':

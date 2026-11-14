@@ -34,6 +34,7 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-write', 'checkpoint-batch', 'checkpoint-backup', 'checkpoint-compaction',
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
+LEGACY_OPERATIONS = ('upgrade-legacy', 'upgrade-empty-legacy')
 PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy',
                           'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover')
 FORMATS = ('v2', 'v3')
@@ -64,6 +65,31 @@ def snapshot(root, format_name):
 def describe(state):
     return {name + '_sha256': digest(value) if value is not None else None for name, value in state.items()} | {
         'log_bytes': len(state['log']), 'backup_bytes': len(state['backup'])}
+
+
+def legacy_snapshot(root):
+    source = root / 'legacy'
+    log_path = source / 'records.log'
+    witness_path = source / 'commit.state'
+    if os.path.lexists(witness_path):
+        if not stat.S_ISREG(witness_path.lstat().st_mode):
+            raise ValueError('legacy witness is not a regular file')
+        witness = witness_path.read_bytes()
+    else:
+        witness = None
+    try:
+        metadata = os.getxattr(log_path, 'user.db.commit.v3')
+    except OSError as error:
+        if error.errno not in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+        metadata = None
+    return {'log': log_path.read_bytes(), 'witness': witness, 'metadata': metadata}
+
+
+def describe_legacy(state):
+    return {'bytes': len(state['log']), **{
+        name + '_sha256': digest(value) if value is not None else None
+        for name, value in state.items()}}
 
 
 def initialization_snapshot(root):
@@ -273,11 +299,19 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         setup = run_probe(binary, 'setup', root, format_name)
         if setup != {'status': 'ready', 'format': format_name}:
             raise ValueError('unexpected fixture setup')
+        legacy_before = None
+        if operation in LEGACY_OPERATIONS:
+            if run_probe(binary, 'setup-legacy', root, operation) != {'status': 'ready', 'operation': operation}:
+                raise ValueError('unexpected legacy fixture setup')
+            legacy_before = legacy_snapshot(root)
         before = snapshot(root, format_name)
         traced = tracer(binary, root, operation, syscall, ordinal, persistent,
                         syscalls, fixture_only)
         after = snapshot(root, format_name)
         check_source(before, after, format_name, operation)
+        legacy_after = legacy_snapshot(root) if legacy_before is not None else None
+        if legacy_before != legacy_after:
+            raise ValueError('legacy source log or witness changed during attempted upgrade')
         stages_before = stage_inventory(root)
         markers_before = stage_markers(root, stages_before)
         initial_target = initialization_snapshot(root) if operation == 'initialize' else None
@@ -290,6 +324,9 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
             check_publication_outcome(traced['outcome'], verification)
         final = snapshot(root, format_name)
         check_source(before, final, format_name, operation)
+        legacy_final = legacy_snapshot(root) if legacy_before is not None else None
+        if legacy_before != legacy_final:
+            raise ValueError('legacy source log or witness changed during verification')
         final_target = initialization_snapshot(root) if operation == 'initialize' else None
         if operation == 'initialize':
             check_initialization(initial_target, final_target)
@@ -305,7 +342,11 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
                 'stages_before_cleanup': stages_before, 'stages_after_cleanup': stages_after,
                 'preserved_unrecognized_markers': {name: digest(markers_before[name]) for name in stages_after},
                 'initialization_before_verification': describe_initialization(initial_target),
-                'initialization_after_verification': describe_initialization(final_target)}
+                'initialization_after_verification': describe_initialization(final_target),
+                'legacy_source': ({'before': describe_legacy(legacy_before),
+                                   'after_attempt': describe_legacy(legacy_after),
+                                   'after_verification': describe_legacy(legacy_final)}
+                                  if legacy_before is not None else None)}
 
 
 def main():
@@ -323,7 +364,7 @@ def main():
                         default='EIO', help='returned errno to inject; EIO is the default')
     parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync',
                         help='sync (default), data writes/metadata, reads, opens, or namespace operations')
-    parser.add_argument('--operation', choices=(*OPERATIONS, 'checkpoint-copy'), help='optional single-operation check')
+    parser.add_argument('--operation', choices=(*OPERATIONS, 'checkpoint-copy', *LEGACY_OPERATIONS), help='optional single-operation check')
     parser.add_argument('--publication-outcomes', action='store_true',
                         help='exercise detailed copy-publication classifications')
     parser.add_argument('--format', choices=FORMATS, help='optional single-format check')
@@ -334,7 +375,7 @@ def main():
         parser.error('existing fixture directory and binary, new output, and valid ordinal limit required')
     if args.persistent_errors and (args.syscall_set != 'sync' or args.injected_error != 'EIO'):
         parser.error('persistent errors are supported only for synchronization EIO')
-    if args.publication_outcomes and args.operation and args.operation not in PUBLICATION_OPERATIONS:
+    if args.publication_outcomes and args.operation and args.operation not in (*PUBLICATION_OPERATIONS, *LEGACY_OPERATIONS):
         parser.error('unsupported publication-outcome operation')
     binary = str(Path(args.binary).resolve())
     directory = str(Path(args.directory).resolve())

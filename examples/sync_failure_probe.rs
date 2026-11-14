@@ -58,6 +58,19 @@ fn setup(root: &Path, format: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn setup_legacy(root: &Path, operation: &str) -> ProbeResult<()> {
+    let bytes: &[u8] = match operation {
+        "upgrade-legacy" => include_bytes!("../tests/fixtures/db01-legacy-record.bin"),
+        "upgrade-empty-legacy" => &[],
+        _ => return Err("unknown legacy operation".into()),
+    };
+    let legacy = root.join("legacy");
+    std::fs::create_dir(&legacy)?;
+    std::fs::write(legacy.join("records.log"), bytes)?;
+    println!("{}", json!({"status":"ready", "operation":operation}));
+    Ok(())
+}
+
 fn action(root: &Path, operation: &str) -> io::Result<()> {
     let source = root.join("source");
     let target = root.join("result");
@@ -67,6 +80,8 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
         "backup" => Store::open(source)?.backup(target),
         "restore" => Store::restore(root.join("reference-backup"), target),
         "upgrade" => Store::open(source)?.upgrade_format(target),
+        "upgrade-legacy" => Store::open(root.join("legacy"))?.upgrade_legacy(target),
+        "upgrade-empty-legacy" => Store::upgrade_empty_legacy(root.join("legacy"), target),
         "checkpoint" => Store::open(source)?.checkpoint_to(target).map(|_| ()),
         "checkpoint-copy" => checkpoint_store(root)?.checkpoint_to(target).map(|_| ()),
         "compaction" => Store::open(source)?.compact_to(target),
@@ -143,6 +158,10 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
         "upgrade" => Store::open(source)
             .map_err(PublicationFailure::NotPublished)
             .and_then(|store| store.upgrade_format_detailed(target)),
+        "upgrade-legacy" => Store::open(root.join("legacy"))
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.upgrade_legacy_detailed(target)),
+        "upgrade-empty-legacy" => Store::upgrade_empty_legacy_detailed(root.join("legacy"), target),
         "checkpoint-rollover" => checkpoint_store(root)
             .map_err(PublicationFailure::NotPublished)
             .and_then(|store| store.rollover_to_detailed(target).map(|_| ())),
@@ -307,6 +326,16 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
     }
     let target = root.join("result");
     let visible = target.exists();
+    let legacy_expected: Option<&[u8]> = match operation {
+        "upgrade-legacy" => Some(include_bytes!("../tests/fixtures/db01-legacy-record.bin")),
+        "upgrade-empty-legacy" => Some(&[]),
+        _ => None,
+    };
+    if let Some(expected) = legacy_expected {
+        if std::fs::read(root.join("legacy/records.log"))? != expected {
+            return Err("legacy source log changed".into());
+        }
+    }
     if !matches!(
         operation,
         "write" | "checkpoint-write" | "batch" | "checkpoint-batch"
@@ -337,6 +366,17 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
             let restored = root.join("verify-copy");
             Store::restore(&target, &restored)?;
             check_values(&Store::open(restored)?)?;
+        } else if legacy_expected.is_some() {
+            let copy = Store::open(&target)?;
+            let rows = copy.scan(None, None, 16)?;
+            let expected = if operation == "upgrade-legacy" {
+                vec![(b"legacy".to_vec(), b"persisted".to_vec())]
+            } else {
+                Vec::new()
+            };
+            if rows != expected {
+                return Err("published legacy upgrade has incorrect values".into());
+            }
         } else if matches!(
             operation,
             "restore" | "upgrade" | "compaction" | "checkpoint-compaction"
@@ -424,6 +464,7 @@ fn main() -> ProbeResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
+        [command, root, operation] if command == "setup-legacy" => setup_legacy(Path::new(root), operation),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation] if command == "attempt-publication" => attempt_publication(Path::new(root), operation),
         [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
@@ -474,6 +515,25 @@ mod tests {
         store.put(b"safe", b"changed").unwrap();
         drop(store);
         assert!(verify(root.path(), "write", "error", "ordinary-first").is_err());
+    }
+
+    #[test]
+    fn legacy_upgrade_verifier_rejects_changed_source_and_unexpected_rows() {
+        for operation in ["upgrade-legacy", "upgrade-empty-legacy"] {
+            let root = tempfile::tempdir().unwrap();
+            setup(root.path(), "v2").unwrap();
+            setup_legacy(root.path(), operation).unwrap();
+            action(root.path(), operation).unwrap();
+            verify(root.path(), operation, "success", "ordinary-first").unwrap();
+            let copy = Store::open(root.path().join("result")).unwrap();
+            copy.put(b"unexpected", b"value").unwrap();
+            drop(copy);
+            let error = verify(root.path(), operation, "success", "checkpoint-first").unwrap_err();
+            assert!(error.to_string().contains("incorrect values"));
+            std::fs::write(root.path().join("legacy/records.log"), b"changed").unwrap();
+            let error = verify(root.path(), operation, "success", "ordinary-first").unwrap_err();
+            assert!(error.to_string().contains("legacy source log changed"));
+        }
     }
 
     #[test]
