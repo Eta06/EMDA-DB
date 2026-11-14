@@ -231,9 +231,27 @@ fn attempt_managed_publication(root: &Path, operation: &str) -> ProbeResult<()> 
     } else {
         checkpoint_store(root)
     };
-    let outcome = store
-        .map_err(ManagedRolloverFailure::NotPublished)
-        .and_then(|store| store.rollover_managed_detailed(root.join("result")));
+    let mut handle_after_selection_failure = None;
+    let outcome = match store {
+        Ok(store) => {
+            let outcome = store.rollover_managed_detailed(root.join("result"));
+            if matches!(
+                &outcome,
+                Err(ManagedRolloverFailure::SelectionOutcomeUnknown(_))
+            ) {
+                let read_blocked = store.get(b"safe").is_err();
+                let write_blocked = store
+                    .put(b"after-selection-error", b"must-not-write")
+                    .is_err();
+                if !read_blocked || !write_blocked {
+                    return Err("selection failure did not block later handle access".into());
+                }
+                handle_after_selection_failure = Some("blocked");
+            }
+            outcome
+        }
+        Err(error) => Err(ManagedRolloverFailure::NotPublished(error)),
+    };
     match outcome {
         Ok(_) => println!(
             "{}",
@@ -253,7 +271,8 @@ fn attempt_managed_publication(root: &Path, operation: &str) -> ProbeResult<()> 
             println!(
                 "{}",
                 json!({"status":"error", "operation":operation,
-                "classification":classification, "kind":format!("{:?}",error.kind()), "message":error.to_string()})
+                "classification":classification, "kind":format!("{:?}",error.kind()), "message":error.to_string(),
+                "handle_after_selection_failure":handle_after_selection_failure})
             );
         }
     }

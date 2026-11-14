@@ -135,7 +135,7 @@ class OneShotCoverageTests(unittest.TestCase):
     def test_managed_rollover_classifies_checkpoint_and_selection_separately(self):
         report = fixture()
         operation = 'checkpoint-managed-rollover'
-        report.update(publication_outcomes=True, operations=[operation], managed_selection_binding=1)
+        report.update(publication_outcomes=True, operations=[operation], managed_selection_binding=1, managed_handle_check=1)
         case = report['cases'][0]
         case['operation'] = operation
         selected = {'bytes': 80, 'sha256': 'a' * 64, 'checkpoint': 'result',
@@ -154,6 +154,7 @@ class OneShotCoverageTests(unittest.TestCase):
         first['verification']['selection_visible'] = False
         first['managed_selection'].update(after_attempt=None, after_verification=None)
         second['outcome'].update(status='error', classification='selection_unknown')
+        second['outcome']['handle_after_selection_failure'] = 'blocked'
         self.assertEqual(verify(report)['injections'], 2)
         broken = copy.deepcopy(report)
         broken['cases'][0]['injections'][0]['verification']['selection_visible'] = True
@@ -164,6 +165,10 @@ class OneShotCoverageTests(unittest.TestCase):
         broken = copy.deepcopy(report)
         broken['cases'][0]['injections'][1]['verification']['target_visible'] = False
         with self.assertRaisesRegex(ValueError, 'without its checkpoint'):
+            verify(broken)
+        broken = copy.deepcopy(report)
+        del broken['cases'][0]['injections'][1]['outcome']['handle_after_selection_failure']
+        with self.assertRaisesRegex(ValueError, 'did not block later handle access'):
             verify(broken)
         broken = copy.deepcopy(report)
         broken['cases'][0]['injections'][1]['managed_selection']['after_verification']['sha256'] = 'b' * 64

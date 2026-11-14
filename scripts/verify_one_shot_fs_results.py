@@ -19,7 +19,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def check_probe(probe, operation, order, syscall=None, error_name=None, publication=False, managed_binding=0):
+def check_probe(probe, operation, order, syscall=None, error_name=None, publication=False, managed_binding=0, managed_handle=0):
     require(probe['outcome']['operation'] == operation
             and probe['outcome']['status'] in ('success', 'error'), 'unexpected probe outcome')
     verified = probe['verification']
@@ -44,7 +44,7 @@ def check_probe(probe, operation, order, syscall=None, error_name=None, publicat
         if operation in MANAGED_OPERATIONS:
             selection = probe['managed_selection']
             check_managed_publication_outcome(probe['outcome'], verified, selection['before'], selection['after_attempt'],
-                                              require_target=managed_binding)
+                                              require_target=managed_binding, require_handle=managed_handle)
         else:
             check_publication_outcome(probe['outcome'], verified)
     if operation in MANAGED_OPERATIONS:
@@ -113,6 +113,8 @@ def verify(result):
     require(type(publication) is bool, 'invalid publication-outcome mode')
     managed_binding = result.get('managed_selection_binding', 0)
     require(type(managed_binding) is int and managed_binding in (0, 1, 2), 'unknown managed selection binding version')
+    managed_handle = result.get('managed_handle_check', 0)
+    require(type(managed_handle) is int and managed_handle in (0, 1), 'unknown managed handle check version')
     if publication:
         require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover', *LEGACY_OPERATIONS, *MANAGED_OPERATIONS) for operation in operations),
                 'invalid publication operation')
@@ -128,7 +130,8 @@ def verify(result):
     for case in cases:
         operation = case['operation']
         control = case['control']
-        check_probe(control, operation, 'ordinary-first', publication=publication, managed_binding=managed_binding)
+        check_probe(control, operation, 'ordinary-first', publication=publication, managed_binding=managed_binding,
+                    managed_handle=managed_handle)
         require(control['outcome']['status'] == 'success', 'control did not succeed')
         expected = []
         for syscall in SYSCALL_SETS[group]:
@@ -145,7 +148,8 @@ def verify(result):
         actual = [(item['syscall'], item['ordinal'], item['order']) for item in injections]
         require(Counter(actual) == Counter(expected), 'missing or duplicate selected injection')
         for item in injections:
-            check_probe(item, operation, item['order'], item['syscall'], error_name, publication, managed_binding)
+            check_probe(item, operation, item['order'], item['syscall'], error_name, publication, managed_binding,
+                        managed_handle)
             outcomes[item['outcome']['status']] += 1
             total += 1
     return {'controls': len(cases), 'injections': total, 'outcomes': dict(outcomes), 'errno': error_name}

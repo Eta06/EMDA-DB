@@ -321,7 +321,7 @@ def check_publication_outcome(outcome, verification):
         raise ValueError('a not-published call left a visible destination')
 
 
-def check_managed_publication_outcome(outcome, verification, before, after, require_target=True):
+def check_managed_publication_outcome(outcome, verification, before, after, require_target=True, require_handle=True):
     classification = outcome.get('classification')
     target = verification.get('target_visible')
     selection = verification.get('selection_visible')
@@ -346,6 +346,8 @@ def check_managed_publication_outcome(outcome, verification, before, after, requ
     elif classification == 'selection_unknown':
         if not target:
             raise ValueError('selection publication began without its checkpoint')
+        if require_handle and outcome.get('handle_after_selection_failure') != 'blocked':
+            raise ValueError('selection failure did not block later handle access')
     else:
         raise ValueError('invalid managed publication failure classification')
 
@@ -521,6 +523,7 @@ def main():
         'operations': [args.operation] if args.operation else list(PUBLICATION_OPERATIONS if args.publication_outcomes else OPERATIONS),
         'publication_outcomes': args.publication_outcomes,
         'managed_selection_binding': 2 if args.operation in MANAGED_SUFFIX_OPERATIONS else 1,
+        'managed_handle_check': 1,
         'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'injected_error': args.injected_error,
         'filesystem': json.loads(subprocess.check_output(
