@@ -164,7 +164,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   mixes successful handoffs, rejected destinations and invalid options.
 - [x] Add opt-in handoff classifications to online reclamation while
   preserving its separate post-handoff cleanup failure. [Boundary and model
-  checks](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md) record the scope.
+  checks](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md) and a [filesystem-fault
+  campaign](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md#returned-filesystem-errors)
+  record the scope and limits.
 - [x] Classify automatic-checkpoint configuration publication for first
   enable, re-enable and disable. A pre-publication classification does not
   certify handle health. [Recovery and fault checks](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md)

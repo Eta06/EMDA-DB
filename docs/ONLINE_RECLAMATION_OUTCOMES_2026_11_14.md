@@ -34,6 +34,59 @@ Both all-target Clippy checks and formatting passed. These hook checks sample
 specific boundaries on a running OS; they do not prove physical power-loss
 safety, off-host restore or every filesystem failure ordering.
 
+## Returned filesystem errors
+
+Revision `4a48d1fe50a1aba263000f663a9d002c18f5d0e2` adds a separate
+filesystem-fault probe. The [retained bundle](../benchmarks/results/2026-11-14-online-reclamation-faults.json.gz)
+contains 18 one-shot campaigns covering V2/V3 initial stores, source-first and
+backup-first verification orders, and selected `EIO` and `EAGAIN` returns
+from synchronization, data-write, read, extended-attribute read, metadata,
+path-read, lock, open and namespace calls.
+
+| Injected error | Not published | Candidate uncertain | Exchange uncertain | Reclamation failed | Success | Total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| EIO | 804 | 40 | 32 | 160 | 154 | 1,190 |
+| EAGAIN | 804 | 40 | 32 | 160 | 154 | 1,190 |
+| **Total** | **1,608** | **80** | **64** | **320** | **308** | **2,380** |
+
+All 64 exchange-uncertain outcomes blocked both reads and writes on the live
+handle. In 56, the original log was visible at the previous path; in eight it
+remained at the source. All 320 reclamation failures left the live handle
+readable. In 160 the original was still at the previous path; in 160 that
+path was absent and staging was visible. The probe records stage contents and
+V3 log metadata, but does not assume the retired copy is complete or remove
+those artifacts. A syscall error may be ignored or handled by a fallback, so
+some operations succeeded. The probe maps initial source-handle open errors to
+`NotPublished` before invoking the API; 300 cases in that category had no
+opened handle.
+
+Every case verifies the exact acknowledged key set from the live store and
+from a local restoration of a separately saved full-log backup. Visible
+siblings are also opened for candidate- and exchange-uncertain results.
+The source, sibling, staged file bytes and V3 metadata, saved checkpoint and
+backup evidence are checked for changes during verification. The saved
+checkpoint is not assumed to apply to a newly compacted log.
+
+The probe test and example Clippy checks passed on stable Rust and Rust 1.85;
+144 Python tests passed. The GitHub EIO workflow includes a small V2 namespace
+check. These are selected synthetic returned errors on a running Linux VM with
+an overlay filesystem of unknown backing. They do not cover partial syscalls,
+all error-only paths, concurrent writes, automated cleanup of the preserved
+stages, persistence reordering, physical power loss or an independent off-host
+restore. Local restoration is not an off-host recovery drill.
+
+To recheck the retained classifications and selected-call coverage:
+
+```sh
+PYTHONPATH=scripts python3 - <<'PY'
+import gzip, json
+from verify_reclamation_eio_results import verify
+with gzip.open('benchmarks/results/2026-11-14-online-reclamation-faults.json.gz', 'rt') as source:
+    bundle = json.load(source)
+print(sum(verify(entry['report'])['injections'] for entry in bundle['reports']))
+PY
+```
+
 ## Reference model
 
 The existing online-compaction model now alternates the original and detailed
