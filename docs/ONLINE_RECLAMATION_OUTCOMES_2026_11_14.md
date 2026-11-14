@@ -26,7 +26,7 @@ formats verify the separate reclamation result and a usable recovered live
 store. A concurrent test acknowledges a source write during preparation and
 checks it survives a later not-published outcome. Public API checks cover
 invalid options, destination conflicts and successful reclamation; unsupported
-platform behavior has a portable integration test whose macOS run is pending.
+platform behavior is also covered by the [native macOS matrix](https://github.com/Eta06/EMDA-DB/actions/runs/43565157651).
 
 Stable, Rust 1.85 and optimized stable all-target suites each passed 1,004
 tests; one guarded tmpfs ENOSPC test was ignored by each ordinary suite.
@@ -86,6 +86,42 @@ with gzip.open('benchmarks/results/2026-11-14-online-reclamation-faults.json.gz'
 print(sum(verify(entry['report'])['injections'] for entry in bundle['reports']))
 PY
 ```
+
+### Cleanup after returned errors
+
+Revision `f5aea7773eb10d6127ea2fe69d6803f5afeaf778` extends the probe to run
+generic staging cleanup and the live store's scoped retired-stage cleanup
+after preserving and verifying the original evidence. It then checks the live
+key set again, restores the saved backup a second time, and verifies the source,
+named sibling and reference files are unchanged. Any staging entries left
+behind must be unchanged, and removal counters must agree with the observed
+stage inventory. The verifier still accepts the earlier reports that did not
+include this cleanup step.
+
+The [follow-up bundle](../benchmarks/results/2026-11-14-online-reclamation-cleanup-faults.json.gz)
+repeats the 2,380 selected `EIO` and `EAGAIN` cases on V2/V3. In 192 cases,
+top-level staging entries were visible before cleanup; none remained in the
+recorded fixture root afterward. Generic cleanup reported eight removed
+markers and 184 skips; scoped retired cleanup reported 184 removed markers,
+104 removed payloads and no skips. These counters include marker-only stages
+and do not imply secure erasure. The source and reference backup were checked
+afterward in every case.
+
+These are selected single returned errors; cleanup itself ran after injection
+stopped. The campaign does not cover failures during that later cleanup,
+arbitrary malformed or nested external entries, concurrent clients, physical
+power loss or off-host restoration. The [existing scoped cleanup tests](../src/store/online/tests/reclaim_tests/scoped_cleanup.rs)
+cover additional interrupted, locked and unrecognized cases.
+
+The expanded probe's two example tests and Clippy checks passed on stable and
+Rust 1.85, and 145 Python verifier tests passed. After merging the reclamation
+implementation and initial fault harness, revision
+`82ad1cd196708a343bc2607aac9f33162485bb93` passed 1,005 tests in each local
+stable, Rust 1.85 and optimized stable all-target suite. One guarded tmpfs
+ENOSPC test was ignored in each ordinary suite; the [separate hosted ENOSPC
+workflow](https://github.com/Eta06/EMDA-DB/actions/runs/43565157618) passed on
+that revision. The [merged-test record](../benchmarks/results/2026-11-14-reclaim-merged-tests.json)
+links the retained logs and records toolchain and filesystem details.
 
 ## Reference model
 

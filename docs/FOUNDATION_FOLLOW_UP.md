@@ -166,7 +166,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   preserving its separate post-handoff cleanup failure. [Boundary and model
   checks](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md) and a [filesystem-fault
   campaign](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md#returned-filesystem-errors)
-  record the scope and limits.
+  record the scope and limits. A [follow-up](ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md#cleanup-after-returned-errors)
+  checks scoped cleanup after the injected errors have stopped.
 - [x] Classify automatic-checkpoint configuration publication for first
   enable, re-enable and disable. A pre-publication classification does not
   certify handle health. [Recovery and fault checks](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md)
