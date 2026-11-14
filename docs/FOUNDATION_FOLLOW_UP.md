@@ -84,6 +84,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Check [100,000-key process-crash fixtures](LARGE_CROSS_ENGINE_CRASH_2026_11_06.md) for the prototype, SQLite, PostgreSQL and MongoDB. Two fresh runs each verified all 800,000 seeded values and every later value or deletion. Restart readiness and resource samples use different scopes; VM interference, in-flight crashes and physical power loss remain outside the check.
 - [ ] Keep write acknowledgement, unknown outcomes, corruption handling and compatibility limitations aligned with `STORAGE_TRANSACTION_CONTRACT.md` as behavior changes.
 - [x] Distinguish directly returned pre-commit transaction conflicts from other `WouldBlock` errors using `is_transaction_conflict`. Checks cover ordinary, checkpoint and document transactions, callback and admission errors, and injected `WouldBlock` synchronization failures whose writes can later recover. The marker does not classify every failure or roll back callback side effects.
+- [x] Record [read-set fuzzing and a local transaction comparison](TRANSACTION_CONFLICT_SAFETY_2026_11_14.md) after adding conflict markers. The finite model and small, noisy SQLite comparison do not establish exhaustive correctness or a general speed ranking.
 - [ ] Specify broader structured outcomes for confirmed pre-submission rejection, callback errors and uncertain commit failures across all APIs. The conflict marker alone does not classify other errors and can be lost if an error is wrapped.
 
 ## Priority 1: durable storage and core operations
