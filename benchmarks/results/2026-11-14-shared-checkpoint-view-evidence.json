@@ -1,0 +1,344 @@
+{
+  "revision": "89319dbc52092c85f986cebe7a104294b5e0873b",
+  "git_status_at_start": "clean",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "scope": "Finite local tests on an overlay filesystem, not physical power loss or off-host restore.",
+  "tests": [
+    {
+      "compiler": "stable",
+      "profile": "debug",
+      "test_binaries": 141,
+      "passed": 1011,
+      "failed": 0,
+      "ignored": 1,
+      "command": "cargo +stable test --all-targets --locked",
+      "log": {
+        "file": "2026-11-14-shared-checkpoint-view-stable.log.gz",
+        "sha256": "4efd1f1068a0697b14c7c56cdff8ae672414fc5b07a572a9f4c4ee5b12163331",
+        "uncompressed_sha256": "a15de78762576d1309f47aa2030bc38f994e5bf878b12a949fbf38b4f7322a0c"
+      }
+    },
+    {
+      "compiler": "1.85.0",
+      "profile": "debug",
+      "test_binaries": 141,
+      "passed": 1011,
+      "failed": 0,
+      "ignored": 1,
+      "command": "cargo +1.85.0 test --all-targets --locked",
+      "log": {
+        "file": "2026-11-14-shared-checkpoint-view-msrv.log.gz",
+        "sha256": "618e2abaf5ee98531eead64f21605af2008b5195171fa8dd331a9e9d5e133c3f",
+        "uncompressed_sha256": "a99054e59b8935df2e42ef45a761deaf5e665af272516f4bd0e397430fa42d0d"
+      }
+    },
+    {
+      "compiler": "stable",
+      "profile": "release",
+      "test_binaries": 141,
+      "passed": 1011,
+      "failed": 0,
+      "ignored": 1,
+      "command": "cargo +stable test --release --all-targets --locked",
+      "log": {
+        "file": "2026-11-14-shared-checkpoint-view-release.log.gz",
+        "sha256": "91ed7519539a0039920c8f1877d0506d1cd5d14b70f0e54829ca428bfa0cdb8c",
+        "uncompressed_sha256": "c936a5bcf5ba38fc1241259e8e8ac674963625e68c3d1623560dcf5be68717df"
+      }
+    }
+  ],
+  "fault_campaigns": [
+    {
+      "file": "checkpoint-view-checkpoint-rollover-EAGAIN-metadata.json",
+      "sha256": "3a0ea219e2e12a80080447e6b651e6ffde62a0b27615ad2a9d51f18add94bb5b",
+      "verified": {
+        "controls": 1,
+        "errno": "EAGAIN",
+        "injections": 128,
+        "outcomes": {
+          "error": 114,
+          "success": 14
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-rollover"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-rollover-EIO-metadata.json",
+      "sha256": "8d5d017c45cdf1d5d03523074a02d4d4b28a193d91a67b4e5883cd3e2c8a5f63",
+      "verified": {
+        "controls": 1,
+        "errno": "EIO",
+        "injections": 128,
+        "outcomes": {
+          "error": 114,
+          "success": 14
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-rollover"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-write-EAGAIN-metadata.json",
+      "sha256": "b70f24c3b2b9b1c1b32c7ac7a82bce9c507909fca24fc6ec0e7ceb40c28ad3f8",
+      "verified": {
+        "controls": 1,
+        "errno": "EAGAIN",
+        "injections": 52,
+        "outcomes": {
+          "error": 44,
+          "success": 8
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-write"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-write-EIO-metadata.json",
+      "sha256": "02de55d6b27055d3c02711955c3aaaa8c01971cff23d724af9a05dbbda3d6c75",
+      "verified": {
+        "controls": 1,
+        "errno": "EIO",
+        "injections": 52,
+        "outcomes": {
+          "error": 44,
+          "success": 8
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-write"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-rollover-data-eio.json",
+      "sha256": "a207487c34a2d02385e869ed58d90746169bb5f01625d4f2e6a9ced78f8cd53c",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 8,
+        "outcomes": {
+          "error": 8
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-rollover"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-rollover-sync-eio.json",
+      "sha256": "ae059eb80284d2af773587561cdded8f538461735bf567ae88c07e46da4cc38a",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 36,
+        "outcomes": {
+          "error": 36
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-rollover"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-rollover-xattr-read-eio.json",
+      "sha256": "ed037748d85591027cc4b62b24eb8b7d01d2da23c2a919985585e962ed5d49c5",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 20,
+        "outcomes": {
+          "error": 20
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-rollover"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-write-data-eio.json",
+      "sha256": "3a19ae5cb9203b6fc9258c8f5996e19f59c6b4f9966cd744ac9b37517b5a20b5",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 8,
+        "outcomes": {
+          "error": 8
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-write"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-write-sync-eio.json",
+      "sha256": "ff3a018e194e04b0a23f22149da2007b48a0a02d6d6352740e49b275947f5e53",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 10,
+        "outcomes": {
+          "error": 10
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-write"
+      ]
+    },
+    {
+      "file": "checkpoint-view-checkpoint-write-xattr-read-eio.json",
+      "sha256": "5e749b3fc34244c770b479356af98fb895a5e68d0802928c0ee38447cba29605",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-write"
+      ]
+    }
+  ],
+  "fuzz": [
+    {
+      "target": "checkpoint_store",
+      "runs": 13892,
+      "seconds": 91,
+      "corpus_files": 506,
+      "replay_runs": 508,
+      "log_sha256": "2fc4fbd3bbfa7a2bf5f7c79f863dd34552cb302bcb0d2a7b797da0b5a17e0e23",
+      "replay_log_sha256": "3eb28a636b3eaec428abc636bfe6389978087dee22a36a42286441c5700f457d",
+      "binary_sha256": "d1ab1879d66132aba7c4ea6ebdf9ac95b03379c0c9293ca1c734f22e2323d62d",
+      "seed": 2701,
+      "max_len": 128,
+      "command": "built AddressSanitizer target with cargo-fuzz; -max_total_time=90 -timeout=15"
+    },
+    {
+      "target": "checkpoint_exchange",
+      "runs": 8029,
+      "seconds": 91,
+      "corpus_files": 212,
+      "replay_runs": 213,
+      "log_sha256": "87d7801b382be8a6108dfd5ba3e7ae3e17582c061ef28707ad28d04e3529f8e0",
+      "replay_log_sha256": "2310bbfc6e88b5aa2bb4700e00415cd781295abae1fc3ab5a0a16afcb4f9878a",
+      "binary_sha256": "712c6fc36cc7277169a3ef890e13a0a0ea0cb5aa6783a0c3cfaca237aac3924c",
+      "seed": 2702,
+      "max_len": 64,
+      "command": "built AddressSanitizer target with cargo-fuzz; -max_total_time=90 -timeout=15"
+    },
+    {
+      "target": "automatic_checkpoint",
+      "runs": 4477,
+      "seconds": 91,
+      "corpus_files": 437,
+      "replay_runs": 439,
+      "log_sha256": "87d520c82e5677ba55e2f47ab9e3a97225cdc4e3f197f28f43f886710da50978",
+      "replay_log_sha256": "12893855d006ced904d1c385f4e5d5e7c9942f1c979db5941244e4c1bf0c240c",
+      "binary_sha256": "24939fff27f0be5592e9ae91dace5f51b3b80bb6ee255d3812a356cd860c40cc",
+      "seed": 2703,
+      "max_len": 128,
+      "command": "built AddressSanitizer target with cargo-fuzz; -max_total_time=90 -timeout=15"
+    }
+  ],
+  "ignored_test": "actual_tmpfs_enospc_preserves_source_and_recovery_evidence",
+  "python": {
+    "command": "python3 -m unittest discover -s scripts/tests",
+    "passed": 147,
+    "log": {
+      "file": "2026-11-14-shared-checkpoint-view-python.log.gz",
+      "sha256": "612dfc0084c6b6931fe3a5f29941a6f4e5166bcb5a545608ff42b6ed5158858d",
+      "uncompressed_sha256": "97471a21ddcb80c8eac6bc24c45f3a36af1d0822d0791f326562c4738e16676a"
+    }
+  },
+  "clippy": {
+    "stable": "cargo +stable clippy --locked --all-targets -- -D warnings",
+    "minimum": "cargo +1.85.0 clippy --all-targets --locked -- -D warnings",
+    "minimum_log": {
+      "file": "2026-11-14-shared-checkpoint-view-msrv-clippy.log.gz",
+      "sha256": "718c2a3c1239c8122844bfd70d6a38f4304120fb0af4b0749e4e8758c3c4e0d0",
+      "uncompressed_sha256": "42cdbceab0c121fcc9b395ce0f6f47011aeb2585010c3084fedef6772c185d6e"
+    }
+  },
+  "format": "cargo +stable fmt --all -- --check",
+  "pair": {
+    "file": "2026-11-14-shared-checkpoint-view-pair.json.gz",
+    "sha256": "c3cd28aae59ce091d48645908e3ed6bd596376aaeba19323ad3b39db243c9b5e",
+    "uncompressed_sha256": "b3aa527fc93192fb6871d47694191079304c4c5a0f84a2ce04b934a09de02ef8"
+  },
+  "pair-repeat": {
+    "file": "2026-11-14-shared-checkpoint-view-pair-repeat.json.gz",
+    "sha256": "f7be42c6efae05a271fed5c95a255854338b46651a184d0e5e9dedd40d6657d2",
+    "uncompressed_sha256": "8f4ef9de4104c2e134ca51a33be61e579525ac13ca6dddae65084986c014ff11"
+  },
+  "fault_archive": {
+    "file": "2026-11-14-shared-checkpoint-view-faults.tar.gz",
+    "sha256": "130c9103e0d40d032bec8ca85e1a737be2e735f3d8355dea2082ec7293f54125"
+  },
+  "fuzz_archive": {
+    "file": "2026-11-14-shared-checkpoint-view-fuzz.tar.gz",
+    "sha256": "5845e8f61fc3728e73b5c6e74a6d74c2bd8d00f01d0f5c0ad0a48562c55f611a"
+  },
+  "fuzz_toolchain": "nightly-2026-11-03; cargo-fuzz 0.13.2; AddressSanitizer; max_total_time=90 seconds per target",
+  "fuzz_replay": "Each retained corpus was replayed with runs set to its file count plus one.",
+  "rust_versions": {
+    "stable": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "minimum": "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+    "fuzz": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)"
+  },
+  "disposable_tmpfs_enospc": {
+    "file": "2026-11-14-shared-checkpoint-view-enospc.json",
+    "sha256": "24563acc888f7f01c42ab75278a31c46ac451b6cd6d0a3d1f8d2ee384e3c008a",
+    "passed": 1,
+    "failure": null
+  }
+}
