@@ -22,6 +22,10 @@ auxiliary fixture, checkpoint and reference backup remain unchanged.
 | Nonempty | 296 | 244 | 44 | 4 | 4 |
 | Empty | 256 | 204 | 44 | 4 | 4 |
 
+For nonempty legacy input, the probe maps an initial handle-open failure to
+`NotPublished` before calling the detailed upgrade method. The empty-legacy
+API performs its own open, so its classification includes that work.
+
 These are synthetic returned errors at calls observed on successful paths;
 they do not cover every error-only call, partial syscall, concurrent schedule
 or persistence ordering. The tests ran on a Linux VM using an overlay of

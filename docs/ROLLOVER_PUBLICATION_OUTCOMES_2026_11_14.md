@@ -36,6 +36,10 @@ error. Each visible checkpoint was checked against a separately saved fixture
 digest. Source, trusted checkpoint and reference-backup preservation were
 checked.
 
+The probe maps an initial handle-open failure to `NotPublished` before it
+calls the detailed rollover API; that category includes both open failures and
+failures returned by the rollover method.
+
 The campaigns inject returned errors into selected observed calls; they do not
 exhaust failure-only calls, partial syscalls, concurrent schedules or
 persistence orderings. The workspace used an overlay of unknown backing, and

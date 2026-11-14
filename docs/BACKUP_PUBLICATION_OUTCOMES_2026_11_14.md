@@ -31,6 +31,11 @@ checked on the running OS. An independent verifier checked the retained reports.
 | [Reads, EIO](../benchmarks/results/2026-11-14-publication-read-eio.json.gz) | 180 | 180 | 0 | 0 |
 | [Open, EIO](../benchmarks/results/2026-11-14-publication-open-eio.json.gz) | 134 | 122 | 12 | 0 |
 
+For backup attempts, the probe maps an initial source-handle open failure to
+`NotPublished` before calling the detailed backup method. The category mixes
+those open failures with failures returned by the method; restore opens its
+source inside its own API.
+
 Of 700 injected cases, none of the 532 classified `NotPublished` left its
 fresh target visible. Of 144 uncertain cases, 132 left a visible verified
 target and 12 did not. The 24 successful calls followed injected errors in

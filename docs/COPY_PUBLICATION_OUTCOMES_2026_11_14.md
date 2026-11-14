@@ -39,6 +39,10 @@ unchanged source before the attempted copy. For compacted checkpoint copies,
 the test recomputes the digest from the produced file; this checks internal
 consistency but is not independent authentication.
 
+For these copy attempts, the probe maps an initial source-handle open failure
+to `NotPublished` before calling the detailed copy method. The category mixes
+those open failures with failures returned by the method itself.
+
 An independent verifier checks every retained campaign. For example:
 
 ```sh

@@ -37,6 +37,10 @@ repeat covered 904 injections with the same outcome counts below. A report's
 `managed_selection_binding` value of `1` denotes these stronger checks;
 earlier reports lack that binding check.
 
+A further [suffix campaign](MANAGED_ROLLOVER_SUFFIX_FAILURES_2026_11_14.md)
+injects errors after an acknowledged write following the previous checkpoint;
+the old and new checkpoints have different saved digests.
+
 The campaigns injected EIO into selected observed sync, data-write, read,
 open and namespace calls, and EAGAIN into sync calls:
 
@@ -44,6 +48,10 @@ open and namespace calls, and EAGAIN into sync calls:
 | --- | ---: | ---: | ---: | ---: | ---: |
 | None | 404 | 204 | 80 | 104 | 16 |
 | Existing | 500 | 300 | 80 | 104 | 16 |
+
+The probe maps an initial handle-open failure to `NotPublished` before it
+calls the detailed rollover API. The category therefore includes failures in
+both the initial open and the rollover method.
 
 In the 160 checkpoint-uncertain cases, the selection was unchanged and 152
 targets were visible. In the 208 selection-uncertain cases, the new checkpoint

@@ -35,6 +35,10 @@ injected cases, 264 returned `NotPublished` and left the fresh target absent;
 completed successfully after an injected namespace error. Source and
 reference-backup preservation were checked.
 
+For format upgrades, the probe maps an initial handle-open failure to
+`NotPublished` before calling the detailed API; the category includes both
+open failures and failures returned by the upgrade method.
+
 These selected synthetic returned errors do not exhaust failure-only calls,
 partial syscalls, persistence ordering or every schedule. They exercise the
 format-upgrade path; a separate [legacy-upgrade campaign](LEGACY_UPGRADE_FAILURES_2026_11_14.md)
