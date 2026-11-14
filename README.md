@@ -87,6 +87,8 @@ The [filesystem EAGAIN report](docs/WOULD_BLOCK_FILESYSTEM_FAILURES_2026_11_14.m
 
 The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) measures reopen time, sampled process memory and point reads through 200,000 keys. The checkpoint-backed writer used less sampled memory but had slower sampled base-key reads than full-log recovery.
 
+The [multi-store resource measurement](docs/MULTI_STORE_RESOURCES_2026_11_14.md) records process RSS, file descriptors and warm-cache open time for up to 100 separate databases, alongside SQLite. It does not establish a project quota or scale-to-zero service.
+
 A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_2026_11_06.md) checks acknowledged workload values after fresh-process reopens through one million base keys, with observed memory, I/O and VM noise.
 
 A [SQLite restart comparison](docs/SQLITE_RESTART_RESOURCES_2026_11_06.md) adds a repeated three-way large-fixture run, including the different open and integrity-check semantics and long-tail samples.
