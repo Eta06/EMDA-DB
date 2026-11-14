@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in publication outcomes to independent checkpoint copies on both
+  writable stores. An uncertain failure does not return the trusted digest.
+
 - Release an ordinary transaction's private index snapshot after validation
   under the writer barrier, before its commit. Other snapshots remain stable;
   transaction admission stays held until completion.

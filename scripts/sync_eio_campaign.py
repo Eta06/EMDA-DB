@@ -34,7 +34,7 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-write', 'checkpoint-batch', 'checkpoint-backup', 'checkpoint-compaction',
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
-PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore')
+PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(' + '|'.join(sorted(
@@ -322,9 +322,9 @@ def main():
                         default='EIO', help='returned errno to inject; EIO is the default')
     parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync',
                         help='sync (default), data writes/metadata, reads, opens, or namespace operations')
-    parser.add_argument('--operation', choices=OPERATIONS, help='optional single-operation check')
+    parser.add_argument('--operation', choices=(*OPERATIONS, 'checkpoint-copy'), help='optional single-operation check')
     parser.add_argument('--publication-outcomes', action='store_true',
-                        help='exercise detailed backup and restore publication classifications')
+                        help='exercise detailed backup, restore and checkpoint publication classifications')
     parser.add_argument('--format', choices=FORMATS, help='optional single-format check')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output)
@@ -334,7 +334,7 @@ def main():
     if args.persistent_errors and (args.syscall_set != 'sync' or args.injected_error != 'EIO'):
         parser.error('persistent errors are supported only for synchronization EIO')
     if args.publication_outcomes and args.operation and args.operation not in PUBLICATION_OPERATIONS:
-        parser.error('publication outcomes support backup, checkpoint-backup and restore only')
+        parser.error('publication outcomes support backup, restore and checkpoint copy operations only')
     binary = str(Path(args.binary).resolve())
     directory = str(Path(args.directory).resolve())
     syscalls = SYSCALL_SETS[args.syscall_set]

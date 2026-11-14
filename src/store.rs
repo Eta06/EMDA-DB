@@ -593,10 +593,46 @@ impl Store {
         self.checkpoint_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Creates a checkpoint with structured destination-publication failures.
+    /// The returned digest must be retained separately in trusted metadata.
+    /// An uncertain result does not provide that digest; a visible file is
+    /// not an independent backup and must be reconciled before retrying.
+    pub fn checkpoint_to_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        self.checkpoint_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
+    }
+
+    fn checkpoint_to_detailed_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.checkpoint_to_using(destination, |log, index, destination| {
+                crate::checkpoint::create_with_hooks(log, index, destination, sync_parent, || {
+                    tracker.begin_publication();
+                    Ok(())
+                })
+            })
+        })
+    }
+
     pub(crate) fn checkpoint_to_with_sync(
         &self,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        self.checkpoint_to_using(destination, |log, index, destination| {
+            crate::checkpoint::create_with_sync(log, index, destination, sync_parent)
+        })
+    }
+
+    fn checkpoint_to_using(
+        &self,
+        destination: &Path,
+        create: impl FnOnce(&Log, &BTreeMap<Vec<u8>, ValueLocation>, &Path) -> io::Result<[u8; 32]>,
     ) -> io::Result<[u8; 32]> {
         let _writer = self
             .writes
@@ -606,7 +642,7 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        crate::checkpoint::create_with_sync(&self.log, &inner.index, destination, sync_parent)
+        create(&self.log, &inner.index, destination)
     }
 
     /// Restores a validated backup into a new directory; existing paths are
@@ -847,6 +883,9 @@ mod coordinator_boundary_tests;
 
 #[cfg(test)]
 mod transaction_snapshot_release_tests;
+
+#[cfg(test)]
+mod detailed_checkpoint_tests;
 
 #[cfg(test)]
 mod group_tests;

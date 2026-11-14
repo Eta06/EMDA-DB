@@ -66,8 +66,15 @@ publish. Neither variant says the destination was absent before the call,
 proves cleanup of temporary stages, establishes source health or confirms an
 independent off-host copy. A visible result after a directory-sync failure may
 not be durable. Inspect and reconcile unknown outcomes before retry. Existing
-backup/restore APIs retain their previous error types; checkpoint, compaction,
-upgrade and other maintenance publications do not yet have this classification.
+backup/restore APIs retain their previous error types.
+
+Both writable stores also provide `checkpoint_to_detailed` for an independent
+checkpoint copy. It returns the same publication classifications, and its
+successful result is a digest the caller must retain in separately trusted
+metadata. An uncertain failure returns no digest and can leave a visible file;
+reconcile it before retrying. A checkpoint is not an independent backup.
+Rollover, compaction, upgrade and other maintenance publications do not yet
+provide this classification.
 
 ## Current prototype: one store in one process
 

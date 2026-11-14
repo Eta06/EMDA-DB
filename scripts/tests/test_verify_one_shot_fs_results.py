@@ -84,6 +84,14 @@ class OneShotCoverageTests(unittest.TestCase):
             injection['outcome'].update(status='error', classification='not_published')
             injection['verification']['target_visible'] = False
         self.assertEqual(verify(report)['injections'], 2)
+        for operation in ('checkpoint', 'checkpoint-copy'):
+            checked = copy.deepcopy(report)
+            checked['operations'] = [operation]
+            checked['cases'][0]['operation'] = operation
+            for value in [checked['cases'][0]['control'], *checked['cases'][0]['injections']]:
+                value['outcome']['operation'] = operation
+                value['verification']['operation'] = operation
+            self.assertEqual(verify(checked)['injections'], 2)
         broken = copy.deepcopy(report)
         broken['cases'][0]['injections'][0]['verification']['target_visible'] = True
         with self.assertRaisesRegex(ValueError, 'not-published call left a visible destination'):

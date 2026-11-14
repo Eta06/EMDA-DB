@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn detailed_streamed_checkpoint_sync_failure_is_unknown_and_source_remains_usable() {
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let target = dir.path().join("target");
+    let result = store.checkpoint_to_detailed_with_sync(&target, |_| {
+        Err(io::Error::other("injected parent sync failure"))
+    });
+    assert!(matches!(
+        result,
+        Err(crate::PublicationFailure::OutcomeUnknown(_))
+    ));
+    assert!(target.exists());
+    assert_eq!(
+        store.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    drop(store);
+    let view = retry_lock(|| CheckpointView::open(&path, &target, &digest)).unwrap();
+    assert_eq!(
+        view.get(b"base").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}
+
+#[test]
 fn streamed_checkpoint_parent_sync_failure_reports_uncertain_publication() {
     let (dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();

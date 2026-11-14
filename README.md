@@ -168,6 +168,8 @@ For direct key-value writes, both stores also offer `put_detailed`, `delete_deta
 
 Both writable stores provide `backup_detailed`, and `Store::restore_detailed` restores a backup, with `PublicationFailure` outcomes. `NotPublished` means this call did not begin publishing its destination; a pre-existing destination or staging artifacts can still exist. `OutcomeUnknown` means publication may have happened and must be inspected before retry, including conservative cases such as an existing destination. These results do not establish source health, cleanup completion or an independent off-host backup. Panics unwind, and the existing backup and restore methods keep their previous error types.
 
+Both writable stores also provide `checkpoint_to_detailed` with the same publication classification. A successful call returns a digest that must be retained in trusted metadata separately; an uncertain failure does not return that digest. A checkpoint contains index data rather than an independent backup, and its visible presence does not establish source health or durability.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

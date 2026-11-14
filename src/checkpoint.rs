@@ -64,6 +64,7 @@ pub(crate) fn create_with_sync(
 /// Writes and verifies a checkpoint from a previously validated ordered
 /// index stream. The caller must hold the writer barrier and verify that the
 /// stream matches a trusted base plus the complete witnessed suffix first.
+#[cfg(test)]
 pub(crate) fn create_streaming_with_sync(
     log: &Log,
     count: u64,
@@ -73,6 +74,30 @@ pub(crate) fn create_streaming_with_sync(
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     limits: Option<CheckpointViewLimits>,
 ) -> io::Result<[u8; 32]> {
+    create_streaming_tracked(
+        log,
+        count,
+        peak,
+        destination,
+        entries,
+        sync_parent,
+        (limits, None),
+    )
+}
+
+pub(crate) fn create_streaming_tracked(
+    log: &Log,
+    count: u64,
+    peak: usize,
+    destination: &Path,
+    entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    options: (
+        Option<CheckpointViewLimits>,
+        Option<&crate::publication_outcome::Tracker>,
+    ),
+) -> io::Result<[u8; 32]> {
+    let (limits, tracker) = options;
     let parent = backup::parent_directory(destination)?;
     create_streaming_in_directory(
         log,
@@ -81,7 +106,12 @@ pub(crate) fn create_streaming_with_sync(
         (destination, parent, limits),
         entries,
         sync_parent,
-        || Ok(()),
+        || {
+            if let Some(tracker) = tracker {
+                tracker.begin_publication();
+            }
+            Ok(())
+        },
     )
 }
 
@@ -282,7 +312,7 @@ fn create_streaming_in_directory(
     Ok(checkpoint_digest)
 }
 
-fn create_with_hooks(
+pub(crate) fn create_with_hooks(
     log: &Log,
     index: &BTreeMap<Vec<u8>, ValueLocation>,
     destination: &Path,

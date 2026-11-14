@@ -1,9 +1,9 @@
-//! Conservative outcomes for backup and restore publication.
+//! Conservative outcomes for backup, restore and checkpoint publication.
 use std::cell::Cell;
 use std::fmt;
 use std::io;
 
-/// A failed backup or restore, classified by this call's publication attempt.
+/// A failed copy publication, classified by this call's publication attempt.
 ///
 /// A pre-existing destination may exist in either case. Temporary staging
 /// artifacts can also remain after failures; these variants do not certify

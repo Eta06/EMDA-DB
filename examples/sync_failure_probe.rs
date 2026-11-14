@@ -68,6 +68,7 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
         "restore" => Store::restore(root.join("reference-backup"), target),
         "upgrade" => Store::open(source)?.upgrade_format(target),
         "checkpoint" => Store::open(source)?.checkpoint_to(target).map(|_| ()),
+        "checkpoint-copy" => checkpoint_store(root)?.checkpoint_to(target).map(|_| ()),
         "compaction" => Store::open(source)?.compact_to(target),
         "checkpoint-write" => checkpoint_store(root)?.put(b"new", b"attempted"),
         "checkpoint-batch" => checkpoint_store(root)?.write_batch(&batch()),
@@ -127,6 +128,12 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
             .map_err(PublicationFailure::NotPublished)
             .and_then(|store| store.backup_detailed(target)),
         "restore" => Store::restore_detailed(root.join("reference-backup"), target),
+        "checkpoint" => Store::open(source)
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.checkpoint_to_detailed(target).map(|_| ())),
+        "checkpoint-copy" => checkpoint_store(root)
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.checkpoint_to_detailed(target).map(|_| ())),
         _ => return Err("unknown publication operation".into()),
     };
     match outcome {
@@ -341,7 +348,10 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
                     return Err("compacted checkpoint has incorrect values".into());
                 }
             }
-        } else if matches!(operation, "checkpoint" | "checkpoint-rollover") {
+        } else if matches!(
+            operation,
+            "checkpoint" | "checkpoint-copy" | "checkpoint-rollover"
+        ) {
             // This digest was independently saved before the attempted copy.
             let view = CheckpointView::open(root.join("source"), &target, &digest)?;
             if view.get(b"safe")?.as_deref() != Some(&b"acknowledged"[..])

@@ -121,6 +121,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   inspection, and neither result establishes an independent off-host backup.
   [Selected filesystem-fault and concurrent-writer checks](BACKUP_PUBLICATION_OUTCOMES_2026_11_14.md)
   record the outcomes and their limits.
+- [x] Add publication classifications for independent checkpoint copies on
+  both writable paths. A successful digest still needs separately trusted
+  metadata; an uncertain failure does not return it.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

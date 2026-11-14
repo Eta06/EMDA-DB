@@ -561,6 +561,28 @@ impl CheckpointStore {
         self.checkpoint_to_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Creates a streamed checkpoint with structured publication failures.
+    /// The returned digest must be retained separately in trusted metadata;
+    /// an uncertain result does not return a digest and needs reconciliation.
+    pub fn checkpoint_to_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        self.checkpoint_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
+    }
+
+    fn checkpoint_to_detailed_with_sync(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.check_selection_destination(destination)?;
+            let state = self.write()?;
+            self.create_checkpoint_tracked(&state, destination, sync_parent, false, Some(tracker))
+        })
+    }
+
     fn checkpoint_to_with_sync(
         &self,
         destination: &Path,
@@ -742,8 +764,19 @@ impl CheckpointStore {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         for_rollover: bool,
     ) -> io::Result<[u8; 32]> {
+        self.create_checkpoint_tracked(state, destination, sync_parent, for_rollover, None)
+    }
+
+    fn create_checkpoint_tracked(
+        &self,
+        state: &State,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        for_rollover: bool,
+        tracker: Option<&crate::publication_outcome::Tracker>,
+    ) -> io::Result<[u8; 32]> {
         let (count, peak) = self.verify_for_checkpoint(state)?;
-        crate::checkpoint::create_streaming_with_sync(
+        crate::checkpoint::create_streaming_tracked(
             &self.log,
             count,
             peak,
@@ -755,7 +788,7 @@ impl CheckpointStore {
                 })
             },
             sync_parent,
-            for_rollover.then_some(self.checkpoint_view_limits),
+            (for_rollover.then_some(self.checkpoint_view_limits), tracker),
         )
     }
 
