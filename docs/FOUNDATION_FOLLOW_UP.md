@@ -124,6 +124,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.
+  [Local failure and comparison evidence](DOCUMENT_MUTATION_OUTCOMES_2026_11_14.md)
+  records the checked boundaries and limitations.
 - [ ] Specify structured outcomes for other maintenance publications, and refine confirmed pre-submission
   classification inside the ordinary commit coordinator. Existing error types
   are unchanged and unknown outcomes cannot be retried solely from error kind.
