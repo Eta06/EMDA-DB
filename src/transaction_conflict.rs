@@ -25,7 +25,8 @@ pub(crate) fn conflict(message: &'static str) -> io::Error {
 /// classify an outcome. Wrapping or replacing an error can discard the marker.
 /// A conflict does not roll back independent writes or other callback effects.
 pub fn is_transaction_conflict(error: &io::Error) -> bool {
-    error.get_ref().is_some_and(|cause| cause.is::<Conflict>())
+    error.kind() == io::ErrorKind::WouldBlock
+        && error.get_ref().is_some_and(|cause| cause.is::<Conflict>())
 }
 
 #[cfg(test)]
@@ -45,5 +46,7 @@ mod tests {
         assert!(!is_transaction_conflict(&io::Error::from(
             io::ErrorKind::WouldBlock
         )));
+        let reclassified = io::Error::other(marked.into_inner().unwrap());
+        assert!(!is_transaction_conflict(&reclassified));
     }
 }

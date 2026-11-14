@@ -179,7 +179,9 @@ fn concurrent_transactions_transfer_without_losing_or_splitting_updates() {
                                 committed = true;
                                 break;
                             }
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                            Err(error) if database_engine::is_transaction_conflict(&error) => {
+                                continue;
+                            }
                             Err(error) => panic!("unexpected transaction error: {error}"),
                         }
                     }

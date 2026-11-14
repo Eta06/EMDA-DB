@@ -121,7 +121,7 @@ fn run_child(store: &impl TransactionStore) -> ! {
                                         .unwrap();
                                     break;
                                 }
-                                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                Err(error) if database_engine::is_transaction_conflict(&error) => {
                                     std::thread::yield_now();
                                 }
                                 Err(error) => panic!("transaction writer failed: {error}"),

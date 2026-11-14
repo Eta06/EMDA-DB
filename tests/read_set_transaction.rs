@@ -125,7 +125,7 @@ fn concurrent_write_skew_is_rejected_with_read_set_validation() {
     assert_eq!(
         results
             .iter()
-            .filter(|result| matches!(result, Err(error) if error.kind() == ErrorKind::WouldBlock))
+            .filter(|result| matches!(result, Err(error) if database_engine::is_transaction_conflict(error)))
             .count(),
         1
     );

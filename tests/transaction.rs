@@ -256,7 +256,7 @@ fn retried_concurrent_transactions_do_not_lose_updates() {
                             tx.put(b"counter", &(i64::from_le_bytes(current) + 1).to_le_bytes())
                         }) {
                             Ok(()) => break,
-                            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                            Err(error) if database_engine::is_transaction_conflict(&error) => {
                                 thread::yield_now()
                             }
                             Err(error) => panic!("unexpected transaction error: {error}"),
