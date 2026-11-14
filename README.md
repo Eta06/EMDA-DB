@@ -29,6 +29,7 @@ The [backup publication report](docs/BACKUP_PUBLICATION_OUTCOMES_2026_11_14.md) 
 The [document mutation report](docs/DOCUMENT_MUTATION_OUTCOMES_2026_11_14.md) records structured outcomes, index recovery checks and local SQLite comparisons.
 The [coordinator admission report](docs/COORDINATOR_ADMISSION_OUTCOMES_2026_11_14.md) records which failures are confirmed before queuing and the tested limits.
 The [transaction snapshot report](docs/TRANSACTION_SNAPSHOT_RELEASE_2026_11_14.md) records a measured copy reduction, concurrent and recovery checks, and benchmark limitations.
+The [checkpoint and compaction publication report](docs/COPY_PUBLICATION_OUTCOMES_2026_11_14.md) records classified failures and their recovery limits.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
