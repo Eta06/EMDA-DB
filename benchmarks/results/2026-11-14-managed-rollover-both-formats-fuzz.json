@@ -1,0 +1,45 @@
+{
+  "revision": "d13918046d9ce33785171e3d159c648513fba7bc",
+  "run_command": "cargo +nightly-2026-11-03 fuzz run managed_checkpoint <corpus> -- -max_total_time=90 -max_len=128 -timeout=15 -seed=1142026",
+  "rustc": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "cargo-fuzz 0.13.2",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "binary_sha256": "377938553440d51ef8f7c58dafccea80a483181866edd189dc51c42860ecd5c0",
+  "target_sha256": "828c7207d34af8a4c6b486ab9d9ddac89d11fe96ce75f7bfb81613e49bf90090",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "fuzz_lock_sha256": "2f09025e1817fb64aae0497d7fcc1c0aa7a363f9cf138f68cda2f3e440e5ef45",
+  "seed_sha256": {
+    "detailed-collision": "ba276e4263fa1915bd20ac4d73697b0de487d8d27ada2031483f5307fbe0d59e",
+    "detailed-interleaved": "64d8e683136d976b6041757ab17e6d3643c701e0cd1780cff4eaf9cd601b5d55",
+    "seed": "ddec4a165ebd1f4e8024bb17a5032271c7160b330314e310ad15f5d6f4cfa234",
+    "v2-detailed": "ece5a0d51ac7d744fadff238df7a6e29c31fdbd0231bb3f5fe7b32a8991c6ede"
+  },
+  "libfuzzer_seed": 1142026,
+  "completed_runs": 11028,
+  "elapsed_seconds_reported": 91,
+  "coverage_counters": 3417,
+  "feature_count": 14723,
+  "libfuzzer_final_corpus_count": 447,
+  "final_corpus_files": 446,
+  "forced_v2_corpus_files": 151,
+  "default_format_corpus_files": 295,
+  "configured_max_len": 128,
+  "last_reported_length_limit": 33,
+  "raw_log": "2026-11-14-managed-rollover-both-formats-fuzz.log.gz",
+  "replay_corpus": "2026-11-14-managed-rollover-both-formats-corpus.tar.gz",
+  "fixed_seed_log": "2026-11-14-managed-rollover-fixed-seeds.log.gz",
+  "replay": {
+    "loaded_corpus_files": 446,
+    "reported_runs": 447,
+    "elapsed_seconds_reported": 5,
+    "raw_log": "2026-11-14-managed-rollover-both-formats-replay.log.gz"
+  }
+}

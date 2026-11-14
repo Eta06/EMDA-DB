@@ -21,6 +21,21 @@ a short randomized run, not exhaustive model checking or a power-loss test.
 The existing scheduled GitHub fuzz workflow runs this target with its committed
 seed corpus.
 
+A second run on revision `d13918046d9ce33785171e3d159c648513fba7bc`
+adds a V2 fixture selected by the input's high bit; other inputs use the
+default format, which was V3 on this Linux workspace. It completed 11,028
+inputs in 91 seconds without a reported crash. The 446 retained corpus files
+include 151 selecting V2 and 295 selecting the default format; the largest
+retained input was 33 bytes. Fixed V2 and default-format seeds were also
+executed separately. The [metadata](../benchmarks/results/2026-11-14-managed-rollover-both-formats-fuzz.json),
+[raw log](../benchmarks/results/2026-11-14-managed-rollover-both-formats-fuzz.log.gz),
+[fixed-seed log](../benchmarks/results/2026-11-14-managed-rollover-fixed-seeds.log.gz)
+and [corpus](../benchmarks/results/2026-11-14-managed-rollover-both-formats-corpus.tar.gz)
+are retained. A [replay](../benchmarks/results/2026-11-14-managed-rollover-both-formats-replay.log.gz)
+loaded all 446 files and completed 447 reported runs without a crash. These
+are counts of retained corpus inputs by selected format, not counts of every
+input executed in the randomized run.
+
 The same revision extends the real-syscall probe to try both a read and a
 write on the original handle after a selection-uncertain failure. The
 [retained fault bundle](../benchmarks/results/2026-11-14-managed-rollover-handle-faults.json.gz)
@@ -41,13 +56,18 @@ The injected errors are selected returned errors on a running Linux VM with an
 overlay filesystem of unknown backing; they do not prove physical power-loss
 safety, independent off-host recovery or all possible schedules.
 
-To replay the retained corpus from the repository root:
+To replay the two-format corpus from a checkout containing this report and
+the target from revision `d139180`:
 
 ```sh
 corpus_dir=$(mktemp -d)
-tar -xzf benchmarks/results/2026-11-14-managed-rollover-fuzz-corpus.tar.gz -C "$corpus_dir"
-cargo +nightly-2026-11-03 fuzz run managed_checkpoint "$corpus_dir" -- -runs=353 -max_len=128 -timeout=15
+tar -xzf benchmarks/results/2026-11-14-managed-rollover-both-formats-corpus.tar.gz -C "$corpus_dir"
+cargo +nightly-2026-11-03 fuzz run managed_checkpoint "$corpus_dir" -- -runs=446 -max_len=128 -timeout=15
 ```
+
+For an exact replay of the original V3-only run, copy its retained corpus to
+a separate checkout of `fa16ba1`; later target revisions interpret the input's
+high bit as a V2 selector.
 
 To recheck the fault reports:
 
