@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Release an ordinary transaction's private index snapshot after validation
+  under the writer barrier, before its commit. Other snapshots remain stable;
+  transaction admission stays held until completion.
+
 - Classify ordinary-store group-commit admission and other failures before a
   request is queued as rejected by the detailed mutation and transaction APIs.
   Once queued, errors remain conservatively unknown even before append.

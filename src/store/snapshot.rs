@@ -185,6 +185,8 @@ impl Drop for Snapshot<'_> {
 impl Store {
     /// Reports per-open logical snapshot reservation limits and usage.
     /// Expired views may remain reserved until reaped, cancelled or dropped.
+    /// An ordinary transaction releases its private snapshot after successful
+    /// validation, even if its write is still synchronizing.
     pub fn snapshot_budget_status(&self) -> io::Result<SnapshotBudgetStatus> {
         Ok(self
             .snapshot_budget

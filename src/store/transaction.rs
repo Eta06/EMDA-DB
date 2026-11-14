@@ -549,6 +549,10 @@ impl Store {
                 .into());
             }
         }
+        // The callback is finished and validation holds the exclusive writer
+        // barrier. Its private snapshot is no longer observed, so release it
+        // before commit. Other live snapshots keep their own index roots.
+        txn.snapshot.cancel();
         if !txn.staged.is_empty() {
             // Deletions first avoid a transient quota overshoot when a
             // transaction atomically replaces one key with another.

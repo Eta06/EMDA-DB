@@ -846,6 +846,9 @@ mod detailed_document_fault_tests;
 mod coordinator_boundary_tests;
 
 #[cfg(test)]
+mod transaction_snapshot_release_tests;
+
+#[cfg(test)]
 mod group_tests;
 
 #[cfg(test)]
