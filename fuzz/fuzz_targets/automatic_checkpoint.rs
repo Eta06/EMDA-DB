@@ -1,5 +1,5 @@
 #![no_main]
-use database_engine::{BatchOperation, CheckpointStore, Store};
+use database_engine::{BatchOperation, CheckpointStore, PublicationFailure, Store};
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
 
@@ -32,12 +32,35 @@ fuzz_target!(|data: &[u8]| {
     let root = tempfile::tempdir().expect("temporary directory");
     let path = root.path().join("store");
     let initial = root.path().join("initial");
+    if data[0] & 0x80 != 0 {
+        std::fs::create_dir(&path).expect("V2 directory");
+        std::fs::write(
+            path.join("records.log"),
+            include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+        )
+        .expect("V2 log");
+        std::fs::write(
+            path.join("commit.state"),
+            include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+        )
+        .expect("V2 witness");
+    }
     let ordinary = Store::open(&path).expect("create");
     ordinary.put(b"z", b"base").expect("base");
     let digest = ordinary.checkpoint_to(&initial).expect("checkpoint");
     drop(ordinary);
     let mut store = CheckpointStore::open_with_limits(&path, &initial, &digest, 4096, max_keys, 64)
         .expect("open");
+    if data[0] & 0x40 != 0 {
+        assert!(matches!(
+            store.enable_automatic_checkpoints_detailed(),
+            Err(PublicationFailure::NotPublished(_))
+        ));
+        assert_eq!(
+            store.get(b"z").expect("base after rejection"),
+            Some(b"base".to_vec())
+        );
+    }
     store
         .rollover_managed(root.path().join("managed-0"))
         .expect("managed selection");
@@ -126,12 +149,28 @@ fuzz_target!(|data: &[u8]| {
                 .expect("reopen");
             }
             5 => {
-                if enabled {
-                    store.disable_automatic_checkpoints().expect("disable");
-                } else {
-                    store.enable_automatic_checkpoints().expect("enable");
+                match (enabled, bytes[2] & 1 != 0) {
+                    (true, false) => store.disable_automatic_checkpoints().expect("disable"),
+                    (true, true) => store
+                        .disable_automatic_checkpoints_detailed()
+                        .expect("detailed disable"),
+                    (false, false) => store.enable_automatic_checkpoints().expect("enable"),
+                    (false, true) => store
+                        .enable_automatic_checkpoints_detailed()
+                        .expect("detailed enable"),
                 }
                 enabled = !enabled;
+                if bytes[2] & 2 != 0 {
+                    if enabled {
+                        store
+                            .enable_automatic_checkpoints_detailed()
+                            .expect("idempotent enable");
+                    } else {
+                        store
+                            .disable_automatic_checkpoints_detailed()
+                            .expect("idempotent disable");
+                    }
+                }
             }
             6 => {
                 generation += 1;
