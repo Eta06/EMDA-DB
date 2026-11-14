@@ -1,0 +1,60 @@
+{
+  "revision": "39279c1e8b33ee1775cb89289ace13f725c2058e",
+  "git_status_at_start": "clean",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "binary_sha256": "c11e143f241e546ac3f2ef3722866eaaa2b375b936168055001704f36a89b103",
+  "test_source_sha256": "367e1d693dba1c977b732ce92f465a2ce0051a5b79b00a8b053d4ed6887e1d21",
+  "scope": "Process termination at selected publication points on a running OS; not physical power loss, independent off-host restoration or an exhaustive crash model.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "repetitions": 25,
+      "killed_processes": 300,
+      "cases_each_configuration": 25,
+      "log": {
+        "file": "2026-11-14-managed-rebuild-crashes-tmpfs.log.gz",
+        "sha256": "4c0fe69e7d734603c7f5d8e322670db36c832d26e8a41fc20ce2d552efef92c4",
+        "uncompressed_sha256": "ae98600e46f25ab80d088f773629eed29dd22c966ff97ea9e3c01fcfc7807fcc"
+      },
+      "temporary_directory": "/tmp"
+    },
+    {
+      "filesystem": "overlay",
+      "repetitions": 25,
+      "killed_processes": 300,
+      "cases_each_configuration": 25,
+      "log": {
+        "file": "2026-11-14-managed-rebuild-crashes-overlay.log.gz",
+        "sha256": "cad5fdb16330ba9b5a2a31c8ff1e5d12eac90e6ac64e9267e1106bff986c7a0a",
+        "uncompressed_sha256": "2ed708319b2a005fc86115cdadb1219e5d923787d1e576fe40fc71e4c9e37012"
+      },
+      "temporary_directory": "/workspace/scratch/rebuild-crash-stress-fixtures"
+    }
+  ],
+  "msrv": {
+    "log": {
+      "file": "2026-11-14-managed-rebuild-crashes-msrv.log.gz",
+      "sha256": "5647d0c1d9fb56943d735cb608f78d93567eb4379756b95022563cbeaeb9d363",
+      "uncompressed_sha256": "a51a5d39c1e46c89a72fba62fbe6a56f1a9c75a42e1a87a810ad2b2e294da7cd"
+    },
+    "passed": 2
+  },
+  "release": {
+    "log": {
+      "file": "2026-11-14-managed-rebuild-crashes-release.log.gz",
+      "sha256": "86ee9bf6095c97e55b7b8f4fb1137c6c727ba8bf2f03a19d4be7a58e38c2c53a",
+      "uncompressed_sha256": "438d17249607fae2919c386907ea69fe89eaf66d3e0e83e038dd6954db49b391"
+    },
+    "passed": 2
+  },
+  "clippy": {
+    "command": "cargo +stable clippy --locked --all-targets -- -D warnings",
+    "log": {
+      "file": "2026-11-14-managed-rebuild-crashes-clippy.log.gz",
+      "sha256": "c4b4ecb8e4476ab904029ac5cbfe2e3fcbe3e083d960db5e9ef06f7a77e8b086",
+      "uncompressed_sha256": "3d20f6e8bdbb53647f10b8fee5f4b4038f1b6db3c85045cd6c8aa59ea79a11c9"
+    }
+  },
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "command": "repeat 25 times per TMPDIR: <release lib-test binary> --exact checkpoint_store::tests::rebuild_crash_detailed::detailed_rebuild_process_kills_preserve_tail_selection_and_backup --nocapture"
+}

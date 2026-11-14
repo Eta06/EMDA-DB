@@ -63,6 +63,14 @@ retain their return types and behavior.
   passed in an isolated 8 MiB, 64-inode Docker tmpfs on `e5e30c3`. It checks
   V2/V3 writes and copy/retry behavior; it does not specifically inject ENOSPC
   into the new detailed rebuild method or emulate a physical disk failure.
+- A [process-termination campaign](../benchmarks/results/2026-11-14-managed-rebuild-crashes.json)
+  on `39279c1` killed 600 paused rebuild processes across tmpfs and workspace
+  overlay, with V2/V3, an existing or absent selection, and three publication
+  points. Every case checked cleanup exclusion while active, the resulting
+  selection, unchanged source and witness evidence, both writable recovery
+  paths, the new checkpoint against a separately prepared digest, and a local
+  backup restore. Stable, Rust 1.85 and optimized focused tests passed. These
+  terminations occur on a running OS and do not simulate physical power loss.
 
 To verify a retained fault report, extract the archive and run
 `python3 scripts/verify_one_shot_fs_results.py <extracted-report>`. The model

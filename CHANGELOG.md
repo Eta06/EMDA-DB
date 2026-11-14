@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Exercise process termination at detailed managed-rebuild checkpoint and
+  selection publication points, including acknowledged suffix recovery.
+
 - Add opt-in offline managed-selection rebuild outcomes that distinguish
   checkpoint and selection publication attempts. Full-log recovery can have
   independent effects even when neither publication begins.

@@ -203,6 +203,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   other writers after the rebuild releases its lock. [Recovery and fault
   evidence](MANAGED_REBUILD_OUTCOMES_2026_11_14.md) includes acknowledged
   suffixes, finite model fuzzing and independently verified syscall errors.
+- [x] Kill detailed rebuild processes at checkpoint publication and two
+  selection-publication points. [Six hundred local cases](../benchmarks/results/2026-11-14-managed-rebuild-crashes.json)
+  check V2/V3, existing and absent selections, acknowledged suffixes, cleanup,
+  two recovery paths and local backup restoration. These running-OS process
+  terminations do not establish physical power-loss behavior.
 
 ## Priority 1: durable storage and core operations
 
