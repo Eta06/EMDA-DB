@@ -18,7 +18,7 @@ enum; an engine-reported deadline or cancellation has its separate documented
 meaning. Callers must reconcile uncertain commit errors instead of assuming a
 rollback.
 
-The focused tests cover conservative, read-set, FIFO and timed transactions,
+The focused tests cover conservative, read-set, FIFO, timed and controlled transactions,
 both writable stores and document transactions. Callback and admission
 `WouldBlock` errors are not marked. In separate ordinary and checkpoint
 fixtures, a synchronization failure returned `WouldBlock` after an append:

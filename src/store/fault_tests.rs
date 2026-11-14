@@ -130,7 +130,7 @@ impl LogIo for FaultIo {
 
 #[test]
 fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
-    for timed in [false, true] {
+    for mode in 0..3 {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("records.log"),
@@ -146,13 +146,24 @@ fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
         let store = open_versioned_fault_store(dir.path(), Arc::clone(&fault)).unwrap();
         store.put(b"safe", b"committed").unwrap();
         *fault.lock().unwrap() = Some(Fault::SyncWouldBlock);
-        let error = if timed {
+        let error = if mode == 1 {
             match store.transaction_until(
                 std::time::Instant::now() + Duration::from_secs(10),
                 crate::TransactionMode::Conservative,
                 |tx| tx.put(b"unknown", b"value"),
             ) {
                 Err(crate::TimedTransactionError::Operation(error)) => error,
+                other => panic!("expected uncertain operation error: {other:?}"),
+            }
+        } else if mode == 2 {
+            let cancellation = crate::CancellationToken::new();
+            match store.transaction_controlled(
+                &cancellation,
+                None,
+                crate::TransactionMode::Conservative,
+                |tx| tx.put(b"unknown", b"value"),
+            ) {
+                Err(crate::ControlledTransactionError::Operation(error)) => error,
                 other => panic!("expected uncertain operation error: {other:?}"),
             }
         } else {

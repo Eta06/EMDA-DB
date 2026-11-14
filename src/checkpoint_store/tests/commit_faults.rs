@@ -76,7 +76,7 @@ fn every_partial_append_and_sync_failure_poison_until_reopen() {
 
 #[test]
 fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
-    for timed in [false, true] {
+    for mode in 0..3 {
         let (_dir, path, checkpoint, digest) = fixture();
         let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
         let file = OpenOptions::new()
@@ -88,13 +88,24 @@ fn would_block_during_commit_is_not_a_confirmed_transaction_conflict() {
             file,
             fault: LogFault::SyncWouldBlock,
         }));
-        let error = if timed {
+        let error = if mode == 1 {
             match store.transaction_until(
                 std::time::Instant::now() + std::time::Duration::from_secs(10),
                 crate::CheckpointTransactionMode::Conservative,
                 |tx| tx.put(b"unknown", b"value"),
             ) {
                 Err(crate::TimedTransactionError::Operation(error)) => error,
+                other => panic!("expected uncertain operation error: {other:?}"),
+            }
+        } else if mode == 2 {
+            let cancellation = crate::CancellationToken::new();
+            match store.transaction_controlled(
+                &cancellation,
+                None,
+                crate::CheckpointTransactionMode::Conservative,
+                |tx| tx.put(b"unknown", b"value"),
+            ) {
+                Err(crate::ControlledTransactionError::Operation(error)) => error,
                 other => panic!("expected uncertain operation error: {other:?}"),
             }
         } else {

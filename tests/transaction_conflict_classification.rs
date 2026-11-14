@@ -1,7 +1,7 @@
 //! A conflict marker must identify only a pre-commit transaction rejection.
 use database_engine::{
-    CheckpointStore, CheckpointTransactionMode, DocumentDatabase, Store, TimedTransactionError,
-    TransactionMode, is_transaction_conflict,
+    CancellationToken, CheckpointStore, CheckpointTransactionMode, ControlledTransactionError,
+    DocumentDatabase, Store, TimedTransactionError, TransactionMode, is_transaction_conflict,
 };
 use std::io::{self, ErrorKind};
 use std::time::{Duration, Instant};
@@ -116,5 +116,43 @@ fn document_transaction_preserves_a_real_conflict_marker() {
         })
         .unwrap_err();
     assert!(is_transaction_conflict(&error));
+    assert_eq!(store.get(b"staged").unwrap(), None);
+}
+
+#[test]
+fn controlled_transactions_preserve_confirmed_conflicts_on_both_backends() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let ordinary = Store::open(&path).unwrap();
+    ordinary.put(b"observed", b"before").unwrap();
+    let token = CancellationToken::new();
+    let error = ordinary
+        .transaction_controlled(&token, None, TransactionMode::ReadSet, |tx| {
+            tx.get(b"observed")?;
+            ordinary.put(b"observed", b"changed")?;
+            tx.put(b"staged", b"must-not-commit")
+        })
+        .unwrap_err();
+    match error {
+        ControlledTransactionError::Operation(error) => assert!(is_transaction_conflict(&error)),
+        other => panic!("expected confirmed conflict: {other:?}"),
+    }
+    assert_eq!(ordinary.get(b"staged").unwrap(), None);
+    let digest = ordinary.checkpoint_to(&checkpoint).unwrap();
+    drop(ordinary);
+
+    let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    let error = store
+        .transaction_controlled(&token, None, CheckpointTransactionMode::ReadSet, |tx| {
+            tx.get(b"observed")?;
+            store.put(b"observed", b"changed-again")?;
+            tx.put(b"staged", b"must-not-commit")
+        })
+        .unwrap_err();
+    match error {
+        ControlledTransactionError::Operation(error) => assert!(is_transaction_conflict(&error)),
+        other => panic!("expected confirmed conflict: {other:?}"),
+    }
     assert_eq!(store.get(b"staged").unwrap(), None);
 }
