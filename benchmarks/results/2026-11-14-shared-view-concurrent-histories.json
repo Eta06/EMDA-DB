@@ -1,0 +1,122 @@
+{
+  "revision": "5672d37e482c149a43696230d12c321b9a034f1e",
+  "git_status": "",
+  "binary_build_revision": "89319dbc52092c85f986cebe7a104294b5e0873b",
+  "source_changes_since_binary_build": [
+    "README.md",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-concurrent-eagain.json.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-enospc.json",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-evidence.json",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-faults.tar.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-fuzz.tar.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-msrv-clippy.log.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-msrv.log.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-pair-repeat.json.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-pair.json.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-python.log.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-release.log.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-short-write.json.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-stable.log.gz",
+    "benchmarks/results/2026-11-14-shared-checkpoint-view-sync-interrupt.json.gz",
+    "docs/CHECKPOINT_SHARED_VIEW_2026_11_14.md",
+    "docs/FOUNDATION_FOLLOW_UP.md"
+  ],
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "runs": [
+    {
+      "model": "mixed",
+      "temporary_filesystem": "tmpfs",
+      "binary_sha256": "800417ce8daefbfa67265f669dd95842ea145dd4fcfac490ae3dfad9ebca139a",
+      "source_sha256": "d4aa0cb1b96b1d99fd66af1ef1ecb90ae7042d7cbb770507c15129b4b560b871",
+      "env": {
+        "TMPDIR": "/tmp",
+        "EMDA_MIXED_TRANSACTION_HISTORIES": 4096
+      },
+      "summary": {
+        "histories": 4096,
+        "conflicts": 4749,
+        "transactions_committed": 3443,
+        "compare_mismatches": 1334,
+        "compare_successes": 2762
+      },
+      "log_sha256": "0f922655bdf06a697d1815852964aa8fcefd09881c15ad78d489fe936705e7e2",
+      "combined_output": "\nrunning 3 tests\ntest model::model_checks_atomic_batches_compare_results_and_real_time_order ... ok\ntest model::model_rejects_stale_range_and_absent_point_after_a_completed_insert ... ok\nhistories=4096 transactions_conflict=4749 transactions_committed=3443 compare_mismatch=1334 compare_success=2762\ntest mixed_transactions_deletions_and_conditional_writes_serialize_and_recover ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.38s\n\n"
+    },
+    {
+      "model": "mixed",
+      "temporary_filesystem": "overlay",
+      "binary_sha256": "800417ce8daefbfa67265f669dd95842ea145dd4fcfac490ae3dfad9ebca139a",
+      "source_sha256": "d4aa0cb1b96b1d99fd66af1ef1ecb90ae7042d7cbb770507c15129b4b560b871",
+      "env": {
+        "TMPDIR": "/workspace/scratch/post-share-mixed-fixtures",
+        "EMDA_MIXED_TRANSACTION_HISTORIES": 4096
+      },
+      "summary": {
+        "histories": 4096,
+        "conflicts": 5382,
+        "transactions_committed": 2810,
+        "compare_mismatches": 1199,
+        "compare_successes": 2897
+      },
+      "log_sha256": "a4216b121d3d705412fbfbd61cc3567ae0254fcdd9c9d5256a8626916e1b681c",
+      "combined_output": "\nrunning 3 tests\ntest model::model_rejects_stale_range_and_absent_point_after_a_completed_insert ... ok\ntest model::model_checks_atomic_batches_compare_results_and_real_time_order ... ok\nhistories=4096 transactions_conflict=5382 transactions_committed=2810 compare_mismatch=1199 compare_success=2897\ntest mixed_transactions_deletions_and_conditional_writes_serialize_and_recover ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.32s\n\n"
+    },
+    {
+      "model": "document",
+      "temporary_filesystem": "tmpfs",
+      "binary_sha256": "26b6cab08f6e9070fae2c9fe1b7749e3ae34ed091b2d3783122bb52264cf33cf",
+      "source_sha256": "64e1585668bd35f889d64bff0567ac236b511b5ca4a82c963d276cd5f42878bf",
+      "env": {
+        "TMPDIR": "/tmp",
+        "EMDA_DOCUMENT_MODEL_HISTORIES": 1024
+      },
+      "summary": [
+        {
+          "checkpoint": false,
+          "histories": 1024,
+          "cancelled": 2753,
+          "completed": 1776,
+          "rejected": 1615
+        },
+        {
+          "checkpoint": true,
+          "histories": 1024,
+          "cancelled": 2768,
+          "completed": 2024,
+          "rejected": 1352
+        }
+      ],
+      "log_sha256": "485687b27edd32183e6ad9cf0d39a320081700da93840c4d829ec5e000a44143",
+      "combined_output": "\nrunning 4 tests\ntest history_checker_rejects_changes_attributed_only_to_cancelled_work ... ok\ntest history_checker_rejects_duplicate_unique_claims_and_lost_writes ... ok\ntest history_checker_rejects_fractured_raw_or_index_data ... ok\ncheckpoint=false histories=1024 cancelled=2753 completed=1776 rejected=1615\ncheckpoint=true histories=1024 cancelled=2768 completed=2024 rejected=1352\ntest concurrent_document_histories_serialize_and_recover_on_both_backends ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.69s\n\n"
+    },
+    {
+      "model": "document",
+      "temporary_filesystem": "overlay",
+      "binary_sha256": "26b6cab08f6e9070fae2c9fe1b7749e3ae34ed091b2d3783122bb52264cf33cf",
+      "source_sha256": "64e1585668bd35f889d64bff0567ac236b511b5ca4a82c963d276cd5f42878bf",
+      "env": {
+        "TMPDIR": "/workspace/scratch/post-share-mixed-fixtures",
+        "EMDA_DOCUMENT_MODEL_HISTORIES": 1024
+      },
+      "summary": [
+        {
+          "checkpoint": false,
+          "histories": 1024,
+          "cancelled": 2984,
+          "completed": 1358,
+          "rejected": 1802
+        },
+        {
+          "checkpoint": true,
+          "histories": 1024,
+          "cancelled": 2880,
+          "completed": 1906,
+          "rejected": 1358
+        }
+      ],
+      "log_sha256": "27f9afba6ec7b100ad6b4e0377ae4132cde65b3c96982ae0c0ac28badfb7f9f2",
+      "combined_output": "\nrunning 4 tests\ntest history_checker_rejects_changes_attributed_only_to_cancelled_work ... ok\ntest history_checker_rejects_duplicate_unique_claims_and_lost_writes ... ok\ntest history_checker_rejects_fractured_raw_or_index_data ... ok\ncheckpoint=false histories=1024 cancelled=2984 completed=1358 rejected=1802\ncheckpoint=true histories=1024 cancelled=2880 completed=1906 rejected=1358\ntest concurrent_document_histories_serialize_and_recover_on_both_backends ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.19s\n\n"
+    }
+  ],
+  "scope": "Finite, clean-reopen, concurrent local histories; no injected I/O errors, physical power failure, independent off-host restoration, or proof of all schedules."
+}

@@ -82,6 +82,15 @@ does not compare SQLite against this candidate on the same fixture.
   uncertain pairs; the short-write run includes deliberately rejected recovery
   for partial records. These tests sample schedules and returned or intercepted
   syscall behavior, not physical power failures.
+- [Concurrent history checks](../benchmarks/results/2026-11-14-shared-view-concurrent-histories.json)
+  on `5672d37` covered 8,192 mixed key-value histories and 4,096 document
+  histories, divided evenly between tmpfs and the workspace overlay. The mixed
+  model rotates both writable backends and V2/V3, checks real-time-compatible
+  serial outcomes, and reopens through both recovery paths. The document model
+  exercises both writable backends with transactions, unique-index claims,
+  indexed reads and raw-key updates, then checks full-log recovery. These are
+  clean-reopen, finite schedules; they do not inject filesystem faults or
+  prove concurrency behavior under all possible interleavings.
 
 For example, extract the fault archive and run
 `python3 scripts/verify_one_shot_fs_results.py <extracted-report>` for each
