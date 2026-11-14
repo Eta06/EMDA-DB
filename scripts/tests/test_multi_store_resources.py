@@ -21,7 +21,8 @@ class MultiStoreResultsTests(unittest.TestCase):
         good = sample()
         self.assertEqual(validate(good, 'ordinary', 2, 5), good)
         for key, value in [('verified_reads', 5), ('open_samples_ns', [40]),
-                           ('fds_open', 3), ('rss_open_kib', -1), ('open_total_ns', True)]:
+                           ('fds_open', 3), ('fds_after_drop', 5),
+                           ('rss_open_kib', -1), ('open_total_ns', True)]:
             broken = copy.deepcopy(good)
             broken[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):

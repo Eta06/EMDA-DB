@@ -148,10 +148,13 @@ mod platform {
             let (witness, boundary) = open_shared(Arc::clone(&file), id).unwrap();
             assert_eq!(boundary, LOG_HEADER_SIZE as u64);
             assert_eq!(Arc::strong_count(&file), 2);
+            let weak = Arc::downgrade(&file);
             drop(file);
             witness.advance(boundary).unwrap();
             witness.verify(boundary).unwrap();
             assert!(witness.advance(boundary - 1).is_err());
+            drop(witness);
+            assert!(weak.upgrade().is_none());
         }
 
         #[test]
