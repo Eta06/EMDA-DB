@@ -101,7 +101,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Distinguish configured log and key-limit rejections from errors after
   submission on the detailed transaction paths. Checkpoint maintenance can
   have independent effects; ordinary coordinator failures may still be
-  conservatively unknown before append.
+  conservatively unknown before append. [Local fault, contention and
+  performance evidence](TRANSACTION_SUBMISSION_BOUNDARY_2026_11_14.md)
+  records the scope and remaining uncertainty.
 - [x] Check [160 injected concurrent filesystem-fault cases and 160
   process-kill cases](DETAILED_TRANSACTION_OUTCOMES_2026_11_14.md) with the
   new interface, plus 8,192 mixed concurrent histories across overlay and
