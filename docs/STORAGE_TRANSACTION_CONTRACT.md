@@ -43,9 +43,18 @@ earlier uncertain write, and checkpoint maintenance may have independent
 effects. `OutcomeUnknown` means this mutation may have been submitted and must
 be reconciled before retry; ordinary coordinator failures can be classified
 unknown even before append. Conditional mismatches return `Ok(false)` without
-submitting a mutation. Existing methods retain their error types, and document
-convenience mutations and maintenance do not yet offer this
-structured classification.
+submitting a mutation. Existing methods retain their error types.
+
+`DocumentDatabase::insert_detailed`, `replace_detailed`, `update_if_detailed`,
+`delete_detailed` and `bulk_detailed` use the same conservative transaction
+and synchronized atomic commit as their existing counterparts. Their
+`TransactionFailure::Callback` or `Rejected` means this call's document and
+index changes were not submitted. `OutcomeUnknown` needs reconciliation before
+retry, including conservative coordinator errors that precede append. An
+earlier uncertain operation and independent checkpoint maintenance are not
+resolved by a rejection. Conditional updates and deletes can return `Ok(false)`
+without a write. Other document maintenance operations can use
+`transaction_detailed`; their existing convenience methods retain their errors.
 
 For full-log backup and restore, opt-in `backup_detailed` and
 `Store::restore_detailed` return `PublicationFailure::NotPublished` if this

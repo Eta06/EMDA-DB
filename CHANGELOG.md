@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in structured outcomes for common document insert, replace,
+  conditional update, delete and atomic bulk calls on both writable stores.
+  They use the existing conservative transaction and synchronization rules.
+
 - Add opt-in structured backup and restore publication failures. A
   `NotPublished` result concerns only this call; a destination may pre-exist
   and staging remnants may remain. Publication errors remain conservative.

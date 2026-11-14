@@ -157,6 +157,7 @@ impl WitnessIo for FaultWitness {
 mod automatic;
 mod commit_faults;
 mod compaction;
+mod detailed_document_fault_tests;
 mod direct_admission;
 mod document_faults;
 #[cfg(target_os = "linux")]

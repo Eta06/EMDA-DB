@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
+mod detailed_document_faults;
 mod document_faults;
 mod online_index_faults;
 mod schema_migration_faults;

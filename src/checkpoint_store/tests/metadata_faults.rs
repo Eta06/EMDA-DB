@@ -17,6 +17,66 @@ struct Metadata {
 }
 
 #[test]
+fn detailed_document_mutations_report_unknown_for_v3_witness_errors() {
+    use crate::document::detailed_fault_model::{
+        OPERATIONS, RecoveryExpectation, apply, prepare, verify_recovery,
+    };
+    use crate::{DocumentDatabase, TransactionFailure};
+    for operation in 0..OPERATIONS {
+        for (index, fault) in [
+            Fault::WriteBefore,
+            Fault::WriteAfter,
+            Fault::SyncBefore,
+            Fault::SyncAfter,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let checkpoint = root.path().join("checkpoint");
+            let ordinary = Store::open(&path).unwrap();
+            let digest = ordinary.checkpoint_to(&checkpoint).unwrap();
+            drop(ordinary);
+            let mut store =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            prepare(&DocumentDatabase::with_checkpoint_store(&store));
+            let header = fs::read(path.join("records.log")).unwrap();
+            let id = crate::metadata_witness::parse_header(
+                header[..witness::LOG_HEADER_SIZE].try_into().unwrap(),
+            )
+            .unwrap();
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            store.log.attach_test_witness(Witness::for_test(
+                Box::new(Metadata { file, fault }),
+                id,
+                header.len() as u64,
+            ));
+            let db = DocumentDatabase::with_checkpoint_store(&store);
+            let result = apply(&db, operation);
+            assert!(
+                matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
+                "operation={operation}, fault={index}: {result:?}"
+            );
+            assert!(store.get(b"health-check").is_err());
+            drop(store);
+            verify_recovery(
+                &path,
+                &checkpoint,
+                &digest,
+                operation,
+                RecoveryExpectation::Committed(true),
+                index % 2 == 0,
+            );
+        }
+    }
+}
+
+#[test]
 fn detailed_transactions_treat_v3_witness_failures_as_unknown_outcomes() {
     for fault in [
         Fault::WriteBefore,

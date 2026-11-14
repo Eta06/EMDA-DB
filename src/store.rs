@@ -846,6 +846,9 @@ pub(crate) mod collection_drop_fault_tests;
 mod fault_tests;
 
 #[cfg(test)]
+mod detailed_document_fault_tests;
+
+#[cfg(test)]
 mod group_tests;
 
 #[cfg(test)]

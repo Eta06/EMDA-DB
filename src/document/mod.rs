@@ -2,6 +2,7 @@
 mod aggregate;
 mod aggregate_stats;
 mod bulk;
+mod detailed_mutations;
 mod filter;
 mod index;
 mod integrity;
@@ -17,6 +18,9 @@ mod update;
 
 #[cfg(test)]
 pub(crate) mod array_fault_model;
+
+#[cfg(test)]
+pub(crate) mod detailed_fault_model;
 
 #[cfg(test)]
 mod point_read_tests;
