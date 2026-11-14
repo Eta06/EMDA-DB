@@ -71,9 +71,10 @@ retain their return types and behavior.
   paths, the new checkpoint against a separately prepared digest, and a local
   backup restore. Stable, Rust 1.85 and optimized focused tests passed. These
   terminations occur on a running OS and do not simulate physical power loss.
-- A coordinated concurrency test checks that ordinary and checkpoint-backed
+- A [coordinated concurrency check](../benchmarks/results/2026-11-14-managed-rebuild-locks.json)
+  ran 200 cases on `b978d9e`, checking that ordinary and checkpoint-backed
   openers remain excluded until the selection synchronization returns, both
-  on success and on an uncertain sync error. It then reopens the visible
+  on success and on an uncertain sync error. Each case reopens the visible
   selection, commits a new write, and verifies that write through full-log
   recovery. These are sampled in-process schedules under cooperative locking.
 

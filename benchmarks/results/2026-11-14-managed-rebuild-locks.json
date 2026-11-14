@@ -1,0 +1,62 @@
+{
+  "revision": "b978d9ec8e042de75debae06af59d4952a626d70",
+  "git_status_at_start": "clean",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "binary_sha256": "2af19c702b02d049954d7a0a499929f5bd59f3e421d0452bab7860e44cc9ba50",
+  "test_source_sha256": "53ff58b07969b7bb0edbb65e24942ff8a1d94ea777cec6705b5d43ea5f70eef8",
+  "scope": "Coordinated in-process lock exclusion on two local filesystems; not an exhaustive scheduler, process fencing, tenant isolation or physical power-loss test.",
+  "runs": [
+    {
+      "filesystem": "tmpfs",
+      "repetitions": 25,
+      "cases_per_repetition": 4,
+      "coordinated_cases": 100,
+      "log": {
+        "file": "2026-11-14-managed-rebuild-locks-tmpfs.log.gz",
+        "sha256": "a822daf4bd28dd0eb6e8759faef094b9ca368065acd4ef64e6f9aea50a6755e8",
+        "uncompressed_sha256": "941c28efa0694ca95cc02eff05182ee076cc82d122d9d69eff4ab8c2a6589494"
+      }
+    },
+    {
+      "filesystem": "overlay",
+      "repetitions": 25,
+      "cases_per_repetition": 4,
+      "coordinated_cases": 100,
+      "log": {
+        "file": "2026-11-14-managed-rebuild-locks-overlay.log.gz",
+        "sha256": "222c8241e6afb31a1e9f72b54372978962395913d05e1c2d3824aadf9ac3d645",
+        "uncompressed_sha256": "5f34c67bfd0cd24fadccae0437ed1152701139eb75ad54eac75cad6abb965640"
+      }
+    }
+  ],
+  "focused_tests": [
+    {
+      "toolchain": "stable",
+      "passed": 1,
+      "log": {
+        "file": "2026-11-14-managed-rebuild-locks-stable.log.gz",
+        "sha256": "5fd7415b68ec7e07c7194df31c30b58683a6b6a9ccdda14530c2a49e200c5560",
+        "uncompressed_sha256": "1b90fa98000241cb4fc6605245875b9afafa966a29ecb6a8e7f73bbf209b21bc"
+      }
+    },
+    {
+      "toolchain": "msrv",
+      "passed": 1,
+      "log": {
+        "file": "2026-11-14-managed-rebuild-locks-msrv.log.gz",
+        "sha256": "6734e72b1401c97a9d645e6c7f2aee9efeb024500eaec741b8b32bc296ce674c",
+        "uncompressed_sha256": "319e7cd39c1278662ce8d6b58edec20ce6ace8321b95a047c9e0897e6028625a"
+      }
+    },
+    {
+      "toolchain": "release",
+      "passed": 1,
+      "log": {
+        "file": "2026-11-14-managed-rebuild-locks-release.log.gz",
+        "sha256": "e0d45078fdee234b218306b45fb8bcf9dd2875e431c02ef80bbb280b8b4772c5",
+        "uncompressed_sha256": "972ddd66645efaf262b057f4ff05468fc92af546d06e692c16bfadd755547a07"
+      }
+    }
+  ],
+  "command": "repeat 25 times per temporary filesystem: <release lib-test binary> --exact checkpoint_store::tests::rebuild_outcomes::detailed_rebuild_holds_the_lock_through_success_or_uncertain_selection_sync --nocapture"
+}
