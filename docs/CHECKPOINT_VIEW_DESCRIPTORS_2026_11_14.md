@@ -24,7 +24,7 @@ candidate `8628301`, ordered baseline, candidate, candidate, baseline. Every
 sample reopened all stores and checked 300 point reads; fixture hashes and
 metadata matched before and after. Each phase contains three fresh-process
 samples. The table shows phase medians; descriptor totals include four baseline
-process descriptors.
+process descriptors, including the `/proc/self/fd` enumeration handle.
 
 | Mode | Baseline first / repeat | Candidate first / repeat |
 | --- | ---: | ---: |
@@ -55,7 +55,11 @@ was observed. The SQLite resource baseline is reported separately in the
   on candidate `8628301`. Rust 1.85 passed all-target Clippy and the real
   descriptor-exhaustion test. The exhaustion test covers V2 and V3, writes
   through an already-open store at the limit, retries a failed open after
-  freeing descriptors, and verifies both writable recovery paths.
+  freeing descriptors, and verifies both writable recovery paths. A
+  [25-run stress campaign](../benchmarks/results/2026-11-14-checkpoint-fd-exhaustion-stress.json)
+  passed 50 V2/V3 cases and 1,200 parent recovery openings; its
+  [test log](../benchmarks/results/2026-11-14-checkpoint-fd-exhaustion-stress.log.gz)
+  is retained.
 - Three independently verified EIO reports cover 1,128 selected sync,
   data-write and xattr-read failures across both formats and recovery orders:
   [sync](../benchmarks/results/2026-11-14-checkpoint-fd-eio-sync.json.gz),
@@ -67,7 +71,13 @@ was observed. The SQLite resource baseline is reported separately in the
   on clean revision `1ef6f30`, starting with 13 seeds; its generated input
   length limit was 27 bytes at completion. The [metadata](../benchmarks/results/2026-11-14-checkpoint-fd-fuzz.json) and
   [archive](../benchmarks/results/2026-11-14-checkpoint-fd-fuzz.tar.gz)
-  contains the log, original seeds and resulting corpus.
+  contain the log, original seeds and resulting corpus.
+- The checkpoint exchange model ran 9,538 inputs in two 61-second campaigns,
+  including four new 63-byte starting sequences that exercise longer
+  rollover, compaction and reopen combinations. Its
+  [metadata](../benchmarks/results/2026-11-14-checkpoint-fd-exchange-fuzz.json)
+  and [archive](../benchmarks/results/2026-11-14-checkpoint-fd-exchange-fuzz.tar.gz)
+  retain the seeds, corpora and logs. These models are finite and serial.
 
 These finite tests do not cover every schedule or filesystem failure. They do
 not establish physical power-loss safety, independent off-host restoration,

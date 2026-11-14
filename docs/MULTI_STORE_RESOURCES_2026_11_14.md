@@ -12,7 +12,8 @@ prepared statements.
 
 The table shows medians of six samples. RSS is the whole measurement process
 after point reads, not per-store allocation. File-descriptor counts include
-four baseline descriptors. Open time is the total for all listed databases.
+four baseline descriptors, including the `/proc/self/fd` enumeration handle.
+Open time is the total for all listed databases.
 
 | Open databases | Mode | RSS MiB | Open descriptors | Total open time ms |
 | ---: | --- | ---: | ---: | ---: |
@@ -46,6 +47,12 @@ accounting was zero in the median of every group, so these were warm-cache
 opens, not independent cold-device or crash-recovery measurements. The Rust
 compiler was 1.100.0. The raw report includes individual samples and noise
 telemetry.
+
+For 100 databases, the median bytes returned by read-like syscalls during open
+and sampled reads were about 9.67 MiB for the ordinary path, 19.30 MiB for the
+checkpoint-backed path and 2.36 MiB for SQLite. These process counters include
+measurement overhead and do not measure physical disk traffic. Checkpoint
+opening still hashes the covered log, which matters when evaluating cold starts.
 
 The driver is available for repeatable local measurements:
 

@@ -1,0 +1,40 @@
+{
+  "revision": "1ef6f30d69b6e5064225ec58f5cdf256ca8da1c1",
+  "git_status": "",
+  "target": "checkpoint_exchange",
+  "compiler": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "toolchain": "nightly-2026-11-03",
+  "sanitizer": "address",
+  "binary_sha256": "ca11f0275bda4ea4b0e10086bf8801267a6ba858a81963b6238e7c6248f86d62",
+  "runs": [
+    {
+      "seed": 4201974324,
+      "initial_files": 1,
+      "initial_max_bytes": 15,
+      "executions": 6749,
+      "seconds": 61,
+      "final_files": 223,
+      "final_length_limit": 22,
+      "log_sha256": "ed7e83d7b25e972e88fe08fc4d969690363239c92ab3145034d627e13deb1801"
+    },
+    {
+      "seed": 2964701635,
+      "initial_files": 5,
+      "initial_max_bytes": 63,
+      "executions": 2789,
+      "seconds": 61,
+      "final_files": 242,
+      "final_length_limit": 63,
+      "max_len_flag": 64,
+      "log_sha256": "348a5d03216f4a17060c5d1a11a0e16928fe23306038af228f1a7738a1b9a5de"
+    }
+  ],
+  "long_start_sha256": {
+    "long-sequence-0": "1a4a9d509e028a3ef6e73e2bf33f95996f89e78abece496d36c102f4d4f17495",
+    "long-sequence-1": "50430f94dc584e7ec6cc88c34a2628b7a352b685cd35c8304a513149267a6fbb",
+    "long-sequence-2": "e712801b231c514bab58be06aca9939a2b4b4b6dc4a8c5ef988c4e908df95150",
+    "long-sequence-3": "e3dd251990cfac6f8c843e90c2857a8e922624669157399bf5f976b61781bd81",
+    "reopen": "90110e095c38036be24821ee726e18749cfee0f33877acd537fb895545032f26"
+  },
+  "limitations": "Finite Linux serial model of managed checkpoints and compaction handoffs. No physical power loss, exhaustive schedules or off-host restore."
+}
