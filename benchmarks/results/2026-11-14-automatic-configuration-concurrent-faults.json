@@ -1,0 +1,35 @@
+{
+  "revision": "cae7ca8fb7361e7cae7b5e5d4ea66aa67ecb5b0e",
+  "test": "failed_configuration_blocks_a_concurrent_waiting_mutation",
+  "command": "cargo +stable test --release --locked --lib failed_configuration_blocks_a_concurrent_waiting_mutation -- --test-threads=1",
+  "repetitions": 100,
+  "fixture_runs": 1200,
+  "formats": "forced V2 and filesystem default; default was V3 on this Linux filesystem",
+  "transitions": [
+    "initial enable",
+    "re-enable",
+    "disable"
+  ],
+  "failure_points": [
+    "before publication",
+    "after publication but before parent sync"
+  ],
+  "notes": "The writer thread starts while configuration holds the store lock; the test does not instrument the exact moment the writer enters the lock queue. Injected in-process errors, normal close and reopen; no physical power failure.",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "minimum_rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+  "test_source_sha256": "c1c3e8a746c87479104b9a817665c5e6667cbb3338428f9ba68f399e2fc5520a",
+  "fixture_source_sha256": "6ac7154ae5d4888d2d10f1459957890a0bdec439e8a9314d77cd5cb8b7bdc675",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "raw_log": "2026-11-14-automatic-configuration-concurrent-faults.log.gz",
+  "raw_log_sha256": "c8f49ee706b71df219f0e4fcd1cc1734a2bffd6d9e1e5708a79cb16860231e83",
+  "uncompressed_log_sha256": "ec5ecda7636dbd64c198e8e2b84cc57ea3d45e96ad9e82820e27e4e8fedae439"
+}

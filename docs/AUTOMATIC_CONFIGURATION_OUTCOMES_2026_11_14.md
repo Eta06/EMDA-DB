@@ -91,6 +91,23 @@ and [raw log](../benchmarks/results/2026-11-14-automatic-rollover-races.log.gz)
 record the sampled run. It has no injected I/O errors or process kills, and
 does not prove every schedule or physical power-loss behavior.
 
+Revision `cae7ca8fb7361e7cae7b5e5d4ea66aa67ecb5b0e` combines a configuration
+failure with a concurrent mutation. For first enable, re-enable and disable,
+the test pauses the configuration while it holds the state lock, starts a
+writer, and then injects an error either before publication or at the parent
+sync after publication. The detailed configuration outcome must match the
+boundary; the writer must be rejected before submission, and acknowledged
+data and the appropriate visible configuration must survive reopening. The
+test does not instrument when the writer actually enters the lock queue.
+
+One hundred optimized repetitions passed across the two initial formats,
+three transitions and two failure boundaries: 1,200 fixtures. The targeted
+test passed on stable and Rust 1.85, and both all-target Clippy checks passed.
+The [metadata](../benchmarks/results/2026-11-14-automatic-configuration-concurrent-faults.json)
+and [raw log](../benchmarks/results/2026-11-14-automatic-configuration-concurrent-faults.log.gz)
+record the run. These are coordinated in-process errors with normal reopen,
+not exhaustive scheduling, syscall fault injection or power-loss testing.
+
 These checks use selected synthetic errors on a running Linux VM with an
 overlay filesystem of unknown backing. They do not cover partial syscalls,
 all error-only code paths, concurrent configuration callers, persistence
