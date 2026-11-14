@@ -72,3 +72,21 @@ and archives its own report.
 ```sh
 python3 scripts/verify_concurrent_eio_results.py benchmarks/results/2026-11-14-eagain-concurrent-transaction.json.gz
 ```
+
+## Concurrent independent writes
+
+The same 320-case matrix was repeated with four independent single-key writers
+on clean revision `2b2c3d60122a2ab8375044ffe2a10c3a5c996ae1`; the Rust probe
+source is identical to the transaction run's revision. Its
+[retained report](../benchmarks/results/2026-11-14-eagain-concurrent-single.json.gz)
+checks 381 observed acknowledgements and 1,280 failed requests. Both recovery
+paths agreed that 530 of those failed writes were present after reopening.
+Eighty cases recorded a vectored append on the ordinary store; observing
+grouped appends does not make independent writes an atomic transaction. These
+are selected synthetic returned errors on a running VM, not physical
+power-loss or exhaustive scheduling evidence. One repetition also runs in
+the filesystem workflow.
+
+```sh
+python3 scripts/verify_concurrent_eio_results.py benchmarks/results/2026-11-14-eagain-concurrent-single.json.gz
+```
