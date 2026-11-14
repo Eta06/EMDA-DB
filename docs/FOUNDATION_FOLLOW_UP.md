@@ -162,6 +162,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   checks both visible paths and disabled handles under selected returned errors.
   A short [reference-model campaign](ONLINE_HANDOFF_MODEL_2026_11_14.md)
   mixes successful handoffs, rejected destinations and invalid options.
+- [x] Classify automatic-checkpoint configuration publication for first
+  enable, re-enable and disable. A pre-publication classification does not
+  certify handle health. [Recovery and fault checks](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md)
+  retain their coverage and limitations.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

@@ -27,8 +27,9 @@ power-loss behavior. Those limitations are separate from the selected
 The scheduled and manually triggered fuzz workflow already runs this target.
 
 To replay the saved corpus on a suitable Linux machine with the pinned nightly
-toolchain and `cargo-fuzz`, extract it into a new empty directory and run:
+toolchain and `cargo-fuzz`, extract it into a new empty `extracted-corpus`
+directory and run:
 
 ```sh
-cargo +nightly-2026-11-03 fuzz run online_compaction <corpus-directory> -- -runs=282 -max_len=96 -timeout=15
+cargo +nightly-2026-11-03 fuzz run online_compaction ./extracted-corpus -- -runs=282 -max_len=96 -timeout=15
 ```
