@@ -190,6 +190,78 @@ fn detailed_rebuild_public_api_preserves_limits_locks_and_existing_files() {
     }
 }
 
+#[test]
+fn detailed_rebuild_holds_the_lock_through_success_or_uncertain_selection_sync() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    for v2 in [true, false] {
+        for fail_sync in [false, true] {
+            let (dir, path, _, _, _) = rebuild_fixture(v2, true);
+            let destination = dir.path().join("next");
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            let result = std::thread::scope(|scope| {
+                let path_ref = path.as_path();
+                let destination_ref = destination.as_path();
+                let rebuilding = scope.spawn(move || {
+                    crate::publication_outcome::track_managed_rebuild(|tracker| {
+                        CheckpointStore::rebuild_managed_using(
+                            path_ref,
+                            destination_ref,
+                            |path| Store::open(path),
+                            super::super::selection::sync_ancestors,
+                            || Ok(()),
+                            |parent| {
+                                ready_tx.send(()).unwrap();
+                                resume_rx
+                                    .recv_timeout(Duration::from_secs(10))
+                                    .map_err(|_| io::Error::other("rebuild release timed out"))?;
+                                if fail_sync {
+                                    Err(io::Error::other("injected selection sync failure"))
+                                } else {
+                                    super::super::selection::sync_ancestors(parent)
+                                }
+                            },
+                            Some(tracker),
+                        )
+                    })
+                });
+                ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                let ordinary = Store::open(&path).err().map(|error| error.kind());
+                let checkpoint = CheckpointStore::open_managed(&path)
+                    .err()
+                    .map(|error| error.kind());
+                resume_tx.send(()).unwrap();
+                let result = rebuilding.join().unwrap();
+                assert_eq!(ordinary, Some(io::ErrorKind::WouldBlock));
+                assert_eq!(checkpoint, Some(io::ErrorKind::WouldBlock));
+                result
+            });
+            if fail_sync {
+                assert!(matches!(
+                    result,
+                    Err(ManagedRebuildFailure::SelectionOutcomeUnknown(_))
+                ));
+            } else {
+                result.unwrap();
+            }
+            let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+            assert_eq!(
+                reopened.get(b"tail").unwrap().as_deref(),
+                Some(&b"acknowledged"[..])
+            );
+            reopened.put(b"after", b"value").unwrap();
+            drop(reopened);
+            let recovered = retry_lock(|| Store::open(&path)).unwrap();
+            assert_eq!(
+                recovered.get(b"after").unwrap().as_deref(),
+                Some(&b"value"[..])
+            );
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn not_published_does_not_claim_full_log_recovery_left_the_source_unchanged() {
