@@ -46,6 +46,10 @@ all-target suites each passed 986 tests, with the documented test-fixture retry
 checked separately on the latter two configurations. GitHub's EIO workflow
 includes a small V2 check for each suffix scenario.
 
+A [follow-up](MANAGED_ROLLOVER_MODEL_2026_11_14.md) checks that the original
+handle rejects reads and writes after selection-uncertain failures and adds
+the detailed outcomes to the managed checkpoint fuzz model.
+
 These are selected synthetic returned errors on an overlay filesystem of
 unknown backing with the operating system running. They do not exhaust
 failure-only calls, partial syscalls, concurrent schedules or persistence

@@ -35,6 +35,7 @@ The [legacy-upgrade fault report](docs/LEGACY_UPGRADE_FAILURES_2026_11_14.md) ch
 The [rollover publication report](docs/ROLLOVER_PUBLICATION_OUTCOMES_2026_11_14.md) records failure classifications and recovery checks for unmanaged checkpoints.
 The [managed-rollover report](docs/MANAGED_ROLLOVER_OUTCOMES_2026_11_14.md) checks the separate checkpoint and selection publication boundaries.
 The [managed suffix report](docs/MANAGED_ROLLOVER_SUFFIX_FAILURES_2026_11_14.md) checks recovery of an acknowledged write after the previous checkpoint under injected errors.
+The [managed outcome model](docs/MANAGED_ROLLOVER_MODEL_2026_11_14.md) checks failed-handle behavior and mixed rollover histories.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
