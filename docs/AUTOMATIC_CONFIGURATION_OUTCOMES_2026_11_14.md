@@ -72,6 +72,25 @@ The test uses sufficiently high suffix limits that it does not exercise
 automatic rollover. It samples scheduling, uses normal close and reopen, and
 does not inject faults or establish physical power-loss safety.
 
+Revision `d53cf0156846d0480c73a8b873a3016649212095` adds a second race with a
+two-key suffix limit, forcing automatic rollover for the workload. Three
+writers submit atomic pairs while a fourth thread changes configuration and
+a fifth scans. The test confirms that the selected checkpoint changed, checks
+pair atomicity during scans, and compares all acknowledged values and the
+configuration after reopening. If automatic checkpointing is temporarily
+disabled, only a confirmed suffix-key-capacity rejection is retried after
+re-enabling it; other outcomes fail the test. This is a test-specific retry,
+not a rule for retrying unknown maintenance or mutation outcomes.
+
+All 28 automatic-checkpoint tests passed on stable and Rust 1.85, as did both
+all-target Clippy checks. One hundred optimized repetitions passed for both
+the forced V2 and default local format, totaling 200 fixtures. Each fixture
+submitted 12 atomic batches, ran 16 configuration-toggle iterations and
+performed 24 scans. The [metadata](../benchmarks/results/2026-11-14-automatic-rollover-races.json)
+and [raw log](../benchmarks/results/2026-11-14-automatic-rollover-races.log.gz)
+record the sampled run. It has no injected I/O errors or process kills, and
+does not prove every schedule or physical power-loss behavior.
+
 These checks use selected synthetic errors on a running Linux VM with an
 overlay filesystem of unknown backing. They do not cover partial syscalls,
 all error-only code paths, concurrent configuration callers, persistence

@@ -1,0 +1,30 @@
+{
+  "revision": "d53cf0156846d0480c73a8b873a3016649212095",
+  "test": "configuration_races_with_required_rollovers_preserve_acknowledged_batches",
+  "command": "cargo +stable test --release --locked --lib configuration_races_with_required_rollovers_preserve_acknowledged_batches -- --test-threads=1",
+  "repetitions": 100,
+  "fixture_runs": 200,
+  "formats": "forced V2 and filesystem default; default was V3 on this Linux filesystem",
+  "threads_per_fixture": 5,
+  "atomic_two_key_batches_per_fixture": 12,
+  "configuration_toggle_iterations_per_fixture": 16,
+  "scans_per_fixture": 24,
+  "notes": "The selection changed at least once in each fixture. Only confirmed suffix-capacity rejections are retried after enabling automatic checkpoints; no returned errors were injected. Scheduling is sampled and close/reopen is normal.",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "minimum_rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+  "test_source_sha256": "5650c851ed74f14386fd3d3e35f99e164bf038f4adf5b72221a842d41424967b",
+  "fixture_source_sha256": "6ac7154ae5d4888d2d10f1459957890a0bdec439e8a9314d77cd5cb8b7bdc675",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "raw_log": "2026-11-14-automatic-rollover-races.log.gz",
+  "raw_log_sha256": "f00d54e8db21855bc3e45c835c02e279c48197acf077e9706ebb89886a33e973",
+  "uncompressed_log_sha256": "6699bb893d5ac24052419171a8e9c1cb3a83452e2a2a8897ecfd64aac0965616"
+}
