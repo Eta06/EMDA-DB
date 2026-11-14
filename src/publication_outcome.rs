@@ -82,6 +82,80 @@ impl std::error::Error for ManagedRolloverFailure {
     }
 }
 
+/// A failed consuming compaction handoff, classified by this call's
+/// publication attempts. The original handle is consumed in every case.
+/// Existing paths and temporary artifacts may remain; these outcomes do not
+/// certify store health, cleanup or a separately recoverable backup. Panics
+/// unwind rather than returning a classification.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum HandoffFailure {
+    /// This call began neither candidate publication nor directory exchange.
+    NotPublished(io::Error),
+    /// The candidate may exist or be partly configured, but this call did not
+    /// begin the directory exchange. Reconcile it before retrying.
+    CandidateOutcomeUnknown(io::Error),
+    /// The directory exchange may have happened. Inspect and reconcile both
+    /// paths before reopening; no new checkpoint digest is returned on error.
+    ExchangeOutcomeUnknown(io::Error),
+}
+
+impl fmt::Display for HandoffFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPublished(error) => {
+                write!(formatter, "handoff publication not started: {error}")
+            }
+            Self::CandidateOutcomeUnknown(error) => {
+                write!(formatter, "handoff candidate outcome unknown: {error}")
+            }
+            Self::ExchangeOutcomeUnknown(error) => {
+                write!(formatter, "handoff exchange outcome unknown: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HandoffFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotPublished(error)
+            | Self::CandidateOutcomeUnknown(error)
+            | Self::ExchangeOutcomeUnknown(error) => Some(error),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HandoffPhase {
+    Preparation,
+    Candidate,
+    Exchange,
+}
+
+pub(crate) struct HandoffTracker(Cell<HandoffPhase>);
+
+impl HandoffTracker {
+    pub(crate) fn begin_candidate(&self) {
+        self.0.set(HandoffPhase::Candidate);
+    }
+
+    pub(crate) fn begin_exchange(&self) {
+        self.0.set(HandoffPhase::Exchange);
+    }
+}
+
+pub(crate) fn track_handoff<T>(
+    action: impl FnOnce(&HandoffTracker) -> io::Result<T>,
+) -> Result<T, HandoffFailure> {
+    let tracker = HandoffTracker(Cell::new(HandoffPhase::Preparation));
+    action(&tracker).map_err(|error| match tracker.0.get() {
+        HandoffPhase::Preparation => HandoffFailure::NotPublished(error),
+        HandoffPhase::Candidate => HandoffFailure::CandidateOutcomeUnknown(error),
+        HandoffPhase::Exchange => HandoffFailure::ExchangeOutcomeUnknown(error),
+    })
+}
+
 pub(crate) struct Tracker(Cell<bool>);
 
 impl Tracker {

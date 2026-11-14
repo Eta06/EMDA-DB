@@ -91,7 +91,7 @@ fn managed_auto_setting_survives_handoff_reopen_and_new_rollover() {
     let previous = root.path().join("previous");
     let cp = fixture(root.path(), true, true);
     cp.set_transaction_staging_limit(0).unwrap();
-    let (cp, _digest) = cp.compact_and_replace(&previous).unwrap();
+    let (cp, _digest) = cp.compact_and_replace_detailed(&previous).unwrap();
     assert_eq!(cp.transaction_budget_status().unwrap().limit_bytes, 0);
     assert!(cp.automatic_checkpoints_enabled().unwrap());
     assert_eq!(cp.overlay_keys().unwrap(), 0);
@@ -218,6 +218,89 @@ fn checkpoint_handoff_faults_leave_two_recoverable_logs_and_valid_source_selecti
     assert!(error.to_string().contains("exchange may have occurred"));
     verify_store(&source);
     verify_store(&previous);
+}
+
+#[test]
+fn detailed_checkpoint_handoff_classifies_candidate_and_exchange_failures() {
+    use crate::HandoffFailure;
+    for managed in [false, true] {
+        for failure in [
+            "preflight",
+            "copy",
+            "selection-before",
+            "selection-sync",
+            "ready",
+            "exchange",
+            "sync",
+        ] {
+            if !managed && failure.starts_with("selection-") {
+                continue;
+            }
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("live");
+            let destination = if failure == "preflight" {
+                root.path().join("missing/previous")
+            } else {
+                root.path().join("previous")
+            };
+            let cp = fixture(root.path(), managed, managed);
+            let original = fs::read(source.join("records.log")).unwrap();
+            let result = cp.compact_and_replace_detailed_with_hooks(
+                &destination,
+                |point| {
+                    let reject = match failure {
+                        "copy" => point == ExchangePoint::CopyPublished,
+                        "selection-before" => point == ExchangePoint::SelectionBeforeRename,
+                        "selection-sync" => point == ExchangePoint::SelectionBeforeSync,
+                        "ready" => point == ExchangePoint::CandidateReady,
+                        "exchange" => point == ExchangePoint::AfterExchange,
+                        _ => false,
+                    };
+                    if reject {
+                        Err(io::Error::other("injected handoff failure"))
+                    } else {
+                        Ok(())
+                    }
+                },
+                |parent| {
+                    if failure == "sync" {
+                        Err(io::Error::other("injected parent sync failure"))
+                    } else {
+                        crate::directory::sync_existing(parent)
+                    }
+                },
+            );
+            match failure {
+                "preflight" => assert!(matches!(result, Err(HandoffFailure::NotPublished(_)))),
+                "exchange" | "sync" => assert!(matches!(
+                    result,
+                    Err(HandoffFailure::ExchangeOutcomeUnknown(_))
+                )),
+                _ => assert!(matches!(
+                    result,
+                    Err(HandoffFailure::CandidateOutcomeUnknown(_))
+                )),
+            }
+            assert_eq!(
+                fs::read(source.join("records.log")).unwrap() == original,
+                !matches!(failure, "exchange" | "sync")
+            );
+            verify_store(&source);
+            if failure == "preflight" {
+                assert!(!destination.exists());
+            } else {
+                verify_store(&destination);
+                assert_eq!(
+                    fs::read(destination.join("records.log")).unwrap() == original,
+                    matches!(failure, "exchange" | "sync")
+                );
+            }
+            if managed {
+                let reopened = retry_lock(|| CheckpointStore::open_managed(&source)).unwrap();
+                assert_eq!(reopened.get(b"a").unwrap(), Some(b"latest".to_vec()));
+            }
+        }
+    }
 }
 
 #[test]

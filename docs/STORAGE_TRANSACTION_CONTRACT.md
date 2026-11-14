@@ -94,8 +94,17 @@ not begin selection publication. The selection-uncertain result disables the
 handle; reopen and reconcile the visible selection, or explicitly recover
 from the previous trusted checkpoint or full log if none exists. Pre-existing
 files and staging artifacts can exist in any case, no error returns the new
-digest, and the classifications do not establish store health. Other
-maintenance handoffs do not yet provide equivalent classifications.
+digest, and the classifications do not establish store health.
+
+The consuming ordinary and checkpoint-backed `compact_and_replace_detailed`
+methods distinguish failures before candidate publication, during candidate
+preparation and after exchange may have begun. Candidate uncertainty is
+conservative and can include failure before a candidate is published; that
+candidate may be partly configured. Exchange uncertainty requires inspecting
+both paths before reopening. The original handle is consumed even on failure,
+no failure returns a new checkpoint digest, and existing paths, staging
+artifacts or an unhealthy source may remain. Online compaction and other
+maintenance operations do not yet provide equivalent classifications.
 
 ## Current prototype: one store in one process
 

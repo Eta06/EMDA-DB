@@ -66,11 +66,47 @@ impl CheckpointStore {
         )
     }
 
+    /// Consumes this store and classifies candidate-copy and exchange
+    /// failures. The handle is consumed even on error. A candidate can be
+    /// partly configured, and no new checkpoint digest is returned on error;
+    /// reconcile affected paths before reopening or retrying.
+    pub fn compact_and_replace_detailed(
+        self,
+        previous: impl AsRef<Path>,
+    ) -> Result<(Self, [u8; 32]), crate::HandoffFailure> {
+        self.compact_and_replace_detailed_with_hooks(
+            previous.as_ref(),
+            |_| Ok(()),
+            crate::directory::sync_existing,
+        )
+    }
+
+    fn compact_and_replace_detailed_with_hooks(
+        self,
+        previous: &Path,
+        hook: impl FnMut(ExchangePoint) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<(Self, [u8; 32]), crate::HandoffFailure> {
+        crate::publication_outcome::track_handoff(|tracker| {
+            self.compact_and_replace_tracked(previous, hook, sync_parent, Some(tracker))
+        })
+    }
+
     fn compact_and_replace_with_hooks(
         self,
         previous: &Path,
         hook: impl FnMut(ExchangePoint) -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<(Self, [u8; 32])> {
+        self.compact_and_replace_tracked(previous, hook, sync_parent, None)
+    }
+
+    fn compact_and_replace_tracked(
+        self,
+        previous: &Path,
+        hook: impl FnMut(ExchangePoint) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: Option<&crate::publication_outcome::HandoffTracker>,
     ) -> io::Result<(Self, [u8; 32])> {
         if !cfg!(target_os = "linux") {
             return Err(io::Error::new(
@@ -99,6 +135,9 @@ impl CheckpointStore {
         }
         drop(state);
         source_directory_is_owned(&source)?;
+        if let Some(tracker) = tracker {
+            tracker.begin_candidate();
+        }
         let digest = self.compact_to(&previous)?;
         (hook.borrow_mut())(ExchangePoint::CopyPublished)?;
         let mut candidate = Self::open_with_options(
@@ -143,6 +182,9 @@ impl CheckpointStore {
         crate::directory::verify_lock_identity(&source, &original_lock)?;
         crate::directory::verify_lock_identity(&previous, &candidate_lock)?;
         (hook.borrow_mut())(ExchangePoint::CandidateReady)?;
+        if let Some(tracker) = tracker {
+            tracker.begin_exchange();
+        }
         crate::store::compact_exchange::exchange(&source, &previous)?;
         (hook.borrow_mut())(ExchangePoint::AfterExchange).map_err(|error| {
             io::Error::new(

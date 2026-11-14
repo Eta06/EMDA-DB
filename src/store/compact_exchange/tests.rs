@@ -31,7 +31,9 @@ fn exchange_preserves_live_data_old_store_and_open_limits() {
     }
     store.put(b"b", b"two").unwrap();
     let old_length = fs::metadata(source.join("records.log")).unwrap().len();
-    let store = store.compact_and_replace(&source, &previous).unwrap();
+    let store = store
+        .compact_and_replace_detailed(&source, &previous)
+        .unwrap();
     assert!(fs::metadata(source.join("records.log")).unwrap().len() < old_length);
     assert_eq!(store.get(b"a").unwrap(), Some(b"19".to_vec()));
     assert!(store.put(b"c", b"three").is_err());
@@ -151,6 +153,77 @@ fn injected_exchange_failures_preserve_both_complete_copies() {
             .unwrap(),
         Some(b"latest".to_vec())
     );
+}
+
+#[test]
+fn detailed_handoff_classifies_copy_and_exchange_boundaries() {
+    use crate::HandoffFailure;
+    for failure in [
+        "preflight",
+        "copy",
+        "before-exchange",
+        "after-exchange",
+        "sync",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (store, source, previous) = populated(root.path());
+        let original = fs::read(source.join("records.log")).unwrap();
+        let destination = if failure == "preflight" {
+            root.path().join("missing/previous")
+        } else {
+            previous.clone()
+        };
+        let result = store.compact_and_replace_detailed_with_hooks(
+            &source,
+            &destination,
+            |point| {
+                if (failure == "copy" && point == ExchangePoint::CopyPublished)
+                    || (failure == "before-exchange" && point == ExchangePoint::BeforeExchange)
+                    || (failure == "after-exchange" && point == ExchangePoint::AfterExchange)
+                {
+                    Err(io::Error::other("injected handoff failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            |parent| {
+                if failure == "sync" {
+                    Err(io::Error::other("injected parent sync failure"))
+                } else {
+                    crate::directory::sync_existing(parent)
+                }
+            },
+        );
+        match failure {
+            "preflight" => assert!(matches!(result, Err(HandoffFailure::NotPublished(_)))),
+            "copy" | "before-exchange" => assert!(matches!(
+                result,
+                Err(HandoffFailure::CandidateOutcomeUnknown(_))
+            )),
+            _ => assert!(matches!(
+                result,
+                Err(HandoffFailure::ExchangeOutcomeUnknown(_))
+            )),
+        }
+        assert_eq!(
+            fs::read(source.join("records.log")).unwrap() == original,
+            !matches!(failure, "after-exchange" | "sync")
+        );
+        let live = retry_lock(|| Store::open(&source)).unwrap();
+        assert_eq!(live.get(b"key").unwrap(), Some(b"latest".to_vec()));
+        assert_eq!(live.get(b"removed").unwrap(), None);
+        if failure != "preflight" {
+            let old = retry_lock(|| Store::open(&destination)).unwrap();
+            assert_eq!(old.get(b"key").unwrap(), Some(b"latest".to_vec()));
+            assert_eq!(old.get(b"removed").unwrap(), None);
+            assert_eq!(
+                fs::read(destination.join("records.log")).unwrap() == original,
+                matches!(failure, "after-exchange" | "sync")
+            );
+        } else {
+            assert!(!destination.exists());
+        }
+    }
 }
 
 #[test]

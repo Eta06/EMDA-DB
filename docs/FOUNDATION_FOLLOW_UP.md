@@ -148,6 +148,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   recovery of an acknowledged write made after the previous checkpoint.
   [Follow-up checks](MANAGED_ROLLOVER_MODEL_2026_11_14.md) cover disabled
   handles and a short randomized managed-rollover model with replayable corpus.
+- [x] Add opt-in classifications for the consuming ordinary and checkpoint
+  compaction handoffs. Candidate and exchange failures remain conservative;
+  the original handle is consumed even when the method returns an error.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

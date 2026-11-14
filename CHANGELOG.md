@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in failure classifications for consuming ordinary and checkpoint
+  compaction handoffs, distinguishing candidate and exchange attempts.
+
 - Add opt-in managed-rollover failure outcomes that separately identify
   attempts to publish the checkpoint and its persistent selection. A selection
   publication failure still disables the handle until recovery.

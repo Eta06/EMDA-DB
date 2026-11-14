@@ -104,12 +104,51 @@ impl Store {
         )
     }
 
+    /// Consumes this store and classifies failures by the candidate-copy and
+    /// directory-exchange boundaries. The handle is consumed even on error;
+    /// inspect and reconcile the affected paths before reopening or retrying.
+    pub fn compact_and_replace_detailed(
+        self,
+        source: impl AsRef<Path>,
+        previous: impl AsRef<Path>,
+    ) -> Result<Self, crate::HandoffFailure> {
+        self.compact_and_replace_detailed_with_hooks(
+            source.as_ref(),
+            previous.as_ref(),
+            |_| Ok(()),
+            crate::directory::sync_existing,
+        )
+    }
+
+    fn compact_and_replace_detailed_with_hooks(
+        self,
+        source: &Path,
+        previous: &Path,
+        hook: impl FnMut(ExchangePoint) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<Self, crate::HandoffFailure> {
+        crate::publication_outcome::track_handoff(|tracker| {
+            self.compact_and_replace_tracked(source, previous, hook, sync_parent, Some(tracker))
+        })
+    }
+
     fn compact_and_replace_with_hooks(
+        self,
+        source: &Path,
+        previous: &Path,
+        hook: impl FnMut(ExchangePoint) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        self.compact_and_replace_tracked(source, previous, hook, sync_parent, None)
+    }
+
+    fn compact_and_replace_tracked(
         self,
         source: &Path,
         previous: &Path,
         mut hook: impl FnMut(ExchangePoint) -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: Option<&crate::publication_outcome::HandoffTracker>,
     ) -> io::Result<Self> {
         if !cfg!(target_os = "linux") {
             return Err(io::Error::new(
@@ -120,6 +159,9 @@ impl Store {
         let (source, previous, parent) = paths(source, previous)?;
         crate::directory::verify_lock_identity(&source, &self._lock_file)?;
         source_directory_is_owned(&source)?;
+        if let Some(tracker) = tracker {
+            tracker.begin_candidate();
+        }
         self.compact_to(&previous)?;
         hook(ExchangePoint::CopyPublished)?;
         let mut candidate = Store::open_with_resource_limits(
@@ -145,6 +187,9 @@ impl Store {
         crate::directory::verify_lock_identity(&source, &self._lock_file)?;
         crate::directory::verify_lock_identity(&previous, &candidate._lock_file)?;
         hook(ExchangePoint::BeforeExchange)?;
+        if let Some(tracker) = tracker {
+            tracker.begin_exchange();
+        }
         exchange(&source, &previous)?;
         hook(ExchangePoint::AfterExchange).map_err(|error| {
             io::Error::new(

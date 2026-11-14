@@ -185,6 +185,8 @@ Both writable stores also provide `checkpoint_to_detailed` with the same publica
 
 `CheckpointStore::rollover_managed_detailed` separately classifies whether this call began checkpoint publication or selection publication. A selection-publication error disables the handle: reopen the visible managed selection, or recover with the previously trusted checkpoint or full log if no selection exists. A failed call returns no new digest. Neither classification establishes store health or cleanup.
 
+Both consuming `compact_and_replace_detailed` APIs distinguish failures before candidate publication, during candidate preparation, and after directory exchange may have begun. The original handle is consumed even on error. A candidate can be partly configured, and an uncertain exchange requires reconciliation of both paths before reopening; these results do not establish cleanup or store health.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust
