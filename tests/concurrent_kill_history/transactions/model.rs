@@ -81,6 +81,12 @@ fn model_rejects_lost_receipts_fractured_commits_and_staged_data() {
         fn remove(&self, _key: &[u8]) -> io::Result<()> {
             Err(io::Error::other("read-only model"))
         }
+        fn write_detailed(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+            self.write(key, value)
+        }
+        fn remove_detailed(&self, key: &[u8]) -> io::Result<()> {
+            self.remove(key)
+        }
         fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
             Ok(self.0.get(key).cloned())
         }

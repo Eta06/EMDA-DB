@@ -2,7 +2,7 @@
 //! SIGKILL leaves OS/device caches running and is not a power-loss test.
 #![cfg(target_os = "linux")]
 
-use database_engine::{CheckpointStore, Store};
+use database_engine::{CheckpointStore, MutationFailure, Store};
 use rustix::fs::getxattr;
 use std::fs;
 use std::io::{self, BufRead, Write};
@@ -25,7 +25,19 @@ enum Format {
 trait TestStore: Sync {
     fn write(&self, key: &[u8], value: &[u8]) -> io::Result<()>;
     fn remove(&self, key: &[u8]) -> io::Result<()>;
+    fn write_detailed(&self, key: &[u8], value: &[u8]) -> io::Result<()>;
+    fn remove_detailed(&self, key: &[u8]) -> io::Result<()>;
     fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>>;
+}
+
+fn detailed(result: Result<(), MutationFailure>) -> io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(MutationFailure::Rejected(error) | MutationFailure::OutcomeUnknown(error)) => {
+            Err(error)
+        }
+        Err(other) => Err(io::Error::other(other)),
+    }
 }
 
 impl TestStore for Store {
@@ -34,6 +46,12 @@ impl TestStore for Store {
     }
     fn remove(&self, key: &[u8]) -> io::Result<()> {
         self.delete(key)
+    }
+    fn write_detailed(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        detailed(self.put_detailed(key, value))
+    }
+    fn remove_detailed(&self, key: &[u8]) -> io::Result<()> {
+        detailed(self.delete_detailed(key))
     }
     fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         self.get(key)
@@ -46,6 +64,12 @@ impl TestStore for CheckpointStore {
     }
     fn remove(&self, key: &[u8]) -> io::Result<()> {
         self.delete(key)
+    }
+    fn write_detailed(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        detailed(self.put_detailed(key, value))
+    }
+    fn remove_detailed(&self, key: &[u8]) -> io::Result<()> {
+        detailed(self.delete_detailed(key))
     }
     fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         self.get(key)
@@ -70,9 +94,13 @@ fn write_until_killed(store: &impl TestStore) -> ! {
             scope.spawn(move || {
                 barrier.wait();
                 for sequence in 0..1000 {
-                    store
-                        .write(&key(worker, sequence), &value(worker, sequence))
-                        .unwrap();
+                    let key = key(worker, sequence);
+                    let value = value(worker, sequence);
+                    if sequence % 2 == 0 {
+                        store.write(&key, &value).unwrap();
+                    } else {
+                        store.write_detailed(&key, &value).unwrap();
+                    }
                     sender.send((worker, sequence)).unwrap();
                 }
             });

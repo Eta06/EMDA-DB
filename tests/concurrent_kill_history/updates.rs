@@ -78,10 +78,11 @@ fn update_until_killed(store: &impl TestStore) -> ! {
                         acknowledged: false,
                     });
                     let key = update_key(worker);
-                    if let Some(next) = update_value(worker, sequence) {
-                        store.write(&key, &next).unwrap();
-                    } else {
-                        store.remove(&key).unwrap();
+                    match (update_value(worker, sequence), sequence % 2 == 0) {
+                        (Some(next), true) => store.write(&key, &next).unwrap(),
+                        (Some(next), false) => store.write_detailed(&key, &next).unwrap(),
+                        (None, true) => store.remove(&key).unwrap(),
+                        (None, false) => store.remove_detailed(&key).unwrap(),
                     }
                     update_event(UpdateEvent {
                         worker,
