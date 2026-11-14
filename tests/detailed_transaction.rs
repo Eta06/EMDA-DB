@@ -391,3 +391,90 @@ fn ordinary_coordinator_rejection_remains_conservatively_unknown() {
     assert_eq!(store.get(b"safe").unwrap().as_deref(), Some(&b"yes"[..]));
     assert_eq!(store.get(b"blocked").unwrap(), None);
 }
+
+fn race_for_one_remaining_key(store: &(impl Backend + Sync)) {
+    let results = std::thread::scope(|scope| {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let mut releases = Vec::new();
+        let workers = [b"first".as_slice(), b"second".as_slice()].map(|key| {
+            let ready = ready_tx.clone();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            releases.push(release_tx);
+            scope.spawn(move || {
+                store.run(1, None, None, |tx| {
+                    let staged = tx.put(key, b"winner");
+                    ready.send(()).map_err(io::Error::other)?;
+                    release_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(io::Error::other)?;
+                    staged
+                })
+            })
+        });
+        let ready = [
+            ready_rx.recv_timeout(Duration::from_secs(10)),
+            ready_rx.recv_timeout(Duration::from_secs(10)),
+        ];
+        for release in releases {
+            let _ = release.send(());
+        }
+        let results = workers.map(|worker| worker.join().unwrap());
+        assert!(
+            ready.into_iter().all(|result| result.is_ok()),
+            "transaction did not reach staging"
+        );
+        results
+    });
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(TransactionFailure::Rejected(_))))
+            .count(),
+        1
+    );
+    let present = [b"first".as_slice(), b"second".as_slice()]
+        .iter()
+        .filter(|key| store.get(key).unwrap().as_deref() == Some(&b"winner"[..]))
+        .count();
+    assert_eq!(present, 1);
+}
+
+#[test]
+fn concurrent_logical_quota_races_reject_only_the_unsubmitted_transaction() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("ordinary");
+    let store = Store::open(&path).unwrap();
+    store.put(b"safe", b"yes").unwrap();
+    drop(store);
+    let store = Store::open_with_limits(&path, None, Some(2)).unwrap();
+    race_for_one_remaining_key(&store);
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        [b"first".as_slice(), b"second".as_slice()]
+            .iter()
+            .filter(|key| reopened.get(key).unwrap().is_some())
+            .count(),
+        1
+    );
+
+    let path = root.path().join("checkpoint-store");
+    let checkpoint = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    store.put(b"safe", b"yes").unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let store =
+        CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 1024, 1, 64).unwrap();
+    race_for_one_remaining_key(&store);
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        [b"first".as_slice(), b"second".as_slice()]
+            .iter()
+            .filter(|key| reopened.get(key).unwrap().is_some())
+            .count(),
+        1
+    );
+}

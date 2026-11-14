@@ -7,6 +7,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 - Classify configured transaction log, live-key and checkpoint suffix limit
   failures as rejected before submission in the opt-in detailed interface;
   checkpoint maintenance may still have independent effects.
+- Exercise competing transactions at a one-key quota boundary and make a
+  private test-fixture reopen tolerate transient lock contention during tests.
 
 - Add opt-in `transaction_detailed` on both writable stores and the document
   interface. It distinguishes callback/staging failures, pre-submission

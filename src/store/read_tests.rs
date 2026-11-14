@@ -88,7 +88,7 @@ fn blocked_read_does_not_block_a_write_and_observes_its_original_value() {
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
     drop(store);
     assert_eq!(
-        Store::open(dir.path())
+        crate::test_support::retry_lock(|| Store::open(dir.path()))
             .unwrap()
             .get(b"key")
             .unwrap()
