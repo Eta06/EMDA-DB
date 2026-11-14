@@ -113,7 +113,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   compare-exchange, integer increments and batches on both writable paths,
   including checkpoint conditional batches. A rejected call says nothing
   about an earlier uncertain write, and ordinary coordinator failures can
-  remain conservatively unknown before append.
+  remain conservatively unknown before append. [Local fault, process-kill and
+  performance evidence](DIRECT_MUTATION_OUTCOMES_2026_11_14.md) records the
+  scope and remaining uncertainty.
 - [ ] Specify structured outcomes for document convenience mutations,
   maintenance, backup and restore APIs, and refine confirmed pre-submission
   classification inside the ordinary commit coordinator. Existing error types
