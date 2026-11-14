@@ -38,6 +38,7 @@ The [managed suffix report](docs/MANAGED_ROLLOVER_SUFFIX_FAILURES_2026_11_14.md)
 The [managed outcome model](docs/MANAGED_ROLLOVER_MODEL_2026_11_14.md) checks failed-handle behavior and mixed rollover histories.
 The [handoff outcome report](docs/HANDOFF_OUTCOMES_2026_11_14.md) records classified compaction failures and recovery checks.
 The [handoff filesystem-fault report](docs/HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md) checks selected errors across ordinary and checkpoint-backed stores.
+The [online handoff report](docs/ONLINE_HANDOFF_OUTCOMES_2026_11_14.md) records its distinct failure and concurrent-write behavior.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
