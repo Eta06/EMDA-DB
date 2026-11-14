@@ -2,6 +2,34 @@ use super::*;
 use crate::Store;
 
 #[test]
+fn detailed_upgrade_reports_unknown_after_parent_sync_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"key", b"value").unwrap();
+    drop(store);
+    let (log, _) = Log::open(&source, false).unwrap();
+    let destination = root.path().join("copy");
+    let result = crate::publication_outcome::track(|tracker| {
+        upgrade_format_with_hooks(
+            &log,
+            &destination,
+            |_| Err(io::Error::other("injected parent sync failure")),
+            || {
+                tracker.begin_publication();
+                Ok(())
+            },
+        )
+    });
+    assert!(matches!(
+        result,
+        Err(crate::PublicationFailure::OutcomeUnknown(_))
+    ));
+    let copy = crate::test_support::retry_lock(|| Store::open(&destination)).unwrap();
+    assert_eq!(copy.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+}
+
+#[test]
 fn staging_lock_release_is_not_delayed_by_a_duplicate_descriptor() {
     let directory = tempfile::tempdir().unwrap();
     let mut lock = StagingLock::create(directory.path()).unwrap();

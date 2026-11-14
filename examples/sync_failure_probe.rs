@@ -140,6 +140,9 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
         "checkpoint-compaction" => checkpoint_store(root)
             .map_err(PublicationFailure::NotPublished)
             .and_then(|store| store.compact_to_detailed(target).map(|_| ())),
+        "upgrade" => Store::open(source)
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.upgrade_format_detailed(target)),
         _ => return Err("unknown publication operation".into()),
     };
     match outcome {

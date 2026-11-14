@@ -291,8 +291,33 @@ pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()>
     upgrade_format(source, destination)
 }
 
+pub(crate) fn upgrade_legacy_tracked(
+    source: &Log,
+    destination: &Path,
+    tracker: &crate::publication_outcome::Tracker,
+) -> io::Result<()> {
+    if !source.is_legacy() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "store already has a commit witness",
+        ));
+    }
+    upgrade_format_tracked(source, destination, tracker)
+}
+
 pub(crate) fn upgrade_format(source: &Log, destination: &Path) -> io::Result<()> {
     upgrade_format_with_hooks(source, destination, crate::directory::sync_existing, || {
+        Ok(())
+    })
+}
+
+pub(crate) fn upgrade_format_tracked(
+    source: &Log,
+    destination: &Path,
+    tracker: &crate::publication_outcome::Tracker,
+) -> io::Result<()> {
+    upgrade_format_with_hooks(source, destination, crate::directory::sync_existing, || {
+        tracker.begin_publication();
         Ok(())
     })
 }

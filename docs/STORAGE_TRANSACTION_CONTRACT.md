@@ -77,8 +77,13 @@ reconcile it before retrying. A checkpoint is not an independent backup.
 both writable stores. The checkpoint-backed result returns a digest on success,
 which must be retained separately in trusted metadata; an uncertain failure
 does not return it. Neither classification establishes source health or
-cleanup. Rollover, compact-and-replace handoffs, upgrade and other maintenance
-publications do not yet provide this classification.
+cleanup. `upgrade_format_detailed`, `upgrade_legacy_detailed` and
+`upgrade_empty_legacy_detailed` classify destination publication for upgrade
+copies. A legacy upgrade cannot detect previous data loss, and the empty-legacy
+variant requires independent confirmation that the source should be empty; it
+may create a source lock file even if the copy fails. Rollover,
+compact-and-replace handoffs and other maintenance publications do not yet
+provide this classification.
 
 ## Current prototype: one store in one process
 

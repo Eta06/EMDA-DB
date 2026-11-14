@@ -84,7 +84,7 @@ class OneShotCoverageTests(unittest.TestCase):
             injection['outcome'].update(status='error', classification='not_published')
             injection['verification']['target_visible'] = False
         self.assertEqual(verify(report)['injections'], 2)
-        for operation in ('checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction'):
+        for operation in ('checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade'):
             checked = copy.deepcopy(report)
             checked['operations'] = [operation]
             checked['cases'][0]['operation'] = operation

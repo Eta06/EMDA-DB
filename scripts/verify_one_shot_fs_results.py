@@ -51,7 +51,7 @@ def verify(result):
     publication = result.get('publication_outcomes', False)
     require(type(publication) is bool, 'invalid publication-outcome mode')
     if publication:
-        require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction') for operation in operations),
+        require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade') for operation in operations),
                 'invalid publication operation')
     require(formats and operations and len(formats) == len(set(formats))
             and len(operations) == len(set(operations)), 'empty or duplicate campaign format or operation')

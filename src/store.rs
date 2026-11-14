@@ -676,15 +676,33 @@ impl Store {
         source: impl AsRef<Path>,
         destination: impl AsRef<Path>,
     ) -> io::Result<()> {
-        let source = source.as_ref();
+        let store = Self::open_empty_legacy_for_upgrade(source.as_ref())?;
+        store.upgrade_legacy(destination)
+    }
+
+    /// Upgrades an independently verified empty legacy store with structured
+    /// destination-publication outcomes. This cannot detect earlier data loss;
+    /// the source directory may gain a lock file even on failure.
+    pub fn upgrade_empty_legacy_detailed(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            let store = Self::open_empty_legacy_for_upgrade(source.as_ref())?;
+            store.upgrade_using(destination.as_ref(), |log, destination| {
+                backup::upgrade_legacy_tracked(log, destination, tracker)
+            })
+        })
+    }
+
+    fn open_empty_legacy_for_upgrade(source: &Path) -> io::Result<Self> {
         let metadata = std::fs::metadata(source.join("records.log"))?;
         if !metadata.is_file() || metadata.len() != 0 {
             return Err(record::invalid_data(
                 "source log is not an empty regular file",
             ));
         }
-        let store = Self::open_using(source, |path, _| Log::open_empty_legacy_for_upgrade(path))?;
-        store.upgrade_legacy(destination)
+        Self::open_using(source, |path, _| Log::open_empty_legacy_for_upgrade(path))
     }
 
     /// Copies a legacy store into a new directory with a commit witness.
@@ -694,15 +712,20 @@ impl Store {
     /// log. The destination must not exist. Mutations wait until the copy and
     /// verification finish. A publication sync error leaves the result uncertain.
     pub fn upgrade_legacy(&self, destination: impl AsRef<Path>) -> io::Result<()> {
-        let _writer = self
-            .writes
-            .write()
-            .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        let _inner = self.read()?;
-        if self.commits.failed() {
-            return Err(uncertain_error());
-        }
-        backup::upgrade_legacy(&self.log, destination.as_ref())
+        self.upgrade_using(destination.as_ref(), backup::upgrade_legacy)
+    }
+
+    /// Copies a legacy store with structured destination-publication outcomes.
+    /// The operation cannot identify data lost before the legacy store opened.
+    pub fn upgrade_legacy_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.upgrade_using(destination.as_ref(), |log, destination| {
+                backup::upgrade_legacy_tracked(log, destination, tracker)
+            })
+        })
     }
 
     /// Copies any supported store into the current format at a new path.
@@ -712,6 +735,27 @@ impl Store {
     /// The destination is verified and synchronized before publication, and
     /// never replaces an existing path. An error after publication is uncertain.
     pub fn upgrade_format(&self, destination: impl AsRef<Path>) -> io::Result<()> {
+        self.upgrade_using(destination.as_ref(), backup::upgrade_format)
+    }
+
+    /// Copies a supported store into the current format, reporting whether
+    /// destination publication may have happened. Inspect uncertain outcomes.
+    pub fn upgrade_format_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.upgrade_using(destination.as_ref(), |log, destination| {
+                backup::upgrade_format_tracked(log, destination, tracker)
+            })
+        })
+    }
+
+    fn upgrade_using(
+        &self,
+        destination: &Path,
+        upgrade: impl FnOnce(&Log, &Path) -> io::Result<()>,
+    ) -> io::Result<()> {
         let _writer = self
             .writes
             .write()
@@ -720,7 +764,7 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        backup::upgrade_format(&self.log, destination.as_ref())
+        upgrade(&self.log, destination)
     }
 
     fn append(

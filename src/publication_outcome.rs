@@ -1,4 +1,4 @@
-//! Conservative outcomes for backup, restore, checkpoint and compaction publication.
+//! Conservative outcomes for verified copy publication.
 use std::cell::Cell;
 use std::fmt;
 use std::io;
