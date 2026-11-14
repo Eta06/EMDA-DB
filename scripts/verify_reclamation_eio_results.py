@@ -9,7 +9,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 
-from reclamation_eio_campaign import EXTERNAL, FORMATS, ORDERS, check_outcome
+from reclamation_eio_campaign import EXTERNAL, FORMATS, ORDERS, check_cleanup, check_outcome
 from sync_eio_campaign import SYSCALL_SETS, reports_injected_error
 
 
@@ -34,7 +34,7 @@ def check_store(value, fmt=None, *, complete):
     require(valid_digest(meta) if actual_format == 'v3' else meta is None, 'invalid metadata digest')
 
 
-def check_probe(probe, fmt, order, syscall=None, error_name=None):
+def check_probe(probe, fmt, order, syscall=None, error_name=None, *, cleanup_checked=False):
     outcome, verified = probe['outcome'], probe['verification']
     require(outcome['operation'] == 'reclaim' and outcome['status'] in ('success', 'error'), 'unexpected reclamation outcome')
     require(verified['status'] == 'verified' and verified['order'] == order and verified['backup_restored'] is True,
@@ -53,6 +53,10 @@ def check_probe(probe, fmt, order, syscall=None, error_name=None):
     require(probe['source_after_verification'] == source and probe['previous_after_verification'] == previous
             and probe['external_after_verification'] == external and probe['stages_after_verification'] == probe['stages_after'],
             'verification changed retained evidence')
+    if cleanup_checked:
+        require(probe['source_after_cleanup'] == source and probe['previous_after_cleanup'] == previous
+                and probe['external_after_cleanup'] == external, 'cleanup changed retained store or reference evidence')
+        check_cleanup(probe['cleanup'], probe['stages_after'], probe['stages_after_cleanup'])
     for path, entry in probe['stages_after'].items():
         name = PurePosixPath(path)
         require(bool(name.parts) and not name.is_absolute() and '..' not in name.parts
@@ -75,6 +79,8 @@ def verify(result):
     group = result['syscall_set']
     require(group in SYSCALL_SETS and result['fixture_paths_only'] == (group != 'sync'), 'invalid syscall group or path mode')
     error_name, formats = result['injected_error'], result['formats']
+    cleanup_checked = result.get('cleanup_checked', False)
+    require(type(cleanup_checked) is bool, 'invalid cleanup coverage marker')
     require(error_name in ('EIO', 'EAGAIN'), 'unknown injected errno')
     require(formats and len(formats) == len(set(formats)) and all(fmt in FORMATS for fmt in formats), 'invalid formats')
     cases = result['cases']
@@ -84,7 +90,7 @@ def verify(result):
     outcomes, total = Counter(), 0
     for case in cases:
         fmt, control = case['format'], case['control']
-        check_probe(control, fmt, 'source-first')
+        check_probe(control, fmt, 'source-first', cleanup_checked=cleanup_checked)
         require(control['outcome']['status'] == 'success', 'reclamation control did not succeed')
         expected = []
         for syscall in SYSCALL_SETS[group]:
@@ -97,7 +103,7 @@ def verify(result):
         actual = [(item['syscall'], item['ordinal'], item['order']) for item in case['injections']]
         require(Counter(actual) == Counter(expected), 'missing or duplicate selected injection')
         for item in case['injections']:
-            check_probe(item, fmt, item['order'], item['syscall'], error_name)
+            check_probe(item, fmt, item['order'], item['syscall'], error_name, cleanup_checked=cleanup_checked)
             outcomes[item['outcome']['classification'] or 'success'] += 1
             total += 1
     return {'controls': len(cases), 'injections': total, 'outcomes': dict(outcomes), 'errno': error_name}

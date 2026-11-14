@@ -1,5 +1,7 @@
 //! Disposable fixtures for detailed online-reclamation fault campaigns.
-use database_engine::{OnlineHandoffFailure, OnlineReclaimFailure, OnlineStore, Store};
+use database_engine::{
+    OnlineHandoffFailure, OnlineReclaimFailure, OnlineStore, Store, cleanup_abandoned_staging,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -163,13 +165,36 @@ fn verify(root: &Path, classification: &str, order: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn cleanup(root: &Path) -> ProbeResult<()> {
+    let generic = cleanup_abandoned_staging(root)?;
+    let store = OnlineStore::open(root.join("source"))?;
+    let retired = store.cleanup_retired_staging(&Default::default())?;
+    if store.with_store(|db| db.scan(None, None, 16))? != expected() {
+        return Err("live data changed after cleanup".into());
+    }
+    drop(store);
+    let restored = root.join("restore-area/after-cleanup");
+    Store::restore(root.join("reference-backup"), &restored)?;
+    if Store::open(restored)?.scan(None, None, 16)? != expected() {
+        return Err("backup did not restore after cleanup".into());
+    }
+    println!(
+        "{}",
+        json!({"status":"cleaned", "backup_restored":true,
+        "generic":{"removed_payloads":generic.removed_payloads, "removed_markers":generic.removed_markers, "skipped":generic.skipped},
+        "retired":{"removed_payloads":retired.removed_payloads, "removed_markers":retired.removed_markers, "skipped":retired.skipped}})
+    );
+    Ok(())
+}
+
 fn main() -> ProbeResult<()> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     match arguments.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "attempt-publication" => attempt(Path::new(root), operation),
         [command, root, classification, order] if command == "verify" => verify(Path::new(root), classification, order),
-        _ => Err("usage: setup ROOT FORMAT | attempt-publication ROOT reclaim | verify ROOT CLASSIFICATION ORDER".into()),
+        [command, root] if command == "cleanup" => cleanup(Path::new(root)),
+        _ => Err("usage: setup ROOT FORMAT | attempt-publication ROOT reclaim | verify ROOT CLASSIFICATION ORDER | cleanup ROOT".into()),
     }
 }
 
@@ -187,5 +212,19 @@ mod tests {
             drop(store);
             assert!(verify(root.path(), "not_published", order).is_err());
         }
+    }
+
+    #[test]
+    fn cleanup_checks_live_data_and_backup_afterward() {
+        let root = tempfile::tempdir().unwrap();
+        setup(root.path(), "v2").unwrap();
+        cleanup(root.path()).unwrap();
+
+        let changed = tempfile::tempdir().unwrap();
+        setup(changed.path(), "v2").unwrap();
+        let store = Store::open(changed.path().join("source")).unwrap();
+        store.put(b"safe", b"changed").unwrap();
+        drop(store);
+        assert!(cleanup(changed.path()).is_err());
     }
 }

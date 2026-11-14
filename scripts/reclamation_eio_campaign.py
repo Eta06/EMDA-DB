@@ -97,6 +97,23 @@ def check_outcome(outcome, verification, original, source, previous):
         raise ValueError('invalid reclamation outcome')
 
 
+def check_cleanup(cleanup, before, after):
+    if cleanup.get('status') != 'cleaned' or cleanup.get('backup_restored') is not True:
+        raise ValueError('cleanup did not verify live data and backup')
+    removed = 0
+    for name in ('generic', 'retired'):
+        report = cleanup.get(name)
+        if not isinstance(report, dict) or set(report) != {'removed_payloads', 'removed_markers', 'skipped'}:
+            raise ValueError('invalid cleanup counters')
+        if any(type(value) is not int or value < 0 for value in report.values()):
+            raise ValueError('invalid cleanup counters')
+        removed += report['removed_payloads'] + report['removed_markers']
+    if any(name not in before or before[name] != entry for name, entry in after.items()):
+        raise ValueError('cleanup added or altered retained staging evidence')
+    if (before != after) != (removed > 0):
+        raise ValueError('cleanup counters disagree with staged evidence')
+
+
 def run_case(binary, parent, fmt, syscalls, fixture_only, error_name,
              syscall=None, ordinal=None, order='source-first'):
     with tempfile.TemporaryDirectory(prefix='reclamation-eio-case-', dir=parent) as directory:
@@ -120,10 +137,18 @@ def run_case(binary, parent, fmt, syscalls, fixture_only, error_name,
                                                                       stage_state(root), external_state(root))
         if (source, previous, stages, external) != (final_source, final_previous, final_stages, final_external):
             raise ValueError('verification changed source, sibling, stage or reference evidence')
+        cleanup = common.run_probe(binary, 'cleanup', root)
+        cleaned_source, cleaned_previous, cleaned_stages, cleaned_external = (store_state(root / 'source'), store_state(root / 'previous'),
+                                                                              stage_state(root), external_state(root))
+        if (source, previous, external) != (cleaned_source, cleaned_previous, cleaned_external):
+            raise ValueError('cleanup changed source, named sibling or reference evidence')
+        check_cleanup(cleanup, stages, cleaned_stages)
         return {**traced, 'original': original, 'source_after': source, 'previous_after': previous,
                 'stages_after': stages, 'external': external, 'verification': verified,
                 'source_after_verification': final_source, 'previous_after_verification': final_previous,
-                'stages_after_verification': final_stages, 'external_after_verification': final_external}
+                'stages_after_verification': final_stages, 'external_after_verification': final_external,
+                'cleanup': cleanup, 'source_after_cleanup': cleaned_source, 'previous_after_cleanup': cleaned_previous,
+                'stages_after_cleanup': cleaned_stages, 'external_after_cleanup': cleaned_external}
 
 
 def main():
@@ -155,6 +180,7 @@ def main():
               'filesystem': json.loads(subprocess.check_output(['findmnt', '-J', '-T', directory, '-o', 'TARGET,FSTYPE'], text=True)),
               'max_ordinals': args.max_ordinals, 'syscall_set': args.syscall_set,
               'fixture_paths_only': fixture_only, 'injected_error': args.error,
+              'cleanup_checked': True,
               'formats': [args.format] if args.format else list(FORMATS),
               'started_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
               'completed': False, 'failure': None, 'current': None, 'cases': []}

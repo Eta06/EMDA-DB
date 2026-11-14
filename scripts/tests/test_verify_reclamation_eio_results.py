@@ -102,6 +102,35 @@ class ReclamationCoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'metadata digest'):
             verify(report)
 
+    def test_cleanup_checks_evidence_and_preserves_unrecognized_stages(self):
+        report = fixture()
+        report['cleanup_checked'] = True
+        case = report['cases'][0]
+        for item in [case['control'], *case['injections']]:
+            stage = {'.emda-stage-v1-r-example.owner': {'type': 'file', 'sha256': 'f' * 64}}
+            item['stages_after'] = copy.deepcopy(stage)
+            item['stages_after_verification'] = copy.deepcopy(stage)
+            item['stages_after_cleanup'] = copy.deepcopy(stage)
+            item['source_after_cleanup'] = item['source_after'].copy()
+            item['previous_after_cleanup'] = item['previous_after']
+            item['external_after_cleanup'] = item['external'].copy()
+            item['cleanup'] = {'status': 'cleaned', 'backup_restored': True,
+                               'generic': {'removed_payloads': 0, 'removed_markers': 0, 'skipped': 1},
+                               'retired': {'removed_payloads': 0, 'removed_markers': 0, 'skipped': 1}}
+        self.assertEqual(verify(report)['injections'], 2)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][0]['stages_after_cleanup']['.emda-stage-v1-r-example.owner']['sha256'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'altered retained staging'):
+            verify(broken)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][0]['source_after_cleanup']['records.log'] = '0' * 64
+        with self.assertRaisesRegex(ValueError, 'cleanup changed retained'):
+            verify(broken)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][0]['cleanup']['retired']['removed_markers'] = 1
+        with self.assertRaisesRegex(ValueError, 'counters disagree'):
+            verify(broken)
+
 
 if __name__ == '__main__':
     unittest.main()
