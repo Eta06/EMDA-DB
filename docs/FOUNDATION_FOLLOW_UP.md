@@ -154,6 +154,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   [Boundary checks](HANDOFF_OUTCOMES_2026_11_14.md) record the tested scope.
   A [filesystem-fault campaign](HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md)
   checks selected returned errors and recovery of both visible copies.
+- [x] Add opt-in publication and exchange classifications for guarded
+  online compaction. Concurrent callbacks can change the source while a
+  candidate is prepared; an exchange-uncertain failure disables the handle.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

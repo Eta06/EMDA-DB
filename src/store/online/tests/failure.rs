@@ -123,6 +123,148 @@ fn failure_injection_preserves_source_and_poisoning_after_exchange() {
 }
 
 #[test]
+fn detailed_online_handoff_classifies_publication_and_exchange_boundaries() {
+    use crate::OnlineHandoffFailure;
+    for failure in [
+        "preflight",
+        "copy",
+        "barrier",
+        "candidate",
+        "exchange",
+        "sync",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (source, previous) = paths(root.path());
+        let store = OnlineStore::open(&source).unwrap();
+        insert_history(&store);
+        let original = fs::read(source.join("records.log")).unwrap();
+        let destination = if failure == "preflight" {
+            root.path().join("missing/previous")
+        } else {
+            previous.clone()
+        };
+        let result = store.compact_with_hooks_detailed(
+            &destination,
+            &Default::default(),
+            |point| {
+                let reject = match failure {
+                    "copy" => point == copy::Point::InitialCopy,
+                    "barrier" => point == copy::Point::BeforeFinalBarrier,
+                    "candidate" => point == copy::Point::BeforeExchange,
+                    "exchange" => point == copy::Point::AfterExchange,
+                    _ => false,
+                };
+                if reject {
+                    Err(io::Error::other("injected handoff failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            |parent| {
+                if failure == "sync" {
+                    Err(io::Error::other("injected parent sync failure"))
+                } else {
+                    crate::directory::sync_existing(parent)
+                }
+            },
+        );
+        match failure {
+            "preflight" | "copy" | "barrier" => {
+                assert!(matches!(result, Err(OnlineHandoffFailure::NotPublished(_))))
+            }
+            "candidate" => assert!(matches!(
+                result,
+                Err(OnlineHandoffFailure::CandidateOutcomeUnknown(_))
+            )),
+            _ => assert!(matches!(
+                result,
+                Err(OnlineHandoffFailure::ExchangeOutcomeUnknown(_))
+            )),
+        }
+        assert_eq!(
+            fs::read(source.join("records.log")).unwrap() == original,
+            !matches!(failure, "exchange" | "sync")
+        );
+        if matches!(failure, "exchange" | "sync") {
+            assert!(store.with_store(|db| db.get(b"overwritten")).is_err());
+            assert!(
+                store
+                    .with_store(|db| db.put(b"after", b"rejected"))
+                    .is_err()
+            );
+        } else {
+            assert_eq!(
+                store.with_store(|db| db.get(b"overwritten")).unwrap(),
+                Some(b"39".to_vec())
+            );
+        }
+        drop(store);
+        let live = retry_lock(|| Store::open(&source)).unwrap();
+        assert_eq!(live.get(b"overwritten").unwrap(), Some(b"39".to_vec()));
+        assert_eq!(live.get(b"after").unwrap(), None);
+        if destination.exists() {
+            let old = retry_lock(|| Store::open(&destination)).unwrap();
+            assert_eq!(old.get(b"overwritten").unwrap(), Some(b"39".to_vec()));
+            assert_eq!(
+                fs::read(destination.join("records.log")).unwrap() == original,
+                matches!(failure, "exchange" | "sync")
+            );
+        } else {
+            assert!(matches!(failure, "preflight" | "copy" | "barrier"));
+        }
+    }
+}
+
+#[test]
+fn detailed_prepublication_failure_does_not_exclude_concurrent_writes() {
+    use crate::OnlineHandoffFailure;
+    let root = tempfile::tempdir().unwrap();
+    let (source, previous) = paths(root.path());
+    let store = Arc::new(OnlineStore::open(&source).unwrap());
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let worker_store = Arc::clone(&store);
+    let target = previous.clone();
+    let worker = thread::spawn(move || {
+        worker_store.compact_with_hooks_detailed(
+            &target,
+            &Default::default(),
+            |point| {
+                if point == copy::Point::BeforeFinalBarrier {
+                    ready_tx.send(()).unwrap();
+                    resume_rx.recv_timeout(WAIT).unwrap();
+                    return Err(io::Error::other("injected prepublication failure"));
+                }
+                Ok(())
+            },
+            crate::directory::sync_existing,
+        )
+    });
+    ready_rx.recv_timeout(WAIT).unwrap();
+    store
+        .with_store(|db| db.put(b"independent", b"acknowledged"))
+        .unwrap();
+    resume_tx.send(()).unwrap();
+    assert!(matches!(
+        worker.join().unwrap(),
+        Err(OnlineHandoffFailure::NotPublished(_))
+    ));
+    assert!(!previous.exists());
+    assert_eq!(
+        store.with_store(|db| db.get(b"independent")).unwrap(),
+        Some(b"acknowledged".to_vec())
+    );
+    drop(store);
+    assert_eq!(
+        retry_lock(|| Store::open(&source))
+            .unwrap()
+            .get(b"independent")
+            .unwrap(),
+        Some(b"acknowledged".to_vec())
+    );
+}
+
+#[test]
 fn staged_corruption_is_detected_before_exchange() {
     use std::os::unix::fs::FileExt;
     let root = tempfile::tempdir().unwrap();

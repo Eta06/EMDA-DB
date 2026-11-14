@@ -189,6 +189,8 @@ Both writable stores also provide `checkpoint_to_detailed` with the same publica
 
 Both consuming `compact_and_replace_detailed` APIs distinguish failures before candidate publication, during candidate preparation, and after directory exchange may have begun. The original handle is consumed even on error. A candidate can be partly configured, and an uncertain exchange requires coordinated reopening and reconciliation of both paths; these results do not establish cleanup or store health.
 
+`OnlineStore::compact_and_replace_detailed` provides similar classifications for guarded online compaction. Other callbacks can write while preparation runs, so a candidate may omit concurrent writes. An uncertain exchange disables the online handle; coordinate callers, drop the handle, and reopen both paths to reconcile them. This does not classify subsequent retired-copy reclamation.
+
 For example, a transaction can read and update multiple keys together:
 
 ```rust

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in publication and exchange failure classifications for guarded
+  online compaction. An exchange-uncertain result disables the online handle.
+
 - Add opt-in failure classifications for consuming ordinary and checkpoint
   compaction handoffs, distinguishing candidate and exchange attempts.
 

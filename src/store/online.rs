@@ -252,6 +252,23 @@ impl OnlineStore {
         )
     }
 
+    /// Classifies this call's destination-publication and exchange failures.
+    /// Independent callbacks can write during preparation. A candidate may
+    /// omit such writes, and an exchange-uncertain failure disables this
+    /// handle; coordinate callers, drop it, and reconcile both paths.
+    pub fn compact_and_replace_detailed(
+        &self,
+        previous: impl AsRef<Path>,
+        options: &OnlineCompactionOptions,
+    ) -> Result<OnlineCompactionReport, crate::OnlineHandoffFailure> {
+        self.compact_with_hooks_detailed(
+            previous.as_ref(),
+            options,
+            |_| Ok(()),
+            crate::directory::sync_existing,
+        )
+    }
+
     /// Performs guarded online compaction and then removes the redundant
     /// previous store after the new directory handoff has been synchronized.
     /// This permanently discards old log history. The source directory and
@@ -340,7 +357,14 @@ impl OnlineStore {
         reclaim_hook: impl FnMut(reclaim::Point) -> io::Result<()>,
     ) -> Result<OnlineCompactionReport, OnlineReclaimError> {
         let (report, reclamation) = self
-            .compact_internal(previous, options, hook, sync_parent, Some(reclaim_hook))
+            .compact_internal(
+                previous,
+                options,
+                hook,
+                sync_parent,
+                Some(reclaim_hook),
+                None,
+            )
             .map_err(OnlineReclaimError::Compaction)?;
         match reclamation {
             Some(Ok(())) => Ok(report),
@@ -365,8 +389,29 @@ impl OnlineStore {
             hook,
             sync_parent,
             None::<fn(reclaim::Point) -> io::Result<()>>,
+            None,
         )
         .map(|(report, _)| report)
+    }
+
+    fn compact_with_hooks_detailed(
+        &self,
+        previous: &Path,
+        options: &OnlineCompactionOptions,
+        hook: impl FnMut(copy::Point) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<OnlineCompactionReport, crate::OnlineHandoffFailure> {
+        crate::publication_outcome::track_online_handoff(|tracker| {
+            self.compact_internal(
+                previous,
+                options,
+                hook,
+                sync_parent,
+                None::<fn(reclaim::Point) -> io::Result<()>>,
+                Some(tracker),
+            )
+            .map(|(report, _)| report)
+        })
     }
 
     fn compact_internal(
@@ -376,6 +421,7 @@ impl OnlineStore {
         mut hook: impl FnMut(copy::Point) -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         reclaim_hook: Option<impl FnMut(reclaim::Point) -> io::Result<()>>,
+        tracker: Option<&crate::publication_outcome::HandoffTracker>,
     ) -> io::Result<(OnlineCompactionReport, Option<io::Result<()>>)> {
         if !cfg!(target_os = "linux") {
             return Err(io::Error::new(
@@ -475,6 +521,9 @@ impl OnlineStore {
         crate::directory::verify_lock_identity(&source, &current._lock_file)?;
         compact_exchange::source_directory_is_owned(&source)?;
         fs::File::open(stage.path())?.sync_all()?;
+        if let Some(tracker) = tracker {
+            tracker.begin_candidate();
+        }
         stage.publish(&previous)?;
         crate::directory::verify_lock_identity(&previous, &candidate._lock_file)?;
         crate::directory::sync_existing(&parent).map_err(|error| {
@@ -488,6 +537,9 @@ impl OnlineStore {
         stage.publication_synchronized();
         hook(copy::Point::BeforeExchange)?;
         state.failed = true;
+        if let Some(tracker) = tracker {
+            tracker.begin_exchange();
+        }
         compact_exchange::exchange(&source, &previous).map_err(|error| {
             io::Error::new(
                 error.kind(),

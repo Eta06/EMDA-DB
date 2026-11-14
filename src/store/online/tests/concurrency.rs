@@ -11,7 +11,7 @@ fn online_handoff_keeps_disabled_direct_read_admission_disabled() {
     let store = OnlineStore::open(&source).unwrap();
     store.with_store(|db| db.put(b"key", b"value")).unwrap();
     store
-        .compact_and_replace(&previous, &OnlineCompactionOptions::default())
+        .compact_and_replace_detailed(&previous, &OnlineCompactionOptions::default())
         .unwrap();
     assert_eq!(
         store

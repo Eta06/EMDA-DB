@@ -127,6 +127,56 @@ impl std::error::Error for HandoffFailure {
     }
 }
 
+/// A failed online compaction handoff, classified by this call's publication
+/// attempts. The handle is not consumed; independent writes can occur during
+/// preparation. Existing paths and temporary artifacts may remain. These
+/// outcomes do not certify source health, cleanup or an independent backup.
+/// Panics unwind rather than returning a classification.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum OnlineHandoffFailure {
+    /// This call began neither destination publication nor directory exchange.
+    NotPublished(io::Error),
+    /// The candidate may exist, but this call did not begin the exchange. It
+    /// may omit concurrent source writes and must be reconciled before use.
+    CandidateOutcomeUnknown(io::Error),
+    /// Exchange may have happened and the handle rejects access. Coordinate
+    /// callers, drop it, and reopen both paths to reconcile before retrying.
+    ExchangeOutcomeUnknown(io::Error),
+}
+
+impl fmt::Display for OnlineHandoffFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPublished(error) => {
+                write!(formatter, "online handoff publication not started: {error}")
+            }
+            Self::CandidateOutcomeUnknown(error) => {
+                write!(
+                    formatter,
+                    "online handoff candidate outcome unknown: {error}"
+                )
+            }
+            Self::ExchangeOutcomeUnknown(error) => {
+                write!(
+                    formatter,
+                    "online handoff exchange outcome unknown: {error}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for OnlineHandoffFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotPublished(error)
+            | Self::CandidateOutcomeUnknown(error)
+            | Self::ExchangeOutcomeUnknown(error) => Some(error),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum HandoffPhase {
     Preparation,
@@ -154,6 +204,20 @@ pub(crate) fn track_handoff<T>(
         HandoffPhase::Preparation => HandoffFailure::NotPublished(error),
         HandoffPhase::Candidate => HandoffFailure::CandidateOutcomeUnknown(error),
         HandoffPhase::Exchange => HandoffFailure::ExchangeOutcomeUnknown(error),
+    })
+}
+
+pub(crate) fn track_online_handoff<T>(
+    action: impl FnOnce(&HandoffTracker) -> io::Result<T>,
+) -> Result<T, OnlineHandoffFailure> {
+    track_handoff(action).map_err(|failure| match failure {
+        HandoffFailure::NotPublished(error) => OnlineHandoffFailure::NotPublished(error),
+        HandoffFailure::CandidateOutcomeUnknown(error) => {
+            OnlineHandoffFailure::CandidateOutcomeUnknown(error)
+        }
+        HandoffFailure::ExchangeOutcomeUnknown(error) => {
+            OnlineHandoffFailure::ExchangeOutcomeUnknown(error)
+        }
     })
 }
 
