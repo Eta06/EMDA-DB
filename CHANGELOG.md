@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Release read-only checkpoint-view witness and anchor handles after validation,
+  while retaining the writable store's witness checks. A versioned log without
+  its witness rejects attempts to append, synchronize or verify as a writer.
+
 - Add `is_transaction_conflict` for directly returned pre-commit conflict
   errors, distinguishing them from other `WouldBlock` errors whose outcomes
   can be uncertain. The helper does not roll back callback side effects.

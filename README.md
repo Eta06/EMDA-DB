@@ -89,6 +89,8 @@ The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON
 
 The [multi-store resource measurement](docs/MULTI_STORE_RESOURCES_2026_11_14.md) records process RSS, file descriptors and warm-cache open time for up to 100 separate databases, alongside SQLite. It does not establish a project quota or scale-to-zero service.
 
+The [checkpoint descriptor follow-up](docs/CHECKPOINT_VIEW_DESCRIPTORS_2026_11_14.md) reduced the sample from 804 to 604 open descriptors for 100 checkpoint-backed stores, with recovery and fault checks; transaction timings varied.
+
 A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_2026_11_06.md) checks acknowledged workload values after fresh-process reopens through one million base keys, with observed memory, I/O and VM noise.
 
 A [SQLite restart comparison](docs/SQLITE_RESTART_RESOURCES_2026_11_06.md) adds a repeated three-way large-fixture run, including the different open and integrity-check semantics and long-tail samples.

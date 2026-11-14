@@ -1,0 +1,33 @@
+{
+  "revision": "1ef6f30d69b6e5064225ec58f5cdf256ca8da1c1",
+  "git_status": "",
+  "target": "checkpoint_store",
+  "compiler": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "toolchain": "nightly-2026-11-03",
+  "sanitizer": "address",
+  "command": "cargo +nightly-2026-11-03 fuzz run checkpoint_store <copied-corpus> -- -max_total_time=60 -timeout=15",
+  "fuzzer_seed": 1801057216,
+  "initial_seeds": 13,
+  "resulting_corpus_files": 460,
+  "executions": 9401,
+  "seconds": 61,
+  "generated_length_limit_bytes_at_finish": 27,
+  "binary_sha256": "69cc2e4bf7e785a51755c463aa52dada5db876777d26fc7afe169ab84a4a7bee",
+  "log_sha256": "b0c461714c5e2d048f79895dfef77c05edad9af62fac38dc435e9fb89dbe55ac",
+  "initial_seed_sha256": {
+    "batch-reopen": "62a7f67e38769d6e102f15bf5465cade3db5ae8187f25719330878829dab60dd",
+    "compaction": "7d9036e0e1f0271bdc194501f33c2523e7d53bb41a83388c656124cc103e42aa",
+    "conditional-batch": "e4b71ea911bf5f22a240ae58e36595c85d975cd2c713354274656c2d84b84b3d",
+    "duplicate": "1a3d02ba18a6f7668f7a0d2fde5cae1c764db48704eb1912544a8f29e56f317d",
+    "live-rollover": "1d37544f16540db83b9bf4e5db9d2f28db72e4c7c48efbc997da8642fdac40b7",
+    "log-cap": "6dad8532767b0b046c728028418380f490e87f294637173bb61b43b7ca292e01",
+    "quota": "d621fee9c61e6cba49ea8e63641d9baa80b4900157eb328cef16efaced6d9222",
+    "rollover": "1cb6945505b3f2ebc8fdaa1e4b48aa821c0b085bddaaf6aa2841b5c26807f51a",
+    "snapshot-rollover": "56b03bef62e4e637bf97136dd35721e83e90763be0a75bd5df31768d5667e310",
+    "transaction": "7b0e6c4ec2ae2ea10f9e5b2f1a34191543304601b8f070505988250b509e6a2e",
+    "transaction-deadline": "b2c0d9c15d3d1c59ca36baeea0145f19845b64c9101d9e4806a1a22ace2292fd",
+    "transaction-fifo": "5828a248b8e3becec2d86f321e3a0766abce21a37e6132327d7d59a4fe354f2c",
+    "transaction-read-set": "643f7bc548ffb339ad12c13241820d957f070ce4db1c18aefa65d0a57324adee"
+  },
+  "limitations": "Finite short-input serial model on a running Linux VM; no physical power loss, exhaustive concurrency or off-host restore."
+}

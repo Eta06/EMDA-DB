@@ -26,6 +26,7 @@ four baseline descriptors. Open time is the total for all listed databases.
 | 100 | Checkpoint-backed | 2.11 | 804 | 44.65 |
 | 100 | SQLite | 14.92 | 304 | 28.96 |
 
+This baseline predates the [checkpoint descriptor reduction](CHECKPOINT_VIEW_DESCRIPTORS_2026_11_14.md).
 For this fixture, the checkpoint-backed path retained less sampled process
 RSS but used about eight descriptors per open database, versus four for the
 ordinary path and three for SQLite. Descriptor limits can therefore constrain
