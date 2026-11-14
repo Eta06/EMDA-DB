@@ -22,6 +22,19 @@ fuzz_target!(|data: &[u8]| {
     let root = tempfile::tempdir().expect("temporary directory");
     let path = root.path().join("store");
     let initial = root.path().join("initial");
+    if data.first().is_some_and(|byte| byte & 0x80 != 0) {
+        std::fs::create_dir(&path).expect("create V2 fixture directory");
+        std::fs::write(
+            path.join("records.log"),
+            include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+        )
+        .expect("write V2 log fixture");
+        std::fs::write(
+            path.join("commit.state"),
+            include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+        )
+        .expect("write V2 witness fixture");
+    }
     let ordinary = Store::open(&path).expect("create");
     let mut model = BTreeMap::new();
     ordinary.put(b"a", b"base").expect("base");
