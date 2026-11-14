@@ -57,6 +57,13 @@ class StagingCleanupVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'resume removal counts'):
             verify(broken)
 
+    def test_verifies_other_supported_error_numbers(self):
+        for error in ('EAGAIN', 'EINTR', 'ENOSPC', 'EDQUOT'):
+            result = fixture()
+            result['injected_error'] = error
+            result['cases'][0]['injected_traces'][0] = result['cases'][0]['injected_traces'][0].replace('EIO', error)
+            self.assertEqual(verify(result)['errno'], error)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -92,20 +92,21 @@ fn detailed_rebuild_classifies_publication_boundaries_and_preserves_recovery() {
                         Some(tracker),
                     )
                 });
-                match failure {
-                    "reject" => assert!(matches!(
-                        result,
-                        Err(ManagedRebuildFailure::NotPublished(_))
-                    )),
-                    "checkpoint-sync" | "checkpoint-open" => assert!(matches!(
-                        result,
+                let classified = match failure {
+                    "reject" => matches!(&result, Err(ManagedRebuildFailure::NotPublished(_))),
+                    "checkpoint-sync" | "checkpoint-open" => matches!(
+                        &result,
                         Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(_))
-                    )),
-                    _ => assert!(matches!(
-                        result,
+                    ),
+                    _ => matches!(
+                        &result,
                         Err(ManagedRebuildFailure::SelectionOutcomeUnknown(_))
-                    )),
-                }
+                    ),
+                };
+                assert!(
+                    classified,
+                    "v2={v2} managed={managed} failure={failure} result={result:?}"
+                );
                 assert_eq!(destination.exists(), failure != "reject");
                 let visible = fs::read(&selection_path).ok();
                 assert_eq!(visible == previous, failure != "selection-after");

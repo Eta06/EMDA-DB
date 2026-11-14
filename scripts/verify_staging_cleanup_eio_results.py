@@ -93,7 +93,8 @@ def verify(result):
     require(result.get('completed') is True and result.get('failure') is None and result.get('current') is None,
             'campaign is incomplete or failed')
     group, error, limit = result['syscall_set'], result['injected_error'], result['max_ordinals']
-    require(group in SYSCALL_SETS and error in ('EIO', 'EAGAIN') and type(limit) is int and 0 <= limit <= 100,
+    require(group in SYSCALL_SETS and error in ('EIO', 'EAGAIN', 'EINTR', 'ENOSPC', 'EDQUOT')
+            and type(limit) is int and 0 <= limit <= 100,
             'invalid campaign configuration')
     control = result['control']
     verify_case(control)

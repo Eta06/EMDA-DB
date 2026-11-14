@@ -115,7 +115,7 @@ def main():
     parser.add_argument('--binary', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync')
-    parser.add_argument('--error', choices=('EIO', 'EAGAIN'), default='EIO')
+    parser.add_argument('--error', choices=('EIO', 'EAGAIN', 'EINTR', 'ENOSPC', 'EDQUOT'), default='EIO')
     parser.add_argument('--max-ordinals', type=int, default=0)
     args = parser.parse_args()
     directory = Path(args.directory).resolve()

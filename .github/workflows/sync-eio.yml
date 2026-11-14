@@ -137,9 +137,11 @@ jobs:
       - name: Build and inject filesystem failures
         run: |
           cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe --example configuration_failure_probe --example reclamation_failure_probe --example staging_cleanup_failure_probe
-          for group in sync namespace; do
-            python3 scripts/staging_cleanup_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/staging_cleanup_failure_probe --output "$RUNNER_TEMP/staging-cleanup-eio-$group.json" --syscall-set "$group" --max-ordinals 3
-            python3 scripts/verify_staging_cleanup_eio_results.py "$RUNNER_TEMP/staging-cleanup-eio-$group.json"
+          for error_name in EIO EAGAIN ENOSPC; do
+            for group in sync namespace; do
+              python3 scripts/staging_cleanup_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/staging_cleanup_failure_probe --output "$RUNNER_TEMP/staging-cleanup-eio-$error_name-$group.json" --error "$error_name" --syscall-set "$group" --max-ordinals 3
+              python3 scripts/verify_staging_cleanup_eio_results.py "$RUNNER_TEMP/staging-cleanup-eio-$error_name-$group.json"
+            done
           done
           python3 scripts/handoff_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/handoff_failure_probe --output "$RUNNER_TEMP/handoff-eio.json" --format v2 --backend managed --syscall-set namespace
           python3 scripts/verify_handoff_eio_results.py "$RUNNER_TEMP/handoff-eio.json"
