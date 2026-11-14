@@ -1,0 +1,39 @@
+{
+  "revision": "2f2b1aa8164c5b3385cde516405a246680239751",
+  "git_status": "",
+  "command": "EMDA_MIXED_TRANSACTION_HISTORIES=4096 cargo +stable test --release --locked --test mixed_transaction_history -- --nocapture",
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "kernel": "Linux 6.18.57 x86_64",
+  "test_binary_sha256": "52b607f08d3e9935fc2f84ca54027e00cc1a53e629bdc1c3e768d9cbb2a03f13",
+  "test_sha256": "dc63c4846cf4934dd30689db23d141b8533726bf0a84723f88d026bdaa8121ea",
+  "model_sha256": "11a1aa4c436d96d6ef2621afd0b7039434c88b74a92a6fce51437448d0cce4a8",
+  "runs": [
+    {
+      "label": "tmpfs",
+      "temporary_directory": "/tmp",
+      "filesystem": "tmpfs",
+      "histories": 4096,
+      "transaction_conflicts": 4873,
+      "transactions_committed": 3319,
+      "compare_mismatches": 1348,
+      "compare_successes": 2748,
+      "cargo_reported_test_seconds": 3.27,
+      "exit_code": 0,
+      "combined_output": "   Compiling libc v0.2.191\n   Compiling version_check v0.9.5\n   Compiling cfg-if v1.0.5\n   Compiling proc-macro2 v1.0.107\n   Compiling typenum v1.20.1\n   Compiling generic-array v0.14.7\n   Compiling unicode-ident v1.0.27\n   Compiling quote v1.0.47\n   Compiling shlex v2.0.1\n   Compiling find-msvc-tools v0.1.15\n   Compiling serde_core v1.0.229\n   Compiling cc v1.11.0\n   Compiling rustix v1.1.6\n   Compiling zmij v1.0.23\n   Compiling bitflags v2.13.2\n   Compiling parking_lot_core v0.9.12\n   Compiling smallvec v1.16.4\n   Compiling getrandom v0.4.3\n   Compiling vcpkg v0.2.15\n   Compiling pkg-config v0.3.34\n   Compiling crypto-common v0.1.7\n   Compiling block-buffer v0.10.4\n   Compiling syn v3.0.9\n   Compiling crc32fast v1.5.4\n   Compiling serde v1.0.229\n   Compiling serde_json v1.0.154\n   Compiling libsqlite3-sys v0.33.0\n   Compiling foldhash v0.1.5\n   Compiling linux-raw-sys v0.12.1\n   Compiling scopeguard v1.2.0\n   Compiling lock_api v0.4.14\n   Compiling serde_derive v1.0.229\n   Compiling hashbrown v0.15.5\n   Compiling digest v0.10.7\n   Compiling once_cell v1.21.4\n   Compiling memchr v2.8.3\n   Compiling cpufeatures v0.2.17\n   Compiling fastrand v2.5.0\n   Compiling itoa v1.0.18\n   Compiling tempfile v3.27.0\n   Compiling sha2 v0.10.9\n   Compiling parking_lot v0.12.5\n   Compiling hashlink v0.10.0\n   Compiling fs2 v0.4.3\n   Compiling fallible-streaming-iterator v0.1.9\n   Compiling fallible-iterator v0.3.0\n   Compiling database-engine v0.1.0 (/workspace/scratch/emda-mixed-history)\n   Compiling rusqlite v0.35.0\n    Finished `release` profile [optimized] target(s) in 47.96s\n     Running tests/mixed_transaction_history.rs (/workspace/scratch/cargo-mixed-clean/release/build/database-engine/dd4d2fbc2f5a0a73/out/mixed_transaction_history-dd4d2fbc2f5a0a73)\n\nrunning 3 tests\ntest model::model_checks_atomic_batches_compare_results_and_real_time_order ... ok\ntest model::model_rejects_stale_range_and_absent_point_after_a_completed_insert ... ok\nhistories=4096 transactions_conflict=4873 transactions_committed=3319 compare_mismatch=1348 compare_success=2748\ntest mixed_transactions_deletions_and_conditional_writes_serialize_and_recover ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.27s\n\n"
+    },
+    {
+      "label": "workspace-overlay",
+      "temporary_directory": "/workspace/scratch/mixed-history-fixtures",
+      "filesystem": "overlay",
+      "histories": 4096,
+      "transaction_conflicts": 5358,
+      "transactions_committed": 2834,
+      "compare_mismatches": 1296,
+      "compare_successes": 2800,
+      "cargo_reported_test_seconds": 34.83,
+      "exit_code": 0,
+      "combined_output": "    Finished `release` profile [optimized] target(s) in 0.08s\n     Running tests/mixed_transaction_history.rs (/workspace/scratch/cargo-mixed-clean/release/build/database-engine/dd4d2fbc2f5a0a73/out/mixed_transaction_history-dd4d2fbc2f5a0a73)\n\nrunning 3 tests\ntest model::model_checks_atomic_batches_compare_results_and_real_time_order ... ok\ntest model::model_rejects_stale_range_and_absent_point_after_a_completed_insert ... ok\nhistories=4096 transactions_conflict=5358 transactions_committed=2834 compare_mismatch=1296 compare_success=2800\ntest mixed_transactions_deletions_and_conditional_writes_serialize_and_recover ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 34.83s\n\n"
+    }
+  ],
+  "limitations": "Finite eight-operation histories, sampled schedules, clean reopens on a running VM. No crash, physical power failure, independent off-host restore, performance ranking, full tenant isolation, or proof of all serial histories."
+}

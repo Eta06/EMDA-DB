@@ -20,6 +20,8 @@ The [backup and filesystem-failure report](docs/BACKUP_AND_FILESYSTEM_FAILURES_2
 The [long transaction-history report](docs/LONG_TRANSACTION_HISTORY_2026_11_06.md) checks concurrent transfers, live-reader invariants and recovery across both writable backends.
 The [long key-value history](docs/LONG_SERIAL_HISTORY_2026_11_06.md) checks successive concurrent operation windows against a serial model, with repeated reopens.
 The [mixed transaction histories](docs/LONG_TRANSACTION_SERIAL_2026_11_06.md) check longer sequences of concurrent transactions, batches and direct operations on both writable paths; they also record conflicts in deliberately contended tests.
+
+The [mixed-operation serial model](docs/MIXED_TRANSACTION_HISTORY_2026_11_14.md) adds concurrent missing-key and range reads, deletes and conditional writes, with clean recovery checks on both writable paths.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
 The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
@@ -80,6 +82,8 @@ An [admission comparison](docs/TRANSACTION_ADMISSION_COMPARISON_2026_11_04.md) r
 The [empty-log recovery report](docs/EMPTY_RECOVERY_COMPARISON_2026_11_04.md) records fail-closed initialization, fault and fuzz checks, and paired reopen measurements with observed VM noise.
 
 The [short-write report](docs/SHORT_WRITE_FAILURES_2026_11_14.md) records 224 selected Linux cases involving actual partial log or witness writes, subsequent retries or injected errors, and both recovery paths. Damaged evidence can require investigation or restore; these checks do not establish physical power-loss safety.
+
+The [filesystem EAGAIN report](docs/WOULD_BLOCK_FILESYSTEM_FAILURES_2026_11_14.md) records selected synchronization, lock, write, open, namespace and metadata-read failures with recovery checks.
 
 The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) measures reopen time, sampled process memory and point reads through 200,000 keys. The checkpoint-backed writer used less sampled memory but had slower sampled base-key reads than full-log recovery.
 

@@ -72,6 +72,9 @@ operation may still succeed; successful outcomes must be visible on recovery.
 These synthetic return values do not deliver a real signal or create actual
 disk/quota exhaustion. The separate isolated tmpfs check exercises real
 kernel `ENOSPC`.
+The [EAGAIN campaign](WOULD_BLOCK_FILESYSTEM_FAILURES_2026_11_14.md) records
+selected filesystem and lock paths separately from transaction conflict
+classification.
 The filesystem workflow's manual `full_eintr` option runs the broader
 interrupted-call matrix on GitHub and preserves each syscall group's report.
 [`verify_one_shot_fs_results.py`](../scripts/verify_one_shot_fs_results.py)
