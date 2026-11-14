@@ -158,6 +158,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   online compaction. Concurrent callbacks can change the source while a
   candidate is prepared; an exchange-uncertain failure disables the handle.
   [Boundary checks](ONLINE_HANDOFF_OUTCOMES_2026_11_14.md) record the scope.
+  A [filesystem-fault campaign](ONLINE_HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md)
+  checks both visible paths and disabled handles under selected returned errors.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

@@ -23,6 +23,9 @@ operations did not occur. Integration checks cover rejected existing
 destinations and successful handoffs on V2/V3; the V3 case skips if the
 filesystem falls back to V2.
 
+A subsequent [filesystem-fault campaign](ONLINE_HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md)
+checks actual returned syscall errors and both possible recovery paths.
+
 Stable, Rust 1.85 and optimized stable all-target suites each passed 993 tests
 with four test threads. Both all-target Clippy checks, formatting and 135
 Python tests passed. The checks use selected synthetic hooks on a running OS;
