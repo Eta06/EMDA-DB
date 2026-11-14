@@ -96,7 +96,8 @@ key set again, restores the saved backup a second time, and verifies the source,
 named sibling and reference files are unchanged. Any staging entries left
 behind must be unchanged, and removal counters must agree with the observed
 stage inventory. The verifier still accepts the earlier reports that did not
-include this cleanup step.
+include this cleanup step, and rejects cleanup evidence whose coverage marker
+has been removed.
 
 The [follow-up bundle](../benchmarks/results/2026-11-14-online-reclamation-cleanup-faults.json.gz)
 repeats the 2,380 selected `EIO` and `EAGAIN` cases on V2/V3. In 192 cases,
