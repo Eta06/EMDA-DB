@@ -100,7 +100,23 @@ def managed_selection_snapshot(root):
     if not stat.S_ISREG(selection.lstat().st_mode):
         raise ValueError('managed selection is not a regular file')
     data = selection.read_bytes()
-    return {'bytes': len(data), 'sha256': digest(data)}
+    if len(data) < 76 or data[:8] != b'EMDASEL1':
+        raise ValueError('invalid managed selection header')
+    path_length = int.from_bytes(data[8:12], 'little')
+    if path_length > 4096 or len(data) != 76 + path_length:
+        raise ValueError('invalid managed selection length')
+    if hashlib.sha256(data[:-32]).digest() != data[-32:]:
+        raise ValueError('invalid managed selection checksum')
+    encoded_path = data[12:12 + path_length]
+    targets = {os.fsencode(root / 'result'): 'result',
+               os.fsencode(root / 'previous-selected'): 'previous-selected'}
+    if encoded_path not in targets:
+        raise ValueError('managed selection refers to an unexpected checkpoint')
+    selected_digest = data[12 + path_length:-32]
+    if selected_digest != (root / 'checkpoint.digest').read_bytes():
+        raise ValueError('managed selection digest differs from trusted fixture')
+    return {'bytes': len(data), 'sha256': digest(data), 'checkpoint': targets[encoded_path],
+            'checkpoint_digest_sha256': digest(selected_digest)}
 
 
 def initialization_snapshot(root):
@@ -302,12 +318,19 @@ def check_publication_outcome(outcome, verification):
         raise ValueError('a not-published call left a visible destination')
 
 
-def check_managed_publication_outcome(outcome, verification, before, after):
+def check_managed_publication_outcome(outcome, verification, before, after, require_target=True):
     classification = outcome.get('classification')
     target = verification.get('target_visible')
     selection = verification.get('selection_visible')
     if type(target) is not bool or type(selection) is not bool:
         raise ValueError('missing managed publication visibility')
+    if require_target:
+        if before is not None and before.get('checkpoint') != 'previous-selected':
+            raise ValueError('initial selection does not reference the previous checkpoint')
+        if after is not None:
+            expected = 'previous-selected' if before == after else 'result'
+            if after.get('checkpoint') != expected:
+                raise ValueError('managed selection references an unexpected checkpoint')
     if outcome['status'] == 'success':
         if classification is not None or not target or not selection or before == after:
             raise ValueError('invalid successful managed rollover')
@@ -474,6 +497,7 @@ def main():
         'formats': [args.format] if args.format else list(FORMATS),
         'operations': [args.operation] if args.operation else list(PUBLICATION_OPERATIONS if args.publication_outcomes else OPERATIONS),
         'publication_outcomes': args.publication_outcomes,
+        'managed_selection_binding': 1,
         'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'injected_error': args.injected_error,
         'filesystem': json.loads(subprocess.check_output(

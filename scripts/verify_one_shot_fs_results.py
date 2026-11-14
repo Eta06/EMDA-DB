@@ -19,7 +19,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def check_probe(probe, operation, order, syscall=None, error_name=None, publication=False):
+def check_probe(probe, operation, order, syscall=None, error_name=None, publication=False, managed_binding=False):
     require(probe['outcome']['operation'] == operation
             and probe['outcome']['status'] in ('success', 'error'), 'unexpected probe outcome')
     verified = probe['verification']
@@ -43,7 +43,8 @@ def check_probe(probe, operation, order, syscall=None, error_name=None, publicat
         require('classification' in probe['outcome'], 'missing publication classification')
         if operation in MANAGED_OPERATIONS:
             selection = probe['managed_selection']
-            check_managed_publication_outcome(probe['outcome'], verified, selection['before'], selection['after_attempt'])
+            check_managed_publication_outcome(probe['outcome'], verified, selection['before'], selection['after_attempt'],
+                                              require_target=managed_binding)
         else:
             check_publication_outcome(probe['outcome'], verified)
     if operation in MANAGED_OPERATIONS:
@@ -56,7 +57,9 @@ def check_probe(probe, operation, order, syscall=None, error_name=None, publicat
         for state in (before, after):
             if state is not None:
                 require(type(state['bytes']) is int and state['bytes'] > 0
-                        and isinstance(state['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', state['sha256']),
+                        and isinstance(state['sha256'], str) and re.fullmatch(r'[0-9a-f]{64}', state['sha256'])
+                        and (not managed_binding or
+                             state['checkpoint_digest_sha256'] == probe['before']['checkpoint_digest_sha256']),
                         'invalid managed selection digest')
         previous = selection['previous_checkpoint_sha256']
         require((previous is None if before is None else
@@ -96,6 +99,8 @@ def verify(result):
     formats, operations = result['formats'], result['operations']
     publication = result.get('publication_outcomes', False)
     require(type(publication) is bool, 'invalid publication-outcome mode')
+    managed_binding = result.get('managed_selection_binding', 0)
+    require(type(managed_binding) is int and managed_binding in (0, 1), 'unknown managed selection binding version')
     if publication:
         require(all(operation in ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy', 'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover', *LEGACY_OPERATIONS, *MANAGED_OPERATIONS) for operation in operations),
                 'invalid publication operation')
@@ -111,7 +116,7 @@ def verify(result):
     for case in cases:
         operation = case['operation']
         control = case['control']
-        check_probe(control, operation, 'ordinary-first', publication=publication)
+        check_probe(control, operation, 'ordinary-first', publication=publication, managed_binding=bool(managed_binding))
         require(control['outcome']['status'] == 'success', 'control did not succeed')
         expected = []
         for syscall in SYSCALL_SETS[group]:
@@ -128,7 +133,7 @@ def verify(result):
         actual = [(item['syscall'], item['ordinal'], item['order']) for item in injections]
         require(Counter(actual) == Counter(expected), 'missing or duplicate selected injection')
         for item in injections:
-            check_probe(item, operation, item['order'], item['syscall'], error_name, publication)
+            check_probe(item, operation, item['order'], item['syscall'], error_name, publication, bool(managed_binding))
             outcomes[item['outcome']['status']] += 1
             total += 1
     return {'controls': len(cases), 'injections': total, 'outcomes': dict(outcomes), 'errno': error_name}

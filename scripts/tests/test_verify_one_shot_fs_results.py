@@ -135,10 +135,11 @@ class OneShotCoverageTests(unittest.TestCase):
     def test_managed_rollover_classifies_checkpoint_and_selection_separately(self):
         report = fixture()
         operation = 'checkpoint-managed-rollover'
-        report.update(publication_outcomes=True, operations=[operation])
+        report.update(publication_outcomes=True, operations=[operation], managed_selection_binding=1)
         case = report['cases'][0]
         case['operation'] = operation
-        selected = {'bytes': 80, 'sha256': 'a' * 64}
+        selected = {'bytes': 80, 'sha256': 'a' * 64, 'checkpoint': 'result',
+                    'checkpoint_digest_sha256': 'a' * 64}
         for value in [case['control'], *case['injections']]:
             value['outcome'].update(operation=operation, classification=None)
             value['verification'].update(operation=operation, target_visible=True, selection_visible=True)
@@ -172,7 +173,8 @@ class OneShotCoverageTests(unittest.TestCase):
         existing_operation = 'checkpoint-managed-rollover-existing'
         existing['operations'] = [existing_operation]
         existing['cases'][0]['operation'] = existing_operation
-        old = {'bytes': 80, 'sha256': 'c' * 64}
+        old = {'bytes': 80, 'sha256': 'c' * 64, 'checkpoint': 'previous-selected',
+               'checkpoint_digest_sha256': 'a' * 64}
         for value in [existing['cases'][0]['control'], *existing['cases'][0]['injections']]:
             value['outcome']['operation'] = existing_operation
             value['verification'].update(operation=existing_operation, selection_visible=True)
@@ -184,6 +186,10 @@ class OneShotCoverageTests(unittest.TestCase):
         existing['cases'][0]['injections'][0]['managed_selection']['previous_after_attempt_sha256'] = 'e' * 64
         with self.assertRaisesRegex(ValueError, 'previous managed checkpoint evidence changed'):
             verify(existing)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][1]['managed_selection']['after_attempt']['checkpoint'] = 'previous-selected'
+        with self.assertRaisesRegex(ValueError, 'unexpected checkpoint'):
+            verify(broken)
 
 
 if __name__ == '__main__':
