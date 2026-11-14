@@ -164,6 +164,7 @@ mod document_faults;
 mod metadata_faults;
 mod online_index_faults;
 mod rebuild;
+mod rebuild_crash_detailed;
 mod rebuild_outcomes;
 mod recovery;
 mod rollover;
