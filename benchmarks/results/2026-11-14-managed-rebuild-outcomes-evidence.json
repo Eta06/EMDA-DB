@@ -1,0 +1,1669 @@
+{
+  "candidate_revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+  "implementation_revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+  "source_changes_since_implementation": [
+    ".github/workflows/sync-eio.yml",
+    "examples/sync_failure_probe.rs",
+    "scripts/sync_eio_campaign.py",
+    "scripts/tests/test_verify_one_shot_fs_results.py"
+  ],
+  "git_status_at_campaign_start": "clean",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "tests": [
+    {
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "toolchain": "stable",
+      "profile": "debug",
+      "test_binaries": 142,
+      "passed": 1015,
+      "failed": 0,
+      "ignored": 1,
+      "command": "cargo +stable test --all-targets --locked",
+      "log": {
+        "file": "2026-11-14-managed-rebuild-outcomes-stable.log.gz",
+        "sha256": "4d951d3f794f0ee33f0088e11a81f6dcd39212ef04bd8d438a9cdb4ee046b28c",
+        "uncompressed_sha256": "97614275698c038fde382d60158263b1f61b1db2f082a6ef424640df581a4c44"
+      }
+    },
+    {
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "toolchain": "1.85.0",
+      "profile": "debug",
+      "test_binaries": 142,
+      "passed": 1015,
+      "failed": 0,
+      "ignored": 1,
+      "command": "cargo +1.85.0 test --all-targets --locked",
+      "log": {
+        "file": "2026-11-14-managed-rebuild-outcomes-msrv.log.gz",
+        "sha256": "a473731fc8c870d9b79b12acfd9bf2f57509b1af6da6d41cfc576622e97dd2c1",
+        "uncompressed_sha256": "97cb8182e7280558d6ec084a55b7cccbbca9188d471b5b4f7bd1e60486ce573a"
+      }
+    },
+    {
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "toolchain": "stable",
+      "profile": "release",
+      "test_binaries": 142,
+      "passed": 1015,
+      "failed": 0,
+      "ignored": 1,
+      "command": "cargo +stable test --release --all-targets --locked",
+      "log": {
+        "file": "2026-11-14-managed-rebuild-outcomes-release.log.gz",
+        "sha256": "f413b71c637ed9ec087fc3ff5d9e62cd7e64a061099a9e1fc08ff842bc735446",
+        "uncompressed_sha256": "c20e34c14129a452838896937e3858c3678fcea0ffc769974a391a5800a0471d"
+      }
+    }
+  ],
+  "scope": "Finite local tests on running Linux systems, not physical power loss, independent off-host restore, or all concurrent schedules.",
+  "ignored_test": "actual_tmpfs_enospc_preserves_source_and_recovery_evidence",
+  "checks": {
+    "stable-clippy": {
+      "file": "2026-11-14-managed-rebuild-outcomes-stable-clippy.log.gz",
+      "sha256": "4a14f50721d8e611f92ebaa96be78571fc665bc2c130a5297568da1e186a6abe",
+      "uncompressed_sha256": "9a30d54c8b16d7e49510b182028079bca120aeebb7d662e88f8566e6196a49f6"
+    },
+    "msrv-clippy": {
+      "file": "2026-11-14-managed-rebuild-outcomes-msrv-clippy.log.gz",
+      "sha256": "da09c0780a3445eb2469cfd8eb4b0ebe703587a26a6a3e6e5621a54b644c9cc2",
+      "uncompressed_sha256": "5ca8cea831da23a681131b3c24fda9d2a9a4ca720350890a279ac8eba1bce0b4"
+    },
+    "suffix-clippy": {
+      "file": "2026-11-14-managed-rebuild-outcomes-suffix-clippy.log.gz",
+      "sha256": "292adb99df5d2b8afc4387b28dde36ad09e491a7b169ca89a265e4409f6a478c",
+      "uncompressed_sha256": "465452af095272ecc8e4199389847882257c95e7c0759da468d2ed21658491fa"
+    },
+    "suffix-msrv": {
+      "file": "2026-11-14-managed-rebuild-outcomes-suffix-msrv.log.gz",
+      "sha256": "b6d3f7a00b3fbd8ea39f9e7bfbca17a9edddaeec422e3287bf2a3da822f26e59",
+      "uncompressed_sha256": "588dcd8658a559be65fc1ace324ac3d7ee1f8fe007be70e336377697d6ebfca8"
+    },
+    "python-tests": {
+      "file": "2026-11-14-managed-rebuild-outcomes-python-tests.log.gz",
+      "sha256": "b286f49e287c89cb23dd9af85e1fa2e995c8cace2d27fd73f96aa9d4a57d3c7d",
+      "uncompressed_sha256": "212744f7cf19b806a3326036672cb9745353453c4d026817da8d566e53514492"
+    },
+    "suffix-example-tests": {
+      "file": "2026-11-14-managed-rebuild-outcomes-suffix-example-tests.log.gz",
+      "sha256": "7d33d7e17573885c64d656d61f0ed7fdfd9a3db793412cbf31ec3141b76fa2c8",
+      "uncompressed_sha256": "3203b6848c8bbf04cbe7105191cc60672958e83639b410463ea44e7f07d0d73f"
+    },
+    "python_tests_passed": 147,
+    "format": "cargo +stable fmt --all -- --check; rustfmt +stable --edition 2024 --check fuzz/fuzz_targets/managed_checkpoint.rs"
+  },
+  "fault_reports": [
+    {
+      "file": "rebuild-eagain-data-checkpoint-managed-rebuild-existing.json",
+      "sha256": "837b0713f419f3afe01ecf3174d030119fffbb40fb314828bb8f5a62783a183c",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-data-checkpoint-managed-rebuild.json",
+      "sha256": "a52e8fead0a75b2fcb30fe352aa36d244536532c68b93c21cde151e275bcee9a",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-lock-checkpoint-managed-rebuild-existing.json",
+      "sha256": "4dcd153db5338ba6d84ade0eec5a54d85054c41d15818b5048809c478ce32eef",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-lock-checkpoint-managed-rebuild.json",
+      "sha256": "64a71904cd1d7016f5daa5ee5c403a3663abdc45f60b93dbe01558450faf2f64",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-metadata-checkpoint-managed-rebuild-existing.json",
+      "sha256": "661cb3823f1179614580bcbcefef326936404596af235a9171451326138802ae",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 148,
+        "outcomes": {
+          "error": 148
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-metadata-checkpoint-managed-rebuild.json",
+      "sha256": "e8a907bb9ce80e4ccc8df6bc87453bdb75d73ec3fb609e821ea4ca7a617c13f3",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 140,
+        "outcomes": {
+          "error": 140
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-namespace-checkpoint-managed-rebuild-existing.json",
+      "sha256": "2aaf98c14b35d8c46652da243282a9bd2c97c2a215ce440193c5c6100bce6be7",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-namespace-checkpoint-managed-rebuild.json",
+      "sha256": "c7e2ae62c7ace262f12efda8e7976099be454b5e8695bccac7671bebc7c91947",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-open-checkpoint-managed-rebuild-existing.json",
+      "sha256": "41ec218783ef753b769f2ffae969d16628e337296a50e061d40286d19209e61d",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-open-checkpoint-managed-rebuild.json",
+      "sha256": "5f1eeb112bcc267b39d5868935a4f7ee075eaeb580e336d5f5b3b75dfc4da8d3",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-path-read-checkpoint-managed-rebuild-existing.json",
+      "sha256": "d037cea52e0d300b143566849e2a3471c20b58d649b662852af1342451f4b0b9",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-path-read-checkpoint-managed-rebuild.json",
+      "sha256": "077b36f5f8ce28b688ce19e6e4de89fb9d450aa95c5477c80ff4ee6d894df300",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-read-checkpoint-managed-rebuild-existing.json",
+      "sha256": "be7482d5796041b83ae40693d706bbbede3709d7ae41b8a41685ced85c02d6cd",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-read-checkpoint-managed-rebuild.json",
+      "sha256": "f4037d6a0fd553b40e18ca2e110ab0e3d49dd34781753ab3bb093a6efc2d4cd2",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 76,
+        "outcomes": {
+          "error": 76
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-sync-checkpoint-managed-rebuild-existing.json",
+      "sha256": "c345f5f31d314621e911d8d081b2f7450a740ab08845a994aeede1e8bb70a450",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-sync-checkpoint-managed-rebuild.json",
+      "sha256": "ee3dcdfa1e274070a587c2eeb239c43a195962bb021d6fd66b3a7ededbc8fec7",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-xattr-read-checkpoint-managed-rebuild-existing.json",
+      "sha256": "6b474568930d1feea51f88fd450bb754fa9d737f2fdf213603ec95b7c247ed16",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eagain-xattr-read-checkpoint-managed-rebuild.json",
+      "sha256": "eebea1ec47b88f64f23f126d5b3786516028adf1735ef7b70461aa8394f216d6",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-data-checkpoint-managed-rebuild-existing.json",
+      "sha256": "13fead05e3929b0a6efa0226e7f28ed9345812e232b7f1c63e481f1201861def",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-data-checkpoint-managed-rebuild.json",
+      "sha256": "689adfa3755c59713fd5382adba8baca2c555b71df067ae1deb559b49297f509",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-lock-checkpoint-managed-rebuild-existing.json",
+      "sha256": "08741b113a4ea043675c4ad54a1006bddfd51d90e4e9c8b21dc78f1c616068d5",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-lock-checkpoint-managed-rebuild.json",
+      "sha256": "744ab041f9cc4e985e07f0a3cb774b806bde9ea694da04433a427e1ee1e85999",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-metadata-checkpoint-managed-rebuild-existing.json",
+      "sha256": "354b7d94c2e796d3494a793ca16e0c9caa4e43349c13ef0df93dd7788ac4db44",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 148,
+        "outcomes": {
+          "error": 148
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-metadata-checkpoint-managed-rebuild.json",
+      "sha256": "c14728f6623b61fbeab1606946f8250ea98041d10c06d3b9c24c537c647a23e8",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 140,
+        "outcomes": {
+          "error": 140
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-namespace-checkpoint-managed-rebuild-existing.json",
+      "sha256": "c3590a75a64c59e8634ea2f6c7641e43033b032d2251625ec67f9dfd9f0bb729",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-namespace-checkpoint-managed-rebuild.json",
+      "sha256": "4411dc6c3ce2dd3e899d29e3524656db6e4d675009ad0a6b38c64fc61f10e810",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-open-checkpoint-managed-rebuild-existing.json",
+      "sha256": "79bf0be1b4fd12d80a5b7eeb72c26686777f04a9f801adc12d27f864ef58acf4",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-open-checkpoint-managed-rebuild.json",
+      "sha256": "0b1d16c75e05e2ed239cb6debfadd76f1d573f3d9fd1a4f2a847b3a8ee417bc1",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-path-read-checkpoint-managed-rebuild-existing.json",
+      "sha256": "774abed001afe767ba47643d31b90f4e1fba2b3b1dfe72305047e2fb4deed469",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-path-read-checkpoint-managed-rebuild.json",
+      "sha256": "bc23ecf831b8bd2f738b28fb26a255076459fab109b6ed0f6e99b295f529b749",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-read-checkpoint-managed-rebuild-existing.json",
+      "sha256": "9144bee9c2713247e7d8dc6e7a9f45c30e80fa0cdfaca99b32804a4df259a564",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-read-checkpoint-managed-rebuild.json",
+      "sha256": "b24d26612ddbb1149c23e7072c04c6e34d555ab5faa5bce5cedf129c99241f1a",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 76,
+        "outcomes": {
+          "error": 76
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-sync-checkpoint-managed-rebuild-existing.json",
+      "sha256": "d21cc9faa9791a07ce924c4c5012d74312986f2d1d8baa0846bc8e9e9b3fe3cd",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-sync-checkpoint-managed-rebuild.json",
+      "sha256": "aa5c10ccd07845fdc4383a68429f3dc1887599fd1dc3f3e0966d1a4209793623",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-eio-xattr-read-checkpoint-managed-rebuild-existing.json",
+      "sha256": "bc46b7395c75278ed4afe8e34c3b78cb3b7ce2fba8496dbb03828a1ed4f03b39",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-existing"
+      ]
+    },
+    {
+      "file": "rebuild-eio-xattr-read-checkpoint-managed-rebuild.json",
+      "sha256": "243096b139c6df62b647c07fd67b5d8a793ab8353e6c70a030164415400d8de5",
+      "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-data-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "566261276ef29ed4c39f8de18b2370c5e8eb1cab577a29e1cfcc57104c439fea",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-data-checkpoint-managed-rebuild-tail.json",
+      "sha256": "d637926fe6f1b6aaea9aac278b63abae7229a09383fb50cc7a771dd8c0ce08f7",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-lock-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "ebe694a533cf1b38aaeff7fd4c72ae27bddaad8dd6ded91b4a2be2dfdee985f0",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-lock-checkpoint-managed-rebuild-tail.json",
+      "sha256": "cd166f42155fbe14bcf5cab1c88cd2f8970bc415eb744515711ff6696749db33",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-metadata-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "9297e48295be5f4bccaef3d0866a1cc0fedd2c626a93d8a987602453ea7ff1d3",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 148,
+        "outcomes": {
+          "error": 148
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-metadata-checkpoint-managed-rebuild-tail.json",
+      "sha256": "238d229465f24ed438abecd07a39f5e5902eb40ce9b3bef86ad3df61707c0a43",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 140,
+        "outcomes": {
+          "error": 140
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-namespace-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "d8f9334e2b1d9b3b9538c5939bfafe42ad4c180fd502d591e24409869102ad99",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-namespace-checkpoint-managed-rebuild-tail.json",
+      "sha256": "3cf260494348b18309fc586ac54c6b153ec714187e5a507a9b31953db7294af2",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-open-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "57d862c94ac206bcaf455aece0de18ca44a1cca83460377fd0477c5e72fb8e20",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-open-checkpoint-managed-rebuild-tail.json",
+      "sha256": "59e0792a0f4f1ecaf7cb0b0d6d9716dffb0e95ee56cc81e7f5c24abf2fb52959",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-path-read-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "5bb44b168bab3397b3dcf435ea19e84c83656858efcf5c2677af005aacfbfbbe",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-path-read-checkpoint-managed-rebuild-tail.json",
+      "sha256": "645e3bda0944ffc321a2e97686a7d1fe8cff3841b659a4894d4fed661baf44bd",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-read-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "d5234f8e46ab8cdc5cf454e23e65dba294c57b46ffc79f572bb80cecd5c604cd",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-read-checkpoint-managed-rebuild-tail.json",
+      "sha256": "0c91204b6452925f15002d56ec5cab57b5ca2703cdfc2394389da3a9a683021c",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 76,
+        "outcomes": {
+          "error": 76
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-sync-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "76266bf7edb0f7855d19aff91db85af0bd6f967cb4f1a96550d89d61bd5be38e",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-sync-checkpoint-managed-rebuild-tail.json",
+      "sha256": "d40736c8824a788f12248597c47214b72eef6b0ec9fb0240f98772f67ddba023",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-xattr-read-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "55db9206210267ebef1b3c0271b759f139ba4c1da20518d34b91ae207e8fcd8d",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EAGAIN-xattr-read-checkpoint-managed-rebuild-tail.json",
+      "sha256": "b18a253c57a411ed44d23467329ea16d2550c442d356ad812aee1413cb51ef35",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EAGAIN",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-data-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "efb14371bab6cf72e52e4eed5152c9d17cf585cfc61ca5fcd52e1fae39ccbdfa",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-data-checkpoint-managed-rebuild-tail.json",
+      "sha256": "d5280c851785ebad96beb22fc1450ccf33b82d0958c113b09fcc898dfefe6311",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 16,
+        "outcomes": {
+          "error": 16
+        }
+      },
+      "syscall_set": "data",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-lock-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "d9dc390f93f7b4a73de4bafa7643c25106b35f50db4844d5e717039384d892e4",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-lock-checkpoint-managed-rebuild-tail.json",
+      "sha256": "5883f17ad2dd072108b61b12f8b835cb91518b5b4a3418320d6fdf049bb4a5f2",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 36,
+        "outcomes": {
+          "error": 28,
+          "success": 8
+        }
+      },
+      "syscall_set": "lock",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-metadata-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "831f9782f5a554e5df8f6c8b894bac66475b8b9d4d71025887e1058606ac04af",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 148,
+        "outcomes": {
+          "error": 148
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-metadata-checkpoint-managed-rebuild-tail.json",
+      "sha256": "28c6db4ef269bb5cfd089622b7401499e86a2e4d5fd2a9da62fb3619a2970cd5",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 140,
+        "outcomes": {
+          "error": 140
+        }
+      },
+      "syscall_set": "metadata",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-namespace-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "77d7a73887442866835fdb7737dce660473bb548e76b93ef63468f8cfe105afb",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-namespace-checkpoint-managed-rebuild-tail.json",
+      "sha256": "46a5142cc53bc00808e2fa17bbd94289ca3f047783ba416e3a1c7498fcac48d2",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 28,
+        "outcomes": {
+          "error": 12,
+          "success": 16
+        }
+      },
+      "syscall_set": "namespace",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-open-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "3426b50a2def5701844246d5306b947ae360abe4949be6d45c73f846aa38e2e8",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-open-checkpoint-managed-rebuild-tail.json",
+      "sha256": "4fda14c183ecc4f819994939b08abf3b305172235861b16bdba2dc2b785f3340",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 80,
+        "outcomes": {
+          "error": 80
+        }
+      },
+      "syscall_set": "open",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-path-read-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "98d355f4afaadb1006bf80a6bbcf0ab6639954a4c6b4b05148b06575729f1aff",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-path-read-checkpoint-managed-rebuild-tail.json",
+      "sha256": "4ccb0afa0ca4ef723e0f448407e7061fa6c62f7723c0abac16ddc7679a0bc33c",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 32,
+        "outcomes": {
+          "error": 32
+        }
+      },
+      "syscall_set": "path-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-read-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "504077691b754d19259523eee875742b84aa9033b0ff88289023bb8e756d055d",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-read-checkpoint-managed-rebuild-tail.json",
+      "sha256": "f5108af34c2cfa6081591c883bdadcbb11cc3e5a1416e6bf4792be1ca22e72f8",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 76,
+        "outcomes": {
+          "error": 76
+        }
+      },
+      "syscall_set": "read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-sync-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "62f5c809e8e7dfbc79718206f2cfcc64dd00b5bb46157c5c2552fe162e0a4f0e",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-sync-checkpoint-managed-rebuild-tail.json",
+      "sha256": "2b3925d049f7b790661110096ee7731666300c04b9d7411ba6af158ddebe115e",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 96,
+        "outcomes": {
+          "error": 96
+        }
+      },
+      "syscall_set": "sync",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-xattr-read-checkpoint-managed-rebuild-tail-existing.json",
+      "sha256": "981809cdde60b18aca8c59a6c2edf276798311829e569be22d6193198245a3fc",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail-existing"
+      ]
+    },
+    {
+      "file": "rebuild-tail-EIO-xattr-read-checkpoint-managed-rebuild-tail.json",
+      "sha256": "6c76ef20c7ec1e80d673412dfe60cc4a8f351943a9c082a73883e540a29aec47",
+      "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+      "verified": {
+        "controls": 2,
+        "errno": "EIO",
+        "injections": 12,
+        "outcomes": {
+          "error": 12
+        }
+      },
+      "syscall_set": "xattr-read",
+      "formats": [
+        "v2",
+        "v3"
+      ],
+      "operations": [
+        "checkpoint-managed-rebuild-tail"
+      ]
+    }
+  ],
+  "fault_summary": {
+    "reports": 72,
+    "injections": 4240,
+    "classifications": {
+      "not_published": 2496,
+      "selection_unknown": 640,
+      "None": 192,
+      "checkpoint_unknown": 912
+    },
+    "note": "None means the operation succeeded after an injected error was handled."
+  },
+  "fault_archive": {
+    "file": "2026-11-14-managed-rebuild-outcomes-faults.tar.gz",
+    "sha256": "0a82d90d2afdaff744bc2c438b114e0a2666a197ab7af7780bd659923788c752"
+  },
+  "model": {
+    "revision": "92b99e5972aa45d767168d97989ce9e7555df4d2",
+    "target": "managed_checkpoint",
+    "toolchain": "nightly-2026-11-03, cargo-fuzz 0.13.2, AddressSanitizer",
+    "runs": 3843,
+    "seconds": 121,
+    "seed": 4301,
+    "max_len": 128,
+    "corpus_files": 383,
+    "replay_runs": 384,
+    "binary_sha256": "8d71bbcc23b77ae1083615c83d6cf5d0ef5c85bc23b7e130bb1ec8db5c2b21d4",
+    "log_sha256": "a26ad2b9f3e9260dd48dc0594dfee29603cdc91b620fda441929d3935ab813a7",
+    "replay_log_sha256": "fe1a1bd8cc4f14faaa804f34c0b2adbde2cdbfb1b6c8f2f6fcf2de79f8bfb5c6",
+    "archive": {
+      "file": "2026-11-14-managed-rebuild-outcomes-model.tar.gz",
+      "sha256": "4a0f591d2a91c5164790b924e5006d029bb6149a6f02af80df673b7577ef50c6"
+    }
+  },
+  "enospc": {
+    "file": "2026-11-14-managed-rebuild-outcomes-enospc.json",
+    "sha256": "d7acdd655bc7a3e699576714c01d71264833b49432f17f6823d355f2b98e4d7f",
+    "revision": "e5e30c3daa43c073a7be24a6944614844c78b6e4",
+    "passed": 1
+  },
+  "versions": {
+    "stable": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "minimum": "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+    "fuzz": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)"
+  }
+}

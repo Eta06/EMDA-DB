@@ -200,7 +200,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   including the limited variant. The result distinguishes checkpoint and
   selection publication attempts; full-log recovery can still adopt an
   unacknowledged complete tail before publication, and callers must coordinate
-  other writers after the rebuild releases its lock.
+  other writers after the rebuild releases its lock. [Recovery and fault
+  evidence](MANAGED_REBUILD_OUTCOMES_2026_11_14.md) includes acknowledged
+  suffixes, finite model fuzzing and independently verified syscall errors.
 
 ## Priority 1: durable storage and core operations
 
