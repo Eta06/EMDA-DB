@@ -580,7 +580,8 @@ fn limited_key_byte_accounting_is_rebuilt_after_uncertain_single_and_batch_write
             assert!(store.put(b"x", b"must-not-commit").is_err());
             drop(store);
             let recovered =
-                Store::open_with_resource_limits(dir.path(), None, None, Some(5)).unwrap();
+                retry_lock(|| Store::open_with_resource_limits(dir.path(), None, None, Some(5)))
+                    .unwrap();
             let b = recovered.get(b"bb").unwrap();
             let c = recovered.get(b"cc").unwrap();
             assert_eq!(b.is_some(), c.is_some());
@@ -679,8 +680,10 @@ fn capped_existing_key_updates_share_a_witness_sync_and_block_deletion() {
         // One extra synchronization belongs to the deletion; updates shared one.
         assert_eq!(entered_rx.try_iter().count(), 1);
         drop(store);
-        let recovered =
-            Store::open_with_resource_limits(dir.path(), max_log, max_keys, max_bytes).unwrap();
+        let recovered = retry_lock(|| {
+            Store::open_with_resource_limits(dir.path(), max_log, max_keys, max_bytes)
+        })
+        .unwrap();
         recovered.put(b"z", b"replacement").unwrap();
         assert!(recovered.put(b"extra", b"over quota").is_err());
     }
@@ -782,7 +785,8 @@ fn failed_capped_group_leader_wakes_existing_key_waiters_and_requires_recovery()
         assert!(store.get(b"a").is_err());
         drop(store);
         let recovered =
-            Store::open_with_resource_limits(dir.path(), None, Some(4), Some(4)).unwrap();
+            retry_lock(|| Store::open_with_resource_limits(dir.path(), None, Some(4), Some(4)))
+                .unwrap();
         for key in [b"b", b"c", b"d"] {
             assert_eq!(recovered.get(key).unwrap().as_deref(), Some(&b"old"[..]));
         }
@@ -850,7 +854,8 @@ fn failed_capped_group_sync_never_acknowledges_waiters_or_oversubscribes() {
         assert!(store.get(b"a").is_err());
         drop(store);
         let recovered =
-            Store::open_with_resource_limits(dir.path(), max_log, Some(4), Some(4)).unwrap();
+            retry_lock(|| Store::open_with_resource_limits(dir.path(), max_log, Some(4), Some(4)))
+                .unwrap();
         assert_eq!(recovered.get(b"a").unwrap().as_deref(), Some(&b"new"[..]));
         for key in [b"b", b"c", b"d"] {
             let value = recovered.get(key).unwrap().unwrap();
