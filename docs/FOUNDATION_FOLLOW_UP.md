@@ -119,6 +119,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add opt-in backup and restore publication classifications. A pre-existing
   destination or staging remnants can still exist; unknown publication needs
   inspection, and neither result establishes an independent off-host backup.
+  [Selected filesystem-fault and concurrent-writer checks](BACKUP_PUBLICATION_OUTCOMES_2026_11_14.md)
+  record the outcomes and their limits.
 - [ ] Specify structured outcomes for document convenience mutations and
   other maintenance publications, and refine confirmed pre-submission
   classification inside the ordinary commit coordinator. Existing error types
