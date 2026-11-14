@@ -790,12 +790,9 @@ impl Store {
         tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
         let Some(quota) = &self.log_quota else {
-            if let Some(tracker) = tracker {
-                tracker.commit();
-            }
             return self
                 .commits
-                .commit(&self.log, &self.inner, operation, key, value);
+                .commit(&self.log, &self.inner, operation, key, value, tracker);
         };
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -811,11 +808,8 @@ impl Store {
         // A coordinator error after append poisons the store. Before-append
         // errors release the reservation; uncertain outcomes cannot be retried
         // on this open instance and are re-counted from the log after reopen.
-        if let Some(tracker) = tracker {
-            tracker.commit();
-        }
         self.commits
-            .commit(&self.log, &self.inner, operation, key, value)?;
+            .commit(&self.log, &self.inner, operation, key, value, tracker)?;
         reservation.committed();
         Ok(())
     }
@@ -847,6 +841,9 @@ mod fault_tests;
 
 #[cfg(test)]
 mod detailed_document_fault_tests;
+
+#[cfg(test)]
+mod coordinator_boundary_tests;
 
 #[cfg(test)]
 mod group_tests;

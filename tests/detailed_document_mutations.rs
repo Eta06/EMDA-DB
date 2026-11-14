@@ -108,6 +108,43 @@ fn check_rejected(db: &DocumentDatabase<'_>) {
 }
 
 #[test]
+fn document_group_admission_rejection_preserves_documents_and_indexes() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let db = DocumentDatabase::new(&store);
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index(
+        "c",
+        IndexDefinition {
+            name: "x".into(),
+            fields: vec![vec!["x".into()]],
+            unique: true,
+            partial: None,
+        },
+    )
+    .unwrap();
+    let before = std::fs::read(root.path().join("records.log")).unwrap();
+    store.set_group_commit_limits(0, 0).unwrap();
+    assert!(matches!(
+        db.insert_detailed("c", "blocked", &json!({"x":1})),
+        Err(TransactionFailure::Rejected(_))
+    ));
+    assert_eq!(
+        std::fs::read(root.path().join("records.log")).unwrap(),
+        before
+    );
+    store
+        .set_group_commit_limits(
+            database_engine::MAX_GROUP_COMMIT_BUFFERED_BYTES,
+            database_engine::MAX_GROUP_COMMIT_BUFFERED_RECORDS,
+        )
+        .unwrap();
+    assert_eq!(db.get("c", "blocked").unwrap(), None);
+    db.verify_collection("c").unwrap();
+}
+
+#[test]
 fn common_document_outcomes_are_atomic_on_both_backends_and_formats() {
     for v2 in [true, false] {
         if !v2 && !cfg!(target_os = "linux") {

@@ -220,6 +220,12 @@ impl Coordinator {
         self.state.lock().unwrap().queue.len()
     }
 
+    #[cfg(test)]
+    pub(super) fn queued_or_active_len(&self) -> usize {
+        let state = self.state.lock().unwrap();
+        state.queue.len() + state.active_completions.len()
+    }
+
     pub(super) fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
     }
@@ -382,6 +388,7 @@ impl Coordinator {
         operation: Operation,
         key: &[u8],
         value: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
         // Store::append validates key and value lengths before admission.
         let bytes = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
@@ -399,6 +406,12 @@ impl Coordinator {
             let error = Self::failure(&state);
             drop(state);
             return Err(error);
+        }
+        // From this point another leader may dequeue and append the request.
+        // Earlier reservation, encoding or coordinator failures cannot have
+        // submitted this call, even if a different call remains uncertain.
+        if let Some(tracker) = tracker {
+            tracker.commit();
         }
         state.queue.push_back(Entry {
             operation,

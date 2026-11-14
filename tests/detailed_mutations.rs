@@ -206,15 +206,79 @@ fn log_quota_rejections_do_not_submit_direct_mutations() {
 }
 
 #[test]
-fn ordinary_coordinator_rejection_is_conservatively_unknown() {
+fn ordinary_group_admission_rejection_is_confirmed_before_submission() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
+    store.put(b"counter", &0_i64.to_le_bytes()).unwrap();
+    let before = std::fs::read(root.path().join("records.log")).unwrap();
     store.set_group_commit_limits(0, 0).unwrap();
     assert!(matches!(
         store.put_detailed(b"blocked", b"no"),
-        Err(MutationFailure::OutcomeUnknown(_))
+        Err(MutationFailure::Rejected(_))
+    ));
+    assert!(matches!(
+        store.delete_detailed(b"counter"),
+        Err(MutationFailure::Rejected(_))
+    ));
+    assert!(matches!(
+        store.compare_exchange_detailed(b"counter", Some(&0_i64.to_le_bytes()), Some(b"new")),
+        Err(MutationFailure::Rejected(_))
+    ));
+    assert!(matches!(
+        store.increment_i64_detailed(b"counter", 1),
+        Err(MutationFailure::Rejected(_))
+    ));
+    assert!(matches!(
+        store.write_batch_detailed(&[BatchOperation::Put {
+            key: b"batch",
+            value: b"no"
+        }]),
+        Err(MutationFailure::Rejected(_))
     ));
     assert_eq!(store.get(b"blocked").unwrap(), None);
+    assert_eq!(
+        store.get(b"counter").unwrap(),
+        Some(0_i64.to_le_bytes().to_vec())
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("records.log")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn group_admission_rejections_release_log_quota_reservations() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open_with_log_limit(root.path(), 4096).unwrap();
+    let before = std::fs::read(root.path().join("records.log")).unwrap();
+    store.set_group_commit_limits(0, 0).unwrap();
+    for _ in 0..128 {
+        match store.put_detailed(b"reserved", b"value") {
+            Err(MutationFailure::Rejected(error)) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock)
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+    }
+    assert_eq!(
+        std::fs::read(root.path().join("records.log")).unwrap(),
+        before
+    );
+    store.set_group_commit_limits(1, 1).unwrap();
+    assert!(
+        matches!(store.put_detailed(b"reserved", b"value"), Err(MutationFailure::Rejected(ref error)) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    store
+        .set_group_commit_limits(
+            database_engine::MAX_GROUP_COMMIT_BUFFERED_BYTES,
+            database_engine::MAX_GROUP_COMMIT_BUFFERED_RECORDS,
+        )
+        .unwrap();
+    store.put_detailed(b"reserved", b"value").unwrap();
+    assert_eq!(
+        store.get(b"reserved").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
 }
 
 macro_rules! race_for_one_key {

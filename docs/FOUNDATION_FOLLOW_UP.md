@@ -126,9 +126,14 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   conservative transaction; an unknown outcome still needs reconciliation.
   [Local failure and comparison evidence](DOCUMENT_MUTATION_OUTCOMES_2026_11_14.md)
   records the checked boundaries and limitations.
-- [ ] Specify structured outcomes for other maintenance publications, and refine confirmed pre-submission
-  classification inside the ordinary commit coordinator. Existing error types
-  are unchanged and unknown outcomes cannot be retried solely from error kind.
+- [x] Classify ordinary group-commit admission and other failures before queue
+  insertion as rejected for the current detailed mutation or transaction.
+  A queued request remains unknown on failure; independent earlier writes may
+  still be uncertain, and rejection does not establish store health.
+- [ ] Specify structured outcomes for other maintenance publications and
+  refine safe classifications where further boundaries can be proven.
+  Existing error types are unchanged and unknown outcomes cannot be retried
+  solely from error kind.
 
 ## Priority 1: durable storage and core operations
 

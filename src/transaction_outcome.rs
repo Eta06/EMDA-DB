@@ -15,8 +15,8 @@ pub enum MutationFailure {
     /// This mutation was not submitted. Independent maintenance or earlier
     /// operations may have effects or uncertain outcomes.
     Rejected(io::Error),
-    /// This mutation may have been submitted. Some coordinator errors before
-    /// append are conservatively classified as unknown.
+    /// This mutation may have been submitted. A queued ordinary-store request
+    /// can be conservatively classified as unknown even before append.
     OutcomeUnknown(io::Error),
 }
 

@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Classify ordinary-store group-commit admission and other failures before a
+  request is queued as rejected by the detailed mutation and transaction APIs.
+  Once queued, errors remain conservatively unknown even before append.
+
 - Add opt-in structured outcomes for common document insert, replace,
   conditional update, delete and atomic bulk calls on both writable stores.
   They use the existing conservative transaction and synchronization rules.

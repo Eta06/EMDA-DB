@@ -419,8 +419,8 @@ impl Store {
     /// that this transaction's staged writes were not submitted. Callback
     /// side effects and independent writes are not rolled back. An unknown
     /// outcome requires reconciliation before retry and can conservatively
-    /// include coordinator failures before append. Recovery may not identify whether
-    /// a particular operation took effect.
+    /// include a queued request that failed before append. Recovery may not
+    /// identify whether a particular operation took effect.
     /// Existing modes, limits and control timing are unchanged. Panics unwind
     /// instead of returning a structured failure.
     pub fn transaction_detailed<T>(

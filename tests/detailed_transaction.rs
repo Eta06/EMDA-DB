@@ -377,7 +377,7 @@ fn key_and_checkpoint_suffix_quota_reject_before_submission() {
 }
 
 #[test]
-fn ordinary_coordinator_rejection_remains_conservatively_unknown() {
+fn ordinary_group_admission_rejection_is_confirmed_before_submission() {
     let root = tempfile::tempdir().unwrap();
     let store = Store::open(root.path()).unwrap();
     store.put(b"safe", b"yes").unwrap();
@@ -387,7 +387,7 @@ fn ordinary_coordinator_rejection_remains_conservatively_unknown() {
             tx.put(b"blocked", b"no")
         })
         .unwrap_err();
-    assert!(matches!(error, TransactionFailure::OutcomeUnknown(_)));
+    assert!(matches!(error, TransactionFailure::Rejected(_)));
     assert_eq!(store.get(b"safe").unwrap().as_deref(), Some(&b"yes"[..]));
     assert_eq!(store.get(b"blocked").unwrap(), None);
 }

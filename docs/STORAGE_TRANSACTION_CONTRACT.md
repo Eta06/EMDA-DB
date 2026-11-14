@@ -25,8 +25,9 @@ its staged writes, not that independent callback effects or earlier writes
 were rolled back. A callback that forwards another operation's cancellation or
 conflict error remains a callback failure. Configured log-length, live-key and
 checkpoint suffix limits are checked before transaction submission. For the
-ordinary store, errors after entering the commit coordinator are conservatively
-unknown even when they precede append. For the checkpoint-backed store,
+ordinary store, group-commit admission, preparation and lock errors before a
+request is queued reject that call. Once queued, an error is conservatively
+unknown even when it precedes append. For the checkpoint-backed store,
 append errors are unknown; errors before append reject this transaction. A
 confirmed rejection, cancellation or expiry during automatic checkpoint
 maintenance concerns only staged transaction writes: maintenance itself may
@@ -41,7 +42,7 @@ detailed conditional batch. `MutationFailure::Rejected` means the current
 mutation was not submitted. It does not establish store health or resolve an
 earlier uncertain write, and checkpoint maintenance may have independent
 effects. `OutcomeUnknown` means this mutation may have been submitted and must
-be reconciled before retry; ordinary coordinator failures can be classified
+be reconciled before retry; a queued ordinary request can be classified
 unknown even before append. Conditional mismatches return `Ok(false)` without
 submitting a mutation. Existing methods retain their error types.
 
