@@ -34,6 +34,7 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-write', 'checkpoint-batch', 'checkpoint-backup', 'checkpoint-compaction',
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
+PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore')
 FORMATS = ('v2', 'v3')
 RECOVERY_ORDERS = ('ordinary-first', 'checkpoint-first')
 CALL = re.compile(r'\b(' + '|'.join(sorted(
@@ -220,14 +221,14 @@ def reports_injected_error(line, error_name):
 
 
 def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persistent=False,
-                   syscalls=SYSCALLS, fixture_only=False, *, injected_error='EIO'):
+                   syscalls=SYSCALLS, fixture_only=False, *, injected_error='EIO', command_name='attempt'):
     trace = root / 'trace.txt'
     command = ['strace', '-f', '-qq', '-yy', '-s', '512', '-o', str(trace),
                '-e', 'trace=' + ','.join(syscalls)]
     if syscall:
         when = f'{ordinal}+1' if persistent else str(ordinal)
         command += ['-e', f'inject={syscall}:error={injected_error}:when={when}']
-    command += [binary, 'attempt', str(root), operation]
+    command += [binary, command_name, str(root), operation]
     run = subprocess.run(command, capture_output=True, text=True, timeout=60)
     if run.returncode:
         raise RuntimeError(f'traced probe exited {run.returncode}: {run.stderr[-3000:]}')
@@ -247,6 +248,20 @@ def traced_attempt(binary, root, operation, syscall=None, ordinal=None, persiste
         raise ValueError('injection did not target a fixture filesystem operation')
     return {'outcome': outcome, 'counts': counts, 'eligible_ordinals': eligible,
             'injected_traces': injected}
+
+
+def check_publication_outcome(outcome, verification):
+    classification = outcome.get('classification')
+    visible = verification.get('target_visible')
+    if type(visible) is not bool:
+        raise ValueError('missing destination visibility')
+    if outcome['status'] == 'success':
+        if classification is not None or not visible:
+            raise ValueError('invalid successful publication result')
+    elif classification not in ('not_published', 'unknown'):
+        raise ValueError('invalid publication failure classification')
+    elif classification == 'not_published' and visible:
+        raise ValueError('a not-published call left a visible destination')
 
 
 def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
@@ -270,6 +285,8 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         if (verification.get('status') != 'verified' or verification.get('operation') != operation
                 or verification.get('recovery_order') != expected_order):
             raise ValueError('recovery verification did not complete')
+        if 'classification' in traced['outcome']:
+            check_publication_outcome(traced['outcome'], verification)
         final = snapshot(root, format_name)
         check_source(before, final, format_name, operation)
         final_target = initialization_snapshot(root) if operation == 'initialize' else None
@@ -306,6 +323,8 @@ def main():
     parser.add_argument('--syscall-set', choices=tuple(SYSCALL_SETS), default='sync',
                         help='sync (default), data writes/metadata, reads, opens, or namespace operations')
     parser.add_argument('--operation', choices=OPERATIONS, help='optional single-operation check')
+    parser.add_argument('--publication-outcomes', action='store_true',
+                        help='exercise detailed backup and restore publication classifications')
     parser.add_argument('--format', choices=FORMATS, help='optional single-format check')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file() or os.path.lexists(args.output)
@@ -314,6 +333,8 @@ def main():
         parser.error('existing fixture directory and binary, new output, and valid ordinal limit required')
     if args.persistent_errors and (args.syscall_set != 'sync' or args.injected_error != 'EIO'):
         parser.error('persistent errors are supported only for synchronization EIO')
+    if args.publication_outcomes and args.operation and args.operation not in PUBLICATION_OPERATIONS:
+        parser.error('publication outcomes support backup, checkpoint-backup and restore only')
     binary = str(Path(args.binary).resolve())
     directory = str(Path(args.directory).resolve())
     syscalls = SYSCALL_SETS[args.syscall_set]
@@ -335,7 +356,8 @@ def main():
         'syscall_set': args.syscall_set,
         'fixture_paths_only': fixture_only,
         'formats': [args.format] if args.format else list(FORMATS),
-        'operations': [args.operation] if args.operation else list(OPERATIONS),
+        'operations': [args.operation] if args.operation else list(PUBLICATION_OPERATIONS if args.publication_outcomes else OPERATIONS),
+        'publication_outcomes': args.publication_outcomes,
         'injection_mode': 'persistent-from-ordinal' if args.persistent_errors else 'one-shot',
         'injected_error': args.injected_error,
         'filesystem': json.loads(subprocess.check_output(
@@ -367,7 +389,8 @@ def main():
     def save(force=False):
         writer.save(result, force=force)
 
-    tracer = functools.partial(traced_attempt, injected_error=args.injected_error)
+    tracer = functools.partial(traced_attempt, injected_error=args.injected_error,
+                               command_name='attempt-publication' if args.publication_outcomes else 'attempt')
     try:
         with tempfile.TemporaryDirectory(prefix='sync-eio-campaign-', dir=directory) as temp:
             for format_name in result['formats']:

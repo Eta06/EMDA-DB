@@ -18,6 +18,7 @@ mod document;
 mod log;
 mod log_io;
 mod metadata_witness;
+mod publication_outcome;
 mod record;
 mod recovered_view;
 mod recovery;
@@ -55,6 +56,7 @@ pub use document::{
     NumericFieldStats, PartialFilter, PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus,
     SchemaStep,
 };
+pub use publication_outcome::PublicationFailure;
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{
     MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,

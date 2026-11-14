@@ -69,6 +69,30 @@ class OneShotCoverageTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'errno differs'):
             verify(broken)
 
+    def test_publication_classification_must_match_visible_destination(self):
+        report = fixture()
+        report['publication_outcomes'] = True
+        report['operations'] = ['backup']
+        case = report['cases'][0]
+        case['operation'] = 'backup'
+        for probe_value in [case['control'], *case['injections']]:
+            probe_value['outcome']['operation'] = 'backup'
+            probe_value['verification']['operation'] = 'backup'
+        case['control']['outcome']['classification'] = None
+        case['control']['verification']['target_visible'] = True
+        for injection in case['injections']:
+            injection['outcome'].update(status='error', classification='not_published')
+            injection['verification']['target_visible'] = False
+        self.assertEqual(verify(report)['injections'], 2)
+        broken = copy.deepcopy(report)
+        broken['cases'][0]['injections'][0]['verification']['target_visible'] = True
+        with self.assertRaisesRegex(ValueError, 'not-published call left a visible destination'):
+            verify(broken)
+        broken = copy.deepcopy(report)
+        del broken['cases'][0]['injections'][0]['outcome']['classification']
+        with self.assertRaisesRegex(ValueError, 'missing publication classification'):
+            verify(broken)
+
 
 if __name__ == '__main__':
     unittest.main()

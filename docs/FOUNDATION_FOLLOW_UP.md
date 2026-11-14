@@ -116,8 +116,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   remain conservatively unknown before append. [Local fault, process-kill and
   performance evidence](DIRECT_MUTATION_OUTCOMES_2026_11_14.md) records the
   scope and remaining uncertainty.
-- [ ] Specify structured outcomes for document convenience mutations,
-  maintenance, backup and restore APIs, and refine confirmed pre-submission
+- [x] Add opt-in backup and restore publication classifications. A pre-existing
+  destination or staging remnants can still exist; unknown publication needs
+  inspection, and neither result establishes an independent off-host backup.
+- [ ] Specify structured outcomes for document convenience mutations and
+  other maintenance publications, and refine confirmed pre-submission
   classification inside the ordinary commit coordinator. Existing error types
   are unchanged and unknown outcomes cannot be retried solely from error kind.
 

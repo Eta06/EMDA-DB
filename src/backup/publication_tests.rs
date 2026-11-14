@@ -475,6 +475,125 @@ fn backup_parent_sync_failure_reports_uncertain_publication() {
 }
 
 #[test]
+fn structured_backup_failures_distinguish_before_and_after_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"key", b"durable").unwrap();
+    drop(store);
+    let (log, _) = Log::open(&source, false).unwrap();
+    let backup = dir.path().join("backup");
+    let before = crate::publication_outcome::track(|tracker| {
+        create_with_stage_hooks(
+            &log,
+            &backup,
+            crate::directory::sync_existing,
+            || {
+                tracker.begin_publication();
+                Ok(())
+            },
+            |point| {
+                if point == BackupCreationPoint::Verified {
+                    Err(io::Error::other("injected before publication"))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+    });
+    assert!(matches!(
+        before,
+        Err(crate::PublicationFailure::NotPublished(_))
+    ));
+    assert!(!backup.exists());
+    let after = crate::publication_outcome::track(|tracker| {
+        create_with_hooks(
+            &log,
+            &backup,
+            |_| Err(io::Error::other("injected directory sync")),
+            || {
+                tracker.begin_publication();
+                Ok(())
+            },
+        )
+    });
+    assert!(matches!(
+        after,
+        Err(crate::PublicationFailure::OutcomeUnknown(_))
+    ));
+    let restored = dir.path().join("restored");
+    Store::restore(&backup, &restored).unwrap();
+    assert_eq!(
+        Store::open(&restored)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"durable"[..])
+    );
+}
+
+#[test]
+fn structured_restore_failures_distinguish_before_and_after_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"key", b"durable").unwrap();
+    let backup = dir.path().join("backup");
+    store.backup(&backup).unwrap();
+    let restored = dir.path().join("restored");
+    let before = crate::publication_outcome::track(|tracker| {
+        restore_with_stage_hooks(
+            &backup,
+            &restored,
+            crate::directory::sync_existing,
+            || {
+                tracker.begin_publication();
+                Ok(())
+            },
+            |_| Ok(()),
+            |_| Ok(()),
+            |point| {
+                if point == RebuildPoint::DirectorySynced {
+                    Err(io::Error::other("injected before publication"))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+    });
+    assert!(matches!(
+        before,
+        Err(crate::PublicationFailure::NotPublished(_))
+    ));
+    assert!(!restored.exists());
+    let after = crate::publication_outcome::track(|tracker| {
+        restore_with_hooks(
+            &backup,
+            &restored,
+            |_| Err(io::Error::other("injected directory sync")),
+            || {
+                tracker.begin_publication();
+                Ok(())
+            },
+        )
+    });
+    assert!(matches!(
+        after,
+        Err(crate::PublicationFailure::OutcomeUnknown(_))
+    ));
+    assert_eq!(
+        Store::open(&restored)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(&b"durable"[..])
+    );
+    assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"durable"[..]));
+}
+
+#[test]
 fn upgrade_parent_sync_failure_reports_uncertain_publication() {
     let directory = tempfile::tempdir().unwrap();
     let source_path = directory.path().join("source");

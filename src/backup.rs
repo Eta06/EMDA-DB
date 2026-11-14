@@ -61,6 +61,17 @@ pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
     create_with_sync(log, destination, crate::directory::sync_existing)
 }
 
+pub(crate) fn create_tracked(
+    log: &Log,
+    destination: &Path,
+    tracker: &crate::publication_outcome::Tracker,
+) -> io::Result<()> {
+    create_with_hooks(log, destination, crate::directory::sync_existing, || {
+        tracker.begin_publication();
+        Ok(())
+    })
+}
+
 fn create_with_sync(
     log: &Log,
     destination: &Path,
@@ -132,6 +143,17 @@ fn create_with_stage_hooks(
 
 pub(crate) fn restore(source: &Path, destination: &Path) -> io::Result<()> {
     restore_with_sync(source, destination, crate::directory::sync_existing)
+}
+
+pub(crate) fn restore_tracked(
+    source: &Path,
+    destination: &Path,
+    tracker: &crate::publication_outcome::Tracker,
+) -> io::Result<()> {
+    restore_with_hooks(source, destination, crate::directory::sync_existing, || {
+        tracker.begin_publication();
+        Ok(())
+    })
 }
 
 fn restore_with_sync(

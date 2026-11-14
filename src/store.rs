@@ -549,6 +549,28 @@ impl Store {
     /// verified. An existing destination is never overwritten. A failed
     /// directory synchronization after publication has an uncertain outcome.
     pub fn backup(&self, destination: impl AsRef<Path>) -> io::Result<()> {
+        self.backup_using(destination.as_ref(), backup::create)
+    }
+
+    /// Creates a backup with structured destination-publication failures.
+    /// A pre-existing destination or staging remnants can exist even when
+    /// this call did not publish. Inspect uncertain outcomes before retrying.
+    pub fn backup_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.backup_using(destination.as_ref(), |log, destination| {
+                backup::create_tracked(log, destination, tracker)
+            })
+        })
+    }
+
+    fn backup_using(
+        &self,
+        destination: &Path,
+        create: impl FnOnce(&Log, &Path) -> io::Result<()>,
+    ) -> io::Result<()> {
         let _writer = self
             .writes
             .write()
@@ -557,7 +579,7 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        backup::create(&self.log, destination.as_ref())
+        create(&self.log, destination)
     }
 
     /// Writes a verified, non-overwriting index checkpoint to a new path.
@@ -593,6 +615,18 @@ impl Store {
     /// after publication has an uncertain outcome and must be inspected.
     pub fn restore(source: impl AsRef<Path>, destination: impl AsRef<Path>) -> io::Result<()> {
         backup::restore(source.as_ref(), destination.as_ref())
+    }
+
+    /// Restores a backup with structured destination-publication failures.
+    /// The classification concerns only this call's publication attempt;
+    /// it does not establish that the source is an independent backup.
+    pub fn restore_detailed(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            backup::restore_tracked(source.as_ref(), destination.as_ref(), tracker)
+        })
     }
 
     /// Copies an independently verified empty, unwitnessed legacy log into a

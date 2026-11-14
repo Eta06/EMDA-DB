@@ -505,6 +505,19 @@ impl CheckpointStore {
         self.backup_using(destination.as_ref(), crate::backup::create)
     }
 
+    /// Creates a backup with structured destination-publication failures.
+    /// A rejection does not establish store health or guarantee cleanup.
+    pub fn backup_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.backup_using(destination.as_ref(), |log, destination| {
+                crate::backup::create_tracked(log, destination, tracker)
+            })
+        })
+    }
+
     /// Creates a verified, non-overwriting compacted copy with its checkpoint
     /// at `COMPACTED_CHECKPOINT_FILE`. The returned digest must be protected
     /// separately. Mutations wait for the copy; readers may continue. The

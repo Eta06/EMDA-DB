@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in structured backup and restore publication failures. A
+  `NotPublished` result concerns only this call; a destination may pre-exist
+  and staging remnants may remain. Publication errors remain conservative.
+
 - Add opt-in structured failures to direct key-value puts, deletes,
   compare-exchange, integer increments and atomic batches on both stores,
   including checkpoint conditional batches. Rejection concerns only the

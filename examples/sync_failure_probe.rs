@@ -115,6 +115,41 @@ fn attempt(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
+    use database_engine::PublicationFailure;
+    let source = root.join("source");
+    let target = root.join("result");
+    let outcome = match operation {
+        "backup" => Store::open(source)
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.backup_detailed(target)),
+        "checkpoint-backup" => checkpoint_store(root)
+            .map_err(PublicationFailure::NotPublished)
+            .and_then(|store| store.backup_detailed(target)),
+        "restore" => Store::restore_detailed(root.join("reference-backup"), target),
+        _ => return Err("unknown publication operation".into()),
+    };
+    match outcome {
+        Ok(()) => println!(
+            "{}",
+            json!({"status":"success", "operation":operation, "classification":null})
+        ),
+        Err(error) => {
+            let (classification, error) = match error {
+                PublicationFailure::NotPublished(error) => ("not_published", error),
+                PublicationFailure::OutcomeUnknown(error) => ("unknown", error),
+                other => ("unknown", io::Error::other(other)),
+            };
+            println!(
+                "{}",
+                json!({"status":"error", "operation":operation,
+                "classification":classification, "kind":format!("{:?}",error.kind()), "message":error.to_string()})
+            );
+        }
+    }
+    Ok(())
+}
+
 fn report_handle(
     operation: &str,
     outcome: io::Result<()>,
@@ -368,6 +403,7 @@ fn main() -> ProbeResult<()> {
     match args.as_slice() {
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
+        [command, root, operation] if command == "attempt-publication" => attempt_publication(Path::new(root), operation),
         [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
         [command, root, order] if command == "verify-rejected" => verify_rejected(Path::new(root), order),

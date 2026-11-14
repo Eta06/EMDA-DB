@@ -19,12 +19,16 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def check_probe(probe, operation, order, syscall=None, error_name=None):
+def check_probe(probe, operation, order, syscall=None, error_name=None, publication=False):
     require(probe['outcome']['operation'] == operation
             and probe['outcome']['status'] in ('success', 'error'), 'unexpected probe outcome')
     verified = probe['verification']
     require(verified['status'] == 'verified' and verified['operation'] == operation
             and verified['recovery_order'] == ORDERS[order], 'missing recovery verification')
+    if publication:
+        from sync_eio_campaign import check_publication_outcome
+        require('classification' in probe['outcome'], 'missing publication classification')
+        check_publication_outcome(probe['outcome'], verified)
     traces = probe['injected_traces']
     require(len(traces) == int(syscall is not None), 'wrong number of recorded injections')
     if syscall is not None:
@@ -44,6 +48,11 @@ def verify(result):
     error_name = result.get('injected_error', 'EIO')
     require(error_name in ('EIO', 'EINTR', 'EAGAIN', 'ENOSPC', 'EDQUOT'), 'unknown injected errno')
     formats, operations = result['formats'], result['operations']
+    publication = result.get('publication_outcomes', False)
+    require(type(publication) is bool, 'invalid publication-outcome mode')
+    if publication:
+        require(all(operation in ('backup', 'checkpoint-backup', 'restore') for operation in operations),
+                'invalid publication operation')
     require(formats and operations and len(formats) == len(set(formats))
             and len(operations) == len(set(operations)), 'empty or duplicate campaign format or operation')
     cases = result['cases']
@@ -56,7 +65,7 @@ def verify(result):
     for case in cases:
         operation = case['operation']
         control = case['control']
-        check_probe(control, operation, 'ordinary-first')
+        check_probe(control, operation, 'ordinary-first', publication=publication)
         require(control['outcome']['status'] == 'success', 'control did not succeed')
         expected = []
         for syscall in SYSCALL_SETS[group]:
@@ -73,7 +82,7 @@ def verify(result):
         actual = [(item['syscall'], item['ordinal'], item['order']) for item in injections]
         require(Counter(actual) == Counter(expected), 'missing or duplicate selected injection')
         for item in injections:
-            check_probe(item, operation, item['order'], item['syscall'], error_name)
+            check_probe(item, operation, item['order'], item['syscall'], error_name, publication)
             outcomes[item['outcome']['status']] += 1
             total += 1
     return {'controls': len(cases), 'injections': total, 'outcomes': dict(outcomes), 'errno': error_name}

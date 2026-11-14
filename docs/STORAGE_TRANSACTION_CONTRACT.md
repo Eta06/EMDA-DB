@@ -44,8 +44,20 @@ effects. `OutcomeUnknown` means this mutation may have been submitted and must
 be reconciled before retry; ordinary coordinator failures can be classified
 unknown even before append. Conditional mismatches return `Ok(false)` without
 submitting a mutation. Existing methods retain their error types, and document
-convenience mutations, maintenance, backup and restore do not yet offer this
+convenience mutations and maintenance do not yet offer this
 structured classification.
+
+For full-log backup and restore, opt-in `backup_detailed` and
+`Store::restore_detailed` return `PublicationFailure::NotPublished` if this
+call did not begin publishing its destination, or `OutcomeUnknown` if the
+publication attempt began and failed. The latter is conservative: a
+non-overwrite conflict can be reported unknown even when this call did not
+publish. Neither variant says the destination was absent before the call,
+proves cleanup of temporary stages, establishes source health or confirms an
+independent off-host copy. A visible result after a directory-sync failure may
+not be durable. Inspect and reconcile unknown outcomes before retry. Existing
+backup/restore APIs retain their previous error types; checkpoint, compaction,
+upgrade and other maintenance publications do not yet have this classification.
 
 ## Current prototype: one store in one process
 

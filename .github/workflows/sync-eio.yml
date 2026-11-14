@@ -109,6 +109,8 @@ jobs:
           python3 scripts/verify_sync_interrupt_results.py "$RUNNER_TEMP/sync-interrupt.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-result.json"
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/sync-eio-result.json"
+          python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-publication.json" --publication-outcomes --operation backup --format v2 --max-ordinals 3
+          python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eio-publication.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/sync-eio-persistent.json" --persistent-errors
           for syscall_group in data read xattr-read open namespace; do
             python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-$syscall_group.json" --syscall-set "$syscall_group"
@@ -181,6 +183,8 @@ jobs:
             ${{ runner.temp }}/eintr-data.json
             ${{ runner.temp }}/eagain-*.json
             ${{ runner.temp }}/eio-double.json
+            ${{ runner.temp }}/eio-publication.json
+            ${{ runner.temp }}/eio-publication.json.progress.json
             ${{ runner.temp }}/eio-double.json.progress.json
             ${{ runner.temp }}/eio-double-sync.json
             ${{ runner.temp }}/eio-double-sync.json.progress.json
