@@ -167,6 +167,48 @@ impl std::error::Error for OnlineReclaimError {
     }
 }
 
+/// A failed online reclamation with detailed handoff outcomes.
+///
+/// A compaction failure classifies this call's candidate and exchange
+/// attempts; it does not establish source health or staging cleanup. A
+/// reclamation failure means the handoff succeeded, but the retired copy may
+/// be partial or retained in an owned staging path. Independent callbacks can
+/// modify the source while the candidate is prepared. Panics unwind instead.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum OnlineReclaimFailure {
+    /// Compaction did not complete; reconcile uncertain outcomes before retry.
+    Compaction(crate::OnlineHandoffFailure),
+    /// The handoff succeeded, but retired-store cleanup did not complete.
+    Reclamation {
+        /// Counters from the successful handoff.
+        report: OnlineCompactionReport,
+        /// The cleanup failure. The old copy may be partially removed.
+        error: io::Error,
+    },
+}
+
+impl std::fmt::Display for OnlineReclaimFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Compaction(error) => write!(formatter, "online compaction failed: {error}"),
+            Self::Reclamation { error, .. } => write!(
+                formatter,
+                "online compaction succeeded but retired-store reclamation failed: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OnlineReclaimFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Compaction(error) => Some(error),
+            Self::Reclamation { error, .. } => Some(error),
+        }
+    }
+}
+
 impl OnlineStore {
     /// Opens an ordinary store through the guarded handle.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -298,6 +340,29 @@ impl OnlineStore {
         )
     }
 
+    /// Like [`Self::compact_and_reclaim`], classifying candidate-publication
+    /// and exchange failures as well as a subsequent reclamation failure.
+    /// An exchange-uncertain compaction disables this handle; coordinate
+    /// callers, drop it, and reconcile both paths before retrying. A candidate
+    /// may omit writes accepted during preparation and is not a current backup.
+    /// A reclamation failure follows a synchronized handoff; the prior copy
+    /// may be partly removed or retained under an owned staging name. That
+    /// failure alone does not disable the live handle, although an independent
+    /// operation can still fail or disable it.
+    pub fn compact_and_reclaim_detailed(
+        &self,
+        previous: impl AsRef<Path>,
+        options: &OnlineCompactionOptions,
+    ) -> Result<OnlineCompactionReport, OnlineReclaimFailure> {
+        self.compact_reclaim_with_hooks_detailed(
+            previous.as_ref(),
+            options,
+            |_| Ok(()),
+            crate::directory::sync_existing,
+            |_| Ok(()),
+        )
+    }
+
     /// Removes recognized abandoned retired stages tied to this store's
     /// current log identity. Before deletion it verifies the entire current
     /// log against a bounded snapshot while excluding mutations; active or
@@ -370,6 +435,35 @@ impl OnlineStore {
             Some(Ok(())) => Ok(report),
             Some(Err(error)) => Err(OnlineReclaimError::Reclamation { report, error }),
             None => Err(OnlineReclaimError::Reclamation {
+                report,
+                error: io::Error::other("retired-store reclamation was not performed"),
+            }),
+        }
+    }
+
+    fn compact_reclaim_with_hooks_detailed(
+        &self,
+        previous: &Path,
+        options: &OnlineCompactionOptions,
+        hook: impl FnMut(copy::Point) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        reclaim_hook: impl FnMut(reclaim::Point) -> io::Result<()>,
+    ) -> Result<OnlineCompactionReport, OnlineReclaimFailure> {
+        let (report, reclamation) = crate::publication_outcome::track_online_handoff(|tracker| {
+            self.compact_internal(
+                previous,
+                options,
+                hook,
+                sync_parent,
+                Some(reclaim_hook),
+                Some(tracker),
+            )
+        })
+        .map_err(OnlineReclaimFailure::Compaction)?;
+        match reclamation {
+            Some(Ok(())) => Ok(report),
+            Some(Err(error)) => Err(OnlineReclaimFailure::Reclamation { report, error }),
+            None => Err(OnlineReclaimFailure::Reclamation {
                 report,
                 error: io::Error::other("retired-store reclamation was not performed"),
             }),

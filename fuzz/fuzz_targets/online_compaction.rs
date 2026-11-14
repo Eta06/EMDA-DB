@@ -1,6 +1,7 @@
 #![no_main]
 use database_engine::{
-    BatchOperation, OnlineCompactionOptions, OnlineHandoffFailure, OnlineStore, Store,
+    BatchOperation, OnlineCompactionOptions, OnlineHandoffFailure, OnlineReclaimFailure,
+    OnlineStore, Store,
 };
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
@@ -94,19 +95,40 @@ fuzz_target!(|data: &[u8]| {
             }
             6 => {
                 let path = root.path().join(format!("reclaimed-{iteration}"));
-                store
-                    .compact_and_reclaim(&path, &OnlineCompactionOptions::default())
-                    .expect("compact and reclaim");
+                if chunk[2] & 1 != 0 {
+                    store
+                        .compact_and_reclaim_detailed(&path, &OnlineCompactionOptions::default())
+                        .expect("detailed compact and reclaim");
+                } else {
+                    store
+                        .compact_and_reclaim(&path, &OnlineCompactionOptions::default())
+                        .expect("compact and reclaim");
+                }
                 assert!(!path.exists());
                 database_engine::cleanup_abandoned_staging(root.path()).expect("cleanup");
             }
             7 => {
                 let path = root.path().join(format!("blocked-{iteration}"));
                 std::fs::write(&path, b"pre-existing destination").expect("sentinel");
-                assert!(matches!(
-                    store.compact_and_replace_detailed(&path, &OnlineCompactionOptions::default()),
-                    Err(OnlineHandoffFailure::NotPublished(_))
-                ));
+                if chunk[2] & 1 != 0 {
+                    assert!(matches!(
+                        store.compact_and_reclaim_detailed(
+                            &path,
+                            &OnlineCompactionOptions::default()
+                        ),
+                        Err(OnlineReclaimFailure::Compaction(
+                            OnlineHandoffFailure::NotPublished(_)
+                        ))
+                    ));
+                } else {
+                    assert!(matches!(
+                        store.compact_and_replace_detailed(
+                            &path,
+                            &OnlineCompactionOptions::default()
+                        ),
+                        Err(OnlineHandoffFailure::NotPublished(_))
+                    ));
+                }
                 assert_eq!(
                     std::fs::read(&path).expect("sentinel after"),
                     b"pre-existing destination"
@@ -122,10 +144,19 @@ fuzz_target!(|data: &[u8]| {
                     catchup_rounds: 17,
                     ..Default::default()
                 };
-                assert!(matches!(
-                    store.compact_and_replace_detailed(&path, &options),
-                    Err(OnlineHandoffFailure::NotPublished(_))
-                ));
+                if chunk[2] & 1 != 0 {
+                    assert!(matches!(
+                        store.compact_and_reclaim_detailed(&path, &options),
+                        Err(OnlineReclaimFailure::Compaction(
+                            OnlineHandoffFailure::NotPublished(_)
+                        ))
+                    ));
+                } else {
+                    assert!(matches!(
+                        store.compact_and_replace_detailed(&path, &options),
+                        Err(OnlineHandoffFailure::NotPublished(_))
+                    ));
+                }
                 assert!(!path.exists());
             }
         }

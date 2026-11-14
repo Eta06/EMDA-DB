@@ -73,9 +73,10 @@ pub use store::{
     MAX_SNAPSHOT_TOTAL_KEYS, MAX_TRANSACTION_READ_CONSTRAINT_BYTES,
     MAX_TRANSACTION_READ_CONSTRAINTS, MAX_TRANSACTION_STAGED_TOTAL_BYTES,
     MAX_TRANSACTION_VALIDATION_ITEMS, OnlineCompactionOptions, OnlineCompactionReport,
-    OnlineReclaimError, OnlineReclamationFailure, OnlineReclamationFailureStage,
-    OnlineReclamationWorker, OnlineReclamationWorkerStatus, OnlineStore, RetiredCleanupStatus,
-    Snapshot, SnapshotBudgetStatus, Store, TimedTransactionError, Transaction, TransactionMode,
+    OnlineReclaimError, OnlineReclaimFailure, OnlineReclamationFailure,
+    OnlineReclamationFailureStage, OnlineReclamationWorker, OnlineReclamationWorkerStatus,
+    OnlineStore, RetiredCleanupStatus, Snapshot, SnapshotBudgetStatus, Store,
+    TimedTransactionError, Transaction, TransactionMode,
 };
 pub use transaction_budget::{MAX_ACTIVE_TRANSACTIONS, TransactionBudgetStatus};
 pub use transaction_conflict::is_transaction_conflict;

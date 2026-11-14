@@ -4,6 +4,7 @@ use std::thread;
 
 mod basic;
 mod concurrency;
+mod detailed;
 mod failure;
 mod recovery;
 mod scoped_cleanup;

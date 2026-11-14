@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an opt-in detailed online reclamation result that classifies handoff
+  publication and exchange failures separately from later cleanup failures.
+
 - Add opt-in automatic-checkpoint enable/disable publication outcomes. The
   result classifies this call's configuration attempt without establishing
   store health; a publication-uncertain failure requires reopening.

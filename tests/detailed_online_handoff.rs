@@ -1,6 +1,8 @@
 #[cfg(target_os = "linux")]
 use database_engine::Store;
-use database_engine::{OnlineCompactionOptions, OnlineHandoffFailure, OnlineStore};
+use database_engine::{
+    OnlineCompactionOptions, OnlineHandoffFailure, OnlineReclaimFailure, OnlineStore,
+};
 use std::fs;
 
 #[cfg(target_os = "linux")]
@@ -30,6 +32,44 @@ fn create_store(path: &std::path::Path, v2: bool) -> OnlineStore {
         })
         .unwrap();
     store
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn detailed_online_reclamation_preserves_data_after_rejection_and_success() {
+    for v2 in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let previous = root.path().join("previous");
+        let store = create_store(&source, v2);
+        let log = fs::read(source.join("records.log")).unwrap();
+        if !v2 && !log.starts_with(b"EMDALOG3") {
+            eprintln!("V3 online reclamation case skipped: filesystem fell back to V2");
+            continue;
+        }
+        fs::write(&previous, b"preserve").unwrap();
+        assert!(matches!(
+            store.compact_and_reclaim_detailed(&previous, &OnlineCompactionOptions::default()),
+            Err(OnlineReclaimFailure::Compaction(
+                OnlineHandoffFailure::NotPublished(_)
+            ))
+        ));
+        assert_eq!(fs::read(&previous).unwrap(), b"preserve");
+        fs::remove_file(&previous).unwrap();
+        store
+            .compact_and_reclaim_detailed(&previous, &OnlineCompactionOptions::default())
+            .unwrap();
+        assert!(!previous.exists());
+        drop(store);
+        assert_eq!(
+            retry_lock(|| Store::open(&source))
+                .unwrap()
+                .get(b"key")
+                .unwrap()
+                .as_deref(),
+            Some(&b"latest"[..])
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -88,6 +128,11 @@ fn unsupported_detailed_online_handoff_keeps_handle_usable() {
     assert!(matches!(
         store.compact_and_replace_detailed(&previous, &OnlineCompactionOptions::default()),
         Err(OnlineHandoffFailure::NotPublished(error)) if error.kind() == std::io::ErrorKind::Unsupported
+    ));
+    assert!(matches!(
+        store.compact_and_reclaim_detailed(&previous, &OnlineCompactionOptions::default()),
+        Err(OnlineReclaimFailure::Compaction(OnlineHandoffFailure::NotPublished(error)))
+            if error.kind() == std::io::ErrorKind::Unsupported
     ));
     assert!(!previous.exists());
     assert_eq!(

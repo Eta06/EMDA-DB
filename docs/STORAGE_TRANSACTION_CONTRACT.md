@@ -119,10 +119,16 @@ publication and exchange attempts. It does not consume the handle, and other
 callbacks can write during preparation. A candidate may omit those writes;
 none of the classifications establishes source health or cleanup. An
 exchange-uncertain failure disables the handle; coordinate callers, drop it,
-and reopen both paths to reconcile before retrying. The existing online
-reclamation method uses its own error type and does not provide these detailed
-compaction-stage classifications. Other maintenance operations also remain
-separate.
+and reopen both paths to reconcile before retrying.
+`OnlineStore::compact_and_reclaim_detailed` uses those handoff classifications
+inside `OnlineReclaimFailure::Compaction`, and separately reports
+`Reclamation` if a synchronized handoff succeeded but cleanup failed. The
+reclamation result includes the handoff report; the old copy may be partly
+removed or retained in owned staging. The cleanup failure alone does not
+disable the live handle, though independent operations can still fail.
+Reclamation failure does not establish secure erasure or an independent
+backup. The existing reclamation method keeps its previous error type. Other
+maintenance operations remain separate.
 
 ## Current prototype: one store in one process
 
