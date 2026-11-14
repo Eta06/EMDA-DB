@@ -632,6 +632,16 @@ impl Store {
     // Membership-changing and compound writes hold the exclusive barrier
     // through the check and append, preventing key quota oversubscription.
     fn commit_limited(&self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
+        self.commit_limited_tracked(operation, key, value, None)
+    }
+
+    fn commit_limited_tracked(
+        &self,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<()> {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
@@ -670,7 +680,7 @@ impl Store {
                 next_key_bytes = Some(next);
             }
         }
-        self.commit_with_log_quota(operation, key, value)?;
+        self.commit_with_log_quota_tracked(operation, key, value, tracker)?;
         if let Some(bytes) = next_key_bytes {
             self.live_key_bytes.store(bytes, Ordering::Relaxed);
         }
@@ -683,7 +693,20 @@ impl Store {
         key: &[u8],
         value: &[u8],
     ) -> io::Result<()> {
+        self.commit_with_log_quota_tracked(operation, key, value, None)
+    }
+
+    fn commit_with_log_quota_tracked(
+        &self,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> io::Result<()> {
         let Some(quota) = &self.log_quota else {
+            if let Some(tracker) = tracker {
+                tracker.commit();
+            }
             return self
                 .commits
                 .commit(&self.log, &self.inner, operation, key, value);
@@ -702,6 +725,9 @@ impl Store {
         // A coordinator error after append poisons the store. Before-append
         // errors release the reservation; uncertain outcomes cannot be retried
         // on this open instance and are re-counted from the log after reopen.
+        if let Some(tracker) = tracker {
+            tracker.commit();
+        }
         self.commits
             .commit(&self.log, &self.inner, operation, key, value)?;
         reservation.committed();

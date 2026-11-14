@@ -450,8 +450,8 @@ impl CheckpointStore {
     /// Rejection, callback failure, cancellation and expiry guarantee only
     /// that this transaction's staged writes were not submitted. Callback
     /// side effects and independent writes are not rolled back. An unknown
-    /// outcome requires reconciliation before retry and can conservatively
-    /// include pre-append failures and failures during automatic checkpoint
+    /// outcome requires reconciliation before retry. A pre-append rejection
+    /// does not rule out independent effects or automatic checkpoint
     /// maintenance. Recovery alone may not identify whether a particular
     /// operation took effect. Panics unwind.
     pub fn transaction_detailed<T>(
@@ -579,9 +579,6 @@ impl CheckpointStore {
                 .collect::<Vec<_>>();
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
-            if let Some(tracker) = tracker {
-                tracker.commit();
-            }
             self.commit_until(
                 &mut state,
                 Operation::Batch,
@@ -591,6 +588,7 @@ impl CheckpointStore {
                 crate::cancellation::CommitControl {
                     deadline,
                     cancellation,
+                    tracker,
                 },
             )?;
         } else {

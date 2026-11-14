@@ -23,12 +23,14 @@ callback/staging errors, engine rejection, cancellation, deadline expiry and
 an unknown commit outcome. The first four mean this transaction did not submit
 its staged writes, not that independent callback effects or earlier writes
 were rolled back. A callback that forwards another operation's cancellation or
-conflict error remains a callback failure. Once the transaction enters the
-commit path, non-control errors are conservatively unknown even when the
-underlying failure actually precedes append (for example, certain quota
-rejections). A confirmed pre-append cancellation or expiry during automatic
-checkpoint maintenance remains a confirmed abort; maintenance itself may
-have completed. A started commit can succeed after cancellation, or fail with
+conflict error remains a callback failure. Configured log-length, live-key and
+checkpoint suffix limits are checked before transaction submission. For the
+ordinary store, errors after entering the commit coordinator are conservatively
+unknown even when they precede append. For the checkpoint-backed store,
+append errors are unknown; errors before append reject this transaction. A
+confirmed rejection, cancellation or expiry during automatic checkpoint
+maintenance concerns only staged transaction writes: maintenance itself may
+have completed or have an uncertain result. A started commit can succeed after cancellation, or fail with
 an unknown outcome. Reconcile an unknown outcome before retrying: recovery
 alone may not identify whether a particular request was applied. Panics
 unwind rather than returning a classified result. Other mutation APIs have not

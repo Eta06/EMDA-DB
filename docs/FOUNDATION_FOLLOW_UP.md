@@ -96,9 +96,12 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   the document transaction interface, distinguishing callback/staging errors,
   engine rejection, cancellation, expiry and uncertain commit outcomes.
   Selected V2/V3 append and synchronization failures, cancellation races and
-  automatic rollover are covered. Commit-path quota rejections can be
-  classified conservatively as unknown; external callback effects are not
-  rolled back, and panics do not return a classified result.
+  automatic rollover are covered. External callback effects are not rolled
+  back, and panics do not return a classified result.
+- [x] Distinguish configured log and key-limit rejections from errors after
+  submission on the detailed transaction paths. Checkpoint maintenance can
+  have independent effects; ordinary coordinator failures may still be
+  conservatively unknown before append.
 - [x] Check [160 injected concurrent filesystem-fault cases and 160
   process-kill cases](DETAILED_TRANSACTION_OUTCOMES_2026_11_14.md) with the
   new interface, plus 8,192 mixed concurrent histories across overlay and

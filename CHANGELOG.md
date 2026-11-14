@@ -4,11 +4,15 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Classify configured transaction log, live-key and checkpoint suffix limit
+  failures as rejected before submission in the opt-in detailed interface;
+  checkpoint maintenance may still have independent effects.
+
 - Add opt-in `transaction_detailed` on both writable stores and the document
   interface. It distinguishes callback/staging failures, pre-submission
   rejections, confirmed cancellation/deadline expiry and uncertain commit
-  outcomes. Commit-path failures are conservative and can include rejections
-  before append. Existing transaction APIs retain their prior error types.
+  outcomes. Errors in the ordinary commit coordinator are conservative and can
+  include rejections before append. Existing transaction APIs retain their prior error types.
 
 - Release read-only checkpoint-view witness and anchor handles after validation,
   while retaining the writable store's witness checks. A versioned log without

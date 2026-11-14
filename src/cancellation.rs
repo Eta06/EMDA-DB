@@ -13,6 +13,7 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(5);
 pub(crate) struct CommitControl<'a> {
     pub(crate) deadline: Option<Instant>,
     pub(crate) cancellation: Option<&'a CancellationToken>,
+    pub(crate) tracker: Option<&'a crate::transaction_outcome::Tracker>,
 }
 
 /// A cloneable, one-way cancellation signal shared by transaction callers.

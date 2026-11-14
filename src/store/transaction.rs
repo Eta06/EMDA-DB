@@ -419,7 +419,7 @@ impl Store {
     /// that this transaction's staged writes were not submitted. Callback
     /// side effects and independent writes are not rolled back. An unknown
     /// outcome requires reconciliation before retry and can conservatively
-    /// include pre-append failures. Recovery alone may not identify whether
+    /// include coordinator failures before append. Recovery may not identify whether
     /// a particular operation took effect.
     /// Existing modes, limits and control timing are unchanged. Panics unwind
     /// instead of returning a structured failure.
@@ -566,10 +566,7 @@ impl Store {
             let payload = encode_payload(&operations)?;
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
-            if let Some(tracker) = tracker {
-                tracker.commit();
-            }
-            self.write_batch_locked(&operations, &payload)?;
+            self.write_batch_locked(&operations, &payload, tracker)?;
         } else {
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;

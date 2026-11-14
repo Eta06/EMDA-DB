@@ -22,7 +22,7 @@ impl Store {
         // exclusive barrier, so concurrent callers cannot each allocate a
         // full batch before entering coordinator admission.
         let payload = encode_payload(operations)?;
-        self.write_batch_locked(operations, &payload)
+        self.write_batch_locked(operations, &payload, None)
     }
 
     // Caller holds the exclusive writes barrier through durable publication.
@@ -30,6 +30,7 @@ impl Store {
         &self,
         operations: &[BatchOperation<'_>],
         payload: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -89,7 +90,7 @@ impl Store {
             }
             next_key_bytes = self.max_live_key_bytes.map(|_| key_bytes);
         }
-        self.commit_limited(Operation::Batch, &[0], payload)?;
+        self.commit_limited_tracked(Operation::Batch, &[0], payload, tracker)?;
         if let Some(bytes) = next_key_bytes {
             self.live_key_bytes.store(bytes, Ordering::Relaxed);
         }

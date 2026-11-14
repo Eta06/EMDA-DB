@@ -281,7 +281,7 @@ fn document_staging_failures_are_classified_on_both_backends() {
 }
 
 #[test]
-fn commit_path_rejections_can_be_conservatively_unknown_without_poisoning() {
+fn log_quota_rejections_are_confirmed_before_submission() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");
     let checkpoint = root.path().join("checkpoint");
@@ -297,9 +297,16 @@ fn commit_path_rejections_can_be_conservatively_unknown_without_poisoning() {
             tx.put(b"over-limit", b"no")
         })
         .unwrap_err();
-    assert!(matches!(error, TransactionFailure::OutcomeUnknown(_)));
+    assert!(matches!(error, TransactionFailure::Rejected(_)));
     assert_eq!(store.get(b"safe").unwrap().as_deref(), Some(&b"yes"[..]));
     assert_eq!(store.get(b"over-limit").unwrap(), None);
+    let error = DocumentDatabase::new(&store)
+        .transaction_detailed(DocumentTransactionMode::Conservative, None, None, |tx| {
+            tx.put_raw(b"doc-over-limit", b"no")
+        })
+        .unwrap_err();
+    assert!(matches!(error, TransactionFailure::Rejected(_)));
+    assert_eq!(store.get(b"doc-over-limit").unwrap(), None);
     drop(store);
 
     let store = CheckpointStore::open_with_resource_limits(
@@ -317,11 +324,70 @@ fn commit_path_rejections_can_be_conservatively_unknown_without_poisoning() {
             tx.put(b"over-limit", b"no")
         })
         .unwrap_err();
-    assert!(matches!(error, TransactionFailure::OutcomeUnknown(_)));
+    assert!(matches!(error, TransactionFailure::Rejected(_)));
     assert_eq!(store.get(b"safe").unwrap().as_deref(), Some(&b"yes"[..]));
     assert_eq!(store.get(b"over-limit").unwrap(), None);
+    let error = DocumentDatabase::with_checkpoint_store(&store)
+        .transaction_detailed(DocumentTransactionMode::Conservative, None, None, |tx| {
+            tx.put_raw(b"doc-over-limit", b"no")
+        })
+        .unwrap_err();
+    assert!(matches!(error, TransactionFailure::Rejected(_)));
+    assert_eq!(store.get(b"doc-over-limit").unwrap(), None);
     assert_eq!(
         std::fs::metadata(path.join("records.log")).unwrap().len(),
         length
     );
+}
+
+#[test]
+fn key_and_checkpoint_suffix_quota_reject_before_submission() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    store.put(b"safe", b"yes").unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let original = std::fs::read(path.join("records.log")).unwrap();
+
+    let store = Store::open_with_limits(&path, None, Some(1)).unwrap();
+    let error = store
+        .transaction_detailed(TransactionMode::ReadSet, None, None, |tx| {
+            tx.put(b"over-limit", b"no")
+        })
+        .unwrap_err();
+    assert!(matches!(error, TransactionFailure::Rejected(_)));
+    assert_eq!(store.get(b"over-limit").unwrap(), None);
+    drop(store);
+
+    let store = CheckpointStore::open_with_limits(&path, &checkpoint, &digest, 0, 0, 0).unwrap();
+    let error = store
+        .transaction_detailed(CheckpointTransactionMode::ReadSet, None, None, |tx| {
+            tx.put(b"over-limit", b"no")
+        })
+        .unwrap_err();
+    assert!(matches!(error, TransactionFailure::Rejected(_)));
+    assert_eq!(store.get(b"over-limit").unwrap(), None);
+    drop(store);
+    assert_eq!(std::fs::read(path.join("records.log")).unwrap(), original);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(reopened.get(b"safe").unwrap().as_deref(), Some(&b"yes"[..]));
+    assert_eq!(reopened.get(b"over-limit").unwrap(), None);
+}
+
+#[test]
+fn ordinary_coordinator_rejection_remains_conservatively_unknown() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    store.put(b"safe", b"yes").unwrap();
+    store.set_group_commit_limits(0, 0).unwrap();
+    let error = store
+        .transaction_detailed(TransactionMode::Conservative, None, None, |tx| {
+            tx.put(b"blocked", b"no")
+        })
+        .unwrap_err();
+    assert!(matches!(error, TransactionFailure::OutcomeUnknown(_)));
+    assert_eq!(store.get(b"safe").unwrap().as_deref(), Some(&b"yes"[..]));
+    assert_eq!(store.get(b"blocked").unwrap(), None);
 }

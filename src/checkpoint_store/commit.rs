@@ -35,6 +35,7 @@ impl CheckpointStore {
         let crate::cancellation::CommitControl {
             deadline,
             cancellation,
+            tracker,
         } = control;
         // Refuse a mutation before appending if a transaction generation can
         // no longer advance; wrapping would let a stale transaction commit.
@@ -76,6 +77,11 @@ impl CheckpointStore {
             return Err(crate::TimedTransactionError::DeadlineExceeded);
         }
         crate::cancellation::check(cancellation)?;
+        // Past this point a returned error may follow an append. The tracker
+        // records only this transaction, not effects of automatic maintenance.
+        if let Some(tracker) = tracker {
+            tracker.commit();
+        }
         state.failed = true;
         let location = self
             .log

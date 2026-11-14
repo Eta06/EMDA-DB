@@ -16,6 +16,8 @@ pub enum TransactionFailure {
     Callback(io::Error),
     /// The engine rejected the transaction before submitting its staged writes.
     /// This includes admission and validation failures, including conflicts.
+    /// Automatic checkpoint maintenance may already have taken effect or
+    /// have an uncertain outcome, independently of these staged writes.
     Rejected(io::Error),
     /// The engine detected cancellation before submitting staged writes.
     Cancelled,
