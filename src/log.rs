@@ -578,6 +578,45 @@ impl Log {
         Ok(())
     }
 
+    // A checkpoint view has already verified its own read-only handle. Share
+    // the writer's V3 file only when both handles identify the same inode and
+    // the view has discarded its witness. Any uncertainty keeps the original
+    // independent read handle. Reads use positional I/O and do not change the
+    // append handle's file offset.
+    pub(crate) fn try_share_checkpoint_view_file(&mut self, writer: &Log) -> bool {
+        if !self.metadata
+            || !writer.metadata
+            || self.log_id.is_none()
+            || self.log_id != writer.log_id
+            || self.witness.is_some()
+            || self.anchor.is_some()
+            || writer.witness.is_none()
+            || writer.anchor.is_none()
+        {
+            return false;
+        }
+        let Some(shared) = writer.file.shared_file() else {
+            return false;
+        };
+        let (Ok(Some(view_identity)), Ok(Some(writer_identity)), Ok(Some(shared_identity))) = (
+            self.file.file_identity(),
+            writer.file.file_identity(),
+            LogIo::file_identity(shared.as_ref()),
+        ) else {
+            return false;
+        };
+        if view_identity != writer_identity || writer_identity != shared_identity {
+            return false;
+        }
+        self.file = Box::new(shared);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_file_for_test(&self) -> Option<Arc<File>> {
+        self.file.shared_file()
+    }
+
     fn require_attached_witness(&self) -> io::Result<()> {
         if self.log_id.is_some() && self.witness.is_none() {
             return Err(io::Error::other("log has no attached commit witness"));

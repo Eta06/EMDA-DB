@@ -17,7 +17,7 @@ use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 mod automatic;
 mod commit;
@@ -346,7 +346,7 @@ impl CheckpointStore {
             lock,
             checkpoint_view,
         )?;
-        let view = RecoveredCheckpointView::from_base_for_writer(
+        let mut view = RecoveredCheckpointView::from_base_for_writer(
             base,
             max_tail_bytes,
             max_tail_keys,
@@ -391,6 +391,9 @@ impl CheckpointStore {
             crate::cleanup_abandoned_staging(automatic::root(&path))?;
         }
         let automatic = automatic_config.unwrap_or(false);
+        if let Some(view_log) = Arc::get_mut(&mut view.base.log) {
+            view_log.try_share_checkpoint_view_file(&log);
+        }
         let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
         Ok(Self {
             log,
@@ -865,7 +868,7 @@ impl CheckpointStore {
                 lock,
                 self.checkpoint_view_limits,
             )?;
-            let view = RecoveredCheckpointView::from_base(
+            let mut view = RecoveredCheckpointView::from_base(
                 base,
                 self.max_tail_bytes,
                 self.max_tail_keys,
@@ -875,6 +878,9 @@ impl CheckpointStore {
                 return Err(record::invalid_data(
                     "new checkpoint has an unexpected suffix",
                 ));
+            }
+            if let Some(view_log) = Arc::get_mut(&mut view.base.log) {
+                view_log.try_share_checkpoint_view_file(&self.log);
             }
             Ok(view)
         })()

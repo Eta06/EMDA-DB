@@ -171,7 +171,12 @@ maintenance operations remain separate.
 - A V3 checkpoint writer shares ownership of its open log handle with its
   metadata witness. The witness still verifies and updates the boundary and
   requires a full `fsync` before acknowledgement; sharing the handle does not
-  change its failure or recovery semantics. V2 keeps its separate witness file.
+  change its failure or recovery semantics. After independent validation, the
+  writable checkpoint view may also share this handle if its log identity and
+  file device/inode match the writer's and the actual shared handle's. An
+  unavailable or failed identity check retains the independent view. View reads
+  use positional I/O, remain read-only at the log API, and retain ownership for
+  the lifetime of captured views. V2 keeps its separate witness file and view.
 
 - `snapshot_budget_status` and `set_snapshot_budget_limits` expose per-open aggregate snapshot reservation limits and counts. Ordinary-store limits cover active reservations, logical keys and key bytes, including transaction snapshots, standalone document point-read slots and the snapshot used during online compaction. An ordinary transaction releases its private snapshot and reservation after validation, before committing under the writer barrier; its separate active-transaction admission remains held through completion. Checkpoint-store limits cover active checkpoint snapshots, copied block-directory entries, overlay keys and overlay-key bytes. Zero can reject new operations using the corresponding budget. Limits cannot exceed the existing hard maxima; a reduction below active reservations returns `WouldBlock` without changing any limit. Existing reservations remain valid, and expired views remain counted until reaped, cancelled or dropped. Supported in-process compaction handoffs preserve the limits; reopening resets them. Counts are logical and exclude returned values, allocator overhead, other resources and other stores; they are not total-memory or persistent project quotas.
 

@@ -168,6 +168,7 @@ mod recovery;
 mod rollover;
 mod schema_migration_faults;
 mod selection;
+mod shared_view_file;
 
 mod transaction;
 

@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse the V3 checkpoint writer's log handle for its validated read view when
+  their file identities match. Identity uncertainty keeps the independent view;
+  V2, witness synchronization and the on-disk formats are unchanged.
+
 - Add an opt-in detailed online reclamation result that classifies handoff
   publication and exchange failures separately from later cleanup failures.
 

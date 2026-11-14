@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io::{self, IoSlice, Write};
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::Arc;
 
 pub(crate) trait LogIo: Send + Sync {
@@ -18,6 +18,15 @@ pub(crate) trait LogIo: Send + Sync {
         Ok(())
     }
     fn sync_data(&self) -> io::Result<()>;
+
+    // Optional identity and shared ownership support for real file handles.
+    // Test and other I/O adapters retain their existing independent path.
+    fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {
+        Ok(None)
+    }
+    fn shared_file(&self) -> Option<Arc<File>> {
+        None
+    }
 }
 
 impl LogIo for File {
@@ -40,6 +49,11 @@ impl LogIo for File {
 
     fn sync_data(&self) -> io::Result<()> {
         File::sync_data(self)
+    }
+
+    fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {
+        let metadata = self.metadata()?;
+        Ok(Some((metadata.dev(), metadata.ino())))
     }
 }
 
@@ -64,6 +78,14 @@ impl LogIo for Arc<File> {
 
     fn sync_data(&self) -> io::Result<()> {
         LogIo::sync_data(self.as_ref())
+    }
+
+    fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {
+        LogIo::file_identity(self.as_ref())
+    }
+
+    fn shared_file(&self) -> Option<Arc<File>> {
+        Some(Arc::clone(self))
     }
 }
 
