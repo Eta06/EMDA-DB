@@ -90,12 +90,10 @@ impl Log {
         expected: u64,
         expected_len: u64,
     ) -> io::Result<Self> {
-        let file = Arc::new(
-            OpenOptions::new()
-                .read(true)
-                .append(true)
-                .open(path.join("records.log"))?,
-        );
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))?;
         let (id, metadata) = log_identity(&file)?;
         let id = id.ok_or_else(|| {
             io::Error::new(
@@ -108,19 +106,19 @@ impl Log {
                 "metadata witness exists without its V3 log header",
             ));
         }
-        let (anchor, witness, boundary) = if metadata {
+        let (file, anchor, witness, boundary): (Box<dyn LogIo>, _, _, _) = if metadata {
             let (anchor, initial) = Witness::open(path, id)?;
             if initial != LOG_HEADER_SIZE as u64 {
                 return Err(record::invalid_data("invalid metadata log identity anchor"));
             }
+            let file = Arc::new(file);
             let (witness, boundary) = metadata_witness::open_shared(Arc::clone(&file), id)?;
-            (Some(anchor), witness, boundary)
+            (Box::new(file), Some(anchor), witness, boundary)
         } else {
             let (witness, boundary) = Witness::open(path, id)?;
-            (None, witness, boundary)
+            (Box::new(file), None, witness, boundary)
         };
-        if boundary != expected || expected_len < boundary || file.metadata()?.len() != expected_len
-        {
+        if boundary != expected || expected_len < boundary || file.len()? != expected_len {
             return Err(record::invalid_data(
                 "log or witness changed while opening checkpoint writer",
             ));
@@ -128,7 +126,7 @@ impl Log {
         // Match ordinary writable-open's persistence requirement for entries.
         File::open(path)?.sync_all()?;
         Ok(Self {
-            file: Box::new(file),
+            file,
             log_id: Some(id),
             witness: Some(witness),
             metadata,
