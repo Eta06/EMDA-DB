@@ -1,12 +1,15 @@
 # Filesystem `EAGAIN` injection
 
-On clean revision `6fb127733e246b748a2d3dd3d645a142d9ed5e22`, six local
-Linux `strace` campaigns injected a single returned `EAGAIN` at each selected
-syscall ordinal observed on a successful path. Each ordinal was tested with
-both writable recovery paths reopening first, on V2 and V3 fixtures. Every
-campaign used 26 successful controls: 13 operations in each format, including
-initialization, single writes, atomic batches, backup, restore, upgrade,
-checkpoint, compaction and checkpoint-backed variants.
+Nine local Linux `strace` campaigns injected a single returned `EAGAIN` at each
+selected syscall ordinal observed on a successful path. The first six used
+clean revision `6fb127733e246b748a2d3dd3d645a142d9ed5e22`; the read, metadata
+and path-read follow-ups used clean revision
+`2b2c3d60122a2ab8375044ffe2a10c3a5c996ae1`. The probe's Rust source was
+unchanged between these revisions. Each ordinal was tested with both writable
+recovery paths reopening first, on V2 and V3 fixtures. Every campaign used 26
+successful controls: 13 operations in each format, including initialization,
+single writes, atomic batches, backup, restore, upgrade, checkpoint,
+compaction and checkpoint-backed variants.
 
 | Syscalls | Injected cases | Reported error | Reported success | Recorded evidence |
 | --- | ---: | ---: | ---: | --- |
@@ -16,7 +19,10 @@ checkpoint, compaction and checkpoint-backed variants.
 | File opens | 682 | 682 | 0 | [open](../benchmarks/results/2026-11-14-eagain-open.json.gz) |
 | Namespace changes | 148 | 92 | 56 | [namespace](../benchmarks/results/2026-11-14-eagain-namespace.json.gz) |
 | Xattr reads | 176 | 176 | 0 | [xattr](../benchmarks/results/2026-11-14-eagain-xattr.json.gz) |
-| Total | 2,244 | 2,152 | 92 | |
+| Reads | 888 | 888 | 0 | [read](../benchmarks/results/2026-11-14-eagain-read.json.gz) |
+| File metadata | 1,416 | 1,396 | 20 | [metadata](../benchmarks/results/2026-11-14-eagain-metadata.json.gz) |
+| Path reads | 164 | 164 | 0 | [path-read](../benchmarks/results/2026-11-14-eagain-path-read.json.gz) |
+| Total | 4,712 | 4,600 | 112 | |
 
 The harness checked acknowledged data, source and reference backup
 preservation, visible published copies and staging cleanup. Successful results
@@ -40,7 +46,7 @@ python3 scripts/verify_one_shot_fs_results.py benchmarks/results/2026-11-14-eaga
 ```
 
 The filesystem workflow also runs and archives a smaller V3 batch subset for
-these six syscall groups on relevant changes. Its results are separate from
+these nine syscall groups on relevant changes. Its results are separate from
 the local campaigns above.
 
 ## Concurrent transaction failures

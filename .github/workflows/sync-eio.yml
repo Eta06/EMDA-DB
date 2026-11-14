@@ -122,7 +122,7 @@ jobs:
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eintr-sync.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-data.json" --error EINTR --syscall-set data --operation batch --format v3 --max-ordinals 2
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eintr-data.json"
-          for syscall_group in sync lock data open namespace xattr-read; do
+          for syscall_group in sync lock data read xattr-read metadata path-read open namespace; do
             python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eagain-$syscall_group.json" --error EAGAIN --syscall-set "$syscall_group" --operation batch --format v3 --max-ordinals 2
             python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eagain-$syscall_group.json"
           done
