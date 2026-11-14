@@ -1,11 +1,14 @@
-//! Backups racing independent atomic writers must represent a consistent cut.
-use database_engine::{BatchOperation, CheckpointStore, Store};
+//! Copies racing independent atomic writers must represent a consistent cut.
+use database_engine::{BatchOperation, CheckpointStore, CheckpointView, Store};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
+
+mod support;
+use support::retry_lock;
 
 const WRITERS: usize = 4;
 const ROUNDS: u64 = 12;
@@ -19,6 +22,7 @@ trait BackupWriter: Send + Sync {
         transaction: bool,
     ) -> io::Result<()>;
     fn backup(&self, destination: &Path, detailed: bool) -> io::Result<()>;
+    fn checkpoint_detailed(&self, destination: &Path) -> io::Result<[u8; 32]>;
 }
 
 impl BackupWriter for Store {
@@ -49,6 +53,9 @@ impl BackupWriter for Store {
             Store::backup(self, destination)
         }
     }
+    fn checkpoint_detailed(&self, destination: &Path) -> io::Result<[u8; 32]> {
+        Store::checkpoint_to_detailed(self, destination).map_err(io::Error::other)
+    }
 }
 
 impl BackupWriter for CheckpointStore {
@@ -78,6 +85,9 @@ impl BackupWriter for CheckpointStore {
         } else {
             CheckpointStore::backup(self, destination)
         }
+    }
+    fn checkpoint_detailed(&self, destination: &Path) -> io::Result<[u8; 32]> {
+        CheckpointStore::checkpoint_to_detailed(self, destination).map_err(io::Error::other)
     }
 }
 
@@ -166,6 +176,7 @@ fn check_case(v2: bool, checkpoint_writer: bool) {
 
     let mut rounds_with_outstanding_writers = 0;
     let mut rounds_with_completed_writers = 0;
+    let mut checkpoints = Vec::new();
     for round in 1..=ROUNDS {
         let lower = acknowledged
             .iter()
@@ -183,6 +194,22 @@ fn check_case(v2: bool, checkpoint_writer: bool) {
             .collect::<Vec<_>>();
         rounds_with_outstanding_writers += usize::from(upper.iter().any(|count| *count < round));
         rounds_with_completed_writers += usize::from(upper.contains(&round));
+        let checkpoint_lower = acknowledged
+            .iter()
+            .map(|count| count.load(Ordering::Acquire))
+            .collect::<Vec<_>>();
+        let checkpoint_copy = root.path().join(format!("checkpoint-{round}"));
+        let checkpoint_digest = store.checkpoint_detailed(&checkpoint_copy).unwrap();
+        let checkpoint_upper = acknowledged
+            .iter()
+            .map(|count| count.load(Ordering::Acquire))
+            .collect::<Vec<_>>();
+        checkpoints.push((
+            checkpoint_copy,
+            checkpoint_digest,
+            checkpoint_lower,
+            checkpoint_upper,
+        ));
         for _ in 0..WRITERS {
             let (_, completed_round, outcome) =
                 completed_rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -234,6 +261,29 @@ fn check_case(v2: bool, checkpoint_writer: bool) {
         worker.join().unwrap();
     }
     drop(store);
+    for (path, digest, lower, upper) in checkpoints {
+        let view = retry_lock(|| CheckpointView::open(&source, &path, &digest)).unwrap();
+        for writer in 0..WRITERS {
+            let (first, second) = keys(writer);
+            let read = |key: &[u8]| {
+                let value = view
+                    .get(key)
+                    .unwrap()
+                    .expect("missing checkpoint model key");
+                u64::from_le_bytes(value.try_into().expect("unexpected model value length"))
+            };
+            let value = read(&first);
+            assert_eq!(value, read(&second), "checkpoint fractured atomic update");
+            assert!(
+                value >= lower[writer],
+                "checkpoint lost an acknowledged update"
+            );
+            assert!(
+                value <= upper[writer] + 1,
+                "checkpoint includes a future update"
+            );
+        }
+    }
     let recovered = CheckpointStore::open(&source, &checkpoint, &digest).unwrap();
     for writer in 0..WRITERS {
         let (first, second) = keys(writer);
