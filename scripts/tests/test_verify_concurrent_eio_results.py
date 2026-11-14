@@ -67,6 +67,20 @@ class ConcurrentReportVerificationTests(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(ValueError):
                 verify(broken)
 
+    def test_eagain_cannot_be_treated_as_an_automatic_success(self):
+        report = fixture()
+        report['error'] = 'EAGAIN'
+        for case in report['cases']:
+            case['injected_traces'] = [line.replace('EIO', 'EAGAIN') for line in case['injected_traces']]
+        self.assertEqual(verify(report)['failed_calls'], 128)
+        case = report['cases'][0]
+        for worker in case['receipts']['workers']:
+            worker.update(acknowledged=list(range(64)), failed=None, error=None)
+        for checked in case['verified']:
+            checked.update(acknowledged=256, uncertain_present=[])
+        with self.assertRaisesRegex(ValueError, 'EAGAIN case did not report a failed writer'):
+            verify(report)
+
 
 if __name__ == '__main__':
     unittest.main()

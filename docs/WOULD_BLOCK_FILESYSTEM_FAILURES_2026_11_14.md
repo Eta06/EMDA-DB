@@ -38,3 +38,7 @@ To verify a retained report, run:
 ```sh
 python3 scripts/verify_one_shot_fs_results.py benchmarks/results/2026-11-14-eagain-sync.json.gz
 ```
+
+The filesystem workflow also runs and archives a smaller V3 batch subset for
+these six syscall groups on relevant changes. Its results are separate from
+the local campaigns above.

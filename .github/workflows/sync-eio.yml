@@ -122,6 +122,10 @@ jobs:
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eintr-sync.json"
           python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-data.json" --error EINTR --syscall-set data --operation batch --format v3 --max-ordinals 2
           python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eintr-data.json"
+          for syscall_group in sync lock data open namespace xattr-read; do
+            python3 scripts/sync_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eagain-$syscall_group.json" --error EAGAIN --syscall-set "$syscall_group" --operation batch --format v3 --max-ordinals 2
+            python3 scripts/verify_one_shot_fs_results.py "$RUNNER_TEMP/eagain-$syscall_group.json"
+          done
           python3 scripts/double_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-double.json"
           python3 scripts/verify_double_eio_results.py "$RUNNER_TEMP/eio-double.json"
           python3 scripts/double_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eio-double-sync.json" --primary-mode sync --all-sync-paths --operation checkpoint-compaction --format v3
@@ -134,6 +138,8 @@ jobs:
           python3 scripts/verify_concurrent_eio_results.py "$RUNNER_TEMP/eio-concurrent-transaction.json"
           python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eintr-concurrent-transaction.json" --mode transaction --error EINTR --repetitions 1
           python3 scripts/verify_concurrent_eio_results.py "$RUNNER_TEMP/eintr-concurrent-transaction.json"
+          python3 scripts/concurrent_eio_campaign.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/eagain-concurrent-transaction.json" --mode transaction --error EAGAIN --repetitions 1
+          python3 scripts/verify_concurrent_eio_results.py "$RUNNER_TEMP/eagain-concurrent-transaction.json"
           python3 scripts/witness_retry_faults.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/witness-retry.json"
       - name: Archive retained fault fixtures
         if: always()
@@ -167,6 +173,7 @@ jobs:
             ${{ runner.temp }}/eio-namespace.json
             ${{ runner.temp }}/eintr-sync.json
             ${{ runner.temp }}/eintr-data.json
+            ${{ runner.temp }}/eagain-*.json
             ${{ runner.temp }}/eio-double.json
             ${{ runner.temp }}/eio-double.json.progress.json
             ${{ runner.temp }}/eio-double-sync.json
@@ -184,6 +191,7 @@ jobs:
             ${{ runner.temp }}/sync-eio-*.json.progress.json
             ${{ runner.temp }}/eio-*.json.progress.json
             ${{ runner.temp }}/eintr-*.json.progress.json
+            ${{ runner.temp }}/eagain-*.json.progress.json
           if-no-files-found: ignore
   interrupted-calls:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_eintr }}

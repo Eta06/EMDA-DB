@@ -14,7 +14,7 @@ def verify(report):
     error = report.get('error')
     mode = report.get('mode')
     repetitions = report.get('repetitions')
-    if error not in ('EIO', 'EINTR') or mode not in ('single', 'transaction') or type(repetitions) is not int or not 1 <= repetitions <= 20:
+    if error not in ('EIO', 'EINTR', 'EAGAIN') or mode not in ('single', 'transaction') or type(repetitions) is not int or not 1 <= repetitions <= 20:
         raise ValueError('invalid campaign configuration')
     expected = set(itertools.product(range(1, repetitions + 1), ('v2', 'v3'),
                                      ('ordinary', 'checkpoint'), ('witness', 'log-sync'),
@@ -48,8 +48,8 @@ def verify(report):
             acknowledged += len(values)
             if failure is not None:
                 failed.add((index, failure))
-        if error == 'EIO' and not failed:
-            raise ValueError('EIO case did not report a failed writer')
+        if error in ('EIO', 'EAGAIN') and not failed:
+            raise ValueError(f'{error} case did not report a failed writer')
 
         checks = case.get('verified')
         expected_backends = ('ordinary', 'checkpoint') if order == 'ordinary-first' else ('checkpoint', 'ordinary')

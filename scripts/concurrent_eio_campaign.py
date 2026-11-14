@@ -47,7 +47,7 @@ def validate_receipts(report, require_failed=True):
                 or (failed is None and len(acknowledged) != OPERATIONS)):
             raise ValueError('invalid writer receipt')
     if require_failed and all(worker['failed'] is None for worker in workers):
-        raise ValueError('injected EIO did not fail a writer')
+        raise ValueError('injected filesystem error did not fail a writer')
 
 
 def check_recovery(verified, backends, mode=None):
@@ -98,8 +98,8 @@ def case(binary, fixture_binary, parent, format_name, backend, fault, ordinal, o
                           '-e', f'inject={call}:error={error}:when={ordinal}',
                           binary, 'attempt', str(root), backend, mode])
         # EINTR may be retried below the API, leaving every writer successful.
-        # EIO must continue to exercise an observed failure as before.
-        validate_receipts(report, require_failed=error == 'EIO')
+        # EIO and EAGAIN must reach the API as a failed request.
+        validate_receipts(report, require_failed=error in ('EIO', 'EAGAIN'))
         lines = trace.read_text().splitlines()
         injected = [line for line in lines if '(INJECTED)' in line]
         matches_target = targets_witness if fault == 'witness' else targets_log_sync
@@ -134,7 +134,7 @@ def main():
     parser.add_argument('--repetitions', type=int, default=3)
     parser.add_argument('--snapshot-interval', type=float, default=1.0,
                         help='minimum seconds between full snapshots; progress is saved per case')
-    parser.add_argument('--error', choices=('EIO', 'EINTR'), default='EIO')
+    parser.add_argument('--error', choices=('EIO', 'EINTR', 'EAGAIN'), default='EIO')
     parser.add_argument('--mode', choices=('single', 'transaction'), default='single')
     args = parser.parse_args()
     if (not Path(args.directory).is_dir() or not Path(args.binary).is_file()
