@@ -40,7 +40,8 @@ def validate(sample, mode, projects, keys):
     times = sample.get('open_samples_ns')
     if (not isinstance(times, list) or len(times) != projects
             or any(type(value) is not int or value < 0 for value in times)
-            or sample['fds_open'] < sample['fds_before']):
+            or sample['fds_open'] < sample['fds_before']
+            or sample['fds_after_drop'] != sample['fds_before']):
         raise ValueError('invalid project-open samples')
     return sample
 

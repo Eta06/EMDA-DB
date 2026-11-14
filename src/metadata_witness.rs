@@ -14,6 +14,7 @@ use crate::witness;
 use crate::witness::{LOG_HEADER_SIZE, LogId, Witness};
 use std::fs::File;
 use std::io;
+use std::sync::Arc;
 
 pub(crate) const MAGIC: &[u8; 8] = b"EMDALOG3";
 
@@ -38,6 +39,7 @@ mod platform {
     use crate::witness::{WITNESS_SIZE, WitnessIo};
     use rustix::fs::{XattrFlags, fgetxattr, fsetxattr};
     use rustix::io::Errno;
+    use std::borrow::Borrow;
 
     // An on-disk identifier, independent of the product's eventual name.
     const NAME: &str = "user.db.commit.v3";
@@ -79,9 +81,13 @@ mod platform {
         Witness::from_io(Box::new(Metadata(file)), id)
     }
 
-    struct Metadata(File);
+    pub(crate) fn open_shared(file: Arc<File>, id: LogId) -> io::Result<(Witness, u64)> {
+        Witness::from_io(Box::new(Metadata(file)), id)
+    }
 
-    impl WitnessIo for Metadata {
+    struct Metadata<F>(F);
+
+    impl<F: Borrow<File> + Send + Sync> WitnessIo for Metadata<F> {
         fn len(&self) -> io::Result<u64> {
             Ok(self.read_marker()?.len() as u64)
         }
@@ -99,7 +105,7 @@ mod platform {
 
         fn read_marker(&self) -> io::Result<[u8; WITNESS_SIZE]> {
             let mut bytes = [0; WITNESS_SIZE];
-            match read_attribute(&self.0, &mut bytes) {
+            match read_attribute(self.0.borrow(), &mut bytes) {
                 Ok(WITNESS_SIZE) => Ok(bytes),
                 Ok(_) | Err(Errno::NODATA | Errno::RANGE) => Err(record::invalid_data(
                     "missing or invalid metadata commit witness",
@@ -119,19 +125,37 @@ mod platform {
             // update. Repeating the same replacement is idempotent even if
             // the interrupted syscall already installed it. Acknowledgement
             // still requires the following full fsync to succeed.
-            retry_interrupted(|| fsetxattr(&self.0, NAME, bytes, XattrFlags::REPLACE))
+            retry_interrupted(|| fsetxattr(self.0.borrow(), NAME, bytes, XattrFlags::REPLACE))
                 .map_err(Into::into)
         }
 
         fn sync_data(&self) -> io::Result<()> {
             // fdatasync need not persist xattrs. A full fsync is mandatory.
-            self.0.sync_all()
+            self.0.borrow().sync_all()
         }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn shared_witness_keeps_the_log_descriptor_alive_until_its_own_drop() {
+            let file = Arc::new(tempfile::tempfile().unwrap());
+            file.set_len(LOG_HEADER_SIZE as u64).unwrap();
+            let id = [0x41; 16];
+            assert!(initialize(&file, &id, LOG_HEADER_SIZE as u64).unwrap());
+            let (witness, boundary) = open_shared(Arc::clone(&file), id).unwrap();
+            assert_eq!(boundary, LOG_HEADER_SIZE as u64);
+            assert_eq!(Arc::strong_count(&file), 2);
+            let weak = Arc::downgrade(&file);
+            drop(file);
+            witness.advance(boundary).unwrap();
+            witness.verify(boundary).unwrap();
+            assert!(witness.advance(boundary - 1).is_err());
+            drop(witness);
+            assert!(weak.upgrade().is_none());
+        }
 
         #[test]
         fn interrupted_replacement_retries_the_same_boundary_but_other_errors_stop() {
@@ -199,9 +223,15 @@ mod platform {
             "V3 metadata durability is supported only on Linux",
         ))
     }
+    pub(crate) fn open_shared(_file: Arc<File>, _id: LogId) -> io::Result<(Witness, u64)> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "V3 metadata durability is supported only on Linux",
+        ))
+    }
 }
 
-pub(crate) use platform::{initialize, is_present, open};
+pub(crate) use platform::{initialize, is_present, open, open_shared};
 
 // Only used for newly built, private restore/upgrade staging directories.
 // Upgrades can have initialized metadata while choosing their output format.
