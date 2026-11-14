@@ -3,6 +3,49 @@ use super::*;
 use crate::witness::{self, WitnessIo};
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn detached_checkpoint_view_cannot_acknowledge_writes_or_verify_a_missing_witness() {
+    for v2 in [true, false] {
+        if !v2 && !cfg!(target_os = "linux") {
+            continue;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        if v2 {
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(
+                path.join("records.log"),
+                include_bytes!("../tests/fixtures/v2-empty-records.log"),
+            )
+            .unwrap();
+            std::fs::write(
+                path.join("commit.state"),
+                include_bytes!("../tests/fixtures/v2-empty-commit.state"),
+            )
+            .unwrap();
+        }
+        let store = crate::Store::open(&path).unwrap();
+        store.put(b"safe", b"acknowledged").unwrap();
+        drop(store);
+        let original = std::fs::read(path.join("records.log")).unwrap();
+        assert_eq!(&original[..8], if v2 { b"EMDALOG2" } else { b"EMDALOG3" });
+        let (mut log, boundary) = Log::open_checkpoint_view(&path).unwrap();
+        assert_eq!(boundary, original.len() as u64);
+        log.release_view_witness().unwrap();
+        assert!(log.verify_witness().is_err());
+        assert!(log.sync_data().is_err());
+        assert!(log.append_batch_unsynced(std::iter::empty()).is_err());
+        assert_eq!(log.len().unwrap(), original.len() as u64);
+        assert_eq!(std::fs::read(path.join("records.log")).unwrap(), original);
+        drop(log);
+        let reopened = crate::test_support::retry_lock(|| crate::Store::open(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"safe").unwrap().as_deref(),
+            Some(&b"acknowledged"[..])
+        );
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fault {
     None,
