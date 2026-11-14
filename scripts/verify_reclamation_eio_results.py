@@ -57,6 +57,8 @@ def check_probe(probe, fmt, order, syscall=None, error_name=None, *, cleanup_che
         require(probe['source_after_cleanup'] == source and probe['previous_after_cleanup'] == previous
                 and probe['external_after_cleanup'] == external, 'cleanup changed retained store or reference evidence')
         check_cleanup(probe['cleanup'], probe['stages_after'], probe['stages_after_cleanup'])
+    else:
+        require('cleanup' not in probe, 'cleanup evidence lacks its coverage marker')
     for path, entry in probe['stages_after'].items():
         name = PurePosixPath(path)
         require(bool(name.parts) and not name.is_absolute() and '..' not in name.parts

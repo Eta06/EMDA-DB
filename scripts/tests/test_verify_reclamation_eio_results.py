@@ -130,6 +130,10 @@ class ReclamationCoverageTests(unittest.TestCase):
         broken['cases'][0]['injections'][0]['cleanup']['retired']['removed_markers'] = 1
         with self.assertRaisesRegex(ValueError, 'counters disagree'):
             verify(broken)
+        broken = copy.deepcopy(report)
+        del broken['cleanup_checked']
+        with self.assertRaisesRegex(ValueError, 'lacks its coverage marker'):
+            verify(broken)
 
 
 if __name__ == '__main__':
