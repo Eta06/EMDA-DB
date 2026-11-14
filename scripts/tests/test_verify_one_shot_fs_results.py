@@ -221,6 +221,18 @@ class OneShotCoverageTests(unittest.TestCase):
             value['managed_suffix'] = {'before': reference.copy(), 'after_attempt': reference.copy(),
                                        'after_verification': reference.copy()}
         self.assertEqual(verify(tail)['injections'], 2)
+        rebuild_tail = copy.deepcopy(tail)
+        rebuild_tail_operation = 'checkpoint-managed-rebuild-tail'
+        rebuild_tail.update(operations=[rebuild_tail_operation], managed_handle_check=0)
+        rebuild_tail['cases'][0]['operation'] = rebuild_tail_operation
+        for value in [rebuild_tail['cases'][0]['control'], *rebuild_tail['cases'][0]['injections']]:
+            value['outcome']['operation'] = rebuild_tail_operation
+            value['outcome'].pop('handle_after_selection_failure', None)
+            value['verification']['operation'] = rebuild_tail_operation
+        self.assertEqual(verify(rebuild_tail)['injections'], 2)
+        rebuild_tail['cases'][0]['injections'][1]['managed_suffix']['after_attempt']['digest'] = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'trusted suffix checkpoint evidence changed'):
+            verify(rebuild_tail)
         tail['cases'][0]['injections'][1]['managed_suffix']['after_attempt']['digest'] = 'b' * 64
         with self.assertRaisesRegex(ValueError, 'trusted suffix checkpoint evidence changed'):
             verify(tail)

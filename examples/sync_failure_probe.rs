@@ -117,7 +117,10 @@ fn action(root: &Path, operation: &str) -> io::Result<()> {
                 .rollover_managed(target)
                 .map(|_| ())
         }
-        "checkpoint-managed-rebuild" | "checkpoint-managed-rebuild-existing" => {
+        "checkpoint-managed-rebuild"
+        | "checkpoint-managed-rebuild-existing"
+        | "checkpoint-managed-rebuild-tail"
+        | "checkpoint-managed-rebuild-tail-existing" => {
             CheckpointStore::rebuild_managed_selection(source, target).map(|_| ())
         }
         "initialize" => Store::open(target).map(|_| ()),
@@ -165,7 +168,10 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
     use database_engine::PublicationFailure;
     if matches!(
         operation,
-        "checkpoint-managed-rebuild" | "checkpoint-managed-rebuild-existing"
+        "checkpoint-managed-rebuild"
+            | "checkpoint-managed-rebuild-existing"
+            | "checkpoint-managed-rebuild-tail"
+            | "checkpoint-managed-rebuild-tail-existing"
     ) {
         return attempt_rebuild_publication(root, operation);
     }
@@ -392,7 +398,7 @@ fn inspect_source(
     if get(b"safe")?.as_deref() != Some(&b"acknowledged"[..]) {
         return Err("acknowledged fixture values changed".into());
     }
-    if operation.contains("-rollover-tail")
+    if (operation.contains("-rollover-tail") || operation.contains("-rebuild-tail"))
         && get(b"tail")?.as_deref() != Some(&b"acknowledged-tail"[..])
     {
         return Err("acknowledged managed suffix changed".into());
@@ -454,8 +460,10 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
             | "checkpoint-managed-rollover-tail-existing"
             | "checkpoint-managed-rebuild"
             | "checkpoint-managed-rebuild-existing"
+            | "checkpoint-managed-rebuild-tail"
+            | "checkpoint-managed-rebuild-tail-existing"
     );
-    let has_tail = operation.contains("-rollover-tail");
+    let has_tail = operation.contains("-rollover-tail") || operation.contains("-rebuild-tail");
     let next_digest: [u8; 32] = if has_tail {
         std::fs::read(root.join("next.digest"))?
             .try_into()
@@ -569,6 +577,8 @@ fn verify(root: &Path, operation: &str, status: &str, order: &str) -> ProbeResul
                 | "checkpoint-managed-rollover-tail-existing"
                 | "checkpoint-managed-rebuild"
                 | "checkpoint-managed-rebuild-existing"
+                | "checkpoint-managed-rebuild-tail"
+                | "checkpoint-managed-rebuild-tail-existing"
         ) {
             // This digest was independently saved before the attempted copy.
             let view = CheckpointView::open(root.join("source"), &target, &next_digest)?;
@@ -748,13 +758,15 @@ mod tests {
             "checkpoint-managed-rollover-tail-existing",
             "checkpoint-managed-rebuild",
             "checkpoint-managed-rebuild-existing",
+            "checkpoint-managed-rebuild-tail",
+            "checkpoint-managed-rebuild-tail-existing",
         ] {
             let root = tempfile::tempdir().unwrap();
             setup(root.path(), "v2").unwrap();
             if operation.ends_with("-existing") {
                 setup_managed(root.path(), operation).unwrap();
             }
-            if operation.contains("-rollover-tail") {
+            if operation.contains("-rollover-tail") || operation.contains("-rebuild-tail") {
                 setup_managed_tail(root.path(), operation).unwrap();
             }
             action(root.path(), operation).unwrap();

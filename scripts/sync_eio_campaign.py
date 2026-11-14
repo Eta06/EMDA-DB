@@ -35,10 +35,13 @@ OPERATIONS = ('write', 'batch', 'backup', 'restore', 'upgrade', 'checkpoint', 'c
               'checkpoint-rollover', 'initialize')
 WRITES = ('write', 'batch', 'checkpoint-write', 'checkpoint-batch')
 LEGACY_OPERATIONS = ('upgrade-legacy', 'upgrade-empty-legacy')
-MANAGED_SUFFIX_OPERATIONS = ('checkpoint-managed-rollover-tail', 'checkpoint-managed-rollover-tail-existing')
-MANAGED_REBUILD_OPERATIONS = ('checkpoint-managed-rebuild', 'checkpoint-managed-rebuild-existing')
+MANAGED_ROLLOVER_SUFFIX_OPERATIONS = ('checkpoint-managed-rollover-tail', 'checkpoint-managed-rollover-tail-existing')
+MANAGED_REBUILD_SUFFIX_OPERATIONS = ('checkpoint-managed-rebuild-tail', 'checkpoint-managed-rebuild-tail-existing')
+MANAGED_SUFFIX_OPERATIONS = (*MANAGED_ROLLOVER_SUFFIX_OPERATIONS, *MANAGED_REBUILD_SUFFIX_OPERATIONS)
+MANAGED_REBUILD_OPERATIONS = ('checkpoint-managed-rebuild', 'checkpoint-managed-rebuild-existing',
+                              *MANAGED_REBUILD_SUFFIX_OPERATIONS)
 MANAGED_OPERATIONS = ('checkpoint-managed-rollover', 'checkpoint-managed-rollover-existing',
-                      *MANAGED_SUFFIX_OPERATIONS, *MANAGED_REBUILD_OPERATIONS)
+                      *MANAGED_ROLLOVER_SUFFIX_OPERATIONS, *MANAGED_REBUILD_OPERATIONS)
 PUBLICATION_OPERATIONS = ('backup', 'checkpoint-backup', 'restore', 'checkpoint', 'checkpoint-copy',
                           'compaction', 'checkpoint-compaction', 'upgrade', 'checkpoint-rollover')
 FORMATS = ('v2', 'v3')
