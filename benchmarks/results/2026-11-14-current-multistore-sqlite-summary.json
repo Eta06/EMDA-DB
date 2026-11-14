@@ -1,0 +1,83 @@
+{
+  "revision": "ac6b3a3726887038525a37fabbb130dd3a866413",
+  "git_status_at_start": "clean",
+  "scope": "Warm-cache multi-store process resource samples; SQLite and the prototype use different open and integrity semantics. No service, quota, isolation or universal performance ranking is established.",
+  "runs": [
+    {
+      "label": "first",
+      "file": "2026-11-14-current-multistore-sqlite-first.json.gz",
+      "sha256": "8195b8859178b2a067886e29d6852e878e906b77d75614b305140d59a4c8ba75",
+      "uncompressed_sha256": "5815962eeba1bc68d9773c8232a81a9e88a905623fb920239adb748c86b68719",
+      "quiet_windows_passed": 16,
+      "quiet_windows_total": 18,
+      "maximum_vm_steal_percent": 5.2632,
+      "maximum_vm_iowait_percent": 9.6154,
+      "throttled_intervals": 0,
+      "maximum_process_physical_read_bytes": 12288,
+      "modes": [
+        {
+          "mode": "ordinary",
+          "median_fds": 404.0,
+          "median_rss_kib": 14568.0,
+          "median_open_ns": 107294423.0,
+          "minimum_open_ns": 88231990,
+          "maximum_open_ns": 172211558
+        },
+        {
+          "mode": "checkpoint",
+          "median_fds": 404.0,
+          "median_rss_kib": 2180.0,
+          "median_open_ns": 51656482.0,
+          "minimum_open_ns": 29604410,
+          "maximum_open_ns": 76180536
+        },
+        {
+          "mode": "sqlite",
+          "median_fds": 304.0,
+          "median_rss_kib": 15322.0,
+          "median_open_ns": 70567915.0,
+          "minimum_open_ns": 22670719,
+          "maximum_open_ns": 118465119
+        }
+      ]
+    },
+    {
+      "label": "repeat",
+      "file": "2026-11-14-current-multistore-sqlite-repeat.json.gz",
+      "sha256": "50677054572b4ecb4f403c53132b40c37723b091567a218737794f0cead32a92",
+      "uncompressed_sha256": "787f55d48351beeb1ad21eb1556adabdab9bfb4b06c259b3bb7c3461ed8c3712",
+      "quiet_windows_passed": 18,
+      "quiet_windows_total": 18,
+      "maximum_vm_steal_percent": 5.5556,
+      "maximum_vm_iowait_percent": 9.6154,
+      "throttled_intervals": 0,
+      "maximum_process_physical_read_bytes": 0,
+      "modes": [
+        {
+          "mode": "ordinary",
+          "median_fds": 404.0,
+          "median_rss_kib": 14530.0,
+          "median_open_ns": 90348646.5,
+          "minimum_open_ns": 72031575,
+          "maximum_open_ns": 160295170
+        },
+        {
+          "mode": "checkpoint",
+          "median_fds": 404.0,
+          "median_rss_kib": 2124.0,
+          "median_open_ns": 40436298.0,
+          "minimum_open_ns": 28623740,
+          "maximum_open_ns": 55311045
+        },
+        {
+          "mode": "sqlite",
+          "median_fds": 304.0,
+          "median_rss_kib": 15320.0,
+          "median_open_ns": 29876037.5,
+          "minimum_open_ns": 25831692,
+          "maximum_open_ns": 33853673
+        }
+      ]
+    }
+  ]
+}

@@ -116,6 +116,8 @@ A [V3 shared-witness follow-up](docs/CHECKPOINT_SHARED_WITNESS_2026_11_14.md) re
 
 A [validated-view sharing follow-up](docs/CHECKPOINT_SHARED_VIEW_2026_11_14.md) reduced the same-size V3 checkpoint sample from 504 to 404 descriptors in two paired runs. Startup timings varied; the report includes recovery, fault and fuzz evidence and its limits.
 
+The [current SQLite multi-store comparison](docs/CURRENT_MULTI_STORE_SQLITE_2026_11_14.md) measured 404 prototype checkpoint descriptors versus 304 for SQLite across 100 open databases; startup timings reversed between the two noisy runs.
+
 A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_2026_11_06.md) checks acknowledged workload values after fresh-process reopens through one million base keys, with observed memory, I/O and VM noise.
 
 A [SQLite restart comparison](docs/SQLITE_RESTART_RESOURCES_2026_11_06.md) adds a repeated three-way large-fixture run, including the different open and integrity-check semantics and long-tail samples.
