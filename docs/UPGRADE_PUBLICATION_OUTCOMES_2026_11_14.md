@@ -37,10 +37,10 @@ reference-backup preservation were checked.
 
 These selected synthetic returned errors do not exhaust failure-only calls,
 partial syscalls, persistence ordering or every schedule. They exercise the
-format-upgrade path; the legacy and empty-legacy variants have separate
-integration checks rather than the full syscall campaign. The workspace uses
-an overlay of unknown backing, and the OS remained running. These results do
-not establish physical power-loss safety or an independent off-host restore.
+format-upgrade path; a separate [legacy-upgrade campaign](LEGACY_UPGRADE_FAILURES_2026_11_14.md)
+checks nonempty and empty legacy sources. The workspace uses an overlay of
+unknown backing, and the OS remained running. These results do not establish
+physical power-loss safety or an independent off-host restore.
 
 The campaign reports can be verified with:
 

@@ -133,6 +133,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   The empty legacy variant requires independent confirmation of intended
   emptiness and may create a source lock file even on failure. [Local fault
   checks](UPGRADE_PUBLICATION_OUTCOMES_2026_11_14.md) record the tested scope.
+  A [separate campaign](LEGACY_UPGRADE_FAILURES_2026_11_14.md) checks legacy
+  source and witness preservation under selected returned errors.
 - [x] Add publication classifications for unmanaged checkpoint rollover. A
   post-publication failure leaves the old view selected and returns no digest;
   managed rollover remains a distinct operation.

@@ -31,6 +31,7 @@ The [coordinator admission report](docs/COORDINATOR_ADMISSION_OUTCOMES_2026_11_1
 The [transaction snapshot report](docs/TRANSACTION_SNAPSHOT_RELEASE_2026_11_14.md) records a measured copy reduction, concurrent and recovery checks, and benchmark limitations.
 The [checkpoint and compaction publication report](docs/COPY_PUBLICATION_OUTCOMES_2026_11_14.md) records classified failures and their recovery limits.
 The [upgrade publication report](docs/UPGRADE_PUBLICATION_OUTCOMES_2026_11_14.md) records classified copy failures and legacy-data limitations.
+The [legacy-upgrade fault report](docs/LEGACY_UPGRADE_FAILURES_2026_11_14.md) checks nonempty and explicitly confirmed empty legacy sources.
 The [rollover publication report](docs/ROLLOVER_PUBLICATION_OUTCOMES_2026_11_14.md) records failure classifications and recovery checks for unmanaged checkpoints.
 The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
 The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
