@@ -169,6 +169,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   checks scans, atomic batches, forced automatic rollover and reopening under
   sampled schedules. A coordinated [concurrent failure check](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md#concurrent-configuration-and-atomic-batches)
   checks rejection of a writer started while configuration holds the lock.
+  A short [reference-model campaign](AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md#automatic-checkpoint-reference-model)
+  mixes detailed configuration calls with writes, snapshots and rollovers.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.

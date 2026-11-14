@@ -116,6 +116,37 @@ passed on that revision. All 139 Python verifier tests passed. The
 [merged-test record](../benchmarks/results/2026-11-14-automatic-configuration-merged-tests.json)
 links the retained logs and records toolchain and filesystem details.
 
+## Automatic-checkpoint reference model
+
+Revision `2d99a1ca9bf4b30c179866ca868f20a10ddc4671` extends the existing
+automatic-checkpoint fuzzer to mix original and detailed configuration calls,
+repeat idempotent calls and verify a rejected detailed enable without a
+managed selection. Its reference model also exercises writes, deletes,
+atomic batches, transactions, snapshots, manual and automatic rollovers, and
+reopens. Inputs start either from the persistent V2 fixture or the default
+format; the latter was V3 on this Linux filesystem.
+
+A 90-second run completed **10,366 inputs** without a finding. The
+[metadata and hashes](../benchmarks/results/2026-11-14-automatic-checkpoint-model.json),
+[raw log](../benchmarks/results/2026-11-14-automatic-checkpoint-model.log.gz),
+[saved corpus](../benchmarks/results/2026-11-14-automatic-checkpoint-model-corpus.tar.gz)
+and [replay log](../benchmarks/results/2026-11-14-automatic-checkpoint-model-replay.log.gz)
+are retained. Of 390 saved files, 162 force V2, 228 select the default format,
+and 192 request the precondition check. Replaying them completed 392 reported
+runs. The configured input maximum was 128 bytes; the fuzzer reached a
+34-byte generation limit in this short run. Both new fixed seeds also passed.
+
+This is a serial model without injected I/O errors, concurrent scheduling or
+process kills; it does not establish physical power-loss behavior. The
+scheduled and manually triggered fuzz workflow already runs this target.
+To replay the saved corpus on a suitable Linux machine with the pinned nightly
+toolchain and `cargo-fuzz`, extract it into a new empty `extracted-corpus`
+directory and run:
+
+```sh
+cargo +nightly-2026-11-03 fuzz run automatic_checkpoint ./extracted-corpus -- -runs=390 -max_len=128 -timeout=15
+```
+
 These checks use selected synthetic errors on a running Linux VM with an
 overlay filesystem of unknown backing. They do not cover partial syscalls,
 all error-only code paths, concurrent configuration callers, persistence

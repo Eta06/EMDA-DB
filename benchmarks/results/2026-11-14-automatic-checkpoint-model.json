@@ -1,0 +1,45 @@
+{
+  "revision": "2d99a1ca9bf4b30c179866ca868f20a10ddc4671",
+  "run_command": "cargo +nightly-2026-11-03 fuzz run automatic_checkpoint <corpus> -- -max_total_time=90 -max_len=128 -timeout=15 -seed=1142026",
+  "rustc": "rustc 1.101.0-nightly (1c3a65069 2026-11-02)",
+  "cargo_fuzz": "cargo-fuzz 0.13.2",
+  "platform": "Linux-6.18.57-x86_64-with-glibc2.41",
+  "filesystem": {
+    "filesystems": [
+      {
+        "target": "/",
+        "fstype": "overlay"
+      }
+    ]
+  },
+  "binary_sha256": "48050e1ee25cb876c5b575d7ed3a254a0ccc858cef8bee774268416af9a70223",
+  "target_sha256": "fe407500d37e8dd20ecdbf769befd2b6fa389caafbae22ebf65f653ae983917a",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "fuzz_lock_sha256": "2f09025e1817fb64aae0497d7fcc1c0aa7a363f9cf138f68cda2f3e440e5ef45",
+  "seed_sha256": {
+    "detailed-toggle": "08ba2411d09c3c4af3438bc632bb3aea8de8bbac4d31fe94f61f22d9fb36658c",
+    "rollover": "15185b1a7977391ef528490aec670e7107fd4bb35abdfec6323368e5fcded0c1",
+    "v2-detailed": "5255ec451f8ceaad9779238d59ef5d029524eb3755cdf70899117a6a121a9553"
+  },
+  "libfuzzer_seed": 1142026,
+  "completed_runs": 10366,
+  "elapsed_seconds_reported": 91,
+  "coverage_counters": 3618,
+  "feature_count": 14735,
+  "libfuzzer_final_corpus_count": 390,
+  "final_corpus_files": 390,
+  "forced_v2_initial_files": 162,
+  "default_initial_files": 228,
+  "precondition_check_files": 192,
+  "configured_max_len": 128,
+  "last_reported_length_limit": 34,
+  "raw_log": "2026-11-14-automatic-checkpoint-model.log.gz",
+  "replay_corpus": "2026-11-14-automatic-checkpoint-model-corpus.tar.gz",
+  "fixed_seed_log": "2026-11-14-automatic-checkpoint-model-fixed-seeds.log.gz",
+  "replay": {
+    "loaded_corpus_files": 390,
+    "reported_runs": 392,
+    "elapsed_seconds_reported": 5,
+    "raw_log": "2026-11-14-automatic-checkpoint-model-replay.log.gz"
+  }
+}
