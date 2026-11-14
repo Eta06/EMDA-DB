@@ -131,7 +131,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   [Selected fault checks](COPY_PUBLICATION_OUTCOMES_2026_11_14.md) record scope.
 - [x] Add publication classifications for format and legacy-copy upgrades.
   The empty legacy variant requires independent confirmation of intended
-  emptiness and may create a source lock file even on failure.
+  emptiness and may create a source lock file even on failure. [Local fault
+  checks](UPGRADE_PUBLICATION_OUTCOMES_2026_11_14.md) record the tested scope.
 - [x] Add structured outcomes to common document insert, replace, conditional
   update, delete and atomic bulk calls. Both writable paths use the existing
   conservative transaction; an unknown outcome still needs reconciliation.
