@@ -3,7 +3,8 @@
 > **Work-in-progress handoff branch:** staging cleanup outcome classification and
 > its expanded failure tests are not ready to merge. See the
 > [handoff](docs/HANDOFF_STAGING_CLEANUP_2026_11_14.md) for the unresolved test
-> failure and verification steps.
+> failure and verification steps. The [session handoff](docs/SESSION_HANDOFF_2026_11_15.md)
+> records the project's goals and how to continue the work.
 
 This is a standalone storage-engine prototype. Its name is a placeholder. It provides byte-key/byte-value operations and an experimental document interface on the same transaction engine. A SQL interface is not implemented.
 
