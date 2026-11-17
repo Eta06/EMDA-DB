@@ -148,6 +148,31 @@ pub fn lookup(
     Ok(value)
 }
 
+/// Load the complete live state privately, returning it only after stream and
+/// independently supplied candidate binding validation. The directory, parents,
+/// and contents must remain trusted and stable throughout. Limits bound entries,
+/// total key bytes, each value, and staged key/value payload. Container and
+/// allocator overhead is bounded by the entry limit, but is not payload bytes.
+/// Budget or I/O errors may precede full validation and do not establish that
+/// the candidate matches the independently supplied binding.
+/// This is non-authoritative and does not open or modify a store.
+pub fn load(
+    directory: impl AsRef<Path>,
+    limits: Limits,
+    staging_limits: retained_base_v2::StagingLimits,
+    expected: &Expected,
+) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let dir = directory.as_ref();
+    check_files(dir, expected)?;
+    let (base, staged) = retained_base_v2::load_with_metadata(
+        open_regular(&dir.join("base"))?,
+        limits,
+        staging_limits,
+    )?;
+    check_binding(&base, expected)?;
+    Ok(staged)
+}
+
 fn check_files(dir: &Path, expected: &Expected) -> io::Result<()> {
     if !fs::symlink_metadata(dir)?.file_type().is_dir() {
         return Err(invalid());

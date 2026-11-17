@@ -1,10 +1,11 @@
 //! Isolated, non-authoritative validation of the proposed EMDARB02 format.
 //!
 //! This validates bytes, not their source, historical peak provenance, or any
-//! witness. It does not stage entries or provide recovery. The caller must keep
+//! witness. It does not provide recovery. The caller must keep
 //! the input immutable during validation and any subsequent use. Limits bound
 //! admitted bytes and work, not I/O latency. Validation allocates no memory
-//! from input; lookup allocates at most the explicit returned-value budget.
+//! from input; lookup allocates at most the explicit returned-value budget. The
+//! candidate loader stages privately under separate explicit limits.
 use sha2::{Digest, Sha256};
 use std::io::{self, Read};
 
@@ -44,7 +45,7 @@ fn add(a: u64, b: u64) -> io::Result<u64> {
 /// Validate one complete stream. Ordinary short reads are retried; an error,
 /// truncation, trailing data or limit violation never yields metadata.
 pub fn validate<R: Read>(reader: R, limits: Limits) -> io::Result<Validated> {
-    scan(reader, limits, None).map(|(metadata, _)| metadata)
+    scan(reader, limits, None, None).map(|(metadata, _)| metadata)
 }
 
 /// Independently supplied binding for a lookup. The digest must come from a
@@ -87,7 +88,7 @@ pub(crate) fn lookup_with_metadata<R: Read>(
             "value budget exceeds format maximum",
         ));
     }
-    let (metadata, value) = scan(reader, limits, Some((key, max_value_bytes)))?;
+    let (metadata, value) = scan(reader, limits, Some((key, max_value_bytes)), None)?;
     if metadata.digest != expected.digest
         || metadata.source_id != expected.source_id
         || metadata.base_id != expected.base_id
@@ -98,10 +99,31 @@ pub(crate) fn lookup_with_metadata<R: Read>(
     Ok((metadata, value))
 }
 
+/// Additional ceilings for private in-memory staging. Payload counts key and value bytes;
+/// entry vector overhead is separately bounded by `Limits::entries`.
+#[derive(Clone, Copy, Debug)]
+pub struct StagingLimits {
+    pub value_bytes: usize,
+    pub staging_bytes: u64,
+}
+
+type StagedEntries = Vec<(Vec<u8>, Vec<u8>)>;
+
+pub(crate) fn load_with_metadata<R: Read>(
+    reader: R,
+    limits: Limits,
+    staging_limits: StagingLimits,
+) -> io::Result<(Validated, StagedEntries)> {
+    let mut staged = Vec::new();
+    let (metadata, _) = scan(reader, limits, None, Some((&mut staged, staging_limits)))?;
+    Ok((metadata, staged))
+}
+
 fn scan<R: Read>(
     mut reader: R,
     limits: Limits,
     selection: Option<(&[u8], usize)>,
+    mut staging: Option<(&mut StagedEntries, StagingLimits)>,
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
     let mut header = [0u8; 112];
     // Require a budget for the header before performing any reads.
@@ -151,6 +173,7 @@ fn scan<R: Read>(
     let mut captured = None;
     let mut observed = 0u64;
     let mut keys = 0u64;
+    let mut staged_bytes = 0u64;
     for _ in 0..entries {
         if add(observed, 8)? > encoded {
             return Err(invalid("entry exceeds declared bytes"));
@@ -175,6 +198,24 @@ fn scan<R: Read>(
         }
         previous[..kl].copy_from_slice(&key[..kl]);
         previous_len = kl;
+        let mut staged_entry = if let Some((_, budget)) = staging.as_ref() {
+            staged_bytes = add(add(staged_bytes, kl as u64)?, vl as u64)?;
+            if vl > budget.value_bytes || staged_bytes > budget.staging_bytes {
+                return Err(invalid("staging budget exceeded"));
+            }
+            let mut staged_key = Vec::new();
+            staged_key
+                .try_reserve_exact(kl)
+                .map_err(|_| io::Error::other("staging allocation failed"))?;
+            staged_key.extend_from_slice(&key[..kl]);
+            let mut value = Vec::new();
+            value
+                .try_reserve_exact(vl)
+                .map_err(|_| io::Error::other("staging allocation failed"))?;
+            Some((staged_key, value))
+        } else {
+            None
+        };
         let selected = selection.is_some_and(|(wanted, _)| wanted == &key[..kl]);
         if selected {
             if vl > selection.unwrap().1 {
@@ -197,7 +238,17 @@ fn scan<R: Read>(
             if selected {
                 captured.as_mut().unwrap().extend_from_slice(&buffer[..n]);
             }
+            if let Some((_, value)) = staged_entry.as_mut() {
+                value.extend_from_slice(&buffer[..n]);
+            }
             remaining -= n;
+        }
+        if let Some(entry) = staged_entry {
+            let entries = &mut staging.as_mut().unwrap().0;
+            entries
+                .try_reserve(1)
+                .map_err(|_| io::Error::other("staging allocation failed"))?;
+            entries.push(entry);
         }
     }
     if observed != encoded || keys != key_bytes {
@@ -280,6 +331,49 @@ mod tests {
             self.0 = &self.0[n..];
             Ok(n)
         }
+    }
+    #[test]
+    fn staging_reads_once_and_unwinds_on_reader_panic() {
+        struct Reader<'a> {
+            bytes: &'a [u8],
+            read: usize,
+            panic_at: Option<usize>,
+        }
+        impl Read for Reader<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.panic_at.is_some_and(|at| self.read >= at) {
+                    panic!("injected panic");
+                }
+                let n = out.len().min(self.bytes.len()).min(7);
+                out[..n].copy_from_slice(&self.bytes[..n]);
+                self.bytes = &self.bytes[n..];
+                self.read += n;
+                Ok(n)
+            }
+        }
+        let bytes = fixture(100);
+        let stage = StagingLimits {
+            value_bytes: 100,
+            staging_bytes: 101,
+        };
+        let mut reader = Reader {
+            bytes: &bytes,
+            read: 0,
+            panic_at: None,
+        };
+        let (_, entries) = load_with_metadata(&mut reader, limits(), stage).unwrap();
+        assert_eq!(reader.read, bytes.len());
+        assert_eq!(entries, vec![(b"a".to_vec(), vec![42; 100])]);
+        let result = std::panic::catch_unwind(|| {
+            let reader = Reader {
+                bytes: &bytes,
+                read: 0,
+                panic_at: Some(130),
+            };
+            let _ = load_with_metadata(reader, limits(), stage);
+        });
+        assert!(result.is_err());
+        assert!(load_with_metadata(Short(&bytes[..bytes.len() - 1]), limits(), stage).is_err());
     }
     #[test]
     fn maximum_value_and_short_reads() {
@@ -382,6 +476,19 @@ mod tests {
         b.extend_from_slice(&[0; 32]);
         rehash(&mut b);
         b
+    }
+    #[test]
+    fn staged_load_rejects_rehashed_bad_order_and_totals() {
+        let stage = StagingLimits {
+            value_bytes: 10,
+            staging_bytes: 100,
+        };
+        let unordered = entries(&[b"b", b"a"]);
+        assert!(load_with_metadata(&unordered[..], limits(), stage).is_err());
+        let mut totals = entries(&[b"a", b"b"]);
+        set64(&mut totals, 64, 3);
+        rehash(&mut totals);
+        assert!(load_with_metadata(&totals[..], limits(), stage).is_err());
     }
     #[test]
     fn independent_known_answer() {

@@ -765,6 +765,67 @@ mod tests {
     }
 
     #[test]
+    fn candidate_load_is_bounded_and_transactional() {
+        use crate::retained_base_v2::StagingLimits;
+        use crate::retained_candidate::load;
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source")).unwrap();
+        store.put(b"a", b"one").unwrap();
+        store.put(b"b", b"two").unwrap();
+        let dest = root.path().join("candidate");
+        let expected = store
+            .build_retained_candidate(&dest, [1; 16], [2; 16], limits())
+            .unwrap();
+        let stage = StagingLimits {
+            value_bytes: 3,
+            staging_bytes: 8,
+        };
+        assert_eq!(
+            load(&dest, candidate_budgets(), stage, &expected).unwrap(),
+            vec![
+                (b"a".to_vec(), b"one".to_vec()),
+                (b"b".to_vec(), b"two".to_vec())
+            ]
+        );
+        assert!(
+            load(
+                &dest,
+                candidate_budgets(),
+                StagingLimits {
+                    value_bytes: 2,
+                    ..stage
+                },
+                &expected
+            )
+            .is_err()
+        );
+        assert!(
+            load(
+                &dest,
+                candidate_budgets(),
+                StagingLimits {
+                    staging_bytes: 7,
+                    ..stage
+                },
+                &expected
+            )
+            .is_err()
+        );
+        let mut wrong = expected.clone();
+        wrong.base_digest[0] ^= 1;
+        assert!(load(&dest, candidate_budgets(), stage, &wrong).is_err());
+        let path = dest.join("base");
+        let original = std::fs::read(&path).unwrap();
+        let mut corrupt = original.clone();
+        let index = corrupt.len() - 33;
+        corrupt[index] ^= 1;
+        std::fs::write(&path, corrupt).unwrap();
+        assert!(load(&dest, candidate_budgets(), stage, &expected).is_err());
+        std::fs::write(&path, &original[..original.len() - 1]).unwrap();
+        assert!(load(&dest, candidate_budgets(), stage, &expected).is_err());
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 4);
+    }
+    #[test]
     fn candidate_lookup_validates_full_bound_snapshot() {
         use crate::retained_candidate::lookup;
         let root = tempfile::tempdir().unwrap();
