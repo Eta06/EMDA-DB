@@ -49,42 +49,41 @@ pub(super) fn capture<'a>(
 }
 
 pub(super) fn verify_initial(
-    source: &Store,
     snapshot: &Snapshot<'_>,
     end: u64,
     options: &OnlineCompactionOptions,
 ) -> io::Result<()> {
     let mut index = BTreeMap::<Vec<u8>, ValueLocation>::new();
     let mut bytes = 0_usize;
-    source
-        .log
-        .visit_synchronized_range(0, end, |key, location| {
-            match location {
-                Some(location) => {
-                    if !index.contains_key(&key) {
-                        if index.len() >= options.max_snapshot_keys {
-                            return Err(io::Error::other(
-                                "historical key count exceeds compaction limit",
-                            ));
-                        }
-                        bytes = bytes
-                            .checked_add(key.len())
-                            .filter(|bytes| *bytes <= options.max_snapshot_key_bytes)
-                            .ok_or_else(|| {
-                                io::Error::other("historical key bytes exceed compaction limit")
-                            })?;
+    let data = snapshot.read_index()?;
+    let log = data.log.as_ref().expect("active snapshot retains its log");
+    log.visit_synchronized_range(0, end, |key, location| {
+        match location {
+            Some(location) => {
+                if !index.contains_key(&key) {
+                    if index.len() >= options.max_snapshot_keys {
+                        return Err(io::Error::other(
+                            "historical key count exceeds compaction limit",
+                        ));
                     }
-                    index.insert(key, location);
+                    bytes = bytes
+                        .checked_add(key.len())
+                        .filter(|bytes| *bytes <= options.max_snapshot_key_bytes)
+                        .ok_or_else(|| {
+                            io::Error::other("historical key bytes exceed compaction limit")
+                        })?;
                 }
-                None => {
-                    if index.remove(&key).is_some() {
-                        bytes -= key.len();
-                    }
+                index.insert(key, location);
+            }
+            None => {
+                if index.remove(&key).is_some() {
+                    bytes -= key.len();
                 }
             }
-            Ok(())
-        })?;
-    if &index != snapshot.read_index()?.index.as_ref() {
+        }
+        Ok(())
+    })?;
+    if &index != data.index.as_ref() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "snapshot does not match verified log prefix",
@@ -146,15 +145,12 @@ impl<'a> Writer<'a> {
     }
 }
 
-pub(super) fn copy_snapshot(
-    source: &Store,
-    snapshot: &Snapshot<'_>,
-    target: &Store,
-) -> io::Result<()> {
+pub(super) fn copy_snapshot(snapshot: &Snapshot<'_>, target: &Store) -> io::Result<()> {
     let index = snapshot.read_index()?;
+    let log = index.log.as_ref().expect("active snapshot retains its log");
     let mut writer = Writer::new(target);
     for (key, location) in index.index.iter() {
-        writer.push(key.clone(), Some(source.log.read(*location)?))?;
+        writer.push(key.clone(), Some(log.read(*location)?))?;
     }
     writer.flush()
 }
@@ -193,4 +189,30 @@ pub(super) fn verify_target(source: &Store, target: &Store) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_reads_use_captured_log_and_reject_cancelled_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let source = Store::open(root.path().join("source")).unwrap();
+        let captured = Store::open(root.path().join("captured")).unwrap();
+        let target = Store::open(root.path().join("target")).unwrap();
+        // Identical record layouts give the two logs overlapping locations.
+        source.put(b"key", b"source!!").unwrap();
+        captured.put(b"key", b"captured").unwrap();
+        let options = OnlineCompactionOptions::default();
+        let (mut snapshot, end) = capture(&captured, &options).unwrap();
+        verify_initial(&snapshot, end, &options).unwrap();
+        copy_snapshot(&snapshot, &target).unwrap();
+        assert_eq!(target.get(b"key").unwrap(), Some(b"captured".to_vec()));
+        assert_eq!(source.get(b"key").unwrap(), Some(b"source!!".to_vec()));
+        assert!(verify_initial(&snapshot, 0, &options).is_err());
+        snapshot.cancel();
+        assert!(verify_initial(&snapshot, end, &options).is_err());
+        assert!(copy_snapshot(&snapshot, &target).is_err());
+    }
 }

@@ -409,7 +409,7 @@ impl OnlineStore {
         crate::staging::cleanup_retired(parent, &id, || {
             let snapshot =
                 current.snapshot(options.max_snapshot_keys, options.max_snapshot_key_bytes)?;
-            copy::verify_initial(current, &snapshot, boundary, options)
+            copy::verify_initial(&snapshot, boundary, options)
         })
     }
 
@@ -543,7 +543,7 @@ impl OnlineStore {
         crate::directory::verify_lock_identity(&source, &current._lock_file)?;
         compact_exchange::source_directory_is_owned(&source)?;
         let (snapshot, initial) = copy::capture(&current, options)?;
-        copy::verify_initial(&current, &snapshot, initial, options)?;
+        copy::verify_initial(&snapshot, initial, options)?;
         let mut stage = crate::staging::Stage::directory(&parent)?;
         let target = Store::open_with_resource_limits(
             stage.path(),
@@ -551,7 +551,7 @@ impl OnlineStore {
             Some(options.max_snapshot_keys),
             Some(options.max_snapshot_key_bytes),
         )?;
-        copy::copy_snapshot(&current, &snapshot, &target)?;
+        copy::copy_snapshot(&snapshot, &target)?;
         hook(copy::Point::InitialCopy)?;
         let mut offset = initial;
         for _ in 0..options.catchup_rounds {
