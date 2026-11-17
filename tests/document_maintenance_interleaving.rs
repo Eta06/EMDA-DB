@@ -802,3 +802,89 @@ fn read_set_stale_writer_conflicts_with_schema_publication_on_both_backends() {
         io::ErrorKind::InvalidInput
     );
 }
+
+// A writer staged before unique-index publication must not bypass the new constraint.
+fn stale_writer_after_index_publication(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.insert("c", "original", &document("original", 1))
+        .unwrap();
+    thread::scope(|scope| {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        let mut release = Release {
+            schema: None,
+            index: Some(go_tx),
+        };
+        let writer = scope.spawn(move || {
+            db.transaction_with_read_set(|tx| {
+                tx.insert("c", "late", &document("late", 1))?;
+                tx.put_raw(b"stale-index-writer", b"yes")?;
+                ready_tx.send(()).unwrap();
+                go_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                Ok(())
+            })
+        });
+        ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        db.start_index_build("c", index_definition()).unwrap();
+        let step = db.advance_index_build("c", "idx", 2).unwrap();
+        assert_eq!((step.processed, step.complete), (1, false));
+        let step = db.advance_index_build("c", "idx", 2).unwrap();
+        assert_eq!((step.processed, step.complete), (0, true));
+        signal(&mut release.index);
+        let error = writer.join().unwrap().expect_err("stale writer committed");
+        assert!(is_transaction_conflict(&error), "unexpected error: {error}");
+    });
+    assert_stale_index_writer_rolled_back(db);
+}
+
+fn assert_stale_index_writer_rolled_back(db: &DocumentDatabase<'_>) {
+    assert_eq!(raw(db, b"stale-index-writer"), None);
+    assert_eq!(db.get("c", "late").unwrap(), None);
+    assert!(db.index_jobs("c").unwrap().is_empty());
+    assert_eq!(db.indexes("c").unwrap(), vec![index_definition()]);
+    assert_eq!(
+        indexed_rows(db),
+        vec![("original".into(), document("original", 1))]
+    );
+    assert_eq!(
+        db.verify_collection("c").unwrap(),
+        CollectionIntegrity {
+            documents: 1,
+            indexes: 1,
+            index_keys: 2
+        }
+    );
+    assert_eq!(
+        db.insert("c", "duplicate", &document("duplicate", 1))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(db.get("c", "duplicate").unwrap(), None);
+}
+
+#[test]
+fn read_set_stale_writer_conflicts_with_unique_index_publication_on_both_backends() {
+    let root = tempfile::tempdir().unwrap();
+    let ordinary = root.path().join("ordinary-index-writer");
+    {
+        let store = Store::open(&ordinary).unwrap();
+        stale_writer_after_index_publication(&DocumentDatabase::new(&store));
+    }
+    {
+        let store = Store::open(&ordinary).unwrap();
+        assert_stale_index_writer_rolled_back(&DocumentDatabase::new(&store));
+    }
+    let source = root.path().join("checkpoint-index-writer");
+    let base = root.path().join("base-index-writer");
+    let initial = Store::open(&source).unwrap();
+    let digest = initial.checkpoint_to(&base).unwrap();
+    drop(initial);
+    {
+        let store = CheckpointStore::open(&source, &base, &digest).unwrap();
+        stale_writer_after_index_publication(&DocumentDatabase::with_checkpoint_store(&store));
+    }
+    let store = CheckpointStore::open(&source, &base, &digest).unwrap();
+    assert_stale_index_writer_rolled_back(&DocumentDatabase::with_checkpoint_store(&store));
+}
