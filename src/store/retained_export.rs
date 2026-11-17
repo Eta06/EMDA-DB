@@ -1026,6 +1026,164 @@ mod tests {
         assert!(run(&corrupt, &binding(&suffix), stage, cap).is_err());
     }
     #[test]
+    fn seeded_suffix_matches_full_log_store_and_preserves_inputs() {
+        use crate::retained_base_v2::StagingLimits;
+        use crate::retained_candidate::{SuffixExpected, SuffixLimits, replay_suffix};
+        use std::collections::BTreeMap;
+
+        for seed in 1u64..=8 {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let store = Store::open(&source).unwrap();
+            let mut model = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+            for key in [b"a", b"c", b"e"] {
+                store.put(key, b"0").unwrap();
+                model.insert(key.to_vec(), b"0".to_vec());
+            }
+            let dest = root.path().join("candidate");
+            let candidate = store
+                .build_retained_candidate(&dest, [1; 16], [2; 16], limits())
+                .unwrap();
+            let log_path = source.join("records.log");
+            let start = std::fs::read(&log_path).unwrap().len();
+            let mut state = seed;
+            let mut work = 0;
+            let mut max_payload = 6usize;
+            let mut count = 0;
+            for step in 0..18 {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let key = [b'a' + ((state >> 32) % 6) as u8];
+                let value = [b'0' + (step % 10) as u8];
+                // Every third record is an atomic batch with ordered repeated keys.
+                if step % 3 == 0 {
+                    let ops = [
+                        BatchOperation::Put {
+                            key: &key,
+                            value: &value,
+                        },
+                        BatchOperation::Delete { key: &key },
+                        BatchOperation::Put {
+                            key: &key,
+                            value: b"xy",
+                        },
+                    ];
+                    store.write_batch(&ops).unwrap();
+                    for val in [Some(value.as_slice()), None, Some(b"xy".as_slice())] {
+                        work += 3 * model.len() as u64 + 1;
+                        if let Some(v) = val {
+                            model.insert(key.to_vec(), v.to_vec());
+                        } else {
+                            model.remove(key.as_slice());
+                        }
+                        max_payload =
+                            max_payload.max(model.iter().map(|(k, v)| k.len() + v.len()).sum());
+                        count += 1;
+                    }
+                } else {
+                    work += 3 * model.len() as u64 + 1;
+                    if step % 2 == 0 {
+                        store.delete(&key).unwrap();
+                        model.remove(key.as_slice());
+                    } else {
+                        store.put(&key, &value).unwrap();
+                        model.insert(key.to_vec(), value.to_vec());
+                    }
+                    max_payload =
+                        max_payload.max(model.iter().map(|(k, v)| k.len() + v.len()).sum());
+                    count += 1;
+                }
+            }
+            let full_log = std::fs::read(&log_path).unwrap();
+            let suffix = &full_log[start..];
+            let expected = SuffixExpected {
+                candidate,
+                end: suffix.len() as u64,
+                digest: Sha256::digest(suffix).into(),
+            };
+            let stage = StagingLimits {
+                value_bytes: 2,
+                staging_bytes: max_payload as u64,
+            };
+            let cap = SuffixLimits {
+                bytes: suffix.len() as u64,
+                operations: count,
+                work,
+            };
+            let files: Vec<_> = ["base", "records.log", "store.lock", "witness"]
+                .iter()
+                .map(|name| (name, std::fs::read(dest.join(name)).unwrap()))
+                .collect();
+            let actual =
+                replay_suffix(&dest, candidate_budgets(), stage, suffix, cap, &expected).unwrap();
+            let ordinary: Vec<_> = (b'a'..=b'f')
+                .filter_map(|k| store.get(&[k]).unwrap().map(|v| (vec![k], v)))
+                .collect();
+            assert_eq!(actual, ordinary, "seed {seed}");
+            assert_eq!(actual, model.into_iter().collect::<Vec<_>>());
+            for reduced in [
+                SuffixLimits {
+                    bytes: cap.bytes - 1,
+                    ..cap
+                },
+                SuffixLimits {
+                    operations: cap.operations - 1,
+                    ..cap
+                },
+                SuffixLimits {
+                    work: cap.work - 1,
+                    ..cap
+                },
+            ] {
+                assert!(
+                    replay_suffix(
+                        &dest,
+                        candidate_budgets(),
+                        stage,
+                        suffix,
+                        reduced,
+                        &expected
+                    )
+                    .is_err()
+                );
+            }
+            assert!(
+                replay_suffix(
+                    &dest,
+                    candidate_budgets(),
+                    StagingLimits {
+                        staging_bytes: stage.staging_bytes - 1,
+                        ..stage
+                    },
+                    suffix,
+                    cap,
+                    &expected
+                )
+                .is_err()
+            );
+            let mut corrupt = suffix.to_vec();
+            *corrupt.last_mut().unwrap() ^= 1;
+            let corrupt_binding = SuffixExpected {
+                digest: Sha256::digest(&corrupt).into(),
+                ..expected.clone()
+            };
+            assert!(
+                replay_suffix(
+                    &dest,
+                    candidate_budgets(),
+                    stage,
+                    &corrupt,
+                    cap,
+                    &corrupt_binding
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read(&log_path).unwrap(), full_log);
+            for (name, bytes) in files {
+                assert_eq!(std::fs::read(dest.join(name)).unwrap(), bytes);
+            }
+        }
+    }
+    #[test]
     fn candidate_lookup_validates_full_bound_snapshot() {
         use crate::retained_candidate::lookup;
         let root = tempfile::tempdir().unwrap();
