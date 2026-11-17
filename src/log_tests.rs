@@ -4,6 +4,19 @@ use crate::witness::{self, WitnessIo};
 use std::sync::{Arc, Mutex};
 
 #[test]
+fn verification_key_byte_overflow_distinguishes_admission_from_corruption() {
+    assert_eq!(verified_key_bytes(usize::MAX, 0, true).unwrap(), usize::MAX);
+    assert_eq!(
+        verified_key_bytes(usize::MAX, 1, true).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        verified_key_bytes(usize::MAX, 1, false).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
 fn replayed_tail_adoption_rejects_growth_after_validation() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path();

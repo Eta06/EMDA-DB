@@ -12,6 +12,32 @@ use std::io::{self, IoSlice, Write};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Admission caps for the extra index built by full historical verification.
+/// Log bytes also bound the encoded input, including atomic batch records;
+/// neither cap is a total process-memory or recovery bound.
+#[derive(Clone, Copy)]
+pub struct PeakVerificationLimits {
+    /// Maximum encoded historical log length.
+    pub max_log_bytes: u64,
+    /// Maximum simultaneous live keys during replay.
+    pub max_live_keys: usize,
+    /// Maximum sum of live key lengths during replay.
+    pub max_live_key_bytes: usize,
+}
+
+fn verified_key_bytes(current: usize, added: usize, bounded: bool) -> io::Result<usize> {
+    current.checked_add(added).ok_or_else(|| {
+        if bounded {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "verification live key limit exceeded",
+            )
+        } else {
+            record::invalid_data("replayed live key bytes overflow")
+        }
+    })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct GenerationId(pub(crate) LogId);
 
@@ -700,17 +726,39 @@ impl Log {
         &self,
         expected: &BTreeMap<Vec<u8>, ValueLocation>,
     ) -> io::Result<(usize, usize)> {
+        self.verify_index_peaks_with_limits(expected, None)
+    }
+
+    pub(crate) fn verify_index_peaks_with_limits(
+        &self,
+        expected: &BTreeMap<Vec<u8>, ValueLocation>,
+        limits: Option<PeakVerificationLimits>,
+    ) -> io::Result<(usize, usize)> {
         self.verify_witness()?;
         let total = self.file.len()?;
+        if limits.is_some_and(|limit| total > limit.max_log_bytes) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "verification log byte limit exceeded",
+            ));
+        }
         let mut index = BTreeMap::new();
         let (mut bytes, mut peak_count, mut peak_bytes) = (0_usize, 0_usize, 0_usize);
         self.visit_records_to(0, total, None, |key, location| {
             match location {
                 Some(location) => {
                     if !index.contains_key(&key) {
-                        bytes = bytes.checked_add(key.len()).ok_or_else(|| {
-                            record::invalid_data("replayed live key bytes overflow")
-                        })?;
+                        let next_bytes = verified_key_bytes(bytes, key.len(), limits.is_some())?;
+                        if limits.is_some_and(|limit| {
+                            index.len() >= limit.max_live_keys
+                                || next_bytes > limit.max_live_key_bytes
+                        }) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "verification live key limit exceeded",
+                            ));
+                        }
+                        bytes = next_bytes;
                     }
                     index.insert(key, location);
                 }

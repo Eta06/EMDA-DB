@@ -88,6 +88,30 @@ impl Store {
         self.compact_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Compacts after admitting the historical verification replay under caller limits.
+    ///
+    /// The limits bound encoded log length and logical live key count and key
+    /// bytes during replay. They do not bound peak allocations or process memory:
+    /// replay buffers, map overhead, existing indexes, values, and copy buffers
+    /// also consume memory. Rejection returns `NotPublished` with `InvalidInput`;
+    /// it does not certify that the log is valid. Successful admission still
+    /// performs full verification before publication.
+    pub fn compact_to_with_verification_limits(
+        &self,
+        destination: impl AsRef<Path>,
+        limits: crate::PeakVerificationLimits,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.compact_to_using_tracked(
+                destination.as_ref(),
+                crate::directory::sync_existing,
+                copy_live_records,
+                Some(tracker),
+                Some(limits),
+            )
+        })
+    }
+
     fn compact_to_detailed_with_sync(
         &self,
         destination: &Path,
@@ -99,6 +123,7 @@ impl Store {
                 sync_parent,
                 copy_live_records,
                 Some(tracker),
+                None,
             )
         })
     }
@@ -117,7 +142,7 @@ impl Store {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         copy: impl FnOnce(&Log, &BTreeMap<Vec<u8>, ValueLocation>, &Log) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.compact_to_using_tracked(destination, sync_parent, copy, None)
+        self.compact_to_using_tracked(destination, sync_parent, copy, None, None)
     }
 
     fn compact_to_using_tracked(
@@ -126,6 +151,7 @@ impl Store {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         copy: impl FnOnce(&Log, &BTreeMap<Vec<u8>, ValueLocation>, &Log) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::Tracker>,
+        verification_limits: Option<crate::log::PeakVerificationLimits>,
     ) -> io::Result<()> {
         let _writer = self
             .writes
@@ -137,7 +163,12 @@ impl Store {
         }
         // Revalidate all log records, including obsolete ones and keys: value
         // reads alone would not detect a damaged historical record or key.
-        self.log.verify_index(&inner.index)?;
+        if let Some(limits) = verification_limits {
+            self.log
+                .verify_index_peaks_with_limits(&inner.index, Some(limits))?;
+        } else {
+            self.log.verify_index(&inner.index)?;
+        }
         let parent = backup::parent_directory(destination)?;
         let mut staging = crate::staging::Stage::directory(parent)?;
         let target = Store::open(staging.path())?;
@@ -666,6 +697,66 @@ mod retained_peak_tests {
     use crate::record::batch::BatchOperation;
 
     #[test]
+    fn bounded_verification_rejects_before_publication() {
+        use crate::log::PeakVerificationLimits;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let destination = dir.path().join("destination");
+        let store = Store::open(&source).unwrap();
+        store.put(b"aa", b"old").unwrap();
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"long-key",
+                    value: b"",
+                },
+                BatchOperation::Delete { key: b"long-key" },
+            ])
+            .unwrap();
+        let length = std::fs::metadata(source.join("records.log")).unwrap().len();
+        let limits = PeakVerificationLimits {
+            max_log_bytes: length,
+            max_live_keys: 2,
+            max_live_key_bytes: 10,
+        };
+        for cap in [
+            PeakVerificationLimits {
+                max_log_bytes: length - 1,
+                ..limits
+            },
+            PeakVerificationLimits {
+                max_live_keys: 1,
+                ..limits
+            },
+            PeakVerificationLimits {
+                max_live_key_bytes: 9,
+                ..limits
+            },
+        ] {
+            let result = store.compact_to_with_verification_limits(&destination, cap);
+            match result {
+                Err(crate::PublicationFailure::NotPublished(error)) => {
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidInput)
+                }
+                other => panic!("unexpected result: {other:?}"),
+            }
+            assert!(!destination.exists());
+            assert_eq!(store.get(b"aa").unwrap().as_deref(), Some(&b"old"[..]));
+        }
+        store
+            .compact_to_with_verification_limits(&destination, limits)
+            .unwrap();
+        assert_eq!(
+            Store::open(&destination)
+                .unwrap()
+                .get(b"aa")
+                .unwrap()
+                .as_deref(),
+            Some(&b"old"[..])
+        );
+    }
+
+    #[test]
     fn verified_peaks_reject_corrupt_superseded_record() {
         use std::os::unix::fs::FileExt;
         let dir = tempfile::tempdir().unwrap();
@@ -677,8 +768,39 @@ mod retained_peak_tests {
         let offset = bytes.windows(11).position(|b| b == b"first-value").unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
         file.write_all_at(b"X", offset as u64).unwrap();
+        let destination = dir.path().join("corrupt-destination");
+        let failure = store
+            .compact_to_with_verification_limits(
+                &destination,
+                crate::PeakVerificationLimits {
+                    max_log_bytes: u64::MAX,
+                    max_live_keys: 10,
+                    max_live_key_bytes: 100,
+                },
+            )
+            .unwrap_err();
+        match failure {
+            crate::PublicationFailure::NotPublished(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData)
+            }
+            other => panic!("unexpected failure: {other:?}"),
+        }
+        assert!(!destination.exists());
         let inner = store.read().unwrap();
         assert!(store.log.verify_index_peaks(&inner.index).is_err());
+        assert!(
+            store
+                .log
+                .verify_index_peaks_with_limits(
+                    &inner.index,
+                    Some(crate::log::PeakVerificationLimits {
+                        max_log_bytes: u64::MAX,
+                        max_live_keys: 10,
+                        max_live_key_bytes: 100,
+                    })
+                )
+                .is_err()
+        );
     }
 
     #[test]

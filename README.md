@@ -196,6 +196,8 @@ Both writable stores also provide `checkpoint_to_detailed` with the same publica
 
 `compact_to_detailed` on both writable stores classifies publication of a separate compacted copy. The checkpoint-backed version returns a digest on success that needs separately trusted metadata; an uncertain failure does not return the digest. A pre-existing destination or temporary staging artifacts can remain. In-place handoffs have separate semantics.
 
+For ordinary `Store`, `compact_to_with_verification_limits` optionally admits historical replay using limits on encoded log length, simultaneous live key count, and total live key bytes. Exceeding a limit returns `PublicationFailure::NotPublished` with `InvalidInput`; verification is incomplete and the result says nothing about source validity. These are logical limits, not peak-memory limits: replay buffers, map overhead, existing indexes, values, and copy buffers add memory. Admitted calls still perform full verification before publishing. Existing compaction methods retain their behavior.
+
 `Store::upgrade_format_detailed`, `upgrade_legacy_detailed` and `upgrade_empty_legacy_detailed` classify destination publication for format upgrades. A legacy upgrade cannot detect data lost before the upgrade. The empty-legacy operation requires independent confirmation that the source is intended to be empty and may create a source lock file.
 
 `CheckpointStore::rollover_to_detailed` classifies publication during unmanaged checkpoint rollover. If it returns an error after publication, the prior view remains active, the destination may exist, and no new digest is returned. Managed rollover uses a separate API.

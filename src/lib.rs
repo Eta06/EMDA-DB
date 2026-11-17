@@ -58,6 +58,7 @@ pub use document::{
     NumericFieldStats, PartialFilter, PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus,
     SchemaStep,
 };
+pub use log::PeakVerificationLimits;
 pub use publication_outcome::{
     HandoffFailure, ManagedRebuildFailure, ManagedRolloverFailure, OnlineHandoffFailure,
     PublicationFailure,

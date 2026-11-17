@@ -82,6 +82,11 @@ cleanup. `upgrade_format_detailed`, `upgrade_legacy_detailed` and
 copies. A legacy upgrade cannot detect previous data loss, and the empty-legacy
 variant requires independent confirmation that the source should be empty; it
 may create a source lock file even if the copy fails.
+`Store::compact_to_with_verification_limits` applies caller limits to encoded
+log length and the logical live-key count and key bytes at every replay step,
+including batch children. Exceeding a limit is `NotPublished(InvalidInput)`
+and does not establish source health; successful admission still verifies the
+entire history. These limits do not bound total memory or all copy work.
 `CheckpointStore::rollover_to_detailed` classifies unmanaged checkpoint
 rollover: if the call fails after publication, the prior view remains active,
 the destination may exist and no new digest is returned. This classification
