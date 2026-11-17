@@ -26,6 +26,25 @@ result to its assertion message. The diagnostic test change does not alter the
 engine's production behavior. Reproduction or a passing retry alone does not
 resolve the original failure.
 
+Code inspection narrows the failed selection assertion: the selection hooks run
+after the selection-publication tracker is set, so an error returned by either
+hook would have the expected classification. An earlier open, checkpoint or
+verification error could instead explain the mismatch. Existing lock lifecycle
+tests demonstrate that a forked child can retain a store lock until exec; a
+transient inherited lock is one possible early error, not a finding about this
+historical run. The saved assertion omitted the result and fixture, so the
+actual cause remains unknown. The public rebuild test already checks that an
+actively held lock reports `NotPublished` without replacing the selection.
+Preserve the diagnostic assertion and inspect the next actual error before
+changing retry or recovery behavior.
+
+An experimental explicit-unlock patch for transient handles was reviewed but
+not integrated. Its exchange-candidate guards are armed only after a fallible
+descriptor duplication, and the Linux exchange paths need runtime tests for
+both the candidate and retired store locks. Unlock errors on cleanup paths also
+need an explicit contract. Do not treat that experiment as a diagnosis of the
+historical failure or as validated storage behavior.
+
 Investigate with the improved assertion on an appropriately provisioned
 machine; examine the returned error and the exact fixture before deciding on a
 fix. A transient lock or a forked child inheriting a descriptor is a possible

@@ -4,6 +4,23 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add ordered array truncation with the same transaction and work limits as
+  other document array updates.
+
+- Add an opt-in offline managed checkpoint rebuild that spills suffix state
+  under caller-selected limits while preserving ordered key-count history.
+
+- Validate rename destination traversal even when the source field is missing.
+
+- Stream put, delete and atomic-batch values through a fixed-size buffer during
+  log replay while retaining full record and value checksum validation.
+
+- Reject incremental index-drop progress that would skip surviving index keys,
+  rather than releasing the index name while those keys remain.
+
+- Preserve the transaction-conflict marker on optimized standalone document
+  reads and classify expiry during internal read-set validation as a deadline.
+
 - Add opt-in generic staging-cleanup outcomes that distinguish calls which
   began no removals from failures after removal may have started.
 
