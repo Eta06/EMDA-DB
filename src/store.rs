@@ -51,6 +51,8 @@ pub use transaction::{
 pub(crate) use transaction_queue::TransactionQueue;
 
 struct Inner {
+    // Published with the index; snapshots retain this exact log.
+    log: Option<Arc<Log>>,
     log_generation: Option<GenerationId>,
     index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
     index_key_bytes: usize,
@@ -67,7 +69,7 @@ pub const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
 
 /// A single-process store. Successful mutations have been synchronized to disk.
 pub struct Store {
-    log: Log,
+    log: Arc<Log>,
     inner: RwLock<Inner>,
     // A backup excludes all in-flight writes and holds this barrier until the
     // snapshot is complete; writers share it while the coordinator batches.
@@ -95,6 +97,35 @@ impl Store {
     // description without releasing the store's exclusive advisory lock.
     pub(crate) fn duplicate_store_lock(&self) -> io::Result<File> {
         self._lock_file.try_clone()
+    }
+
+    // Instrument only before any snapshots or other owners exist. Restore the
+    // published reference during unwinding as well as on normal return.
+    #[cfg(all(test, target_os = "linux"))]
+    fn instrument_log_for_test(&mut self, instrument: impl FnOnce(&mut Log)) {
+        struct Restore<'a> {
+            published: &'a mut Option<Arc<Log>>,
+            log: &'a mut Arc<Log>,
+        }
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                *self.published = Some(Arc::clone(self.log));
+            }
+        }
+        let inner = self.inner.get_mut().expect("store lock poisoned");
+        assert!(
+            Arc::ptr_eq(
+                inner.log.as_ref().expect("published log missing"),
+                &self.log
+            ),
+            "published log differs"
+        );
+        drop(inner.log.take());
+        let guard = Restore {
+            published: &mut inner.log,
+            log: &mut self.log,
+        };
+        instrument(Arc::get_mut(guard.log).expect("log has other owners"));
     }
 
     /// Opens or creates a store. Only one store may hold its directory lock.
@@ -273,9 +304,11 @@ impl Store {
                 .ok_or_else(|| io::Error::other("live index key byte count overflow"))
         })?;
         let log_generation = log.id().map(GenerationId);
+        let log = Arc::new(log);
         Ok(Self {
-            log,
+            log: Arc::clone(&log),
             inner: RwLock::new(Inner {
+                log: Some(log),
                 log_generation,
                 index: Arc::new(index),
                 index_key_bytes,

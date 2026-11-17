@@ -137,6 +137,7 @@ enum SnapshotStatus {
 
 pub(super) struct SnapshotData {
     pub(super) log_generation: Option<GenerationId>,
+    log: Option<Arc<Log>>,
     pub(super) index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
     reserved_keys: usize,
     reserved_key_bytes: usize,
@@ -149,6 +150,7 @@ impl SnapshotData {
         if self.status == SnapshotStatus::Active {
             // Release this view before capacity becomes available again.
             self.index = Arc::new(BTreeMap::new());
+            self.log = None;
             store
                 .snapshot_budget
                 .lock()
@@ -267,6 +269,9 @@ impl Store {
             log_generation: inner.log_generation,
             state: Arc::new(RwLock::new(SnapshotData {
                 log_generation: inner.log_generation,
+                log: Some(Arc::clone(
+                    inner.log.as_ref().expect("published log missing"),
+                )),
                 index: Arc::clone(&inner.index),
                 reserved_keys: key_count,
                 reserved_key_bytes: key_bytes,
@@ -410,7 +415,12 @@ impl Snapshot<'_> {
         data.index
             .get(key)
             .copied()
-            .map(|location| self.store.log.read(location))
+            .map(|location| {
+                data.log
+                    .as_ref()
+                    .expect("active snapshot retains its log")
+                    .read(location)
+            })
             .transpose()
     }
 
@@ -447,7 +457,13 @@ impl Snapshot<'_> {
                 break;
             }
             bytes += size;
-            result.push((key.clone(), self.store.log.read(location)?));
+            result.push((
+                key.clone(),
+                data.log
+                    .as_ref()
+                    .expect("active snapshot retains its log")
+                    .read(location)?,
+            ));
         }
         Ok(result)
     }

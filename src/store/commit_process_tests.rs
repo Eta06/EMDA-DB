@@ -246,7 +246,7 @@ fn interrupted_commit_child() {
         store.write_batch(&operations).unwrap();
     } else {
         let mut store = retry_lock(|| Store::open(path)).unwrap();
-        instrument(&mut store.log, path, format, point);
+        store.instrument_log_for_test(|log| instrument(log, path, format, point));
         store.write_batch(&operations).unwrap();
     }
     panic!("commit passed its requested interruption point");

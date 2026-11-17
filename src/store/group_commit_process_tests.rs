@@ -252,11 +252,13 @@ fn instrument(store: &mut Store, path: &Path, format: Format, gate: Arc<Gate>) {
         id,
     )
     .unwrap();
-    store.log.replace_io_for_test(Box::new(GroupLog {
-        file: log_file,
-        gate,
-    }));
-    store.log.attach_test_witness(witness);
+    store.instrument_log_for_test(|log| {
+        log.replace_io_for_test(Box::new(GroupLog {
+            file: log_file,
+            gate,
+        }));
+        log.attach_test_witness(witness);
+    });
 }
 
 #[test]

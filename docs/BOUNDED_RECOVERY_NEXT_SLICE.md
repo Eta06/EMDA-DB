@@ -109,3 +109,9 @@ conservative transactions and ordinary two-point reads now also compare the
 captured identity. Actual switching still requires coordinated publication and
 old-log lifetime protection. No reclamation or format change follows from this
 work.
+
+Ordinary snapshots capture a shared log handle with their index under the
+state lock, and release it on cancellation or expiry after active reads finish.
+This adds a reference, not a descriptor. Transactions, direct reads and online
+copy still use the store's log directly; no operational switch is supported.
+Retired-log cleanup will also need to respect snapshot and registry lock order.

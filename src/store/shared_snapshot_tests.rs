@@ -275,3 +275,58 @@ fn panic_after_snapshot_copy_poison_store_and_does_not_acknowledge() {
     let reopened = crate::test_support::retry_lock(|| Store::open(root.path())).unwrap();
     assert_eq!(reopened.get(b"key").unwrap(), Some(b"new".to_vec()));
 }
+
+#[test]
+fn snapshot_reads_and_releases_the_log_captured_with_its_index() {
+    let first_dir = tempfile::tempdir().unwrap();
+    let second_dir = tempfile::tempdir().unwrap();
+    let first = Store::open(first_dir.path()).unwrap();
+    let second = Store::open(second_dir.path()).unwrap();
+    first.put(b"key", b"first").unwrap();
+    second.put(b"key", b"second").unwrap();
+
+    let mut snapshot = first.snapshot(1, 3).unwrap();
+    let old_log = Arc::downgrade(&first.log);
+    // Model only state publication, not an operational log switch. The store's
+    // write path remains attached to its original log throughout this test.
+    {
+        let replacement = second.read().unwrap();
+        let mut state = first.inner.write().unwrap();
+        state.log = Some(Arc::clone(replacement.log.as_ref().unwrap()));
+        state.log_generation = replacement.log_generation;
+        state.index = Arc::clone(&replacement.index);
+    }
+    assert_eq!(snapshot.get(b"key").unwrap(), Some(b"first".to_vec()));
+    assert_eq!(
+        snapshot.scan(None, None, 1).unwrap(),
+        vec![(b"key".to_vec(), b"first".to_vec())]
+    );
+    assert_eq!(Arc::strong_count(&old_log.upgrade().unwrap()), 3); // store, snapshot, temporary
+    snapshot.cancel();
+    assert_eq!(Arc::strong_count(&old_log.upgrade().unwrap()), 2); // store and temporary
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn instrumentation_restores_published_log_after_panics_and_other_references() {
+    for case in 0..3 {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path()).unwrap();
+        let strong = (case == 1).then(|| Arc::clone(&store.log));
+        let weak = (case == 2).then(|| Arc::downgrade(&store.log));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.instrument_log_for_test(|_| {
+                assert_ne!(case, 0, "injected instrumentation panic");
+            });
+        }));
+        assert!(result.is_err());
+        assert!(Arc::ptr_eq(
+            store.read().unwrap().log.as_ref().unwrap(),
+            &store.log
+        ));
+        drop(strong);
+        drop(weak);
+        store.put(b"key", b"value").unwrap();
+        assert_eq!(store.get(b"key").unwrap(), Some(b"value".to_vec()));
+    }
+}

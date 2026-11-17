@@ -417,7 +417,7 @@ mod tests {
                 .unwrap();
             let (witness, _) =
                 Witness::from_io(Box::new(FaultWitness { file, fault }), id).unwrap();
-            target.log.attach_test_witness(witness);
+            target.instrument_log_for_test(|log| log.attach_test_witness(witness));
             {
                 let inner = source.read().unwrap();
                 assert!(copy_live_records(&source.log, &inner.index, &target.log).is_err());
