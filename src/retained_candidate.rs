@@ -207,3 +207,297 @@ fn check_binding(base: &Validated, expected: &Expected) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// Independently retained binding for a detached suffix of this exact candidate.
+/// `end` is relative to the candidate's empty suffix boundary. The digest is
+/// SHA-256 of the exact suffix bytes; neither it nor the boundary is authority.
+#[derive(Clone, Debug)]
+pub struct SuffixExpected {
+    pub candidate: Expected,
+    pub end: u64,
+    pub digest: [u8; 32],
+}
+
+/// Bounds on detached suffix input and replay work. Single records count as one
+/// operation; batches count their nested operations. Base and live-set limits are separate.
+/// Work bounds entry visits and vector shifts only, not byte comparisons or allocation.
+/// The suffix byte limit separately bounds hashing and checksumming; batch validation
+/// is also bounded by the record format limits. Other verifier allocations may be infallible.
+#[derive(Clone, Copy, Debug)]
+pub struct SuffixLimits {
+    pub bytes: u64,
+    pub operations: u64,
+    /// Maximum entry visits and vector shifts during replay.
+    pub work: u64,
+}
+
+/// Validate and privately replay a detached suffix against an independently
+/// trusted binding. The candidate directory and suffix bytes must stay stable
+/// throughout. Errors, including budget errors, can precede full validation and
+/// establish nothing about authenticity. No partial state is returned. This is
+/// an offline, non-authoritative inspection; it does not modify or open a store.
+pub fn replay_suffix(
+    directory: impl AsRef<Path>,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    suffix: &[u8],
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
+    let length = u64::try_from(suffix.len()).map_err(|_| invalid())?;
+    if length > suffix_limits.bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "suffix byte limit exceeded",
+        ));
+    }
+    if length != expected.end || <[u8; 32]>::from(Sha256::digest(suffix)) != expected.digest {
+        return Err(invalid());
+    }
+    let mut state = load(directory, limits, staging, &expected.candidate)?;
+    let mut cursor = 0usize;
+    let mut operations = 0u64;
+    let mut replay = ReplayBudget {
+        limits,
+        staging,
+        work: 0,
+        work_limit: suffix_limits.work,
+    };
+    while cursor < suffix.len() {
+        let header_end = cursor.checked_add(HEADER_SIZE).ok_or_else(invalid)?;
+        let header: &[u8; HEADER_SIZE] = suffix
+            .get(cursor..header_end)
+            .ok_or_else(invalid)?
+            .try_into()
+            .unwrap();
+        let parsed = record::Header::parse(header)?;
+        let end = cursor
+            .checked_add(usize::try_from(parsed.record_len()).map_err(|_| invalid())?)
+            .ok_or_else(invalid)?;
+        let data_end = end.checked_sub(CHECKSUM_SIZE).ok_or_else(invalid)?;
+        let payload = suffix.get(header_end..data_end).ok_or_else(invalid)?;
+        let checksum = suffix.get(data_end..end).ok_or_else(invalid)?;
+        record::verify(
+            header,
+            payload,
+            u32::from_le_bytes(checksum.try_into().unwrap()),
+        )?;
+        let (key, value) = payload.split_at(parsed.key_len);
+        if parsed.operation == Operation::Batch {
+            if key != [0] {
+                return Err(invalid());
+            }
+            let count = record::batch::payload_count(value)?;
+            operations = operations.checked_add(count as u64).ok_or_else(invalid)?;
+            if operations > suffix_limits.operations {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "suffix operation limit exceeded",
+                ));
+            }
+            allocation_point()?;
+            let mut decoded = Vec::new();
+            decoded
+                .try_reserve_exact(count)
+                .map_err(|_| io::Error::other("batch allocation failed"))?;
+            let decoded = record::batch::decode_payload_into(value, decoded)?;
+            for op in decoded {
+                apply_suffix(
+                    &mut state,
+                    op.operation,
+                    op.key,
+                    &value[op.value_offset..op.value_offset + op.value_len],
+                    &mut replay,
+                )?;
+            }
+        } else {
+            operations = operations.checked_add(1).ok_or_else(invalid)?;
+            if operations > suffix_limits.operations {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "suffix operation limit exceeded",
+                ));
+            }
+            apply_suffix(&mut state, parsed.operation, key, value, &mut replay)?;
+        }
+        cursor = end;
+    }
+    Ok(state)
+}
+
+#[cfg(test)]
+thread_local! { pub(crate) static FAIL_ALLOCATION: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) }; }
+
+fn allocation_point() -> io::Result<()> {
+    #[cfg(test)]
+    FAIL_ALLOCATION.with(|slot| {
+        if let Some(n) = slot.get() {
+            if n == 0 {
+                return Err(io::Error::other("injected allocation failure"));
+            }
+            slot.set(Some(n - 1));
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+struct ReplayBudget {
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    work: u64,
+    work_limit: u64,
+}
+
+fn apply_suffix(
+    state: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    operation: crate::record::Operation,
+    key: &[u8],
+    value: &[u8],
+    budget: &mut ReplayBudget,
+) -> io::Result<()> {
+    // Bound binary search comparisons, the accounting scan, and vector shifts.
+    // The extra unit covers the final binary-search comparison.
+    let cost = u64::try_from(state.len())
+        .map_err(|_| invalid())?
+        .checked_mul(3)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(invalid)?;
+    budget.work = budget.work.checked_add(cost).ok_or_else(invalid)?;
+    if budget.work > budget.work_limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "suffix work limit exceeded",
+        ));
+    }
+    let position = state.binary_search_by(|entry| entry.0.as_slice().cmp(key));
+    if operation == crate::record::Operation::Delete {
+        if let Ok(index) = position {
+            state.remove(index);
+        }
+        return Ok(());
+    }
+    if value.len() > budget.staging.value_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "value limit exceeded",
+        ));
+    }
+    let old = position.ok().map(|i| &state[i]);
+    let entries = u64::try_from(state.len())
+        .map_err(|_| invalid())?
+        .checked_add(u64::from(old.is_none()))
+        .ok_or_else(invalid)?;
+    let (mut keys, mut payload) = (0u64, 0u64);
+    for (k, v) in state.iter() {
+        let kl = u64::try_from(k.len()).map_err(|_| invalid())?;
+        let vl = u64::try_from(v.len()).map_err(|_| invalid())?;
+        keys = keys.checked_add(kl).ok_or_else(invalid)?;
+        payload = payload
+            .checked_add(kl)
+            .and_then(|n| n.checked_add(vl))
+            .ok_or_else(invalid)?;
+    }
+    let key_len = u64::try_from(key.len()).map_err(|_| invalid())?;
+    let value_len = u64::try_from(value.len()).map_err(|_| invalid())?;
+    if old.is_none() {
+        keys = keys.checked_add(key_len).ok_or_else(invalid)?;
+    }
+    if let Some((k, v)) = old {
+        payload = payload
+            .checked_sub(u64::try_from(k.len()).map_err(|_| invalid())?)
+            .and_then(|n| {
+                u64::try_from(v.len())
+                    .ok()
+                    .and_then(|len| n.checked_sub(len))
+            })
+            .ok_or_else(invalid)?;
+    }
+    payload = payload
+        .checked_add(key_len)
+        .and_then(|n| n.checked_add(value_len))
+        .ok_or_else(invalid)?;
+    if entries > budget.limits.entries
+        || keys > budget.limits.key_bytes
+        || payload > budget.staging.staging_bytes
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "live set limit exceeded",
+        ));
+    }
+    fn copy(bytes: &[u8]) -> io::Result<Vec<u8>> {
+        allocation_point()?;
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| io::Error::other("suffix allocation failed"))?;
+        result.extend_from_slice(bytes);
+        Ok(result)
+    }
+    let new_value = copy(value)?;
+    match position {
+        Ok(i) => state[i].1 = new_value,
+        Err(i) => {
+            let new_key = copy(key)?;
+            allocation_point()?;
+            state
+                .try_reserve(1)
+                .map_err(|_| io::Error::other("suffix allocation failed"))?;
+            state.insert(i, (new_key, new_value));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod suffix_budget_tests {
+    use super::*;
+    use crate::record::Operation;
+
+    #[test]
+    fn shifted_insert_and_delete_obey_work_limit() {
+        let mut state = vec![(vec![2], vec![2]), (vec![3], vec![3])];
+        let mut budget = ReplayBudget {
+            limits: Limits {
+                file_bytes: u64::MAX,
+                entries: u64::MAX,
+                key_bytes: u64::MAX,
+                work_bytes: u64::MAX,
+            },
+            staging: retained_base_v2::StagingLimits {
+                value_bytes: usize::MAX,
+                staging_bytes: u64::MAX,
+            },
+            work: 0,
+            work_limit: 17,
+        };
+        apply_suffix(&mut state, Operation::Put, &[1], &[1], &mut budget).unwrap();
+        apply_suffix(&mut state, Operation::Delete, &[1], &[], &mut budget).unwrap();
+        assert_eq!(budget.work, 17);
+        assert_eq!(state, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
+        assert!(apply_suffix(&mut state, Operation::Put, &[1], &[1], &mut budget).is_err());
+    }
+
+    #[test]
+    fn work_overflow_does_not_mutate_state() {
+        let mut state = vec![(vec![1], vec![2])];
+        let mut budget = ReplayBudget {
+            limits: Limits {
+                file_bytes: u64::MAX,
+                entries: u64::MAX,
+                key_bytes: u64::MAX,
+                work_bytes: u64::MAX,
+            },
+            staging: retained_base_v2::StagingLimits {
+                value_bytes: usize::MAX,
+                staging_bytes: u64::MAX,
+            },
+            work: u64::MAX,
+            work_limit: u64::MAX,
+        };
+        assert!(apply_suffix(&mut state, Operation::Delete, &[1], &[], &mut budget).is_err());
+        assert_eq!(state, vec![(vec![1], vec![2])]);
+    }
+}

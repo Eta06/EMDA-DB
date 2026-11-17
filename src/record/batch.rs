@@ -65,18 +65,30 @@ pub(crate) fn encode_payload(operations: &[BatchOperation<'_>]) -> io::Result<Ve
     Ok(result)
 }
 
-pub(crate) fn decode_payload(payload: &[u8]) -> io::Result<Vec<Decoded<'_>>> {
-    let count_bytes: [u8; 4] = payload
+pub(crate) fn payload_count(payload: &[u8]) -> io::Result<usize> {
+    let bytes: [u8; 4] = payload
         .get(..4)
         .ok_or_else(|| invalid_data("incomplete batch count"))?
         .try_into()
         .expect("four bytes");
-    let count = u32::from_le_bytes(count_bytes) as usize;
+    let count = u32::from_le_bytes(bytes) as usize;
     if count == 0 || count > MAX_ATOMIC_BATCH_OPERATIONS {
         return Err(invalid_data("invalid batch operation count"));
     }
+    Ok(count)
+}
+
+pub(crate) fn decode_payload(payload: &[u8]) -> io::Result<Vec<Decoded<'_>>> {
+    let count = payload_count(payload)?;
+    decode_payload_into(payload, Vec::with_capacity(count))
+}
+
+pub(crate) fn decode_payload_into<'a>(
+    payload: &'a [u8],
+    mut result: Vec<Decoded<'a>>,
+) -> io::Result<Vec<Decoded<'a>>> {
+    let count = payload_count(payload)?;
     let mut cursor = 4_usize;
-    let mut result = Vec::with_capacity(count);
     for _ in 0..count {
         let header_end = cursor
             .checked_add(HEADER_SIZE)

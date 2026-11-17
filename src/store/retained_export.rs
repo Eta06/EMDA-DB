@@ -826,6 +826,206 @@ mod tests {
         assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 4);
     }
     #[test]
+    fn detached_suffix_replay_checks_binding_records_and_intermediate_limits() {
+        use crate::record::batch::{self, BatchOperation};
+        use crate::record::{self, Operation};
+        use crate::retained_base_v2::StagingLimits;
+        use crate::retained_candidate::{SuffixExpected, SuffixLimits, replay_suffix};
+        use sha2::{Digest, Sha256};
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source")).unwrap();
+        store.put(b"a", b"one").unwrap();
+        let dest = root.path().join("candidate");
+        let candidate = store
+            .build_retained_candidate(&dest, [1; 16], [2; 16], limits())
+            .unwrap();
+        let batch = batch::encode_payload(&[
+            BatchOperation::Put {
+                key: b"b",
+                value: b"two",
+            },
+            BatchOperation::Delete { key: b"a" },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"x",
+            },
+        ])
+        .unwrap();
+        let suffix = record::encode(Operation::Batch, &[0], &batch).unwrap();
+        let binding = |bytes: &[u8]| SuffixExpected {
+            candidate: candidate.clone(),
+            end: bytes.len() as u64,
+            digest: Sha256::digest(bytes).into(),
+        };
+        let stage = StagingLimits {
+            value_bytes: 3,
+            staging_bytes: 8,
+        };
+        let cap = SuffixLimits {
+            bytes: 1000,
+            operations: 3,
+            work: 100,
+        };
+        let run = |bytes: &[u8], expected: &SuffixExpected, stage, cap| {
+            replay_suffix(&dest, candidate_budgets(), stage, bytes, cap, expected)
+        };
+        assert_eq!(
+            run(&suffix, &binding(&suffix), stage, cap).unwrap(),
+            vec![(b"b".to_vec(), b"x".to_vec())]
+        );
+        assert!(
+            run(
+                &suffix,
+                &binding(&suffix),
+                StagingLimits {
+                    staging_bytes: 7,
+                    ..stage
+                },
+                cap
+            )
+            .is_err()
+        );
+        // Conservative work charges are 4, 7 and 4 for these state sizes.
+        assert!(
+            run(
+                &suffix,
+                &binding(&suffix),
+                stage,
+                SuffixLimits { work: 15, ..cap }
+            )
+            .is_ok()
+        );
+        assert!(
+            run(
+                &suffix,
+                &binding(&suffix),
+                stage,
+                SuffixLimits { work: 14, ..cap }
+            )
+            .is_err()
+        );
+        // Every replay allocation failure returns an error, including after prior
+        // private mutations in the batch. No partial result can escape.
+        for fail_at in 0..5 {
+            crate::retained_candidate::FAIL_ALLOCATION.with(|slot| slot.set(Some(fail_at)));
+            let result = run(&suffix, &binding(&suffix), stage, cap);
+            crate::retained_candidate::FAIL_ALLOCATION.with(|slot| slot.set(None));
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "injected allocation failure"
+            );
+        }
+        let large_batch = batch::encode_payload(&vec![
+            BatchOperation::Delete { key: b"z" };
+            batch::MAX_ATOMIC_BATCH_OPERATIONS
+        ])
+        .unwrap();
+        let large_suffix = record::encode(Operation::Batch, &[0], &large_batch).unwrap();
+        let large_cap = SuffixLimits {
+            bytes: large_suffix.len() as u64,
+            operations: batch::MAX_ATOMIC_BATCH_OPERATIONS as u64,
+            work: 0,
+        };
+        assert!(run(&large_suffix, &binding(&large_suffix), stage, large_cap).is_err());
+        let zero_work = run(
+            &suffix,
+            &binding(&suffix),
+            stage,
+            SuffixLimits { work: 0, ..cap },
+        );
+        assert!(zero_work.is_err());
+        let mut bad_checksum = suffix.clone();
+        *bad_checksum.last_mut().unwrap() ^= 1;
+        let err = run(
+            &bad_checksum,
+            &binding(&bad_checksum),
+            stage,
+            SuffixLimits {
+                operations: 0,
+                ..cap
+            },
+        )
+        .unwrap_err();
+        assert_ne!(err.to_string(), "suffix operation limit exceeded");
+        let nested = record::encode(Operation::Batch, &[0], &batch).unwrap();
+        let mut nested_payload = 1u32.to_le_bytes().to_vec();
+        nested_payload.extend(nested);
+        let nested_outer = record::encode(Operation::Batch, &[0], &nested_payload).unwrap();
+        assert!(run(&nested_outer, &binding(&nested_outer), stage, cap).is_err());
+        let empty = [];
+        assert!(
+            run(
+                &empty,
+                &binding(&empty),
+                stage,
+                SuffixLimits {
+                    bytes: 0,
+                    operations: 0,
+                    work: 0
+                }
+            )
+            .is_ok()
+        );
+        // A count over budget is rejected even when nested bytes are malformed.
+        let malformed = record::encode(Operation::Batch, &[0], &3u32.to_le_bytes()).unwrap();
+        let err = run(
+            &malformed,
+            &binding(&malformed),
+            stage,
+            SuffixLimits {
+                operations: 2,
+                ..cap
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "suffix operation limit exceeded");
+        assert!(
+            run(
+                &suffix,
+                &binding(&suffix),
+                stage,
+                SuffixLimits {
+                    operations: 2,
+                    ..cap
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &suffix,
+                &binding(&suffix),
+                stage,
+                SuffixLimits { bytes: 1, ..cap }
+            )
+            .is_err()
+        );
+        let mut singles = record::encode(Operation::Put, b"a", b"new").unwrap();
+        singles.extend(record::encode(Operation::Delete, b"a", b"").unwrap());
+        assert!(
+            run(&singles, &binding(&singles), stage, cap)
+                .unwrap()
+                .is_empty()
+        );
+        let mut wrong = binding(&suffix);
+        wrong.end += 1;
+        assert!(run(&suffix, &wrong, stage, cap).is_err());
+        let mut wrong = binding(&suffix);
+        wrong.candidate.base_digest[0] ^= 1;
+        assert!(run(&suffix, &wrong, stage, cap).is_err());
+        let mut corrupt = suffix.clone();
+        corrupt[20] ^= 1;
+        assert!(run(&corrupt, &binding(&corrupt), stage, cap).is_err());
+        // Recompute the outer checksum to exercise nested validation independently.
+        let mut broken_batch = batch.clone();
+        broken_batch[10] ^= 1;
+        let broken_outer = record::encode(Operation::Batch, &[0], &broken_batch).unwrap();
+        assert!(run(&broken_outer, &binding(&broken_outer), stage, cap).is_err());
+        let truncated = &suffix[..suffix.len() - 1];
+        assert!(run(truncated, &binding(truncated), stage, cap).is_err());
+        assert!(run(&corrupt, &binding(&suffix), stage, cap).is_err());
+    }
+    #[test]
     fn candidate_lookup_validates_full_bound_snapshot() {
         use crate::retained_candidate::lookup;
         let root = tempfile::tempdir().unwrap();

@@ -316,3 +316,10 @@ empty lock file keeps it inspectable after that rejected open. This is not a
 recovery format, an authority, a compatibility promise, or log reclamation.
 Retained-related tests passed on macOS; Linux V3 and process-kill tests for the
 candidate itself remain outstanding. All-target Clippy passed on macOS.
+
+The candidate also supports bounded, detached suffix inspection using an
+independently retained candidate binding, suffix length and SHA-256 digest.
+It validates DB01 and DB02 records before returning a private replayed live
+set. Its work counter bounds entry visits and vector shifts; suffix bytes bound
+hashing and checksumming. Neither counter is a total CPU or memory bound.
+This does not bind a durable witness or implement store recovery or cutover.
