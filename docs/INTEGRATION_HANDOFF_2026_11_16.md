@@ -164,4 +164,14 @@ file is not recoverable authority and does not permit reclamation. Eight
 exporter and eight format tests passed on Linux and macOS; Linux Clippy passed.
 The first Linux run exposed a V3-specific fault-fixture assumption; its failure
 log is retained alongside the passing corrected run. Direct witness fault
-injection during export and a full post-change suite remain open.
+injection during export remains open.
+
+After syncing and hash-checking 331 tracked source, test, example and Cargo
+files, a Linux ARM64 Rust 1.85 `--all-targets` run passed, including 577 library
+tests; one test was ignored. The [full log](../benchmarks/results/2026-11-17-linux-arm64-post-export-all-targets.log.gz)
+and [source manifest](../benchmarks/results/2026-11-17-linux-arm64-post-export-source.sha256)
+are retained. The earlier [mixed-source failure](../benchmarks/results/2026-11-17-linux-arm64-mixed-snapshot-failure.log.gz)
+and [stale-binary failure](../benchmarks/results/2026-11-17-linux-arm64-stale-binary-failure.log.gz)
+are also retained: the latter occurred after copying files with old mtimes;
+updating validation-checkout source mtimes forced recompilation. This passing
+run does not prove the intermittent parallel lock failures are resolved.
