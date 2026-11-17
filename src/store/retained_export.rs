@@ -564,6 +564,86 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn v3_xattr_witness_changes_fail_closed_at_export_hooks() {
+        use rustix::fs::{XattrFlags, getxattr, setxattr};
+
+        const XATTR: &str = "user.db.commit.v3";
+        for point in ["after_replay", "before_witness"] {
+            for identity in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let source = dir.path().join("source");
+                let store = Store::open(&source).unwrap();
+                store.put(b"key", b"value").unwrap();
+                let log_path = source.join("records.log");
+                let log = std::fs::read(&log_path).unwrap();
+                // This test requires V3; do not silently exercise the V2 fallback.
+                assert!(log.starts_with(b"EMDALOG3"));
+                let anchor = std::fs::read(source.join("commit.state")).unwrap();
+                let mut original = [0u8; crate::witness::WITNESS_SIZE];
+                assert_eq!(
+                    getxattr(&log_path, XATTR, &mut original[..]).unwrap(),
+                    original.len()
+                );
+                let source_id = store.log.id().unwrap();
+                let changed_id = if identity { [9; 16] } else { source_id };
+                assert!(!identity || changed_id != source_id);
+                let changed = crate::witness::encode_for_test(
+                    &changed_id,
+                    if identity {
+                        store.log.len().unwrap()
+                    } else {
+                        crate::witness::LOG_HEADER_SIZE as u64
+                    },
+                );
+                assert_ne!(&changed[..], &original[..]);
+                let out = dir.path().join("out");
+                let mut mutations = 0;
+                let result = store.export_retained_base_with_hook(
+                    &out,
+                    [1; 16],
+                    limits(),
+                    |_| panic!("publication sync must not run"),
+                    |at| {
+                        if at == point {
+                            mutations += 1;
+                            setxattr(&log_path, XATTR, &changed, XattrFlags::REPLACE)?;
+                        }
+                        Ok(())
+                    },
+                );
+                match result {
+                    Err(crate::PublicationFailure::NotPublished(error)) => {
+                        assert_eq!(
+                            error.kind(),
+                            io::ErrorKind::InvalidData,
+                            "{point} identity={identity}"
+                        )
+                    }
+                    other => panic!("unexpected result at {point} identity={identity}: {other:?}"),
+                }
+                assert_eq!(mutations, 1);
+                assert!(!out.exists());
+                assert_eq!(std::fs::read(&log_path).unwrap(), log);
+                assert_eq!(std::fs::read(source.join("commit.state")).unwrap(), anchor);
+                let mut actual = [0u8; crate::witness::WITNESS_SIZE];
+                assert_eq!(
+                    getxattr(&log_path, XATTR, &mut actual[..]).unwrap(),
+                    actual.len()
+                );
+                assert_eq!(&actual[..], &changed[..]);
+
+                setxattr(&log_path, XATTR, &original, XattrFlags::REPLACE).unwrap();
+                store.export_retained_base(&out, [1; 16], limits()).unwrap();
+                assert!(out.is_file());
+                assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+                assert_eq!(std::fs::read(&log_path).unwrap(), log);
+                assert_eq!(std::fs::read(source.join("commit.state")).unwrap(), anchor);
+            }
+        }
+    }
+
     #[test]
     fn appended_log_during_staging_is_not_published() {
         use std::io::Write;
