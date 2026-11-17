@@ -21,6 +21,17 @@ fn fixture() -> (
     std::path::PathBuf,
     [u8; 32],
 ) {
+    fixture_before_drop(|| {})
+}
+
+fn fixture_before_drop(
+    before_drop: impl FnOnce(),
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    [u8; 32],
+) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let checkpoint = dir.path().join("checkpoint");
@@ -38,8 +49,100 @@ fn fixture() -> (
     let store = Store::open(&path).unwrap();
     store.put(b"base", b"acknowledged").unwrap();
     let digest = store.checkpoint_to(&checkpoint).unwrap();
+    before_drop();
     drop(store);
     (dir, path, checkpoint, digest)
+}
+
+// Fork from a different thread while the actual fixture owns its store lock.
+// The child does only async-signal-safe operations until it exits.
+#[cfg(target_os = "linux")]
+#[test]
+fn fixture_lock_is_inherited_by_a_fork_in_another_thread() {
+    const CHILD_ENV: &str = "EMDA_FIXTURE_FORK_REGRESSION_CHILD";
+    if std::env::var_os(CHILD_ENV).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "checkpoint_store::tests::fixture_lock_is_inherited_by_a_fork_in_another_thread",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .status()
+            .unwrap();
+        assert!(status.success(), "isolated regression failed: {status}");
+        return;
+    }
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::net::UnixStream;
+
+    unsafe extern "C" {
+        fn fork() -> i32;
+        fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
+        fn _exit(status: i32) -> !;
+        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+    }
+    struct Child {
+        pid: i32,
+        release: Option<UnixStream>,
+    }
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if let Some(mut release) = self.release.take() {
+                let _ = release.write_all(&[1]);
+            }
+            let mut status = 0;
+            unsafe {
+                waitpid(self.pid, &mut status, 0);
+            }
+        }
+    }
+
+    // A separate fixture without a child establishes the normal drop behavior.
+    let (_control_dir, control_path, _, _) = fixture();
+    drop(Store::open(&control_path).unwrap());
+
+    let mut child = None;
+    let (_dir, path, _, _) = fixture_before_drop(|| {
+        let (parent, child_end) = UnixStream::pair().unwrap();
+        let pid = std::thread::spawn(move || {
+            let pid = unsafe { fork() };
+            if pid == 0 {
+                // Close the child's copy of the write end.
+                drop(parent);
+                let mut byte = 0u8;
+                unsafe {
+                    read(child_end.as_raw_fd(), (&mut byte as *mut u8).cast(), 1);
+                    _exit(0)
+                }
+            }
+            assert!(pid > 0, "fork failed");
+            drop(child_end);
+            (pid, parent)
+        })
+        .join()
+        .unwrap();
+        child = Some(Child {
+            pid: pid.0,
+            release: Some(pid.1),
+        });
+    });
+    let child = child.unwrap();
+    let lock = fs::metadata(path.join("store.lock")).unwrap();
+    let inherited = fs::read_dir(format!("/proc/{}/fd", child.pid))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| fs::metadata(entry.path()).ok())
+        .any(|metadata| metadata.dev() == lock.dev() && metadata.ino() == lock.ino());
+    assert!(inherited, "child must hold the fixture's exact lock inode");
+    let error = match Store::open(&path) {
+        Ok(_) => panic!("reopen succeeded while child held inherited lock"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    drop(child); // Signal and reap the deliberately retained holder.
+    drop(Store::open(&path).unwrap());
 }
 
 #[derive(Clone, Copy)]

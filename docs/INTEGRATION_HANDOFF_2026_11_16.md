@@ -127,6 +127,12 @@ inheritance, and other failures must not be classified without evidence.
 A later 16-thread run with lock, fork, exec and exit tracing passed all 539
 library tests; its [trace](../benchmarks/results/2026-11-17-linux-arm64-lock-followup-bpf.tar.gz)
 did not reproduce either failing fixture or identify its holder.
+An isolated Linux regression now forks from another thread while the actual
+checkpoint fixture owns its lock, confirms the child holds that exact inode
+through `/proc`, and observes `WouldBlock` until the child exits. Its [test and
+Clippy log](../benchmarks/results/2026-11-17-linux-arm64-fixture-fork-regression.log.gz)
+is retained. It demonstrates the mechanism deterministically; it does not
+identify the holders in the other archived failures.
 Ordinary and checkpoint opens now adopt only the exact log end validated by
 replay. This is defense against mutation by a writer ignoring the advisory
 lock, which remains outside the supported concurrency contract. Two targeted
