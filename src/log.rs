@@ -690,15 +690,54 @@ impl Log {
         &self,
         expected: &BTreeMap<Vec<u8>, ValueLocation>,
     ) -> io::Result<usize> {
+        Ok(self.verify_index_peaks(expected)?.0)
+    }
+
+    /// Reconstruct both high-water marks from a fully verified ordered replay.
+    /// The caller must exclude writes for the entire verification. This is not
+    /// a stable export view or a provenance record.
+    pub(crate) fn verify_index_peaks(
+        &self,
+        expected: &BTreeMap<Vec<u8>, ValueLocation>,
+    ) -> io::Result<(usize, usize)> {
         self.verify_witness()?;
-        let mut peak = 0;
-        if &self.recover_from(self.file.len()?, None, None, None, None, &mut peak)? != expected {
+        let total = self.file.len()?;
+        let mut index = BTreeMap::new();
+        let (mut bytes, mut peak_count, mut peak_bytes) = (0_usize, 0_usize, 0_usize);
+        self.visit_records_to(0, total, None, |key, location| {
+            match location {
+                Some(location) => {
+                    if !index.contains_key(&key) {
+                        bytes = bytes.checked_add(key.len()).ok_or_else(|| {
+                            record::invalid_data("replayed live key bytes overflow")
+                        })?;
+                    }
+                    index.insert(key, location);
+                }
+                None => {
+                    if index.remove(&key).is_some() {
+                        bytes = bytes.checked_sub(key.len()).ok_or_else(|| {
+                            record::invalid_data("replayed live key bytes underflow")
+                        })?;
+                    }
+                }
+            }
+            peak_count = peak_count.max(index.len());
+            peak_bytes = peak_bytes.max(bytes);
+            Ok(())
+        })?;
+        if &index != expected {
             return Err(record::invalid_data(
                 "live index does not match verified log",
             ));
         }
+        if self.file.len()? != total {
+            return Err(record::invalid_data(
+                "log length changed during verification",
+            ));
+        }
         self.verify_witness()?;
-        Ok(peak)
+        Ok((peak_count, peak_bytes))
     }
 
     fn recover_from(

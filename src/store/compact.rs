@@ -659,3 +659,54 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod retained_peak_tests {
+    use super::*;
+    use crate::record::batch::BatchOperation;
+
+    #[test]
+    fn verified_peaks_reject_corrupt_superseded_record() {
+        use std::os::unix::fs::FileExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"key", b"first-value").unwrap();
+        store.put(b"key", b"second-value").unwrap();
+        let path = dir.path().join("records.log");
+        let bytes = std::fs::read(&path).unwrap();
+        let offset = bytes.windows(11).position(|b| b == b"first-value").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.write_all_at(b"X", offset as u64).unwrap();
+        let inner = store.read().unwrap();
+        assert!(store.log.verify_index_peaks(&inner.index).is_err());
+    }
+
+    #[test]
+    fn verified_peaks_include_intermediate_batch_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"aa", b"old").unwrap();
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"long-key",
+                    value: b"",
+                },
+                BatchOperation::Put {
+                    key: b"aa",
+                    value: b"replacement",
+                },
+                BatchOperation::Delete { key: b"long-key" },
+                BatchOperation::Put {
+                    key: b"b",
+                    value: b"v",
+                },
+            ])
+            .unwrap();
+        let inner = store.read().unwrap();
+        assert_eq!(store.log.verify_index_peaks(&inner.index).unwrap(), (2, 10));
+        let mut wrong = (*inner.index).clone();
+        wrong.clear();
+        assert!(store.log.verify_index_peaks(&wrong).is_err());
+    }
+}

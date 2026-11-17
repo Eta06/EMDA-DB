@@ -78,6 +78,9 @@ peak. Key-byte peak provenance must be reconstructed by verified ordered full
 replay, or the export must
 mark provenance unavailable and be ineligible for authoritative use. This
 proposal chooses rejection for missing provenance, not a fabricated zero.
+The internal full-log index verifier now reconstructs both peaks in ordered
+replay and checks the resulting index and witness. It builds a full in-memory
+index and has no retained-base export caller; it is not bounded recovery.
 
 ## Producing and authenticating an export
 
