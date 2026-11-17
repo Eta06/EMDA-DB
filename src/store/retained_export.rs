@@ -373,6 +373,68 @@ impl Store {
 mod tests {
     use super::*;
     use crate::record::batch::BatchOperation;
+
+    #[test]
+    fn full_index_verification_requires_an_exact_historical_boundary() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        store.put(b"key", b"old").unwrap();
+        let boundary = store.log.len().unwrap();
+        store.put(b"key", b"new").unwrap();
+        let batch_start = store.log.len().unwrap();
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"b",
+                    value: b"v",
+                },
+                BatchOperation::Delete { key: b"key" },
+            ])
+            .unwrap();
+        let batch_end = store.log.len().unwrap();
+        let inner = store.read().unwrap();
+        assert!(
+            store
+                .log
+                .verify_index_peaks_at_boundary(&inner.index, None, Some(boundary))
+                .is_ok()
+        );
+        assert!(
+            store
+                .log
+                .verify_index_peaks_at_boundary(&inner.index, None, Some(boundary - 1))
+                .is_err()
+        );
+        assert!(
+            store
+                .log
+                .verify_index_peaks_at_boundary(&inner.index, None, Some(batch_start))
+                .is_ok()
+        );
+        assert!(
+            store
+                .log
+                .verify_index_peaks_at_boundary(&inner.index, None, Some(batch_start + 1))
+                .is_err()
+        );
+        assert!(
+            store
+                .log
+                .verify_index_peaks_at_boundary(&inner.index, None, Some(batch_end))
+                .is_ok()
+        );
+        assert!(
+            store
+                .log
+                .verify_index_peaks_at_boundary(
+                    &inner.index,
+                    None,
+                    Some(store.log.len().unwrap() + 1),
+                )
+                .is_err()
+        );
+    }
+
     fn limits() -> RetainedExportLimits {
         RetainedExportLimits {
             max_log_bytes: 10_000_000,

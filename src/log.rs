@@ -734,6 +734,15 @@ impl Log {
         expected: &BTreeMap<Vec<u8>, ValueLocation>,
         limits: Option<PeakVerificationLimits>,
     ) -> io::Result<(usize, usize)> {
+        self.verify_index_peaks_at_boundary(expected, limits, None)
+    }
+
+    pub(crate) fn verify_index_peaks_at_boundary(
+        &self,
+        expected: &BTreeMap<Vec<u8>, ValueLocation>,
+        limits: Option<PeakVerificationLimits>,
+        boundary: Option<u64>,
+    ) -> io::Result<(usize, usize)> {
         self.verify_witness()?;
         let total = self.file.len()?;
         if limits.is_some_and(|limit| total > limit.max_log_bytes) {
@@ -744,7 +753,7 @@ impl Log {
         }
         let mut index = BTreeMap::new();
         let (mut bytes, mut peak_count, mut peak_bytes) = (0_usize, 0_usize, 0_usize);
-        self.visit_records_to(0, total, None, |key, location| {
+        self.visit_records_to(0, total, boundary, |key, location| {
             match location {
                 Some(location) => {
                     if !index.contains_key(&key) {
