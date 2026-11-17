@@ -1133,3 +1133,129 @@ fn assert_same_projection(
         (expected, got) => panic!("stream {got:?} != in-memory decoder {expected:?} ({label})"),
     }
 }
+
+// These adapters use the real fixture files; only the selected sync fails.
+struct AdoptionLog(File, bool);
+impl LogIo for AdoptionLog {
+    fn len(&self) -> io::Result<u64> {
+        LogIo::len(&self.0)
+    }
+    fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        LogIo::read_exact_at(&self.0, bytes, offset)
+    }
+    fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
+        LogIo::append_all(&self.0, bytes)
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        if self.1 {
+            Err(io::Error::other("injected adoption log sync"))
+        } else {
+            LogIo::sync_data(&self.0)
+        }
+    }
+}
+struct AdoptionWitness(File);
+impl WitnessIo for AdoptionWitness {
+    fn len(&self) -> io::Result<u64> {
+        WitnessIo::len(&self.0)
+    }
+    fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        WitnessIo::read_exact_at(&self.0, bytes, offset)
+    }
+    fn write_all_at(&self, bytes: &[u8], offset: u64) -> io::Result<()> {
+        WitnessIo::write_all_at(&self.0, bytes, offset)
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        Err(io::Error::other("injected adoption witness sync"))
+    }
+}
+
+#[test]
+fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
+    for fail_log in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        std::fs::write(
+            path.join("records.log"),
+            include_bytes!("../tests/fixtures/v2-empty-records.log"),
+        )
+        .unwrap();
+        std::fs::write(
+            path.join("commit.state"),
+            include_bytes!("../tests/fixtures/v2-empty-commit.state"),
+        )
+        .unwrap();
+        let store = crate::Store::open(path).unwrap();
+        store.put(b"base", b"acknowledged").unwrap();
+        let old_witness = std::fs::read(path.join("commit.state")).unwrap();
+        store.put(b"tail", b"complete").unwrap();
+        drop(store);
+        std::fs::write(path.join("commit.state"), &old_witness).unwrap();
+        let original_log = std::fs::read(path.join("records.log")).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        let (id, metadata) = log_identity(&file).unwrap();
+        let id = id.unwrap();
+        let boundary = witness::decode(old_witness.as_slice().try_into().unwrap(), &id).unwrap();
+        let witness_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.join("commit.state"))
+            .unwrap();
+        let witness = Witness::for_test(Box::new(AdoptionWitness(witness_file)), id, boundary);
+        // Mirror the open sequence: replay must reach the exact validated end,
+        // and an adoption error must prevent the replayed index being returned.
+        let open = || -> io::Result<_> {
+            let (log, index, end) = Log::from_parts(
+                Box::new(AdoptionLog(file, fail_log)),
+                Some(id),
+                Some(witness),
+                Some(boundary),
+                metadata,
+                (None, None),
+                None,
+            )?;
+            assert_eq!(end, original_log.len() as u64);
+            assert!(boundary < end);
+            assert!(index.contains_key(&b"base"[..]));
+            assert!(index.contains_key(&b"tail"[..]));
+            log.adopt_replayed_tail(Some(boundary), end)?;
+            Ok(index)
+        };
+        let error = match open() {
+            Ok(_) => panic!("adoption unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains(if fail_log {
+            "adoption log sync"
+        } else {
+            "adoption witness sync"
+        }));
+        assert_eq!(
+            std::fs::read(path.join("records.log")).unwrap(),
+            original_log
+        );
+        let after = std::fs::read(path.join("commit.state")).unwrap();
+        if fail_log {
+            assert_eq!(after, old_witness);
+        } else {
+            // The failed sync makes persistence uncertain even though the write is visible.
+            assert_eq!(
+                witness::decode(after.as_slice().try_into().unwrap(), &id).unwrap(),
+                original_log.len() as u64
+            );
+        }
+        let reopened = crate::Store::open(path).unwrap();
+        assert_eq!(
+            reopened.get(b"base").unwrap().as_deref(),
+            Some(&b"acknowledged"[..])
+        );
+        assert_eq!(
+            reopened.get(b"tail").unwrap().as_deref(),
+            Some(&b"complete"[..])
+        );
+    }
+}
