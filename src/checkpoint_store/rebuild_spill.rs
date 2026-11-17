@@ -439,10 +439,7 @@ impl Drop for RunWriter {
 
 enum Emit {
     Pending,
-    Memory {
-        items: Vec<(Vec<u8>, Option<ValueLocation>)>,
-        index: usize,
-    },
+    Memory(std::collections::btree_map::IntoIter<Vec<u8>, Option<ValueLocation>>),
     File(RunCursor),
     Exhausted,
 }
@@ -580,9 +577,9 @@ impl SpillSession {
         }
         if !self.dirty.is_empty() {
             if self.runs.is_empty() {
-                let items = std::mem::take(&mut self.dirty).into_iter().collect();
+                let items = std::mem::take(&mut self.dirty).into_iter();
                 self.chunk_key_bytes = 0;
-                self.emit = Emit::Memory { items, index: 0 };
+                self.emit = Emit::Memory(items);
                 return Ok(());
             }
             self.write_dirty()?;
@@ -591,10 +588,7 @@ impl SpillSession {
             self.merge_all()?;
         }
         if self.runs.is_empty() {
-            self.emit = Emit::Memory {
-                items: Vec::new(),
-                index: 0,
-            };
+            self.emit = Emit::Memory(BTreeMap::new().into_iter());
             return Ok(());
         }
         let cursor = RunCursor::open(&self.fd, &self.runs[0], true)?;
@@ -606,15 +600,7 @@ impl SpillSession {
         let next = match &mut self.emit {
             Emit::Pending => return Err(io::Error::other("suffix spill was not prepared")),
             Emit::Exhausted => return Ok(None),
-            Emit::Memory { items, index } => {
-                if *index >= items.len() {
-                    None
-                } else {
-                    let item = items[*index].clone();
-                    *index += 1;
-                    Some(item)
-                }
-            }
+            Emit::Memory(items) => items.next(),
             Emit::File(cursor) => cursor.next_entry()?,
         };
         let Some((key, state)) = next else {
@@ -1293,6 +1279,26 @@ mod tests {
         assert_eq!(session.peak_open_fds(), 0);
         drop(session);
         assert!(fs::read_dir(directory.path()).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn memory_emission_moves_entries_and_consumes_them_in_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = SpillSession::create(directory.path(), limits(8, 0, 10), 0, 0).unwrap();
+        session.push(b"b", Some(loc(20)), |_| Ok(None)).unwrap();
+        session.push(b"a", None, |_| Ok(None)).unwrap();
+        let original_key = session.dirty.first_key_value().unwrap().0.as_ptr();
+        session.prepare_for_emit().unwrap();
+        let (key, state) = session.next_latest().unwrap().unwrap();
+        assert_eq!(key, b"a");
+        assert_eq!(key.as_ptr(), original_key);
+        assert!(state.is_none());
+        assert!(matches!(&session.emit, Emit::Memory(items) if items.len() == 1));
+        let (key, state) = session.next_latest().unwrap().unwrap();
+        assert_eq!(key, b"b");
+        assert_eq!(state.unwrap().offset, 20);
+        assert!(session.next_latest().unwrap().is_none());
+        assert!(session.next_latest().unwrap().is_none());
     }
 
     #[test]

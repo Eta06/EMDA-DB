@@ -68,7 +68,12 @@ That boundary probe was not part of the cited fuzz run.
 
 The bounded rebuild remains experimental. A post-verification spill corruption
 bug was reproduced and addressed using per-entry checks; targeted and broad
-tests are recorded in `LINUX_ARM64_VALIDATION_2026_11_15.md`. The Linux
+tests are recorded in `LINUX_ARM64_VALIDATION_2026_11_15.md`.
+In-memory suffix emission now consumes its sorted map and moves keys instead
+of retaining and cloning previously emitted entries. On macOS Rust 1.85, 16
+rebuild/spill tests and the seeded rebuild model passed. This reduces transient
+retention only; it does not bound total memory, recovery time, or log growth.
+The Linux
 parallel rebuild test has also failed with `NotPublished(WouldBlock)` before
 an injected hook; the lock holder was not captured, and the historical failure
 remains unexplained. Do not weaken assertions or silently retry it away.
