@@ -1630,6 +1630,7 @@ mod tests {
         panic!("bounded rebuild child returned before {mode}: {result:?}");
     }
 
+    #[allow(clippy::too_many_arguments)] // Explicit knobs exercise distinct fork and publication paths.
     fn crash_fixture_initial(
         path: &Path,
         base: &Path,

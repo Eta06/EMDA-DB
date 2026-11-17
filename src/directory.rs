@@ -25,12 +25,15 @@ pub(crate) fn diagnose_lock_failure(
 }
 
 #[cfg(test)]
+type LockDiagnostic = (std::path::PathBuf, String, Option<(u64, u64)>);
+
+#[cfg(test)]
 thread_local! {
-    static LOCK_DIAGNOSTIC: std::cell::RefCell<Option<(std::path::PathBuf, String, Option<(u64, u64)>)>> = const { std::cell::RefCell::new(None) };
+    static LOCK_DIAGNOSTIC: std::cell::RefCell<Option<LockDiagnostic>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-pub(crate) fn take_lock_diagnostic() -> Option<(std::path::PathBuf, String, Option<(u64, u64)>)> {
+pub(crate) fn take_lock_diagnostic() -> Option<LockDiagnostic> {
     LOCK_DIAGNOSTIC.with(|slot| slot.borrow_mut().take())
 }
 
