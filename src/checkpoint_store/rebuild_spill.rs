@@ -52,6 +52,7 @@ pub(super) struct SpillLimits {
     pub(super) max_spill_bytes: u64,
     pub(super) max_merge_fan_in: usize,
     pub(super) max_operations: u64,
+    pub(super) max_log_bytes: Option<u64>,
 }
 
 impl SpillLimits {
@@ -68,6 +69,7 @@ impl SpillLimits {
             max_spill_bytes,
             max_merge_fan_in,
             max_operations,
+            max_log_bytes: None,
         };
         limits.validate()?;
         Ok(limits)

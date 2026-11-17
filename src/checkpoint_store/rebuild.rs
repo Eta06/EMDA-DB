@@ -354,6 +354,46 @@ impl CheckpointStore {
         })
     }
 
+    /// Like `rebuild_managed_selection_bounded_detailed`, but rejects a whole
+    /// log larger than `max_log_bytes` under the exclusive store lock, before
+    /// checkpoint validation or tail adoption. This is an admission limit, not
+    /// a bound on repeated verification I/O, elapsed time, or total disk usage.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rebuild_managed_selection_bounded_with_log_limit_detailed(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        base_checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        max_chunk_keys: usize,
+        max_chunk_key_bytes: usize,
+        max_spill_bytes: u64,
+        max_merge_fan_in: usize,
+        max_operations: u64,
+        max_log_bytes: u64,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        crate::publication_outcome::track_managed_rebuild(|tracker| {
+            with_standard_hooks(|hooks| {
+                let mut limits = SpillLimits::new(
+                    max_chunk_keys,
+                    max_chunk_key_bytes,
+                    max_spill_bytes,
+                    max_merge_fan_in,
+                    max_operations,
+                )?;
+                limits.max_log_bytes = Some(max_log_bytes);
+                Self::rebuild_bounded_using(
+                    path.as_ref(),
+                    destination.as_ref(),
+                    base_checkpoint.as_ref(),
+                    trusted_digest,
+                    limits,
+                    Some(tracker),
+                    hooks,
+                )
+            })
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn rebuild_bounded_using(
         path: &Path,
@@ -409,6 +449,14 @@ impl CheckpointStore {
             .open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock_file)?;
         crate::directory::verify_lock_identity(&path, &lock_file)?;
+        if let Some(max) = limits.max_log_bytes {
+            if fs::metadata(path.join("records.log"))?.len() > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "existing log exceeds configured limit",
+                ));
+            }
+        }
         // Malformed selection metadata is rejected before the base is trusted.
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
@@ -687,6 +735,86 @@ mod tests {
             }
         }
         Err(last.expect("retry observed a lock conflict"))
+    }
+
+    #[test]
+    fn bounded_rebuild_log_limit_rejects_before_publication_and_accepts_exact_size() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("store");
+        let base = directory.path().join("base");
+        let destination = directory.path().join("rebuilt");
+        let store = Store::open(&path).unwrap();
+        store.put(b"base", b"value").unwrap();
+        let digest = store.checkpoint_to(&base).unwrap();
+        store.put(b"tail", b"value").unwrap();
+        drop(store);
+        let log = fs::read(path.join("records.log")).unwrap();
+        let witness = witness_bytes(&path);
+        let run = |cap| {
+            CheckpointStore::rebuild_managed_selection_bounded_with_log_limit_detailed(
+                &path,
+                &destination,
+                &base,
+                &digest,
+                1,
+                4096,
+                32 << 20,
+                2,
+                10_000,
+                cap,
+            )
+        };
+        assert!(matches!(
+            run(log.len() as u64 - 1),
+            Err(ManagedRebuildFailure::NotPublished(_))
+        ));
+        assert!(!destination.exists());
+        assert!(!selection::path(&path).exists());
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+        assert_eq!(witness_bytes(&path), witness);
+        run(log.len() as u64).unwrap();
+        let reopened = CheckpointStore::open_managed(&path).unwrap();
+        assert_eq!(reopened.get(b"base").unwrap(), Some(b"value".to_vec()));
+        assert_eq!(reopened.get(b"tail").unwrap(), Some(b"value".to_vec()));
+    }
+
+    #[test]
+    fn log_limited_rebuild_still_rejects_corrupt_superseded_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("store");
+        let base = directory.path().join("base");
+        let destination = directory.path().join("rebuilt");
+        let store = Store::open(&path).unwrap();
+        store.put(b"key", b"old-unique-value").unwrap();
+        store.put(b"key", b"new").unwrap();
+        let digest = store.checkpoint_to(&base).unwrap();
+        drop(store);
+        let log_path = path.join("records.log");
+        let mut log = fs::read(&log_path).unwrap();
+        let offset = log
+            .windows(b"old-unique-value".len())
+            .position(|w| w == b"old-unique-value")
+            .unwrap();
+        log[offset] ^= 1;
+        fs::write(&log_path, &log).unwrap();
+        let result = CheckpointStore::rebuild_managed_selection_bounded_with_log_limit_detailed(
+            &path,
+            &destination,
+            &base,
+            &digest,
+            1,
+            4096,
+            32 << 20,
+            2,
+            10_000,
+            log.len() as u64,
+        );
+        assert!(matches!(
+            result,
+            Err(ManagedRebuildFailure::NotPublished(_))
+        ));
+        assert!(!destination.exists());
+        assert_eq!(fs::read(log_path).unwrap(), log);
     }
 
     #[test]
@@ -1474,6 +1602,38 @@ mod tests {
             log,
             base_bytes,
         }
+    }
+
+    #[test]
+    fn log_limit_rejection_does_not_adopt_unacknowledged_tail() {
+        let fixture = unacknowledged_suffix_for_spill();
+        let destination = fixture._directory.path().join("rejected");
+        let result = CheckpointStore::rebuild_managed_selection_bounded_with_log_limit_detailed(
+            &fixture.path,
+            &destination,
+            &fixture.base,
+            &fixture.digest,
+            1,
+            4096,
+            32 << 20,
+            2,
+            10_000,
+            fixture.log.len() as u64 - 1,
+        );
+        match result {
+            Err(ManagedRebuildFailure::NotPublished(error)) => {
+                assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+        assert!(!destination.exists());
+        assert!(!selection::path(&fixture.path).exists());
+        assert_eq!(witness_bytes(&fixture.path), fixture.witness);
+        assert_eq!(
+            fs::read(fixture.path.join("records.log")).unwrap(),
+            fixture.log
+        );
+        assert_eq!(fs::read(&fixture.base).unwrap(), fixture.base_bytes);
     }
 
     fn finished_spill_runs(store: &Path) -> Vec<PathBuf> {
