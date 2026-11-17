@@ -545,3 +545,39 @@ fn parent_lock_release_is_not_delayed_by_a_duplicate_descriptor() {
     drop(duplicate);
     drop(exclusive);
 }
+
+#[test]
+fn parent_lock_failure_diagnostics_identify_descriptor_and_mode() {
+    use std::os::unix::fs::MetadataExt;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path();
+    let metadata = fs::metadata(path).unwrap();
+    let held = ParentLock::exclusive(path).unwrap();
+    assert_eq!(
+        ParentLock::shared(path).err().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        crate::directory::take_lock_diagnostic(),
+        Some((
+            path.to_path_buf(),
+            "staging parent shared".into(),
+            Some((metadata.dev(), metadata.ino()))
+        ))
+    );
+    drop(held);
+    let held = ParentLock::shared(path).unwrap();
+    assert_eq!(
+        ParentLock::exclusive(path).err().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        crate::directory::take_lock_diagnostic(),
+        Some((
+            path.to_path_buf(),
+            "staging parent exclusive".into(),
+            Some((metadata.dev(), metadata.ino()))
+        ))
+    );
+    drop(held);
+}

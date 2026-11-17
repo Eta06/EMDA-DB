@@ -5,6 +5,35 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+#[cfg(test)]
+pub(crate) fn diagnose_lock_failure(
+    result: io::Result<()>,
+    path: &Path,
+    file: &File,
+    operation: &str,
+) -> io::Result<()> {
+    if let Err(ref error) = result {
+        let identity = file.metadata().map(|m| (m.dev(), m.ino()));
+        eprintln!(
+            "lock acquisition failed: operation={operation} path={path:?} descriptor_dev_ino={identity:?} error={error:?}"
+        );
+        LOCK_DIAGNOSTIC.with(|slot| {
+            *slot.borrow_mut() = Some((path.to_path_buf(), operation.to_owned(), identity.ok()))
+        });
+    }
+    result
+}
+
+#[cfg(test)]
+thread_local! {
+    static LOCK_DIAGNOSTIC: std::cell::RefCell<Option<(std::path::PathBuf, String, Option<(u64, u64)>)>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_lock_diagnostic() -> Option<(std::path::PathBuf, String, Option<(u64, u64)>)> {
+    LOCK_DIAGNOSTIC.with(|slot| slot.borrow_mut().take())
+}
+
 /// After acquiring an advisory lock, ensure the path still names that inode.
 /// A cooperating directory handoff may have changed the path between opening
 /// the descriptor and taking the lock. Opening the log under a stale lock

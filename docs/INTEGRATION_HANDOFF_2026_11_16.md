@@ -278,3 +278,18 @@ holder was involved. A fresh 16-thread traced run at `d112d94` passed all 593
 library tests and did not reproduce it. The [research trace](../benchmarks/results/2026-11-18-linux-arm64-witness-research-trace.tar.gz)
 has SHA-256 `0b5ce7890e539b952800de90e3d7f8b124744f05a299afaa2614b67c82c5fa55`.
 The intermittent lock issue remains unresolved.
+
+A test-build diagnostic now reports the operation, path, descriptor device and
+inode, and original error for bounded rebuild store-lock acquisition and staging
+parent shared/exclusive acquisition. Controlled Linux ARM64 contention verified
+all three reports; the focused rebuild module passed 12 tests. The
+[logs and flock trace](../benchmarks/results/2026-11-18-linux-lock-diagnostics-evidence.tar.gz)
+include a 16-thread control on a disposable copy with the two test retry helpers
+replaced by single attempts (Rust 1.100). It failed: 544 passed and 51 failed.
+The intended skip filter did not match the retry-helper unit test, so that
+expected failure is included. One bounded log-limit test failed at its later
+`CheckpointStore::open_managed` fixture reopen, outside the instrumented bounded
+acquisition; its EAGAIN is not discriminated by this instrumentation. Other
+failures and trace are retained without attributing holders or a root cause.
+The control is not a normal-source suite result. Production lock lifetime and
+errors are unchanged; physical power loss and off-host restore remain deferred.

@@ -454,7 +454,15 @@ impl CheckpointStore {
             .read(true)
             .write(true)
             .open(path.join("store.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&lock_file)?;
+        let lock_result = fs2::FileExt::try_lock_exclusive(&lock_file);
+        #[cfg(test)]
+        let lock_result = crate::directory::diagnose_lock_failure(
+            lock_result,
+            &path.join("store.lock"),
+            &lock_file,
+            "bounded rebuild store exclusive",
+        );
+        lock_result?;
         crate::directory::verify_lock_identity(&path, &lock_file)?;
         #[cfg(all(test, target_os = "linux"))]
         CAPTURE_BOUNDED_LOCK.with(|capture| {
@@ -752,6 +760,30 @@ mod tests {
             }
         }
         Err(last.expect("retry observed a lock conflict"))
+    }
+
+    #[test]
+    fn bounded_store_lock_failure_diagnostic() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let base = root.path().join("base");
+        let store = Store::open(&path).unwrap();
+        let digest = store.checkpoint_to(&base).unwrap();
+        let lock_path = path.join("store.lock");
+        let metadata = fs::metadata(&lock_path).unwrap();
+        let result = publish_bounded(&path, &root.path().join("rebuilt"), &base, &digest);
+        assert!(
+            matches!(result, Err(ManagedRebuildFailure::NotPublished(ref e)) if e.kind() == io::ErrorKind::WouldBlock)
+        );
+        assert_eq!(
+            crate::directory::take_lock_diagnostic(),
+            Some((
+                fs::canonicalize(&lock_path).unwrap(),
+                "bounded rebuild store exclusive".into(),
+                Some((metadata.dev(), metadata.ino()))
+            ))
+        );
     }
 
     #[test]

@@ -71,13 +71,25 @@ pub(crate) fn is_retired_parent_busy(error: &io::Error) -> bool {
 impl ParentLock {
     fn shared(parent: &Path) -> io::Result<Self> {
         let file = File::open(parent)?;
-        fs2::FileExt::try_lock_shared(&file)?;
+        let result = fs2::FileExt::try_lock_shared(&file);
+        #[cfg(test)]
+        let result =
+            crate::directory::diagnose_lock_failure(result, parent, &file, "staging parent shared");
+        result?;
         Ok(Self(file))
     }
 
     fn exclusive(parent: &Path) -> io::Result<Self> {
         let file = File::open(parent)?;
-        fs2::FileExt::try_lock_exclusive(&file)?;
+        let result = fs2::FileExt::try_lock_exclusive(&file);
+        #[cfg(test)]
+        let result = crate::directory::diagnose_lock_failure(
+            result,
+            parent,
+            &file,
+            "staging parent exclusive",
+        );
+        result?;
         Ok(Self(file))
     }
 }
