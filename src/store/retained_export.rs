@@ -98,9 +98,23 @@ impl Store {
             ] {
                 let path = stage.child_path(std::ffi::OsStr::new(name))?;
                 let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+                #[cfg(test)]
+                hook(match name {
+                    "records.log" => "header_write",
+                    "store.lock" => "lock_write",
+                    _ => "witness_write",
+                })?;
                 file.write_all(bytes)?;
+                #[cfg(test)]
+                hook(match name {
+                    "records.log" => "header_sync",
+                    "store.lock" => "lock_sync",
+                    _ => "witness_sync",
+                })?;
                 file.sync_all()?;
             }
+            #[cfg(test)]
+            hook("stage_sync")?;
             directory::sync_existing(stage.path())?;
             crate::retained_candidate::verify(
                 stage.path(),
@@ -344,6 +358,195 @@ mod tests {
             max_output_bytes: 10_000_000,
         }
     }
+    fn candidate_budgets() -> crate::retained_base_v2::Limits {
+        crate::retained_base_v2::Limits {
+            file_bytes: 10000,
+            entries: 10,
+            key_bytes: 100,
+            work_bytes: 10001,
+        }
+    }
+
+    fn assert_no_candidate_stages(root: &Path) {
+        assert!(!std::fs::read_dir(root).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".emda-stage-v1-")
+        }));
+    }
+
+    #[test]
+    fn candidate_injected_io_and_publication_outcomes() {
+        for point in [
+            "header_write",
+            "header_sync",
+            "lock_write",
+            "lock_sync",
+            "witness_write",
+            "witness_sync",
+            "stage_sync",
+            "verified",
+            "publish",
+            "parent_sync",
+            "conflict",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let store = Store::open(&source).unwrap();
+            store.put(b"key", b"value").unwrap();
+            let log = std::fs::read(source.join("records.log")).unwrap();
+            let witness = std::fs::read(source.join("commit.state")).ok();
+            let dest = root.path().join("candidate");
+            if point == "conflict" {
+                std::fs::create_dir(&dest).unwrap();
+                std::fs::write(dest.join("sentinel"), b"untouched").unwrap();
+            }
+            let failure = store
+                .build_retained_candidate_with_hook(&dest, [1; 16], [2; 16], limits(), |at| {
+                    if at == point {
+                        Err(io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            match point {
+                "publish" => {
+                    assert!(matches!(
+                        failure,
+                        crate::retained_candidate::Failure::OutcomeUnknown { .. }
+                    ));
+                    assert!(!dest.exists());
+                }
+                "parent_sync" => {
+                    let crate::retained_candidate::Failure::OutcomeUnknown { expected, .. } =
+                        failure
+                    else {
+                        panic!("wrong outcome")
+                    };
+                    crate::retained_candidate::verify(&dest, candidate_budgets(), &expected)
+                        .unwrap();
+                }
+                "conflict" => {
+                    let crate::retained_candidate::Failure::OutcomeUnknown { expected, .. } =
+                        failure
+                    else {
+                        panic!("wrong outcome")
+                    };
+                    assert_eq!(std::fs::read(dest.join("sentinel")).unwrap(), b"untouched");
+                    assert!(
+                        crate::retained_candidate::verify(&dest, candidate_budgets(), &expected)
+                            .is_err()
+                    );
+                }
+                _ => {
+                    assert!(
+                        matches!(failure, crate::retained_candidate::Failure::NotPublished(_)),
+                        "{point}"
+                    );
+                    assert!(!dest.exists());
+                }
+            }
+            assert_eq!(std::fs::read(source.join("records.log")).unwrap(), log);
+            assert_eq!(std::fs::read(source.join("commit.state")).ok(), witness);
+            assert_no_candidate_stages(root.path());
+        }
+    }
+
+    #[test]
+    fn candidate_kill_child() {
+        let Ok(root) = std::env::var("EMDA_CANDIDATE_KILL_ROOT") else {
+            return;
+        };
+        let point = std::env::var("EMDA_CANDIDATE_KILL_POINT").unwrap();
+        let root = Path::new(&root);
+        let store = Store::open(root.join("source")).unwrap();
+        let _ = store.build_retained_candidate_with_hook(
+            &root.join("candidate"),
+            [1; 16],
+            [2; 16],
+            limits(),
+            |at| {
+                if at == point {
+                    println!("CANDIDATE_READY");
+                    std::io::stdout().flush().unwrap();
+                    loop {
+                        std::thread::park();
+                    }
+                }
+                Ok(())
+            },
+        );
+        panic!("boundary not reached");
+    }
+
+    #[test]
+    fn candidate_process_kill_boundaries() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        // A running OS survives these kills; this does not simulate power loss.
+        for point in [
+            "header_write",
+            "stage_sync",
+            "verified",
+            "publish",
+            "parent_sync",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let store = Store::open(&source).unwrap();
+            store.put(b"key", b"value").unwrap();
+            // Retain a binding independently before starting the child, from the same
+            // unchanged source and identifiers; never infer it from the killed stage.
+            let expected = store
+                .build_retained_candidate(root.path().join("reference"), [1; 16], [2; 16], limits())
+                .unwrap();
+            let log = std::fs::read(source.join("records.log")).unwrap();
+            let witness = std::fs::read(source.join("commit.state")).ok();
+            drop(store);
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "store::retained_export::tests::candidate_kill_child",
+                    "--nocapture",
+                ])
+                .env("EMDA_CANDIDATE_KILL_ROOT", root.path())
+                .env("EMDA_CANDIDATE_KILL_POINT", point)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let ready = std::io::BufReader::new(stdout)
+                    .lines()
+                    .any(|line| line.is_ok_and(|line| line.contains("CANDIDATE_READY")));
+                let _ = ready_tx.send(ready);
+            });
+            let ready = ready_rx.recv_timeout(std::time::Duration::from_secs(20));
+            if !matches!(ready, Ok(true)) {
+                let _ = child.kill();
+                let _ = child.wait();
+                reader.join().unwrap();
+                panic!("child did not reach {point}");
+            }
+            child.kill().unwrap();
+            child.wait().unwrap();
+            reader.join().unwrap();
+            let dest = root.path().join("candidate");
+            if point == "parent_sync" {
+                crate::retained_candidate::verify(&dest, candidate_budgets(), &expected).unwrap();
+            } else {
+                assert!(!dest.exists(), "{point}");
+            }
+            assert_eq!(std::fs::read(source.join("records.log")).unwrap(), log);
+            assert_eq!(std::fs::read(source.join("commit.state")).ok(), witness);
+            crate::staging::cleanup_abandoned_staging(root.path()).unwrap();
+            assert_no_candidate_stages(root.path());
+        }
+    }
+
     #[test]
     fn candidate_verification_and_failure_paths() {
         let root = tempfile::tempdir().unwrap();
