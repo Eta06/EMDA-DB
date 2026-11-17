@@ -819,17 +819,40 @@ mod tests {
 
     #[test]
     fn bounded_rebuild_classifies_publication_and_keeps_the_lock_through_selection() {
+        bounded_rebuild_fixture(None);
+    }
+
+    fn bounded_rebuild_fixture(fork_release: Option<bool>) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("store");
         let base = directory.path().join("base");
         let store = Store::open(&path).unwrap();
         store.put(b"safe", b"acked").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
+        #[cfg(target_os = "linux")]
+        let child = fork_release.map(|_| crate::test_support::fork_lock::Child::spawn());
+        if fork_release != Some(false) {
+            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
+        }
         drop(store);
+        #[cfg(target_os = "linux")]
+        if let Some(child) = child {
+            crate::test_support::fork_lock::check(&path, child, fork_release.unwrap());
+        }
         let store = Store::open(&path).unwrap();
         store.put(b"tail", b"one").unwrap();
         store.put(b"tail", b"two").unwrap();
+        #[cfg(target_os = "linux")]
+        let child = fork_release.map(|_| crate::test_support::fork_lock::Child::spawn());
+        if fork_release != Some(false) {
+            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
+        }
         drop(store);
+        #[cfg(target_os = "linux")]
+        if let Some(child) = child {
+            crate::test_support::fork_lock::check(&path, child, fork_release.unwrap());
+            drop(Store::open(&path).unwrap());
+        }
         let destination = directory.path().join("published");
         let failure = track_managed_rebuild(|tracker| {
             let mut before_adopt = || Ok(());
@@ -893,7 +916,7 @@ mod tests {
             )
         })
         .unwrap_err();
-        assert!(saw_lock);
+        assert!(saw_lock, "selection hook was not reached: {failure:?}");
         assert!(matches!(
             failure,
             ManagedRebuildFailure::SelectionOutcomeUnknown(_)
@@ -965,6 +988,20 @@ mod tests {
         assert!(matches!(failure, ManagedRebuildFailure::NotPublished(_)));
         assert_eq!(witness_bytes(&path), witness);
         assert!(!adopted.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bounded_rebuild_fixture_fork_lock_lifetime() {
+        if crate::test_support::fork_lock::isolated(
+            "checkpoint_store::rebuild::tests::bounded_rebuild_fixture_fork_lock_lifetime",
+            "EMDA_BOUNDED_FORK_LIFETIME",
+        ) {
+            return;
+        }
+        for released in [false, true] {
+            bounded_rebuild_fixture(Some(released));
+        }
     }
 
     struct AdoptionCase {

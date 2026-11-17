@@ -126,6 +126,10 @@ fn old_and_new_snapshots_remain_stable_during_concurrent_writes() {
 
 #[test]
 fn accounting_failure_after_sync_poison_reads_before_partial_index_is_visible() {
+    accounting_failure_fixture(None);
+}
+
+fn accounting_failure_fixture(fork_release: Option<bool>) {
     for overflow in [true, false] {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
@@ -154,7 +158,16 @@ fn accounting_failure_after_sync_poison_reads_before_partial_index_is_visible() 
         assert!(store.write_batch(&operations).is_err());
         assert!(store.get(b"base").is_err());
         assert!(store.snapshot(10, 100).is_err());
+        #[cfg(target_os = "linux")]
+        let child = fork_release.map(|_| crate::test_support::fork_lock::Child::spawn());
+        if fork_release != Some(false) {
+            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
+        }
         drop(store);
+        #[cfg(target_os = "linux")]
+        if let Some(child) = child {
+            crate::test_support::fork_lock::check(root.path(), child, fork_release.unwrap());
+        }
         let reopened = Store::open(root.path()).unwrap();
         if overflow {
             assert_eq!(reopened.get(b"base").unwrap(), Some(b"new".to_vec()));
@@ -167,6 +180,20 @@ fn accounting_failure_after_sync_poison_reads_before_partial_index_is_visible() 
             state.index_key_bytes,
             state.index.keys().map(Vec::len).sum::<usize>()
         );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn accounting_failure_fixture_fork_lock_lifetime() {
+    if crate::test_support::fork_lock::isolated(
+        "store::shared_snapshot_tests::accounting_failure_fixture_fork_lock_lifetime",
+        "EMDA_ACCOUNTING_FORK_LIFETIME",
+    ) {
+        return;
+    }
+    for released in [false, true] {
+        accounting_failure_fixture(Some(released));
     }
 }
 

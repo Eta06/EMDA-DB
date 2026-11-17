@@ -148,6 +148,14 @@ hit the spill fixture before its release was added, and a
 [later run](../benchmarks/results/2026-11-17-linux-arm64-fixture-release-parallel-failure2.log.gz)
 hit `EAGAIN` in bounded rebuild and shared snapshot tests. Their holders are
 not identified. No general parallel-suite resolution is claimed.
+Controlled tests now also cover the exact initial bounded-rebuild and failed
+accounting-store lifetimes, preserving their recovery assertions. Fixture-only
+release occurs after the relevant store work and is verified against a live
+forked child; drop-only variants remain. A subsequent strict 16-thread run
+still failed three rebuild tests (two `EAGAIN`, one selection hook not reached)
+with 588 passed; its [log](../benchmarks/results/2026-11-17-linux-arm64-exact-release-parallel-failure.log.gz)
+is retained. The missing-hook assertion now reports its early error. These
+results do not establish the failing holders or resolve parallel reliability.
 An additional isolated regression exercises the initial store drop/reopen
 boundaries of the spill and crash fixtures. It checks the exact inherited inode
 and a direct blocked reopen, then a successful reopen after the child exits.
