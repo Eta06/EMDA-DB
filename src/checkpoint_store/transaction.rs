@@ -112,7 +112,7 @@ impl CheckpointTransaction<'_> {
                     read_set
                         .lock()
                         .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
-                        .record_point(self.store, key, location)?;
+                        .record_point(self.store, key, location, state.log_generation)?;
                 }
                 location
                     .map(|location| state.view.base.log.read(location))
@@ -513,13 +513,13 @@ impl CheckpointStore {
         };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
-        let generation = {
+        let (generation, log_generation) = {
             let state =
                 crate::cancellation::read_lock(&self.state, deadline, cancellation, uncertain)?;
             if state.failed {
                 return Err(uncertain().into());
             }
-            state.generation
+            (state.generation, state.log_generation)
         };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
@@ -528,7 +528,8 @@ impl CheckpointStore {
             generation,
             deadline,
             cancellation: cancellation.cloned(),
-            read_set: track_points.then(|| Mutex::new(super::read_set::ReadSet::new(generation))),
+            read_set: track_points
+                .then(|| Mutex::new(super::read_set::ReadSet::new(generation, log_generation))),
             staged: BTreeMap::new(),
             encoded_bytes: 4,
         };

@@ -3,7 +3,7 @@ use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits};
 use crate::controlled_lock::{
     ControlledRwLock, ReadGuard as ControlledReadGuard, WriteGuard as ControlledWriteGuard,
 };
-use crate::log::Log;
+use crate::log::{GenerationId, Log};
 use crate::record::batch::{BatchOperation, encode_payload};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 use crate::recovered_view::{
@@ -39,6 +39,7 @@ pub use worker::{CheckpointWorker, CheckpointWorkerStatus};
 
 struct State {
     view: RecoveredCheckpointView,
+    log_generation: Option<GenerationId>,
     overlay_key_bytes: usize,
     generation: u64,
     failed: bool,
@@ -396,10 +397,12 @@ impl CheckpointStore {
             view_log.try_share_checkpoint_view_file(&log);
         }
         let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
+        let log_generation = log.id().map(GenerationId);
         Ok(Self {
             log,
             state: ControlledRwLock::new(State {
                 view,
+                log_generation,
                 overlay_key_bytes,
                 generation: 0,
                 failed: false,

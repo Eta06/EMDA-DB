@@ -350,3 +350,46 @@ fn direct_read_admission_counts_checkpoint_state_lock_waiters() {
     });
     assert_eq!(store.direct_read_status().active, Some(0));
 }
+
+#[test]
+fn read_set_qualifies_checkpoint_and_overlay_observations() {
+    for range in [false, true] {
+        for overlay in [false, true] {
+            let (_dir, path, checkpoint, digest) = fixture();
+            let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+            let key: &[u8] = if overlay { b"overlay" } else { b"base" };
+            if overlay {
+                store.put(key, b"value").unwrap();
+            }
+            let observed = std::sync::Barrier::new(2);
+            let published = std::sync::Barrier::new(2);
+            let result = std::thread::scope(|scope| {
+                let worker = scope.spawn(|| {
+                    store.transaction_with_read_set(|tx| {
+                        if range {
+                            let (start, end): (&[u8], &[u8]) =
+                                if overlay { (b"n", b"p") } else { (b"a", b"c") };
+                            let rows = tx.scan(Some(start), Some(end), 100)?;
+                            assert_eq!(rows.len(), 1);
+                            assert_eq!(rows[0].0, key);
+                        } else {
+                            assert!(tx.get(key)?.is_some());
+                        }
+                        tx.put(b"staged", b"must not commit")?;
+                        observed.wait();
+                        published.wait();
+                        Ok(())
+                    })
+                });
+                observed.wait();
+                // Model publication with unchanged locations and mutation counter.
+                store.state.write().unwrap().log_generation = Some(GenerationId([42; 16]));
+                published.wait();
+                worker.join().unwrap()
+            });
+            let error = result.unwrap_err();
+            assert!(crate::is_transaction_conflict(&error), "{error}");
+            assert_eq!(store.get(b"staged").unwrap(), None);
+        }
+    }
+}

@@ -98,11 +98,12 @@ live generation replacement is implemented or authorized. The identity and index
 must continue to be published together under the state lock if replacement is
 introduced.
 
-This is a narrower prerequisite, not completion of the first slice. The
-checkpoint-backed store and recovered-view overlay have separate read paths and
-are not converted. Direct reads, snapshots and checkpoint encoding still use
-ordinary locations; checkpoint validation and corruption checks are unchanged.
-A future cross-path conversion must bind checkpoint and overlay observations to
-validated identities, cover grouped records and concurrent publication with
-barrier-controlled tests, and preserve snapshot lifetime and legacy behavior.
-No reclamation or format change follows from this prerequisite.
+Checkpoint-backed read-set point and range observations now also bind present
+base and overlay locations to the identity captured under the state lock. Tests
+model a change of identity; they do not switch the underlying log. Absence and
+empty ranges retain membership semantics. Direct reads, snapshots and checkpoint
+encoding still use ordinary locations; validation and corruption checks remain
+unchanged. This is still a partial prerequisite: grouped records, identity/view
+publication and snapshot lifetime require further engine-level evidence, and
+future conservative transactions must also detect any generation switch. No
+reclamation or format change follows from this work.

@@ -1,7 +1,7 @@
 //! Bounded point and complete-range observations over checkpoint-backed data.
 use super::transaction::conflict;
 use super::{CheckpointStore, State};
-use crate::log::ValueLocation;
+use crate::log::{GenerationId, GenerationLocation, ValueLocation};
 use crate::transaction_budget::PendingReservation;
 use crate::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
@@ -15,7 +15,7 @@ const RANGE_RESERVATION_QUANTUM: usize = 4 * 1024;
 
 pub(super) struct RangeEntry {
     end: usize,
-    location: ValueLocation,
+    location: GenerationLocation,
 }
 
 struct Range {
@@ -26,17 +26,18 @@ struct Range {
 }
 
 pub(super) struct ReadSet {
-    points: BTreeMap<Vec<u8>, Option<ValueLocation>>,
+    points: BTreeMap<Vec<u8>, Option<GenerationLocation>>,
     ranges: Vec<Range>,
     key_bytes: usize,
     items: usize,
     charged: usize,
     validated_generation: u64,
+    validated_log_generation: Option<GenerationId>,
     conflicted: bool,
 }
 
 impl ReadSet {
-    pub(super) fn new(generation: u64) -> Self {
+    pub(super) fn new(generation: u64, log_generation: Option<GenerationId>) -> Self {
         Self {
             points: BTreeMap::new(),
             ranges: Vec::new(),
@@ -44,6 +45,7 @@ impl ReadSet {
             items: 0,
             charged: 0,
             validated_generation: generation,
+            validated_log_generation: log_generation,
             conflicted: false,
         }
     }
@@ -56,12 +58,15 @@ impl ReadSet {
         }
         // An unchanged generation is not compared again. Rollover relies on
         // that: it publishes no mutation and must not move existing locations.
-        if self.validated_generation != state.generation {
+        if self.validated_generation != state.generation
+            || self.validated_log_generation != state.log_generation
+        {
             if !self.matches(state)? {
                 self.conflicted = true;
                 return Err(conflict());
             }
             self.validated_generation = state.generation;
+            self.validated_log_generation = state.log_generation;
         }
         Ok(())
     }
@@ -71,10 +76,15 @@ impl ReadSet {
         store: &CheckpointStore,
         key: &[u8],
         location: Option<ValueLocation>,
+        log_generation: Option<GenerationId>,
     ) -> io::Result<()> {
         if self.conflicted {
             return Err(conflict());
         }
+        let location = location.map(|location| GenerationLocation {
+            generation: log_generation,
+            location,
+        });
         if let Some(previous) = self.points.get(key) {
             if *previous != location {
                 self.conflicted = true;
@@ -90,7 +100,7 @@ impl ReadSet {
                 "checkpoint transaction read-set limit exceeded",
             ));
         }
-        let charge = key.len() + std::mem::size_of::<Option<ValueLocation>>();
+        let charge = key.len() + std::mem::size_of::<Option<GenerationLocation>>();
         let mut reservation = PendingReservation::acquire(&store.transaction_budget, charge)?;
         self.points.insert(key.to_vec(), location);
         self.key_bytes += key.len();
@@ -158,7 +168,10 @@ impl ReadSet {
             keys.extend_from_slice(key);
             entries.push(RangeEntry {
                 end: keys.len(),
-                location,
+                location: GenerationLocation {
+                    generation: state.log_generation,
+                    location,
+                },
             });
             Ok(ControlFlow::Continue(()))
         })?;
@@ -188,13 +201,23 @@ impl ReadSet {
         // checkpoint rollover, also keeps previously issued log locations
         // immutable and unreused. Rewriting those locations requires a new
         // generation so this comparison runs.
-        if self.validated_generation == state.generation {
+        if self.validated_generation == state.generation
+            && self.validated_log_generation == state.log_generation
+        {
             return Ok(true);
         }
         let mut work = 0_usize;
         for (key, location) in &self.points {
             work += 1;
-            if state.view.location(key)? != *location {
+            if state
+                .view
+                .location(key)?
+                .map(|location| GenerationLocation {
+                    generation: state.log_generation,
+                    location,
+                })
+                != *location
+            {
                 return Ok(false);
             }
         }
@@ -220,7 +243,13 @@ impl ReadSet {
                     } else {
                         range.entries[index - 1].end
                     };
-                    if &range.keys[start..previous.end] != key || previous.location != location {
+                    if &range.keys[start..previous.end] != key
+                        || previous.location
+                            != (GenerationLocation {
+                                generation: state.log_generation,
+                                location,
+                            })
+                    {
                         same = false;
                         return Ok(ControlFlow::Break(()));
                     }
