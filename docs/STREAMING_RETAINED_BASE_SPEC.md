@@ -1,13 +1,13 @@
 # Streaming retained-base proposal
 
-Status: design only. This specifies a new, disconnected export format; it does
+Status: non-authoritative export implemented. This specifies an export format; it does
 not change existing logs, checkpoints or the experimental `EMDARB01` codec.
 Export is non-destructive and confers no authority to recover, switch, or
 remove history. Authoritative recovery below is a proposed protocol, gated on
 explicit decisions and implementation of all its prerequisites.
 
-A test-only streaming validator exercises the wire checks below. It returns
-self-consistent metadata only, has no stable public API and does not establish
+A streaming validator exercises the wire checks below. It returns
+self-consistent metadata only and does not establish
 source provenance, immutable input, trusted authority or safe publication.
 
 ## Wire format and streaming contract
@@ -80,7 +80,7 @@ mark provenance unavailable and be ineligible for authoritative use. This
 proposal chooses rejection for missing provenance, not a fabricated zero.
 The internal full-log index verifier now reconstructs both peaks in ordered
 replay and checks the resulting index and witness. It builds a full in-memory
-index and has no retained-base export caller; it is not bounded recovery.
+index and is used by the bounded retained-base exporter; it is not bounded recovery.
 
 ## Producing and authenticating an export
 
@@ -110,6 +110,20 @@ record and validate the witness chain/source binding; a self-signed trailer or
 manifest is insufficient. For an offline export without such a record, label it
 untrusted and never use it as authority. Exact witness representation and how
 independent trust is provisioned are decisions, not supplied by this codec.
+
+The exporter assumes the source bytes, witness and directories are trusted and
+stable against uncoordinated mutation throughout verification and publication;
+the advisory lock and writer barrier only exclude cooperating writers. The caller
+must place the destination outside the source directory. Store does not retain
+its source path, so the exporter cannot enforce that precondition, including
+through directory aliases. Its output is non-authoritative and cannot be used
+for recovery without the independent binding described above.
+
+The exporter holds the writer barrier throughout verification and publication.
+It requires caller-provided replay and output budgets and a nonzero base ID
+distinct from the source ID. The caller is responsible for ID uniqueness; no
+allocation registry or independent trust is provided. A publication failure
+after the attempt begins is reported as outcome unknown.
 
 ## Future authority, recovery and publication (not implemented)
 

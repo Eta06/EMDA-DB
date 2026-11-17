@@ -22,8 +22,7 @@ mod publication_outcome;
 mod record;
 mod recovered_view;
 mod recovery;
-#[cfg(test)]
-mod retained_base_v2;
+pub mod retained_base_v2;
 mod snapshot_reaper;
 mod staging;
 mod store;
@@ -82,7 +81,7 @@ pub use store::{
     MAX_TRANSACTION_VALIDATION_ITEMS, OnlineCompactionOptions, OnlineCompactionReport,
     OnlineReclaimError, OnlineReclaimFailure, OnlineReclamationFailure,
     OnlineReclamationFailureStage, OnlineReclamationWorker, OnlineReclamationWorkerStatus,
-    OnlineStore, RetiredCleanupStatus, Snapshot, SnapshotBudgetStatus, Store,
+    OnlineStore, RetainedExportLimits, RetiredCleanupStatus, Snapshot, SnapshotBudgetStatus, Store,
     TimedTransactionError, Transaction, TransactionMode,
 };
 pub use transaction_budget::{MAX_ACTIVE_TRANSACTIONS, TransactionBudgetStatus};

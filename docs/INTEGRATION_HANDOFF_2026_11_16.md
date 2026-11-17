@@ -154,3 +154,14 @@ correctness defect under the supported advisory-lock model; adoption-specific
 sync and witness failure injection remains a useful coverage gap.
 Physical power-loss testing and the independent off-host restore drill remain
 explicitly deferred, not passed.
+
+An ordinary-store non-authoritative retained-base exporter now verifies the
+full witnessed history under the writer barrier and streams into a staged,
+no-clobber file with caller resource limits. The caller must keep its
+destination outside the source and aliases; the API cannot enforce this.
+Source/directory stability against non-cooperating mutation is assumed. The
+file is not recoverable authority and does not permit reclamation. Eight
+exporter and eight format tests passed on Linux and macOS; Linux Clippy passed.
+The first Linux run exposed a V3-specific fault-fixture assumption; its failure
+log is retained alongside the passing corrected run. Direct witness fault
+injection during export and a full post-change suite remain open.

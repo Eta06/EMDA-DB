@@ -87,6 +87,14 @@ log length and the logical live-key count and key bytes at every replay step,
 including batch children. Exceeding a limit is `NotPublished(InvalidInput)`
 and does not establish source health; successful admission still verifies the
 entire history. These limits do not bound total memory or all copy work.
+`Store::export_retained_base` produces a non-authoritative EMDARB02 file from
+a fully verified, witnessed source under the writer barrier, with caller limits
+on replay and output. It does not permit recovery or deletion of history. The
+caller must choose a destination outside the store directory and its aliases;
+the API cannot verify that obligation. It assumes the source and directories
+are not modified by non-cooperating actors. The caller supplies the base ID
+and is responsible for uniqueness. A failure after publication starts has an
+uncertain outcome; inspect the destination before retrying.
 `CheckpointStore::rollover_to_detailed` classifies unmanaged checkpoint
 rollover: if the call fails after publication, the prior view remains active,
 the destination may exist and no new digest is returned. This classification

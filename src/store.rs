@@ -21,6 +21,8 @@ mod log_quota;
 mod online;
 mod point_read;
 mod read_set;
+mod retained_export;
+
 mod snapshot;
 mod transaction;
 mod transaction_queue;
@@ -37,6 +39,8 @@ pub use online::{
     OnlineReclamationFailure, OnlineReclamationFailureStage, OnlineReclamationWorker,
     OnlineReclamationWorkerStatus, OnlineStore, RetiredCleanupStatus,
 };
+pub use retained_export::RetainedExportLimits;
+
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
     MAX_TRANSACTION_VALIDATION_ITEMS,
