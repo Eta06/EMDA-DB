@@ -7,6 +7,13 @@ use std::io;
 use std::ops::ControlFlow;
 use std::path::Path;
 
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static OBSERVE_BOUNDED_LOCK: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) };
+    static BOUNDED_CHILD: std::cell::RefCell<Option<crate::test_support::fork_lock::Child>> = const { std::cell::RefCell::new(None) };
+    static CAPTURE_BOUNDED_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 struct BoundedHooks<'a> {
     before_adopt: &'a mut dyn FnMut() -> io::Result<()>,
     sync_checkpoint_ancestors: &'a mut dyn FnMut(&Path) -> io::Result<()>,
@@ -449,6 +456,16 @@ impl CheckpointStore {
             .open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_exclusive(&lock_file)?;
         crate::directory::verify_lock_identity(&path, &lock_file)?;
+        #[cfg(all(test, target_os = "linux"))]
+        CAPTURE_BOUNDED_LOCK.with(|capture| {
+            if capture.get() {
+                OBSERVE_BOUNDED_LOCK
+                    .with(|slot| *slot.borrow_mut() = Some(lock_file.try_clone().unwrap()));
+                BOUNDED_CHILD.with(|slot| {
+                    *slot.borrow_mut() = Some(crate::test_support::fork_lock::Child::spawn())
+                });
+            }
+        });
         if let Some(max) = limits.max_log_bytes {
             if fs::metadata(path.join("records.log"))?.len() > max {
                 return Err(io::Error::new(
@@ -1001,6 +1018,120 @@ mod tests {
         }
         for released in [false, true] {
             bounded_rebuild_fixture(Some(released));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bounded_acquisition_fork_outcomes() {
+        if crate::test_support::fork_lock::isolated(
+            "checkpoint_store::rebuild::tests::bounded_acquisition_fork_outcomes",
+            "EMDA_BOUNDED_ACQUISITION_FORK",
+        ) {
+            return;
+        }
+        for mode in [
+            "success",
+            "cap",
+            "checkpoint",
+            "selection",
+            "panic",
+            "release",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("store");
+            let base = dir.path().join("base");
+            let destination = dir.path().join("published");
+            let store = Store::open(&path).unwrap();
+            store.put(b"key", b"value").unwrap();
+            let digest = store.checkpoint_to(&base).unwrap();
+            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
+            drop(store);
+            CAPTURE_BOUNDED_LOCK.with(|v| v.set(true));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                track_managed_rebuild(|tracker| {
+                    let mut before_adopt = || Ok(());
+                    let mut checkpoint = |p: &Path| {
+                        if mode == "checkpoint" {
+                            Err(io::Error::other("sync"))
+                        } else {
+                            selection::sync_ancestors(p)
+                        }
+                    };
+                    let mut selection_hook = || {
+                        if mode == "panic" {
+                            panic!("injected panic");
+                        }
+                        if mode == "selection" {
+                            Err(io::Error::other("selection"))
+                        } else {
+                            Ok(())
+                        }
+                    };
+                    let mut sync_selection = |p: &Path| selection::sync_ancestors(p);
+                    let mut hooks = BoundedHooks {
+                        before_adopt: &mut before_adopt,
+                        sync_checkpoint_ancestors: &mut checkpoint,
+                        before_selection_rename: &mut selection_hook,
+                        sync_selection_parent: &mut sync_selection,
+                    };
+                    let mut limits = small_limits();
+                    if mode == "cap" {
+                        limits.max_log_bytes = Some(0);
+                    }
+                    CheckpointStore::rebuild_bounded_using(
+                        &path,
+                        &destination,
+                        &base,
+                        &digest,
+                        limits,
+                        Some(tracker),
+                        &mut hooks,
+                    )
+                })
+            }));
+            CAPTURE_BOUNDED_LOCK.with(|v| v.set(false));
+            match mode {
+                "success" | "release" => {
+                    assert!(result.unwrap().is_ok());
+                    assert!(destination.is_file());
+                    assert!(selection::path(&path).exists());
+                }
+                "cap" => {
+                    assert!(matches!(
+                        result.unwrap(),
+                        Err(ManagedRebuildFailure::NotPublished(_))
+                    ));
+                    assert!(!destination.exists());
+                }
+                "checkpoint" => {
+                    assert!(matches!(
+                        result.unwrap(),
+                        Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(_))
+                    ));
+                    assert!(destination.is_file());
+                    assert!(!selection::path(&path).exists());
+                }
+                "selection" => {
+                    assert!(matches!(
+                        result.unwrap(),
+                        Err(ManagedRebuildFailure::SelectionOutcomeUnknown(_))
+                    ));
+                    assert!(destination.is_file());
+                    assert!(!selection::path(&path).exists());
+                }
+                "panic" => assert!(result.is_err()),
+                _ => unreachable!(),
+            }
+            let lock = OBSERVE_BOUNDED_LOCK.with(|v| v.borrow_mut().take().unwrap());
+            let child = BOUNDED_CHILD.with(|v| v.borrow_mut().take().unwrap());
+            child.assert_inode(&path);
+            if mode == "release" {
+                fs2::FileExt::unlock(&lock).unwrap();
+            }
+            drop(lock);
+            crate::test_support::fork_lock::check(&path, child, mode == "release");
+            drop(Store::open(&path).unwrap());
         }
     }
 

@@ -156,6 +156,12 @@ still failed three rebuild tests (two `EAGAIN`, one selection hook not reached)
 with 588 passed; its [log](../benchmarks/results/2026-11-17-linux-arm64-exact-release-parallel-failure.log.gz)
 is retained. The missing-hook assertion now reports its early error. These
 results do not establish the failing holders or resolve parallel reliability.
+A Linux-only test hook now captures the exact bounded-rebuild lock descriptor.
+Controlled fork cases cover success, log-limit rejection, checkpoint and
+selection uncertainty, and panic: reopening remains blocked while the child
+retains the inherited lock. In the success-only explicit-release control,
+reopening succeeds while the child remains alive. No production unlock was
+added, and this evidence does not identify the archived holders.
 An additional isolated regression exercises the initial store drop/reopen
 boundaries of the spill and crash fixtures. It checks the exact inherited inode
 and a direct blocked reopen, then a successful reopen after the child exits.
