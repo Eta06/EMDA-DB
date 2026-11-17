@@ -233,6 +233,26 @@ impl Stage {
         Ok(())
     }
 
+    /// A single non-reserved child of a live, privately owned directory stage.
+    pub(crate) fn child_path(&self, name: &OsStr) -> io::Result<PathBuf> {
+        let path = Path::new(name);
+        if !matches!(self.kind, Kind::Directory)
+            || !self.created
+            || self.published
+            || !matches!(
+                (path.components().next(), path.components().nth(1)),
+                (Some(Component::Normal(_)), None)
+            )
+            || name.as_bytes().starts_with(RESERVED)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid staged child",
+            ));
+        }
+        Ok(self.payload.join(name))
+    }
+
     pub(crate) fn path(&self) -> &Path {
         &self.payload
     }

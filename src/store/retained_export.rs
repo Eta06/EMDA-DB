@@ -33,6 +33,29 @@ impl Store {
         )
     }
 
+    /// Export into a directory stage held by the caller. The caller must keep
+    /// the source and stage trusted and stable, as for the public export.
+    #[allow(dead_code)]
+    pub(crate) fn export_retained_base_in_stage(
+        &self,
+        stage: &crate::staging::Stage,
+        name: &std::ffi::OsStr,
+        base_id: [u8; 16],
+        limits: RetainedExportLimits,
+    ) -> Result<crate::retained_base_v2::Validated, crate::PublicationFailure> {
+        let destination = stage
+            .child_path(name)
+            .map_err(crate::PublicationFailure::NotPublished)?;
+        self.export_retained_base_impl(
+            &destination,
+            Some(stage.path()),
+            base_id,
+            limits,
+            crate::directory::sync_existing,
+            |_| Ok(()),
+        )
+    }
+
     fn export_retained_base_with_sync(
         &self,
         destination: &Path,
@@ -46,6 +69,18 @@ impl Store {
     fn export_retained_base_with_hook(
         &self,
         destination: &Path,
+        base_id: [u8; 16],
+        limits: RetainedExportLimits,
+        sync: impl FnOnce(&Path) -> io::Result<()>,
+        hook: impl FnMut(&str) -> io::Result<()>,
+    ) -> Result<crate::retained_base_v2::Validated, crate::PublicationFailure> {
+        self.export_retained_base_impl(destination, None, base_id, limits, sync, hook)
+    }
+
+    fn export_retained_base_impl(
+        &self,
+        destination: &Path,
+        owned_parent: Option<&Path>,
         base_id: [u8; 16],
         limits: RetainedExportLimits,
         sync: impl FnOnce(&Path) -> io::Result<()>,
@@ -126,7 +161,10 @@ impl Store {
             ] {
                 header[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
             }
-            let parent = backup::parent_directory(destination)?;
+            let parent = match owned_parent {
+                Some(parent) => parent,
+                None => backup::parent_directory(destination)?,
+            };
             let (mut stage, mut file) = crate::staging::Stage::file(parent)?;
             let mut hash = Sha256::new();
             hash.update(b"EMDA retained base v2\0");
@@ -208,6 +246,88 @@ mod tests {
             max_output_bytes: 10_000_000,
         }
     }
+    #[test]
+    fn owned_directory_export_matches_public_and_cleans_up() {
+        use std::ffi::OsStr;
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source")).unwrap();
+        store.put(b"key", &vec![5; 150_000]).unwrap();
+        let public = root.path().join("public");
+        let expected = store
+            .export_retained_base(&public, [1; 16], limits())
+            .unwrap();
+        let stage = crate::staging::Stage::directory(root.path()).unwrap();
+        let path = stage.path().to_owned();
+        let actual = store
+            .export_retained_base_in_stage(&stage, OsStr::new("base"), [1; 16], limits())
+            .unwrap();
+        assert_eq!(actual.digest, expected.digest);
+        assert_eq!(
+            std::fs::read(path.join("base")).unwrap(),
+            std::fs::read(public).unwrap()
+        );
+        let cleanup_root = root.path().to_owned();
+        let cleanup = std::thread::spawn(move || crate::cleanup_abandoned_staging(cleanup_root));
+        assert_eq!(
+            cleanup.join().unwrap().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(path.join("base").exists());
+        assert!(matches!(
+            store.export_retained_base_in_stage(&stage, OsStr::new("base"), [1; 16], limits()),
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert!(matches!(
+            store.export_retained_base_in_stage(&stage, OsStr::new("../escape"), [1; 16], limits()),
+            Err(crate::PublicationFailure::NotPublished(_))
+        ));
+        assert!(matches!(
+            store.export_retained_base_in_stage(
+                &stage,
+                OsStr::new("limited"),
+                [1; 16],
+                RetainedExportLimits {
+                    max_output_bytes: 1,
+                    ..limits()
+                }
+            ),
+            Err(crate::PublicationFailure::NotPublished(_))
+        ));
+        assert!(!path.join("limited").exists());
+        let failed = path.join("failed");
+        assert!(matches!(
+            store.export_retained_base_impl(
+                &failed,
+                Some(&path),
+                [1; 16],
+                limits(),
+                crate::directory::sync_existing,
+                |point| if point == "before_witness" {
+                    Err(io::Error::other("injected"))
+                } else {
+                    Ok(())
+                }
+            ),
+            Err(crate::PublicationFailure::NotPublished(_))
+        ));
+        assert!(!failed.exists());
+        let uncertain = path.join("uncertain");
+        assert!(matches!(
+            store.export_retained_base_impl(
+                &uncertain,
+                Some(&path),
+                [1; 16],
+                limits(),
+                |_| Err(io::Error::other("injected sync")),
+                |_| Ok(())
+            ),
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert!(uncertain.exists());
+        drop(stage);
+        assert!(!path.exists());
+    }
+
     #[test]
     fn exports_batch_peak_and_chunked_value() {
         let dir = tempfile::tempdir().unwrap();
