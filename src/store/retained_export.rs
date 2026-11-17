@@ -80,11 +80,13 @@ impl Store {
             let parent = backup::parent_directory(destination)?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let base = self
-                .export_retained_base_in_stage(
-                    &stage,
-                    std::ffi::OsStr::new("base"),
+                .export_retained_base_impl(
+                    &stage.child_path(std::ffi::OsStr::new("base"))?,
+                    Some(stage.path()),
                     base_id,
                     limits,
+                    crate::directory::sync_existing,
+                    &mut hook,
                 )
                 .map_err(|e| match e {
                     crate::PublicationFailure::NotPublished(e)
@@ -454,6 +456,106 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn candidate_source_faults_during_base_export() {
+        use super::super::fault_tests::{Fault, open_versioned_fault_store};
+        use std::sync::{Arc, Mutex};
+
+        for point in [
+            "replay",
+            "value_read",
+            "output_sync",
+            "after_replay",
+            "before_witness",
+        ] {
+            for mutation in if point == "after_replay" || point == "before_witness" {
+                vec!["stale", "malformed", "identity", "append"]
+            } else {
+                vec!["io"]
+            } {
+                let root = tempfile::tempdir().unwrap();
+                let source = root.path().join("source");
+                std::fs::create_dir(&source).unwrap();
+                let fault = Arc::new(Mutex::new(None));
+                let store = open_versioned_fault_store(&source, Arc::clone(&fault)).unwrap();
+                store.put(b"key", b"value").unwrap();
+                let log_path = source.join("records.log");
+                let marker = source.join("commit.state");
+                let log = std::fs::read(&log_path).unwrap();
+                // The marker is the V2 witness on macOS. Do not claim V3 coverage here.
+                assert!(log.starts_with(b"EMDALOG2"));
+                let witness = std::fs::read(&marker).unwrap();
+                let changed = match mutation {
+                    "stale" => crate::witness::encode_for_test(&store.log.id().unwrap(), 0),
+                    "identity" => {
+                        crate::witness::encode_for_test(&[9; 16], store.log.len().unwrap())
+                    }
+                    "malformed" => vec![0; witness.len()],
+                    _ => witness.clone(),
+                };
+                let dest = root.path().join("candidate");
+                if point == "replay" {
+                    *fault.lock().unwrap() = Some(Fault::ShortRead(1));
+                }
+                let mut reached = 0;
+                let result = store.build_retained_candidate_with_hook(
+                    &dest,
+                    [1; 16],
+                    [2; 16],
+                    limits(),
+                    |at| {
+                        if at == point {
+                            reached += 1;
+                            match mutation {
+                                "io" if point == "value_read" => {
+                                    *fault.lock().unwrap() = Some(Fault::ShortRead(1))
+                                }
+                                "io" if point == "output_sync" => {
+                                    return Err(io::Error::other("injected sync failure"));
+                                }
+                                "append" => OpenOptions::new()
+                                    .append(true)
+                                    .open(&log_path)?
+                                    .write_all(b"unexpected")?,
+                                "stale" | "malformed" | "identity" => {
+                                    std::fs::write(&marker, &changed)?
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(())
+                    },
+                );
+                match result {
+                    Err(crate::retained_candidate::Failure::NotPublished(error)) => {
+                        if mutation != "io" {
+                            assert_eq!(
+                                error.kind(),
+                                io::ErrorKind::InvalidData,
+                                "{point} {mutation}"
+                            );
+                        }
+                    }
+                    other => panic!("unexpected {point} {mutation}: {other:?}"),
+                }
+                assert_eq!(
+                    reached,
+                    usize::from(point != "replay"),
+                    "{point} {mutation}"
+                );
+                assert!(!dest.exists());
+                let mut expected_log = log;
+                if mutation == "append" {
+                    expected_log.extend_from_slice(b"unexpected");
+                }
+                assert_eq!(std::fs::read(&log_path).unwrap(), expected_log);
+                assert_eq!(std::fs::read(&marker).unwrap(), changed);
+                assert_no_candidate_stages(root.path());
+            }
+        }
+    }
+
     #[test]
     fn candidate_kill_child() {
         let Ok(root) = std::env::var("EMDA_CANDIDATE_KILL_ROOT") else {
@@ -648,6 +750,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path().join("source")).unwrap();
         store.put(b"before", b"value").unwrap();
+        let source = root.path().join("source");
+        let log_before = std::fs::read(source.join("records.log")).unwrap();
+        let witness_before = std::fs::read(source.join("commit.state")).unwrap();
+        let independent = store
+            .build_retained_candidate(root.path().join("reference"), [1; 16], [2; 16], limits())
+            .unwrap();
         let dest = root.path().join("snapshot");
         let expected = store
             .build_retained_candidate_with_hook(&dest, [1; 16], [2; 16], limits(), |point| {
@@ -662,6 +770,19 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+        assert_eq!(expected, independent);
+        assert_eq!(store.get(b"after").unwrap().as_deref(), Some(&b"value"[..]));
+        assert_ne!(
+            std::fs::read(source.join("records.log")).unwrap(),
+            log_before
+        );
+        if log_before.starts_with(b"EMDALOG2") {
+            assert_ne!(
+                std::fs::read(source.join("commit.state")).unwrap(),
+                witness_before
+            );
+        }
+        assert_no_candidate_stages(root.path());
         let budgets = crate::retained_base_v2::Limits {
             file_bytes: 10000,
             entries: 10,
