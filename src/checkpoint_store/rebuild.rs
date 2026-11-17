@@ -1424,6 +1424,31 @@ mod tests {
         panic!("bounded rebuild child returned before {mode}: {result:?}");
     }
 
+    fn crash_fixture_initial(
+        path: &Path,
+        base: &Path,
+        selected: &Path,
+        managed: bool,
+        retry_managed: bool,
+        before_drop: impl FnOnce(),
+        after_drop: impl FnOnce(&Path),
+    ) -> [u8; 32] {
+        let store = Store::open(path).unwrap();
+        store.put(b"safe", b"acked").unwrap();
+        let digest = store.checkpoint_to(base).unwrap();
+        before_drop();
+        drop(store);
+        after_drop(path);
+        if managed {
+            if retry_managed {
+                retry(|| CheckpointStore::rebuild_managed_selection(path, selected)).unwrap();
+            } else {
+                CheckpointStore::rebuild_managed_selection(path, selected).unwrap();
+            }
+        }
+        digest
+    }
+
     #[test]
     fn crash_boundaries_leave_a_recoverable_store() {
         for mode in ["adopt", "checkpoint", "selection"] {
@@ -1431,19 +1456,15 @@ mod tests {
             let path = directory.path().join("store");
             let base = directory.path().join("base");
             let destination = directory.path().join("rebuilt");
-            let store = Store::open(&path).unwrap();
-            store.put(b"safe", b"acked").unwrap();
-            let digest = store.checkpoint_to(&base).unwrap();
-            drop(store);
-            if mode != "adopt" {
-                retry(|| {
-                    CheckpointStore::rebuild_managed_selection(
-                        &path,
-                        directory.path().join("selected"),
-                    )
-                })
-                .unwrap();
-            }
+            let digest = crash_fixture_initial(
+                &path,
+                &base,
+                &directory.path().join("selected"),
+                mode != "adopt",
+                true,
+                || {},
+                |_| {},
+            );
             let witness = witness_bytes(&path);
             let selection_before = fs::read(selection::path(&path)).ok();
             let store = crate::test_support::diagnose_lock(
@@ -1576,13 +1597,22 @@ mod tests {
     }
 
     fn unacknowledged_suffix_for_spill() -> UnacknowledgedSuffix {
+        unacknowledged_suffix_before_drop(|| {}, |_| {})
+    }
+
+    fn unacknowledged_suffix_before_drop(
+        before_drop: impl FnOnce(),
+        after_drop: impl FnOnce(&Path),
+    ) -> UnacknowledgedSuffix {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("store");
         let base = directory.path().join("base");
         let store = Store::open(&path).unwrap();
         store.put(b"a", b"base").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
+        before_drop();
         drop(store);
+        after_drop(&path);
         let witness = witness_bytes(&path);
         let store =
             crate::test_support::diagnose_lock(&path, "spill fixture reopen", Store::open(&path))
@@ -1601,6 +1631,98 @@ mod tests {
             witness,
             log,
             base_bytes,
+        }
+    }
+
+    // Run in a separate test process so unrelated parallel tests cannot inherit
+    // the fixture lock and affect the final, single reopen attempt.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rebuild_fixture_drop_reopen_inherits_forked_lock() {
+        const ENV: &str = "EMDA_REBUILD_FIXTURE_FORK_CHILD";
+        if std::env::var_os(ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "checkpoint_store::rebuild::tests::rebuild_fixture_drop_reopen_inherits_forked_lock", "--nocapture"])
+                .env(ENV, "1").status().unwrap();
+            assert!(status.success(), "isolated test failed: {status}");
+            return;
+        }
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::net::UnixStream;
+        unsafe extern "C" {
+            fn fork() -> i32;
+            fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
+            fn _exit(status: i32) -> !;
+            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        }
+        struct Child(i32, Option<UnixStream>);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                if let Some(mut stream) = self.1.take() {
+                    let _ = stream.write_all(&[1]);
+                }
+                let mut status = 0;
+                assert_eq!(unsafe { waitpid(self.0, &mut status, 0) }, self.0);
+                assert_eq!(status, 0);
+            }
+        }
+        fn spawn() -> Child {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let (pid, parent) = std::thread::spawn(move || {
+                let pid = unsafe { fork() };
+                if pid == 0 {
+                    drop(parent);
+                    let mut byte = 0u8;
+                    unsafe {
+                        read(child.as_raw_fd(), (&mut byte as *mut u8).cast(), 1);
+                        _exit(0)
+                    }
+                }
+                assert!(pid > 0);
+                drop(child);
+                (pid, parent)
+            })
+            .join()
+            .unwrap();
+            Child(pid, Some(parent))
+        }
+        fn check(path: &Path, child: Child) {
+            let lock = fs::metadata(path.join("store.lock")).unwrap();
+            assert!(
+                fs::read_dir(format!("/proc/{}/fd", child.0))
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter_map(|e| fs::metadata(e.path()).ok())
+                    .any(|m| m.dev() == lock.dev() && m.ino() == lock.ino())
+            );
+            let error = match Store::open(path) {
+                Ok(_) => panic!("reopen unexpectedly succeeded"),
+                Err(e) => e,
+            };
+            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            drop(child);
+            drop(Store::open(path).unwrap());
+        }
+        let child = std::cell::RefCell::new(None);
+        let fixture = unacknowledged_suffix_before_drop(
+            || *child.borrow_mut() = Some(spawn()),
+            |path| check(path, child.borrow_mut().take().unwrap()),
+        );
+        drop(fixture);
+        for managed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("store");
+            crash_fixture_initial(
+                &path,
+                &dir.path().join("base"),
+                &dir.path().join("selected"),
+                managed,
+                false,
+                || *child.borrow_mut() = Some(spawn()),
+                |path| check(path, child.borrow_mut().take().unwrap()),
+            );
+            drop(Store::open(&path).unwrap());
         }
     }
 

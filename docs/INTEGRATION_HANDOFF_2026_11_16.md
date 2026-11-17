@@ -138,6 +138,11 @@ through `/proc`, and observes `WouldBlock` until the child exits. Its [test and
 Clippy log](../benchmarks/results/2026-11-17-linux-arm64-fixture-fork-regression.log.gz)
 is retained. It demonstrates the mechanism deterministically; it does not
 identify the holders in the other archived failures.
+An additional isolated regression exercises the initial store drop/reopen
+boundaries of the spill and crash fixtures. It checks the exact inherited inode
+and a direct blocked reopen, then a successful reopen after the child exits.
+The managed variant runs its rebuild afterward; it does not fork while that
+rebuild itself holds the lock. The historical failure holders remain unknown.
 Ordinary and checkpoint opens now adopt only the exact log end validated by
 replay. This is defense against mutation by a writer ignoring the advisory
 lock, which remains outside the supported concurrency contract. Two targeted
