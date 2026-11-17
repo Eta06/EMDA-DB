@@ -44,16 +44,17 @@ impl Store {
         let second = inner.index.get(second).copied();
         let generation = inner.generation;
         let log_generation = inner.log_generation;
+        let log = Arc::clone(inner.log.as_ref().expect("published log missing"));
         drop(inner);
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        let first = first.map(|location| self.log.read(location)).transpose()?;
+        let first = first.map(|location| log.read(location)).transpose()?;
         let mut read_second = || {
             if self.commits.failed() {
                 return Err(uncertain_error());
             }
-            second.map(|location| self.log.read(location)).transpose()
+            second.map(|location| log.read(location)).transpose()
         };
         let result = action(first, &mut read_second)?;
         // Match a conservative read-only transaction: wait for in-flight

@@ -419,3 +419,82 @@ fn saturated_direct_reads_do_not_clear_an_uncertain_write() {
     assert!(store.get(b"key").is_err());
     assert_eq!(store.direct_read_status().active, Some(0));
 }
+
+#[test]
+fn direct_reads_use_log_published_with_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let other_dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path()).unwrap();
+    let other = Store::open(other_dir.path()).unwrap();
+    for (key, old, captured) in [
+        (&b"a"[..], &b"old-a"[..], &b"new-a"[..]),
+        (b"b", b"old-b", b"new-b"),
+    ] {
+        store.put(key, old).unwrap();
+        other.put(key, captured).unwrap();
+    }
+    {
+        let mut inner = store.inner.write().unwrap();
+        let source = other.inner.read().unwrap();
+        inner.log = Some(Arc::clone(&other.log));
+        inner.index = Arc::clone(&source.index);
+    }
+    drop(other);
+    store.enable_direct_read_limit(1).unwrap();
+    assert_eq!(store.get(b"a").unwrap(), Some(b"new-a".to_vec()));
+    assert_eq!(
+        store.get_many(&[b"b", b"missing", b"a", b"b"]).unwrap(),
+        vec![
+            Some(b"new-b".to_vec()),
+            None,
+            Some(b"new-a".to_vec()),
+            Some(b"new-b".to_vec())
+        ]
+    );
+    assert_eq!(
+        store.scan(None, None, 10).unwrap(),
+        vec![
+            (b"a".to_vec(), b"new-a".to_vec()),
+            (b"b".to_vec(), b"new-b".to_vec())
+        ]
+    );
+    store.set_active_direct_read_limit(0).unwrap();
+    assert_eq!(
+        store.get(b"a").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        store.get_many(&[b"a"]).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        store.scan(None, None, 1).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn two_point_read_retains_captured_log_across_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let other_dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let other = Store::open(other_dir.path()).unwrap();
+    for key in [&b"a"[..], &b"b"[..]] {
+        store.put(key, b"old").unwrap();
+        other.put(key, b"captured").unwrap();
+    }
+    {
+        let mut inner = store.inner.write().unwrap();
+        inner.log = Some(Arc::clone(&other.log));
+        inner.index = Arc::clone(&other.inner.read().unwrap().index);
+    }
+    drop(other);
+    store
+        .read_two_consistent(b"a", b"b", |first, second| {
+            assert_eq!(first, Some(b"captured".to_vec()));
+            store.inner.write().unwrap().log = Some(Arc::clone(&store.log));
+            assert_eq!(second()?, Some(b"captured".to_vec()));
+            Ok(())
+        })
+        .unwrap();
+}

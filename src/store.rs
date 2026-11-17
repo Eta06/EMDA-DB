@@ -349,8 +349,9 @@ impl Store {
         // The log is append-only, so a location remains valid even if a
         // concurrent writer publishes a newer value after this lookup.
         let location = inner.index.get(key).copied();
+        let log = Arc::clone(inner.log.as_ref().expect("published log missing"));
         drop(inner);
-        location.map(|location| self.log.read(location)).transpose()
+        location.map(|location| log.read(location)).transpose()
     }
 
     /// Reads up to 1,024 keys from one captured index state, in input order.
@@ -387,10 +388,11 @@ impl Store {
             }
             locations.push(location);
         }
+        let log = Arc::clone(inner.log.as_ref().expect("published log missing"));
         drop(inner);
         locations
             .into_iter()
-            .map(|location| location.map(|location| self.log.read(location)).transpose())
+            .map(|location| location.map(|location| log.read(location)).transpose())
             .collect()
     }
 
@@ -438,10 +440,11 @@ impl Store {
             bytes += size;
             locations.push((key.clone(), location));
         }
+        let log = Arc::clone(inner.log.as_ref().expect("published log missing"));
         drop(inner);
         locations
             .into_iter()
-            .map(|(key, location)| self.log.read(location).map(|value| (key, value)))
+            .map(|(key, location)| log.read(location).map(|value| (key, value)))
             .collect()
     }
 
