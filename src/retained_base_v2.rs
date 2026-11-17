@@ -111,6 +111,9 @@ fn scan<R: Read>(
     if source_id == [0; 16] || base_id == [0; 16] {
         return Err(invalid("zero identifier"));
     }
+    if source_id == base_id {
+        return Err(invalid("base identifier equals source identifier"));
+    }
     let boundary = number(&header[48..56]);
     let entries = number(&header[56..64]);
     let key_bytes = number(&header[64..72]);
@@ -321,6 +324,34 @@ mod tests {
     }
     fn set64(bytes: &mut [u8], offset: usize, value: u64) {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    #[test]
+    fn reused_source_identity_is_rejected_even_with_matching_digest_and_binding() {
+        let mut bytes = fixture(3);
+        let source: [u8; 16] = bytes[16..32].try_into().unwrap();
+        bytes[32..48].copy_from_slice(&source);
+        rehash(&mut bytes);
+        let digest = bytes[bytes.len() - 32..].try_into().unwrap();
+        let error = validate(&bytes[..], limits()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("base identifier equals source identifier")
+        );
+        let expected = Expected {
+            digest,
+            source_id: source,
+            base_id: source,
+            boundary: 0,
+        };
+        let error = lookup(&bytes[..], limits(), b"a", 3, expected).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("base identifier equals source identifier")
+        );
     }
     fn entries(keys: &[&[u8]]) -> Vec<u8> {
         let mut b = fixture(0);

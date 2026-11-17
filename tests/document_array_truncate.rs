@@ -964,8 +964,7 @@ fn keep_last_is_ordered_bounded_and_atomic_on_both_backends() {
             updates.push(keep("items", 19_999));
             updates.push(push("items", json!(0)));
         }
-        db.update_if("c", "a", &[], &updates[..100], false)
-            .unwrap();
+        db.update_if("c", "a", &[], &updates[..100], false).unwrap();
         assert_eq!(db.get("c", "a").unwrap(), before_large);
         assert!(db.update_if("c", "a", &[], &updates, false).is_err());
         assert_eq!(db.get("c", "a").unwrap(), before_large);

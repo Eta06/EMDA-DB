@@ -9,6 +9,9 @@ explicit decisions and implementation of all its prerequisites.
 A streaming validator exercises the wire checks below. It returns
 self-consistent metadata only and does not establish
 source provenance, immutable input, trusted authority or safe publication.
+Validation rejects a base ID equal to the source ID, matching the exporter;
+previously the inspection codec accepted such files. Distinct IDs alone do not
+prove freshness, uniqueness, provenance, or authority.
 Single-key lookup captures the requested budgeted value from the same bytes it
 hashes, then returns it only after checking the complete stream and the
 caller-supplied digest, IDs and boundary. A budget failure can precede full
@@ -19,7 +22,7 @@ authorize recovery or deletion.
 
 Proposed `EMDARB02`, little endian, canonical fixed-width integers. Header:
 8-byte magic, u32 version (=2), u32 header length (=112), 16-byte nonzero
-source generation ID, 16-byte nonzero new base ID, u64 boundary, u64 entry
+source generation ID, 16-byte nonzero new base ID distinct from the source ID, u64 boundary, u64 entry
 count, u64 live key bytes, u64 historical peak count, u64 historical peak key
 bytes, u64 encoded entry bytes, u64 flags (=0), and 8 reserved zero bytes.
 This totals 112 bytes. Boundary is an exact committed source-log end offset,
