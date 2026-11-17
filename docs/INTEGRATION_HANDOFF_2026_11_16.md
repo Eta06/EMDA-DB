@@ -199,6 +199,24 @@ sync and witness failure injection remains a useful coverage gap.
 Physical power-loss testing and the independent off-host restore drill remain
 explicitly deferred, not passed.
 
+Subsequent local commits add generation-qualified ordinary and checkpoint
+read-set observations, conservative transaction identity checks, captured-log
+binding for ordinary snapshots, transactions and direct reads, and captured
+log use for initial online copying. These are prerequisites only: no live log
+switch or reclamation is supported. The non-authoritative EMDARB02 export and
+single-key bound lookup do not establish witness provenance or authority.
+The exporter requires callers to keep destinations outside the source and its
+aliases. A proposed persistent source-directory descriptor was not integrated:
+review found it could leave a fresh lock-only store after an added failure and
+did not prevent exchange-away-and-back during pathname-based log opening.
+Descriptor-relative lock, log and witness opens and a separately specified
+recoverable initialization protocol remain open.
+
+Document work since the prior handoff includes bounded `ArrayReverse`, OR
+presence inference for eligible indexes, and targeted rollback/phantom tests.
+The well-formed replaced migration/build cursor trust gap remains open; an
+extra cursor in the same writable metadata would not authenticate progress.
+
 An ordinary-store non-authoritative retained-base exporter now verifies the
 full witnessed history under the writer barrier and streams into a staged,
 no-clobber file with caller resource limits. The caller must keep its
