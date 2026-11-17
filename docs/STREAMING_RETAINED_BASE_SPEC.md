@@ -9,6 +9,11 @@ explicit decisions and implementation of all its prerequisites.
 A streaming validator exercises the wire checks below. It returns
 self-consistent metadata only and does not establish
 source provenance, immutable input, trusted authority or safe publication.
+Single-key lookup captures the requested budgeted value from the same bytes it
+hashes, then returns it only after checking the complete stream and the
+caller-supplied digest, IDs and boundary. A budget failure can precede full
+validation. This inspection API does not establish witness provenance or
+authorize recovery or deletion.
 
 ## Wire format and streaming contract
 

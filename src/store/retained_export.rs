@@ -239,6 +239,177 @@ mod tests {
         assert_eq!(&bytes[122..122 + 150_000], &vec![7; 150_000]);
     }
     #[test]
+    fn lookup_export_verifies_binding_and_complete_stream() {
+        use crate::retained_base_v2::{Expected, Limits, lookup};
+        use std::io::{self, Read};
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("source")).unwrap();
+        let value = vec![7; 150_000];
+        store.put(b"a", &value).unwrap();
+        store.put(b"empty", b"").unwrap();
+        let path = dir.path().join("base");
+        let meta = store
+            .export_retained_base(&path, [1; 16], limits())
+            .unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let binding = Expected {
+            digest: meta.digest,
+            source_id: meta.source_id,
+            base_id: meta.base_id,
+            boundary: meta.boundary,
+        };
+        let lim = Limits {
+            file_bytes: bytes.len() as u64,
+            work_bytes: bytes.len() as u64 + 1,
+            entries: 10,
+            key_bytes: 100,
+        };
+        for invalid_key in [&b""[..], &vec![b'x'; 1025][..]] {
+            assert_eq!(
+                lookup(&bytes[..], lim, invalid_key, 0, binding)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(
+            lookup(&bytes[..], lim, b"a", value.len() - 1, binding)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            lookup(&bytes[..], lim, b"a", value.len(), binding).unwrap(),
+            Some(value)
+        );
+        assert_eq!(
+            lookup(&bytes[..], lim, b"empty", 0, binding).unwrap(),
+            Some(vec![])
+        );
+        assert_eq!(
+            lookup(&bytes[..], lim, b"missing", 0, binding).unwrap(),
+            None
+        );
+        assert!(lookup(&bytes[..], lim, b"a", 1, binding).is_err());
+        assert!(lookup(&bytes[..], lim, b"a", 16 * 1024 * 1024 + 1, binding).is_err());
+        for expected in [
+            Expected {
+                digest: [0; 32],
+                ..binding
+            },
+            Expected {
+                source_id: [9; 16],
+                ..binding
+            },
+            Expected {
+                base_id: [9; 16],
+                ..binding
+            },
+            Expected {
+                boundary: binding.boundary + 1,
+                ..binding
+            },
+        ] {
+            assert!(lookup(&bytes[..], lim, b"a", 150_000, expected).is_err());
+        }
+        for end in [0, 112, 121, bytes.len() - 1] {
+            assert!(lookup(&bytes[..end], lim, b"missing", 0, binding).is_err());
+        }
+        let mut corrupt = bytes.clone();
+        corrupt[122] ^= 1;
+        assert!(lookup(&corrupt[..], lim, b"a", 150_000, binding).is_err());
+        // A forged self-consistent file still cannot satisfy the independent binding.
+        use sha2::{Digest, Sha256};
+        let end = corrupt.len() - 32;
+        let mut hash = Sha256::new();
+        hash.update(b"EMDA retained base v2\0");
+        hash.update(&corrupt[..end]);
+        corrupt[end..].copy_from_slice(&hash.finalize());
+        assert!(lookup(&corrupt[..], lim, b"a", 150_000, binding).is_err());
+        let mut extra = bytes.clone();
+        extra.push(1);
+        assert!(
+            lookup(
+                &extra[..],
+                Limits {
+                    file_bytes: lim.file_bytes + 1,
+                    work_bytes: lim.work_bytes + 1,
+                    ..lim
+                },
+                b"missing",
+                0,
+                binding
+            )
+            .is_err()
+        );
+        struct Fault<'a> {
+            bytes: &'a [u8],
+            remaining: usize,
+        }
+        impl Read for Fault<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(io::ErrorKind::PermissionDenied.into());
+                }
+                let n = out.len().min(self.bytes.len()).min(self.remaining).min(7);
+                out[..n].copy_from_slice(&self.bytes[..n]);
+                self.bytes = &self.bytes[n..];
+                self.remaining -= n;
+                Ok(n)
+            }
+        }
+        // Switch the source after some bytes have been read, simulating a
+        // deterministic mid-stream mutation of the selected value.
+        struct Changing<'a> {
+            original: &'a [u8],
+            changed: &'a [u8],
+            pos: usize,
+        }
+        impl Read for Changing<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                let source = if self.pos < 122 {
+                    self.original
+                } else {
+                    self.changed
+                };
+                let limit = if self.pos < 122 { 122 } else { source.len() };
+                let n = out.len().min(limit - self.pos);
+                out[..n].copy_from_slice(&source[self.pos..self.pos + n]);
+                self.pos += n;
+                Ok(n)
+            }
+        }
+        assert!(
+            lookup(
+                Changing {
+                    original: &bytes,
+                    changed: &corrupt,
+                    pos: 0
+                },
+                lim,
+                b"a",
+                150_000,
+                binding
+            )
+            .is_err()
+        );
+        for at in [1, 122, bytes.len()] {
+            assert!(
+                lookup(
+                    Fault {
+                        bytes: &bytes,
+                        remaining: at
+                    },
+                    lim,
+                    b"missing",
+                    0,
+                    binding
+                )
+                .is_err()
+            );
+        }
+    }
+    #[test]
     fn rejects_budgets_conflicts_and_reports_uncertainty() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path().join("source")).unwrap();

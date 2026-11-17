@@ -3,7 +3,8 @@
 //! This validates bytes, not their source, historical peak provenance, or any
 //! witness. It does not stage entries or provide recovery. The caller must keep
 //! the input immutable during validation and any subsequent use. Limits bound
-//! admitted bytes and work, not I/O latency. No memory is allocated from input.
+//! admitted bytes and work, not I/O latency. Validation allocates no memory
+//! from input; lookup allocates at most the explicit returned-value budget.
 use sha2::{Digest, Sha256};
 use std::io::{self, Read};
 
@@ -42,7 +43,56 @@ fn add(a: u64, b: u64) -> io::Result<u64> {
 
 /// Validate one complete stream. Ordinary short reads are retried; an error,
 /// truncation, trailing data or limit violation never yields metadata.
-pub fn validate<R: Read>(mut reader: R, limits: Limits) -> io::Result<Validated> {
+pub fn validate<R: Read>(reader: R, limits: Limits) -> io::Result<Validated> {
+    scan(reader, limits, None).map(|(metadata, _)| metadata)
+}
+
+/// Independently supplied binding for a lookup. The digest must come from a
+/// trusted caller; the file's own trailer is not a witness or authority.
+#[derive(Clone, Copy, Debug)]
+pub struct Expected {
+    pub digest: [u8; 32],
+    pub source_id: [u8; 16],
+    pub base_id: [u8; 16],
+    pub boundary: u64,
+}
+
+/// Verify the complete stream and return the selected value, if present.
+/// The value is captured from the same reads used to hash it. This operation
+/// provides no recovery, deletion, or live switch. The caller must obtain the
+/// expected binding independently and decide whether it is trustworthy.
+/// A value-budget rejection can occur before validation completes and does not
+/// establish that the input is authentic or that the key is present.
+pub fn lookup<R: Read>(
+    reader: R,
+    limits: Limits,
+    key: &[u8],
+    max_value_bytes: usize,
+    expected: Expected,
+) -> io::Result<Option<Vec<u8>>> {
+    crate::record::validate_key(key)?;
+    if max_value_bytes > 16 * 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "value budget exceeds format maximum",
+        ));
+    }
+    let (metadata, value) = scan(reader, limits, Some((key, max_value_bytes)))?;
+    if metadata.digest != expected.digest
+        || metadata.source_id != expected.source_id
+        || metadata.base_id != expected.base_id
+        || metadata.boundary != expected.boundary
+    {
+        return Err(invalid("expected binding mismatch"));
+    }
+    Ok(value)
+}
+
+fn scan<R: Read>(
+    mut reader: R,
+    limits: Limits,
+    selection: Option<(&[u8], usize)>,
+) -> io::Result<(Validated, Option<Vec<u8>>)> {
     let mut header = [0u8; 112];
     // Require a budget for the header before performing any reads.
     if limits.file_bytes < 144 || limits.work_bytes < 145 {
@@ -85,6 +135,7 @@ pub fn validate<R: Read>(mut reader: R, limits: Limits) -> io::Result<Validated>
     let mut previous_len = 0usize;
     let mut key = [0u8; 1024];
     let mut buffer = [0u8; 65536];
+    let mut captured = None;
     let mut observed = 0u64;
     let mut keys = 0u64;
     for _ in 0..entries {
@@ -111,11 +162,28 @@ pub fn validate<R: Read>(mut reader: R, limits: Limits) -> io::Result<Validated>
         }
         previous[..kl].copy_from_slice(&key[..kl]);
         previous_len = kl;
+        let selected = selection.is_some_and(|(wanted, _)| wanted == &key[..kl]);
+        if selected {
+            if vl > selection.unwrap().1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "value budget exceeded",
+                ));
+            }
+            let mut value = Vec::new();
+            value
+                .try_reserve_exact(vl)
+                .map_err(|_| io::Error::other("value allocation failed"))?;
+            captured = Some(value);
+        }
         let mut remaining = vl;
         while remaining != 0 {
             let n = remaining.min(buffer.len());
             reader.read_exact(&mut buffer[..n])?;
             hash.update(&buffer[..n]);
+            if selected {
+                captured.as_mut().unwrap().extend_from_slice(&buffer[..n]);
+            }
             remaining -= n;
         }
     }
@@ -137,17 +205,20 @@ pub fn validate<R: Read>(mut reader: R, limits: Limits) -> io::Result<Validated>
             Err(e) => return Err(e),
         }
     }
-    Ok(Validated {
-        source_id,
-        base_id,
-        boundary,
-        entries,
-        key_bytes,
-        peak_entries,
-        peak_key_bytes,
-        file_bytes,
-        digest,
-    })
+    Ok((
+        Validated {
+            source_id,
+            base_id,
+            boundary,
+            entries,
+            key_bytes,
+            peak_entries,
+            peak_key_bytes,
+            file_bytes,
+            digest,
+        },
+        captured,
+    ))
 }
 
 #[cfg(test)]
