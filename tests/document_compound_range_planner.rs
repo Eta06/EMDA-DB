@@ -634,7 +634,9 @@ fn compound_range_detects_a_multi_page_phantom() {
                 tx.put_raw(b"compound-range-paged-phantom", b"bad")?;
                 Ok(())
             });
-            assert_eq!(result.unwrap_err().kind(), ErrorKind::WouldBlock);
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::WouldBlock);
+            assert!(database_engine::is_transaction_conflict(&error));
             writer.join().unwrap();
         });
         assert_eq!(
@@ -801,4 +803,143 @@ fn compound_ranges_work_after_full_log_recovery() {
         let ordinary = retry_lock(|| Store::open(&source)).unwrap();
         check(&DocumentDatabase::new(&ordinary));
     }
+}
+
+fn or_presence_request(proof: DocumentFilter) -> DocumentQuery {
+    query(
+        and(vec![
+            eq("tenant", json!("t")),
+            cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(1)),
+            proof,
+        ]),
+        20,
+    )
+}
+
+fn or_presence_proof() -> DocumentFilter {
+    DocumentFilter::Or(vec![
+        eq("flag", json!(null)),
+        and(vec![exists("flag", true), eq("kind", json!("yes"))]),
+        DocumentFilter::Or(vec![eq("flag", json!(true)), eq("flag", json!(false))]),
+    ])
+}
+
+#[test]
+fn or_presence_proves_compound_suffix_and_mixed_branches_fall_back() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(&["tenant", "score", "flag"], None))
+            .unwrap();
+        for (id, doc) in [
+            ("a", json!({"tenant":"t", "score":2, "flag":null})),
+            (
+                "b",
+                json!({"tenant":"t", "score":3, "flag":true, "kind":"yes"}),
+            ),
+            ("c", json!({"tenant":"t", "score":4, "kind":"yes"})),
+            ("d", json!({"tenant":"t", "score":5, "flag":false})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        let request = or_presence_request(or_presence_proof());
+        compare(db, &request, access(1, false));
+        let ids: Vec<_> = db
+            .query_planned("c", &request)
+            .unwrap()
+            .result
+            .documents
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(ids, ["a", "b", "d"]);
+        for proof in [
+            DocumentFilter::Or(vec![exists("flag", true), eq("kind", json!("yes"))]),
+            DocumentFilter::Or(vec![exists("flag", true), exists("flag", false)]),
+            DocumentFilter::Or(vec![]),
+        ] {
+            compare(
+                db,
+                &or_presence_request(proof),
+                DocumentQueryAccess::CollectionScan,
+            );
+        }
+        db.transaction_with_read_set(|tx| {
+            assert!(tx.delete("c", "a")?);
+            tx.replace(
+                "c",
+                "c",
+                &json!({"tenant":"t", "score":4, "flag":true}),
+                false,
+            )?;
+            tx.replace("c", "b", &json!({"tenant":"t", "score":3}), false)?;
+            let scan = tx.query("c", &request)?;
+            let planned = tx.query_planned("c", &request)?;
+            assert_eq!(planned.access, access(1, false));
+            assert_eq!(planned.result.documents, scan.documents);
+            assert_eq!(
+                planned
+                    .result
+                    .documents
+                    .iter()
+                    .map(|r| r.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["c", "d"]
+            );
+            Ok(())
+        })
+        .unwrap();
+        compare(db, &request, access(1, false));
+    });
+}
+
+#[test]
+fn or_presence_compound_range_conflicts_on_concurrent_phantom() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(&["tenant", "score", "flag"], None))
+            .unwrap();
+        let request = or_presence_request(or_presence_proof());
+        compare(db, &request, access(1, false));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                ready_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("reader did not reach query");
+                let result = db.insert(
+                    "c",
+                    "phantom",
+                    &json!({"tenant":"t", "score":2, "flag":true}),
+                );
+                done_tx.send(result).unwrap();
+            });
+            let result = db.transaction_with_read_set(|tx| {
+                let planned = tx.query_planned("c", &request)?;
+                assert_eq!(planned.access, access(1, false));
+                assert!(planned.result.documents.is_empty());
+                ready_tx.send(()).unwrap();
+                done_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("writer timed out")?;
+                tx.put_raw(b"or-presence-conflict-marker", b"must roll back")?;
+                Ok(())
+            });
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::WouldBlock);
+            assert!(database_engine::is_transaction_conflict(&error));
+            writer.join().unwrap();
+        });
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"or-presence-conflict-marker"))
+                .unwrap(),
+            None
+        );
+        compare(db, &request, access(1, false));
+        assert_eq!(db.query("c", &request).unwrap().documents.len(), 1);
+    });
 }
