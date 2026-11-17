@@ -87,6 +87,7 @@ dependencies = [
 name = "database-engine-fuzz"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "database-engine",
  "libfuzzer-sys",
  "rustix",

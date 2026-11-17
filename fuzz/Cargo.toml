@@ -14,10 +14,18 @@ libfuzzer-sys = "0.4"
 sha2 = "0.10"
 serde_json = "1.0"
 tempfile = "3.20"
+crc32fast = "1.4"
 
 [[bin]]
 name = "recovery"
 path = "fuzz_targets/recovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "large_record_recovery"
+path = "fuzz_targets/large_record_recovery.rs"
 test = false
 doc = false
 bench = false
@@ -322,6 +330,13 @@ bench = false
 [[bin]]
 name = "document_collection_drop"
 path = "fuzz_targets/document_collection_drop.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bounded_rebuild"
+path = "fuzz_targets/bounded_rebuild.rs"
 test = false
 doc = false
 bench = false

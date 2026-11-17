@@ -10,6 +10,7 @@ name: macOS correctness
       - "Cargo.lock"
       - "src/**"
       - "tests/**"
+      - "examples/sync_failure_probe.rs"
   pull_request:
     paths:
       - ".github/workflows/macos.yml"
@@ -17,6 +18,7 @@ name: macOS correctness
       - "Cargo.lock"
       - "src/**"
       - "tests/**"
+      - "examples/sync_failure_probe.rs"
 
 permissions:
   contents: read
@@ -46,3 +48,5 @@ jobs:
           rustc +${{ matrix.toolchain }} --version
       - name: Test library and integration tests
         run: cargo +${{ matrix.toolchain }} test --locked --lib --tests
+      - name: Test filesystem fault probe
+        run: cargo +${{ matrix.toolchain }} test --locked --example sync_failure_probe

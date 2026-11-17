@@ -26,6 +26,12 @@ jobs:
       - name: Install cargo-fuzz
         id: fuzz_setup
         run: cargo +nightly-2026-11-03 install cargo-fuzz --version 0.13.2 --locked
+      - name: Run bounded checkpoint rebuild fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/bounded-rebuild-corpus"
+          cp fuzz/bounded-rebuild-seeds/* "$RUNNER_TEMP/bounded-rebuild-corpus/"
+          cargo +nightly-2026-11-03 fuzz run bounded_rebuild "$RUNNER_TEMP/bounded-rebuild-corpus" -- -max_total_time=60 -max_len=48 -timeout=10
       - name: Run JSON string input-budget fuzzing
         if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
         run: |
@@ -68,6 +74,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/staging-cleanup-corpus"
           cp fuzz/staging-cleanup-seeds/* "$RUNNER_TEMP/staging-cleanup-corpus/"
           cargo +nightly-2026-11-03 fuzz run staging_cleanup "$RUNNER_TEMP/staging-cleanup-corpus" -- -max_total_time=60 -max_len=64 -timeout=10
+      - name: Run large-record recovery fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 4 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/large-record-recovery-corpus"
+          cp fuzz/large-record-recovery-seeds/* "$RUNNER_TEMP/large-record-recovery-corpus/"
+          cargo +nightly-2026-11-03 fuzz run large_record_recovery "$RUNNER_TEMP/large-record-recovery-corpus" -- -max_total_time=60 -max_len=16 -timeout=10
       - name: Run checkpoint parser fuzzing
         if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 3 }}
         run: |

@@ -89,7 +89,7 @@ fuzz_target!(|data: &[u8]| {
     for bytes in data[1..].chunks_exact(2) {
         let item = value(bytes[1]);
         let array_path = path("items");
-        let operation = match bytes[0] % 8 {
+        let operation = match bytes[0] % 9 {
             0 => {
                 model.push(item.clone());
                 Some(DocumentUpdate::ArrayPush {
@@ -167,6 +167,18 @@ fuzz_target!(|data: &[u8]| {
                 });
                 assert!(result.is_err());
                 None
+            }
+            7 => {
+                let max_len = if bytes[1] == u8::MAX {
+                    usize::MAX
+                } else {
+                    usize::from(bytes[1])
+                };
+                model.truncate(max_len);
+                Some(DocumentUpdate::ArrayTruncate {
+                    path: array_path,
+                    max_len,
+                })
             }
             _ => {
                 drop(store);
