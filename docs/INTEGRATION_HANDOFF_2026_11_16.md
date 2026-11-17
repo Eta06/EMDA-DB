@@ -143,6 +143,11 @@ boundaries of the spill and crash fixtures. It checks the exact inherited inode
 and a direct blocked reopen, then a successful reopen after the child exits.
 The managed variant runs its rebuild afterward; it does not fork while that
 rebuild itself holds the lock. The historical failure holders remain unknown.
+A separate isolated regression now forks while managed rebuild holds its source
+lock. It verifies the child's inherited inode, observes direct reopen blocked
+after rebuild returns, and reopens successfully after child exit with selection
+and source intact. This establishes that mechanism for the controlled case,
+not the holders in the archived failure.
 Ordinary and checkpoint opens now adopt only the exact log end validated by
 replay. This is defense against mutation by a writer ignoring the advisory
 lock, which remains outside the supported concurrency contract. Two targeted
