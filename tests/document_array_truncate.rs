@@ -812,3 +812,102 @@ fn reverse_is_ordered_bounded_and_atomic_on_both_backends() {
         assert_eq!(db.get("c", "a").unwrap(), before);
     });
 }
+
+#[test]
+fn reverse_rejects_invalid_updates_atomically_on_both_backends() {
+    with_both_backends(|db| {
+        prepare(db);
+        let reverse = |field: &str| DocumentUpdate::ArrayReverse { path: path(field) };
+        let invalid_paths = [
+            vec![],
+            vec!["p".into(); 33],
+            vec!["x".repeat(129)],
+            vec!["".into()],
+        ];
+        for path in invalid_paths {
+            let message = if path.len() == 33 || path.is_empty() {
+                "field path must have between 1 and 32 components"
+            } else {
+                "name must contain between 1 and 128 UTF-8 bytes"
+            };
+            reject(
+                db,
+                "a",
+                &[],
+                &[reverse("items"), DocumentUpdate::ArrayReverse { path }],
+                false,
+                ErrorKind::InvalidInput,
+                message,
+            );
+        }
+        for field in ["note.child", "score.child", "items.0"] {
+            reject(
+                db,
+                "a",
+                &[],
+                &[reverse("items"), reverse(field)],
+                false,
+                ErrorKind::InvalidInput,
+                "update path traverses a non-object",
+            );
+        }
+        reject(
+            db,
+            "a",
+            &[],
+            &[reverse("items"), reverse("note")],
+            false,
+            ErrorKind::InvalidInput,
+            "array update requires an array",
+        );
+        reject(
+            db,
+            "a",
+            &[],
+            &[reverse("items"), unset("score")],
+            false,
+            ErrorKind::InvalidInput,
+            "required field is missing",
+        );
+        reject(
+            db,
+            "a",
+            &[],
+            &[reverse("items"), unset("items"), set("handle", json!("b"))],
+            false,
+            ErrorKind::AlreadyExists,
+            "unique index constraint violated",
+        );
+    });
+}
+
+#[test]
+fn reverse_shares_exact_work_boundary_and_rolls_back_one_over() {
+    with_both_backends(|db| {
+        prepare(db);
+        let mut original = with_ones(COUNTED_ARRAY);
+        original["items"][0] = json!(7);
+        db.replace("c", "a", &original, false).unwrap();
+        let reverse = DocumentUpdate::ArrayReverse {
+            path: path("items"),
+        };
+        // 99 removals and one reverse examine 999,900 entries; truncation
+        // accounts for the remaining 100 (or 101 for the rejection).
+        let mut prefix = vec![set("tag", json!("new"))];
+        prefix.extend(removes(99));
+        prefix.push(reverse);
+        let mut over = prefix.clone();
+        over.push(truncate("items", COUNTED_ARRAY - REMAINDER - 1));
+        reject_work(db, &over);
+        let mut exact = prefix;
+        exact.push(truncate("items", COUNTED_ARRAY - REMAINDER));
+        assert!(db.update_if("c", "a", &[], &exact, false).unwrap());
+        let mut expected = original;
+        expected["tag"] = json!("new");
+        expected["items"] = json!(vec![1; COUNTED_ARRAY - REMAINDER]);
+        assert_eq!(db.get("c", "a").unwrap(), Some(expected));
+        assert_eq!(ids(db, "tag", &[text("new")]), names(&["a"]));
+        assert_eq!(ids(db, "with_items", &[]), names(&["a", "b"]));
+        assert_eq!(db.verify_collection("c").unwrap().documents, 2);
+    });
+}
