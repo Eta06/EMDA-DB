@@ -494,3 +494,216 @@ fn read_set_build_steps_handle_writes_on_both_sides_of_the_cursor() {
         assert_eq!(db.verify_collection("c").unwrap().index_keys, 6);
     }
 }
+
+const DOCUMENT_PREFIX: &[u8] = b"\0emda-document\x01";
+
+trait RawKv {
+    fn raw_put(&self, key: &[u8], value: &[u8]) -> io::Result<()>;
+    fn raw_scan(&self) -> io::Result<Vec<database_engine::Entry>>;
+}
+
+impl RawKv for Store {
+    fn raw_put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        self.put(key, value)
+    }
+    fn raw_scan(&self) -> io::Result<Vec<database_engine::Entry>> {
+        self.scan(None, None, 1024)
+    }
+}
+
+impl RawKv for CheckpointStore {
+    fn raw_put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        self.put(key, value)
+    }
+    fn raw_scan(&self) -> io::Result<Vec<database_engine::Entry>> {
+        self.scan(None, None, 1024)
+    }
+}
+
+fn names_collection(key: &[u8], kind: u8, collection: &str) -> bool {
+    let Some(rest) = key.strip_prefix(DOCUMENT_PREFIX) else {
+        return false;
+    };
+    let Some((found, rest)) = rest.split_first() else {
+        return false;
+    };
+    if *found != kind || rest.len() < 2 {
+        return false;
+    }
+    let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
+    rest.get(2..2 + len) == Some(collection.as_bytes())
+}
+
+fn index_counts(entries: &[database_engine::Entry], collection: &str) -> (usize, usize) {
+    (
+        entries
+            .iter()
+            .filter(|(key, _)| names_collection(key, b'I', collection))
+            .count(),
+        entries
+            .iter()
+            .filter(|(key, _)| names_collection(key, b'U', collection))
+            .count(),
+    )
+}
+
+fn prepare_unique_drop(db: &DocumentDatabase<'_>, collection: &str) {
+    db.create_collection(collection, CollectionSchema::default())
+        .unwrap();
+    db.insert(collection, "a", &json!({"n": 1})).unwrap();
+    db.insert(collection, "b", &json!({"n": 2})).unwrap();
+    db.create_index(collection, definition(true)).unwrap();
+    db.start_index_drop(collection, "idx").unwrap();
+    assert!(matches!(
+        &db.index_jobs(collection).unwrap()[..],
+        [IndexJobStatus::Dropping {
+            phase: IndexDropPhase::Entries,
+            ..
+        }]
+    ));
+}
+
+fn rewrite_drop(
+    store: &impl RawKv,
+    collection: &str,
+    phase: IndexDropPhase,
+    after: Option<Vec<u8>>,
+) {
+    let entries = store.raw_scan().unwrap();
+    let (key, value) = entries
+        .iter()
+        .find(|(key, _)| names_collection(key, b'M', collection))
+        .unwrap();
+    let mut metadata: serde_json::Value = serde_json::from_slice(value).unwrap();
+    let job = &mut metadata["jobs"][0];
+    job["phase"] = serde_json::to_value(phase).unwrap();
+    job["after"] = match &after {
+        Some(cursor) => serde_json::to_value(cursor).unwrap(),
+        None => serde_json::Value::Null,
+    };
+    store
+        .raw_put(key, &serde_json::to_vec(&metadata).unwrap())
+        .unwrap();
+}
+
+fn assert_skip_rejected(db: &DocumentDatabase<'_>, store: &impl RawKv, collection: &str) {
+    let before = index_counts(&store.raw_scan().unwrap(), collection);
+    assert_eq!(before, (2, 2));
+    let error = db.advance_index_drop(collection, "idx", 128).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error.to_string().contains("skipped existing keys"),
+        "{error}"
+    );
+    assert_eq!(index_counts(&store.raw_scan().unwrap(), collection), before);
+    assert!(matches!(
+        &db.index_jobs(collection).unwrap()[..],
+        [IndexJobStatus::Dropping { name, .. }] if name == "idx"
+    ));
+    let again = db.advance_index_drop(collection, "idx", 1).unwrap_err();
+    assert_eq!(again.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(index_counts(&store.raw_scan().unwrap(), collection), before);
+}
+
+fn exercise_drop_cursor_guard(db: &DocumentDatabase<'_>, store: &impl RawKv) {
+    prepare_unique_drop(db, "ordered");
+    complete_drop_named(db, "ordered");
+    assert!(db.index_jobs("ordered").unwrap().is_empty());
+    assert_eq!(index_counts(&store.raw_scan().unwrap(), "ordered"), (0, 0));
+    db.create_index("ordered", definition(true)).unwrap();
+    assert_eq!(db.verify_collection("ordered").unwrap().index_keys, 4);
+
+    prepare_unique_drop(db, "past");
+    let entries = store.raw_scan().unwrap();
+    let mut entry_keys = entries
+        .iter()
+        .filter(|(key, _)| names_collection(key, b'I', "past"))
+        .map(|(key, _)| key.clone())
+        .collect::<Vec<_>>();
+    entry_keys.sort();
+    let mut past_end = entry_keys.last().unwrap().clone();
+    past_end.push(0);
+    rewrite_drop(store, "past", IndexDropPhase::Entries, Some(past_end));
+    assert_skip_rejected(db, store, "past");
+    assert!(matches!(
+        &db.index_jobs("past").unwrap()[..],
+        [IndexJobStatus::Dropping {
+            phase: IndexDropPhase::Entries,
+            ..
+        }]
+    ));
+
+    prepare_unique_drop(db, "live");
+    let entries = store.raw_scan().unwrap();
+    let live = entries
+        .iter()
+        .filter(|(key, _)| names_collection(key, b'I', "live"))
+        .map(|(key, _)| key.clone())
+        .min()
+        .unwrap();
+    rewrite_drop(store, "live", IndexDropPhase::Entries, Some(live));
+    assert_skip_rejected(db, store, "live");
+    assert!(matches!(
+        &db.index_jobs("live").unwrap()[..],
+        [IndexJobStatus::Dropping {
+            phase: IndexDropPhase::Entries,
+            ..
+        }]
+    ));
+
+    prepare_unique_drop(db, "phase");
+    rewrite_drop(store, "phase", IndexDropPhase::Unique, None);
+    assert_skip_rejected(db, store, "phase");
+    assert!(matches!(
+        &db.index_jobs("phase").unwrap()[..],
+        [IndexJobStatus::Dropping {
+            phase: IndexDropPhase::Unique,
+            ..
+        }]
+    ));
+}
+
+fn complete_drop_named(db: &DocumentDatabase<'_>, collection: &str) {
+    for _ in 0..16 {
+        if db
+            .advance_index_drop(collection, "idx", 1)
+            .unwrap()
+            .complete
+        {
+            return;
+        }
+    }
+    panic!("index drop did not finish");
+}
+
+#[test]
+fn index_drop_refuses_a_cursor_that_skips_surviving_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let ordinary_path = root.path().join("ordinary");
+    let ordinary = Store::open(&ordinary_path).unwrap();
+    exercise_drop_cursor_guard(&DocumentDatabase::new(&ordinary), &ordinary);
+    drop(ordinary);
+    let reopened = Store::open(&ordinary_path).unwrap();
+    let db = DocumentDatabase::new(&reopened);
+    assert_skip_rejected(&db, &reopened, "past");
+    assert_skip_rejected(&db, &reopened, "live");
+    assert_skip_rejected(&db, &reopened, "phase");
+    assert_eq!(
+        index_counts(&reopened.raw_scan().unwrap(), "ordered"),
+        (2, 2)
+    );
+
+    let source = root.path().join("checkpoint");
+    let checkpoint = root.path().join("base");
+    let initial = Store::open(&source).unwrap();
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    drop(initial);
+    let store = retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
+    exercise_drop_cursor_guard(&DocumentDatabase::with_checkpoint_store(&store), &store);
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
+    let db = DocumentDatabase::with_checkpoint_store(&reopened);
+    assert_skip_rejected(&db, &reopened, "past");
+    assert_skip_rejected(&db, &reopened, "live");
+    assert_skip_rejected(&db, &reopened, "phase");
+}

@@ -10,6 +10,78 @@ use crate::{DocumentDatabase, TransactionFailure, test_support::retry_lock};
 use std::fs;
 use std::sync::{Arc, Mutex};
 
+fn v2_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    [u8; 32],
+) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    fs::create_dir(&path).unwrap();
+    fs::write(
+        path.join("records.log"),
+        include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+    )
+    .unwrap();
+    fs::write(
+        path.join("commit.state"),
+        include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+    )
+    .unwrap();
+    let checkpoint = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    (root, path, checkpoint, digest)
+}
+
+#[test]
+fn indexed_document_mutations_recover_at_every_v2_append_cut() {
+    for operation in [0, 1] {
+        let length = {
+            let (_root, path, _, _) = v2_fixture();
+            let store = Store::open(&path).unwrap();
+            let db = DocumentDatabase::new(&store);
+            prepare(&db);
+            let before = fs::metadata(path.join("records.log")).unwrap().len();
+            apply(&db, operation).unwrap();
+            usize::try_from(fs::metadata(path.join("records.log")).unwrap().len() - before).unwrap()
+        };
+        assert!(length > 1);
+        for cut in 0..=length {
+            let (_root, path, checkpoint, digest) = v2_fixture();
+            let armed = Arc::new(Mutex::new(None));
+            let store =
+                retry_lock(|| open_versioned_fault_store(&path, Arc::clone(&armed))).unwrap();
+            let db = DocumentDatabase::new(&store);
+            prepare(&db);
+            *armed.lock().unwrap() = Some(Fault::PartialAppend(cut));
+            let result = apply(&db, operation);
+            assert!(
+                matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
+                "operation={operation}, cut={cut}/{length}: {result:?}"
+            );
+            drop(store);
+            let expected = if cut == 0 {
+                RecoveryExpectation::Committed(false)
+            } else if cut == length {
+                RecoveryExpectation::Committed(true)
+            } else {
+                RecoveryExpectation::Torn
+            };
+            verify_recovery(
+                &path,
+                &checkpoint,
+                &digest,
+                operation,
+                expected,
+                cut % 2 == 0,
+            );
+        }
+    }
+}
+
 #[test]
 fn detailed_document_mutations_report_unknown_and_recover_atomic_indexes() {
     for v2 in [true, false] {

@@ -24,6 +24,7 @@ mod commit;
 mod compact_exchange;
 mod read_set;
 mod rebuild;
+mod rebuild_spill;
 mod selection;
 mod snapshot;
 mod transaction;
@@ -366,7 +367,7 @@ impl CheckpointStore {
         }
         let log = open_writer(&path, boundary, length)?;
         if length > boundary {
-            log.sync_data().map_err(|error| {
+            log.sync_validated_boundary(length).map_err(|error| {
                 io::Error::new(
                     error.kind(),
                     format!("failed to synchronize recovered tail; outcome is uncertain: {error}"),

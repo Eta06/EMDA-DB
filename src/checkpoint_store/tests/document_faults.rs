@@ -441,3 +441,105 @@ fn array_index_and_raw_write_recover_together_for_every_v2_append_cut() {
         assert_eq!(fs::read(log).unwrap(), bytes);
     }
 }
+
+#[test]
+fn compound_partial_indexes_and_raw_key_recover_together_for_every_v2_append_cut() {
+    use crate::store::compound_partial_index_fault_tests::{prepare, update, verify};
+    let length = {
+        let (_root, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let db = DocumentDatabase::with_checkpoint_store(&store);
+        prepare(&db);
+        let log = path.join("records.log");
+        let before = fs::metadata(&log).unwrap().len();
+        update(&db).unwrap();
+        assert!(
+            verify(&db),
+            "successful checkpoint update did not publish the committed document state"
+        );
+        usize::try_from(fs::metadata(log).unwrap().len() - before).unwrap()
+    };
+    assert!(
+        length > 64,
+        "compound partial update did not append a record"
+    );
+    eprintln!(
+        "V2 checkpoint compound partial index append cut points: {}",
+        length + 1
+    );
+    let mut faults = (0..=length).map(LogFault::Partial).collect::<Vec<_>>();
+    let mut committed = false;
+    let mut absent = false;
+    let mut rejected = false;
+    faults.extend([
+        LogFault::SyncBefore,
+        LogFault::SyncAfter,
+        LogFault::SyncTimeout,
+        LogFault::Panic(0),
+        LogFault::Panic(length / 2),
+        LogFault::Panic(length),
+    ]);
+    for fault in faults {
+        let (_root, path, checkpoint, digest) = fixture();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        prepare(&DocumentDatabase::with_checkpoint_store(&store));
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        store
+            .log
+            .replace_io_for_test(Box::new(FaultLog { file, fault }));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            update(&DocumentDatabase::with_checkpoint_store(&store))
+        }));
+        assert!(!matches!(outcome, Ok(Ok(()))));
+        assert!(store.get(b"base").is_err());
+        drop(store);
+        let log = path.join("records.log");
+        let bytes = fs::read(&log).unwrap();
+        let ordinary = match retry_lock(|| Store::open(&path)) {
+            Ok(reopened) => Some(verify(&DocumentDatabase::new(&reopened))),
+            Err(error) => {
+                assert!(matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ));
+                None
+            }
+        };
+        match retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)) {
+            Ok(reopened) => {
+                let checkpoint_committed =
+                    verify(&DocumentDatabase::with_checkpoint_store(&reopened));
+                assert_eq!(
+                    ordinary,
+                    Some(checkpoint_committed),
+                    "ordinary and checkpoint recovery disagreed"
+                );
+                if checkpoint_committed {
+                    committed = true;
+                } else {
+                    absent = true;
+                }
+            }
+            Err(error) => {
+                assert!(
+                    ordinary.is_none(),
+                    "ordinary recovery accepted a log checkpoint recovery rejected: {error}"
+                );
+                assert!(matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+                ));
+                rejected = true;
+            }
+        }
+        assert_eq!(fs::read(&log).unwrap(), bytes);
+    }
+    assert!(
+        committed && absent && rejected,
+        "checkpoint append cuts did not cover committed ({committed}), absent ({absent}), and rejected ({rejected}) recovery"
+    );
+}

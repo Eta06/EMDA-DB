@@ -73,6 +73,58 @@ fn incremental_schema_validation_handles_writes_on_both_backends() {
     exercise(&DocumentDatabase::with_checkpoint_store(&store));
 }
 
+fn exercise_deleted_progress_cursor(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.insert("c", "a", &json!({"email":"a"})).unwrap();
+    db.insert("c", "b", &json!({"email":"b"})).unwrap();
+    db.start_schema_migration("c", schema()).unwrap();
+    db.start_index_build(
+        "c",
+        IndexDefinition {
+            name: "email".into(),
+            fields: vec![vec!["email".into()]],
+            unique: true,
+            partial: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(db.advance_schema_migration("c", 1).unwrap().processed, 1);
+    assert_eq!(
+        db.advance_index_build("c", "email", 1).unwrap().processed,
+        1
+    );
+    assert_eq!(
+        db.schema_migration("c").unwrap().unwrap().after.as_deref(),
+        Some("a")
+    );
+    assert!(db.delete("c", "a").unwrap());
+    finish(db, 1);
+    for _ in 0..10 {
+        if db.advance_index_build("c", "email", 1).unwrap().complete {
+            break;
+        }
+    }
+    assert!(db.index_jobs("c").unwrap().is_empty());
+    assert!(db.get("c", "a").unwrap().is_none());
+    assert_eq!(db.get("c", "b").unwrap(), Some(json!({"email":"b"})));
+    assert_eq!(db.verify_collection("c").unwrap().index_keys, 2);
+}
+
+#[test]
+fn deleted_progress_document_does_not_block_build_or_migration() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path().join("ordinary")).unwrap();
+    exercise_deleted_progress_cursor(&DocumentDatabase::new(&store));
+    let path = root.path().join("checkpoint");
+    let base = root.path().join("base");
+    let initial = Store::open(&path).unwrap();
+    let digest = initial.checkpoint_to(&base).unwrap();
+    drop(initial);
+    let store = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+    exercise_deleted_progress_cursor(&DocumentDatabase::with_checkpoint_store(&store));
+}
+
 #[test]
 fn cancellation_keeps_the_active_schema_and_releases_write_constraints() {
     let root = tempfile::tempdir().unwrap();

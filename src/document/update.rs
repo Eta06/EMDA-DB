@@ -50,6 +50,9 @@ pub enum DocumentUpdate {
     ArrayRemove { path: Vec<String>, value: Value },
     /// Remove the first or last element; a missing or empty array is a no-op.
     ArrayPop { path: Vec<String>, first: bool },
+    /// Keep the first `max_len` elements. A missing field is a no-op, and a
+    /// shorter array is unchanged.
+    ArrayTruncate { path: Vec<String>, max_len: usize },
 }
 
 fn parent_mut<'a>(
@@ -111,7 +114,10 @@ fn apply(document: &mut Value, updates: &[DocumentUpdate]) -> io::Result<()> {
             DocumentUpdate::ArrayPush { .. }
             | DocumentUpdate::ArrayAddUnique { .. }
             | DocumentUpdate::ArrayRemove { .. }
-            | DocumentUpdate::ArrayPop { .. } => array::apply(document, update, &mut array_work)?,
+            | DocumentUpdate::ArrayPop { .. }
+            | DocumentUpdate::ArrayTruncate { .. } => {
+                array::apply(document, update, &mut array_work)?
+            }
         }
     }
     Ok(())
@@ -154,7 +160,8 @@ impl DocumentTransaction<'_, '_> {
                     | DocumentUpdate::ArrayPush { path, .. }
                     | DocumentUpdate::ArrayAddUnique { path, .. }
                     | DocumentUpdate::ArrayRemove { path, .. }
-                    | DocumentUpdate::ArrayPop { path, .. } => path,
+                    | DocumentUpdate::ArrayPop { path, .. }
+                    | DocumentUpdate::ArrayTruncate { path, .. } => path,
                     DocumentUpdate::Rename { from, to } => {
                         schema::validate_path(to)?;
                         if from.starts_with(to) || to.starts_with(from) {

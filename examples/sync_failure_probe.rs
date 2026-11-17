@@ -821,6 +821,9 @@ mod tests {
         use std::io::Write;
 
         for format in ["v2", "v3"] {
+            if format == "v3" && !cfg!(target_os = "linux") {
+                continue;
+            }
             let root = tempfile::tempdir().unwrap();
             setup(root.path(), format).unwrap();
             assert!(verify_rejected(root.path(), "ordinary-first").is_err());

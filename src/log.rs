@@ -336,7 +336,7 @@ impl Log {
             }
         };
         let file: Box<dyn LogIo> = Box::new(file);
-        let (mut log, index) = Self::from_parts(
+        let (mut log, index, validated_end) = Self::from_parts(
             file,
             id,
             witness,
@@ -346,15 +346,22 @@ impl Log {
             checkpoint,
         )?;
         log.anchor = anchor;
+        log.adopt_replayed_tail(boundary, validated_end)?;
+        Ok((log, index))
+    }
+
+    fn adopt_replayed_tail(&self, boundary: Option<u64>, validated_end: u64) -> io::Result<()> {
         if let Some(boundary) = boundary {
-            let total = log.file.len()?;
-            if total > boundary {
+            if validated_end > boundary {
                 // A complete but unacknowledged tail may survive a crash.
                 // Validate it first, then durably publish the adopted boundary.
-                log.sync_data()?;
+                self.sync_validated_boundary(validated_end)?;
+            }
+            if self.file.len()? != validated_end {
+                return Err(record::invalid_data("log length changed after recovery"));
             }
         }
-        Ok((log, index))
+        Ok(())
     }
 
     // Only used by the explicit, non-mutating empty-legacy upgrade path. The
@@ -401,6 +408,7 @@ impl Log {
         // Backup readers contain only the log bytes; their length and digest
         // are verified separately before a fresh witness is installed.
         Self::from_parts(file, id, None, None, metadata, (None, None), None)
+            .map(|(log, index, _)| (log, index))
     }
 
     fn from_parts(
@@ -411,7 +419,7 @@ impl Log {
         metadata: bool,
         limits: (Option<usize>, Option<usize>),
         checkpoint: Option<(&Path, &[u8; 32])>,
-    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>, u64)> {
         let log = Self {
             file,
             log_id,
@@ -444,14 +452,16 @@ impl Log {
             None
         };
         let mut peak = start.as_ref().map_or(0, |checkpoint| checkpoint.peak);
+        let validated_end = log.file.len()?;
         let index = log.recover_from(
+            validated_end,
             boundary,
             max_live_keys,
             max_live_key_bytes,
             start,
             &mut peak,
         )?;
-        Ok((log, index))
+        Ok((log, index, validated_end))
     }
 
     pub(crate) fn read(&self, location: ValueLocation) -> io::Result<Vec<u8>> {
@@ -527,6 +537,23 @@ impl Log {
         self.file.sync_data()?;
         if let Some(witness) = &self.witness {
             witness.advance(self.file.len()?)?;
+        }
+        Ok(())
+    }
+
+    // Adopt only the boundary whose records the caller actually validated.
+    pub(crate) fn sync_validated_boundary(&self, boundary: u64) -> io::Result<()> {
+        self.require_attached_witness()?;
+        if self.file.len()? != boundary {
+            return Err(record::invalid_data(
+                "log length changed before tail adoption",
+            ));
+        }
+        if !self.metadata {
+            self.file.sync_data()?;
+        }
+        if let Some(witness) = &self.witness {
+            witness.advance(boundary)?;
         }
         Ok(())
     }
@@ -656,7 +683,7 @@ impl Log {
     ) -> io::Result<usize> {
         self.verify_witness()?;
         let mut peak = 0;
-        if &self.recover_from(None, None, None, None, &mut peak)? != expected {
+        if &self.recover_from(self.file.len()?, None, None, None, None, &mut peak)? != expected {
             return Err(record::invalid_data(
                 "live index does not match verified log",
             ));
@@ -667,6 +694,7 @@ impl Log {
 
     fn recover_from(
         &self,
+        total: u64,
         boundary: Option<u64>,
         max_live_keys: Option<usize>,
         max_live_key_bytes: Option<usize>,
@@ -678,7 +706,7 @@ impl Log {
             None => (BTreeMap::new(), 0),
         };
         let mut live_key_bytes = 0_usize;
-        self.visit_records(offset, boundary, |key, location| {
+        self.visit_records_to(offset, total, boundary, |key, location| {
             match location {
                 Some(location) => {
                     if max_live_keys
@@ -709,8 +737,16 @@ impl Log {
         Ok(index)
     }
 
-    /// Visits fully verified log mutations without materializing the full index.
-    /// Callers must keep visitor results private until the complete replay succeeds.
+    /// Visits fully verified log mutations without materializing record values.
+    ///
+    /// Payloads are checksummed through `RECOVERY_READ_BUFFER_BYTES` and are
+    /// not retained. A batch keeps each owned child key and value location
+    /// until that record's outer checksum, outer key, and nested records have
+    /// all been checked, then gives them to `visit` in order. The format
+    /// allows at most 1,024 children. `visit` may retain keys; this function
+    /// does not bound that index, returned values, or the time required to
+    /// scan the log. Callers must keep visitor results private until the
+    /// complete replay succeeds.
     pub(crate) fn visit_records(
         &self,
         offset: u64,
@@ -756,6 +792,7 @@ impl Log {
                 witness::parse_header(&header)?;
             }
             offset = LOG_HEADER_SIZE as u64;
+            debug_assert_eq!(reader.position(), offset);
         }
         let mut saw_boundary = boundary.is_none_or(|value| value == offset);
         while offset < total {
@@ -769,41 +806,40 @@ impl Log {
             if total - offset < record_len {
                 return Err(incomplete_record(offset));
             }
-            let mut payload = vec![0_u8; header.key_len + header.value_len];
-            reader.read_exact(&mut payload)?;
-            let mut checksum = [0_u8; 4];
-            reader.read_exact(&mut checksum)?;
-            record::verify(&header_bytes, &payload, u32::from_le_bytes(checksum))?;
-            let key = payload[..header.key_len].to_vec();
-            match header.operation {
-                Operation::Put => {
-                    visit(
-                        key,
-                        Some(ValueLocation {
-                            offset: offset + HEADER_SIZE as u64 + header.key_len as u64,
-                            length: header.value_len,
-                            checksum: crc32fast::hash(&payload[header.key_len..]),
-                        }),
-                    )?;
+            if header.operation == Operation::Batch {
+                let updates = stream_batch(&mut reader, &header_bytes, &header, offset)?;
+                for update in updates {
+                    visit(update.key, update.location)?;
                 }
-                Operation::Delete => {
-                    visit(key, None)?;
+            } else {
+                let mut key = vec![0_u8; header.key_len];
+                reader.read_exact(&mut key)?;
+                let mut record_hasher = crc32fast::Hasher::new();
+                record_hasher.update(&header_bytes);
+                record_hasher.update(&key);
+                let mut value_hasher = crc32fast::Hasher::new();
+                reader.read_with(header.value_len, |chunk| {
+                    record_hasher.update(chunk);
+                    value_hasher.update(chunk);
+                })?;
+                let mut checksum = [0_u8; 4];
+                reader.read_exact(&mut checksum)?;
+                if record_hasher.finalize() != u32::from_le_bytes(checksum) {
+                    return Err(record::invalid_data("record checksum mismatch"));
                 }
-                Operation::Batch => {
-                    if key != [0] {
-                        return Err(record::invalid_data("invalid batch record key"));
-                    }
-                    let outer = ValueLocation {
+                let location = if header.operation == Operation::Put {
+                    Some(ValueLocation {
                         offset: offset + HEADER_SIZE as u64 + header.key_len as u64,
                         length: header.value_len,
-                        checksum: crc32fast::hash(&payload[header.key_len..]),
-                    };
-                    for update in prepare_batch(&payload[header.key_len..], outer)? {
-                        visit(update.key, update.location)?;
-                    }
-                }
+                        checksum: value_hasher.finalize(),
+                    })
+                } else {
+                    None
+                };
+                visit(key, location)?;
             }
             offset += record_len;
+            debug_assert_eq!(reader.position(), offset);
             if boundary == Some(offset) {
                 saw_boundary = true;
             }
@@ -815,6 +851,343 @@ impl Log {
         }
         Ok(())
     }
+}
+
+/// One forward scan of a DB02 payload.
+///
+/// Child keys and value locations are retained until `finish`. Value bytes
+/// are hashed and dropped. At most [`record::batch::MAX_ATOMIC_BATCH_OPERATIONS`]
+/// keys are stored. Nested failures release those keys while the caller
+/// continues hashing the rest of the record for the outer checksum.
+struct BatchScan {
+    phase: BatchPhase,
+    pending: Option<PendingChild>,
+    error: Option<io::Error>,
+    updates: Vec<BatchUpdate>,
+    payload_base: u64,
+    pos: usize,
+    ops_left: usize,
+}
+
+struct PendingChild {
+    operation: Operation,
+    key: Vec<u8>,
+    key_need: usize,
+    value_need: usize,
+    value_len: usize,
+    value_offset: usize,
+    nested: crc32fast::Hasher,
+    value_hash: crc32fast::Hasher,
+}
+
+enum BatchPhase {
+    Count {
+        bytes: [u8; 4],
+        filled: usize,
+    },
+    Header {
+        bytes: [u8; HEADER_SIZE],
+        filled: usize,
+    },
+    Key,
+    Value,
+    Checksum {
+        bytes: [u8; 4],
+        filled: usize,
+    },
+    Trailing,
+    Draining,
+}
+
+impl BatchScan {
+    fn new(payload_base: u64) -> Self {
+        Self {
+            phase: BatchPhase::Count {
+                bytes: [0; 4],
+                filled: 0,
+            },
+            pending: None,
+            error: None,
+            updates: Vec::new(),
+            payload_base,
+            pos: 0,
+            ops_left: 0,
+        }
+    }
+
+    fn push(&mut self, mut chunk: &[u8]) {
+        while !chunk.is_empty() {
+            if matches!(self.phase, BatchPhase::Draining) {
+                return;
+            }
+            chunk = self.consume(chunk);
+        }
+    }
+
+    fn finish(self) -> io::Result<Vec<BatchUpdate>> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        match self.phase {
+            BatchPhase::Trailing => Ok(self.updates),
+            BatchPhase::Count { .. } => Err(record::invalid_data("incomplete batch count")),
+            BatchPhase::Header { .. } => Err(record::invalid_data("incomplete nested header")),
+            BatchPhase::Key | BatchPhase::Value => {
+                Err(record::invalid_data("incomplete nested payload"))
+            }
+            BatchPhase::Checksum { .. } => Err(record::invalid_data("incomplete nested checksum")),
+            BatchPhase::Draining => Err(record::invalid_data("incomplete batch payload")),
+        }
+    }
+
+    fn consume<'a>(&mut self, input: &'a [u8]) -> &'a [u8] {
+        let phase = std::mem::replace(&mut self.phase, BatchPhase::Draining);
+        match phase {
+            BatchPhase::Draining => &[],
+            BatchPhase::Trailing => {
+                self.fail(record::invalid_data("trailing bytes in atomic batch"));
+                &[]
+            }
+            BatchPhase::Count { mut bytes, filled } => {
+                let (got, rest) = split_at_most(input, 4 - filled);
+                bytes[filled..filled + got.len()].copy_from_slice(got);
+                let filled = filled + got.len();
+                self.pos += got.len();
+                if filled < 4 {
+                    self.phase = BatchPhase::Count { bytes, filled };
+                    return rest;
+                }
+                let count = u32::from_le_bytes(bytes) as usize;
+                if count == 0 || count > record::batch::MAX_ATOMIC_BATCH_OPERATIONS {
+                    self.fail(record::invalid_data("invalid batch operation count"));
+                    return &[];
+                }
+                self.ops_left = count;
+                self.updates.reserve(count);
+                self.phase = BatchPhase::Header {
+                    bytes: [0; HEADER_SIZE],
+                    filled: 0,
+                };
+                rest
+            }
+            BatchPhase::Header { mut bytes, filled } => {
+                let (got, rest) = split_at_most(input, HEADER_SIZE - filled);
+                bytes[filled..filled + got.len()].copy_from_slice(got);
+                let filled = filled + got.len();
+                self.pos += got.len();
+                if filled < HEADER_SIZE {
+                    self.phase = BatchPhase::Header { bytes, filled };
+                    return rest;
+                }
+                self.begin_child(bytes);
+                rest
+            }
+            BatchPhase::Key => {
+                let (done, rest) = {
+                    let child = self.pending.as_mut().expect("batch child key");
+                    let (got, rest) = split_at_most(input, child.key_need);
+                    child.key.extend_from_slice(got);
+                    child.nested.update(got);
+                    child.key_need -= got.len();
+                    let done = child.key_need == 0;
+                    self.pos += got.len();
+                    (done, rest)
+                };
+                if done {
+                    self.after_key();
+                } else {
+                    self.phase = BatchPhase::Key;
+                }
+                rest
+            }
+            BatchPhase::Value => {
+                let (done, rest) = {
+                    let child = self.pending.as_mut().expect("batch child value");
+                    let (got, rest) = split_at_most(input, child.value_need);
+                    child.nested.update(got);
+                    child.value_hash.update(got);
+                    child.value_need -= got.len();
+                    let done = child.value_need == 0;
+                    self.pos += got.len();
+                    (done, rest)
+                };
+                if done {
+                    self.phase = BatchPhase::Checksum {
+                        bytes: [0; 4],
+                        filled: 0,
+                    };
+                } else {
+                    self.phase = BatchPhase::Value;
+                }
+                rest
+            }
+            BatchPhase::Checksum { mut bytes, filled } => {
+                let (got, rest) = split_at_most(input, 4 - filled);
+                bytes[filled..filled + got.len()].copy_from_slice(got);
+                let filled = filled + got.len();
+                self.pos += got.len();
+                if filled < 4 {
+                    self.phase = BatchPhase::Checksum { bytes, filled };
+                    return rest;
+                }
+                self.accept(u32::from_le_bytes(bytes));
+                rest
+            }
+        }
+    }
+
+    fn begin_child(&mut self, header_bytes: [u8; HEADER_SIZE]) {
+        let parsed = match Header::parse(&header_bytes) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                self.fail(error);
+                return;
+            }
+        };
+        if parsed.operation == Operation::Batch {
+            self.fail(record::invalid_data("nested batches are not supported"));
+            return;
+        }
+        let value_offset = match self.pos.checked_add(parsed.key_len) {
+            Some(offset) => offset,
+            None => {
+                self.fail(record::invalid_data("batch offset overflow"));
+                return;
+            }
+        };
+        if value_offset
+            .checked_add(parsed.value_len)
+            .and_then(|end| end.checked_add(record::CHECKSUM_SIZE))
+            .is_none()
+        {
+            self.fail(record::invalid_data("batch offset overflow"));
+            return;
+        }
+        let mut nested = crc32fast::Hasher::new();
+        nested.update(&header_bytes);
+        let key_need = parsed.key_len;
+        self.pending = Some(PendingChild {
+            operation: parsed.operation,
+            key: Vec::with_capacity(key_need),
+            key_need,
+            value_need: parsed.value_len,
+            value_len: parsed.value_len,
+            value_offset,
+            nested,
+            value_hash: crc32fast::Hasher::new(),
+        });
+        if key_need == 0 {
+            self.after_key();
+        } else {
+            self.phase = BatchPhase::Key;
+        }
+    }
+
+    fn after_key(&mut self) {
+        let value_need = self.pending.as_ref().expect("batch child").value_need;
+        self.phase = if value_need == 0 {
+            BatchPhase::Checksum {
+                bytes: [0; 4],
+                filled: 0,
+            }
+        } else {
+            BatchPhase::Value
+        };
+    }
+
+    fn accept(&mut self, checksum: u32) {
+        let child = self.pending.take().expect("batch child checksum");
+        if child.nested.finalize() != checksum {
+            self.fail(record::invalid_data("record checksum mismatch"));
+            return;
+        }
+        let location = match child.operation {
+            Operation::Put => {
+                let Some(offset) = self.payload_base.checked_add(child.value_offset as u64) else {
+                    self.fail(record::invalid_data("batch value offset overflow"));
+                    return;
+                };
+                Some(ValueLocation {
+                    offset,
+                    length: child.value_len,
+                    checksum: child.value_hash.finalize(),
+                })
+            }
+            Operation::Delete => None,
+            Operation::Batch => {
+                self.fail(record::invalid_data("nested batch"));
+                return;
+            }
+        };
+        debug_assert!(self.updates.len() < record::batch::MAX_ATOMIC_BATCH_OPERATIONS);
+        self.updates.push(BatchUpdate {
+            key: child.key,
+            location,
+        });
+        self.ops_left -= 1;
+        self.phase = if self.ops_left == 0 {
+            BatchPhase::Trailing
+        } else {
+            BatchPhase::Header {
+                bytes: [0; HEADER_SIZE],
+                filled: 0,
+            }
+        };
+    }
+
+    fn fail(&mut self, error: io::Error) {
+        if self.error.is_none() {
+            self.error = Some(error);
+            self.updates.clear();
+            self.pending = None;
+        }
+        self.phase = BatchPhase::Draining;
+    }
+}
+
+fn split_at_most(input: &[u8], n: usize) -> (&[u8], &[u8]) {
+    let n = n.min(input.len());
+    input.split_at(n)
+}
+
+/// Checksums one batch record without retaining its payload.
+///
+/// The outer checksum is compared first, then the outer key, then nested
+/// decoding. The key is known before the value, but a key mismatch is
+/// reported only after the outer checksum matches. Nested bytes are hashed
+/// either way. Children are parsed only for the canonical key, so a key
+/// failure cannot replace itself with a nested error. The caller publishes
+/// the returned updates only after this function succeeds.
+fn stream_batch(
+    reader: &mut RecoveryReader<'_>,
+    header_bytes: &[u8; HEADER_SIZE],
+    header: &Header,
+    record_offset: u64,
+) -> io::Result<Vec<BatchUpdate>> {
+    debug_assert!(header.operation == Operation::Batch);
+    let mut record_hasher = crc32fast::Hasher::new();
+    record_hasher.update(header_bytes);
+    let mut key = vec![0_u8; header.key_len];
+    reader.read_exact(&mut key)?;
+    record_hasher.update(&key);
+    let key_ok = key.as_slice() == [0_u8];
+    let payload_base = record_offset + HEADER_SIZE as u64 + header.key_len as u64;
+    let mut scan = BatchScan::new(payload_base);
+    reader.read_with(header.value_len, |chunk| {
+        record_hasher.update(chunk);
+        if key_ok {
+            scan.push(chunk);
+        }
+    })?;
+    let mut checksum = [0_u8; 4];
+    reader.read_exact(&mut checksum)?;
+    if record_hasher.finalize() != u32::from_le_bytes(checksum) {
+        return Err(record::invalid_data("record checksum mismatch"));
+    }
+    if !key_ok {
+        return Err(record::invalid_data("invalid batch record key"));
+    }
+    scan.finish()
 }
 
 fn add_recovery_key_bytes(current: usize, additional: usize, max: usize) -> io::Result<usize> {

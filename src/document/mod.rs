@@ -423,6 +423,8 @@ impl<'a> DocumentDatabase<'a> {
     }
 
     /// Advances an incremental index drop by a bounded number of keys.
+    /// A cursor with a surviving key at or before it, or a unique phase that
+    /// still has entry keys, returns `InvalidData` and does not submit the step.
     pub fn advance_index_drop(
         &self,
         collection: &str,

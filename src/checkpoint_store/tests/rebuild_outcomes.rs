@@ -1,6 +1,33 @@
 use super::*;
 use crate::ManagedRebuildFailure;
 
+// This fixture owns the store exclusively and has finished its backup. An
+// unrelated test's pre-exec child may hold a duplicate of its descriptor.
+fn close_backup_fixture(store: Store) -> io::Result<()> {
+    let lock = store.duplicate_store_lock()?;
+    fs2::FileExt::unlock(&lock)?;
+    drop(store);
+    Ok(())
+}
+
+#[test]
+fn backup_fixture_unlocks_even_if_a_duplicate_remains_open() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let store = Store::open(&path).unwrap();
+    store.put(b"key", b"value").unwrap();
+    store.backup(root.path().join("backup")).unwrap();
+    let inherited = store.duplicate_store_lock().unwrap();
+    close_backup_fixture(store).unwrap();
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        reopened.get(b"key").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+    drop(reopened);
+    drop(inherited);
+}
+
 fn rebuild_fixture(
     v2: bool,
     managed: bool,
@@ -37,7 +64,7 @@ fn rebuild_fixture(
     let backup = dir.path().join("backup");
     let store = retry_lock(|| Store::open(&path)).unwrap();
     store.backup(&backup).unwrap();
-    drop(store);
+    close_backup_fixture(store).unwrap();
     (dir, path, base, digest, backup)
 }
 
@@ -64,7 +91,13 @@ fn detailed_rebuild_classifies_publication_boundaries_and_preserves_recovery() {
                     CheckpointStore::rebuild_managed_using(
                         &path,
                         &destination,
-                        |path| Store::open(path),
+                        |path| {
+                            crate::test_support::diagnose_lock(
+                                path,
+                                "rebuild classification source",
+                                Store::open(path),
+                            )
+                        },
                         |parent| {
                             if failure == "checkpoint-sync" {
                                 Err(io::Error::other("injected checkpoint sync failure"))
@@ -148,10 +181,14 @@ fn detailed_rebuild_public_api_preserves_limits_locks_and_existing_files() {
         let previous = fs::read(super::super::selection::path(&path)).unwrap();
         let destination = dir.path().join("new");
         let active = retry_lock(|| Store::open(&path)).unwrap();
-        assert!(matches!(
-            CheckpointStore::rebuild_managed_selection_detailed(&path, &destination),
-            Err(ManagedRebuildFailure::NotPublished(_))
-        ));
+        let result = CheckpointStore::rebuild_managed_selection_detailed(&path, &destination);
+        if let Err(ManagedRebuildFailure::NotPublished(error)) = &result {
+            crate::test_support::report_lock_error(&path, "public rebuild rejection", error);
+        }
+        assert!(
+            matches!(&result, Err(ManagedRebuildFailure::NotPublished(_))),
+            "{result:?}"
+        );
         drop(active);
         assert!(matches!(
             CheckpointStore::rebuild_managed_selection_with_limits_detailed(
@@ -210,7 +247,13 @@ fn detailed_rebuild_holds_the_lock_through_success_or_uncertain_selection_sync()
                         CheckpointStore::rebuild_managed_using(
                             path_ref,
                             destination_ref,
-                            |path| Store::open(path),
+                            |path| {
+                                crate::test_support::diagnose_lock(
+                                    path,
+                                    "rebuild lock-hold source",
+                                    Store::open(path),
+                                )
+                            },
                             super::super::selection::sync_ancestors,
                             || Ok(()),
                             |parent| {
@@ -228,7 +271,11 @@ fn detailed_rebuild_holds_the_lock_through_success_or_uncertain_selection_sync()
                         )
                     })
                 });
-                ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                if let Err(error) = ready_rx.recv_timeout(Duration::from_secs(10)) {
+                    drop(resume_tx);
+                    let result = rebuilding.join();
+                    panic!("rebuild did not reach selection sync: {error:?}; worker={result:?}");
+                }
                 let ordinary = Store::open(&path).err().map(|error| error.kind());
                 let checkpoint = CheckpointStore::open_managed(&path)
                     .err()
@@ -334,10 +381,14 @@ fn not_published_does_not_claim_full_log_recovery_left_the_source_unchanged() {
         let selection = super::super::selection::path(&path);
         fs::write(&selection, b"invalid selection").unwrap();
         let destination = dir.path().join("never-published");
-        assert!(matches!(
-            CheckpointStore::rebuild_managed_selection_detailed(&path, &destination),
-            Err(ManagedRebuildFailure::NotPublished(_))
-        ));
+        let result = CheckpointStore::rebuild_managed_selection_detailed(&path, &destination);
+        if let Err(ManagedRebuildFailure::NotPublished(error)) = &result {
+            crate::test_support::report_lock_error(&path, "not-published recovery", error);
+        }
+        assert!(
+            matches!(&result, Err(ManagedRebuildFailure::NotPublished(_))),
+            "{result:?}"
+        );
         assert!(!destination.exists());
         assert_eq!(fs::read(&selection).unwrap(), b"invalid selection");
         assert_eq!(fs::read(path.join("records.log")).unwrap(), complete_log);
@@ -351,7 +402,7 @@ fn not_published_does_not_claim_full_log_recovery_left_the_source_unchanged() {
             );
             marker.to_vec()
         };
-        assert_ne!(after_witness, before_witness);
+        assert_ne!(after_witness, before_witness, "v2={v2} rebuild={result:?}");
         let recovered = retry_lock(|| Store::open(&path)).unwrap();
         assert_eq!(
             recovered.get(b"pending").unwrap().as_deref(),

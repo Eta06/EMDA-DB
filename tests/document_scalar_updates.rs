@@ -258,6 +258,10 @@ fn scalar_failures_are_atomic_and_preserve_indexes_and_raw_writes() {
                 to: path("num.child"),
             }],
             vec![Rename {
+                from: path("absent"),
+                to: path("num.child"),
+            }],
+            vec![Rename {
                 from: path("required"),
                 to: path("away"),
             }],

@@ -914,6 +914,8 @@ mod shared_snapshot_tests;
 mod array_document_fault_tests;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) mod collection_drop_fault_tests;
+#[cfg(test)]
+pub(crate) mod compound_partial_index_fault_tests;
 
 #[cfg(test)]
 mod fault_tests;

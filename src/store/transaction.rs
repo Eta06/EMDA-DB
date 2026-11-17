@@ -74,6 +74,16 @@ fn check_deadline(deadline: Option<Instant>) -> Result<(), TimedTransactionError
     }
 }
 
+fn classify_validation_snapshot_error(error: io::Error) -> TimedTransactionError {
+    // Snapshot::read_index currently uses TimedOut only for expiry. If that
+    // method gains other timeout sources, use a distinct expiry marker here.
+    if error.kind() == io::ErrorKind::TimedOut {
+        TimedTransactionError::DeadlineExceeded
+    } else {
+        TimedTransactionError::Operation(error)
+    }
+}
+
 /// A process-local point transaction. Changes are staged until the callback
 /// succeeds and commit validation completes; dropping it never commits.
 ///
@@ -536,7 +546,10 @@ impl Store {
                 if current.generation == txn.snapshot.generation {
                     true
                 } else {
-                    let snapshot = txn.snapshot.read_index()?;
+                    let snapshot = txn
+                        .snapshot
+                        .read_index()
+                        .map_err(classify_validation_snapshot_error)?;
                     read_set.matches(&snapshot.index, &current.index)?
                 }
             } else {
@@ -586,6 +599,63 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn deadline_expiring_during_read_set_validation_rejects_staged_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        store.put(b"observed", b"value").unwrap();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let worker_store = Arc::clone(&store);
+        let worker = thread::spawn(move || {
+            worker_store.transaction_until(deadline, TransactionMode::ReadSet, |tx| {
+                assert_eq!(tx.get(b"observed")?.as_deref(), Some(&b"value"[..]));
+                tx.put(b"staged", b"must-not-commit")?;
+                ready_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        store.put(b"unrelated", b"committed").unwrap();
+        let index_lock = store.inner.write().unwrap();
+        resume_tx.send(()).unwrap();
+        let mut writer_acquired = false;
+        while Instant::now() < deadline {
+            if store.writes.try_read().is_err() {
+                writer_acquired = true;
+                break;
+            }
+            thread::yield_now();
+        }
+        // Leave time for the worker to reach the index read after taking the
+        // writer barrier; the held index lock prevents validation until expiry.
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        drop(index_lock);
+        let result = worker.join().unwrap();
+        assert!(
+            writer_acquired,
+            "worker did not reach the writer barrier before expiry"
+        );
+        assert!(
+            matches!(result, Err(TimedTransactionError::DeadlineExceeded)),
+            "{result:?}"
+        );
+        assert_eq!(store.get(b"staged").unwrap(), None);
+        assert_eq!(
+            store.get(b"unrelated").unwrap().as_deref(),
+            Some(&b"committed"[..])
+        );
+        drop(store);
+        let reopened = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
+        assert_eq!(reopened.get(b"staged").unwrap(), None);
+        assert_eq!(
+            reopened.get(b"unrelated").unwrap().as_deref(),
+            Some(&b"committed"[..])
+        );
+    }
 
     #[test]
     fn poisoned_transaction_budget_rejects_new_admissions() {

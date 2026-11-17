@@ -160,6 +160,7 @@ mod compaction;
 mod detailed_document_fault_tests;
 mod direct_admission;
 mod document_faults;
+mod log_retention;
 #[cfg(target_os = "linux")]
 mod metadata_faults;
 mod online_index_faults;

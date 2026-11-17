@@ -4,6 +4,127 @@ use crate::witness::{self, WitnessIo};
 use std::sync::{Arc, Mutex};
 
 #[test]
+fn replayed_tail_adoption_rejects_growth_after_validation() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path();
+    std::fs::write(
+        path.join("records.log"),
+        include_bytes!("../tests/fixtures/v2-empty-records.log"),
+    )
+    .unwrap();
+    std::fs::write(
+        path.join("commit.state"),
+        include_bytes!("../tests/fixtures/v2-empty-commit.state"),
+    )
+    .unwrap();
+    let original_witness = std::fs::read(path.join("commit.state")).unwrap();
+    let store = crate::Store::open(path).unwrap();
+    store.put(b"tail", b"complete").unwrap();
+    drop(store);
+    std::fs::write(path.join("commit.state"), &original_witness).unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap();
+    let (id, metadata) = log_identity(&file).unwrap();
+    let (witness, boundary) = Witness::open(path, id.unwrap()).unwrap();
+    let (log, index, end) = Log::from_parts(
+        Box::new(file),
+        id,
+        Some(witness),
+        Some(boundary),
+        metadata,
+        (None, None),
+        None,
+    )
+    .unwrap();
+    assert!(index.contains_key(&b"tail"[..]));
+    let mut expected = std::fs::read(path.join("records.log")).unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap()
+        .write_all(b"x")
+        .unwrap();
+    expected.push(b'x');
+    let error = log.adopt_replayed_tail(Some(boundary), end).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        std::fs::read(path.join("commit.state")).unwrap(),
+        original_witness
+    );
+    assert_eq!(std::fs::read(path.join("records.log")).unwrap(), expected);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn replayed_v3_tail_adoption_rejects_growth_after_validation() {
+    use rustix::fs::{XattrFlags, fgetxattr, fsetxattr};
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let store = crate::Store::open(&path).unwrap();
+    let marker_file = File::open(path.join("records.log")).unwrap();
+    let mut witness = [0_u8; 36];
+    assert_eq!(
+        fgetxattr(&marker_file, "user.db.commit.v3", &mut witness).unwrap(),
+        36
+    );
+    let anchor = std::fs::read(path.join("commit.state")).unwrap();
+    store.put(b"tail", b"complete").unwrap();
+    drop(store);
+    fsetxattr(
+        &marker_file,
+        "user.db.commit.v3",
+        &witness,
+        XattrFlags::REPLACE,
+    )
+    .unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap();
+    let (id, metadata) = log_identity(&file).unwrap();
+    assert!(metadata);
+    let (attached, boundary) =
+        metadata_witness::open(file.try_clone().unwrap(), id.unwrap()).unwrap();
+    let (log, index, end) = Log::from_parts(
+        Box::new(file),
+        id,
+        Some(attached),
+        Some(boundary),
+        metadata,
+        (None, None),
+        None,
+    )
+    .unwrap();
+    assert!(index.contains_key(&b"tail"[..]));
+    let mut expected = std::fs::read(path.join("records.log")).unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap()
+        .write_all(b"x")
+        .unwrap();
+    expected.push(b'x');
+    assert_eq!(
+        log.adopt_replayed_tail(Some(boundary), end)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+    let mut after = [0_u8; 36];
+    assert_eq!(
+        fgetxattr(&marker_file, "user.db.commit.v3", &mut after).unwrap(),
+        36
+    );
+    assert_eq!(after, witness);
+    assert_eq!(std::fs::read(path.join("commit.state")).unwrap(), anchor);
+    assert_eq!(std::fs::read(path.join("records.log")).unwrap(), expected);
+}
+
+#[test]
 fn detached_checkpoint_view_cannot_acknowledge_writes_or_verify_a_missing_witness() {
     for v2 in [true, false] {
         if !v2 && !cfg!(target_os = "linux") {
@@ -199,5 +320,816 @@ fn metadata_path_requires_witness_update_and_inode_sync_without_a_second_log_syn
         };
         assert_eq!(log.sync_data().is_ok(), fault == Fault::None);
         assert_eq!(&*state.events.lock().unwrap(), expected);
+    }
+}
+
+struct ReplayFile {
+    bytes: Vec<u8>,
+    reads: Arc<Mutex<Vec<usize>>>,
+    fail_read: Option<usize>,
+}
+
+impl LogIo for ReplayFile {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.bytes.len() as u64)
+    }
+
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        let mut reads = self.reads.lock().unwrap();
+        reads.push(buffer.len());
+        if self.fail_read == Some(reads.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "injected short read",
+            ));
+        }
+        drop(reads);
+        let start = usize::try_from(offset).unwrap();
+        let end = start.checked_add(buffer.len()).unwrap();
+        buffer.copy_from_slice(
+            self.bytes.get(start..end).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "replay read past end")
+            })?,
+        );
+        Ok(())
+    }
+
+    fn append_all(&self, _bytes: &[u8]) -> io::Result<()> {
+        Err(io::Error::other("replay file is read-only"))
+    }
+
+    fn sync_data(&self) -> io::Result<()> {
+        Err(io::Error::other("replay file is read-only"))
+    }
+}
+
+fn replay_log(bytes: Vec<u8>, id: Option<[u8; 16]>) -> (Arc<Mutex<Vec<usize>>>, Log) {
+    replay_log_with_failure(bytes, id, None)
+}
+
+fn replay_log_with_failure(
+    bytes: Vec<u8>,
+    id: Option<[u8; 16]>,
+    fail_read: Option<usize>,
+) -> (Arc<Mutex<Vec<usize>>>, Log) {
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let log = Log {
+        metadata: false,
+        anchor: None,
+        file: Box::new(ReplayFile {
+            bytes,
+            reads: Arc::clone(&reads),
+            fail_read,
+        }),
+        log_id: id,
+        witness: None,
+    };
+    (reads, log)
+}
+
+#[test]
+fn streamed_value_short_read_does_not_publish_the_record() {
+    let id = [10_u8; 16];
+    let mut bytes = v2_header(id).to_vec();
+    let value = vec![0x5a; crate::recovery::RECOVERY_READ_BUFFER_BYTES * 2];
+    bytes.extend(record::encode(record::Operation::Put, b"wide", &value).unwrap());
+    let (reads, log) = replay_log_with_failure(bytes, Some(id), Some(2));
+    let mut visits = 0;
+    let error = log
+        .visit_records(0, None, |_, _| {
+            visits += 1;
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    assert_eq!(visits, 0);
+    assert_eq!(reads.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn streamed_record_requires_a_complete_witness_boundary() {
+    let id = [11_u8; 16];
+    let mut bytes = v2_header(id).to_vec();
+    let value = vec![0x33; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 1];
+    bytes.extend(record::encode(record::Operation::Put, b"wide", &value).unwrap());
+    let end = bytes.len() as u64;
+    let (_, log) = replay_log(bytes, Some(id));
+    let error = log
+        .visit_records(0, Some(end - 1), |_, _| Ok(()))
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("acknowledged commit boundary"));
+    log.visit_records(0, Some(end), |_, _| Ok(())).unwrap();
+}
+
+#[test]
+fn streamed_record_rejects_truncated_value_and_checksum_and_bad_trailer() {
+    let id = [12_u8; 16];
+    let value = vec![0x55; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 64];
+    let mut bytes = v2_header(id).to_vec();
+    bytes.extend(record::encode(record::Operation::Put, b"wide", &value).unwrap());
+    for length in [bytes.len() - 20, bytes.len() - 3, bytes.len() - 1] {
+        let (_, log) = replay_log(bytes[..length].to_vec(), Some(id));
+        let mut visits = 0;
+        assert!(
+            log.visit_records(0, None, |_, _| {
+                visits += 1;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(visits, 0);
+    }
+    *bytes.last_mut().unwrap() ^= 1;
+    let (_, log) = replay_log(bytes, Some(id));
+    let mut visits = 0;
+    let error = log
+        .visit_records(0, None, |_, _| {
+            visits += 1;
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("record checksum mismatch"));
+    assert_eq!(visits, 0);
+}
+
+fn v2_header(id: [u8; 16]) -> [u8; 28] {
+    let mut header = [0_u8; 28];
+    header[..8].copy_from_slice(witness::LOG_MAGIC);
+    header[8..24].copy_from_slice(&id);
+    let checksum = crc32fast::hash(&header[..24]);
+    header[24..].copy_from_slice(&checksum.to_le_bytes());
+    header
+}
+
+fn assert_chunked(reads: &Arc<Mutex<Vec<usize>>>) {
+    let reads = reads.lock().unwrap();
+    assert!(!reads.is_empty());
+    assert!(
+        reads
+            .iter()
+            .all(|len| *len <= crate::recovery::RECOVERY_READ_BUFFER_BYTES),
+        "put/delete replay read {reads:?}"
+    );
+}
+
+#[test]
+fn put_and_delete_replay_checks_a_value_larger_than_the_read_buffer() {
+    let id = [7_u8; 16];
+    let value = vec![0x5a_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 100];
+    let mut bytes = v2_header(id).to_vec();
+    bytes.extend(record::encode(record::Operation::Put, b"wide", &value).unwrap());
+    bytes.extend(record::encode(record::Operation::Put, b"next", b"ok").unwrap());
+    bytes.extend(record::encode(record::Operation::Delete, b"wide", b"").unwrap());
+    let (reads, log) = replay_log(bytes, Some(id));
+    let mut seen = Vec::new();
+    log.visit_records(0, None, |key, location| {
+        seen.push((key, location.map(|location| location.checksum)));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            (b"wide".to_vec(), Some(crc32fast::hash(&value))),
+            (b"next".to_vec(), Some(crc32fast::hash(b"ok"))),
+            (b"wide".to_vec(), None),
+        ]
+    );
+    assert_chunked(&reads);
+}
+
+#[test]
+fn legacy_replay_also_chunks_a_value_past_the_read_buffer() {
+    let value = vec![0x11_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 1];
+    let bytes = record::encode(record::Operation::Put, b"k", &value).unwrap();
+    let (reads, log) = replay_log(bytes, None);
+    let mut checksum = None;
+    log.visit_records(0, None, |_key, location| {
+        checksum = location.map(|location| location.checksum);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(checksum, Some(crc32fast::hash(&value)));
+    assert_chunked(&reads);
+}
+
+#[test]
+fn corruption_past_the_recovery_buffer_fails_before_the_record_is_published() {
+    let id = [8_u8; 16];
+    let value = vec![0x5a_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 80];
+    let encoded = record::encode(record::Operation::Put, b"wide", &value).unwrap();
+    let mut bytes = v2_header(id).to_vec();
+    let value_at = bytes.len() + record::HEADER_SIZE + b"wide".len();
+    bytes.extend(encoded);
+    bytes.extend(record::encode(record::Operation::Put, b"later", b"kept").unwrap());
+    bytes[value_at + crate::recovery::RECOVERY_READ_BUFFER_BYTES] ^= 1;
+    let (_reads, log) = replay_log(bytes, Some(id));
+    let mut visits = 0_usize;
+    let error = log
+        .visit_records(0, None, |_, _| {
+            visits += 1;
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error.to_string().contains("record checksum mismatch"),
+        "{error}"
+    );
+    assert_eq!(visits, 0);
+}
+
+#[test]
+fn an_incomplete_large_record_is_rejected_without_reading_its_value() {
+    let id = [9_u8; 16];
+    let mut header = [0_u8; record::HEADER_SIZE];
+    header[..4].copy_from_slice(b"DB01");
+    header[4] = 1;
+    header[5..9].copy_from_slice(&1_u32.to_le_bytes());
+    header[9..13].copy_from_slice(&(crate::record::MAX_VALUE as u32).to_le_bytes());
+    let checksum = crc32fast::hash(&header[..13]);
+    header[13..].copy_from_slice(&checksum.to_le_bytes());
+    let mut bytes = v2_header(id).to_vec();
+    bytes.extend(header);
+    bytes.extend_from_slice(b"k");
+    let (reads, log) = replay_log(bytes, Some(id));
+    let error = log.visit_records(0, None, |_, _| Ok(())).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error.to_string().contains("incomplete log record"),
+        "{error}"
+    );
+    assert_chunked(&reads);
+}
+
+#[test]
+fn streamed_batch_matches_prepare_batch_for_valid_and_malformed_payloads() {
+    let small = sample_batch(&[
+        BatchOp::Put {
+            key: b"child",
+            value: b"value",
+        },
+        BatchOp::Delete { key: b"gone" },
+        BatchOp::Put {
+            key: b"child",
+            value: b"",
+        },
+    ]);
+    let wide_key = vec![0x11_u8; 1024];
+    let crossed = sample_batch(&[
+        BatchOp::Put {
+            key: &wide_key,
+            value: &vec![0x5a_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES],
+        },
+        BatchOp::Put {
+            key: b"tail",
+            value: &vec![0x6b_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 1],
+        },
+        BatchOp::Delete { key: b"tail" },
+    ]);
+    let mut patterned = Vec::with_capacity(70_000);
+    patterned.extend((0..70_000).map(|index| (index % 251) as u8));
+    let patterned = sample_batch(&[
+        BatchOp::Put {
+            key: b"pattern",
+            value: &patterned,
+        },
+        BatchOp::Delete { key: b"other" },
+    ]);
+    let max_ops = indexed_deletes(record::batch::MAX_ATOMIC_BATCH_OPERATIONS);
+    let mut flipped_value = small.clone();
+    let value_at = 4 + record::HEADER_SIZE + b"child".len();
+    flipped_value[value_at] ^= 1;
+    let mut flipped_header = small.clone();
+    flipped_header[4] ^= 1;
+    let mut truncated = small.clone();
+    truncated.truncate(small.len() / 2);
+    let mut short_checksum = small.clone();
+    short_checksum.truncate(small.len() - 2);
+    let mut trailing = small.clone();
+    trailing.push(0);
+    let mut payloads = vec![
+        small,
+        sample_batch(&[BatchOp::Delete { key: b"only" }]),
+        sample_batch(&[BatchOp::Put {
+            key: b"empty",
+            value: b"",
+        }]),
+        crossed,
+        patterned,
+        max_ops,
+        Vec::new(),
+        vec![1, 2, 3],
+        0_u32.to_le_bytes().to_vec(),
+        count_payload(1, 0),
+        count_payload(1, 10),
+        count_payload(1025, 64),
+        count_payload(1025, 70_000),
+        count_payload(u32::MAX, 32),
+        truncated,
+        short_checksum,
+        trailing,
+        flipped_value,
+        flipped_header,
+        nested_batch_payload(),
+        lone_nested_header(1, 0, 0),
+        lone_nested_header(2, 1, 1),
+    ];
+    payloads.extend((1..6).map(|cut| {
+        let mut partial = sample_batch(&[BatchOp::Put {
+            key: b"cut",
+            value: b"abcdef",
+        }]);
+        partial.truncate(partial.len() - cut);
+        partial
+    }));
+
+    for payload in &payloads {
+        assert_scanner_matches_prepare_batch(payload);
+        assert_legacy_replay_matches_prepare_batch(payload);
+    }
+}
+
+#[test]
+fn batch_replay_streams_a_split_child_header_and_the_next_record() {
+    let id = [6_u8; 16];
+    let buffer = crate::recovery::RECOVERY_READ_BUFFER_BYTES;
+    let mut bytes = v2_header(id).to_vec();
+    bytes.extend(record::encode(record::Operation::Put, b"early", b"1").unwrap());
+    let batch_at = bytes.len();
+    let payload_at = batch_at + record::HEADER_SIZE + 1;
+    let first_payload_budget = buffer - payload_at;
+    let second_header_at = first_payload_budget - 3;
+    let value_len = second_header_at - (4 + record::HEADER_SIZE + 1 + record::CHECKSUM_SIZE);
+    assert!(second_header_at + record::HEADER_SIZE > first_payload_budget);
+    let wide: Vec<u8> = (0..value_len).map(|index| (index % 251) as u8).collect();
+    let payload = record::batch::encode_payload(&[
+        record::batch::BatchOperation::Put {
+            key: b"wide",
+            value: &wide,
+        },
+        record::batch::BatchOperation::Put {
+            key: b"next",
+            value: b"child",
+        },
+        record::batch::BatchOperation::Delete { key: b"early" },
+    ])
+    .unwrap();
+    let batch = record::encode(record::Operation::Batch, &[0], &payload).unwrap();
+    bytes.extend(batch);
+    bytes.extend(record::encode(record::Operation::Put, b"tail", b"z").unwrap());
+    let payload_base = payload_at as u64;
+    let expected = projected_batch(&payload, payload_base).unwrap();
+
+    let (reads, log) = replay_log(bytes, Some(id));
+    let seen = visit_projected(&log).unwrap();
+    assert_eq!(seen[0].0, b"early");
+    assert_eq!(&seen[1..seen.len() - 1], expected.as_slice());
+    let (tail_offset, tail_len, tail_checksum) = seen.last().unwrap().1.unwrap();
+    assert_eq!(seen.last().unwrap().0, b"tail");
+    assert_eq!((tail_len, tail_checksum), (1, crc32fast::hash(b"z")));
+    let batch_len = record::HEADER_SIZE + 1 + payload.len() + record::CHECKSUM_SIZE;
+    assert_eq!(
+        tail_offset,
+        batch_at as u64 + batch_len as u64 + record::HEADER_SIZE as u64 + b"tail".len() as u64
+    );
+    assert_eq!(seen[1].1.unwrap().2, crc32fast::hash(&wide));
+    assert_eq!(seen[2].1.unwrap().2, crc32fast::hash(b"child"));
+    assert_eq!(seen[3].1, None);
+    assert_chunked(&reads);
+    assert!(reads.lock().unwrap().contains(&buffer));
+}
+
+#[test]
+fn batch_children_are_published_in_order_only_after_validation() {
+    let payload = record::batch::encode_payload(&[
+        record::batch::BatchOperation::Put {
+            key: b"a",
+            value: b"first",
+        },
+        record::batch::BatchOperation::Put {
+            key: b"b",
+            value: b"second",
+        },
+        record::batch::BatchOperation::Delete { key: b"a" },
+    ])
+    .unwrap();
+    let batch = record::encode(record::Operation::Batch, &[0], &payload).unwrap();
+    let mut bytes = batch.clone();
+    bytes.extend(record::encode(record::Operation::Put, b"tail", b"z").unwrap());
+    let (_, log) = replay_log(bytes.clone(), None);
+    let mut seen = Vec::new();
+    log.visit_records(0, None, |key, location| {
+        seen.push((key, location.map(|location| location.checksum)));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            (b"a".to_vec(), Some(crc32fast::hash(b"first"))),
+            (b"b".to_vec(), Some(crc32fast::hash(b"second"))),
+            (b"a".to_vec(), None),
+            (b"tail".to_vec(), Some(crc32fast::hash(b"z"))),
+        ]
+    );
+
+    let (_, log) = replay_log(bytes, None);
+    let mut invoked = Vec::new();
+    let mut applied = Vec::new();
+    let error = log
+        .visit_records(0, None, |key, _| {
+            invoked.push(key.clone());
+            if key == b"b" {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "quota"));
+            }
+            applied.push(key);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(invoked, vec![b"a".to_vec(), b"b".to_vec()]);
+    assert_eq!(applied, vec![b"a".to_vec()]);
+
+    let mut corrupt = batch;
+    let value_at = corrupt
+        .windows(b"second".len())
+        .position(|window| window == b"second")
+        .unwrap();
+    corrupt[value_at] ^= 1;
+    resign(&mut corrupt, true);
+    corrupt.extend(record::encode(record::Operation::Put, b"tail", b"z").unwrap());
+    let (_, log) = replay_log(corrupt, None);
+    let mut seen = Vec::new();
+    let error = log
+        .visit_records(0, None, |key, _| {
+            seen.push(key);
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("record checksum mismatch"),
+        "{error}"
+    );
+    assert!(seen.is_empty(), "{seen:?}");
+}
+
+#[test]
+fn batch_replay_reports_outer_checksum_before_key_and_nested_errors() {
+    let id = [4_u8; 16];
+    let batch = encoded_batch(&[
+        BatchOp::Put {
+            key: b"child",
+            value: &vec![0x3c_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 32],
+        },
+        BatchOp::Delete { key: b"gone" },
+    ]);
+    let mut checksum_wins = batch.clone();
+    checksum_wins[record::HEADER_SIZE] ^= 1;
+    checksum_wins[record::HEADER_SIZE + 1 + 4] ^= 1;
+    resign(&mut checksum_wins, false);
+    assert_batch_stops_after_early(
+        &log_around(id, &checksum_wins),
+        id,
+        "record checksum mismatch",
+    );
+
+    let mut key_wins = batch.clone();
+    key_wins[record::HEADER_SIZE] ^= 1;
+    key_wins[record::HEADER_SIZE + 1 + 4] ^= 1;
+    resign(&mut key_wins, true);
+    assert_batch_stops_after_early(&log_around(id, &key_wins), id, "invalid batch record key");
+
+    let mut nested_wins = batch;
+    nested_wins[record::HEADER_SIZE + 1 + 4] ^= 1;
+    resign(&mut nested_wins, true);
+    assert_batch_stops_after_early(&log_around(id, &nested_wins), id, "invalid record header");
+
+    let huge = count_payload(1025, 70_000);
+    let mut count_checksum = record::encode(record::Operation::Batch, &[0], &huge).unwrap();
+    resign(&mut count_checksum, false);
+    assert_batch_stops_after_early(
+        &log_around(id, &count_checksum),
+        id,
+        "record checksum mismatch",
+    );
+
+    let mut count_key = record::encode(record::Operation::Batch, &[0], &huge).unwrap();
+    count_key[record::HEADER_SIZE] ^= 1;
+    resign(&mut count_key, true);
+    assert_batch_stops_after_early(&log_around(id, &count_key), id, "invalid batch record key");
+
+    let count = record::encode(record::Operation::Batch, &[0], &huge).unwrap();
+    let (reads, log) = replay_log(log_around(id, &count), Some(id));
+    let error = assert_batch_stops_after_early_on(&log, "invalid batch operation count");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_chunked(&reads);
+
+    let empty = record::encode(record::Operation::Batch, &[0], &[]).unwrap();
+    assert_batch_stops_after_early(&log_around(id, &empty), id, "incomplete batch count");
+    let mut empty_checksum = empty;
+    resign(&mut empty_checksum, false);
+    assert_batch_stops_after_early(
+        &log_around(id, &empty_checksum),
+        id,
+        "record checksum mismatch",
+    );
+}
+
+#[test]
+fn batch_short_read_reports_io_before_key_or_nested_validation() {
+    let id = [5_u8; 16];
+    let mut batch = encoded_batch(&[BatchOp::Put {
+        key: b"child",
+        value: &vec![0x11_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES * 2 + 25],
+    }]);
+    batch[record::HEADER_SIZE] ^= 1;
+    batch[record::HEADER_SIZE + 1 + crate::recovery::RECOVERY_READ_BUFFER_BYTES] ^= 1;
+    let (reads, log) = replay_log_with_failure(log_around(id, &batch), Some(id), Some(2));
+    let mut seen = Vec::new();
+    let error = log
+        .visit_records(0, None, |key, _| {
+            seen.push(key);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
+    assert_eq!(seen, vec![b"early".to_vec()]);
+    assert_eq!(reads.lock().unwrap().len(), 2);
+
+    let mut truncated = v2_header(id).to_vec();
+    truncated.extend(record::encode(record::Operation::Put, b"early", b"1").unwrap());
+    truncated.extend(&batch[..batch.len() - 1]);
+    let (_, log) = replay_log(truncated, Some(id));
+    let mut seen = Vec::new();
+    let error = log
+        .visit_records(0, None, |key, _| {
+            seen.push(key);
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("incomplete log record"),
+        "{error}"
+    );
+    assert_eq!(seen, vec![b"early".to_vec()]);
+}
+
+#[test]
+fn batch_suffix_boundary_rejects_a_partial_record_without_publishing_children() {
+    let id = [13_u8; 16];
+    let payload = record::batch::encode_payload(&[
+        record::batch::BatchOperation::Put {
+            key: b"child",
+            value: &vec![0x44_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 9],
+        },
+        record::batch::BatchOperation::Delete { key: b"gone" },
+    ])
+    .unwrap();
+    let batch = record::encode(record::Operation::Batch, &[0], &payload).unwrap();
+    let mut bytes = v2_header(id).to_vec();
+    bytes.extend(record::encode(record::Operation::Put, b"early", b"1").unwrap());
+    let batch_at = bytes.len() as u64;
+    bytes.extend(batch);
+    let end = bytes.len() as u64;
+
+    let (_, log) = replay_log(bytes.clone(), Some(id));
+    let suffix = visit_projected_from(&log, batch_at, Some(end)).unwrap();
+    assert_eq!(
+        suffix.into_iter().map(|(key, _)| key).collect::<Vec<_>>(),
+        vec![b"child".to_vec(), b"gone".to_vec()]
+    );
+    let error = log
+        .visit_records(batch_at, Some(end - 1), |_, _| Ok(()))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("acknowledged commit boundary"),
+        "{error}"
+    );
+
+    let mut truncated = bytes.clone();
+    truncated.truncate(end as usize - 8);
+    let (_, log) = replay_log(truncated, Some(id));
+    let mut seen = Vec::new();
+    let error = log
+        .visit_records(0, None, |key, _| {
+            seen.push(key);
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("incomplete log record"),
+        "{error}"
+    );
+    assert_eq!(seen, vec![b"early".to_vec()]);
+
+    let mut header = [0_u8; record::HEADER_SIZE];
+    header[..4].copy_from_slice(b"DB02");
+    header[4] = 3;
+    header[5..9].copy_from_slice(&1_u32.to_le_bytes());
+    header[9..13].copy_from_slice(&(crate::record::MAX_VALUE as u32).to_le_bytes());
+    let checksum = crc32fast::hash(&header[..13]);
+    header[13..].copy_from_slice(&checksum.to_le_bytes());
+    let mut huge = v2_header(id).to_vec();
+    huge.extend(header);
+    huge.push(0);
+    let (reads, log) = replay_log(huge, Some(id));
+    let error = log.visit_records(0, None, |_, _| Ok(())).unwrap_err();
+    assert!(
+        error.to_string().contains("incomplete log record"),
+        "{error}"
+    );
+    assert_chunked(&reads);
+    assert!(
+        reads
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|len| *len < crate::record::MAX_VALUE)
+    );
+}
+
+fn resign(record: &mut [u8], valid: bool) {
+    let end = record.len() - 4;
+    let mut sum = crc32fast::hash(&record[..end]);
+    if !valid {
+        sum ^= u32::MAX;
+    }
+    record[end..].copy_from_slice(&sum.to_le_bytes());
+}
+
+fn log_around(id: [u8; 16], batch: &[u8]) -> Vec<u8> {
+    let mut bytes = v2_header(id).to_vec();
+    bytes.extend(record::encode(record::Operation::Put, b"early", b"1").unwrap());
+    bytes.extend_from_slice(batch);
+    bytes.extend(record::encode(record::Operation::Put, b"tail", b"z").unwrap());
+    bytes
+}
+
+fn assert_batch_stops_after_early(bytes: &[u8], id: [u8; 16], message: &str) {
+    let (_, log) = replay_log(bytes.to_vec(), Some(id));
+    assert_batch_stops_after_early_on(&log, message);
+}
+
+fn assert_batch_stops_after_early_on(log: &Log, message: &str) -> io::Error {
+    let mut seen = Vec::new();
+    let error = log
+        .visit_records(0, None, |key, _| {
+            seen.push(key);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(seen, vec![b"early".to_vec()], "{error}");
+    assert!(error.to_string().contains(message), "{error}");
+    error
+}
+
+enum BatchOp<'a> {
+    Put { key: &'a [u8], value: &'a [u8] },
+    Delete { key: &'a [u8] },
+}
+
+fn sample_batch(operations: &[BatchOp<'_>]) -> Vec<u8> {
+    let encoded: Vec<_> = operations
+        .iter()
+        .map(|operation| match operation {
+            BatchOp::Put { key, value } => record::batch::BatchOperation::Put { key, value },
+            BatchOp::Delete { key } => record::batch::BatchOperation::Delete { key },
+        })
+        .collect();
+    record::batch::encode_payload(&encoded).unwrap()
+}
+
+fn encoded_batch(operations: &[BatchOp<'_>]) -> Vec<u8> {
+    record::encode(record::Operation::Batch, &[0], &sample_batch(operations)).unwrap()
+}
+
+fn indexed_deletes(count: usize) -> Vec<u8> {
+    let keys: Vec<[u8; 2]> = (0..count)
+        .map(|index| (index as u16).to_le_bytes())
+        .collect();
+    let operations: Vec<_> = keys
+        .iter()
+        .map(|key| record::batch::BatchOperation::Delete { key: &key[..] })
+        .collect();
+    record::batch::encode_payload(&operations).unwrap()
+}
+
+fn count_payload(count: u32, tail: usize) -> Vec<u8> {
+    let mut payload = count.to_le_bytes().to_vec();
+    payload.resize(4 + tail, 0);
+    payload
+}
+
+fn nested_batch_payload() -> Vec<u8> {
+    let inner = record::encode(record::Operation::Batch, &[0], b"x").unwrap();
+    let mut payload = 1_u32.to_le_bytes().to_vec();
+    payload.extend(inner);
+    payload
+}
+
+fn lone_nested_header(operation: u8, key_len: u32, value_len: u32) -> Vec<u8> {
+    let mut header = [0_u8; record::HEADER_SIZE];
+    header[..4].copy_from_slice(b"DB01");
+    header[4] = operation;
+    header[5..9].copy_from_slice(&key_len.to_le_bytes());
+    header[9..13].copy_from_slice(&value_len.to_le_bytes());
+    let checksum = crc32fast::hash(&header[..13]);
+    header[13..].copy_from_slice(&checksum.to_le_bytes());
+    let mut payload = 1_u32.to_le_bytes().to_vec();
+    payload.extend_from_slice(&header);
+    payload
+}
+
+type Projected = (Vec<u8>, Option<(u64, usize, u32)>);
+
+fn project(updates: Vec<BatchUpdate>) -> Vec<Projected> {
+    updates
+        .into_iter()
+        .map(|update| {
+            (
+                update.key,
+                update
+                    .location
+                    .map(|location| (location.offset, location.length, location.checksum)),
+            )
+        })
+        .collect()
+}
+
+fn projected_batch(payload: &[u8], base: u64) -> io::Result<Vec<Projected>> {
+    prepare_batch(
+        payload,
+        ValueLocation {
+            offset: base,
+            length: payload.len(),
+            checksum: 0,
+        },
+    )
+    .map(project)
+}
+
+fn assert_scanner_matches_prepare_batch(payload: &[u8]) {
+    let expected = projected_batch(payload, (record::HEADER_SIZE + 1) as u64);
+    for chunk in [1_usize, 2, 3, 7, 16, 17, 31, 64, 1024, 65_536] {
+        let mut scan = BatchScan::new((record::HEADER_SIZE + 1) as u64);
+        if !payload.is_empty() {
+            for piece in payload.chunks(chunk) {
+                scan.push(piece);
+            }
+        }
+        assert_same_projection(&expected, scan.finish().map(project), chunk);
+    }
+}
+
+fn assert_legacy_replay_matches_prepare_batch(payload: &[u8]) {
+    let record = record::encode(record::Operation::Batch, &[0], payload).unwrap();
+    let expected = projected_batch(payload, (record::HEADER_SIZE + 1) as u64);
+    let (reads, log) = replay_log(record, None);
+    let got = visit_projected(&log);
+    assert_same_projection(&expected, got, payload.len());
+    if payload.len() > crate::recovery::RECOVERY_READ_BUFFER_BYTES {
+        assert_chunked(&reads);
+    }
+}
+
+fn visit_projected(log: &Log) -> io::Result<Vec<Projected>> {
+    visit_projected_from(log, 0, None)
+}
+
+fn visit_projected_from(
+    log: &Log,
+    offset: u64,
+    boundary: Option<u64>,
+) -> io::Result<Vec<Projected>> {
+    let mut seen = Vec::new();
+    log.visit_records(offset, boundary, |key, location| {
+        seen.push((
+            key,
+            location.map(|location| (location.offset, location.length, location.checksum)),
+        ));
+        Ok(())
+    })
+    .map(|()| seen)
+}
+
+fn assert_same_projection(
+    expected: &io::Result<Vec<Projected>>,
+    got: io::Result<Vec<Projected>>,
+    label: usize,
+) {
+    match (expected, got) {
+        (Ok(expected), Ok(got)) => assert_eq!(expected, &got, "chunk or length {label}"),
+        (Err(expected), Err(got)) => {
+            assert_eq!(expected.kind(), got.kind(), "{expected} vs {got}");
+            assert_eq!(
+                expected.to_string(),
+                got.to_string(),
+                "chunk or length {label}"
+            );
+        }
+        (expected, got) => panic!("stream {got:?} != in-memory decoder {expected:?} ({label})"),
     }
 }

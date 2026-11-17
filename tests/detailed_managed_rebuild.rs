@@ -78,3 +78,46 @@ fn external_caller_can_classify_rebuild_failures_and_reopen_the_selection() {
         );
     }
 }
+
+#[test]
+fn duplicate_lock_descriptor_prevents_rebuild_before_publication() {
+    use fs2::FileExt;
+    use std::io::ErrorKind;
+
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let store = Store::open(&path).unwrap();
+    store.put(b"safe", b"acknowledged").unwrap();
+    drop(store);
+    let first = root.path().join("first");
+    CheckpointStore::rebuild_managed_selection_detailed(&path, &first).unwrap();
+    let selection = fs::read(path.join("checkpoint.selection")).unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.join("store.lock"))
+        .unwrap();
+    lock.try_lock_exclusive().unwrap();
+    let inherited = lock.try_clone().unwrap();
+    drop(lock);
+
+    let next = root.path().join("next");
+    let failure = CheckpointStore::rebuild_managed_selection_detailed(&path, &next).unwrap_err();
+    assert!(
+        matches!(failure, ManagedRebuildFailure::NotPublished(ref error) if error.kind() == ErrorKind::WouldBlock),
+        "{failure:?}"
+    );
+    assert!(!next.exists());
+    assert_eq!(
+        fs::read(path.join("checkpoint.selection")).unwrap(),
+        selection
+    );
+    drop(inherited);
+
+    CheckpointStore::rebuild_managed_selection_detailed(&path, &next).unwrap();
+    let reopened = CheckpointStore::open_managed(&path).unwrap();
+    assert_eq!(
+        reopened.get(b"safe").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}

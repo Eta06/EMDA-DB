@@ -54,6 +54,8 @@ impl ReadSet {
         if self.conflicted {
             return Err(conflict());
         }
+        // An unchanged generation is not compared again. Rollover relies on
+        // that: it publishes no mutation and must not move existing locations.
         if self.validated_generation != state.generation {
             if !self.matches(state)? {
                 self.conflicted = true;
@@ -181,6 +183,11 @@ impl ReadSet {
         if self.conflicted {
             return Ok(false);
         }
+        // Commit uses this skip directly. It is sound only while every
+        // maintenance path that keeps the generation unchanged, including
+        // checkpoint rollover, also keeps previously issued log locations
+        // immutable and unreused. Rewriting those locations requires a new
+        // generation so this comparison runs.
         if self.validated_generation == state.generation {
             return Ok(true);
         }

@@ -1,7 +1,9 @@
+#[cfg(target_os = "linux")]
+use database_engine::{COMPACTED_CHECKPOINT_FILE, OnlineStore};
 use database_engine::{
-    COMPACTED_CHECKPOINT_FILE, CancellationToken, CheckpointStore, ControlledTransactionError,
-    DocumentDatabase, DocumentTransactionMode, MAX_ACTIVE_TRANSACTIONS,
-    MAX_TRANSACTION_STAGED_TOTAL_BYTES, OnlineStore, Store, TransactionBudgetStatus,
+    CancellationToken, CheckpointStore, ControlledTransactionError, DocumentDatabase,
+    DocumentTransactionMode, MAX_ACTIVE_TRANSACTIONS, MAX_TRANSACTION_STAGED_TOTAL_BYTES, Store,
+    TransactionBudgetStatus,
 };
 use std::{
     cell::Cell,

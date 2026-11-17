@@ -320,11 +320,15 @@ fn checkpoint_keeps_readers_available_and_blocks_writes_until_publication_sync()
     drop(store);
     // The new record is in the tail and must be replayed from the checkpoint.
     assert_eq!(
-        Store::open_with_checkpoint(&path, &checkpoint, &token)
-            .unwrap()
-            .get(b"key")
-            .unwrap()
-            .as_deref(),
+        crate::test_support::diagnose_lock(
+            &path,
+            "checkpoint reader reopen",
+            Store::open_with_checkpoint(&path, &checkpoint, &token)
+        )
+        .unwrap()
+        .get(b"key")
+        .unwrap()
+        .as_deref(),
         Some(&b"new"[..])
     );
 }

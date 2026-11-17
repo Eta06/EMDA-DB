@@ -60,6 +60,9 @@ pub(super) fn apply(document: &mut Value, update: &DocumentUpdate) -> io::Result
         DocumentUpdate::Min { path, value } => update_extreme(document, path, value, true)?,
         DocumentUpdate::Max { path, value } => update_extreme(document, path, value, false)?,
         DocumentUpdate::Rename { from, to } => {
+            // Even a missing source must reject an existing non-object on the
+            // destination path, without creating missing destination objects.
+            parent_mut(document, to, false)?;
             let Some(value) = parent_mut(document, from, false)?
                 .and_then(|parent| parent.remove(from.last().expect("validated path")))
             else {

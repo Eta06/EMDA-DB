@@ -87,6 +87,17 @@ pub(super) fn apply(
                 }
             }
         }
+        // Only discarded elements count. A cap at or above the current length,
+        // including `usize::MAX`, must not allocate or add work.
+        DocumentUpdate::ArrayTruncate { path, max_len } => {
+            if let Some(values) = array(document, path, false)? {
+                let removed = values.len().saturating_sub(*max_len);
+                if removed > 0 {
+                    reserve_work(work, removed)?;
+                    values.truncate(*max_len);
+                }
+            }
+        }
         _ => unreachable!("array update variant"),
     }
     Ok(())

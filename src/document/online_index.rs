@@ -115,6 +115,39 @@ impl IndexJob {
 fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+
+fn index_prefix(kind: u8, collection: &str, name: &str) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let prefix = key::index(kind, collection, name)?;
+    let end = key::end(&prefix);
+    Ok((prefix, end))
+}
+
+// Entry and unique keys share no keyspace. A limit-1 scan is an existence
+// check, not a full namespace read.
+fn index_namespace_empty(
+    tx: &DocumentTransaction<'_, '_>,
+    kind: u8,
+    collection: &str,
+    name: &str,
+) -> io::Result<bool> {
+    let (prefix, end) = index_prefix(kind, collection, name)?;
+    Ok(tx.scan(&prefix, &end, 1)?.is_empty())
+}
+
+fn first_index_key(
+    tx: &DocumentTransaction<'_, '_>,
+    kind: u8,
+    collection: &str,
+    name: &str,
+) -> io::Result<Option<Vec<u8>>> {
+    let (prefix, end) = index_prefix(kind, collection, name)?;
+    Ok(tx
+        .scan(&prefix, &end, 1)?
+        .into_iter()
+        .next()
+        .map(|(key, _)| key))
+}
+
 fn job_position(metadata: &Metadata, name: &str) -> io::Result<usize> {
     metadata
         .jobs
@@ -309,7 +342,11 @@ impl DocumentTransaction<'_, '_> {
 
     /// Removes at most `limit` index keys and persists its cursor atomically.
     /// An empty entries page advances to unique keys; an empty unique page
-    /// completes the job and releases the index name.
+    /// completes the job and releases the index name. A cursor that still has
+    /// an entry or unique key at or before its position fails the step before
+    /// any key is removed. The unique phase also requires the entry namespace
+    /// to be empty, so a phase change cannot release the name while entry keys
+    /// remain. The failed step is not submitted; earlier steps stay durable.
     pub fn advance_index_drop(
         &mut self,
         collection: &str,
@@ -324,15 +361,29 @@ impl DocumentTransaction<'_, '_> {
                 IndexJob::Dropping { phase, after, .. } => (*phase, after.clone()),
                 _ => return Err(key::invalid("index job is not a drop")),
             };
-            let prefix = key::index(
-                match phase {
-                    IndexDropPhase::Entries => b'I',
-                    IndexDropPhase::Unique => b'U',
-                },
-                collection,
-                name,
-            )?;
-            let end = key::end(&prefix);
+            // Unique cleanup is only valid after every entry key is gone.
+            // Checking first refuses a forged unique phase before it deletes
+            // the unique namespace and then reports completion.
+            if phase == IndexDropPhase::Unique
+                && !index_namespace_empty(this, b'I', collection, name)?
+            {
+                return Err(invalid_data("index drop cursor skipped existing keys"));
+            }
+            let kind = match phase {
+                IndexDropPhase::Entries => b'I',
+                IndexDropPhase::Unique => b'U',
+            };
+            // The saved cursor is the last removed key. A surviving key at or
+            // before it was not removed, so continuing would skip it or treat
+            // a non-empty namespace as finished.
+            if let Some(cursor) = &after {
+                if first_index_key(this, kind, collection, name)?
+                    .is_some_and(|first| first.as_slice() <= cursor.as_slice())
+                {
+                    return Err(invalid_data("index drop cursor skipped existing keys"));
+                }
+            }
+            let (prefix, end) = index_prefix(kind, collection, name)?;
             let cursor = after.unwrap_or(prefix);
             let rows = this.scan(&cursor, &end, limit)?;
             if rows.is_empty() {

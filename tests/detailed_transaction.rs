@@ -178,6 +178,22 @@ fn exercise_backend(store: &impl Backend) {
         assert!(matches!(error, TransactionFailure::DeadlineExceeded));
     }
 
+    // A read that expires inside the callback is a callback failure, even
+    // though engine-detected expiry after the callback has another variant.
+    let deadline = Instant::now() + Duration::from_millis(250);
+    let error = store
+        .run(1, Some(deadline), None, |tx| {
+            tx.put(b"callback-timeout", b"no")?;
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            tx.get(b"observed")?;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(
+        matches!(error, TransactionFailure::Callback(ref error) if error.kind() == io::ErrorKind::TimedOut)
+    );
+    assert_eq!(store.get(b"callback-timeout").unwrap(), None);
+
     // A forwarded conflict from an independently run transaction is a
     // callback failure for the outer transaction, not its validation error.
     let nested = store

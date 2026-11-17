@@ -2,6 +2,92 @@ use super::*;
 use std::os::unix::fs::symlink;
 
 #[test]
+fn tail_adoption_rejects_log_growth_after_validation() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let witness = fs::read(path.join("commit.state")).unwrap();
+    let store = retry_lock(|| Store::open(&path)).unwrap();
+    store.put(b"tail", b"complete").unwrap();
+    drop(store);
+    // Model a completed tail whose durable V2 witness was not advanced.
+    fs::write(path.join("commit.state"), &witness).unwrap();
+    let validated_log = fs::read(path.join("records.log")).unwrap();
+    let result = CheckpointStore::open_source_using(
+        &path,
+        OpenSource::Explicit(&checkpoint, &digest),
+        OpenLimits::default(),
+        |path, boundary, length| {
+            let log = Log::open_checkpoint_writer(path, boundary, length)?;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path.join("records.log"))?
+                .write_all(b"x")?;
+            Ok(log)
+        },
+        |_| Ok(()),
+    );
+    let error = match result {
+        Ok(_) => panic!("open accepted unvalidated log growth"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness);
+    let mut expected = validated_log;
+    expected.push(b'x');
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), expected);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn v3_tail_adoption_rejects_log_growth_after_validation() {
+    use rustix::fs::{XattrFlags, fgetxattr, fsetxattr};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let checkpoint = dir.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    store.put(b"base", b"safe").unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    let file = File::open(path.join("records.log")).unwrap();
+    let mut witness = [0_u8; 36];
+    assert_eq!(
+        fgetxattr(&file, "user.db.commit.v3", &mut witness).unwrap(),
+        36
+    );
+    let anchor = fs::read(path.join("commit.state")).unwrap();
+    store.put(b"tail", b"complete").unwrap();
+    drop(store);
+    fsetxattr(&file, "user.db.commit.v3", &witness, XattrFlags::REPLACE).unwrap();
+    let mut expected = fs::read(path.join("records.log")).unwrap();
+    let result = CheckpointStore::open_source_using(
+        &path,
+        OpenSource::Explicit(&checkpoint, &digest),
+        OpenLimits::default(),
+        |path, boundary, length| {
+            let log = Log::open_checkpoint_writer(path, boundary, length)?;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(path.join("records.log"))?
+                .write_all(b"x")?;
+            Ok(log)
+        },
+        |_| Ok(()),
+    );
+    let error = match result {
+        Ok(_) => panic!("open accepted unvalidated log growth"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let mut after = [0_u8; 36];
+    assert_eq!(
+        fgetxattr(&file, "user.db.commit.v3", &mut after).unwrap(),
+        36
+    );
+    assert_eq!(after, witness);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), anchor);
+    expected.push(b'x');
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), expected);
+}
+
+#[test]
 fn managed_rollovers_reopen_the_recorded_checkpoint_and_preserve_snapshots() {
     let (dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();

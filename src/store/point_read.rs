@@ -65,8 +65,7 @@ impl Store {
             return Err(uncertain_error());
         }
         if self.read()?.generation != generation {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
+            return Err(crate::transaction_conflict::conflict(
                 "transaction conflict: observed state changed since snapshot",
             ));
         }
@@ -103,6 +102,8 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(crate::is_transaction_conflict(&error));
+        assert_eq!(store.get(b"unrelated").unwrap(), Some(b"write".to_vec()));
     }
 
     #[test]
@@ -112,13 +113,11 @@ mod tests {
         let error = store
             .read_two_consistent(b"first", b"second", |_, _| {
                 store.put(b"other", b"write")?;
-                Err::<(), _>(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "callback failed",
-                ))
+                Err::<(), _>(io::Error::new(io::ErrorKind::WouldBlock, "callback failed"))
             })
             .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(!crate::is_transaction_conflict(&error));
     }
 
     #[test]
@@ -147,6 +146,7 @@ mod tests {
                 })
                 .unwrap_err();
             assert!(error.to_string().contains("uncertain"));
+            assert!(!crate::is_transaction_conflict(&error));
             assert!(store.get(b"first").is_err());
         }
     }
