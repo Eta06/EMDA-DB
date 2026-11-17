@@ -271,3 +271,10 @@ individual holders. Logs and exit statuses are preserved in
 [the evidence archive](../benchmarks/results/2026-11-18-linux-arm64-crash-fixture-lock-control.tar.gz)
 (SHA-256 `55d9bfbfba340f598d0cb5b056a47575c48b9eb2c6600c084b99df66e1bfaf3e`).
 No production lock behavior or error assertions were changed.
+
+The failed witness-substitution case was its final V2 bounded rebuild after
+restoring the witness; the recorded EAGAIN did not identify which lock or
+holder was involved. A fresh 16-thread traced run at `d112d94` passed all 593
+library tests and did not reproduce it. The [research trace](../benchmarks/results/2026-11-18-linux-arm64-witness-research-trace.tar.gz)
+has SHA-256 `0b5ce7890e539b952800de90e3d7f8b124744f05a299afaa2614b67c82c5fa55`.
+The intermittent lock issue remains unresolved.
