@@ -23,6 +23,7 @@ mod record;
 mod recovered_view;
 mod recovery;
 pub mod retained_base_v2;
+pub mod retained_candidate;
 mod snapshot_reaper;
 mod staging;
 mod store;

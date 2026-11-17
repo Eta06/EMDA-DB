@@ -304,3 +304,15 @@ A macOS test initially failed because `/var` and `/private/var` are aliases;
 the assertion now canonicalizes the observed path, and all four focused lock
 diagnostic tests pass there. On last inspection the Linux VM had 227 MiB free;
 preserve existing data and evidence when planning further runs.
+
+An experimental candidate builder now exports a point-in-time retained base
+into a no-clobber directory with an `EMDALOG4` marker and a header-bound
+inspection witness. The verifier requires an independently retained binding;
+uncertain publication returns that binding. Candidate output limits cover the
+base, header and witness, not filesystem allocation or staging overhead. The
+caller must keep the destination outside the source and keep directories
+trusted and stable. A current Store open rejects a copied candidate; a synced
+empty lock file keeps it inspectable after that rejected open. This is not a
+recovery format, an authority, a compatibility promise, or log reclamation.
+Retained-related tests passed on macOS; Linux V3 and process-kill tests for the
+candidate itself remain outstanding. All-target Clippy passed on macOS.

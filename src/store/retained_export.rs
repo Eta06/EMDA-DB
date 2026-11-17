@@ -33,6 +33,104 @@ impl Store {
         )
     }
 
+    /// Build an experimental, non-authoritative candidate. The caller must choose
+    /// a destination outside the source directory and all aliases of it; this
+    /// precondition cannot be enforced by the store.
+    /// The source directory, destination parent and their ancestors must remain
+    /// trusted and stable against uncoordinated filesystem mutation. The caller
+    /// must preserve the returned binding independently for subsequent verification,
+    /// including the binding returned with an uncertain publication outcome.
+    /// The candidate reflects the verified source point captured during base export;
+    /// concurrent writes after that point can precede candidate publication and are omitted.
+    /// `max_output_bytes` bounds the total base, header, and witness bytes.
+    pub fn build_retained_candidate(
+        &self,
+        destination: impl AsRef<Path>,
+        base_id: [u8; 16],
+        log_id: [u8; 16],
+        limits: RetainedExportLimits,
+    ) -> Result<crate::retained_candidate::Expected, crate::retained_candidate::Failure> {
+        self.build_retained_candidate_with_hook(
+            destination.as_ref(),
+            base_id,
+            log_id,
+            limits,
+            |_| Ok(()),
+        )
+    }
+
+    fn build_retained_candidate_with_hook(
+        &self,
+        destination: &Path,
+        base_id: [u8; 16],
+        log_id: [u8; 16],
+        mut limits: RetainedExportLimits,
+        mut hook: impl FnMut(&str) -> io::Result<()>,
+    ) -> Result<crate::retained_candidate::Expected, crate::retained_candidate::Failure> {
+        use crate::retained_candidate::Failure;
+        use std::io::Write;
+        limits.max_output_bytes = limits.max_output_bytes.checked_sub(144).ok_or_else(|| {
+            Failure::NotPublished(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "candidate limit smaller than header and witness",
+            ))
+        })?;
+        let mut verified_binding = None;
+        let result = crate::publication_outcome::track(|tracker| {
+            let parent = backup::parent_directory(destination)?;
+            let mut stage = crate::staging::Stage::directory(parent)?;
+            let base = self
+                .export_retained_base_in_stage(
+                    &stage,
+                    std::ffi::OsStr::new("base"),
+                    base_id,
+                    limits,
+                )
+                .map_err(|e| match e {
+                    crate::PublicationFailure::NotPublished(e)
+                    | crate::PublicationFailure::OutcomeUnknown(e) => e,
+                })?;
+            let expected = crate::retained_candidate::binding(&base, log_id)?;
+            for (name, bytes) in [
+                ("records.log", expected.header.as_slice()),
+                ("store.lock", &[]),
+                ("witness", expected.witness.as_slice()),
+            ] {
+                let path = stage.child_path(std::ffi::OsStr::new(name))?;
+                let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+                file.write_all(bytes)?;
+                file.sync_all()?;
+            }
+            directory::sync_existing(stage.path())?;
+            crate::retained_candidate::verify(
+                stage.path(),
+                crate::retained_base_v2::Limits {
+                    file_bytes: limits.max_output_bytes,
+                    entries: limits.max_live_keys as u64,
+                    key_bytes: limits.max_live_key_bytes as u64,
+                    work_bytes: limits.max_output_bytes.saturating_add(1),
+                },
+                &expected,
+            )?;
+            verified_binding = Some(expected.clone());
+            hook("verified")?;
+            tracker.begin_publication();
+            hook("publish")?;
+            stage.publish(destination)?;
+            hook("parent_sync")?;
+            directory::sync_existing(parent)?;
+            stage.publication_synchronized();
+            Ok(expected)
+        });
+        result.map_err(|failure| match failure {
+            crate::PublicationFailure::NotPublished(error) => Failure::NotPublished(error),
+            crate::PublicationFailure::OutcomeUnknown(error) => Failure::OutcomeUnknown {
+                error,
+                expected: Box::new(verified_binding.expect("publication follows verification")),
+            },
+        })
+    }
+
     /// Export into a directory stage held by the caller. The caller must keep
     /// the source and stage trusted and stable, as for the public export.
     #[allow(dead_code)]
@@ -246,6 +344,181 @@ mod tests {
             max_output_bytes: 10_000_000,
         }
     }
+    #[test]
+    fn candidate_verification_and_failure_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source")).unwrap();
+        store.put(b"key", b"value").unwrap();
+        let dest = root.path().join("candidate");
+        let expected = store
+            .build_retained_candidate(&dest, [1; 16], [2; 16], limits())
+            .unwrap();
+        let budgets = crate::retained_base_v2::Limits {
+            file_bytes: 10000,
+            entries: 10,
+            key_bytes: 100,
+            work_bytes: 10001,
+        };
+        let verified = crate::retained_candidate::verify(&dest, budgets, &expected).unwrap();
+        assert_eq!(verified.entries, 1);
+        let probe = root.path().join("reader-probe");
+        std::fs::create_dir(&probe).unwrap();
+        for name in ["base", "records.log", "store.lock", "witness"] {
+            std::fs::copy(dest.join(name), probe.join(name)).unwrap();
+        }
+        assert!(Store::open(&probe).is_err());
+        for name in ["base", "records.log", "store.lock", "witness"] {
+            assert_eq!(
+                std::fs::read(dest.join(name)).unwrap(),
+                std::fs::read(probe.join(name)).unwrap()
+            );
+        }
+        assert!(crate::retained_candidate::verify(&probe, budgets, &expected).is_ok());
+        let mut wrong = expected.clone();
+        wrong.base_digest[0] ^= 1;
+        assert!(crate::retained_candidate::verify(&dest, budgets, &wrong).is_err());
+        let mut small = budgets;
+        small.file_bytes = 1;
+        assert!(crate::retained_candidate::verify(&dest, small, &expected).is_err());
+        let conflict = store
+            .build_retained_candidate(&dest, [3; 16], [4; 16], limits())
+            .unwrap_err();
+        let crate::retained_candidate::Failure::OutcomeUnknown {
+            expected: other, ..
+        } = conflict
+        else {
+            panic!("expected uncertain publication for existing destination");
+        };
+        assert!(crate::retained_candidate::verify(&dest, budgets, &other).is_err());
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_ok());
+        let failed = root.path().join("failed");
+        assert!(
+            store
+                .build_retained_candidate(&failed, [3; 16], [3; 16], limits())
+                .is_err()
+        );
+        assert!(!failed.exists());
+        assert_eq!(store.get(b"key").unwrap(), Some(b"value".to_vec()));
+        std::fs::write(dest.join("extra"), b"x").unwrap();
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_err());
+        std::fs::remove_file(dest.join("extra")).unwrap();
+        let base_path = dest.join("base");
+        let base_bytes = std::fs::read(&base_path).unwrap();
+        let root_link = root.path().join("candidate-link");
+        std::os::unix::fs::symlink(&dest, &root_link).unwrap();
+        assert!(crate::retained_candidate::verify(&root_link, budgets, &expected).is_err());
+        std::fs::remove_file(&base_path).unwrap();
+        std::os::unix::fs::symlink(dest.join("records.log"), &base_path).unwrap();
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_err());
+        std::fs::remove_file(&base_path).unwrap();
+        std::fs::write(&base_path, &base_bytes).unwrap();
+        let mut corrupt_base = base_bytes.clone();
+        corrupt_base[0] ^= 1;
+        std::fs::write(&base_path, corrupt_base).unwrap();
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_err());
+        std::fs::write(&base_path, &base_bytes).unwrap();
+        std::fs::remove_file(&base_path).unwrap();
+        std::fs::create_dir(&base_path).unwrap();
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_err());
+        std::fs::remove_dir(&base_path).unwrap();
+        std::fs::write(&base_path, base_bytes).unwrap();
+        let witness = dest.join("witness");
+        let witness_bytes = std::fs::read(&witness).unwrap();
+        let mut corrupt_witness = witness_bytes.clone();
+        corrupt_witness[0] ^= 1;
+        std::fs::write(&witness, corrupt_witness).unwrap();
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_err());
+        std::fs::write(&witness, &witness_bytes).unwrap();
+        std::fs::remove_file(&witness).unwrap();
+        std::os::unix::fs::symlink(dest.join("records.log"), &witness).unwrap();
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_err());
+        std::fs::remove_file(&witness).unwrap();
+        std::fs::write(&witness, witness_bytes).unwrap();
+        let header = dest.join("records.log");
+        let mut bytes = std::fs::read(&header).unwrap();
+        bytes[8] ^= 1;
+        std::fs::write(&header, bytes).unwrap();
+        assert!(crate::retained_candidate::verify(&dest, budgets, &expected).is_err());
+    }
+    #[test]
+    fn candidate_point_in_time_limits_and_publication_faults() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source")).unwrap();
+        store.put(b"before", b"value").unwrap();
+        let dest = root.path().join("snapshot");
+        let expected = store
+            .build_retained_candidate_with_hook(&dest, [1; 16], [2; 16], limits(), |point| {
+                if point == "verified" {
+                    std::thread::scope(|scope| {
+                        scope
+                            .spawn(|| store.put(b"after", b"value"))
+                            .join()
+                            .unwrap()
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let budgets = crate::retained_base_v2::Limits {
+            file_bytes: 10000,
+            entries: 10,
+            key_bytes: 100,
+            work_bytes: 10001,
+        };
+        assert_eq!(
+            crate::retained_candidate::verify(&dest, budgets, &expected)
+                .unwrap()
+                .entries,
+            1
+        );
+        let total = std::fs::metadata(dest.join("base")).unwrap().len() + 144;
+        // Use a fresh store with the same contents to check the exact candidate size.
+        let other = Store::open(root.path().join("other")).unwrap();
+        other.put(b"before", b"value").unwrap();
+        let mut exact = limits();
+        exact.max_output_bytes = total;
+        other
+            .build_retained_candidate(root.path().join("exact"), [3; 16], [4; 16], exact)
+            .unwrap();
+        exact.max_output_bytes -= 1;
+        assert!(matches!(
+            other.build_retained_candidate(root.path().join("short"), [3; 16], [4; 16], exact),
+            Err(crate::retained_candidate::Failure::NotPublished(_))
+        ));
+        for point in ["publish", "parent_sync"] {
+            let path = root.path().join(point);
+            let failure = other
+                .build_retained_candidate_with_hook(&path, [3; 16], [4; 16], limits(), |at| {
+                    if at == point {
+                        Err(io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            let crate::retained_candidate::Failure::OutcomeUnknown { expected, .. } = failure
+            else {
+                panic!("wrong failure")
+            };
+            if point == "parent_sync" {
+                crate::retained_candidate::verify(&path, budgets, &expected).unwrap();
+            } else {
+                assert!(!path.exists());
+            }
+        }
+        let path = root.path().join("before_publish");
+        assert!(matches!(
+            other.build_retained_candidate_with_hook(&path, [3; 16], [4; 16], limits(), |at| {
+                if at == "verified" {
+                    Err(io::Error::other("injected"))
+                } else {
+                    Ok(())
+                }
+            }),
+            Err(crate::retained_candidate::Failure::NotPublished(_))
+        ));
+    }
+
     #[test]
     fn owned_directory_export_matches_public_and_cleans_up() {
         use std::ffi::OsStr;
