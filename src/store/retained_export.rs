@@ -865,6 +865,69 @@ mod tests {
     }
 
     #[test]
+    fn empty_restore_has_fresh_identity_and_witness() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(
+            source.join("records.log"),
+            include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("commit.state"),
+            include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+        )
+        .unwrap();
+        let store = Store::open(&source).unwrap();
+        let candidate = root.path().join("candidate");
+        let expected = store
+            .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+            .unwrap();
+        let staging = crate::retained_base_v2::StagingLimits {
+            value_bytes: 1000,
+            staging_bytes: 10000,
+        };
+        let suffix_limits = crate::retained_candidate::SuffixLimits {
+            bytes: 10000,
+            operations: 10,
+            work: 1000,
+        };
+        let suffix = root.path().join("suffix");
+        let binding = store
+            .export_retained_suffix(
+                &candidate,
+                &expected,
+                &suffix,
+                candidate_budgets(),
+                staging,
+                suffix_limits,
+                limits(),
+            )
+            .unwrap();
+        let destination = root.path().join("restored");
+        crate::retained_candidate::restore_exported_suffix(
+            &candidate,
+            &suffix,
+            &destination,
+            candidate_budgets(),
+            staging,
+            suffix_limits,
+            &binding,
+            crate::retained_candidate::RestoreLimits {
+                log_bytes: 10000,
+                live_keys: 0,
+                live_key_bytes: 0,
+            },
+        )
+        .unwrap();
+        let restored = Store::open(&destination).unwrap();
+        assert_ne!(restored.log.id().unwrap(), store.log.id().unwrap());
+        restored.log.verify_witness().unwrap();
+        assert!(restored.scan(None, None, 1).unwrap().is_empty());
+    }
+
+    #[test]
     fn source_suffix_export_replays_and_preserves_source() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
@@ -881,6 +944,7 @@ mod tests {
         .unwrap();
         let store = Store::open(&source).unwrap();
         store.put(b"old", b"value").unwrap();
+        store.put(b"historical-long-key", b"value").unwrap();
         let candidate = root.path().join("candidate");
         let expected = store
             .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
@@ -888,6 +952,9 @@ mod tests {
         store
             .write_batch(&[
                 BatchOperation::Delete { key: b"old" },
+                BatchOperation::Delete {
+                    key: b"historical-long-key",
+                },
                 BatchOperation::Put {
                     key: b"new",
                     value: b"value2",
@@ -930,6 +997,235 @@ mod tests {
                 limits(),
             )
             .unwrap();
+        let restored = root.path().join("restored");
+        let output_limits = crate::retained_candidate::RestoreLimits {
+            log_bytes: 10000,
+            live_keys: 1,
+            live_key_bytes: 3,
+        };
+        let restore =
+            |destination: &Path, binding: &crate::retained_candidate::SuffixExpected, output| {
+                crate::retained_candidate::restore_exported_suffix(
+                    &candidate,
+                    &out,
+                    destination,
+                    base_limits,
+                    staging,
+                    suffix,
+                    binding,
+                    output,
+                )
+            };
+        restore(&restored, &binding, output_limits).unwrap();
+        assert_eq!(
+            Store::open(&restored).unwrap().get(b"new").unwrap(),
+            Some(b"value2".to_vec())
+        );
+        {
+            let reopened = Store::open(&restored).unwrap();
+            assert_ne!(reopened.log.id().unwrap(), store.log.id().unwrap());
+            reopened.log.verify_witness().unwrap();
+        }
+        for point in ["init", "write", "reopen", "check", "stage_sync", "rename"] {
+            let destination = root.path().join(format!("failure-{point}"));
+            let before: std::collections::BTreeSet<_> = std::fs::read_dir(root.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            let result = crate::retained_candidate::restore_with_hooks(
+                &candidate,
+                &out,
+                &destination,
+                base_limits,
+                staging,
+                suffix,
+                &binding,
+                output_limits,
+                crate::directory::sync_existing,
+                |at| {
+                    if at == point {
+                        Err(std::io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            if point == "rename" {
+                assert!(
+                    matches!(result, Err(crate::PublicationFailure::OutcomeUnknown(_))),
+                    "{point}: {result:?}"
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(crate::PublicationFailure::NotPublished(_))),
+                    "{point}: {result:?}"
+                );
+            }
+            assert!(!destination.exists());
+            let after: std::collections::BTreeSet<_> = std::fs::read_dir(root.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(before, after, "stage cleanup at {point}");
+            assert_eq!(snapshot(&source), source_before);
+            assert_eq!(snapshot(&candidate), candidate_before);
+        }
+        assert!(matches!(
+            restore(
+                &root.path().join("zero-keys"),
+                &binding,
+                crate::retained_candidate::RestoreLimits {
+                    live_keys: 0,
+                    ..output_limits
+                }
+            ),
+            Err(crate::PublicationFailure::NotPublished(_))
+        ));
+        assert!(restore(&restored, &binding, output_limits).is_err());
+        {
+            let reopened = Store::open(&restored).unwrap();
+            reopened.put(b"later", b"write").unwrap();
+        }
+        assert_eq!(
+            Store::open(&restored).unwrap().get(b"later").unwrap(),
+            Some(b"write".to_vec())
+        );
+        // Use an unmodified restore to measure its exact output size.
+        let measured = root.path().join("measured");
+        restore(&measured, &binding, output_limits).unwrap();
+        let inside = candidate.join("nested");
+        assert!(matches!(
+            restore(&inside, &binding, output_limits),
+            Err(crate::PublicationFailure::NotPublished(_))
+        ));
+        #[cfg(unix)]
+        {
+            let alias = root.path().join("candidate-alias");
+            std::os::unix::fs::symlink(&candidate, &alias).unwrap();
+            assert!(matches!(
+                restore(&alias.join("nested"), &binding, output_limits),
+                Err(crate::PublicationFailure::NotPublished(_))
+            ));
+            let link = root.path().join("existing-link");
+            std::os::unix::fs::symlink(&out, &link).unwrap();
+            assert!(matches!(
+                restore(&link, &binding, output_limits),
+                Err(crate::PublicationFailure::OutcomeUnknown(_))
+            ));
+            assert_eq!(std::fs::read_link(&link).unwrap(), out);
+        }
+        let existing_file = root.path().join("existing-file");
+        std::fs::write(&existing_file, b"keep").unwrap();
+        assert!(matches!(
+            restore(&existing_file, &binding, output_limits),
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert_eq!(std::fs::read(&existing_file).unwrap(), b"keep");
+        let existing_dir = root.path().join("existing-dir");
+        std::fs::create_dir(&existing_dir).unwrap();
+        assert!(matches!(
+            restore(&existing_dir, &binding, output_limits),
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert_eq!(std::fs::read_dir(&existing_dir).unwrap().count(), 0);
+        let race = root.path().join("race");
+        std::thread::scope(|scope| {
+            let a = scope.spawn(|| restore(&race, &binding, output_limits));
+            let b = scope.spawn(|| restore(&race, &binding, output_limits));
+            let results = [a.join().unwrap(), b.join().unwrap()];
+            assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+            assert_eq!(
+                results
+                    .iter()
+                    .filter(|result| matches!(
+                        result,
+                        Err(crate::PublicationFailure::OutcomeUnknown(_))
+                    ))
+                    .count(),
+                1
+            );
+        });
+        assert_eq!(
+            Store::open(&race).unwrap().get(b"new").unwrap(),
+            Some(b"value2".to_vec())
+        );
+        let exact_log = std::fs::metadata(measured.join("records.log"))
+            .unwrap()
+            .len();
+        let exact = root.path().join("exact");
+        restore(
+            &exact,
+            &binding,
+            crate::retained_candidate::RestoreLimits {
+                log_bytes: exact_log,
+                ..output_limits
+            },
+        )
+        .unwrap();
+        let too_small = root.path().join("too-small");
+        assert!(
+            restore(
+                &too_small,
+                &binding,
+                crate::retained_candidate::RestoreLimits {
+                    log_bytes: exact_log - 1,
+                    ..output_limits
+                }
+            )
+            .is_err()
+        );
+        assert!(!too_small.exists());
+        let corrupt = root.path().join("corrupt-suffix");
+        let mut damaged = std::fs::read(&out).unwrap();
+        damaged[0] ^= 1;
+        std::fs::write(&corrupt, damaged).unwrap();
+        assert!(
+            crate::retained_candidate::restore_exported_suffix(
+                &candidate,
+                &corrupt,
+                &too_small,
+                base_limits,
+                staging,
+                suffix,
+                &binding,
+                output_limits
+            )
+            .is_err()
+        );
+        assert!(!too_small.exists());
+        let mut wrong = binding.clone();
+        wrong.digest[0] ^= 1;
+        let rejected = root.path().join("rejected");
+        assert!(restore(&rejected, &wrong, output_limits).is_err());
+        assert!(!rejected.exists());
+        assert!(
+            restore(
+                &rejected,
+                &binding,
+                crate::retained_candidate::RestoreLimits {
+                    live_key_bytes: 2,
+                    ..output_limits
+                }
+            )
+            .is_err()
+        );
+        assert!(!rejected.exists());
+        let uncertain = root.path().join("uncertain");
+        assert!(matches!(
+            crate::retained_candidate::restore_with_sync(
+                &candidate,
+                &out,
+                &uncertain,
+                base_limits,
+                staging,
+                suffix,
+                &binding,
+                output_limits,
+                |_| Err(std::io::Error::other("injected fsync failure")),
+            ),
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert!(uncertain.exists());
         let bytes = std::fs::read(&out).unwrap();
         let open = |path: &Path, budget, binding: &crate::retained_candidate::SuffixExpected| {
             crate::retained_candidate::open_exported_suffix(

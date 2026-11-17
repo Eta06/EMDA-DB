@@ -574,3 +574,161 @@ mod suffix_budget_tests {
         assert_eq!(state, vec![(vec![1], vec![2])]);
     }
 }
+
+/// Independent limits for the newly created store. Input validation limits are
+/// supplied separately to [`restore_exported_suffix`].
+#[derive(Clone, Copy, Debug)]
+pub struct RestoreLimits {
+    pub log_bytes: u64,
+    pub live_keys: usize,
+    pub live_key_bytes: usize,
+}
+
+/// Restore a validated candidate and detached suffix into a new directory.
+///
+/// This creates a new log identity and history. Historical key-count and
+/// key-byte peaks are neither preserved nor enforced. Input validation and
+/// output creation use distinct limits. The independently retained binding
+/// must be trusted by the caller; all external directories and their ancestors
+/// must remain trusted and stable throughout. The complete reconstructed state
+/// and the new store index coexist in memory. The caller must keep the source
+/// and suffix separate from the destination; only candidate descendants are
+/// rejected here. This is not recovery of the old
+/// witness, a live switch or reclamation, or anti-rollback protection.
+/// The destination must not exist. A publication outcome error requires
+/// inspection before retrying. Source files are not modified.
+#[allow(clippy::too_many_arguments)]
+pub fn restore_exported_suffix(
+    candidate: impl AsRef<Path>,
+    suffix: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+    output: RestoreLimits,
+) -> Result<(), crate::PublicationFailure> {
+    restore_with_sync(
+        candidate.as_ref(),
+        suffix.as_ref(),
+        destination.as_ref(),
+        limits,
+        staging,
+        suffix_limits,
+        expected,
+        output,
+        crate::directory::sync_existing,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restore_with_sync(
+    candidate: &Path,
+    suffix: &Path,
+    destination: &Path,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+    output: RestoreLimits,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), crate::PublicationFailure> {
+    restore_with_hooks(
+        candidate,
+        suffix,
+        destination,
+        limits,
+        staging,
+        suffix_limits,
+        expected,
+        output,
+        sync_parent,
+        |_| Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn restore_with_hooks(
+    candidate: &Path,
+    suffix: &Path,
+    destination: &Path,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+    output: RestoreLimits,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    hook: impl Fn(&str) -> io::Result<()>,
+) -> Result<(), crate::PublicationFailure> {
+    crate::publication_outcome::track(|tracker| {
+        let parent = crate::backup::parent_directory(destination)?;
+        let candidate_real = fs::canonicalize(candidate)?;
+        let parent_real = fs::canonicalize(parent)?;
+        if parent_real.starts_with(&candidate_real) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "destination parent is inside candidate",
+            ));
+        }
+        let state =
+            open_exported_suffix(candidate, suffix, limits, staging, suffix_limits, expected)?;
+        let mut stage = crate::staging::Stage::directory(parent)?;
+        {
+            hook("init")?;
+            let store = crate::Store::open_with_resource_limits(
+                stage.path(),
+                Some(output.log_bytes),
+                Some(output.live_keys),
+                Some(output.live_key_bytes),
+            )?;
+            for (key, value) in &state {
+                hook("write")?;
+                store.put(key, value)?;
+            }
+        }
+        {
+            hook("reopen")?;
+            let store = crate::Store::open_with_resource_limits(
+                stage.path(),
+                Some(output.log_bytes),
+                Some(output.live_keys),
+                Some(output.live_key_bytes),
+            )?;
+            hook("check")?;
+            let mut after: Option<Vec<u8>> = None;
+            let mut count = 0usize;
+            loop {
+                let page = store.scan(after.as_deref(), None, 1)?;
+                if page.is_empty() {
+                    break;
+                }
+                let (key, value) = &page[0];
+                if !state
+                    .get(count)
+                    .is_some_and(|entry| &entry.0 == key && &entry.1 == value)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "restored state mismatch",
+                    ));
+                }
+                count += 1;
+                after = Some(key.clone());
+            }
+            if count != state.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "restored state mismatch",
+                ));
+            }
+        }
+        hook("stage_sync")?;
+        crate::directory::sync_existing(stage.path())?;
+        tracker.begin_publication();
+        hook("rename")?;
+        stage.publish(destination)?;
+        sync_parent(parent)?;
+        stage.publication_synchronized();
+        Ok(())
+    })
+}

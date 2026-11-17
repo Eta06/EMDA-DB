@@ -333,3 +333,13 @@ Thirty retained-export tests and all-target Clippy passed on macOS. This export
 does not establish rollback protection, writable retained recovery, bounded
 total process memory, cutover, or reclamation. The existing trusted stable
 directory and caller-selected external destination assumptions remain.
+
+An explicit offline restore now validates a bound candidate and suffix and
+creates a separate, quota-limited ordinary Store through no-clobber staging.
+It reopens and compares the staged store before publication. The restored
+store has a new identity and history; prior historical peaks and witness are
+not preserved. Input and output limits are distinct, and the replayed state
+and output index coexist in memory. Thirty-one retained-export tests and
+warnings-denied all-target Clippy passed on macOS. Restore-specific process
+kills, partial I/O and Linux V3 coverage remain open; pre-operation fault hooks
+do not establish those properties. This is not a live cutover or reclamation.
