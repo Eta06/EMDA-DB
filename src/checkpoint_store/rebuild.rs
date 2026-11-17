@@ -764,6 +764,7 @@ mod tests {
         store.put(b"base", b"value").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
         store.put(b"tail", b"value").unwrap();
+        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let log = fs::read(path.join("records.log")).unwrap();
         let witness = witness_bytes(&path);
@@ -805,6 +806,7 @@ mod tests {
         store.put(b"key", b"old-unique-value").unwrap();
         store.put(b"key", b"new").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
+        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let log_path = path.join("records.log");
         let mut log = fs::read(&log_path).unwrap();
@@ -894,10 +896,10 @@ mod tests {
             )
         })
         .unwrap_err();
-        assert!(matches!(
-            failure,
-            ManagedRebuildFailure::CheckpointOutcomeUnknown(_)
-        ));
+        assert!(
+            matches!(failure, ManagedRebuildFailure::CheckpointOutcomeUnknown(_)),
+            "checkpoint sync hook was not classified as uncertain: {failure:?}"
+        );
         assert!(destination.is_file());
         assert!(!selection::path(&path).exists());
 
@@ -945,6 +947,7 @@ mod tests {
         let witness = witness_bytes(&path);
         let store = Store::open(&path).unwrap();
         store.put(b"pending", b"complete").unwrap();
+        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let complete_log = fs::read(path.join("records.log")).unwrap();
         restore_witness(&path, &witness);

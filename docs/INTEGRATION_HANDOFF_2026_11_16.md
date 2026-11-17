@@ -156,6 +156,12 @@ still failed three rebuild tests (two `EAGAIN`, one selection hook not reached)
 with 588 passed; its [log](../benchmarks/results/2026-11-17-linux-arm64-exact-release-parallel-failure.log.gz)
 is retained. The missing-hook assertion now reports its early error. These
 results do not establish the failing holders or resolve parallel reliability.
+After releasing three additional completed fixture stores, another strict
+16-thread run passed 591 tests and failed one. The improved assertion recorded
+the second bounded rebuild returning `NotPublished(EAGAIN)` before its selection
+hook after a prior uncertain checkpoint publication. The
+[failure log](../benchmarks/results/2026-11-17-linux-arm64-bounded-release-parallel-failure.log.gz)
+is retained. The holder remains unknown; no uncertain-path unlock was added.
 A Linux-only test hook now captures the exact bounded-rebuild lock descriptor.
 Controlled fork cases cover success, log-limit rejection, checkpoint and
 selection uncertainty, and panic: reopening remains blocked while the child
