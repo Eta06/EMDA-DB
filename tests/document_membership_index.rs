@@ -360,3 +360,80 @@ fn union_results_survive_checkpoint_and_full_log_recovery() {
         check(&DocumentDatabase::new(&store));
     }
 }
+
+#[test]
+fn partial_union_detects_document_entering_index_during_read_set_transaction() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            index(
+                false,
+                Some(PartialFilter::Equals {
+                    path: vec!["active".into()],
+                    value: IndexValue::Boolean(true),
+                }),
+            ),
+        )
+        .unwrap();
+        db.insert("c", "existing", &json!({"v": 7, "active": false}))
+            .unwrap();
+        let request = query(DocumentFilter::And(vec![
+            in_values(vec![json!(5), json!(7)]),
+            DocumentFilter::Equal {
+                path: vec!["active".into()],
+                value: json!(true),
+            },
+        ]));
+        std::thread::scope(|scope| {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (changed_tx, changed_rx) = std::sync::mpsc::channel();
+            let writer = scope.spawn(move || {
+                entered_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                db.replace("c", "existing", &json!({"v": 7, "active": true}), false)
+                    .unwrap();
+                changed_tx.send(()).unwrap();
+            });
+            let result = db.transaction_with_read_set(|tx| {
+                let planned = tx.query_planned("c", &request)?;
+                assert_eq!(
+                    planned.access,
+                    DocumentQueryAccess::PartialMembershipIndex {
+                        index: "v".into(),
+                        probes: 2,
+                    }
+                );
+                assert!(planned.result.documents.is_empty());
+                entered_tx.send(()).unwrap();
+                changed_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                tx.put_raw(b"partial-union-transition", b"must roll back")?;
+                Ok(())
+            });
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::WouldBlock);
+            assert!(database_engine::is_transaction_conflict(&error));
+            writer.join().unwrap();
+        });
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"partial-union-transition"))
+                .unwrap(),
+            None
+        );
+        let result = db.query_planned("c", &request).unwrap();
+        assert_eq!(result.result.documents.len(), 1);
+        assert_eq!(result.result.documents[0].id, "existing");
+        equal_scan(
+            db,
+            &request,
+            DocumentQueryAccess::PartialMembershipIndex {
+                index: "v".into(),
+                probes: 2,
+            },
+        );
+    });
+}
