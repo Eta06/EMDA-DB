@@ -6,6 +6,10 @@ Export is non-destructive and confers no authority to recover, switch, or
 remove history. Authoritative recovery below is a proposed protocol, gated on
 explicit decisions and implementation of all its prerequisites.
 
+A test-only streaming validator exercises the wire checks below. It returns
+self-consistent metadata only, has no stable public API and does not establish
+source provenance, immutable input, trusted authority or safe publication.
+
 ## Wire format and streaming contract
 
 Proposed `EMDARB02`, little endian, canonical fixed-width integers. Header:

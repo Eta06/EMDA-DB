@@ -22,6 +22,8 @@ mod publication_outcome;
 mod record;
 mod recovered_view;
 mod recovery;
+#[cfg(test)]
+mod retained_base_v2;
 mod snapshot_reaper;
 mod staging;
 mod store;
