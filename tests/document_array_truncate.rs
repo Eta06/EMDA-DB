@@ -911,3 +911,72 @@ fn reverse_shares_exact_work_boundary_and_rolls_back_one_over() {
         assert_eq!(db.verify_collection("c").unwrap().documents, 2);
     });
 }
+
+#[test]
+fn keep_last_is_ordered_bounded_and_atomic_on_both_backends() {
+    with_both_backends(|db| {
+        prepare(db);
+        let keep = |field: &str, max_len| DocumentUpdate::ArrayKeepLast {
+            path: path(field),
+            max_len,
+        };
+        db.update_if(
+            "c",
+            "a",
+            &[],
+            &[
+                keep("items", 2),
+                push("items", json!("new")),
+                keep("absent.child", 0),
+            ],
+            false,
+        )
+        .unwrap();
+        let mut expected = original_a();
+        expected["items"] = json!([null, "tail", "new"]);
+        assert_eq!(db.get("c", "a").unwrap(), Some(expected.clone()));
+        assert_pair(db);
+        assert!(
+            db.transaction(|tx| {
+                tx.put_raw(b"keep-rollback", b"value")?;
+                tx.update_if("c", "a", &[], &[keep("items", 0), keep("note", 1)], false)?;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(db.get("c", "a").unwrap(), Some(expected));
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"keep-rollback")).unwrap(),
+            None
+        );
+        assert_pair(db);
+        db.update_if(
+            "c",
+            "a",
+            &[],
+            &[set("items", json!(vec![0; 20_000]))],
+            false,
+        )
+        .unwrap();
+        let before_large = db.get("c", "a").unwrap();
+        let mut updates = Vec::new();
+        for _ in 0..51 {
+            updates.push(keep("items", 19_999));
+            updates.push(push("items", json!(0)));
+        }
+        db.update_if("c", "a", &[], &updates[..100], false)
+            .unwrap();
+        assert_eq!(db.get("c", "a").unwrap(), before_large);
+        assert!(db.update_if("c", "a", &[], &updates, false).is_err());
+        assert_eq!(db.get("c", "a").unwrap(), before_large);
+        db.update_if(
+            "c",
+            "a",
+            &[],
+            &[keep("items", usize::MAX), keep("items", 0)],
+            false,
+        )
+        .unwrap();
+        assert_eq!(db.get("c", "a").unwrap().unwrap()["items"], json!([]));
+    });
+}

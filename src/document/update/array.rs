@@ -98,6 +98,16 @@ pub(super) fn apply(
                 }
             }
         }
+        DocumentUpdate::ArrayKeepLast { path, max_len } => {
+            if let Some(values) = array(document, path, false)? {
+                let removed = values.len().saturating_sub(*max_len);
+                if removed > 0 {
+                    // Draining shifts the retained suffix as well as dropping the prefix.
+                    reserve_work(work, values.len())?;
+                    values.drain(..removed);
+                }
+            }
+        }
         DocumentUpdate::ArrayReverse { path } => {
             if let Some(values) = array(document, path, false)? {
                 reserve_work(work, values.len())?;
