@@ -1077,3 +1077,27 @@ fn checkpoint_initial_state_deadlines_expire_while_the_lock_remains_held() {
     assert_eq!(store.transaction_queue.queued_for_test(), 0);
     assert_eq!(store.get(b"key").unwrap(), None);
 }
+
+#[test]
+fn conservative_identity_change_rejects_reads_and_commit() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    for read_after_change in [false, true] {
+        for replacement in [None, Some(crate::log::GenerationId([42; 16]))] {
+            let original = store.read().unwrap().log_generation;
+            let error = store
+                .transaction(|tx| {
+                    tx.put(b"staged", b"value")?;
+                    store.write().unwrap().log_generation = replacement;
+                    if read_after_change {
+                        tx.get(b"staged")?;
+                    }
+                    Ok(())
+                })
+                .unwrap_err();
+            store.write().unwrap().log_generation = original;
+            assert!(crate::is_transaction_conflict(&error));
+            assert_eq!(store.get(b"staged").unwrap(), None);
+        }
+    }
+}

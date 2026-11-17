@@ -105,5 +105,7 @@ empty ranges retain membership semantics. Direct reads, snapshots and checkpoint
 encoding still use ordinary locations; validation and corruption checks remain
 unchanged. This is still a partial prerequisite: grouped records, identity/view
 publication and snapshot lifetime require further engine-level evidence, and
-future conservative transactions must also detect any generation switch. No
-reclamation or format change follows from this work.
+conservative transactions and ordinary two-point reads now also compare the
+captured identity. Actual switching still requires coordinated publication and
+old-log lifetime protection. No reclamation or format change follows from this
+work.

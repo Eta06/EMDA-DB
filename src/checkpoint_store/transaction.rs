@@ -30,6 +30,7 @@ pub enum CheckpointTransactionMode {
 pub struct CheckpointTransaction<'a> {
     store: &'a CheckpointStore,
     generation: u64,
+    log_generation: Option<crate::log::GenerationId>,
     deadline: Option<Instant>,
     cancellation: Option<crate::CancellationToken>,
     read_set: Option<Mutex<super::read_set::ReadSet>>,
@@ -94,7 +95,8 @@ impl CheckpointTransaction<'_> {
                 .lock()
                 .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
                 .check_state(&state)?;
-        } else if state.generation != self.generation {
+        } else if state.generation != self.generation || state.log_generation != self.log_generation
+        {
             return Err(conflict());
         }
         Ok(state)
@@ -526,6 +528,7 @@ impl CheckpointStore {
         let mut transaction = CheckpointTransaction {
             store: self,
             generation,
+            log_generation,
             deadline,
             cancellation: cancellation.cloned(),
             read_set: track_points
@@ -568,7 +571,7 @@ impl CheckpointStore {
                 .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
                 .matches(&state)?
         } else {
-            state.generation == generation
+            state.generation == generation && state.log_generation == log_generation
         };
         if !valid {
             return Err(conflict().into());

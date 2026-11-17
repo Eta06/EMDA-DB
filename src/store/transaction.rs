@@ -561,6 +561,7 @@ impl Store {
                 }
             } else {
                 current.generation == txn.snapshot.generation
+                    && current.log_generation == txn.snapshot.log_generation
             };
             if !valid {
                 return Err(crate::transaction_conflict::conflict(
@@ -606,6 +607,25 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn conservative_transaction_rejects_identity_change_without_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        for replacement in [None, Some(crate::log::GenerationId([42; 16]))] {
+            let original = store.read().unwrap().log_generation;
+            let error = store
+                .transaction(|tx| {
+                    tx.put(b"staged", b"value")?;
+                    store.inner.write().unwrap().log_generation = replacement;
+                    Ok(())
+                })
+                .unwrap_err();
+            store.inner.write().unwrap().log_generation = original;
+            assert!(crate::is_transaction_conflict(&error));
+            assert_eq!(store.get(b"staged").unwrap(), None);
+        }
+    }
 
     #[test]
     fn deadline_expiring_during_read_set_validation_rejects_staged_writes() {

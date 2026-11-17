@@ -43,6 +43,7 @@ impl Store {
         let first = inner.index.get(first).copied();
         let second = inner.index.get(second).copied();
         let generation = inner.generation;
+        let log_generation = inner.log_generation;
         drop(inner);
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -64,7 +65,8 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
-        if self.read()?.generation != generation {
+        let current = self.read()?;
+        if current.generation != generation || current.log_generation != log_generation {
             return Err(crate::transaction_conflict::conflict(
                 "transaction conflict: observed state changed since snapshot",
             ));
@@ -104,6 +106,21 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         assert!(crate::is_transaction_conflict(&error));
         assert_eq!(store.get(b"unrelated").unwrap(), Some(b"write".to_vec()));
+    }
+
+    #[test]
+    fn identity_change_conflicts_without_a_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path()).unwrap();
+        let original = store.read().unwrap().log_generation;
+        let error = store
+            .read_two_consistent(b"first", b"second", |_, _| {
+                store.inner.write().unwrap().log_generation = None;
+                Ok(())
+            })
+            .unwrap_err();
+        store.inner.write().unwrap().log_generation = original;
+        assert!(crate::is_transaction_conflict(&error));
     }
 
     #[test]
