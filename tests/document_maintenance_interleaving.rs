@@ -719,3 +719,86 @@ fn read_set_schema_empty_page_conflicts_with_insert_after_cursor_on_both_backend
     }
     finish_schema_after_cursor(|| CheckpointStore::open(&source, &base, &digest));
 }
+
+// A writer that validated against the old schema must not commit after a
+// migration has published a stricter schema, even if its document was absent
+// from the migration's scan.
+fn stale_writer_after_schema_publication(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    thread::scope(|scope| {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        let mut release = Release {
+            schema: Some(go_tx),
+            index: None,
+        };
+        let writer = scope.spawn(move || {
+            db.transaction_with_read_set(|tx| {
+                tx.insert("c", "late", &json!({"n": 7}))?;
+                tx.put_raw(b"stale-writer", b"yes")?;
+                ready_tx.send(()).unwrap();
+                go_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                Ok(())
+            })
+        });
+        ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        db.start_schema_migration("c", pending_schema()).unwrap();
+        let step = db.advance_schema_migration("c", 1).unwrap();
+        assert!(step.complete);
+        signal(&mut release.schema);
+        let error = writer.join().unwrap().expect_err("stale writer committed");
+        assert!(is_transaction_conflict(&error), "unexpected error: {error}");
+    });
+    assert_stale_writer_rolled_back(db);
+}
+
+fn assert_stale_writer_rolled_back(db: &DocumentDatabase<'_>) {
+    assert_eq!(db.get("c", "late").unwrap(), None);
+    assert_eq!(raw(db, b"stale-writer"), None);
+    assert_eq!(db.schema_migration("c").unwrap(), None);
+    assert_eq!(
+        db.insert("c", "invalid", &json!({})).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    db.insert("c", "valid", &document("valid", 1)).unwrap();
+}
+
+#[test]
+fn read_set_stale_writer_conflicts_with_schema_publication_on_both_backends() {
+    let root = tempfile::tempdir().unwrap();
+    let ordinary = root.path().join("ordinary");
+    {
+        let store = Store::open(&ordinary).unwrap();
+        stale_writer_after_schema_publication(&DocumentDatabase::new(&store));
+    }
+    {
+        let store = Store::open(&ordinary).unwrap();
+        let db = DocumentDatabase::new(&store);
+        assert_eq!(db.get("c", "late").unwrap(), None);
+        assert_eq!(raw(&db, b"stale-writer"), None);
+        assert_eq!(db.get("c", "valid").unwrap(), Some(document("valid", 1)));
+        assert_eq!(
+            db.insert("c", "invalid", &json!({})).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+    let source = root.path().join("checkpoint");
+    let base = root.path().join("base");
+    let initial = Store::open(&source).unwrap();
+    let digest = initial.checkpoint_to(&base).unwrap();
+    drop(initial);
+    {
+        let store = CheckpointStore::open(&source, &base, &digest).unwrap();
+        stale_writer_after_schema_publication(&DocumentDatabase::with_checkpoint_store(&store));
+    }
+    let store = CheckpointStore::open(&source, &base, &digest).unwrap();
+    let db = DocumentDatabase::with_checkpoint_store(&store);
+    assert_eq!(db.get("c", "late").unwrap(), None);
+    assert_eq!(raw(&db, b"stale-writer"), None);
+    assert_eq!(db.get("c", "valid").unwrap(), Some(document("valid", 1)));
+    assert_eq!(
+        db.insert("c", "invalid", &json!({})).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+}
