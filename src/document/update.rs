@@ -53,6 +53,8 @@ pub enum DocumentUpdate {
     /// Keep the first `max_len` elements. A missing field is a no-op, and a
     /// shorter array is unchanged.
     ArrayTruncate { path: Vec<String>, max_len: usize },
+    /// Reverse an existing array in place; a missing field is a no-op.
+    ArrayReverse { path: Vec<String> },
 }
 
 fn parent_mut<'a>(
@@ -115,7 +117,8 @@ fn apply(document: &mut Value, updates: &[DocumentUpdate]) -> io::Result<()> {
             | DocumentUpdate::ArrayAddUnique { .. }
             | DocumentUpdate::ArrayRemove { .. }
             | DocumentUpdate::ArrayPop { .. }
-            | DocumentUpdate::ArrayTruncate { .. } => {
+            | DocumentUpdate::ArrayTruncate { .. }
+            | DocumentUpdate::ArrayReverse { .. } => {
                 array::apply(document, update, &mut array_work)?
             }
         }
@@ -161,7 +164,8 @@ impl DocumentTransaction<'_, '_> {
                     | DocumentUpdate::ArrayAddUnique { path, .. }
                     | DocumentUpdate::ArrayRemove { path, .. }
                     | DocumentUpdate::ArrayPop { path, .. }
-                    | DocumentUpdate::ArrayTruncate { path, .. } => path,
+                    | DocumentUpdate::ArrayTruncate { path, .. }
+                    | DocumentUpdate::ArrayReverse { path } => path,
                     DocumentUpdate::Rename { from, to } => {
                         schema::validate_path(to)?;
                         if from.starts_with(to) || to.starts_with(from) {

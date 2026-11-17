@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add ordered array reversal under the shared document array-work limit.
+
 - Add ordered array truncation with the same transaction and work limits as
   other document array updates.
 

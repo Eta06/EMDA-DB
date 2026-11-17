@@ -761,3 +761,54 @@ fn truncate_enforces_input_work_and_operator_limits() {
         assert_pair(db);
     });
 }
+
+#[test]
+fn reverse_is_ordered_bounded_and_atomic_on_both_backends() {
+    with_both_backends(|db| {
+        prepare(db);
+        let reverse = |field: &str| DocumentUpdate::ArrayReverse { path: path(field) };
+        db.update_if(
+            "c",
+            "a",
+            &[],
+            &[
+                reverse("items"),
+                push("items", json!("end")),
+                reverse("profile.tags"),
+                reverse("absent.child"),
+            ],
+            false,
+        )
+        .unwrap();
+        let mut expected = original_a();
+        expected["items"] = json!(["tail", null, 1, {"x": 1}, 1, "end"]);
+        expected["profile"]["tags"] = json!(["drop", "keep"]);
+        assert_eq!(db.get("c", "a").unwrap(), Some(expected.clone()));
+        assert_pair(db);
+        let result = db.transaction(|tx| {
+            tx.put_raw(b"reverse-rollback", b"value")?;
+            tx.update_if("c", "a", &[], &[reverse("items"), reverse("note")], false)?;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(db.get("c", "a").unwrap(), Some(expected));
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"reverse-rollback"))
+                .unwrap(),
+            None
+        );
+        assert_pair(db);
+        db.update_if(
+            "c",
+            "a",
+            &[],
+            &[set("items", json!(vec![0; 10_000]))],
+            false,
+        )
+        .unwrap();
+        let before = db.get("c", "a").unwrap();
+        let updates = vec![reverse("items"); 101];
+        assert!(db.update_if("c", "a", &[], &updates, false).is_err());
+        assert_eq!(db.get("c", "a").unwrap(), before);
+    });
+}

@@ -98,6 +98,12 @@ pub(super) fn apply(
                 }
             }
         }
+        DocumentUpdate::ArrayReverse { path } => {
+            if let Some(values) = array(document, path, false)? {
+                reserve_work(work, values.len())?;
+                values.reverse();
+            }
+        }
         _ => unreachable!("array update variant"),
     }
     Ok(())
