@@ -136,7 +136,8 @@ fn required_membership(filter: &DocumentFilter, path: &[String]) -> Option<Vec<I
 
 // A successful equality, comparison or array predicate requires the path to
 // exist. Explicit Exists is the only currently recognized proof of absence.
-// Children of Or/Not are never individually required by the whole filter.
+// An Or proves the condition only if every nonempty branch proves it.
+// Not and nested array-element filters do not establish root-path presence.
 fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> bool {
     let mut pending = vec![filter];
     while let Some(filter) = pending.pop() {
@@ -158,6 +159,14 @@ fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> 
                 return true;
             }
             DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
+            DocumentFilter::Or(filters)
+                if !filters.is_empty()
+                    && filters
+                        .iter()
+                        .all(|branch| required_presence(branch, path, exists)) =>
+            {
+                return true;
+            }
             _ => {}
         }
     }

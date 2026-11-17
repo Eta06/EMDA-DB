@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Allow partial-index presence proofs when every branch of a nonempty required
+  `Or` establishes the guard.
+
 - Add ordered array reversal under the shared document array-work limit.
 
 - Add ordered array truncation with the same transaction and work limits as

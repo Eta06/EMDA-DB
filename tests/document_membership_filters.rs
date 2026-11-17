@@ -530,3 +530,94 @@ fn singleton_membership_detects_index_phantoms_and_allows_unrelated_inserts() {
         on_backends(|db| phantom(db, inside));
     }
 }
+
+#[test]
+fn partial_presence_through_or_is_conservative_and_transactional() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            index(
+                "score",
+                &["score"],
+                false,
+                Some(PartialFilter::Exists {
+                    path: path("active"),
+                    exists: true,
+                }),
+            ),
+        )
+        .unwrap();
+        for (id, doc) in [
+            ("a", json!({"score":1,"active":null})),
+            ("b", json!({"score":1,"active":true})),
+            ("c", json!({"score":1})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        let branch = DocumentFilter::Or(vec![eq("active", json!(null)), eq("active", json!(true))]);
+        let request = query(DocumentFilter::And(vec![eq("score", json!(1)), branch]));
+        let access = DocumentQueryAccess::PartialEqualityIndex {
+            index: "score".into(),
+            fields: 1,
+        };
+        compare(db, &request, access.clone());
+        db.transaction(|tx| {
+            tx.insert("c", "d", &json!({"score":1,"active":true}))?;
+            let planned = tx.query_planned("c", &request)?;
+            assert_eq!(planned.access, access);
+            assert_eq!(planned.result.documents, tx.query("c", &request)?.documents);
+            assert_eq!(planned.result.documents.len(), 3);
+            let mut limited = request.clone();
+            limited.max_scanned = 2;
+            assert!(tx.query_planned("c", &limited).is_err());
+            Ok(())
+        })
+        .unwrap();
+        db.create_index(
+            "c",
+            index(
+                "absent",
+                &["score"],
+                false,
+                Some(PartialFilter::Exists {
+                    path: path("active"),
+                    exists: false,
+                }),
+            ),
+        )
+        .unwrap();
+        let absent = || DocumentFilter::Exists {
+            path: path("active"),
+            exists: false,
+        };
+        let absence_query = query(DocumentFilter::And(vec![
+            eq("score", json!(1)),
+            DocumentFilter::Or(vec![
+                absent(),
+                DocumentFilter::And(vec![absent(), DocumentFilter::All]),
+            ]),
+        ]));
+        compare(
+            db,
+            &absence_query,
+            DocumentQueryAccess::PartialEqualityIndex {
+                index: "absent".into(),
+                fields: 1,
+            },
+        );
+        for branch in [
+            DocumentFilter::Or(vec![eq("active", json!(true)), DocumentFilter::All]),
+            DocumentFilter::Or(vec![eq("active", json!(true)), not_in("active", vec![])]),
+            DocumentFilter::Not(Box::new(eq("active", json!(false)))),
+            DocumentFilter::Or(vec![]),
+        ] {
+            compare(
+                db,
+                &query(DocumentFilter::And(vec![eq("score", json!(1)), branch])),
+                DocumentQueryAccess::CollectionScan,
+            );
+        }
+    });
+}
