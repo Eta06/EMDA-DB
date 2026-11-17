@@ -79,14 +79,44 @@ fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid candidate")
 }
 fn open_regular(path: &Path) -> io::Result<fs::File> {
+    use rustix::fs::{Mode, OFlags, open};
+    // Reject known non-regular files before open; a stable trusted directory is
+    // required because type checks cannot prevent a concurrent replacement.
     if !fs::symlink_metadata(path)?.file_type().is_file() {
         return Err(invalid());
     }
-    let file = fs::File::open(path)?;
+    let file = fs::File::from(open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?);
     if !file.metadata()?.is_file() {
         return Err(invalid());
     }
     Ok(file)
+}
+
+#[cfg(test)]
+#[test]
+fn open_regular_rejects_fifo_and_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("fifo");
+    #[cfg(target_os = "linux")]
+    {
+        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR).unwrap();
+        assert_eq!(
+            open_regular(&fifo).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    fs::write(&fifo, b"regular target").unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&fifo, &link).unwrap();
+    assert_eq!(
+        open_regular(&link).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
 }
 fn exact(path: &Path, len: usize) -> io::Result<Vec<u8>> {
     let mut file = open_regular(path)?;
@@ -229,6 +259,49 @@ pub struct SuffixLimits {
     pub operations: u64,
     /// Maximum entry visits and vector shifts during replay.
     pub work: u64,
+}
+
+/// Open a detached exported suffix and privately replay it with its candidate.
+/// The independently retained binding identifies the candidate's source and
+/// captured boundary and the exact suffix endpoint and digest; it is not proof
+/// of freshness or authority. Directory ancestors and contents must remain
+/// trusted and stable during the operation. Final-component symlinks are rejected.
+/// The file is read once, with exact EOF, into a buffer bounded by `suffix_limits.bytes`;
+/// the same bytes are hashed and replayed. Peak memory includes that buffer plus
+/// the staged live set, transient replacement values, batch decoding and allocator
+/// overhead. Entry and payload limits do not constitute a total process memory cap.
+/// Errors return no state and may precede full verification. This does not open,
+/// modify, select, or recover an ordinary store.
+pub fn open_exported_suffix(
+    directory: impl AsRef<Path>,
+    suffix_path: impl AsRef<Path>,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    if expected.end > suffix_limits.bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "suffix byte limit exceeded",
+        ));
+    }
+    let len = usize::try_from(expected.end).map_err(|_| invalid())?;
+    let mut file = open_regular(suffix_path.as_ref())?;
+    if file.metadata()?.len() != expected.end {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|_| io::Error::other("suffix allocation failed"))?;
+    bytes.resize(len, 0);
+    file.read_exact(&mut bytes)?;
+    let mut extra = [0];
+    if file.read(&mut extra)? != 0 {
+        return Err(invalid());
+    }
+    replay_suffix(directory, limits, staging, &bytes, suffix_limits, expected)
 }
 
 /// Validate and privately replay a detached suffix against an independently

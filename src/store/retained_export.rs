@@ -931,6 +931,51 @@ mod tests {
             )
             .unwrap();
         let bytes = std::fs::read(&out).unwrap();
+        let open = |path: &Path, budget, binding: &crate::retained_candidate::SuffixExpected| {
+            crate::retained_candidate::open_exported_suffix(
+                &candidate,
+                path,
+                base_limits,
+                staging,
+                budget,
+                binding,
+            )
+        };
+        assert_eq!(
+            open(&out, suffix, &binding).unwrap(),
+            vec![(b"new".to_vec(), b"value2".to_vec())]
+        );
+        assert!(
+            open(
+                &out,
+                crate::retained_candidate::SuffixLimits { bytes: 0, ..suffix },
+                &binding
+            )
+            .is_err()
+        );
+        let mut swapped = binding.clone();
+        swapped.candidate.header[8] ^= 1;
+        assert!(open(&out, suffix, &swapped).is_err());
+        swapped = binding.clone();
+        swapped.digest[0] ^= 1;
+        assert!(open(&out, suffix, &swapped).is_err());
+        let bad = root.path().join("bad-suffix");
+        let mut corrupt = bytes.clone();
+        corrupt[0] ^= 1;
+        std::fs::write(&bad, &corrupt).unwrap();
+        assert!(open(&bad, suffix, &binding).is_err());
+        std::fs::write(&bad, &bytes[..bytes.len() - 1]).unwrap();
+        assert!(open(&bad, suffix, &binding).is_err());
+        let mut extended = bytes.clone();
+        extended.push(0);
+        std::fs::write(&bad, extended).unwrap();
+        assert!(open(&bad, suffix, &binding).is_err());
+        #[cfg(unix)]
+        {
+            let link = root.path().join("suffix-link");
+            std::os::unix::fs::symlink(&out, &link).unwrap();
+            assert!(open(&link, suffix, &binding).is_err());
+        }
         assert_eq!(
             crate::retained_candidate::replay_suffix(
                 &candidate,
