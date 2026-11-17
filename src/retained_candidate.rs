@@ -727,6 +727,8 @@ pub(crate) fn restore_with_hooks(
         tracker.begin_publication();
         hook("rename")?;
         stage.publish(destination)?;
+        #[cfg(test)]
+        hook("published")?;
         sync_parent(parent)?;
         stage.publication_synchronized();
         Ok(())

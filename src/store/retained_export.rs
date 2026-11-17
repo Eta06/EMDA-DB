@@ -1210,6 +1210,30 @@ mod tests {
             .is_err()
         );
         assert!(!rejected.exists());
+        let published = root.path().join("injected-published");
+        assert!(matches!(
+            crate::retained_candidate::restore_with_hooks(
+                &candidate,
+                &out,
+                &published,
+                base_limits,
+                staging,
+                suffix,
+                &binding,
+                output_limits,
+                crate::directory::sync_existing,
+                |at| if at == "published" {
+                    Err(std::io::Error::other("injected"))
+                } else {
+                    Ok(())
+                },
+            ),
+            Err(crate::PublicationFailure::OutcomeUnknown(_))
+        ));
+        assert_eq!(
+            Store::open(&published).unwrap().get(b"new").unwrap(),
+            Some(b"value2".to_vec())
+        );
         let uncertain = root.path().join("uncertain");
         assert!(matches!(
             crate::retained_candidate::restore_with_sync(
@@ -1785,6 +1809,190 @@ mod tests {
             assert_eq!(std::fs::read(source.join("commit.state")).ok(), witness);
             crate::staging::cleanup_abandoned_staging(root.path()).unwrap();
             assert_no_candidate_stages(root.path());
+        }
+    }
+
+    #[test]
+    fn restore_kill_child() {
+        let Ok(root) = std::env::var("EMDA_RESTORE_KILL_ROOT") else {
+            return;
+        };
+        let root = Path::new(&root);
+        let point = std::env::var("EMDA_RESTORE_KILL_POINT").unwrap();
+        let bytes = std::fs::read(root.join("binding")).unwrap();
+        let binding = crate::retained_candidate::SuffixExpected {
+            candidate: crate::retained_candidate::Expected {
+                header: bytes[0..112].try_into().unwrap(),
+                witness: bytes[112..144].try_into().unwrap(),
+                base_digest: bytes[144..176].try_into().unwrap(),
+            },
+            end: u64::from_le_bytes(bytes[176..184].try_into().unwrap()),
+            digest: bytes[184..216].try_into().unwrap(),
+        };
+        let writes = std::cell::Cell::new(0);
+        let _ = crate::retained_candidate::restore_with_hooks(
+            &root.join("candidate"),
+            &root.join("suffix"),
+            &root.join("output"),
+            candidate_budgets(),
+            crate::retained_base_v2::StagingLimits {
+                value_bytes: 1000,
+                staging_bytes: 10000,
+            },
+            crate::retained_candidate::SuffixLimits {
+                bytes: 10000,
+                operations: 10,
+                work: 1000,
+            },
+            &binding,
+            crate::retained_candidate::RestoreLimits {
+                log_bytes: 10000,
+                live_keys: 10,
+                live_key_bytes: 1000,
+            },
+            crate::directory::sync_existing,
+            |at| {
+                if at == "write" {
+                    writes.set(writes.get() + 1);
+                }
+                if at == point || (point == "write2" && at == "write" && writes.get() == 2) {
+                    println!("RESTORE_READY");
+                    std::io::stdout().flush().unwrap();
+                    loop {
+                        std::thread::park();
+                    }
+                }
+                Ok(())
+            },
+        );
+        panic!("boundary not reached");
+    }
+
+    #[test]
+    fn restore_process_kill_boundaries() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        for point in [
+            "init",
+            "write",
+            "write2",
+            "reopen",
+            "check",
+            "stage_sync",
+            "rename",
+            "published",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let store = Store::open(&source).unwrap();
+            store.put(b"old", b"base").unwrap();
+            let candidate = root.path().join("candidate");
+            let expected = store
+                .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+                .unwrap();
+            store.put(b"new", b"suffix").unwrap();
+            let suffix = root.path().join("suffix");
+            let staging = crate::retained_base_v2::StagingLimits {
+                value_bytes: 1000,
+                staging_bytes: 10000,
+            };
+            let suffix_limits = crate::retained_candidate::SuffixLimits {
+                bytes: 10000,
+                operations: 10,
+                work: 1000,
+            };
+            let binding = store
+                .export_retained_suffix(
+                    &candidate,
+                    &expected,
+                    &suffix,
+                    candidate_budgets(),
+                    staging,
+                    suffix_limits,
+                    limits(),
+                )
+                .unwrap();
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&binding.candidate.header);
+            bytes.extend_from_slice(&binding.candidate.witness);
+            bytes.extend_from_slice(&binding.candidate.base_digest);
+            bytes.extend_from_slice(&binding.end.to_le_bytes());
+            bytes.extend_from_slice(&binding.digest);
+            std::fs::write(root.path().join("binding"), bytes).unwrap();
+            drop(store);
+            let snapshot = |dir: &Path| {
+                let mut files: Vec<_> = std::fs::read_dir(dir)
+                    .unwrap()
+                    .map(|e| {
+                        let e = e.unwrap();
+                        (e.file_name(), std::fs::read(e.path()).unwrap())
+                    })
+                    .collect();
+                files.sort();
+                files
+            };
+            let source_before = snapshot(&source);
+            let candidate_before = snapshot(&candidate);
+            let suffix_before = std::fs::read(&suffix).unwrap();
+            let sentinel = root.path().join(".emda-stage-v1-d-unowned.owner");
+            std::fs::write(&sentinel, b"unowned").unwrap();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "store::retained_export::tests::restore_kill_child",
+                    "--nocapture",
+                ])
+                .env("EMDA_RESTORE_KILL_ROOT", root.path())
+                .env("EMDA_RESTORE_KILL_POINT", point)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let ready = std::io::BufReader::new(stdout)
+                    .lines()
+                    .any(|l| l.is_ok_and(|l| l.contains("RESTORE_READY")));
+                let _ = tx.send(ready);
+            });
+            let ready = rx.recv_timeout(std::time::Duration::from_secs(20));
+            if !matches!(ready, Ok(true)) {
+                let _ = child.kill();
+                let _ = child.wait();
+                reader.join().unwrap();
+                panic!("child did not reach {point}");
+            }
+            child.kill().unwrap();
+            child.wait().unwrap();
+            reader.join().unwrap();
+            let output = root.path().join("output");
+            if output.exists() {
+                let reopened = Store::open(&output).unwrap();
+                assert_eq!(
+                    reopened.scan(None, None, 10).unwrap(),
+                    vec![
+                        (b"new".to_vec(), b"suffix".to_vec()),
+                        (b"old".to_vec(), b"base".to_vec())
+                    ]
+                );
+            } else {
+                assert_ne!(point, "published");
+            }
+            assert_eq!(snapshot(&source), source_before);
+            assert_eq!(snapshot(&candidate), candidate_before);
+            assert_eq!(std::fs::read(&suffix).unwrap(), suffix_before);
+            crate::staging::cleanup_abandoned_staging(root.path()).unwrap();
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"unowned");
+            if output.exists() {
+                assert_eq!(
+                    Store::open(&output)
+                        .unwrap()
+                        .scan(None, None, 10)
+                        .unwrap()
+                        .len(),
+                    2
+                );
+            }
         }
     }
 
