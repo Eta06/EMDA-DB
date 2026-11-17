@@ -70,6 +70,16 @@ pub fn lookup<R: Read>(
     max_value_bytes: usize,
     expected: Expected,
 ) -> io::Result<Option<Vec<u8>>> {
+    lookup_with_metadata(reader, limits, key, max_value_bytes, expected).map(|(_, value)| value)
+}
+
+pub(crate) fn lookup_with_metadata<R: Read>(
+    reader: R,
+    limits: Limits,
+    key: &[u8],
+    max_value_bytes: usize,
+    expected: Expected,
+) -> io::Result<(Validated, Option<Vec<u8>>)> {
     crate::record::validate_key(key)?;
     if max_value_bytes > 16 * 1024 * 1024 {
         return Err(io::Error::new(
@@ -85,7 +95,7 @@ pub fn lookup<R: Read>(
     {
         return Err(invalid("expected binding mismatch"));
     }
-    Ok(value)
+    Ok((metadata, value))
 }
 
 fn scan<R: Read>(

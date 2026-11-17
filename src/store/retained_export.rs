@@ -765,6 +765,67 @@ mod tests {
     }
 
     #[test]
+    fn candidate_lookup_validates_full_bound_snapshot() {
+        use crate::retained_candidate::lookup;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let store = Store::open(&source).unwrap();
+        let large = vec![42; 150_000];
+        store.put(b"a", b"").unwrap();
+        store.put(b"b", &large).unwrap();
+        store.put(b"z", b"last").unwrap();
+        let dest = root.path().join("candidate");
+        let expected = store
+            .build_retained_candidate(&dest, [1; 16], [2; 16], limits())
+            .unwrap();
+        let budgets = crate::retained_base_v2::Limits {
+            file_bytes: 1_000_000,
+            entries: 10,
+            key_bytes: 100,
+            work_bytes: 1_000_001,
+        };
+        let before = std::fs::read(source.join("records.log")).unwrap();
+        assert_eq!(
+            lookup(&dest, budgets, b"a", 0, &expected).unwrap(),
+            Some(vec![])
+        );
+        assert_eq!(
+            lookup(&dest, budgets, b"b", large.len(), &expected).unwrap(),
+            Some(large)
+        );
+        assert_eq!(
+            lookup(&dest, budgets, b"missing", 0, &expected).unwrap(),
+            None
+        );
+        assert!(lookup(&dest, budgets, b"b", 1, &expected).is_err());
+        assert!(lookup(&dest, budgets, b"", 0, &expected).is_err());
+        assert!(lookup(&dest, budgets, &vec![1; 1025], 0, &expected).is_err());
+        assert!(lookup(&dest, budgets, b"a", 16 * 1024 * 1024 + 1, &expected).is_err());
+        let mut wrong = expected.clone();
+        wrong.base_digest[0] ^= 1;
+        assert!(lookup(&dest, budgets, b"a", 0, &wrong).is_err());
+        let mut wrong = expected.clone();
+        wrong.header[48] ^= 1;
+        assert!(lookup(&dest, budgets, b"a", 0, &wrong).is_err());
+        let mut small = budgets;
+        small.work_bytes = 145;
+        assert!(lookup(&dest, small, b"a", 0, &expected).is_err());
+        let base = dest.join("base");
+        let original = std::fs::read(&base).unwrap();
+        let mut mutated = original.clone();
+        let pos = mutated.len() - 33;
+        mutated[pos] ^= 1;
+        std::fs::write(&base, &mutated).unwrap();
+        assert!(lookup(&dest, budgets, b"a", 0, &expected).is_err());
+        std::fs::write(&base, &original[..original.len() - 1]).unwrap();
+        assert!(lookup(&dest, budgets, b"a", 0, &expected).is_err());
+        std::fs::write(&base, original).unwrap();
+        std::fs::write(dest.join("extra"), b"x").unwrap();
+        assert!(lookup(&dest, budgets, b"a", 0, &expected).is_err());
+        assert_eq!(std::fs::read(source.join("records.log")).unwrap(), before);
+        assert_eq!(store.get(b"z").unwrap(), Some(b"last".to_vec()));
+    }
+    #[test]
     fn candidate_verification_and_failure_paths() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path().join("source")).unwrap();

@@ -110,6 +110,45 @@ pub fn verify(
     expected: &Expected,
 ) -> io::Result<Validated> {
     let dir = directory.as_ref();
+    check_files(dir, expected)?;
+    let base = retained_base_v2::validate(open_regular(&dir.join("base"))?, limits)?;
+    check_binding(&base, expected)?;
+    Ok(base)
+}
+
+/// Read one value only after validating the entire candidate against an independently
+/// retained binding. The directory, its parents, and their contents must remain
+/// trusted and stable throughout the operation. Limits apply to the base stream.
+/// A limit or I/O error can occur before full validation; it does not establish
+/// that the key exists or that the candidate matches the binding.
+/// This is a read-only, non-authoritative operation, not a store or recovery.
+pub fn lookup(
+    directory: impl AsRef<Path>,
+    limits: Limits,
+    key: &[u8],
+    max_value_bytes: usize,
+    expected: &Expected,
+) -> io::Result<Option<Vec<u8>>> {
+    let dir = directory.as_ref();
+    check_files(dir, expected)?;
+    let base_expected = retained_base_v2::Expected {
+        digest: expected.base_digest,
+        source_id: expected.header[8..24].try_into().unwrap(),
+        base_id: expected.header[24..40].try_into().unwrap(),
+        boundary: u64::from_le_bytes(expected.header[40..48].try_into().unwrap()),
+    };
+    let (base, value) = retained_base_v2::lookup_with_metadata(
+        open_regular(&dir.join("base"))?,
+        limits,
+        key,
+        max_value_bytes,
+        base_expected,
+    )?;
+    check_binding(&base, expected)?;
+    Ok(value)
+}
+
+fn check_files(dir: &Path, expected: &Expected) -> io::Result<()> {
     if !fs::symlink_metadata(dir)?.file_type().is_dir() {
         return Err(invalid());
     }
@@ -130,13 +169,16 @@ pub fn verify(
     if header != expected.header || witness != expected.witness {
         return Err(invalid());
     }
-    let base = retained_base_v2::validate(open_regular(&dir.join("base"))?, limits)?;
+    Ok(())
+}
+
+fn check_binding(base: &Validated, expected: &Expected) -> io::Result<()> {
     if base.digest != expected.base_digest {
         return Err(invalid());
     }
     let log_id = expected.header[88..104].try_into().unwrap();
-    if binding(&base, log_id)? != *expected {
+    if binding(base, log_id).map_err(|_| invalid())? != *expected {
         return Err(invalid());
     }
-    Ok(base)
+    Ok(())
 }
