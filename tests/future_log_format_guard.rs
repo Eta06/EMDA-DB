@@ -106,3 +106,29 @@ fn live_backup_rejects_future_marker_without_publishing() {
     assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
     assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness);
 }
+
+#[test]
+fn empty_future_log_is_rejected_without_mutating_candidate_files() {
+    // This exercises only current readers. The marker and companion files are
+    // deliberately not a LOG4 encoding or evidence about historical binaries.
+    for companions in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("candidate");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("records.log"), b"EMDALOG4").unwrap();
+        if companions {
+            fs::write(path.join("commit.state"), b"unrecognized witness").unwrap();
+            fs::write(path.join("base.rb"), b"unrecognized base").unwrap();
+        }
+        assert!(Store::open(&path).is_err());
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), b"EMDALOG4");
+        assert_eq!(
+            fs::read(path.join("commit.state")).ok(),
+            companions.then(|| b"unrecognized witness".to_vec())
+        );
+        assert_eq!(
+            fs::read(path.join("base.rb")).ok(),
+            companions.then(|| b"unrecognized base".to_vec())
+        );
+    }
+}
