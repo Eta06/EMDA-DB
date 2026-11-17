@@ -64,11 +64,32 @@ impl Store {
         destination: &Path,
         base_id: [u8; 16],
         log_id: [u8; 16],
+        limits: RetainedExportLimits,
+        hook: impl FnMut(&str) -> io::Result<()>,
+    ) -> Result<crate::retained_candidate::Expected, crate::retained_candidate::Failure> {
+        self.build_retained_candidate_with_io(
+            destination,
+            base_id,
+            log_id,
+            limits,
+            hook,
+            |_, file, bytes| match bytes {
+                Some(bytes) => file.write_all(bytes),
+                None => file.sync_all(),
+            },
+        )
+    }
+
+    fn build_retained_candidate_with_io(
+        &self,
+        destination: &Path,
+        base_id: [u8; 16],
+        log_id: [u8; 16],
         mut limits: RetainedExportLimits,
         mut hook: impl FnMut(&str) -> io::Result<()>,
+        mut output: impl FnMut(&str, &mut File, Option<&[u8]>) -> io::Result<()>,
     ) -> Result<crate::retained_candidate::Expected, crate::retained_candidate::Failure> {
         use crate::retained_candidate::Failure;
-        use std::io::Write;
         limits.max_output_bytes = limits.max_output_bytes.checked_sub(144).ok_or_else(|| {
             Failure::NotPublished(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -106,14 +127,14 @@ impl Store {
                     "store.lock" => "lock_write",
                     _ => "witness_write",
                 })?;
-                file.write_all(bytes)?;
+                output(name, &mut file, Some(bytes))?;
                 #[cfg(test)]
                 hook(match name {
                     "records.log" => "header_sync",
                     "store.lock" => "lock_sync",
                     _ => "witness_sync",
                 })?;
-                file.sync_all()?;
+                output(name, &mut file, None)?;
             }
             #[cfg(test)]
             hook("stage_sync")?;
@@ -376,6 +397,100 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".emda-stage-v1-")
         }));
+    }
+
+    #[test]
+    fn candidate_partial_output_and_sync_failures_are_not_published() {
+        struct Partial<'a> {
+            file: &'a mut File,
+            written: usize,
+            zero: bool,
+        }
+        impl Write for Partial<'_> {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.written == 0 {
+                    let n = self.file.write(&bytes[..bytes.len().min(7)])?;
+                    self.written += n;
+                    Ok(n)
+                } else if self.zero {
+                    Ok(0)
+                } else {
+                    Err(io::Error::other("injected after short write"))
+                }
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.file.flush()
+            }
+        }
+        for target in ["records.log", "witness"] {
+            for fault in ["error", "zero", "sync"] {
+                let root = tempfile::tempdir().unwrap();
+                let source = root.path().join("source");
+                std::fs::create_dir(&source).unwrap();
+                std::fs::write(
+                    source.join("records.log"),
+                    include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+                )
+                .unwrap();
+                std::fs::write(
+                    source.join("commit.state"),
+                    include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+                )
+                .unwrap();
+                let store = Store::open(&source).unwrap();
+                store.put(b"key", b"value").unwrap();
+                let log = std::fs::read(source.join("records.log")).unwrap();
+                let witness = std::fs::read(source.join("commit.state")).unwrap();
+                let dest = root.path().join("candidate");
+                let mut injected = false;
+                let failure = store
+                    .build_retained_candidate_with_io(
+                        &dest,
+                        [1; 16],
+                        [2; 16],
+                        limits(),
+                        |_| Ok(()),
+                        |name, file, bytes| match bytes {
+                            Some(bytes) if name == target && fault != "sync" => {
+                                let mut writer = Partial {
+                                    file,
+                                    written: 0,
+                                    zero: fault == "zero",
+                                };
+                                let result = writer.write_all(bytes);
+                                assert_eq!(writer.written, 7);
+                                assert_eq!(writer.file.metadata()?.len(), 7);
+                                injected = true;
+                                result
+                            }
+                            Some(bytes) => file.write_all(bytes),
+                            None if name == target && fault == "sync" => {
+                                assert!(file.metadata()?.len() > 0);
+                                injected = true;
+                                Err(io::Error::other("injected sync failure"))
+                            }
+                            None => file.sync_all(),
+                        },
+                    )
+                    .unwrap_err();
+                assert!(injected, "{target} {fault}");
+                let crate::retained_candidate::Failure::NotPublished(error) = failure else {
+                    panic!("unexpected publication outcome for {target} {fault}");
+                };
+                assert_eq!(
+                    error.kind(),
+                    if fault == "zero" {
+                        io::ErrorKind::WriteZero
+                    } else {
+                        io::ErrorKind::Other
+                    }
+                );
+                assert!(!dest.exists());
+                assert_eq!(std::fs::read(source.join("records.log")).unwrap(), log);
+                assert_eq!(std::fs::read(source.join("commit.state")).unwrap(), witness);
+                assert_no_candidate_stages(root.path());
+            }
+        }
     }
 
     #[test]
