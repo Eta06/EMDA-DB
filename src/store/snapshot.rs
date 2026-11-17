@@ -137,7 +137,7 @@ enum SnapshotStatus {
 
 pub(super) struct SnapshotData {
     pub(super) log_generation: Option<GenerationId>,
-    log: Option<Arc<Log>>,
+    pub(super) log: Option<Arc<Log>>,
     pub(super) index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
     reserved_keys: usize,
     reserved_key_bytes: usize,

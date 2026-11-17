@@ -112,6 +112,7 @@ work.
 
 Ordinary snapshots capture a shared log handle with their index under the
 state lock, and release it on cancellation or expiry after active reads finish.
-This adds a reference, not a descriptor. Transactions, direct reads and online
-copy still use the store's log directly; no operational switch is supported.
+This adds a reference, not a descriptor. Transaction get and scan also use that captured handle while holding the snapshot
+read lock. Direct reads and online copy still use the store's log directly; no
+operational switch is supported.
 Retired-log cleanup will also need to respect snapshot and registry lock order.

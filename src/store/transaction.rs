@@ -133,7 +133,13 @@ impl Transaction<'_> {
             .index
             .get(key)
             .copied()
-            .map(|location| self.snapshot.store.log.read(location))
+            .map(|location| {
+                snapshot
+                    .log
+                    .as_ref()
+                    .expect("active snapshot retains its log")
+                    .read(location)
+            })
             .transpose()
     }
 
@@ -201,7 +207,11 @@ impl Transaction<'_> {
                 if bytes + size > MAX_SCAN_BYTES {
                     break;
                 }
-                let value = self.snapshot.store.log.read(*location)?;
+                let value = snapshot
+                    .log
+                    .as_ref()
+                    .expect("active snapshot retains its log")
+                    .read(*location)?;
                 bytes += size;
                 result.push((key.clone(), value));
             } else {
@@ -607,6 +617,71 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn transaction_reads_use_captured_log_with_staging_and_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let other_dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let other = Store::open(other_dir.path()).unwrap();
+        for (key, original, captured) in [
+            (&b"a"[..], &b"old-a"[..], &b"new-a"[..]),
+            (b"b", b"old-b", b"new-b"),
+            (b"c", b"old-c", b"new-c"),
+        ] {
+            store.put(key, original).unwrap();
+            other.put(key, captured).unwrap();
+        }
+        // Model a captured handle distinct from Store::log without publishing a
+        // live switch. The index must carry the captured records' checksums.
+        {
+            let mut inner = store.inner.write().unwrap();
+            inner.log = Some(Arc::clone(&other.log));
+            inner.index = Arc::clone(&other.inner.read().unwrap().index);
+        }
+        let result = store.transaction_with_read_set(|tx| {
+            assert_eq!(tx.get(b"a")?, Some(b"new-a".to_vec()));
+            tx.put(b"b", b"staged")?;
+            tx.delete(b"c")?;
+            tx.put(b"d", b"added")?;
+            assert_eq!(tx.get(b"b")?, Some(b"staged".to_vec()));
+            assert_eq!(tx.get(b"c")?, None);
+            assert_eq!(
+                tx.scan(None, None, 10)?,
+                vec![
+                    (b"a".to_vec(), b"new-a".to_vec()),
+                    (b"b".to_vec(), b"staged".to_vec()),
+                    (b"d".to_vec(), b"added".to_vec()),
+                ]
+            );
+            store.put(b"a", b"changed")?;
+            Ok(())
+        });
+        let error = result.unwrap_err();
+        assert!(crate::is_transaction_conflict(&error), "{error:?}");
+        assert_eq!(store.get(b"d").unwrap(), None);
+    }
+
+    #[test]
+    fn cancelled_transaction_reads_reject_staged_and_captured_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"base", b"value").unwrap();
+        let token = crate::CancellationToken::new();
+        let result = store.transaction_controlled(&token, None, TransactionMode::ReadSet, |tx| {
+            tx.put(b"staged", b"value")?;
+            token.cancel();
+            assert!(tx.get(b"base").is_err());
+            assert!(tx.get(b"staged").is_err());
+            assert!(tx.scan(None, None, 10).is_err());
+            Ok(())
+        });
+        assert!(matches!(
+            result,
+            Err(crate::ControlledTransactionError::Cancelled)
+        ));
+        assert_eq!(store.get(b"staged").unwrap(), None);
+    }
 
     #[test]
     fn conservative_transaction_rejects_identity_change_without_mutation() {
