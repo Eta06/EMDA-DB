@@ -293,3 +293,14 @@ acquisition; its EAGAIN is not discriminated by this instrumentation. Other
 failures and trace are retained without attributing holders or a root cause.
 The control is not a normal-source suite result. Production lock lifetime and
 errors are unchanged; physical power loss and off-host restore remain deferred.
+
+Test-only diagnostics also cover ordinary open, checkpoint source open and
+retired-store cleanup. Controlled Linux tests passed; a normal-source traced
+16-thread Linux run passed 597 tests without reproducing the intermittent
+EAGAIN. An earlier trace ran out of disk space. Both are in the [evidence
+archive](../benchmarks/results/2026-11-18-managed-open-lock-diagnostics-evidence.tar.gz),
+SHA-256 `5d7b55cc5e234fe0b78d426f5f00646620f26d74cd9ac1b61934a5434776b516`.
+A macOS test initially failed because `/var` and `/private/var` are aliases;
+the assertion now canonicalizes the observed path, and all four focused lock
+diagnostic tests pass there. On last inspection the Linux VM had 227 MiB free;
+preserve existing data and evidence when planning further runs.

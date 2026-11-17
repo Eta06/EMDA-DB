@@ -581,3 +581,25 @@ fn parent_lock_failure_diagnostics_identify_descriptor_and_mode() {
     );
     drop(held);
 }
+
+#[test]
+fn retired_lock_failure_diagnostic_preserves_busy_result() {
+    use std::os::unix::fs::MetadataExt;
+    let root = tempfile::tempdir().unwrap();
+    let retired = root.path().join("retired");
+    fs::create_dir(&retired).unwrap();
+    let path = retired.join("store.lock");
+    fs::write(&path, []).unwrap();
+    let owner = File::open(&path).unwrap();
+    fs2::FileExt::try_lock_exclusive(&owner).unwrap();
+    let metadata = owner.metadata().unwrap();
+    assert!(lock_safe_retired_payload(root.path()).unwrap().is_none());
+    assert_eq!(
+        crate::directory::take_lock_diagnostic(),
+        Some((
+            path,
+            "retired store exclusive".into(),
+            Some((metadata.dev(), metadata.ino()))
+        ))
+    );
+}

@@ -306,7 +306,15 @@ impl CheckpointStore {
             .read(true)
             .write(true)
             .open(path.join("store.lock"))?;
-        fs2::FileExt::try_lock_exclusive(&lock)?;
+        let lock_result = fs2::FileExt::try_lock_exclusive(&lock);
+        #[cfg(test)]
+        let lock_result = crate::directory::diagnose_lock_failure(
+            lock_result,
+            &path.join("store.lock"),
+            &lock,
+            "checkpoint source store exclusive",
+        );
+        lock_result?;
         crate::directory::verify_lock_identity(&path, &lock)?;
         let selection = selection::load(&path)?;
         let (checkpoint, digest, selection) = match source {

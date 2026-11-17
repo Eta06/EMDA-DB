@@ -90,6 +90,32 @@ mod tests {
     }
 
     #[test]
+    fn open_lock_failure_sites_report_descriptor_and_preserve_error() {
+        use std::os::unix::fs::MetadataExt;
+        let root = tempfile::tempdir().unwrap();
+        let owner = crate::Store::open(root.path()).unwrap();
+        let path = std::fs::canonicalize(root.path().join("store.lock")).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        for operation in ["store open exclusive", "checkpoint source store exclusive"] {
+            let error = if operation == "store open exclusive" {
+                crate::Store::open(root.path()).err().unwrap()
+            } else {
+                crate::CheckpointStore::open_managed(root.path())
+                    .err()
+                    .unwrap()
+            };
+            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            assert!(error.raw_os_error().is_some());
+            let (actual_path, actual_operation, actual_identity) =
+                crate::directory::take_lock_diagnostic().unwrap();
+            assert_eq!(std::fs::canonicalize(actual_path).unwrap(), path);
+            assert_eq!(actual_operation, operation);
+            assert_eq!(actual_identity, Some((metadata.dev(), metadata.ino())));
+        }
+        drop(owner);
+    }
+
+    #[test]
     fn retries_transient_busy_without_masking_the_next_recovery_error() {
         let mut attempts = 0;
         let result: io::Result<()> = retry_lock(|| {

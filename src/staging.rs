@@ -694,7 +694,15 @@ fn lock_safe_retired_payload(stage: &Path) -> io::Result<Option<Option<File>>> {
         return Ok((!has_other).then_some(None));
     }
     let lock = File::open(retired.join("store.lock"))?;
-    match fs2::FileExt::try_lock_exclusive(&lock) {
+    let lock_result = fs2::FileExt::try_lock_exclusive(&lock);
+    #[cfg(test)]
+    let lock_result = crate::directory::diagnose_lock_failure(
+        lock_result,
+        &retired.join("store.lock"),
+        &lock,
+        "retired store exclusive",
+    );
+    match lock_result {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
         Err(error) => return Err(error),

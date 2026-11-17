@@ -299,7 +299,15 @@ impl Store {
             Err(error) => return Err(error),
         };
         after_lock_open()?;
-        fs2::FileExt::try_lock_exclusive(&lock_file)?;
+        let lock_result = fs2::FileExt::try_lock_exclusive(&lock_file);
+        #[cfg(test)]
+        let lock_result = directory::diagnose_lock_failure(
+            lock_result,
+            &lock_path,
+            &lock_file,
+            "store open exclusive",
+        );
+        lock_result?;
         directory::verify_lock_identity(path, &lock_file)?;
         let (log, index) = open_log(path, may_initialize)?;
         let index_key_bytes = index.keys().try_fold(0_usize, |total, key| {
