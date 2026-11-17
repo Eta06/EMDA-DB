@@ -597,6 +597,9 @@ impl SpillSession {
     }
 
     pub(super) fn next_latest(&mut self) -> io::Result<Option<(Vec<u8>, Option<ValueLocation>)>> {
+        // File cursors already check ordering against their previous key.
+        // Avoid retaining a second copy of that key in the session.
+        let file_backed = matches!(self.emit, Emit::File(_));
         let next = match &mut self.emit {
             Emit::Pending => return Err(io::Error::other("suffix spill was not prepared")),
             Emit::Exhausted => return Ok(None),
@@ -605,8 +608,12 @@ impl SpillSession {
         };
         let Some((key, state)) = next else {
             self.emit = Emit::Exhausted;
+            self.last_key = None;
             return Ok(None);
         };
+        if file_backed {
+            return Ok(Some((key, state)));
+        }
         if self
             .last_key
             .as_ref()
@@ -2431,14 +2438,9 @@ mod tests {
                 site.entry_index,
                 "emission",
             );
-            if site.entry_index == 0 {
-                assert!(session.last_key.is_none());
-            } else {
-                assert_eq!(
-                    session.last_key.as_deref(),
-                    Some(entries[site.entry_index - 1].0.as_slice())
-                );
-            }
+            // The file cursor owns the ordering state; the session need not
+            // retain a second copy even when an entry read fails.
+            assert!(session.last_key.is_none());
             assert_eq!(session.live_count(), live_count);
         }
 
