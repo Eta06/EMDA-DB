@@ -21,10 +21,18 @@ fn fixture() -> (
     std::path::PathBuf,
     [u8; 32],
 ) {
-    fixture_before_drop(|| {})
+    fixture_before_drop(FixtureRelease::Explicit, || {})
+}
+
+#[derive(Clone, Copy)]
+enum FixtureRelease {
+    Explicit,
+    #[cfg(target_os = "linux")]
+    DropOnly,
 }
 
 fn fixture_before_drop(
+    release: FixtureRelease,
     before_drop: impl FnOnce(),
 ) -> (
     tempfile::TempDir,
@@ -50,6 +58,9 @@ fn fixture_before_drop(
     store.put(b"base", b"acknowledged").unwrap();
     let digest = store.checkpoint_to(&checkpoint).unwrap();
     before_drop();
+    if matches!(release, FixtureRelease::Explicit) {
+        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
+    }
     drop(store);
     (dir, path, checkpoint, digest)
 }
@@ -100,49 +111,56 @@ fn fixture_lock_is_inherited_by_a_fork_in_another_thread() {
     }
 
     // A separate fixture without a child establishes the normal drop behavior.
-    let (_control_dir, control_path, _, _) = fixture();
+    let (_control_dir, control_path, _, _) = fixture_before_drop(FixtureRelease::DropOnly, || {});
     drop(Store::open(&control_path).unwrap());
 
-    let mut child = None;
-    let (_dir, path, _, _) = fixture_before_drop(|| {
-        let (parent, child_end) = UnixStream::pair().unwrap();
-        let pid = std::thread::spawn(move || {
-            let pid = unsafe { fork() };
-            if pid == 0 {
-                // Close the child's copy of the write end.
-                drop(parent);
-                let mut byte = 0u8;
-                unsafe {
-                    read(child_end.as_raw_fd(), (&mut byte as *mut u8).cast(), 1);
-                    _exit(0)
+    for release in [FixtureRelease::DropOnly, FixtureRelease::Explicit] {
+        let mut child = None;
+        let (_dir, path, _, _) = fixture_before_drop(release, || {
+            let (parent, child_end) = UnixStream::pair().unwrap();
+            let pid = std::thread::spawn(move || {
+                let pid = unsafe { fork() };
+                if pid == 0 {
+                    // Close the child's copy of the write end.
+                    drop(parent);
+                    let mut byte = 0u8;
+                    unsafe {
+                        read(child_end.as_raw_fd(), (&mut byte as *mut u8).cast(), 1);
+                        _exit(0)
+                    }
                 }
-            }
-            assert!(pid > 0, "fork failed");
-            drop(child_end);
-            (pid, parent)
-        })
-        .join()
-        .unwrap();
-        child = Some(Child {
-            pid: pid.0,
-            release: Some(pid.1),
+                assert!(pid > 0, "fork failed");
+                drop(child_end);
+                (pid, parent)
+            })
+            .join()
+            .unwrap();
+            child = Some(Child {
+                pid: pid.0,
+                release: Some(pid.1),
+            });
         });
-    });
-    let child = child.unwrap();
-    let lock = fs::metadata(path.join("store.lock")).unwrap();
-    let inherited = fs::read_dir(format!("/proc/{}/fd", child.pid))
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter_map(|entry| fs::metadata(entry.path()).ok())
-        .any(|metadata| metadata.dev() == lock.dev() && metadata.ino() == lock.ino());
-    assert!(inherited, "child must hold the fixture's exact lock inode");
-    let error = match Store::open(&path) {
-        Ok(_) => panic!("reopen succeeded while child held inherited lock"),
-        Err(error) => error,
-    };
-    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-    drop(child); // Signal and reap the deliberately retained holder.
-    drop(Store::open(&path).unwrap());
+        let child = child.unwrap();
+        let lock = fs::metadata(path.join("store.lock")).unwrap();
+        let inherited = fs::read_dir(format!("/proc/{}/fd", child.pid))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| fs::metadata(entry.path()).ok())
+            .any(|metadata| metadata.dev() == lock.dev() && metadata.ino() == lock.ino());
+        assert!(inherited, "child must hold the fixture's exact lock inode");
+        match release {
+            FixtureRelease::DropOnly => {
+                let error = match Store::open(&path) {
+                    Ok(_) => panic!("reopen succeeded while child held inherited lock"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            }
+            FixtureRelease::Explicit => drop(Store::open(&path).unwrap()),
+        }
+        drop(child);
+        drop(Store::open(&path).unwrap());
+    }
 }
 
 #[derive(Clone, Copy)]

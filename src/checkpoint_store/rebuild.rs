@@ -1597,10 +1597,11 @@ mod tests {
     }
 
     fn unacknowledged_suffix_for_spill() -> UnacknowledgedSuffix {
-        unacknowledged_suffix_before_drop(|| {}, |_| {})
+        unacknowledged_suffix_before_drop(true, || {}, |_| {})
     }
 
     fn unacknowledged_suffix_before_drop(
+        release_fixture_lock: bool,
         before_drop: impl FnOnce(),
         after_drop: impl FnOnce(&Path),
     ) -> UnacknowledgedSuffix {
@@ -1611,6 +1612,9 @@ mod tests {
         store.put(b"a", b"base").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
         before_drop();
+        if release_fixture_lock {
+            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
+        }
         drop(store);
         after_drop(&path);
         let witness = witness_bytes(&path);
@@ -1619,6 +1623,7 @@ mod tests {
                 .unwrap();
         store.put(b"b", b"one").unwrap();
         store.put(b"c", b"two").unwrap();
+        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let log = fs::read(path.join("records.log")).unwrap();
         let base_bytes = fs::read(&base).unwrap();
@@ -1687,7 +1692,7 @@ mod tests {
             .unwrap();
             Child(pid, Some(parent))
         }
-        fn check(path: &Path, child: Child) {
+        fn check(path: &Path, child: Child, released: bool) {
             let lock = fs::metadata(path.join("store.lock")).unwrap();
             assert!(
                 fs::read_dir(format!("/proc/{}/fd", child.0))
@@ -1696,20 +1701,27 @@ mod tests {
                     .filter_map(|e| fs::metadata(e.path()).ok())
                     .any(|m| m.dev() == lock.dev() && m.ino() == lock.ino())
             );
-            let error = match Store::open(path) {
-                Ok(_) => panic!("reopen unexpectedly succeeded"),
-                Err(e) => e,
-            };
-            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            if released {
+                drop(Store::open(path).unwrap());
+            } else {
+                let error = match Store::open(path) {
+                    Ok(_) => panic!("reopen unexpectedly succeeded"),
+                    Err(e) => e,
+                };
+                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            }
             drop(child);
             drop(Store::open(path).unwrap());
         }
         let child = std::cell::RefCell::new(None);
-        let fixture = unacknowledged_suffix_before_drop(
-            || *child.borrow_mut() = Some(spawn()),
-            |path| check(path, child.borrow_mut().take().unwrap()),
-        );
-        drop(fixture);
+        for released in [false, true] {
+            let fixture = unacknowledged_suffix_before_drop(
+                released,
+                || *child.borrow_mut() = Some(spawn()),
+                |path| check(path, child.borrow_mut().take().unwrap(), released),
+            );
+            drop(fixture);
+        }
         for managed in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store");
@@ -1720,7 +1732,7 @@ mod tests {
                 managed,
                 false,
                 || *child.borrow_mut() = Some(spawn()),
-                |path| check(path, child.borrow_mut().take().unwrap()),
+                |path| check(path, child.borrow_mut().take().unwrap(), false),
             );
             drop(Store::open(&path).unwrap());
         }

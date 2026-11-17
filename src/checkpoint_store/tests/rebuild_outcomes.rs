@@ -10,6 +10,13 @@ fn close_backup_fixture(store: Store) -> io::Result<()> {
     Ok(())
 }
 
+fn close_checkpoint_fixture(store: CheckpointStore) -> io::Result<()> {
+    let lock = store.read()?.view.base.duplicate_store_lock()?;
+    fs2::FileExt::unlock(&lock)?;
+    drop(store);
+    Ok(())
+}
+
 #[test]
 fn backup_fixture_unlocks_even_if_a_duplicate_remains_open() {
     let root = tempfile::tempdir().unwrap();
@@ -26,6 +33,85 @@ fn backup_fixture_unlocks_even_if_a_duplicate_remains_open() {
     );
     drop(reopened);
     drop(inherited);
+}
+
+// The duplicate belongs to the exact store opened for this rebuild. Only a
+// successful return guarantees publication and all internal views are finished.
+fn fixture_rebuild(
+    path: &Path,
+    destination: &Path,
+    lock: &mut Option<File>,
+    before_selection: impl FnOnce() -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
+    let digest = CheckpointStore::rebuild_managed_using(
+        path,
+        destination,
+        |path| {
+            let store = Store::open(path)?;
+            *lock = Some(store.duplicate_store_lock()?);
+            Ok(store)
+        },
+        super::super::selection::sync_ancestors,
+        before_selection,
+        |parent| File::open(parent)?.sync_all(),
+        None,
+    )?;
+    fs2::FileExt::unlock(lock.as_ref().unwrap())?;
+    Ok(digest)
+}
+
+#[test]
+fn fixture_rebuild_errors_and_panics_do_not_unlock() {
+    for panic in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        close_backup_fixture(Store::open(&path).unwrap()).unwrap();
+        let mut lock = None;
+        let mut reached = false;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fixture_rebuild(&path, &dir.path().join("checkpoint"), &mut lock, || {
+                reached = true;
+                if panic {
+                    panic!("injected panic");
+                }
+                Err(io::Error::other("injected error"))
+            })
+        }));
+        assert!(reached, "injected hook was not reached");
+        if panic {
+            assert!(result.is_err());
+        } else {
+            let error = result.unwrap().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert!(error.to_string().ends_with("injected error"));
+        }
+        assert_eq!(
+            Store::open(&path).err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        fs2::FileExt::unlock(lock.as_ref().unwrap()).unwrap();
+        drop(lock);
+        drop(Store::open(&path).unwrap());
+    }
+}
+
+#[test]
+fn fixture_rebuild_success_unlocks_its_retained_duplicate() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let store = Store::open(&path).unwrap();
+    store.put(b"safe", b"value").unwrap();
+    close_backup_fixture(store).unwrap();
+    let mut lock = None;
+    fixture_rebuild(&path, &dir.path().join("checkpoint"), &mut lock, || Ok(())).unwrap();
+    assert!(lock.is_some());
+    let reopened = CheckpointStore::open_managed(&path).unwrap();
+    assert_eq!(
+        reopened.get(b"safe").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+    drop(reopened);
+    drop(lock);
 }
 
 fn rebuild_fixture(
@@ -51,15 +137,17 @@ fn rebuild_fixture(
     let store = Store::open(&path).unwrap();
     store.put(b"safe", b"acknowledged").unwrap();
     let digest = store.checkpoint_to(&base).unwrap();
-    drop(store);
+    close_backup_fixture(store).unwrap();
     if managed {
-        retry_lock(|| CheckpointStore::rebuild_managed_selection(&path, dir.path().join("old")))
-            .unwrap();
+        let mut lock = None;
+        fixture_rebuild(&path, &dir.path().join("old"), &mut lock, || Ok(())).unwrap();
         let store = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
         store.put(b"tail", b"acknowledged").unwrap();
+        close_checkpoint_fixture(store).unwrap();
     } else {
         let store = retry_lock(|| Store::open(&path)).unwrap();
         store.put(b"tail", b"acknowledged").unwrap();
+        close_backup_fixture(store).unwrap();
     }
     let backup = dir.path().join("backup");
     let store = retry_lock(|| Store::open(&path)).unwrap();

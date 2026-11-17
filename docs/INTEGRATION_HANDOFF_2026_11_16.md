@@ -138,6 +138,16 @@ through `/proc`, and observes `WouldBlock` until the child exits. Its [test and
 Clippy log](../benchmarks/results/2026-11-17-linux-arm64-fixture-fork-regression.log.gz)
 is retained. It demonstrates the mechanism deterministically; it does not
 identify the holders in the other archived failures.
+Fixture-owned checkpoint and managed-rebuild setup now explicitly unlock only
+after successful fixture work; error and panic paths do not unlock early. The
+drop-only controls remain. A controlled spill fixture test verifies both the
+blocked drop-only case and successful reopen after fixture-only unlock while
+the inheriting child remains alive. Focused tests passed, but strict 16-thread
+runs still failed: [one run](../benchmarks/results/2026-11-17-linux-arm64-fixture-release-parallel-failure.log.gz)
+hit the spill fixture before its release was added, and a
+[later run](../benchmarks/results/2026-11-17-linux-arm64-fixture-release-parallel-failure2.log.gz)
+hit `EAGAIN` in bounded rebuild and shared snapshot tests. Their holders are
+not identified. No general parallel-suite resolution is claimed.
 An additional isolated regression exercises the initial store drop/reopen
 boundaries of the spill and crash fixtures. It checks the exact inherited inode
 and a direct blocked reopen, then a successful reopen after the child exits.
