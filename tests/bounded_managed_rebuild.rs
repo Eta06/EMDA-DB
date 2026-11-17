@@ -450,66 +450,91 @@ fn complete_unacknowledged_suffix_is_adopted_and_a_torn_suffix_is_not() {
 #[test]
 fn torn_tail_after_complete_record_preserves_existing_selection_and_can_retry() {
     for v2 in [true, false] {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("store");
-        let base = root.path().join("base");
-        let store = open_store(&path, v2);
-        store.put(b"base", b"value").unwrap();
-        drop(store);
-        let digest = CheckpointStore::rebuild_managed_selection(&path, &base).unwrap();
-        let selection = fs::read(path.join("checkpoint.selection")).unwrap();
-        let witness = witness_bytes(&path);
-
-        let store = Store::open(&path).unwrap();
-        store.put(b"complete", b"first").unwrap();
-        store.put(b"torn", b"second").unwrap();
-        drop(store);
-        let log_path = path.join("records.log");
-        let complete_log = fs::read(&log_path).unwrap();
-        restore_witness(&path, &witness);
-        let mut torn_log = complete_log.clone();
-        torn_log.pop().unwrap();
-        fs::write(&log_path, &torn_log).unwrap();
-
-        let destination = root.path().join("rebuilt");
-        let error =
-            bounded_detailed(&path, &destination, &base, &digest, 1, 1 << 20, 100).unwrap_err();
-        match error {
-            ManagedRebuildFailure::NotPublished(error) => assert!(
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
-                ),
-                "v2={v2}: {error}"
-            ),
-            error => panic!("v2={v2}: {error}"),
-        }
-        assert!(!destination.exists());
-        assert_eq!(fs::read(&log_path).unwrap(), torn_log);
-        assert_eq!(witness_bytes(&path), witness);
-        assert_eq!(
-            fs::read(path.join("checkpoint.selection")).unwrap(),
-            selection
-        );
-        assert_no_stages(&path);
-        assert_no_stages(root.path());
-
-        fs::write(&log_path, &complete_log).unwrap();
-        bounded_detailed(&path, &destination, &base, &digest, 1, 1 << 20, 100).unwrap();
-        let reopened = CheckpointStore::open_managed(&path).unwrap();
-        assert_eq!(
-            reopened.get(b"base").unwrap().as_deref(),
-            Some(&b"value"[..])
-        );
-        assert_eq!(
-            reopened.get(b"complete").unwrap().as_deref(),
-            Some(&b"first"[..])
-        );
-        assert_eq!(
-            reopened.get(b"torn").unwrap().as_deref(),
-            Some(&b"second"[..])
-        );
+        check_torn_tail(v2, false);
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn v3_torn_tail_preserves_metadata_witness_and_anchor() {
+    check_torn_tail(false, true);
+}
+
+fn check_torn_tail(v2: bool, require_v3: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let base = root.path().join("base");
+    let store = open_store(&path, v2);
+    store.put(b"base", b"value").unwrap();
+    drop(store);
+    let digest = CheckpointStore::rebuild_managed_selection(&path, &base).unwrap();
+    let selection = fs::read(path.join("checkpoint.selection")).unwrap();
+    let witness = witness_bytes(&path);
+    let anchor = fs::read(path.join("commit.state")).unwrap();
+    if require_v3 {
+        assert!(
+            fs::read(path.join("records.log"))
+                .unwrap()
+                .starts_with(b"EMDALOG3"),
+            "V3 metadata witness required"
+        );
+        let file = File::open(path.join("records.log")).unwrap();
+        let mut bytes = [0_u8; 128];
+        let count = rustix::fs::fgetxattr(&file, "user.db.commit.v3", &mut bytes).unwrap();
+        assert_eq!(count, 36);
+        assert_eq!(&bytes[..count], witness);
+        eprintln!("verified EMDALOG3 and user.db.commit.v3 ({count} bytes)");
+    }
+
+    let store = Store::open(&path).unwrap();
+    store.put(b"complete", b"first").unwrap();
+    store.put(b"torn", b"second").unwrap();
+    drop(store);
+    let log_path = path.join("records.log");
+    let complete_log = fs::read(&log_path).unwrap();
+    restore_witness(&path, &witness);
+    let mut torn_log = complete_log.clone();
+    torn_log.pop().unwrap();
+    fs::write(&log_path, &torn_log).unwrap();
+
+    let destination = root.path().join("rebuilt");
+    let error = bounded_detailed(&path, &destination, &base, &digest, 1, 1 << 20, 100).unwrap_err();
+    match error {
+        ManagedRebuildFailure::NotPublished(error) => assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+            ),
+            "v2={v2}: {error}"
+        ),
+        error => panic!("v2={v2}: {error}"),
+    }
+    assert!(!destination.exists());
+    assert_eq!(fs::read(&log_path).unwrap(), torn_log);
+    assert_eq!(witness_bytes(&path), witness);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), anchor);
+    assert_eq!(
+        fs::read(path.join("checkpoint.selection")).unwrap(),
+        selection
+    );
+    assert_no_stages(&path);
+    assert_no_stages(root.path());
+
+    fs::write(&log_path, &complete_log).unwrap();
+    bounded_detailed(&path, &destination, &base, &digest, 1, 1 << 20, 100).unwrap();
+    let reopened = CheckpointStore::open_managed(&path).unwrap();
+    assert_eq!(
+        reopened.get(b"base").unwrap().as_deref(),
+        Some(&b"value"[..])
+    );
+    assert_eq!(
+        reopened.get(b"complete").unwrap().as_deref(),
+        Some(&b"first"[..])
+    );
+    assert_eq!(
+        reopened.get(b"torn").unwrap().as_deref(),
+        Some(&b"second"[..])
+    );
 }
 
 fn copy_store(source: &Path, destination: &Path) {
