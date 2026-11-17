@@ -247,3 +247,12 @@ one failed acquisition to a fork-inherited descriptor; other archived failures
 still lack holder identification, so parallel reliability remains open.
 The same commit added `ArrayKeepLast`; both array test suites passed on macOS,
 including an exact shared work-budget boundary on both writable backends.
+
+Current-reader `EMDALOG4` and truncated-marker guards now cover ordinary and
+checkpoint opens, backup, and restore. All three tests passed on macOS and in
+a fresh Linux ARM64 Rust 1.85 checkout at `9750892`. The Linux test also uses
+the default store format, but did not assert which format the filesystem chose.
+These tests check preserved bytes; they do not exercise older binaries or prove
+that no write syscall was issued. A proposed external anti-rollback authority
+design remains in an isolated worktree and is not an adopted deployment
+requirement. Recovery cutover and retained-data reclamation remain unimplemented.
