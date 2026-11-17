@@ -122,6 +122,7 @@ impl SnapshotBudget {
 pub struct Snapshot<'a> {
     pub(super) store: &'a Store,
     pub(super) generation: u64,
+    pub(super) log_generation: Option<GenerationId>,
     state: Arc<RwLock<SnapshotData>>,
 }
 
@@ -135,6 +136,7 @@ enum SnapshotStatus {
 }
 
 pub(super) struct SnapshotData {
+    pub(super) log_generation: Option<GenerationId>,
     pub(super) index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
     reserved_keys: usize,
     reserved_key_bytes: usize,
@@ -262,7 +264,9 @@ impl Store {
         let snapshot = Snapshot {
             store: self,
             generation: inner.generation,
+            log_generation: inner.log_generation,
             state: Arc::new(RwLock::new(SnapshotData {
+                log_generation: inner.log_generation,
                 index: Arc::clone(&inner.index),
                 reserved_keys: key_count,
                 reserved_key_bytes: key_bytes,

@@ -12,7 +12,16 @@ use std::io::{self, IoSlice, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct GenerationId(pub(crate) LogId);
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct GenerationLocation {
+    pub(crate) generation: Option<GenerationId>,
+    pub(crate) location: ValueLocation,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct ValueLocation {
     pub(crate) offset: u64,
     pub(crate) length: usize,

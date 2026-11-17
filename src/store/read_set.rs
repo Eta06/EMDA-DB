@@ -1,5 +1,6 @@
 //! Bounded read dependencies used by the opt-in serializable validator.
 use super::*;
+use crate::log::GenerationLocation;
 use std::collections::BTreeSet;
 
 /// Maximum distinct point and range dependencies in one read-set transaction.
@@ -62,6 +63,8 @@ impl ReadSet {
         &self,
         snapshot: &BTreeMap<Vec<u8>, ValueLocation>,
         current: &BTreeMap<Vec<u8>, ValueLocation>,
+        snapshot_generation: Option<GenerationId>,
+        current_generation: Option<GenerationId>,
     ) -> io::Result<bool> {
         let mut inspected = 0_usize;
         for key in &self.points {
@@ -71,7 +74,15 @@ impl ReadSet {
                     "transaction validation work limit exceeded",
                 ));
             }
-            if snapshot.get(key) != current.get(key) {
+            let qualify = |location: Option<&ValueLocation>, generation| {
+                location.map(|location| GenerationLocation {
+                    generation,
+                    location: *location,
+                })
+            };
+            if qualify(snapshot.get(key), snapshot_generation)
+                != qualify(current.get(key), current_generation)
+            {
                 return Ok(false);
             }
         }
@@ -94,11 +105,84 @@ impl ReadSet {
                         "transaction validation work limit exceeded",
                     ));
                 }
-                if left != right {
+                fn qualify<'a>(
+                    entry: Option<(&'a Vec<u8>, &ValueLocation)>,
+                    generation: Option<GenerationId>,
+                ) -> Option<(&'a Vec<u8>, GenerationLocation)> {
+                    entry.map(|(key, location)| {
+                        (
+                            key,
+                            GenerationLocation {
+                                generation,
+                                location: *location,
+                            },
+                        )
+                    })
+                }
+                if qualify(left, snapshot_generation) != qualify(right, current_generation) {
                     return Ok(false);
                 }
             }
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn witnessed_identity_qualifies_point_and_range_observations() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store.put(b"a", b"value").unwrap();
+        let original = store.read().unwrap().log_generation.expect("witnessed log");
+        for range in [false, true] {
+            let result = store.transaction_with_read_set(|tx| {
+                if range {
+                    tx.scan(None, None, 10)?;
+                } else {
+                    tx.get(b"a")?;
+                }
+                tx.put(b"staged", b"not committed")?;
+                // Model a future atomic publication with identical locations but a
+                // different witnessed identity. No actual log switch is implemented.
+                store.inner.write().unwrap().log_generation = Some(GenerationId([42; 16]));
+                Ok(())
+            });
+            store.inner.write().unwrap().log_generation = Some(original);
+            let error = result.expect_err("identity change must conflict");
+            assert!(crate::is_transaction_conflict(&error), "{error}");
+            assert_eq!(store.get(b"staged").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn missing_observations_and_legacy_locations_keep_their_semantics() {
+        let mut reads = ReadSet::default();
+        reads.point(b"missing").unwrap();
+        let empty = BTreeMap::new();
+        assert!(
+            reads
+                .matches(
+                    &empty,
+                    &empty,
+                    Some(GenerationId([1; 16])),
+                    Some(GenerationId([2; 16]))
+                )
+                .unwrap()
+        );
+        let mut index = BTreeMap::new();
+        index.insert(
+            b"missing".to_vec(),
+            ValueLocation {
+                offset: 1,
+                length: 2,
+                checksum: 3,
+            },
+        );
+        assert!(!reads.matches(&empty, &index, None, None).unwrap());
+        assert!(reads.matches(&index, &index, None, None).unwrap());
     }
 }

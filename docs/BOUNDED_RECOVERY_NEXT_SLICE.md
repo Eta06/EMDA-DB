@@ -86,3 +86,23 @@ precondition, not a reclamation or recovery-time guarantee.
 
 Until these conditions are implemented and validated, retain live history and
 use the existing verified whole-store handoff only under its documented rules.
+
+## Implemented prerequisite and remaining work
+
+The ordinary `Store` read-set validator now captures the validated log identity
+with its immutable index state and qualifies present point and range locations
+when comparing snapshots to current state. Missing entries retain their prior
+membership semantics; legacy logs retain unqualified comparisons. The test for
+cross-identity ABA models a publication by changing the in-memory identity; no
+live generation replacement is implemented or authorized. The identity and index
+must continue to be published together under the state lock if replacement is
+introduced.
+
+This is a narrower prerequisite, not completion of the first slice. The
+checkpoint-backed store and recovered-view overlay have separate read paths and
+are not converted. Direct reads, snapshots and checkpoint encoding still use
+ordinary locations; checkpoint validation and corruption checks are unchanged.
+A future cross-path conversion must bind checkpoint and overlay observations to
+validated identities, cover grouped records and concurrent publication with
+barrier-controlled tests, and preserve snapshot lifetime and legacy behavior.
+No reclamation or format change follows from this prerequisite.

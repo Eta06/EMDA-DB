@@ -1,6 +1,6 @@
 //! Public store operations, in-process coordination, and exclusive ownership.
 
-use crate::log::{Log, ValueLocation};
+use crate::log::{GenerationId, Log, ValueLocation};
 use crate::record::{self, Operation};
 use crate::{backup, directory};
 use std::collections::BTreeMap;
@@ -51,6 +51,7 @@ pub use transaction::{
 pub(crate) use transaction_queue::TransactionQueue;
 
 struct Inner {
+    log_generation: Option<GenerationId>,
     index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
     index_key_bytes: usize,
     generation: u64,
@@ -271,9 +272,11 @@ impl Store {
                 .checked_add(key.len())
                 .ok_or_else(|| io::Error::other("live index key byte count overflow"))
         })?;
+        let log_generation = log.id().map(GenerationId);
         Ok(Self {
             log,
             inner: RwLock::new(Inner {
+                log_generation,
                 index: Arc::new(index),
                 index_key_bytes,
                 generation: 0,

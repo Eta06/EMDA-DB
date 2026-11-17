@@ -543,14 +543,21 @@ impl Store {
                 let read_set = read_set
                     .lock()
                     .map_err(|_| io::Error::other("transaction read set poisoned"))?;
-                if current.generation == txn.snapshot.generation {
+                if current.generation == txn.snapshot.generation
+                    && current.log_generation == txn.snapshot.log_generation
+                {
                     true
                 } else {
                     let snapshot = txn
                         .snapshot
                         .read_index()
                         .map_err(classify_validation_snapshot_error)?;
-                    read_set.matches(&snapshot.index, &current.index)?
+                    read_set.matches(
+                        &snapshot.index,
+                        &current.index,
+                        snapshot.log_generation,
+                        current.log_generation,
+                    )?
                 }
             } else {
                 current.generation == txn.snapshot.generation
