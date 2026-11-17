@@ -40,6 +40,17 @@ impl Store {
         limits: RetainedExportLimits,
         sync: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<crate::retained_base_v2::Validated, crate::PublicationFailure> {
+        self.export_retained_base_with_hook(destination, base_id, limits, sync, |_| Ok(()))
+    }
+
+    fn export_retained_base_with_hook(
+        &self,
+        destination: &Path,
+        base_id: [u8; 16],
+        limits: RetainedExportLimits,
+        sync: impl FnOnce(&Path) -> io::Result<()>,
+        mut hook: impl FnMut(&str) -> io::Result<()>,
+    ) -> Result<crate::retained_base_v2::Validated, crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             let _writer = self
                 .writes
@@ -69,6 +80,7 @@ impl Store {
                     max_live_key_bytes: limits.max_live_key_bytes,
                 }),
             )?;
+            hook("after_replay")?;
             let boundary = self.log.len()?;
             let mut encoded = 0u64;
             let mut key_bytes = 0u64;
@@ -134,6 +146,7 @@ impl Store {
                 let mut remaining = location.length;
                 while remaining > 0 {
                     let n = remaining.min(buffer.len());
+                    hook("value_read")?;
                     self.log.read_bytes(&mut buffer[..n], offset)?;
                     crc.update(&buffer[..n]);
                     hash.update(&buffer[..n]);
@@ -152,6 +165,7 @@ impl Store {
             }
             let digest: [u8; 32] = hash.finalize().into();
             file.write_all(&digest)?;
+            hook("output_sync")?;
             file.sync_all()?;
             file.seek(SeekFrom::Start(0))?;
             let result = crate::retained_base_v2::validate(
@@ -171,6 +185,7 @@ impl Store {
                 ));
             }
             // Recheck source witness after the final value read.
+            hook("before_witness")?;
             self.log.verify_witness()?;
             tracker.begin_publication();
             stage.publish(destination)?;
@@ -453,5 +468,136 @@ mod tests {
         ));
         assert!(!out.exists());
         assert_eq!(std::fs::read(source.join("records.log")).unwrap(), before);
+    }
+    #[test]
+    fn injected_read_and_staging_sync_failures_preserve_source() {
+        use super::super::fault_tests::{Fault, open_versioned_fault_store};
+        use std::sync::{Arc, Mutex};
+        for point in ["replay", "value_read", "output_sync"] {
+            let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("source");
+            std::fs::create_dir(&source).unwrap();
+            let fault = Arc::new(Mutex::new(None));
+            let store = open_versioned_fault_store(&source, Arc::clone(&fault)).unwrap();
+            store.put(b"key", b"value").unwrap();
+            let log = std::fs::read(source.join("records.log")).unwrap();
+            let witness = std::fs::read(source.join("commit.state")).ok();
+            let out = dir.path().join("out");
+            if point == "replay" {
+                *fault.lock().unwrap() = Some(Fault::ShortRead(1));
+            }
+            let result = store.export_retained_base_with_hook(
+                &out,
+                [1; 16],
+                limits(),
+                crate::directory::sync_existing,
+                |at| {
+                    if point == "value_read" && at == point {
+                        *fault.lock().unwrap() = Some(Fault::ShortRead(1));
+                    }
+                    if point == "output_sync" && at == point {
+                        return Err(io::Error::other("injected output sync failure"));
+                    }
+                    Ok(())
+                },
+            );
+            assert!(
+                matches!(result, Err(crate::PublicationFailure::NotPublished(_))),
+                "{point}"
+            );
+            assert!(!out.exists());
+            assert_eq!(std::fs::read(source.join("records.log")).unwrap(), log);
+            assert_eq!(std::fs::read(source.join("commit.state")).ok(), witness);
+            assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+        }
+    }
+
+    #[test]
+    fn v2_witness_or_v3_anchor_changes_after_replay_and_staging_fail_closed() {
+        for point in ["after_replay", "before_witness"] {
+            for identity in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let source = dir.path().join("source");
+                let store = Store::open(&source).unwrap();
+                store.put(b"key", b"value").unwrap();
+                let log = std::fs::read(source.join("records.log")).unwrap();
+                let marker = source.join("commit.state");
+                // V2 stores use this marker as the mutable witness. V3 stores
+                // use it as the identity anchor, with a separate xattr witness.
+                let original = std::fs::read(&marker).unwrap();
+                let id = if identity {
+                    [9; 16]
+                } else {
+                    store.log.id().unwrap()
+                };
+                let changed = crate::witness::encode_for_test(
+                    &id,
+                    if identity {
+                        store.log.len().unwrap()
+                    } else {
+                        0
+                    },
+                );
+                let out = dir.path().join("out");
+                let result = store.export_retained_base_with_hook(
+                    &out,
+                    [1; 16],
+                    limits(),
+                    crate::directory::sync_existing,
+                    |at| {
+                        if at == point {
+                            std::fs::write(&marker, &changed)?;
+                        }
+                        Ok(())
+                    },
+                );
+                assert!(
+                    matches!(result, Err(crate::PublicationFailure::NotPublished(_))),
+                    "{point} {identity}"
+                );
+                assert!(!out.exists());
+                assert_eq!(std::fs::read(source.join("records.log")).unwrap(), log);
+                assert_eq!(std::fs::read(&marker).unwrap(), changed);
+                std::fs::write(&marker, &original).unwrap();
+                assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+            }
+        }
+    }
+
+    #[test]
+    fn appended_log_during_staging_is_not_published() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let store = Store::open(&source).unwrap();
+        store.put(b"key", b"value").unwrap();
+        let log_path = source.join("records.log");
+        let original = std::fs::read(&log_path).unwrap();
+        let witness = std::fs::read(source.join("commit.state")).ok();
+        let out = dir.path().join("out");
+        let result = store.export_retained_base_with_hook(
+            &out,
+            [1; 16],
+            limits(),
+            crate::directory::sync_existing,
+            |at| {
+                if at == "before_witness" {
+                    OpenOptions::new()
+                        .append(true)
+                        .open(&log_path)?
+                        .write_all(b"unexpected")?;
+                }
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(crate::PublicationFailure::NotPublished(_))
+        ));
+        assert!(!out.exists());
+        let mut expected = original;
+        expected.extend_from_slice(b"unexpected");
+        assert_eq!(std::fs::read(log_path).unwrap(), expected);
+        assert_eq!(std::fs::read(source.join("commit.state")).ok(), witness);
     }
 }
