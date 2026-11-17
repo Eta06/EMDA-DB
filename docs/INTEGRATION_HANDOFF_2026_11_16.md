@@ -256,3 +256,18 @@ These tests check preserved bytes; they do not exercise older binaries or prove
 that no write syscall was issued. A proposed external anti-rollback authority
 design remains in an isolated worktree and is not an adopted deployment
 requirement. Recovery cutover and retained-data reclamation remain unimplemented.
+
+The crash-boundary fixture now explicitly releases its initial store lock after
+its checkpoint completes, before reopening or managed rebuild. Its isolated
+Linux fork control checks the exact inherited inode, both blocked drop-only and
+successful explicit-release cases, including managed setup. Targeted fork and
+crash-boundary tests passed in a fresh Linux ARM64 Rust 1.85 source copy. A
+16-thread library run failed one witness-substitution test with EAGAIN (592
+passed); its holder was not identified. A separate diagnostic control replaced
+the two library retry helpers with single attempts in the disposable copy and
+skipped the retry-helper unit test: 536 passed and 56 failed, many with EAGAIN.
+That modified-source control is not a clean suite pass and does not establish
+individual holders. Logs and exit statuses are preserved in
+[the evidence archive](../benchmarks/results/2026-11-18-linux-arm64-crash-fixture-lock-control.tar.gz)
+(SHA-256 `55d9bfbfba340f598d0cb5b056a47575c48b9eb2c6600c084b99df66e1bfaf3e`).
+No production lock behavior or error assertions were changed.

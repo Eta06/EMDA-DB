@@ -1604,6 +1604,7 @@ mod tests {
         selected: &Path,
         managed: bool,
         retry_managed: bool,
+        release_fixture_lock: bool,
         before_drop: impl FnOnce(),
         after_drop: impl FnOnce(&Path),
     ) -> [u8; 32] {
@@ -1611,6 +1612,10 @@ mod tests {
         store.put(b"safe", b"acked").unwrap();
         let digest = store.checkpoint_to(base).unwrap();
         before_drop();
+        // Fixture work is complete; a forked child may retain this descriptor.
+        if release_fixture_lock {
+            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
+        }
         drop(store);
         after_drop(path);
         if managed {
@@ -1635,6 +1640,7 @@ mod tests {
                 &base,
                 &directory.path().join("selected"),
                 mode != "adopt",
+                true,
                 true,
                 || {},
                 |_| {},
@@ -1896,7 +1902,7 @@ mod tests {
             );
             drop(fixture);
         }
-        for managed in [false, true] {
+        for (managed, released) in [(false, false), (true, false), (false, true), (true, true)] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store");
             crash_fixture_initial(
@@ -1905,8 +1911,9 @@ mod tests {
                 &dir.path().join("selected"),
                 managed,
                 false,
+                released,
                 || *child.borrow_mut() = Some(spawn()),
-                |path| check(path, child.borrow_mut().take().unwrap(), false),
+                |path| check(path, child.borrow_mut().take().unwrap(), released),
             );
             drop(Store::open(&path).unwrap());
         }
