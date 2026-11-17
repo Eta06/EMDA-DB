@@ -935,6 +935,9 @@ mod tests {
             )
         })
         .unwrap_err();
+        if let ManagedRebuildFailure::NotPublished(error) = &failure {
+            crate::test_support::report_lock_error(&path, "bounded second rebuild", error);
+        }
         assert!(saw_lock, "selection hook was not reached: {failure:?}");
         assert!(matches!(
             failure,

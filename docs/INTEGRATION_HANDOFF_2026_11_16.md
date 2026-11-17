@@ -162,6 +162,10 @@ the second bounded rebuild returning `NotPublished(EAGAIN)` before its selection
 hook after a prior uncertain checkpoint publication. The
 [failure log](../benchmarks/results/2026-11-17-linux-arm64-bounded-release-parallel-failure.log.gz)
 is retained. The holder remains unknown; no uncertain-path unlock was added.
+The second-call assertion now also records lock inode diagnostics on an early
+`WouldBlock`. A subsequent [kernel-traced 16-thread run](../benchmarks/results/2026-11-17-linux-arm64-bounded-uncertain-bpf.tar.gz)
+passed 592 library tests and therefore did not capture that failure or its
+holder. This pass does not resolve the earlier untraced failure.
 A Linux-only test hook now captures the exact bounded-rebuild lock descriptor.
 Controlled fork cases cover success, log-limit rejection, checkpoint and
 selection uncertainty, and panic: reopening remains blocked while the child
