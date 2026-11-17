@@ -83,7 +83,7 @@ pub use store::{
     OnlineReclaimError, OnlineReclaimFailure, OnlineReclamationFailure,
     OnlineReclamationFailureStage, OnlineReclamationWorker, OnlineReclamationWorkerStatus,
     OnlineStore, RetainedExportLimits, RetiredCleanupStatus, Snapshot, SnapshotBudgetStatus, Store,
-    TimedTransactionError, Transaction, TransactionMode,
+    SuffixExportFailure, TimedTransactionError, Transaction, TransactionMode,
 };
 pub use transaction_budget::{MAX_ACTIVE_TRANSACTIONS, TransactionBudgetStatus};
 pub use transaction_conflict::is_transaction_conflict;

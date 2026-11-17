@@ -39,7 +39,7 @@ pub use online::{
     OnlineReclamationFailure, OnlineReclamationFailureStage, OnlineReclamationWorker,
     OnlineReclamationWorkerStatus, OnlineStore, RetiredCleanupStatus,
 };
-pub use retained_export::RetainedExportLimits;
+pub use retained_export::{RetainedExportLimits, SuffixExportFailure};
 
 pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,

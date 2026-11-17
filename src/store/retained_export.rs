@@ -12,6 +12,35 @@ pub struct RetainedExportLimits {
     pub max_output_bytes: u64,
 }
 
+/// Publication result for a detached suffix. Preserve `expected` independently
+/// when publication is uncertain and reconcile the destination before retrying.
+#[derive(Debug)]
+pub enum SuffixExportFailure {
+    NotPublished(io::Error),
+    OutcomeUnknown {
+        error: io::Error,
+        expected: Box<crate::retained_candidate::SuffixExpected>,
+    },
+}
+
+impl std::fmt::Display for SuffixExportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotPublished(error) => write!(f, "suffix publication not started: {error}"),
+            Self::OutcomeUnknown { error, .. } => {
+                write!(f, "suffix publication outcome unknown: {error}")
+            }
+        }
+    }
+}
+impl std::error::Error for SuffixExportFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotPublished(error) | Self::OutcomeUnknown { error, .. } => Some(error),
+        }
+    }
+}
+
 impl Store {
     /// Exports an untrusted retained base. The caller supplies a nonzero fresh
     /// identifier; this operation does not establish authority or permit recovery.
@@ -165,6 +194,214 @@ impl Store {
                 error,
                 expected: Box::new(verified_binding.expect("publication follows verification")),
             },
+        })
+    }
+
+    /// Copy and verify the exact source suffix after an independently bound candidate.
+    /// Candidate, source and destination parents must remain trusted and stable;
+    /// destination must be outside the source and candidate directories and aliases.
+    /// This is non-authoritative and does not change the source or enable recovery.
+    /// Memory includes the suffix byte cap, replay staging payload and entry overhead,
+    /// plus the full-index verification limits and a fixed 64 KiB comparison buffer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn export_retained_suffix(
+        &self,
+        candidate: impl AsRef<Path>,
+        expected: &crate::retained_candidate::Expected,
+        destination: impl AsRef<Path>,
+        base_limits: crate::retained_base_v2::Limits,
+        staging_limits: crate::retained_base_v2::StagingLimits,
+        suffix_limits: crate::retained_candidate::SuffixLimits,
+        source_limits: RetainedExportLimits,
+    ) -> Result<crate::retained_candidate::SuffixExpected, SuffixExportFailure> {
+        self.export_retained_suffix_impl(
+            candidate.as_ref(),
+            expected,
+            destination.as_ref(),
+            base_limits,
+            staging_limits,
+            suffix_limits,
+            source_limits,
+            crate::directory::sync_existing,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn export_retained_suffix_impl(
+        &self,
+        candidate: &Path,
+        expected: &crate::retained_candidate::Expected,
+        destination: &Path,
+        base_limits: crate::retained_base_v2::Limits,
+        staging_limits: crate::retained_base_v2::StagingLimits,
+        suffix_limits: crate::retained_candidate::SuffixLimits,
+        source_limits: RetainedExportLimits,
+        sync: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<crate::retained_candidate::SuffixExpected, SuffixExportFailure> {
+        let mut binding = None;
+        let result = crate::publication_outcome::track(|tracker| {
+            let _writer = self
+                .writes
+                .write()
+                .map_err(|_| io::Error::other("write barrier poisoned"))?;
+            let inner = self.read()?;
+            if self.commits.failed() {
+                return Err(uncertain_error());
+            }
+            let base = crate::retained_candidate::verify(candidate, base_limits, expected)?;
+            if self.log.id() != Some(base.source_id) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "candidate source identity mismatch",
+                ));
+            }
+            let (prefix, peak_entries, peak_key_bytes) = self.log.reconstruct_prefix_index_peaks(
+                &inner.index,
+                base.boundary,
+                crate::log::PeakVerificationLimits {
+                    max_log_bytes: source_limits.max_log_bytes,
+                    max_live_keys: source_limits.max_live_keys,
+                    max_live_key_bytes: source_limits.max_live_key_bytes,
+                },
+            )?;
+            if base.peak_entries != peak_entries as u64
+                || base.peak_key_bytes != peak_key_bytes as u64
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "candidate historical peaks mismatch",
+                ));
+            }
+            let candidate_entries =
+                crate::retained_candidate::load(candidate, base_limits, staging_limits, expected)?;
+            if candidate_entries.len() != prefix.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "candidate prefix count mismatch",
+                ));
+            }
+            let mut buffer = [0u8; 65536];
+            for ((key, value), (source_key, location)) in
+                candidate_entries.iter().zip(prefix.iter())
+            {
+                if key != source_key || value.len() != location.length {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "candidate prefix index mismatch",
+                    ));
+                }
+                for (i, chunk) in value.chunks(buffer.len()).enumerate() {
+                    let offset = location
+                        .offset
+                        .checked_add((i * buffer.len()) as u64)
+                        .ok_or_else(|| io::Error::other("offset overflow"))?;
+                    self.log.read_bytes(&mut buffer[..chunk.len()], offset)?;
+                    if &buffer[..chunk.len()] != chunk {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "candidate prefix value mismatch",
+                        ));
+                    }
+                }
+            }
+            drop(candidate_entries);
+            drop(prefix);
+            let end = self.log.len()?;
+            let len = end.checked_sub(base.boundary).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "boundary beyond source")
+            })?;
+            if len > suffix_limits.bytes || len > source_limits.max_output_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "suffix byte limit exceeded",
+                ));
+            }
+            let size = usize::try_from(len).map_err(|_| io::Error::other("suffix too large"))?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(size)
+                .map_err(|_| io::Error::other("suffix allocation failed"))?;
+            bytes.resize(size, 0);
+            self.log.read_bytes(&mut bytes, base.boundary)?;
+            let suffix_binding = crate::retained_candidate::SuffixExpected {
+                candidate: expected.clone(),
+                end: len,
+                digest: Sha256::digest(&bytes).into(),
+            };
+            let replay = crate::retained_candidate::replay_suffix(
+                candidate,
+                base_limits,
+                staging_limits,
+                &bytes,
+                suffix_limits,
+                &suffix_binding,
+            )?;
+            if replay.len() != inner.index.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "replay count mismatch",
+                ));
+            }
+            for ((key, value), (live_key, location)) in replay.iter().zip(inner.index.iter()) {
+                if key != live_key || value.len() != location.length {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "replay index mismatch",
+                    ));
+                }
+                for (i, chunk) in value.chunks(buffer.len()).enumerate() {
+                    let offset = location
+                        .offset
+                        .checked_add((i * buffer.len()) as u64)
+                        .ok_or_else(|| io::Error::other("offset overflow"))?;
+                    self.log.read_bytes(&mut buffer[..chunk.len()], offset)?;
+                    if &buffer[..chunk.len()] != chunk {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "replay value mismatch",
+                        ));
+                    }
+                }
+            }
+            self.log.verify_witness()?;
+            let parent = backup::parent_directory(destination)?;
+            let (mut stage, mut file) = crate::staging::Stage::file(parent)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            file.seek(SeekFrom::Start(0))?;
+            let mut staged_hash = Sha256::new();
+            let mut remaining = len;
+            while remaining > 0 {
+                let n = remaining.min(buffer.len() as u64) as usize;
+                std::io::Read::read_exact(&mut file, &mut buffer[..n])?;
+                staged_hash.update(&buffer[..n]);
+                remaining -= n as u64;
+            }
+            if file.metadata()?.len() != len
+                || <[u8; 32]>::from(staged_hash.finalize()) != suffix_binding.digest
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "staged suffix mismatch",
+                ));
+            }
+            binding = Some(suffix_binding.clone());
+            tracker.begin_publication();
+            stage.publish(destination)?;
+            sync(parent)?;
+            stage.publication_synchronized();
+            Ok(suffix_binding)
+        });
+        result.map_err(|failure| match failure {
+            crate::PublicationFailure::NotPublished(error) => {
+                SuffixExportFailure::NotPublished(error)
+            }
+            crate::PublicationFailure::OutcomeUnknown(error) => {
+                SuffixExportFailure::OutcomeUnknown {
+                    error,
+                    expected: Box::new(binding.expect("publication follows verification")),
+                }
+            }
         })
     }
 
@@ -373,6 +610,390 @@ impl Store {
 mod tests {
     use super::*;
     use crate::record::batch::BatchOperation;
+
+    #[test]
+    fn suffix_rejects_forged_prefix_even_if_later_removed() {
+        for delete in [false, true] {
+            for forged_peak in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let store = Store::open(root.path().join("source")).unwrap();
+                store.put(b"key", b"original-value").unwrap();
+                let candidate = root.path().join("candidate");
+                store
+                    .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+                    .unwrap();
+                let path = candidate.join("base");
+                let mut bytes = std::fs::read(&path).unwrap();
+                let value = bytes
+                    .windows(14)
+                    .position(|w| w == b"original-value")
+                    .unwrap();
+                bytes[value] ^= 1;
+                if forged_peak {
+                    bytes[72..80].copy_from_slice(&2u64.to_le_bytes());
+                    bytes[80..88].copy_from_slice(&4u64.to_le_bytes());
+                }
+                let end = bytes.len() - 32;
+                let mut hash = Sha256::new();
+                hash.update(b"EMDA retained base v2\0");
+                hash.update(&bytes[..end]);
+                bytes[end..].copy_from_slice(&hash.finalize());
+                std::fs::write(&path, &bytes).unwrap();
+                let base =
+                    crate::retained_base_v2::validate(&bytes[..], candidate_budgets()).unwrap();
+                let expected = crate::retained_candidate::binding(&base, [2; 16]).unwrap();
+                std::fs::write(candidate.join("records.log"), expected.header).unwrap();
+                std::fs::write(candidate.join("witness"), expected.witness).unwrap();
+                if delete {
+                    store.delete(b"key").unwrap();
+                } else {
+                    store.put(b"key", b"replacement").unwrap();
+                }
+                let out = root.path().join("suffix");
+                let failure = store
+                    .export_retained_suffix(
+                        &candidate,
+                        &expected,
+                        &out,
+                        candidate_budgets(),
+                        crate::retained_base_v2::StagingLimits {
+                            value_bytes: 1000,
+                            staging_bytes: 10000,
+                        },
+                        crate::retained_candidate::SuffixLimits {
+                            bytes: 10000,
+                            operations: 10,
+                            work: 1000,
+                        },
+                        limits(),
+                    )
+                    .unwrap_err();
+                let message = if forged_peak {
+                    "candidate historical peaks mismatch"
+                } else {
+                    "candidate prefix value mismatch"
+                };
+                assert!(
+                    matches!(&failure, SuffixExportFailure::NotPublished(e) if e.to_string().contains(message)),
+                    "{failure:?}"
+                );
+                assert!(!out.exists());
+                assert!(!root.path().join("selection").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn suffix_entry_rejects_wrong_source_and_superseded_corruption() {
+        for corrupt in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let store = Store::open(&source).unwrap();
+            store.put(b"key", b"original-value").unwrap();
+            let candidate = root.path().join("candidate");
+            let expected = store
+                .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+                .unwrap();
+            store.put(b"key", b"replacement").unwrap();
+            let other = root.path().join("other");
+            let other_store = Store::open(&other).unwrap();
+            if corrupt {
+                let path = source.join("records.log");
+                let mut bytes = std::fs::read(&path).unwrap();
+                let offset = bytes
+                    .windows(14)
+                    .position(|w| w == b"original-value")
+                    .unwrap();
+                bytes[offset] ^= 1;
+                std::fs::write(path, bytes).unwrap();
+            }
+            let out = root.path().join("suffix");
+            let failure = (if corrupt { &store } else { &other_store })
+                .export_retained_suffix(
+                    &candidate,
+                    &expected,
+                    &out,
+                    candidate_budgets(),
+                    crate::retained_base_v2::StagingLimits {
+                        value_bytes: 1000,
+                        staging_bytes: 10000,
+                    },
+                    crate::retained_candidate::SuffixLimits {
+                        bytes: 10000,
+                        operations: 10,
+                        work: 1000,
+                    },
+                    limits(),
+                )
+                .unwrap_err();
+            let message = if corrupt {
+                "record checksum mismatch"
+            } else {
+                "candidate source identity mismatch"
+            };
+            assert!(
+                matches!(&failure, SuffixExportFailure::NotPublished(e) if e.to_string().contains(message)),
+                "{failure:?}"
+            );
+            assert!(!out.exists());
+            assert!(!root.path().join("selection").exists());
+            assert_no_candidate_stages(root.path());
+        }
+    }
+
+    #[test]
+    fn suffix_entry_rejects_boundaries_inside_batch() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("source")).unwrap();
+        let candidate = root.path().join("candidate");
+        store
+            .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+            .unwrap();
+        let batch_start = store.log.len().unwrap();
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"first",
+                    value: b"one",
+                },
+                BatchOperation::Put {
+                    key: b"second",
+                    value: b"two",
+                },
+            ])
+            .unwrap();
+        let log = std::fs::read(root.path().join("source/records.log")).unwrap();
+        let second = log.windows(6).position(|w| w == b"second").unwrap() as u64;
+        // A nested record starts before its key; locate it from its encoded bytes.
+        let child =
+            crate::record::encode(crate::record::Operation::Put, b"second", b"two").unwrap();
+        let child_start = log.windows(child.len()).position(|w| w == child).unwrap() as u64;
+        assert!(child_start > batch_start && child_start < second);
+        for boundary in [child_start, child_start + 1] {
+            let path = candidate.join("base");
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes[48..56].copy_from_slice(&boundary.to_le_bytes());
+            let end = bytes.len() - 32;
+            let mut hash = Sha256::new();
+            hash.update(b"EMDA retained base v2\0");
+            hash.update(&bytes[..end]);
+            bytes[end..].copy_from_slice(&hash.finalize());
+            std::fs::write(&path, &bytes).unwrap();
+            let base = crate::retained_base_v2::validate(&bytes[..], candidate_budgets()).unwrap();
+            let expected = crate::retained_candidate::binding(&base, [2; 16]).unwrap();
+            std::fs::write(candidate.join("records.log"), expected.header).unwrap();
+            std::fs::write(candidate.join("witness"), expected.witness).unwrap();
+            let out = root.path().join("suffix");
+            let failure = store
+                .export_retained_suffix(
+                    &candidate,
+                    &expected,
+                    &out,
+                    candidate_budgets(),
+                    crate::retained_base_v2::StagingLimits {
+                        value_bytes: 1000,
+                        staging_bytes: 10000,
+                    },
+                    crate::retained_candidate::SuffixLimits {
+                        bytes: 10000,
+                        operations: 10,
+                        work: 1000,
+                    },
+                    limits(),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(&failure, SuffixExportFailure::NotPublished(e) if e.to_string().contains("log does not contain its acknowledged commit boundary")),
+                "{failure:?}"
+            );
+            assert!(!out.exists());
+            assert!(!root.path().join("selection").exists());
+        }
+    }
+
+    #[test]
+    fn suffix_export_holds_writer_through_sync() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(root.path().join("source")).unwrap());
+        let candidate = root.path().join("candidate");
+        let expected = store
+            .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+            .unwrap();
+        let output = root.path().join("suffix");
+        let (entered, wait) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let exporting = Arc::clone(&store);
+        let thread = std::thread::spawn(move || {
+            exporting.export_retained_suffix_impl(
+                &candidate,
+                &expected,
+                &output,
+                candidate_budgets(),
+                crate::retained_base_v2::StagingLimits {
+                    value_bytes: 1000,
+                    staging_bytes: 10000,
+                },
+                crate::retained_candidate::SuffixLimits {
+                    bytes: 10000,
+                    operations: 10,
+                    work: 1000,
+                },
+                limits(),
+                |parent| {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                    crate::directory::sync_existing(parent)
+                },
+            )
+        });
+        wait.recv().unwrap();
+        let (done, result) = mpsc::channel();
+        let writer = Arc::clone(&store);
+        let write = std::thread::spawn(move || {
+            done.send(writer.put(b"key", b"value")).unwrap();
+        });
+        assert!(result.recv_timeout(Duration::from_millis(100)).is_err());
+        release.send(()).unwrap();
+        thread.join().unwrap().unwrap();
+        result
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        write.join().unwrap();
+    }
+
+    #[test]
+    fn source_suffix_export_replays_and_preserves_source() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(
+            source.join("records.log"),
+            include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("commit.state"),
+            include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+        )
+        .unwrap();
+        let store = Store::open(&source).unwrap();
+        store.put(b"old", b"value").unwrap();
+        let candidate = root.path().join("candidate");
+        let expected = store
+            .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+            .unwrap();
+        store
+            .write_batch(&[
+                BatchOperation::Delete { key: b"old" },
+                BatchOperation::Put {
+                    key: b"new",
+                    value: b"value2",
+                },
+            ])
+            .unwrap();
+        let original = std::fs::read(source.join("records.log")).unwrap();
+        let snapshot = |dir: &Path| {
+            let mut files: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| {
+                    let e = e.unwrap();
+                    (e.file_name(), std::fs::read(e.path()).unwrap())
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        let source_before = snapshot(&source);
+        let candidate_before = snapshot(&candidate);
+        let base_limits = candidate_budgets();
+        let staging = crate::retained_base_v2::StagingLimits {
+            value_bytes: 1000,
+            staging_bytes: 10000,
+        };
+        let suffix = crate::retained_candidate::SuffixLimits {
+            bytes: 10000,
+            operations: 10,
+            work: 1000,
+        };
+        let out = root.path().join("suffix");
+        let binding = store
+            .export_retained_suffix(
+                &candidate,
+                &expected,
+                &out,
+                base_limits,
+                staging,
+                suffix,
+                limits(),
+            )
+            .unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(
+            crate::retained_candidate::replay_suffix(
+                &candidate,
+                base_limits,
+                staging,
+                &bytes,
+                suffix,
+                &binding
+            )
+            .unwrap(),
+            vec![(b"new".to_vec(), b"value2".to_vec())]
+        );
+        let conflict = store
+            .export_retained_suffix(
+                &candidate,
+                &expected,
+                &out,
+                base_limits,
+                staging,
+                suffix,
+                limits(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(conflict, SuffixExportFailure::OutcomeUnknown { error, .. } if error.kind() == io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
+        assert_eq!(std::fs::read(source.join("records.log")).unwrap(), original);
+        assert_eq!(snapshot(&source), source_before);
+        assert_eq!(snapshot(&candidate), candidate_before);
+        let tiny = crate::retained_candidate::SuffixLimits { bytes: 0, ..suffix };
+        let small = root.path().join("small");
+        let failure = store
+            .export_retained_suffix(
+                &candidate,
+                &expected,
+                &small,
+                base_limits,
+                staging,
+                tiny,
+                limits(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(failure, SuffixExportFailure::NotPublished(e) if e.to_string().contains("suffix byte limit exceeded"))
+        );
+        assert!(!small.exists());
+        assert!(!root.path().join("selection").exists());
+        let uncertain = store.export_retained_suffix_impl(
+            &candidate,
+            &expected,
+            &root.path().join("uncertain"),
+            base_limits,
+            staging,
+            suffix,
+            limits(),
+            |_| Err(io::Error::other("sync")),
+        );
+        assert!(matches!(
+            uncertain,
+            Err(SuffixExportFailure::OutcomeUnknown { .. })
+        ));
+    }
 
     #[test]
     fn full_index_verification_requires_an_exact_historical_boundary() {

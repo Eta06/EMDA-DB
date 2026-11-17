@@ -323,3 +323,13 @@ It validates DB01 and DB02 records before returning a private replayed live
 set. Its work counter bounds entry visits and vector shifts; suffix bytes bound
 hashing and checksumming. Neither counter is a total CPU or memory bound.
 This does not bind a durable witness or implement store recovery or cutover.
+
+The ordinary Store can now export a non-authoritative source-bound suffix.
+Under the writer barrier it verifies the witnessed source and exact boundary,
+compares the candidate's prefix values and historical peaks with source replay,
+replays the bounded suffix and compares the final live state before staged
+publication. The independent binding is returned on uncertain publication.
+Thirty retained-export tests and all-target Clippy passed on macOS. This export
+does not establish rollback protection, writable retained recovery, bounded
+total process memory, cutover, or reclamation. The existing trusted stable
+directory and caller-selected external destination assumptions remain.
