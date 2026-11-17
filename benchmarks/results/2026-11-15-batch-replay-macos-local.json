@@ -1,0 +1,451 @@
+{
+  "scope": "Exploratory warm-cache local macOS V2 DB02 reopen; paired ABBA, same fixture, no CPU isolation or cold cache. Baseline a2f6192; candidate contains uncommitted changes. Not Linux, total-memory, power-loss, production or competitor evidence.",
+  "timestamp_utc": "2026-11-15T20:36:37.557977+00:00",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "baseline_revision": "a2f619298edfa8e00a4f3beebb89c8a40723695e",
+  "candidate_base": "a2f619298edfa8e00a4f3beebb89c8a40723695e",
+  "candidate_tracked_diff_sha256": "1a041b87c25e6acb2708f556fe16136e4bf2b5360d37a315e960e42acc05fa7c",
+  "binary_sha256": {
+    "baseline": "753e05585a44201ee6c26dc6cbac12c911a67568b6985a1a1cbdf2477716efe2",
+    "candidate": "8a6ad7f784ae86550f74714e61a0e504df3a2db878efbf4bedd47da0d1abdf4f"
+  },
+  "fixture_binary_sha256": "6b81d8ec9bf283ace8d3fc00d09a71f2b98da6fb719dc1515405fb7f2322066b",
+  "fixture_source_sha256": "923205108578ad5f2c3fd6a6d06002d0f0b4708ccc7b60507ea8a2ced9f70c2a",
+  "measure_source_sha256": "784c31c031b2060b4af9b193416095664978d91c1a281bca5617041f9196f3c2",
+  "cargo_lock_sha256": "4407e2ab3f1c778471a737694e5e859344ce1bda37c02335ad065126e56963aa",
+  "rustc_version": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+  "cases": [
+    {
+      "records": 1000,
+      "value_bytes": 64,
+      "batch_group": 100,
+      "fixture_sha256": {
+        "records.log": "6cbac1095cb05e959d147202ed1dd8a2146de9a2c03dab6bea741cffba980859",
+        "commit.state": "5b86400a2d12123e55a7b2af46811335085f9cae47cacdd2fe06169529b11f27"
+      },
+      "log_bytes": 93288,
+      "runs": [
+        {
+          "round": 1,
+          "variant": "baseline",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=737 open_p95_us=1461 open_p99_us=1461 open_max_us=1461",
+          "samples_us": [
+            710,
+            717,
+            718,
+            728,
+            737,
+            784,
+            793,
+            858,
+            1041,
+            1461
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "candidate",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=772 open_p95_us=4094 open_p99_us=4094 open_max_us=4094",
+          "samples_us": [
+            688,
+            722,
+            748,
+            748,
+            772,
+            947,
+            953,
+            964,
+            1007,
+            4094
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "candidate",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=551 open_p95_us=664 open_p99_us=664 open_max_us=664",
+          "samples_us": [
+            495,
+            501,
+            511,
+            515,
+            551,
+            578,
+            583,
+            613,
+            613,
+            664
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "baseline",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=396 open_p95_us=666 open_p99_us=666 open_max_us=666",
+          "samples_us": [
+            392,
+            392,
+            392,
+            394,
+            396,
+            397,
+            439,
+            481,
+            501,
+            666
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "baseline",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=347 open_p95_us=530 open_p99_us=530 open_max_us=530",
+          "samples_us": [
+            334,
+            336,
+            340,
+            346,
+            347,
+            347,
+            348,
+            373,
+            394,
+            530
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "candidate",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=296 open_p95_us=374 open_p99_us=374 open_max_us=374",
+          "samples_us": [
+            291,
+            292,
+            294,
+            294,
+            296,
+            296,
+            297,
+            306,
+            316,
+            374
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "candidate",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=263 open_p95_us=340 open_p99_us=340 open_max_us=340",
+          "samples_us": [
+            258,
+            259,
+            260,
+            261,
+            263,
+            263,
+            267,
+            276,
+            279,
+            340
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "baseline",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=254 open_p95_us=332 open_p99_us=332 open_max_us=332",
+          "samples_us": [
+            240,
+            241,
+            242,
+            248,
+            254,
+            257,
+            281,
+            287,
+            318,
+            332
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "baseline",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=242 open_p95_us=289 open_p99_us=289 open_max_us=289",
+          "samples_us": [
+            226,
+            240,
+            241,
+            242,
+            242,
+            243,
+            244,
+            245,
+            254,
+            289
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "candidate",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=221 open_p95_us=272 open_p99_us=272 open_max_us=272",
+          "samples_us": [
+            219,
+            220,
+            220,
+            221,
+            221,
+            222,
+            225,
+            227,
+            236,
+            272
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "candidate",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=206 open_p95_us=250 open_p99_us=250 open_max_us=250",
+          "samples_us": [
+            202,
+            203,
+            204,
+            204,
+            206,
+            207,
+            209,
+            209,
+            215,
+            250
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "baseline",
+          "fields": "expected_records=1000 repetitions=10 value_bytes=64 log_bytes=93288 open_p50_us=205 open_p95_us=245 open_p99_us=245 open_max_us=245",
+          "samples_us": [
+            201,
+            202,
+            203,
+            205,
+            205,
+            205,
+            206,
+            210,
+            212,
+            245
+          ]
+        }
+      ]
+    },
+    {
+      "records": 8,
+      "value_bytes": 8388608,
+      "batch_group": 1,
+      "fixture_sha256": {
+        "records.log": "3e3deca3e96d998fb917f1773e4b1aa6aed8c8bc1e5c9b6c4fb10614b49a5107",
+        "commit.state": "fad0138d5fda38d7a4864616ae68db8f53f9991e91088fb3c7e2fe35b966f29f"
+      },
+      "log_bytes": 67109332,
+      "runs": [
+        {
+          "round": 1,
+          "variant": "baseline",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=10465 open_p95_us=25982 open_p99_us=25982 open_max_us=25982",
+          "samples_us": [
+            10245,
+            10267,
+            10292,
+            10404,
+            10465,
+            11336,
+            12708,
+            12793,
+            14333,
+            25982
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "candidate",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=9140 open_p95_us=16234 open_p99_us=16234 open_max_us=16234",
+          "samples_us": [
+            9011,
+            9070,
+            9072,
+            9128,
+            9140,
+            9182,
+            9240,
+            9308,
+            11936,
+            16234
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "candidate",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=9068 open_p95_us=9531 open_p99_us=9531 open_max_us=9531",
+          "samples_us": [
+            8934,
+            8967,
+            9025,
+            9042,
+            9068,
+            9431,
+            9459,
+            9511,
+            9518,
+            9531
+          ]
+        },
+        {
+          "round": 1,
+          "variant": "baseline",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=10447 open_p95_us=10901 open_p99_us=10901 open_max_us=10901",
+          "samples_us": [
+            10163,
+            10198,
+            10235,
+            10389,
+            10447,
+            10532,
+            10775,
+            10809,
+            10832,
+            10901
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "baseline",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=10369 open_p95_us=10801 open_p99_us=10801 open_max_us=10801",
+          "samples_us": [
+            10065,
+            10151,
+            10226,
+            10283,
+            10369,
+            10380,
+            10635,
+            10668,
+            10793,
+            10801
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "candidate",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=9028 open_p95_us=9471 open_p99_us=9471 open_max_us=9471",
+          "samples_us": [
+            8908,
+            8992,
+            9015,
+            9020,
+            9028,
+            9085,
+            9242,
+            9302,
+            9306,
+            9471
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "candidate",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=9043 open_p95_us=12544 open_p99_us=12544 open_max_us=12544",
+          "samples_us": [
+            8883,
+            8974,
+            9016,
+            9017,
+            9043,
+            9235,
+            9310,
+            9469,
+            9592,
+            12544
+          ]
+        },
+        {
+          "round": 2,
+          "variant": "baseline",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=10415 open_p95_us=14155 open_p99_us=14155 open_max_us=14155",
+          "samples_us": [
+            10205,
+            10274,
+            10292,
+            10408,
+            10415,
+            10729,
+            10939,
+            10961,
+            13531,
+            14155
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "baseline",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=10442 open_p95_us=13787 open_p99_us=13787 open_max_us=13787",
+          "samples_us": [
+            10072,
+            10284,
+            10338,
+            10405,
+            10442,
+            10531,
+            10594,
+            10774,
+            13648,
+            13787
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "candidate",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=9131 open_p95_us=9545 open_p99_us=9545 open_max_us=9545",
+          "samples_us": [
+            8918,
+            8936,
+            8994,
+            9111,
+            9131,
+            9173,
+            9204,
+            9264,
+            9357,
+            9545
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "candidate",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=9094 open_p95_us=9418 open_p99_us=9418 open_max_us=9418",
+          "samples_us": [
+            8975,
+            9001,
+            9054,
+            9073,
+            9094,
+            9198,
+            9222,
+            9340,
+            9392,
+            9418
+          ]
+        },
+        {
+          "round": 3,
+          "variant": "baseline",
+          "fields": "expected_records=8 repetitions=10 value_bytes=8388608 log_bytes=67109332 open_p50_us=10731 open_p95_us=13852 open_p99_us=13852 open_max_us=13852",
+          "samples_us": [
+            10442,
+            10539,
+            10556,
+            10560,
+            10731,
+            10861,
+            10874,
+            11152,
+            12857,
+            13852
+          ]
+        }
+      ]
+    }
+  ]
+}
