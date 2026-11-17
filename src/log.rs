@@ -751,9 +751,50 @@ impl Log {
                 "verification log byte limit exceeded",
             ));
         }
+        let (index, peak_count, peak_bytes) = self.replay_index_peaks(total, boundary, limits)?;
+        if &index != expected {
+            return Err(record::invalid_data(
+                "live index does not match verified log",
+            ));
+        }
+        if self.file.len()? != total {
+            return Err(record::invalid_data(
+                "log length changed during verification",
+            ));
+        }
+        self.verify_witness()?;
+        Ok((peak_count, peak_bytes))
+    }
+
+    /// Reconstruct a verified prefix while the caller holds the writer barrier.
+    /// The source and expected index must remain stable and trusted throughout both
+    /// scans. Limits bound logical replay state and full source bytes, not total
+    /// allocator usage: BTreeMap and record decoding include infallible allocations.
+    #[allow(dead_code)] // Reserved for internal consumers of verified prefixes.
+    pub(crate) fn reconstruct_prefix_index_peaks(
+        &self,
+        expected: &BTreeMap<Vec<u8>, ValueLocation>,
+        boundary: u64,
+        limits: PeakVerificationLimits,
+    ) -> io::Result<(BTreeMap<Vec<u8>, ValueLocation>, usize, usize)> {
+        if self.witness.is_none() {
+            return Err(io::Error::other("log has no attached commit witness"));
+        }
+        self.verify_index_peaks_at_boundary(expected, Some(limits), Some(boundary))?;
+        let result = self.replay_index_peaks(boundary, None, Some(limits))?;
+        self.verify_witness()?;
+        Ok(result)
+    }
+
+    fn replay_index_peaks(
+        &self,
+        end: u64,
+        boundary: Option<u64>,
+        limits: Option<PeakVerificationLimits>,
+    ) -> io::Result<(BTreeMap<Vec<u8>, ValueLocation>, usize, usize)> {
         let mut index = BTreeMap::new();
         let (mut bytes, mut peak_count, mut peak_bytes) = (0_usize, 0_usize, 0_usize);
-        self.visit_records_to(0, total, boundary, |key, location| {
+        self.visit_records_to(0, end, boundary, |key, location| {
             match location {
                 Some(location) => {
                     if !index.contains_key(&key) {
@@ -783,18 +824,7 @@ impl Log {
             peak_bytes = peak_bytes.max(bytes);
             Ok(())
         })?;
-        if &index != expected {
-            return Err(record::invalid_data(
-                "live index does not match verified log",
-            ));
-        }
-        if self.file.len()? != total {
-            return Err(record::invalid_data(
-                "log length changed during verification",
-            ));
-        }
-        self.verify_witness()?;
-        Ok((peak_count, peak_bytes))
+        Ok((index, peak_count, peak_bytes))
     }
 
     fn recover_from(

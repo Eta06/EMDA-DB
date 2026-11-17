@@ -1006,3 +1006,6 @@ mod wake_tests;
 
 #[cfg(all(test, target_os = "linux"))]
 mod metadata_tests;
+
+#[cfg(test)]
+mod prefix_reconstruction_tests;

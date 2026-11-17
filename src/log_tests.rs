@@ -1272,3 +1272,18 @@ fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
         );
     }
 }
+
+#[test]
+fn prefix_reconstruction_requires_attached_witness() {
+    let id = [10_u8; 16];
+    let (_, log) = replay_log(v2_header(id).to_vec(), Some(id));
+    let limits = PeakVerificationLimits {
+        max_log_bytes: u64::MAX,
+        max_live_keys: usize::MAX,
+        max_live_key_bytes: usize::MAX,
+    };
+    assert!(
+        log.reconstruct_prefix_index_peaks(&BTreeMap::new(), LOG_HEADER_SIZE as u64, limits)
+            .is_err()
+    );
+}
