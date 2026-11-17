@@ -615,3 +615,107 @@ fn read_set_index_empty_page_conflicts_with_insert_after_cursor_on_both_backends
     }
     finish_after_cursor(|| CheckpointStore::open(&source, &base, &digest));
 }
+
+fn stage_schema_empty_page_and_insert_after_cursor(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.insert("c", "z", &document("z", 1)).unwrap();
+    db.start_schema_migration("c", pending_schema()).unwrap();
+    let step = db.advance_schema_migration("c", 1).unwrap();
+    assert_eq!((step.processed, step.complete), (1, false));
+
+    thread::scope(|scope| {
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        let mut release = Release {
+            schema: Some(go_tx),
+            index: None,
+        };
+        let publication = scope.spawn(move || {
+            db.transaction_with_read_set(|tx| {
+                tx.put_raw(SCHEMA_WITNESS, b"yes")?;
+                let step = tx.advance_schema_migration("c", 1)?;
+                assert_eq!((step.processed, step.complete), (0, true));
+                ready_tx.send(()).unwrap();
+                go_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+                Ok(())
+            })
+        });
+        ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        db.insert("c", AFTER_CURSOR_ID, &later_document()).unwrap();
+        signal(&mut release.schema);
+        let error = publication
+            .join()
+            .unwrap()
+            .expect_err("schema publication missed phantom");
+        assert!(is_transaction_conflict(&error), "unexpected error: {error}");
+    });
+    assert_schema_rollback(db);
+}
+
+fn assert_schema_rollback(db: &DocumentDatabase<'_>) {
+    assert_eq!(raw(db, SCHEMA_WITNESS), None);
+    assert_eq!(
+        db.schema_migration("c").unwrap().unwrap().after.as_deref(),
+        Some("z")
+    );
+    assert_eq!(
+        db.get("c", AFTER_CURSOR_ID).unwrap(),
+        Some(later_document())
+    );
+}
+
+fn finish_schema_after_cursor<S: BorrowDatabase>(mut open: impl FnMut() -> io::Result<S>) {
+    {
+        let store = retry_lock(&mut open).unwrap();
+        store.with_database(|db| {
+            assert_schema_rollback(db);
+            let step = db.advance_schema_migration("c", 1).unwrap();
+            assert_eq!((step.processed, step.complete), (1, false));
+            db.transaction_with_read_set(|tx| {
+                tx.put_raw(SCHEMA_WITNESS, b"yes")?;
+                let step = tx.advance_schema_migration("c", 1)?;
+                assert_eq!((step.processed, step.complete), (0, true));
+                Ok(())
+            })
+            .unwrap();
+        });
+    }
+    let store = retry_lock(&mut open).unwrap();
+    store.with_database(|db| {
+        assert_eq!(db.schema_migration("c").unwrap(), None);
+        assert_eq!(raw(db, SCHEMA_WITNESS).as_deref(), Some(b"yes".as_slice()));
+        assert_eq!(
+            db.get("c", AFTER_CURSOR_ID).unwrap(),
+            Some(later_document())
+        );
+        assert_eq!(
+            db.insert("c", "invalid", &json!({})).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    });
+}
+
+#[test]
+fn read_set_schema_empty_page_conflicts_with_insert_after_cursor_on_both_backends() {
+    let root = tempfile::tempdir().unwrap();
+    let ordinary = root.path().join("ordinary");
+    {
+        let store = Store::open(&ordinary).unwrap();
+        stage_schema_empty_page_and_insert_after_cursor(&DocumentDatabase::new(&store));
+    }
+    finish_schema_after_cursor(|| Store::open(&ordinary));
+
+    let source = root.path().join("checkpoint");
+    let base = root.path().join("base");
+    let initial = Store::open(&source).unwrap();
+    let digest = initial.checkpoint_to(&base).unwrap();
+    drop(initial);
+    {
+        let store = retry_lock(|| CheckpointStore::open(&source, &base, &digest)).unwrap();
+        stage_schema_empty_page_and_insert_after_cursor(&DocumentDatabase::with_checkpoint_store(
+            &store,
+        ));
+    }
+    finish_schema_after_cursor(|| CheckpointStore::open(&source, &base, &digest));
+}
