@@ -780,7 +780,7 @@ fn sync_timeout_is_an_unknown_operation_error_not_confirmed_expiry() {
 fn point_read_reservations_share_the_staged_budget_and_release_on_abort_and_panic() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
-    let charge = b"missing-a".len() + std::mem::size_of::<Option<crate::log::ValueLocation>>();
+    let charge = b"missing-a".len() + std::mem::size_of::<Option<crate::log::GenerationLocation>>();
     store.transaction_budget.lock().unwrap().limit = charge * 2 - 1;
     let result: io::Result<()> = store.transaction_with_read_set(|outer| {
         assert_eq!(outer.get(b"missing-a")?, None);

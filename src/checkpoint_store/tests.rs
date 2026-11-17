@@ -393,3 +393,65 @@ fn read_set_qualifies_checkpoint_and_overlay_observations() {
         }
     }
 }
+
+#[test]
+fn read_set_identity_conflict_at_observation_is_sticky() {
+    for range in [false, true] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+        let original = store.state.read().unwrap().log_generation;
+        let result = store.transaction_with_read_set(|tx| {
+            if range {
+                assert_eq!(tx.scan(Some(b"a"), Some(b"c"), 10)?.len(), 1);
+            } else {
+                assert!(tx.get(b"base")?.is_some());
+            }
+            tx.put(b"staged", b"no")?;
+            store.state.write().unwrap().log_generation = Some(GenerationId([42; 16]));
+            let error = tx.get(b"another").unwrap_err();
+            assert!(crate::is_transaction_conflict(&error));
+            // Even restoring the original identity cannot clear a swallowed conflict.
+            store.state.write().unwrap().log_generation = original;
+            assert!(crate::is_transaction_conflict(
+                &tx.get(b"another").unwrap_err()
+            ));
+            Ok(())
+        });
+        assert!(crate::is_transaction_conflict(&result.unwrap_err()));
+        assert_eq!(store.get(b"staged").unwrap(), None);
+    }
+}
+
+#[test]
+fn read_set_absence_and_empty_range_keep_membership_semantics_across_identity_change() {
+    for tombstone in [false, true] {
+        for insertion in [None, Some(&b"missing"[..]), Some(&b"middle"[..])] {
+            let (_dir, path, checkpoint, digest) = fixture();
+            let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+            if tombstone {
+                store.put(b"missing", b"old").unwrap();
+                store.delete(b"missing").unwrap();
+            }
+            let result = store.transaction_with_read_set(|tx| {
+                assert_eq!(tx.get(b"missing")?, None);
+                assert!(tx.scan(Some(b"l"), Some(b"n"), 10)?.is_empty());
+                store.state.write().unwrap().log_generation = Some(GenerationId([42; 16]));
+                // Revalidation of absent observations succeeds with unchanged membership.
+                assert_eq!(tx.get(b"missing")?, None);
+                assert!(tx.scan(Some(b"l"), Some(b"n"), 10)?.is_empty());
+                if let Some(key) = insertion {
+                    store.put(key, b"new")?;
+                }
+                tx.put(b"staged", b"ok")?;
+                Ok(())
+            });
+            if insertion.is_some() {
+                assert!(crate::is_transaction_conflict(&result.unwrap_err()));
+                assert_eq!(store.get(b"staged").unwrap(), None);
+            } else {
+                result.unwrap();
+                assert_eq!(store.get(b"staged").unwrap().as_deref(), Some(&b"ok"[..]));
+            }
+        }
+    }
+}
