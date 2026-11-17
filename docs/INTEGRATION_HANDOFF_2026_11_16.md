@@ -237,3 +237,13 @@ and [stale-binary failure](../benchmarks/results/2026-11-17-linux-arm64-stale-bi
 are also retained: the latter occurred after copying files with old mtimes;
 updating validation-checkout source mtimes forced recompilation. This passing
 run does not prove the intermittent parallel lock failures are resolved.
+
+At integration commit `3dac783`, a fresh Linux ARM64 Rust 1.85 build passed
+all 592 library tests with 16 threads and kernel lock/fork tracing enabled.
+The [trace and test evidence](../benchmarks/results/2026-11-18-linux-arm64-integration-head-lock-trace.tar.gz)
+has SHA-256 `81d85060b7fc129826dcebeca0c8fc42abae6cc9769ad1c800dfd9c92f1878af`.
+This run did not reproduce a lock failure. A preserved earlier trace linked
+one failed acquisition to a fork-inherited descriptor; other archived failures
+still lack holder identification, so parallel reliability remains open.
+The same commit added `ArrayKeepLast`; both array test suites passed on macOS,
+including an exact shared work-budget boundary on both writable backends.
