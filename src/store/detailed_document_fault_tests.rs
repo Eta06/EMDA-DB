@@ -150,3 +150,69 @@ fn detailed_document_mutations_report_unknown_and_recover_atomic_indexes() {
         }
     }
 }
+
+#[test]
+fn schema_publication_and_partial_indexes_recover_together_after_append_failure() {
+    use crate::store::compound_partial_index_fault_tests::{prepare, verify};
+    use crate::{CollectionSchema, DocumentTransactionMode, FieldRule, FieldType};
+    use serde_json::json;
+
+    for committed in [false, true] {
+        let (_root, path, _, _) = v2_fixture();
+        let armed = Arc::new(Mutex::new(None));
+        let store = open_versioned_fault_store(&path, Arc::clone(&armed)).unwrap();
+        let db = DocumentDatabase::new(&store);
+        prepare(&db);
+        let schema = CollectionSchema {
+            fields: vec![FieldRule {
+                path: vec!["region".into()],
+                field_type: FieldType::String,
+                required: true,
+                nullable: false,
+            }],
+        };
+        db.start_schema_migration("c", schema.clone()).unwrap();
+        let step = db.advance_schema_migration("c", 2).unwrap();
+        assert_eq!((step.processed, step.complete), (2, false));
+        *armed.lock().unwrap() = Some(if committed {
+            Fault::SyncAfter
+        } else {
+            Fault::PartialAppend(0)
+        });
+        let result =
+            db.transaction_detailed(DocumentTransactionMode::Conservative, None, None, |tx| {
+                tx.replace(
+                    "c",
+                    "item",
+                    &json!({"status":"open","region":"west","sku":2}),
+                    false,
+                )?;
+                tx.put_raw(b"receipt", b"moved")?;
+                let step = tx.advance_schema_migration("c", 1)?;
+                assert_eq!((step.processed, step.complete), (0, true));
+                Ok(())
+            });
+        assert!(
+            matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
+            "{result:?}"
+        );
+        assert!(store.get(b"health-check").is_err());
+        drop(store);
+
+        let reopened = Store::open(&path).unwrap();
+        let db = DocumentDatabase::new(&reopened);
+        assert_eq!(verify(&db), committed);
+        let migration = db.schema_migration("c").unwrap();
+        if committed {
+            assert_eq!(migration, None);
+            assert_eq!(
+                db.insert("c", "invalid", &json!({})).unwrap_err().kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        } else {
+            let migration = migration.unwrap();
+            assert_eq!(migration.schema, schema);
+            assert_eq!(migration.after.as_deref(), Some("other"));
+        }
+    }
+}
