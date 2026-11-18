@@ -257,7 +257,7 @@ pub struct SuffixExpected {
 pub struct SuffixLimits {
     pub bytes: u64,
     pub operations: u64,
-    /// Maximum entry visits and vector shifts during replay.
+    /// Maximum initial live-entry visits and suffix entry visits and shifts.
     pub work: u64,
 }
 
@@ -329,13 +329,30 @@ pub fn replay_suffix(
         return Err(invalid());
     }
     let mut state = load(directory, limits, staging, &expected.candidate)?;
+    let initial_work = u64::try_from(state.len()).map_err(|_| invalid())?;
+    if initial_work > suffix_limits.work {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "suffix work limit exceeded",
+        ));
+    }
+    let (entries, keys, payload) = live_totals(&state)?;
+    if entries > limits.entries || keys > limits.key_bytes || payload > staging.staging_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "live set limit exceeded",
+        ));
+    }
     let mut cursor = 0usize;
     let mut operations = 0u64;
     let mut replay = ReplayBudget {
         limits,
         staging,
-        work: 0,
+        work: initial_work,
         work_limit: suffix_limits.work,
+        entries,
+        keys,
+        payload,
     };
     while cursor < suffix.len() {
         let header_end = cursor.checked_add(HEADER_SIZE).ok_or_else(invalid)?;
@@ -421,6 +438,28 @@ struct ReplayBudget {
     staging: retained_base_v2::StagingLimits,
     work: u64,
     work_limit: u64,
+    entries: u64,
+    keys: u64,
+    payload: u64,
+}
+
+fn live_totals(state: &[(Vec<u8>, Vec<u8>)]) -> io::Result<(u64, u64, u64)> {
+    let mut keys = 0u64;
+    let mut payload = 0u64;
+    for (key, value) in state {
+        let k = u64::try_from(key.len()).map_err(|_| invalid())?;
+        let v = u64::try_from(value.len()).map_err(|_| invalid())?;
+        keys = keys.checked_add(k).ok_or_else(invalid)?;
+        payload = payload
+            .checked_add(k)
+            .and_then(|n| n.checked_add(v))
+            .ok_or_else(invalid)?;
+    }
+    Ok((
+        u64::try_from(state.len()).map_err(|_| invalid())?,
+        keys,
+        payload,
+    ))
 }
 
 fn apply_suffix(
@@ -430,7 +469,7 @@ fn apply_suffix(
     value: &[u8],
     budget: &mut ReplayBudget,
 ) -> io::Result<()> {
-    // Bound binary search comparisons, the accounting scan, and vector shifts.
+    // Conservatively bound binary search comparisons and vector shifts.
     // The extra unit covers the final binary-search comparison.
     let cost = u64::try_from(state.len())
         .map_err(|_| invalid())?
@@ -447,7 +486,18 @@ fn apply_suffix(
     let position = state.binary_search_by(|entry| entry.0.as_slice().cmp(key));
     if operation == crate::record::Operation::Delete {
         if let Ok(index) = position {
+            let (k, v) = &state[index];
+            let kl = u64::try_from(k.len()).map_err(|_| invalid())?;
+            let vl = u64::try_from(v.len()).map_err(|_| invalid())?;
+            let entries = budget.entries.checked_sub(1).ok_or_else(invalid)?;
+            let keys = budget.keys.checked_sub(kl).ok_or_else(invalid)?;
+            let payload = budget
+                .payload
+                .checked_sub(kl)
+                .and_then(|n| n.checked_sub(vl))
+                .ok_or_else(invalid)?;
             state.remove(index);
+            (budget.entries, budget.keys, budget.payload) = (entries, keys, payload);
         }
         return Ok(());
     }
@@ -458,20 +508,11 @@ fn apply_suffix(
         ));
     }
     let old = position.ok().map(|i| &state[i]);
-    let entries = u64::try_from(state.len())
-        .map_err(|_| invalid())?
+    let entries = budget
+        .entries
         .checked_add(u64::from(old.is_none()))
         .ok_or_else(invalid)?;
-    let (mut keys, mut payload) = (0u64, 0u64);
-    for (k, v) in state.iter() {
-        let kl = u64::try_from(k.len()).map_err(|_| invalid())?;
-        let vl = u64::try_from(v.len()).map_err(|_| invalid())?;
-        keys = keys.checked_add(kl).ok_or_else(invalid)?;
-        payload = payload
-            .checked_add(kl)
-            .and_then(|n| n.checked_add(vl))
-            .ok_or_else(invalid)?;
-    }
+    let (mut keys, mut payload) = (budget.keys, budget.payload);
     let key_len = u64::try_from(key.len()).map_err(|_| invalid())?;
     let value_len = u64::try_from(value.len()).map_err(|_| invalid())?;
     if old.is_none() {
@@ -521,6 +562,7 @@ fn apply_suffix(
             state.insert(i, (new_key, new_value));
         }
     }
+    (budget.entries, budget.keys, budget.payload) = (entries, keys, payload);
     Ok(())
 }
 
@@ -545,12 +587,63 @@ mod suffix_budget_tests {
             },
             work: 0,
             work_limit: 17,
+            entries: 2,
+            keys: 2,
+            payload: 4,
         };
         apply_suffix(&mut state, Operation::Put, &[1], &[1], &mut budget).unwrap();
         apply_suffix(&mut state, Operation::Delete, &[1], &[], &mut budget).unwrap();
         assert_eq!(budget.work, 17);
         assert_eq!(state, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
         assert!(apply_suffix(&mut state, Operation::Put, &[1], &[1], &mut budget).is_err());
+    }
+
+    #[test]
+    fn seeded_totals_match_rescan_and_fail_atomically() {
+        let mut state = Vec::new();
+        let mut budget = ReplayBudget {
+            limits: Limits {
+                file_bytes: u64::MAX,
+                entries: 8,
+                key_bytes: 8,
+                work_bytes: u64::MAX,
+            },
+            staging: retained_base_v2::StagingLimits {
+                value_bytes: 5,
+                staging_bytes: 24,
+            },
+            work: 0,
+            work_limit: u64::MAX,
+            entries: 0,
+            keys: 0,
+            payload: 0,
+        };
+        let mut seed = 0x12345678u64;
+        for _ in 0..2000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let key = [(seed >> 32) as u8 % 12];
+            let value = vec![7; (seed as usize >> 4) % 7];
+            let op = if seed & 1 == 0 {
+                Operation::Put
+            } else {
+                Operation::Delete
+            };
+            let before = state.clone();
+            let totals = (budget.entries, budget.keys, budget.payload);
+            if apply_suffix(&mut state, op, &key, &value, &mut budget).is_err() {
+                assert_eq!(state, before);
+                assert_eq!((budget.entries, budget.keys, budget.payload), totals);
+            }
+            assert_eq!(
+                live_totals(&state).unwrap(),
+                (budget.entries, budget.keys, budget.payload)
+            );
+        }
+        budget.payload = u64::MAX;
+        let before = state.clone();
+        assert!(apply_suffix(&mut state, Operation::Put, &[99], &[1], &mut budget).is_err());
+        assert_eq!(state, before);
+        assert_eq!(budget.payload, u64::MAX);
     }
 
     #[test]
@@ -569,6 +662,9 @@ mod suffix_budget_tests {
             },
             work: u64::MAX,
             work_limit: u64::MAX,
+            entries: 1,
+            keys: 1,
+            payload: 2,
         };
         assert!(apply_suffix(&mut state, Operation::Delete, &[1], &[], &mut budget).is_err());
         assert_eq!(state, vec![(vec![1], vec![2])]);

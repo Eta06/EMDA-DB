@@ -2117,13 +2117,13 @@ mod tests {
             )
             .is_err()
         );
-        // Conservative work charges are 4, 7 and 4 for these state sizes.
+        // One initial entry visit, then conservative charges of 4, 7 and 4.
         assert!(
             run(
                 &suffix,
                 &binding(&suffix),
                 stage,
-                SuffixLimits { work: 15, ..cap }
+                SuffixLimits { work: 16, ..cap }
             )
             .is_ok()
         );
@@ -2132,9 +2132,14 @@ mod tests {
                 &suffix,
                 &binding(&suffix),
                 stage,
-                SuffixLimits { work: 14, ..cap }
+                SuffixLimits { work: 15, ..cap }
             )
             .is_err()
+        );
+        assert!(run(&[], &binding(&[]), stage, SuffixLimits { work: 0, ..cap }).is_err());
+        assert_eq!(
+            run(&[], &binding(&[]), stage, SuffixLimits { work: 1, ..cap }).unwrap(),
+            vec![(b"a".to_vec(), b"one".to_vec())]
         );
         // Every replay allocation failure returns an error, including after prior
         // private mutations in the batch. No partial result can escape.
@@ -2193,7 +2198,7 @@ mod tests {
                 SuffixLimits {
                     bytes: 0,
                     operations: 0,
-                    work: 0
+                    work: 1
                 }
             )
             .is_ok()
@@ -2279,7 +2284,7 @@ mod tests {
             let log_path = source.join("records.log");
             let start = std::fs::read(&log_path).unwrap().len();
             let mut state = seed;
-            let mut work = 0;
+            let mut work = model.len() as u64;
             let mut max_payload = 6usize;
             let mut count = 0;
             for step in 0..18 {
