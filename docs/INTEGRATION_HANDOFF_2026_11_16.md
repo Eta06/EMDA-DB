@@ -568,3 +568,12 @@ records the verified selection and retirement behavior across authority
 errors and process kills. Remaining Step 2 work includes measuring recovery
 and peak resources across generations and establishing deployment policy for
 legacy archives, supported readers and independently protected authority.
+
+The [paired retained recovery campaign](../benchmarks/results/2026-11-19-authorized-recovery-resources/README.md)
+verified both backends after eight fresh-process reopens of 131,072-key
+fixtures on macOS APFS and Linux ext4. With a larger benchmark work budget
+the retained catalog rotated five times instead of 42. It used less
+reopen RSS in every sampled profile and took longer to reopen. The
+report records the cost of synchronous rotation, the retained legacy
+archive and observed staging peaks. End-to-end resource bounds and
+deployment-scale cold-cache validation remain open.

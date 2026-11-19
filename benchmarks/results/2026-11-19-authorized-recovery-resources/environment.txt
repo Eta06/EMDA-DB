@@ -1,0 +1,23 @@
+Current harness revision e58dfbf44ecd0b830e2d351671f6b254956f4e19
+Engine baseline revision 36d3ef7d5bc59db59ca2ed0fc176dcc21343ee57
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+Mac binaries in profile order, 1M then 60M
+fb9a1aa6430b1f4de7e7389673eab5bff1de69e5cb8f24e9c052371344aac79d  target/release/examples/authorized_recovery_bench
+83e0ac597d001d160a552c69fa17ffeacf8512b5e912cc8b19f632c86a15dc3b  target/release/examples/authorized_recovery_bench
+Mac filesystem
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   228Gi    98Gi    83Gi    55%    677k  867M    0%   /System/Volumes/Data
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+Linux binaries in profile order, 1M then 60M
+42a04263eee172ff8550703cb1202c8983832047b80950611375fc7a6b20827f  target/release/examples/authorized_recovery_bench
+9c6679e97a992c106648a5475f757274ddc7b3b487612f598e5d93dc51a55174  target/release/examples/authorized_recovery_bench
+TARGET FSTYPE OPTIONS
+/      ext4   rw,relatime,discard,errors=remount-ro,commit=30
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        19G   19G  109M 100% /
+   File System Personality:   APFS
