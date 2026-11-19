@@ -146,14 +146,14 @@ fuzz_target!(|data: &[u8]| {
             }
             _ => {}
         }
-        let mode = bytes[0] % 16;
+        let mode = bytes[0] % 20;
         let bound = match bytes[2] % 4 {
             0 => IndexValue::Null,
             1 => IndexValue::Boolean(false),
             2 => IndexValue::Integer(i64::from(bytes[3] % 5) - 2),
             _ => IndexValue::String("s".into()),
         };
-        let score_range = compare("score", Comparison::GreaterOrEqual, bound);
+        let score_range = compare("score", Comparison::GreaterOrEqual, bound.clone());
         let mut filters = vec![eq("tenant", json!("t")), score_range.clone()];
         let expected = match mode {
             0 => {
@@ -274,11 +274,58 @@ fuzz_target!(|data: &[u8]| {
                     partial,
                 }
             }
-            _ => {
+            15 => {
                 filters[1] = DocumentFilter::Or(vec![exists("score", true), DocumentFilter::All]);
                 filters.push(exists("suffix", true));
                 DocumentQueryAccess::CollectionScan
             }
+            16 => {
+                let tenant = IndexValue::String("t".into());
+                filters[0] = DocumentFilter::And(vec![
+                    compare("tenant", Comparison::GreaterOrEqual, tenant.clone()),
+                    compare("tenant", Comparison::LessOrEqual, tenant),
+                ]);
+                filters.push(exists("suffix", true));
+                access(1, partial)
+            }
+            17..=19 => {
+                if mode == 18 {
+                    filters[1] = compare("score", Comparison::Greater, bound.clone());
+                }
+                filters.push(compare("score", Comparison::LessOrEqual, bound));
+                filters.push(eq("suffix", Value::Null));
+                match (mode, partial) {
+                    (17, true) => DocumentQueryAccess::PartialEqualityIndex {
+                        index: "i".into(),
+                        fields: 3,
+                    },
+                    (17, false) => DocumentQueryAccess::CompoundEqualityIndex {
+                        index: "i".into(),
+                        fields: 3,
+                    },
+                    (18, _) => access(1, partial),
+                    _ => {
+                        filters[0] = DocumentFilter::In {
+                            path: vec!["tenant".into()],
+                            values: vec![json!("t"), json!("u")],
+                        };
+                        if partial {
+                            DocumentQueryAccess::PartialCompoundMembershipIndex {
+                                index: "i".into(),
+                                fields: 3,
+                                probes: 2,
+                            }
+                        } else {
+                            DocumentQueryAccess::CompoundMembershipIndex {
+                                index: "i".into(),
+                                fields: 3,
+                                probes: 2,
+                            }
+                        }
+                    }
+                }
+            }
+            _ => unreachable!("range model mode"),
         };
         if partial && mode != 2 {
             filters.push(eq("active", json!(true)));

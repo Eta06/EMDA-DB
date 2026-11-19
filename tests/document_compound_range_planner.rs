@@ -41,6 +41,13 @@ fn cmp(name: &str, comparison: Comparison, value: IndexValue) -> DocumentFilter 
 fn and(filters: Vec<DocumentFilter>) -> DocumentFilter {
     DocumentFilter::And(filters)
 }
+
+fn closed_bounds(name: &str, value: IndexValue) -> DocumentFilter {
+    and(vec![
+        cmp(name, Comparison::GreaterOrEqual, value.clone()),
+        cmp(name, Comparison::LessOrEqual, value),
+    ])
+}
 fn query(filter: DocumentFilter, max_scanned: usize) -> DocumentQuery {
     DocumentQuery {
         filter,
@@ -457,7 +464,7 @@ fn phantom(db: &DocumentDatabase<'_>, mode: u8) {
         let result = db.transaction_with_read_set(|tx| {
             let request = query(
                 and(vec![
-                    eq("tenant", json!("t")),
+                    closed_bounds("tenant", IndexValue::String("t".into())),
                     cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(20)),
                     cmp("score", Comparison::LessOrEqual, IndexValue::Integer(30)),
                     exists("flag", true),
@@ -488,6 +495,67 @@ fn phantom(db: &DocumentDatabase<'_>, mode: u8) {
             Some(b"committed".to_vec())
         }
     );
+}
+
+#[test]
+fn closed_bounds_enable_later_compound_fields() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                unique: true,
+                ..index(&["tenant", "score"], None)
+            },
+        )
+        .unwrap();
+        for (id, tenant, score) in [("a", "t", 1), ("b", "t", 2), ("c", "t", 3), ("d", "u", 3)] {
+            db.insert("c", id, &json!({"tenant":tenant, "score":score}))
+                .unwrap();
+        }
+        let tenant = closed_bounds("tenant", IndexValue::String("t".into()));
+        let range = and(vec![
+            tenant.clone(),
+            cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(3)),
+        ]);
+        let narrowed = db.query_planned("c", &query(range.clone(), 1)).unwrap();
+        assert_eq!(narrowed.access, access(1, false));
+        assert_eq!(narrowed.result.plan.scanned, 1);
+        assert_eq!(narrowed.result.documents[0].id, "c");
+        compare(db, &query(range, 4), access(1, false));
+
+        let exact = and(vec![
+            tenant.clone(),
+            closed_bounds("score", IndexValue::Integer(3)),
+        ]);
+        compare(
+            db,
+            &query(exact, 4),
+            DocumentQueryAccess::UniqueCompoundEqualityIndex {
+                index: "compound".into(),
+                fields: 2,
+            },
+        );
+        let union = and(vec![
+            tenant.clone(),
+            membership("score", vec![json!(2), json!(3)]),
+        ]);
+        compare(
+            db,
+            &query(union, 4),
+            DocumentQueryAccess::CompoundMembershipIndex {
+                index: "compound".into(),
+                fields: 2,
+                probes: 2,
+            },
+        );
+        compare(
+            db,
+            &query(and(vec![tenant, exists("score", true)]), 4),
+            prefix_access(1, 1, false),
+        );
+    });
 }
 #[test]
 fn compound_range_detects_matching_phantoms_and_allows_nonmatching_inserts() {
@@ -554,6 +622,20 @@ fn compound_range_uses_scalar_order_and_intersected_exclusive_bounds() {
             IndexValue::Integer(5),
             IndexValue::String("a\0z".into()),
         ] {
+            compare(
+                db,
+                &query(
+                    and(vec![
+                        eq("tenant", json!("t")),
+                        closed_bounds("score", bound.clone()),
+                    ]),
+                    20,
+                ),
+                DocumentQueryAccess::CompoundEqualityIndex {
+                    index: "compound".into(),
+                    fields: 2,
+                },
+            );
             for comparison in [
                 Comparison::Less,
                 Comparison::LessOrEqual,

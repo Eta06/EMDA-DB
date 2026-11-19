@@ -100,13 +100,17 @@ pub struct PlannedDocumentQueryResult {
 
 // Each supplied filter must hold for the current plan. Within it, descend
 // only through And: Or and Not do not require any particular child.
-fn required_equality(required: &[&DocumentFilter], path: &[String]) -> Option<IndexValue> {
+fn required_equality(
+    required: &[&DocumentFilter],
+    path: &[String],
+) -> io::Result<Option<IndexValue>> {
     let mut pending = required.to_vec();
+    let (mut lower, mut upper) = (None, None);
     while let Some(filter) = pending.pop() {
         match filter {
             DocumentFilter::Equal { path: field, value } if field == path => {
                 if let Ok(value) = IndexValue::from_json(value) {
-                    return Some(value);
+                    return Ok(Some(value));
                 }
             }
             DocumentFilter::In {
@@ -114,14 +118,26 @@ fn required_equality(required: &[&DocumentFilter], path: &[String]) -> Option<In
                 values,
             } if field == path && values.len() == 1 => {
                 if let Ok(value) = IndexValue::from_json(&values[0]) {
-                    return Some(value);
+                    return Ok(Some(value));
                 }
             }
+            DocumentFilter::Compare {
+                path: field,
+                comparison,
+                value,
+            } if field == path => tighten_range(&mut lower, &mut upper, value, *comparison)?,
             DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
             _ => {}
         }
     }
-    None
+    match (lower, upper) {
+        (Some((lower, _)), Some((upper, _)))
+            if lower.inclusive && upper.inclusive && lower.value == upper.value =>
+        {
+            Ok(Some(lower.value))
+        }
+        _ => Ok(None),
+    }
 }
 
 // Select one required, wholly indexable list. Deduplication uses the exact
@@ -316,9 +332,11 @@ impl Selection {
 fn compound_membership(
     required: &[&DocumentFilter],
     fields: &[Vec<String>],
-) -> Option<Vec<Vec<IndexValue>>> {
-    let (choices, has_membership) = compound_choices(required, fields)?;
-    (has_membership && choices.len() == fields.len()).then(|| expand_tuples(choices))
+) -> io::Result<Option<Vec<Vec<IndexValue>>>> {
+    let Some((choices, has_membership)) = compound_choices(required, fields)? else {
+        return Ok(None);
+    };
+    Ok((has_membership && choices.len() == fields.len()).then(|| expand_tuples(choices)))
 }
 
 // Gather the longest constrained prefix. Reject an excessive product before
@@ -326,12 +344,12 @@ fn compound_membership(
 fn compound_choices(
     required: &[&DocumentFilter],
     fields: &[Vec<String>],
-) -> Option<(Vec<Vec<IndexValue>>, bool)> {
+) -> io::Result<Option<(Vec<Vec<IndexValue>>, bool)>> {
     let mut choices = Vec::with_capacity(fields.len());
     let mut probe_count = 1_usize;
     let mut has_membership = false;
     for field in fields {
-        let values = if let Some(value) = required_equality(required, field) {
+        let values = if let Some(value) = required_equality(required, field)? {
             vec![value]
         } else if let Some(values) = required_membership(required, field) {
             has_membership = true;
@@ -339,13 +357,16 @@ fn compound_choices(
         } else {
             break;
         };
-        probe_count = probe_count.checked_mul(values.len())?;
-        if probe_count > MAX_INDEX_PROBES {
-            return None;
-        }
+        let Some(count) = probe_count
+            .checked_mul(values.len())
+            .filter(|&count| count <= MAX_INDEX_PROBES)
+        else {
+            return Ok(None);
+        };
+        probe_count = count;
         choices.push(values);
     }
-    Some((choices, has_membership))
+    Ok(Some((choices, has_membership)))
 }
 
 // The distinct alternatives within each field yield disjoint prefixes.
@@ -410,6 +431,22 @@ fn tighten(
     Ok(())
 }
 
+type EncodedBound = Option<(IndexBound, Vec<u8>)>;
+
+fn tighten_range(
+    lower: &mut EncodedBound,
+    upper: &mut EncodedBound,
+    value: &IndexValue,
+    comparison: Comparison,
+) -> io::Result<()> {
+    match comparison {
+        Comparison::Greater => tighten(lower, value, false, true),
+        Comparison::GreaterOrEqual => tighten(lower, value, true, true),
+        Comparison::Less => tighten(upper, value, false, false),
+        Comparison::LessOrEqual => tighten(upper, value, true, false),
+    }
+}
+
 fn required_range(
     required: &[&DocumentFilter],
     path: &[String],
@@ -423,12 +460,7 @@ fn required_range(
                 path: field,
                 comparison,
                 value,
-            } if field == path => match comparison {
-                Comparison::Greater => tighten(&mut lower, value, false, true)?,
-                Comparison::GreaterOrEqual => tighten(&mut lower, value, true, true)?,
-                Comparison::Less => tighten(&mut upper, value, false, false)?,
-                Comparison::LessOrEqual => tighten(&mut upper, value, true, false)?,
-            },
+            } if field == path => tighten_range(&mut lower, &mut upper, value, *comparison)?,
             DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
             _ => {}
         }
@@ -467,21 +499,20 @@ fn choose_index<'a>(
     // Prefer a unique exact tuple, then a nonunique one, regardless of range.
     // Complete tuples require equality on every field, so omitted missing
     // fields cannot produce an incorrect result.
-    if let Some(selected) = indexes
+    for index in indexes
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
         .filter(|index| eligible(index, required))
-        .find_map(|index| {
-            index
-                .fields
-                .iter()
-                .map(|field| required_equality(required, field))
-                .collect::<Option<Vec<_>>>()
-                .map(|tuple| (index, Selection::Equality(tuple)))
-        })
     {
-        return Ok(Some(selected));
+        if let Some(tuple) = index
+            .fields
+            .iter()
+            .map(|field| required_equality(required, field))
+            .collect::<io::Result<Option<Vec<_>>>>()?
+        {
+            return Ok(Some((index, Selection::Equality(tuple))));
+        }
     }
     // Keep the existing single-field range preference so adding compound
     // planning does not displace an already eligible single-field range.
@@ -493,7 +524,7 @@ fn choose_index<'a>(
     {
         let mut equal = Vec::new();
         for (position, field) in index.fields.iter().enumerate() {
-            if let Some(value) = required_equality(required, field) {
+            if let Some(value) = required_equality(required, field)? {
                 equal.push(value);
                 continue;
             }
@@ -528,17 +559,15 @@ fn choose_index<'a>(
     }
     // Complete compound tuples can also be probed as a bounded union. Keep
     // existing exact, range and single-field membership choices first.
-    if let Some(selected) = indexes
+    for index in indexes
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
-        .find_map(|index| {
-            compound_membership(required, &index.fields)
-                .map(|tuples| (index, Selection::CompoundMembership(tuples)))
-        })
     {
-        return Ok(Some(selected));
+        if let Some(tuples) = compound_membership(required, &index.fields)? {
+            return Ok(Some((index, Selection::CompoundMembership(tuples))));
+        }
     }
     for index in indexes
         .iter()
@@ -548,7 +577,7 @@ fn choose_index<'a>(
             let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? else {
                 continue;
             };
-            if let Some(prefixes) = compound_membership(required, &index.fields[..position]) {
+            if let Some(prefixes) = compound_membership(required, &index.fields[..position])? {
                 return Ok(Some((
                     index,
                     Selection::MembershipRange {
@@ -566,12 +595,12 @@ fn choose_index<'a>(
 fn choose_prefix<'a>(
     required: &[&DocumentFilter],
     indexes: &'a [IndexDefinition],
-) -> Option<(&'a IndexDefinition, Selection)> {
+) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
     for index in indexes
         .iter()
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
-        if let Some((choices, _)) = compound_choices(required, &index.fields) {
+        if let Some((choices, _)) = compound_choices(required, &index.fields)? {
             let prefix_fields = choices.len();
             if prefix_fields > 0
                 && prefix_fields < index.fields.len()
@@ -579,11 +608,14 @@ fn choose_prefix<'a>(
                     .iter()
                     .all(|field| required_presence(required, field, true))
             {
-                return Some((index, Selection::CompoundPrefix(expand_tuples(choices))));
+                return Ok(Some((
+                    index,
+                    Selection::CompoundPrefix(expand_tuples(choices)),
+                )));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 // Keep the first occurrence of each exact probe, including its index and
@@ -625,11 +657,10 @@ fn choose_disjunction<'a, 'filter>(
                 let mut complete = true;
                 for branch in filters {
                     context.push(branch);
-                    let selection = choose_index(context, indexes)?.or_else(|| {
-                        allow_prefix
-                            .then(|| choose_prefix(context, indexes))
-                            .flatten()
-                    });
+                    let mut selection = choose_index(context, indexes)?;
+                    if selection.is_none() && allow_prefix {
+                        selection = choose_prefix(context, indexes)?;
+                    }
                     let covered = selection.is_some_and(|(index, selection)| {
                         admit_probes(planned, selection.into_probes(index))
                     });
@@ -665,7 +696,7 @@ fn plan_query<'a>(
     let mut planned = HashMap::new();
     for allow_prefix in [false, true] {
         if allow_prefix {
-            if let Some((index, selection)) = choose_prefix(&[filter], indexes) {
+            if let Some((index, selection)) = choose_prefix(&[filter], indexes)? {
                 return Ok(Some((
                     describe_selection(index, &selection),
                     selection.into_probes(index).collect(),

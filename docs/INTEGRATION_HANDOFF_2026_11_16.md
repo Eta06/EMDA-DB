@@ -794,3 +794,10 @@ checks partial indexes selected through required lower and upper bounds,
 including bounds supplied by every branch of a disjunction. The
 regressions compare both writable backends with collection scans and
 check the empty-range transaction conflict.
+
+[Closed-bound planner evidence](../benchmarks/results/2026-11-19-singleton-bound-probes/README.md)
+checks exact typed probes when required comparisons have equal inclusive
+endpoints. The planner can use a later compound range within a
+one-candidate limit. The regression fails on the prior revision and
+passes on both writable backends, including the range's transaction
+dependencies.

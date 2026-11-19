@@ -1,0 +1,72 @@
+   Compiling libc v0.2.191
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling version_check v0.9.5
+   Compiling proc-macro2 v1.0.107
+   Compiling cfg-if v1.0.5
+   Compiling typenum v1.20.1
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling rustix v1.1.6
+   Compiling cc v1.11.0
+   Compiling bitflags v2.13.2
+   Compiling smallvec v1.16.4
+   Compiling parking_lot_core v0.9.12
+   Compiling generic-array v0.14.7
+   Compiling subtle v2.6.1
+   Compiling getrandom v0.4.3
+   Compiling vcpkg v0.2.15
+   Compiling pkg-config v0.3.34
+   Compiling foldhash v0.1.5
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.154
+   Compiling crc32fast v1.5.4
+   Compiling scopeguard v1.2.0
+   Compiling hashbrown v0.15.5
+   Compiling lock_api v0.4.14
+   Compiling once_cell v1.21.4
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling sha2-asm v0.6.4
+   Compiling libsqlite3-sys v0.33.0
+   Compiling syn v3.0.9
+   Compiling errno v0.3.14
+   Compiling cpufeatures v0.2.17
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling fastrand v2.5.0
+   Compiling hashlink v0.10.0
+   Compiling parking_lot v0.12.5
+   Compiling digest v0.10.7
+   Compiling fs2 v0.4.3
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling hmac v0.12.1
+   Compiling sha2 v0.10.9
+   Compiling tempfile v3.27.0
+   Compiling serde_derive v1.0.229
+   Compiling rusqlite v0.35.0
+   Compiling database-engine v0.1.0 (/tmp/emda-singleton-baseline.5w5ddi)
+    Finished `test` profile [unoptimized] target(s) in 5.59s
+     Running tests/document_compound_range_planner.rs (/tmp/emda-singleton-baseline.5w5ddi/target/debug/build/database-engine/473ae6d144dc8638/out/document_compound_range_planner-473ae6d144dc8638)
+
+running 1 test
+test closed_bounds_enable_later_compound_fields ... FAILED
+
+failures:
+
+---- closed_bounds_enable_later_compound_fields stdout ----
+
+thread 'closed_bounds_enable_later_compound_fields' (9571070) panicked at tests/document_compound_range_planner.rs:522:72:
+called `Result::unwrap()` on an `Err` value: Custom { kind: InvalidInput, error: "document scan exceeds the operation limit" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    closed_bounds_enable_later_compound_fields
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.21s
+
+error: test failed, to rerun pass `--test document_compound_range_planner`
