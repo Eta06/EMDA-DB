@@ -100,6 +100,27 @@ fn filter(byte: u8) -> (DocumentFilter, bool) {
         ),
     }
 }
+
+fn compound_disjunctions(value: u8) -> DocumentFilter {
+    let group = DocumentFilter::Or(vec![
+        equal("group", Value::Null),
+        DocumentFilter::Or(vec![equal("group", json!(0)), equal("group", json!(true))]),
+    ]);
+    let region = DocumentFilter::Or(vec![equal("region", json!(1)), equal("region", json!(2))]);
+    let guard = equal("active", json!(true));
+    match value % 3 {
+        0 => DocumentFilter::And(vec![guard, region, group]),
+        1 => DocumentFilter::And(vec![
+            region,
+            DocumentFilter::Or(vec![
+                DocumentFilter::And(vec![guard, group]),
+                equal("group", json!(2)),
+            ]),
+        ]),
+        _ => DocumentFilter::And(vec![guard, region, DocumentFilter::Not(Box::new(group))]),
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() || data.len() > 96 {
         return;
@@ -163,20 +184,28 @@ fuzz_target!(|data: &[u8]| {
             store = open(&path, &checkpoint, &digest, checkpoint_mode);
         }
         if bytes[0] % 7 == 0 {
-            store
-                .db()
-                .replace(
-                    "c",
-                    "0",
-                    &json!({"email":"e0", "score":bytes[1] % 4, "region":1,
-                        "group":bytes[1] % 4, "active":bytes[1] & 4 != 0}),
-                    false,
-                )
-                .unwrap();
+            let group = match bytes[1] % 7 {
+                4 => Value::Null,
+                5 => json!(true),
+                _ => json!(bytes[1] % 4),
+            };
+            let mut replacement = json!({
+                "email":"e0", "score":bytes[1] % 4, "region":1 + (bytes[1] >> 5) % 2,
+                "group":group, "active":bytes[1] & 4 != 0
+            });
+            if bytes[1] % 7 == 6 {
+                replacement.as_object_mut().unwrap().remove("group");
+            }
+            store.db().replace("c", "0", &replacement, false).unwrap();
         }
         let (filter, indexed) = filter(bytes[0]);
+        let compound = bytes[0] >= 240;
         let query = DocumentQuery {
-            filter,
+            filter: if compound {
+                compound_disjunctions(bytes[1])
+            } else {
+                filter
+            },
             max_scanned: 16,
             limit: 1 + usize::from(bytes[1] % 4),
             offset: usize::from(bytes[1] % 3),
@@ -188,29 +217,42 @@ fuzz_target!(|data: &[u8]| {
         };
         let scan = store.db().query("c", &query).unwrap();
         let planned = store.db().query_planned("c", &query).unwrap();
-        assert_eq!(
-            planned.access,
-            if indexed {
-                DocumentQueryAccess::UniqueEqualityIndex {
-                    index: "email".into(),
-                }
-            } else {
-                match bytes[0] % 12 {
-                    4 => DocumentQueryAccess::DisjunctionIndex {
-                        indexes: vec!["email".into()],
-                        probes: 2,
-                    },
-                    7 | 8 => DocumentQueryAccess::EqualityIndex {
-                        index: "score".into(),
-                    },
-                    10 => DocumentQueryAccess::DisjunctionIndex {
-                        indexes: vec!["region_group".into()],
-                        probes: 2,
-                    },
-                    _ => DocumentQueryAccess::CollectionScan,
-                }
+        if compound {
+            if bytes[1] % 3 == 0 {
+                assert_eq!(
+                    planned.access,
+                    DocumentQueryAccess::PartialCompoundMembershipIndex {
+                        index: "region_group".into(),
+                        fields: 2,
+                        probes: 6,
+                    }
+                );
             }
-        );
+        } else {
+            assert_eq!(
+                planned.access,
+                if indexed {
+                    DocumentQueryAccess::UniqueEqualityIndex {
+                        index: "email".into(),
+                    }
+                } else {
+                    match bytes[0] % 12 {
+                        4 => DocumentQueryAccess::DisjunctionIndex {
+                            indexes: vec!["email".into()],
+                            probes: 2,
+                        },
+                        7 | 8 => DocumentQueryAccess::EqualityIndex {
+                            index: "score".into(),
+                        },
+                        10 => DocumentQueryAccess::DisjunctionIndex {
+                            indexes: vec!["region_group".into()],
+                            probes: 2,
+                        },
+                        _ => DocumentQueryAccess::CollectionScan,
+                    }
+                }
+            );
+        }
         assert_eq!(planned.result.documents, scan.documents);
         assert_eq!(planned.result.plan.matched, scan.plan.matched);
         assert_eq!(planned.result.plan.returned, scan.plan.returned);
