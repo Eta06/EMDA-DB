@@ -146,7 +146,7 @@ fuzz_target!(|data: &[u8]| {
             }
             _ => {}
         }
-        let mode = bytes[0] % 20;
+        let mode = bytes[0] % 23;
         let bound = match bytes[2] % 4 {
             0 => IndexValue::Null,
             1 => IndexValue::Boolean(false),
@@ -323,6 +323,58 @@ fuzz_target!(|data: &[u8]| {
                             }
                         }
                     }
+                }
+            }
+            20..=22 => {
+                filters[0] =
+                    DocumentFilter::Or(vec![eq("tenant", json!("t")), eq("tenant", json!("u"))]);
+                let second = match (mode, bytes[3] % 3) {
+                    (22, _) => json!(1.0),
+                    (_, 0) => json!(true),
+                    (_, 1) => json!(i64::from(bytes[3] % 5) - 2),
+                    _ => json!("s"),
+                };
+                filters[1] = DocumentFilter::Or(vec![
+                    eq("score", Value::Null),
+                    DocumentFilter::In {
+                        path: vec!["score".into()],
+                        values: vec![second, Value::Null],
+                    },
+                ]);
+                if mode == 21 {
+                    filters.push(compare(
+                        "suffix",
+                        Comparison::GreaterOrEqual,
+                        IndexValue::Null,
+                    ));
+                } else {
+                    filters.push(eq("suffix", Value::Null));
+                }
+                match (mode, partial) {
+                    (20, false) => DocumentQueryAccess::CompoundMembershipIndex {
+                        index: "i".into(),
+                        fields: 3,
+                        probes: 4,
+                    },
+                    (20, true) => DocumentQueryAccess::PartialCompoundMembershipIndex {
+                        index: "i".into(),
+                        fields: 3,
+                        probes: 4,
+                    },
+                    (21, false) => DocumentQueryAccess::CompoundMembershipRangeIndex {
+                        index: "i".into(),
+                        prefix_fields: 2,
+                        probes: 4,
+                    },
+                    (21, true) => DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+                        index: "i".into(),
+                        prefix_fields: 2,
+                        probes: 4,
+                    },
+                    _ => DocumentQueryAccess::DisjunctionIndex {
+                        indexes: vec!["i".into()],
+                        probes: 2,
+                    },
                 }
             }
             _ => unreachable!("range model mode"),

@@ -7,7 +7,7 @@ use super::{
     transaction::{DocumentTransaction, Metadata},
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 use std::io;
 
 // Bound the Cartesian product before allocating tuple probes.
@@ -683,6 +683,62 @@ fn choose_disjunction<'a, 'filter>(
     Ok(false)
 }
 
+// Only choices on one field with indexable scalar values are equivalent to
+// a membership predicate. Keep correlated alternatives as branch plans.
+fn literal_disjunction(branches: &[DocumentFilter]) -> Option<DocumentFilter> {
+    let mut pending: Vec<_> = branches.iter().collect();
+    let mut path = None;
+    let mut distinct = HashSet::new();
+    let mut values = Vec::new();
+    while let Some(branch) = pending.pop() {
+        let (field, alternatives) = match branch {
+            DocumentFilter::Equal { path, value } => (path, std::slice::from_ref(value)),
+            DocumentFilter::In { path, values } if !values.is_empty() => (path, values.as_slice()),
+            DocumentFilter::Or(filters) if !filters.is_empty() => {
+                pending.extend(filters);
+                continue;
+            }
+            _ => return None,
+        };
+        if *path.get_or_insert(field) != field {
+            return None;
+        }
+        for value in alternatives {
+            if distinct.insert(IndexValue::from_json(value).ok()?) {
+                if values.len() == MAX_INDEX_PROBES {
+                    return None;
+                }
+                values.push(value);
+            }
+        }
+    }
+    Some(DocumentFilter::In {
+        path: path?.clone(),
+        values: values.into_iter().cloned().collect(),
+    })
+}
+
+fn choose_literal_disjunctions<'a>(
+    filter: &DocumentFilter,
+    indexes: &'a [IndexDefinition],
+) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
+    let mut memberships = Vec::new();
+    let mut pending = vec![filter];
+    while let Some(required) = pending.pop() {
+        match required {
+            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
+            DocumentFilter::Or(branches) => memberships.extend(literal_disjunction(branches)),
+            _ => {}
+        }
+    }
+    if memberships.is_empty() {
+        return Ok(None);
+    }
+    let mut required = vec![filter];
+    required.extend(&memberships);
+    choose_index(&required, indexes)
+}
+
 fn plan_query<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
@@ -696,7 +752,13 @@ fn plan_query<'a>(
     let mut planned = HashMap::new();
     for allow_prefix in [false, true] {
         if allow_prefix {
-            if let Some((index, selection)) = choose_prefix(&[filter], indexes)? {
+            // Try compound constraints from independent disjunctions before
+            // falling back to prefix scans. Complete branch plans have priority.
+            let selected = match choose_literal_disjunctions(filter, indexes)? {
+                some @ Some(_) => some,
+                None => choose_prefix(&[filter], indexes)?,
+            };
+            if let Some((index, selection)) = selected {
                 return Ok(Some((
                     describe_selection(index, &selection),
                     selection.into_probes(index).collect(),

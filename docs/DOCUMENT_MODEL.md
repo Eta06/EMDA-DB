@@ -146,7 +146,7 @@ A required singleton `In` with an indexable value is also an equality for planni
 
 For a required multi-value `In` whose values are all indexable, the planner may use a single-field index as a union of exact-value probes. It deduplicates input values by index encoding, combines the existing candidate and original-document-byte limits across all probes, restores ID order, and applies the complete filter before pagination and projection. Probes share the transaction's read-set protections. Equality and range choices retain their earlier priority; a multi-value list does not use this union when any listed value is non-indexable. The 256-value input limit bounds distinct single-field probes; these are not total time or memory guarantees.
 
-After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. A product above that cap or an unconstrained field cannot use this compound union. An implied partial index is eligible under the same guard rules. Full tuples prevent omitted missing fields from producing incomplete results. `Or`, `Not` and non-indexable alternatives do not prove a tuple. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes.
+After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. A product above that cap or an unconstrained field cannot use this compound union. An implied partial index is eligible under the same guard rules. Full tuples prevent omitted missing fields from producing incomplete results. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes.
 
 A compound index can also answer a required scalar range after a prefix of
 required indexable equality and `In` predicates, with at least one multi-value
@@ -172,9 +172,16 @@ document and byte budgets. Hits from distinct probes consume budget on
 each visit, even when their ranges overlap.
 The planner keeps one document per ID, restores collection order and evaluates
 the full filter before sorting, pagination and projection. Every probe
-participates in transaction validation, including empty scans. If a branch
-cannot be covered or the probe cap is exceeded, the planner uses the complete
-bounded collection scan.
+participates in transaction validation, including empty scans.
+
+Before falling back to prefix scans, the planner can combine independent
+required disjunctions as compound membership predicates. Each such `Or`
+must consist entirely of literal equalities and nonempty `In` lists on
+the same field. Nested nonempty `Or` preserves this rule. Every value must
+be an indexable scalar. This can complete a compound tuple or enable a range
+on a later field. The probe cap applies to the product of distinct choices,
+and the query still evaluates the original filter. Correlated alternatives
+use the branch rules above.
 
 If the existing access paths cannot cover the query, the planner can scan a
 compound index for a contiguous leading tuple of required equalities or
@@ -184,7 +191,7 @@ share the 256-probe cap. A prefix can match several rows of a unique index, so
 the planner pages through those results under the same candidate and byte
 limits and applies the full filter.
 
-A partial index is eligible only when a required predicate proves its filter. Presence is proved by required `Exists(true)`, equality, `In`, comparison or array predicates on that path; absence requires `Exists(false)`. `NotIn` does not prove presence because it matches missing paths. A typed equality guard can follow from literal equality, a nonempty `In` list consisting of the same typed scalar, or comparisons requiring both bounds at that scalar on the guarded path. Each needed bound can come from any required conjunct or every branch of a required nonempty `Or`. Presence and absence proofs also follow through a nonempty `Or` when every branch proves the same condition. Explicit null counts as present. The planner does not infer individual equality or range probes from `Or` or infer guards from `Not`, and incomplete compound tuples or non-indexable values do not qualify by themselves. If no eligible index qualifies, the method falls back to `query`'s complete scan. The result reports the selected path and actual candidate-document counts. This can succeed for a large collection when the explicit complete scan exceeds its work limit, but it is not a cost-based planner and does not handle arbitrary compound constraints or general boolean implication.
+A partial index is eligible only when a required predicate proves its filter. Presence is proved by required `Exists(true)`, equality, `In`, comparison or array predicates on that path; absence requires `Exists(false)`. `NotIn` does not prove presence because it matches missing paths. A typed equality guard can follow from literal equality, a nonempty `In` list consisting of the same typed scalar, or comparisons requiring both bounds at that scalar on the guarded path. Each needed bound can come from any required conjunct or every branch of a required nonempty `Or`. Presence and absence proofs also follow through a nonempty `Or` when every branch proves the same condition. Explicit null counts as present. Negation supplies no index proof. If no eligible index qualifies, the method falls back to `query`'s complete scan. The result reports the selected path and actual candidate-document counts. This can succeed for a large collection when the explicit complete scan exceeds its work limit, but it is not a cost-based planner and does not handle arbitrary compound constraints or general boolean implication.
 
 The indexed path relies on the declared index being intact. It validates each encountered index entry and its unique mapping, but an entry removed by unsupported raw writes to the reserved namespace can cause an omission. `verify_collection` can detect such omissions within its existing small-collection limits. The query holds the same transaction view, read-set range dependencies, conflict behavior, document and response limits as the underlying indexed query; it does not introduce cross-store snapshots or a total-memory guarantee.
 

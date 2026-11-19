@@ -346,6 +346,208 @@ fn disjunction_falls_back_for_unindexed_branches_and_shared_probe_overflow() {
 }
 
 #[test]
+fn independent_literal_disjunctions_complete_a_compound_range() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "items",
+            IndexDefinition {
+                partial: Some(PartialFilter::Equals {
+                    path: path("active"),
+                    value: IndexValue::Boolean(true),
+                }),
+                ..index("compound", &["tenant", "code", "rank"])
+            },
+        )
+        .unwrap();
+        for (id, row) in [
+            (
+                "first",
+                json!({"tenant":"t","code":null,"rank":5,"active":true}),
+            ),
+            (
+                "other-type",
+                json!({"tenant":"u","code":true,"rank":6,"active":true}),
+            ),
+            (
+                "too-small",
+                json!({"tenant":"t","code":null,"rank":4,"active":true}),
+            ),
+            (
+                "integer",
+                json!({"tenant":"u","code":1,"rank":7,"active":true}),
+            ),
+            (
+                "other-tenant",
+                json!({"tenant":"v","code":null,"rank":7,"active":true}),
+            ),
+            (
+                "inactive",
+                json!({"tenant":"t","code":null,"rank":5,"active":false}),
+            ),
+            ("missing", json!({"tenant":"t","rank":5,"active":true})),
+        ] {
+            db.insert("items", id, &row).unwrap();
+        }
+        let tenants = DocumentFilter::Or(vec![
+            eq("tenant", json!("t")),
+            DocumentFilter::Or(vec![eq("tenant", json!("u")), eq("tenant", json!("t"))]),
+        ]);
+        let codes = DocumentFilter::Or(vec![
+            eq("code", Value::Null),
+            DocumentFilter::In {
+                path: path("code"),
+                values: vec![json!(true), Value::Null],
+            },
+        ]);
+        let query = |codes, max_scanned| {
+            request(
+                DocumentFilter::And(vec![
+                    tenants.clone(),
+                    DocumentFilter::And(vec![eq("active", json!(true)), codes]),
+                    DocumentFilter::Compare {
+                        path: path("rank"),
+                        comparison: Comparison::GreaterOrEqual,
+                        value: IndexValue::Integer(5),
+                    },
+                ]),
+                max_scanned,
+            )
+        };
+        let planned = db.query_planned("items", &query(codes.clone(), 2)).unwrap();
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+                index: "compound".into(),
+                prefix_fields: 2,
+                probes: 4,
+            },
+        );
+        assert_eq!(planned.result.plan.scanned, 2);
+        assert_eq!(
+            planned
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "other-type"],
+        );
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &query(codes, 7)).unwrap().documents,
+        );
+
+        for (unsupported, expected) in [
+            (eq("code", json!(1.0)), access(&["compound"], 2)),
+            (eq("rank", json!(7)), DocumentQueryAccess::CollectionScan),
+        ] {
+            let query = query(
+                DocumentFilter::Or(vec![eq("code", Value::Null), unsupported]),
+                7,
+            );
+            let planned = db.query_planned("items", &query).unwrap();
+            assert_eq!(planned.access, expected);
+            assert_eq!(
+                planned.result.documents,
+                db.query("items", &query).unwrap().documents
+            );
+        }
+    });
+}
+
+#[test]
+fn independent_literal_disjunctions_share_the_compound_probe_limit() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index("items", index("compound", &["a", "b"]))
+            .unwrap();
+        db.insert("items", "inside", &json!({"a":15,"b":15}))
+            .unwrap();
+        db.insert("items", "outside", &json!({"a":16,"b":16}))
+            .unwrap();
+        let choices = |field, count| {
+            DocumentFilter::Or((0..count).map(|value| eq(field, json!(value))).collect())
+        };
+        for (count, expected) in [
+            (
+                16,
+                DocumentQueryAccess::CompoundMembershipIndex {
+                    index: "compound".into(),
+                    fields: 2,
+                    probes: 256,
+                },
+            ),
+            (17, access(&["compound"], 16)),
+        ] {
+            let query = request(
+                DocumentFilter::And(vec![choices("a", 16), choices("b", count)]),
+                2,
+            );
+            let planned = db.query_planned("items", &query).unwrap();
+            assert_eq!(planned.access, expected);
+            assert_eq!(
+                planned.result.documents,
+                db.query("items", &query).unwrap().documents
+            );
+            assert_eq!(planned.result.documents.len(), 1);
+        }
+    });
+}
+
+#[test]
+fn independent_literal_disjunctions_track_empty_compound_probes() {
+    for matching in [false, true] {
+        on_backends(|db| {
+            db.create_collection("items", CollectionSchema::default())
+                .unwrap();
+            db.create_index("items", index("compound", &["a", "b"]))
+                .unwrap();
+            let choices =
+                |field| DocumentFilter::Or(vec![eq(field, json!(1)), eq(field, json!(2))]);
+            let query = request(DocumentFilter::And(vec![choices("a"), choices("b")]), 1);
+            let (read, observed) = mpsc::channel();
+            let (committed, written) = mpsc::channel();
+            std::thread::scope(|scope| {
+                let writer = scope.spawn(move || {
+                    observed.recv_timeout(Duration::from_secs(5)).unwrap();
+                    db.insert("items", "new", &json!({"a":2,"b":if matching {2} else {3}}))
+                        .unwrap();
+                    committed.send(()).unwrap();
+                });
+                let result = db.transaction_with_read_set(|tx| {
+                    let plan = tx.query_planned("items", &query)?;
+                    assert_eq!(
+                        plan.access,
+                        DocumentQueryAccess::CompoundMembershipIndex {
+                            index: "compound".into(),
+                            fields: 2,
+                            probes: 4
+                        }
+                    );
+                    assert!(plan.result.documents.is_empty());
+                    read.send(()).unwrap();
+                    written.recv_timeout(Duration::from_secs(5)).unwrap();
+                    tx.put_raw(b"receipt", b"committed")
+                });
+                writer.join().unwrap();
+                if matching {
+                    assert!(is_transaction_conflict(&result.unwrap_err()));
+                } else {
+                    result.unwrap();
+                }
+            });
+            assert_eq!(
+                db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(),
+                (!matching).then(|| b"committed".to_vec()),
+            );
+        });
+    }
+}
+
+#[test]
 fn overlapping_disjunct_ranges_share_the_document_byte_budget() {
     on_backends(|db| {
         db.create_collection("items", CollectionSchema::default())

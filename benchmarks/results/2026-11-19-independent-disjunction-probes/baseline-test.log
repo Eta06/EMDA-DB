@@ -1,0 +1,72 @@
+   Compiling libc v0.2.191
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling version_check v0.9.5
+   Compiling typenum v1.20.1
+   Compiling proc-macro2 v1.0.107
+   Compiling cfg-if v1.0.5
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling serde_core v1.0.229
+   Compiling bitflags v2.13.2
+   Compiling getrandom v0.4.3
+   Compiling vcpkg v0.2.15
+   Compiling smallvec v1.16.4
+   Compiling cc v1.11.0
+   Compiling pkg-config v0.3.34
+   Compiling parking_lot_core v0.9.12
+   Compiling generic-array v0.14.7
+   Compiling subtle v2.6.1
+   Compiling zmij v1.0.23
+   Compiling rustix v1.1.6
+   Compiling scopeguard v1.2.0
+   Compiling foldhash v0.1.5
+   Compiling serde_json v1.0.154
+   Compiling serde v1.0.229
+   Compiling crc32fast v1.5.4
+   Compiling hashbrown v0.15.5
+   Compiling lock_api v0.4.14
+   Compiling fastrand v2.5.0
+   Compiling once_cell v1.21.4
+   Compiling memchr v2.8.3
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling itoa v1.0.18
+   Compiling hashlink v0.10.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling digest v0.10.7
+   Compiling syn v3.0.9
+   Compiling errno v0.3.14
+   Compiling cpufeatures v0.2.17
+   Compiling fs2 v0.4.3
+   Compiling fallible-iterator v0.3.0
+   Compiling hmac v0.12.1
+   Compiling parking_lot v0.12.5
+   Compiling sha2-asm v0.6.4
+   Compiling libsqlite3-sys v0.33.0
+   Compiling tempfile v3.27.0
+   Compiling serde_derive v1.0.229
+   Compiling sha2 v0.10.9
+   Compiling database-engine v0.1.0 (/private/tmp/emda-compound-or-baseline.2uuxhw/src-copy)
+   Compiling rusqlite v0.35.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.02s
+     Running tests/document_disjunction_planner.rs (target/debug/build/database-engine/026b5c166838208f/out/document_disjunction_planner-026b5c166838208f)
+
+running 1 test
+test independent_literal_disjunctions_complete_a_compound_range ... FAILED
+
+failures:
+
+---- independent_literal_disjunctions_complete_a_compound_range stdout ----
+
+thread 'independent_literal_disjunctions_complete_a_compound_range' (9643967) panicked at tests/document_disjunction_planner.rs:418:75:
+called `Result::unwrap()` on an `Err` value: Custom { kind: InvalidInput, error: "document scan exceeds the operation limit" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    independent_literal_disjunctions_complete_a_compound_range
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 8 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `--test document_disjunction_planner`

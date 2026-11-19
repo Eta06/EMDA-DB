@@ -818,3 +818,9 @@ closed, preserving the witness and authority.
 authenticates the synced base against the writer's binding while building its
 sparse index. A rechecksummed substitution is rejected. Rotation rechecks
 the complete source before publication.
+
+[Independent disjunction probe validation](../benchmarks/results/2026-11-19-independent-disjunction-probes/README.md)
+covers compound tuples and later-field ranges when separate required
+disjunctions supply choices on different fields. Complete branch plans
+retain priority. The new regression verifies the candidate and probe limits
+and confirms that empty probes still protect against matching inserts.
