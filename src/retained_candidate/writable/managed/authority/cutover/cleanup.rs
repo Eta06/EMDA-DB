@@ -85,6 +85,9 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 {
                     return Err(record::invalid_data("preparation is in use by authority"));
                 }
+                if catalog.is_some() {
+                    self.inner.reclaim_room()?;
+                }
                 Ok(())
             },
         )
@@ -124,6 +127,7 @@ fn discard(
             &path,
             ceiling,
             CUTOVER_MAGIC,
+            None,
             |root, id| {
                 let active = Active::load(root, id)?;
                 check_layout(root, &active)?;

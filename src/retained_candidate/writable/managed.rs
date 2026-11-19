@@ -26,9 +26,13 @@ const AUTHORIZED_MAGIC: &[u8; 8] = b"EMDACT02";
 const CUTOVER_MAGIC: &[u8; 8] = b"EMDACT03";
 const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
+const ACTIVE_BYTES: usize = 256;
 
 mod authority;
 mod backup;
+mod storage;
+use storage::CatalogStorage;
+pub use storage::CatalogStorageLimits;
 
 pub use authority::{
     AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CutoverArchiveBinding,
@@ -54,6 +58,7 @@ pub struct ManagedRetainedStore {
     uncertain: bool,
     auto_reclaim: Option<NonZeroU64>,
     cleanup_pending: bool,
+    storage: Option<CatalogStorage>,
     lock: StoreLock,
 }
 
@@ -252,21 +257,64 @@ impl ManagedRetainedStore {
     /// The selected generation's persisted limits must fit within the
     /// recovery ceiling. Writes use the persisted limits.
     pub fn open(root: impl AsRef<Path>, ceiling: RetainedStoreLimits) -> io::Result<Self> {
-        Self::open_role(root.as_ref(), ceiling, CATALOG_MAGIC, Active::load, |_| {
-            Ok(())
-        })
+        Self::open_role(
+            root.as_ref(),
+            ceiling,
+            CATALOG_MAGIC,
+            None,
+            Active::load,
+            |_| Ok(()),
+        )
+    }
+
+    /// Recover with a whole-catalog logical storage limit. Pass the same
+    /// policy on subsequent opens. Admission checks precede tail recovery,
+    /// appends and generation publication. Optional automatic reclamation
+    /// follows the same limit.
+    pub fn open_with_storage_limits(
+        root: impl AsRef<Path>,
+        ceiling: RetainedStoreLimits,
+        storage_limits: CatalogStorageLimits,
+        suffix_threshold: Option<NonZeroU64>,
+    ) -> io::Result<Self> {
+        let root = root.as_ref();
+        let storage = CatalogStorage {
+            root: root.to_path_buf(),
+            limits: storage_limits,
+        };
+        let mut store = Self::open_role(
+            root,
+            ceiling,
+            CATALOG_MAGIC,
+            Some(storage),
+            Active::load,
+            |_| Ok(()),
+        )?;
+        if suffix_threshold.is_some() {
+            store.finish_maintenance()?;
+            store.auto_reclaim = suffix_threshold;
+        }
+        Ok(store)
     }
 
     fn open_role(
         root: &Path,
         ceiling: RetainedStoreLimits,
         catalog_magic: &'static [u8; 8],
+        storage: Option<CatalogStorage>,
         select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
         authorize: impl FnOnce(AuthorityPoint) -> io::Result<()>,
     ) -> io::Result<Self> {
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
         lock.verify_identity(&root)?;
+        let storage = storage
+            .map(|mut storage| -> io::Result<_> {
+                storage.root = storage.root.canonicalize()?;
+                storage.room(0, 0)?;
+                Ok(storage)
+            })
+            .transpose()?;
         let catalog = read_catalog(&root, catalog_magic)?;
         let active = select(&root, catalog)?;
         let path = active.slot.path(&root);
@@ -291,6 +339,7 @@ impl ManagedRetainedStore {
             uncertain: false,
             auto_reclaim: None,
             cleanup_pending: false,
+            storage,
             lock,
         })
     }
@@ -397,7 +446,7 @@ impl ManagedRetainedStore {
         self.prepare_write()?;
         let bytes = encode().map_err(MutationFailure::Rejected)?;
         let Some(threshold) = self.auto_reclaim else {
-            return self.store.write_encoded(&bytes, admit, |_| Ok(()));
+            return self.append(&bytes, admit);
         };
         if self.cleanup_pending {
             self.finish_maintenance()
@@ -405,10 +454,10 @@ impl ManagedRetainedStore {
         }
         let suffix_len = self.store.suffix_len as u64;
         if suffix_len == 0 {
-            return self.store.write_encoded(&bytes, admit, |_| Ok(()));
+            return self.append(&bytes, admit);
         }
         if suffix_len.saturating_add(bytes.len() as u64) <= threshold.get() {
-            match self.store.write_encoded(&bytes, &admit, |_| Ok(())) {
+            match self.append(&bytes, &admit) {
                 Err(MutationFailure::Rejected(ref error))
                     if error
                         .get_ref()
@@ -419,7 +468,23 @@ impl ManagedRetainedStore {
         admit().map_err(MutationFailure::Rejected)?;
         self.compact_for_write(&bytes)?;
         self.prepare_write()?;
-        self.store.write_encoded(&bytes, admit, |_| Ok(()))
+        self.append(&bytes, admit)
+    }
+
+    fn append(
+        &mut self,
+        bytes: &[u8],
+        admit: impl FnOnce() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        self.storage_room(bytes.len() as u64, 0)
+            .map_err(MutationFailure::Rejected)?;
+        self.store.write_encoded(bytes, admit, |_| Ok(()))
+    }
+
+    fn storage_room(&self, reserve_bytes: u64, reserve_entries: u64) -> io::Result<u64> {
+        self.storage.as_ref().map_or(Ok(u64::MAX), |storage| {
+            storage.room(reserve_bytes, reserve_entries)
+        })
     }
 
     fn compact_for_write(&mut self, bytes: &[u8]) -> Result<(), MutationFailure> {
@@ -483,7 +548,7 @@ impl ManagedRetainedStore {
     ) -> Result<[u8; 16], PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             self.verify_selection()?;
-            let (active, next) = self.prepare_successor(limits)?;
+            let (active, next) = self.prepare_successor(limits, self.auto_reclaim.is_some())?;
             let generation = active.generation;
             let (mut selection, mut file) = crate::staging::Stage::file(&self.root)?;
             file.write_all(&active.encode())?;
@@ -506,6 +571,7 @@ impl ManagedRetainedStore {
     fn prepare_successor(
         &self,
         limits: RetainedStoreLimits,
+        reclaim_after: bool,
     ) -> io::Result<(Active, RetainedStore)> {
         let slot = self.active.slot.other();
         let destination = slot.path(&self.root);
@@ -519,10 +585,34 @@ impl ManagedRetainedStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        let mut stage = crate::staging::Stage::directory(&self.root)?;
-        let expected = self
-            .store
-            .write_rebased_base(&stage.path().join("base"), limits.base)?;
+        use crate::staging::Stage;
+        let generation_metadata = (super::MANAGED_HEADER_BYTES + super::WITNESS_BYTES) as u64;
+        let selection_bytes = if self.catalog_magic == CATALOG_MAGIC {
+            Stage::FILE_MARKER_BYTES + ACTIVE_BYTES as u64
+        } else {
+            0
+        };
+        // Directory stage and marker, four successor files, plus a possible
+        // selection stage. Reserving both markers covers failed cleanup.
+        let entries = if selection_bytes != 0 {
+            8
+        } else if reclaim_after {
+            // The published successor adds five paths. Reclamation needs
+            // two more after the preparation marker has been cleaned.
+            7
+        } else {
+            6
+        };
+        let max_base_bytes = self.storage_room(
+            Stage::DIRECTORY_MARKER_BYTES + generation_metadata + selection_bytes,
+            entries,
+        )?;
+        let mut stage = Stage::directory(&self.root)?;
+        let expected = self.store.write_rebased_base(
+            &stage.path().join("base"),
+            limits.base,
+            max_base_bytes,
+        )?;
         let next = RetainedStore::initialize(
             stage.path(),
             limits,
@@ -572,6 +662,7 @@ impl ManagedRetainedStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error),
         }
+        self.reclaim_room()?;
         self.store.verify_complete()?;
         sync_existing(&self.root)?;
         let _retired_lock = lock_directory(&inactive)?;
@@ -587,6 +678,11 @@ impl ManagedRetainedStore {
         sync_existing(stage.path())?;
         stage.finish_retained_cleanup();
         Ok(true)
+    }
+
+    fn reclaim_room(&self) -> io::Result<()> {
+        self.storage_room(crate::staging::Stage::DIRECTORY_MARKER_BYTES, 2)?;
+        Ok(())
     }
 
     fn ensure_selected(&self) -> io::Result<()> {
@@ -741,8 +837,8 @@ struct Active {
 }
 
 impl Active {
-    fn encode(&self) -> [u8; 256] {
-        let mut bytes = [0; 256];
+    fn encode(&self) -> [u8; ACTIVE_BYTES] {
+        let mut bytes = [0; ACTIVE_BYTES];
         bytes[..8].copy_from_slice(ACTIVE_MAGIC);
         bytes[8..24].copy_from_slice(&self.catalog);
         bytes[24] = match self.slot {
@@ -759,7 +855,7 @@ impl Active {
     }
 
     fn load(root: &Path, catalog: [u8; 16]) -> io::Result<Self> {
-        let bytes = exact(&root.join(ACTIVE_FILE), 256)?;
+        let bytes = exact(&root.join(ACTIVE_FILE), ACTIVE_BYTES)?;
         let invalid = || record::invalid_data("invalid active retained selection");
         let slot = match bytes[24] {
             0 => Slot::A,

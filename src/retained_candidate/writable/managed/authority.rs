@@ -146,12 +146,39 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     pub fn open(
         root: impl AsRef<Path>,
         limits: RetainedStoreLimits,
+        authority: A,
+    ) -> io::Result<Self> {
+        Self::open_using(root.as_ref(), limits, authority, None)
+    }
+
+    /// Recover with a logical storage limit covering the entire original
+    /// path, including any archives, abandoned preparations and stages.
+    /// Authority-provider storage must be outside that path.
+    /// Pass the same limit on subsequent opens.
+    pub fn open_with_storage_limits(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        authority: A,
+        storage_limits: CatalogStorageLimits,
+        suffix_threshold: Option<NonZeroU64>,
+    ) -> io::Result<Self> {
+        let mut store = Self::open_using(root.as_ref(), limits, authority, Some(storage_limits))?;
+        if suffix_threshold.is_some() {
+            store.finish_maintenance()?;
+            store.auto_reclaim = suffix_threshold;
+        }
+        Ok(store)
+    }
+
+    fn open_using(
+        root: &Path,
+        limits: RetainedStoreLimits,
         mut authority: A,
+        storage_limits: Option<CatalogStorageLimits>,
     ) -> io::Result<Self> {
         let current = authority
             .read()?
             .ok_or_else(|| record::invalid_data("retained authority record is absent"))?;
-        let root = root.as_ref();
         let fence = match fs::symlink_metadata(root.join(CATALOG_FILE)) {
             Ok(_) => None,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -171,6 +198,10 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             &catalog_path,
             limits,
             role,
+            storage_limits.map(|limits| CatalogStorage {
+                root: root.to_path_buf(),
+                limits,
+            }),
             |root, catalog| select_authorized(root, catalog, current.committed),
             |observed| current.check(observed),
         )?;
@@ -286,7 +317,9 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         crate::publication_outcome::track(|tracker| {
             self.verify_current()?;
             let mut next = self.current.finalized(self.current.committed)?;
-            let (active, store) = self.inner.prepare_successor(limits)?;
+            let (active, store) = self
+                .inner
+                .prepare_successor(limits, self.auto_reclaim.is_some())?;
             let point = AuthorityPoint::from_store(active.catalog, &store);
             next.committed = point;
             tracker.begin_publication();
@@ -310,6 +343,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             Err(error) => return Err(error),
             Ok(_) => {}
         }
+        self.inner.reclaim_room()?;
         let fence = self.current.finalized(self.current.committed)?;
         self.inner.uncertain = true;
         self.advance(fence)?;
@@ -384,6 +418,9 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         encoded: &[u8],
         admit: impl FnOnce() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
+        self.inner
+            .storage_room(encoded.len() as u64, 0)
+            .map_err(MutationFailure::Rejected)?;
         let mut hash = self.inner.store.hash.clone();
         hash.update(encoded);
         let end = suffix_end(

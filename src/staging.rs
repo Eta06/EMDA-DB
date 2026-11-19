@@ -133,6 +133,9 @@ pub(crate) struct Stage {
 }
 
 impl Stage {
+    pub(crate) const DIRECTORY_MARKER_BYTES: u64 = DIR_MARKER.len() as u64;
+    pub(crate) const FILE_MARKER_BYTES: u64 = FILE_MARKER.len() as u64;
+
     fn new(parent: &Path, kind: Kind) -> io::Result<Self> {
         Self::new_with_sync(parent, kind, File::sync_all, File::sync_all)
     }

@@ -128,6 +128,75 @@ impl Fixture {
 }
 
 #[test]
+fn catalog_storage_reserves_headroom_for_automatic_authorized_reclamation() {
+    use crate::retained_candidate::writable::managed::tests::catalog_usage;
+    use crate::staging::Stage;
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"suffix", b"kept").unwrap();
+    let selection = store.current;
+    let base_bytes = 144
+        + store
+            .scan(None, None, 8)
+            .unwrap()
+            .iter()
+            .map(|(key, value)| (8 + key.len() + value.len()) as u64)
+            .sum::<u64>();
+    drop(store);
+    let used = catalog_usage(&f.root);
+    let fixed = (crate::retained_candidate::writable::MANAGED_HEADER_BYTES
+        + crate::retained_candidate::writable::WITNESS_BYTES) as u64;
+    let exact = CatalogStorageLimits {
+        bytes: used.bytes + base_bytes + fixed + Stage::DIRECTORY_MARKER_BYTES,
+        entries: used.entries + 7,
+    };
+    let mut store = AuthorizedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        f.provider.clone(),
+        CatalogStorageLimits {
+            entries: exact.entries - 1,
+            ..exact
+        },
+        Some(NonZeroU64::MIN),
+    )
+    .unwrap();
+    assert!(
+        matches!(store.put(b"new", b"ack"), Err(MutationFailure::Rejected(ref e))
+        if e.kind() == io::ErrorKind::InvalidInput)
+    );
+    assert_eq!(store.authority.read().unwrap(), Some(selection));
+    assert_eq!(catalog_usage(&f.root), used);
+    drop(store);
+    let mut store = AuthorizedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        f.provider.clone(),
+        exact,
+        Some(NonZeroU64::MIN),
+    )
+    .unwrap();
+    store.put(b"new", b"ack").unwrap();
+    assert!(!Slot::A.path(&f.root).exists());
+    assert_ne!(
+        store.current.committed.generation,
+        selection.committed.generation
+    );
+    drop(store);
+    let mut store = AuthorizedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        f.provider.clone(),
+        exact,
+        None,
+    )
+    .unwrap();
+    assert_eq!(store.get(b"suffix", 4).unwrap().unwrap(), b"kept");
+    assert_eq!(store.get(b"new", 3).unwrap().unwrap(), b"ack");
+}
+
+#[test]
 fn prepared_catalog_requires_authority_and_a_witnessed_role() {
     let mut f = Fixture::prepare();
     assert!(Store::open(&f.root).is_err());

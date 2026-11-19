@@ -5,6 +5,165 @@ use crate::{RetainedExportLimits, Store};
 use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
 
+pub(super) fn catalog_usage(root: &Path) -> CatalogStorageLimits {
+    let mut total = CatalogStorageLimits {
+        bytes: 0,
+        entries: 0,
+    };
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        total.entries += 1;
+        if entry.file_type().unwrap().is_dir() {
+            let child = catalog_usage(&entry.path());
+            total.bytes += child.bytes;
+            total.entries += child.entries;
+        } else {
+            total.bytes += entry.metadata().unwrap().len();
+        }
+    }
+    total
+}
+
+#[test]
+fn catalog_storage_caps_appends_and_rejects_oversize_recovery_before_adoption() {
+    let f = Fixture::new(LIMITS);
+    let used = catalog_usage(&f.root);
+    let record = record::encode(Operation::Put, b"b", b"exact").unwrap();
+    let limit = CatalogStorageLimits {
+        bytes: used.bytes + record.len() as u64,
+        ..used
+    };
+    let mut store =
+        ManagedRetainedStore::open_with_storage_limits(&f.root, LIMITS, limit, None).unwrap();
+    store.put(b"b", b"exact").unwrap();
+    let slot = Slot::A.path(&f.root);
+    let log = slot.join("records.log");
+    let witness = slot.join("commit.state");
+    let accepted = fs::read(&log).unwrap();
+    let committed = fs::read(&witness).unwrap();
+    assert_eq!(catalog_usage(&f.root), limit);
+    assert!(
+        matches!(store.delete(b"a"), Err(MutationFailure::Rejected(ref e))
+        if e.to_string() == "catalog byte limit exceeded")
+    );
+    assert_eq!(fs::read(&log).unwrap(), accepted);
+    assert_eq!(fs::read(&witness).unwrap(), committed);
+    drop(store);
+    let tail = record::encode(Operation::Put, b"a", b"recover").unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(&log)
+        .unwrap()
+        .write_all(&tail)
+        .unwrap();
+    let error = ManagedRetainedStore::open_with_storage_limits(&f.root, LIMITS, limit, None)
+        .err()
+        .unwrap();
+    assert_eq!(error.to_string(), "catalog byte limit exceeded");
+    assert_eq!(fs::read(&witness).unwrap(), committed);
+    assert_eq!(fs::read(&log).unwrap(), [accepted, tail].concat());
+    let reopened = ManagedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        catalog_usage(&f.root),
+        None,
+    )
+    .unwrap();
+    assert_eq!(reopened.get(b"a", 7).unwrap().unwrap(), b"recover");
+    assert_ne!(fs::read(&witness).unwrap(), committed);
+}
+
+#[test]
+fn catalog_storage_charges_abandoned_stages_until_cleanup() {
+    use crate::staging::Stage;
+    let f = Fixture::new(LIMITS);
+    let used = catalog_usage(&f.root);
+    let value = [1; 32];
+    let growth = record::encode(Operation::Put, b"b", &value).unwrap().len() as u64;
+    let (stage, mut file) = Stage::file(&f.root).unwrap();
+    file.write_all(&vec![0; (growth - Stage::FILE_MARKER_BYTES) as usize])
+        .unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    stage.retain_payload().unwrap();
+    let limit = CatalogStorageLimits {
+        bytes: used.bytes + growth,
+        entries: used.entries + 2,
+    };
+    assert_eq!(catalog_usage(&f.root), limit);
+    let mut store =
+        ManagedRetainedStore::open_with_storage_limits(&f.root, LIMITS, limit, None).unwrap();
+    assert!(
+        matches!(store.put(b"b", &value), Err(MutationFailure::Rejected(ref e))
+        if e.to_string() == "catalog byte limit exceeded")
+    );
+    drop(store);
+    let mut store = ManagedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        limit,
+        Some(NonZeroU64::MAX),
+    )
+    .unwrap();
+    assert_eq!(catalog_usage(&f.root), used);
+    store.put(b"b", &value).unwrap();
+    assert_eq!(store.get(b"b", value.len()).unwrap(), Some(value.to_vec()));
+}
+
+#[test]
+fn catalog_storage_reserves_successor_and_selection_stages() {
+    use crate::staging::Stage;
+    let f = Fixture::new(LIMITS);
+    let used = catalog_usage(&f.root);
+    let original = Slot::A.path(&f.root);
+    let base_bytes = fs::metadata(original.join("base")).unwrap().len();
+    let overhead = (super::super::MANAGED_HEADER_BYTES + super::super::WITNESS_BYTES + ACTIVE_BYTES)
+        as u64
+        + Stage::DIRECTORY_MARKER_BYTES
+        + Stage::FILE_MARKER_BYTES;
+    let exact = CatalogStorageLimits {
+        bytes: used.bytes + base_bytes + overhead,
+        entries: used.entries + 8,
+    };
+    let active = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    for (limit, message) in [
+        (
+            CatalogStorageLimits {
+                bytes: exact.bytes - 1,
+                ..exact
+            },
+            "compacted base byte limit exceeded",
+        ),
+        (
+            CatalogStorageLimits {
+                entries: exact.entries - 1,
+                ..exact
+            },
+            "catalog entry limit exceeded",
+        ),
+    ] {
+        let mut store =
+            ManagedRetainedStore::open_with_storage_limits(&f.root, LIMITS, limit, None).unwrap();
+        assert!(
+            matches!(store.compact(), Err(PublicationFailure::NotPublished(ref e)) if e.to_string() == message)
+        );
+        assert_eq!(catalog_usage(&f.root), used);
+        assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), active);
+        assert!(!Slot::B.path(&f.root).exists());
+    }
+    let mut store =
+        ManagedRetainedStore::open_with_storage_limits(&f.root, LIMITS, exact, None).unwrap();
+    let new = store.compact().unwrap();
+    assert!(original.exists());
+    assert!(store.reclaim_inactive().unwrap());
+    assert!(!original.exists());
+    drop(store);
+    let reopened =
+        ManagedRetainedStore::open_with_storage_limits(&f.root, LIMITS, exact, None).unwrap();
+    assert_eq!(reopened.generation_id().unwrap(), new);
+    assert_eq!(reopened.get(b"a", 4).unwrap().unwrap(), b"old");
+}
+
 const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
     base: Limits {
         file_bytes: 8192,

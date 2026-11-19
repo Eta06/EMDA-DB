@@ -16,9 +16,9 @@ pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
 mod suffix_file;
 mod writable;
 pub use writable::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CutoverArchiveBinding,
-    FileRetainedAuthority, ManagedRetainedStore, RetainedAuthority, RetainedStore,
-    RetainedStoreLimits,
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CatalogStorageLimits,
+    CutoverArchiveBinding, FileRetainedAuthority, ManagedRetainedStore, RetainedAuthority,
+    RetainedStore, RetainedStoreLimits,
 };
 
 /// An independently retained copy of the exact candidate header and witness.

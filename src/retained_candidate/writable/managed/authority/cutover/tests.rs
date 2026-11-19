@@ -36,6 +36,80 @@ fn seed(path: &Path) -> Store {
     store
 }
 
+#[test]
+fn catalog_storage_counts_cutover_archive_and_checks_before_authority_update() {
+    use crate::retained_candidate::writable::managed::tests::catalog_usage;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    let location = tmp.path().join("authority");
+    let store = seed(&root);
+    let old_log = fs::read(root.join("records.log")).unwrap();
+    let old_witness = fs::read(root.join("commit.state")).unwrap();
+    let archive = CutoverArchiveBinding {
+        log_bytes: old_log.len() as u64,
+        log_digest: Sha256::digest(&old_log).into(),
+        witness_digest: Sha256::digest(&old_witness).into(),
+    };
+    let initial = Catalog::cutover_from_store(store, &root, EXPORT, LIMITS).unwrap();
+    let mut authority = FileRetainedAuthority::create(&location).unwrap();
+    assert!(authority.compare_and_swap(None, initial).unwrap());
+    let limit = catalog_usage(&root);
+    let mut store =
+        Catalog::open_with_storage_limits(&root, LIMITS, authority, limit, None).unwrap();
+    let log = Slot::A.path(&store.inner.root).join("records.log");
+    let before = fs::read(&log).unwrap();
+    assert!(matches!(
+        store.put(b"new", b"ok"),
+        Err(MutationFailure::Rejected(ref e)) if e.to_string() == "catalog byte limit exceeded"
+    ));
+    assert_eq!(store.authority.read().unwrap(), Some(initial));
+    assert_eq!(fs::read(&log).unwrap(), before);
+    assert_eq!(catalog_usage(&root), limit);
+    let backup = tmp.path().join("backup");
+    let expected = store.backup_to(&backup).unwrap();
+    assert!(
+        store
+            .retire_cutover_archive(&archive, &backup, &expected)
+            .unwrap()
+    );
+    store.put(b"new", b"ok").unwrap();
+    drop(store);
+
+    let outside = tmp.path().join("outside");
+    fs::write(&outside, b"preserve").unwrap();
+    let alias = root.join("untrusted-link");
+    std::os::unix::fs::symlink(&outside, &alias).unwrap();
+    let error = Catalog::open_with_storage_limits(
+        &root,
+        LIMITS,
+        FileRetainedAuthority::open(&location).unwrap(),
+        CatalogStorageLimits {
+            entries: limit.entries + 1,
+            ..limit
+        },
+        None,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "unsupported file type in catalog storage"
+    );
+    assert_eq!(fs::read(&outside).unwrap(), b"preserve");
+    fs::remove_file(&alias).unwrap();
+    let mut reopened = Catalog::open_with_storage_limits(
+        &root,
+        LIMITS,
+        FileRetainedAuthority::open(&location).unwrap(),
+        limit,
+        None,
+    )
+    .unwrap();
+    assert_eq!(reopened.get(b"new", 2).unwrap().unwrap(), b"ok");
+}
+
 fn only_preparation(root: &Path) -> [u8; 16] {
     let mut paths = fs::read_dir(root)
         .unwrap()

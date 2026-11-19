@@ -307,6 +307,36 @@ The threshold is a maintenance trigger. A single record in an empty suffix
 can exceed it while staying within the persisted limits. Maintenance runs
 on the caller's write path and temporarily uses both slots.
 
+### Whole-catalog storage admission
+
+`open_with_storage_limits` on the managed and authorized handles sets
+per-open limits on logical regular-file bytes and directory entries.
+An authorized original-path handle measures the entire original
+directory, including the fence, archives, failed cutover preparations,
+and staging files. Place the independent authority and backups outside
+that directory. For a separate catalog the measured tree is its catalog
+directory. Hard links are charged for each directory entry. The walk
+rejects symbolic links and special files and stops at the supplied cap.
+
+The live lock spans admission and mutation. The open checks existing
+usage before adopting a tail or finalizing an authority intent. Appends
+reserve their full encoded length before any append or authority update.
+Rotation reserves its successor's log header, witness, base, and staging
+metadata, including the managed selection replacement, while the active
+generation still exists. The base writer fits its output to the remaining
+catalog budget and its own persisted generation limits. Reclamation
+reserves room for its private staging marker and directory. Automatic
+rotation accounts for that headroom before selecting the successor.
+Stale staging artifacts consume budget until cleanup.
+
+The limits apply to this open handle and must be supplied again on
+reopen. The API leaves the storage format and persisted generation
+ceilings intact. A manual reclamation may need a higher open ceiling
+when a catalog is already full. These are logical accounting limits
+for trusted, stable directories. Filesystem allocation, copies and
+authority files elsewhere, initial publication, and writes made through
+unlimited handles have their own policies.
+
 Catalogs use trusted local directories and the ordinary rollback model.
 The original ordinary store remains independently addressable after
 import. The catalog's safe retirement applies to its own inactive slots.

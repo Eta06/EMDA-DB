@@ -45,6 +45,7 @@ impl RetainedStore {
         &self,
         destination: &Path,
         limits: Limits,
+        max_base_bytes: u64,
     ) -> io::Result<Expected> {
         self.verify_complete()?;
         let peaks = self.overlay.live_peaks(
@@ -60,6 +61,7 @@ impl RetainedStore {
         }
         let mut space = limits
             .file_bytes
+            .min(max_base_bytes)
             .min(limits.work_bytes.saturating_sub(1))
             .checked_sub(144)
             .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
