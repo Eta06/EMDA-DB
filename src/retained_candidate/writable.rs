@@ -1,0 +1,514 @@
+use super::indexed_suffix::Overlay;
+use super::{
+    Expected, IndexLimits, Limits, OverlayLimits, SuffixLimits, check_binding, check_files,
+};
+use super::{SuffixExpected, check_suffix_binding, open_regular, open_regular_with, read_suffix};
+use crate::record::{self, Operation};
+use crate::retained_base_v2::index::IndexedBase;
+use crate::store_lock::StoreLock;
+use crate::{BatchOperation, Entry, MutationFailure, PublicationFailure};
+use rustix::fs::OFlags;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{File, OpenOptions},
+    io::{self, Read, Write},
+    os::unix::fs::{FileExt, OpenOptionsExt},
+    path::Path,
+};
+
+const VERSION: [u8; 8] = *b"EMDARW01";
+const WITNESS_MAGIC: [u8; 8] = *b"EMDAWIT4";
+const LIMITS_OFFSET: usize = 136;
+const HEADER_BYTES: usize = LIMITS_OFFSET + 11 * 8;
+const WITNESS_BYTES: usize = 84;
+
+#[cfg(test)]
+mod tests;
+
+/// Admission ceilings for one writable retained generation. These are
+/// persisted at creation, and reopening requires the same configuration.
+/// Suffix limits include physical bytes, ordered operations and replay work.
+/// Overlay limits include tombstones. Result buffers, transient allocations,
+/// allocator overhead and filesystem blocks are outside these logical caps.
+#[derive(Clone, Copy, Debug)]
+pub struct RetainedStoreLimits {
+    pub base: Limits,
+    pub index: IndexLimits,
+    pub suffix: SuffixLimits,
+    pub overlay: OverlayLimits,
+}
+
+impl RetainedStoreLimits {
+    fn fields(self) -> [u64; 11] {
+        [
+            self.base.file_bytes,
+            self.base.entries,
+            self.base.key_bytes,
+            self.base.work_bytes,
+            self.index.blocks as u64,
+            self.index.anchor_bytes as u64,
+            self.suffix.bytes,
+            self.suffix.operations,
+            self.suffix.work,
+            self.overlay.entries as u64,
+            self.overlay.key_bytes as u64,
+        ]
+    }
+}
+
+/// An independently created writable retained generation. It keeps one
+/// immutable, authenticated base on disk and admits writes to a bounded
+/// suffix. The existing source and candidate remain separate copies.
+///
+/// The caller supplies the independently retained base binding on each open.
+/// The local witness binds the generation header and the exact committed
+/// suffix prefix. As with the ordinary store, the directory and filesystem
+/// must be trusted and cooperating. The local witness cannot detect rollback
+/// of the complete generation and witness together.
+pub struct RetainedStore {
+    base: IndexedBase,
+    log: File,
+    witness: File,
+    header: [u8; HEADER_BYTES],
+    suffix: Vec<u8>,
+    hash: Sha256,
+    overlay: Overlay,
+    limits: RetainedStoreLimits,
+    failed: bool,
+    _lock: StoreLock,
+}
+
+impl RetainedStore {
+    /// Publish a new writable generation initialized from a verified
+    /// candidate and an empty suffix. The destination directory must be
+    /// absent and outside the candidate. A publication attempt with an
+    /// uncertain outcome requires inspection before retry.
+    pub fn create(
+        candidate: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::create_using(
+            candidate.as_ref(),
+            destination.as_ref(),
+            limits,
+            expected,
+            || Ok(Vec::new()),
+            crate::directory::sync_existing,
+        )
+    }
+
+    /// Publish a new writable generation from an independently verified base
+    /// and detached suffix. The imported suffix is charged against the
+    /// generation's persisted limits and witnessed before publication.
+    pub fn create_from_suffix(
+        candidate: impl AsRef<Path>,
+        suffix: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &SuffixExpected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::create_using(
+            candidate.as_ref(),
+            destination.as_ref(),
+            limits,
+            &expected.candidate,
+            || {
+                let bytes = read_suffix(suffix.as_ref(), limits.suffix, expected.end)?;
+                check_suffix_binding(&bytes, limits.suffix, expected)?;
+                Ok(bytes)
+            },
+            crate::directory::sync_existing,
+        )
+    }
+
+    fn create_using(
+        candidate: &Path,
+        destination: &Path,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        open_suffix: impl FnOnce() -> io::Result<Vec<u8>>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            let parent = crate::backup::parent_directory(destination)?;
+            if parent
+                .canonicalize()?
+                .starts_with(candidate.canonicalize()?)
+            {
+                return Err(invalid_input("destination parent is inside candidate"));
+            }
+            check_files(candidate, expected)?;
+            let base_size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+            if base_size > limits.base.file_bytes
+                || base_size
+                    .checked_add(1)
+                    .is_none_or(|n| n > limits.base.work_bytes)
+            {
+                return Err(invalid_input("retained base byte limit exceeded"));
+            }
+            let suffix = open_suffix()?;
+            let mut stage = crate::staging::Stage::directory(parent)?;
+            let dir = stage.path();
+            create_file(&dir.join("store.lock"))?.sync_all()?;
+            let base = open_regular(&candidate.join("base"))?;
+            let mut target = create_file(&dir.join("base"))?;
+            if io::copy(&mut base.take(base_size + 1), &mut target)? != base_size {
+                return Err(record::invalid_data(
+                    "retained base length changed during copy",
+                ));
+            }
+            target.sync_all()?;
+            let header = new_header(expected, limits)?;
+            let mut log = create_file(&dir.join("records.log"))?;
+            log.write_all(&header)?;
+            log.write_all(&suffix)?;
+            log.sync_all()?;
+            let mut witness = create_file(&dir.join("commit.state"))?;
+            witness.write_all(&marker(
+                &header,
+                suffix.len() as u64,
+                &Sha256::digest(&suffix).into(),
+            ))?;
+            witness.sync_all()?;
+            drop((target, log, witness, suffix));
+            let verified = Self::open(dir, limits, expected)?;
+            let id = verified.generation_id();
+            drop(verified);
+            tracker.begin_publication();
+            stage.publish(destination)?;
+            sync_parent(parent)?;
+            stage.publication_synchronized();
+            Ok(id)
+        })
+    }
+
+    /// Verify the base, witness and complete bounded suffix under an
+    /// exclusive store lock. A complete tail may be adopted after validation
+    /// and synchronization. The directory ancestry is synchronized before
+    /// the handle can accept writes, including after uncertain creation.
+    /// Torn records, split commit boundaries, changed
+    /// witnessed bytes and missing acknowledged bytes fail closed.
+    pub fn open(
+        directory: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            directory.as_ref(),
+            limits,
+            expected,
+            crate::directory::sync_existing,
+        )
+    }
+
+    fn open_using(
+        dir: &Path,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        if !dir.symlink_metadata()?.file_type().is_dir() {
+            return Err(record::invalid_data("invalid retained store directory"));
+        }
+        let lock = open_regular_with(&dir.join("store.lock"), OFlags::RDWR)?;
+        fs2::FileExt::try_lock_exclusive(&lock)?;
+        let lock = StoreLock::acquired(lock);
+        lock.verify_identity(dir)?;
+        let log = open_regular_with(&dir.join("records.log"), OFlags::RDWR | OFlags::APPEND)?;
+        let witness = open_regular_with(&dir.join("commit.state"), OFlags::RDWR)?;
+        let mut header = [0; HEADER_BYTES];
+        log.read_exact_at(&mut header, 0)?;
+        verify_header(&header, expected, limits)?;
+        let saved = read_marker(&witness)?;
+        let (committed, committed_hash) = decode_marker(&saved, &header)?;
+        let log_size = log.metadata()?.len();
+        let suffix_len = log_size
+            .checked_sub(HEADER_BYTES as u64)
+            .ok_or_else(|| record::invalid_data("missing retained log header"))?;
+        if committed > suffix_len {
+            return Err(record::invalid_data(
+                "suffix is shorter than the commit witness",
+            ));
+        }
+        if suffix_len > limits.suffix.bytes {
+            return Err(invalid_input("suffix byte limit exceeded"));
+        }
+        let suffix_len = usize::try_from(suffix_len)
+            .map_err(|_| invalid_input("suffix length exceeds platform range"))?;
+        let committed = usize::try_from(committed).unwrap();
+        let mut suffix = Vec::new();
+        reserve_suffix(&mut suffix, suffix_len)?;
+        suffix.resize(suffix_len, 0);
+        log.read_exact_at(&mut suffix, HEADER_BYTES as u64)?;
+        let mut hash = Sha256::new();
+        hash.update(&suffix[..committed]);
+        if <[u8; 32]>::from(hash.clone().finalize()) != committed_hash {
+            return Err(record::invalid_data("committed suffix digest mismatch"));
+        }
+        hash.update(&suffix[committed..]);
+        let overlay = Overlay::build(&suffix, limits.suffix, limits.overlay, Some(committed))?;
+        let base = IndexedBase::open(open_regular(&dir.join("base"))?, limits.base, limits.index)?;
+        check_binding(base.metadata(), expected)?;
+        sync_directory(dir)?;
+        lock.verify_identity(dir)?;
+        verify_files(&log, &witness, &header, log_size, &saved)?;
+        if committed < suffix_len {
+            log.sync_data()?;
+            update_witness(&witness, &header, suffix_len, &hash)?;
+        }
+        Ok(Self {
+            base,
+            log,
+            witness,
+            header,
+            suffix,
+            hash,
+            overlay,
+            limits,
+            failed: false,
+            _lock: lock,
+        })
+    }
+
+    /// The unique identity generated when this writable generation was created.
+    pub fn generation_id(&self) -> [u8; 16] {
+        self.header[120..LIMITS_OFFSET].try_into().unwrap()
+    }
+
+    pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
+        self.ensure_healthy()?;
+        self.overlay
+            .get(&self.base, &self.suffix, key, max_value_bytes)
+    }
+
+    pub fn scan(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+    ) -> io::Result<Vec<Entry>> {
+        self.ensure_healthy()?;
+        self.overlay
+            .scan(&self.base, &self.suffix, after, before, limit)
+    }
+
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
+        self.write(|| record::encode(Operation::Put, key, value), |_| Ok(()))
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> Result<(), MutationFailure> {
+        self.write(|| record::encode(Operation::Delete, key, &[]), |_| Ok(()))
+    }
+
+    pub fn write_batch(
+        &mut self,
+        operations: &[BatchOperation<'_>],
+    ) -> Result<(), MutationFailure> {
+        self.write(
+            || {
+                record::encode(
+                    Operation::Batch,
+                    &[0],
+                    &record::batch::encode_payload(operations)?,
+                )
+            },
+            |_| Ok(()),
+        )
+    }
+
+    fn ensure_healthy(&self) -> io::Result<()> {
+        if self.failed {
+            return Err(io::Error::other(
+                "retained write outcome uncertain; reopen required",
+            ));
+        }
+        Ok(())
+    }
+
+    fn write(
+        &mut self,
+        encode: impl FnOnce() -> io::Result<Vec<u8>>,
+        mut hook: impl FnMut(CommitPoint) -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        crate::transaction_outcome::mutation(|tracker| {
+            self.ensure_healthy()?;
+            let encoded = encode()?;
+            let end = self
+                .suffix
+                .len()
+                .checked_add(encoded.len())
+                .filter(|&n| n as u64 <= self.limits.suffix.bytes)
+                .ok_or_else(|| invalid_input("suffix byte limit exceeded"))?;
+            let overlay = self.overlay.prepare_append(
+                &encoded,
+                self.suffix.len(),
+                self.limits.suffix,
+                self.limits.overlay,
+            )?;
+            reserve_suffix(&mut self.suffix, encoded.len())?;
+            let expected = marker(
+                &self.header,
+                self.suffix.len() as u64,
+                &self.hash.clone().finalize().into(),
+            );
+            if let Err(error) = verify_files(
+                &self.log,
+                &self.witness,
+                &self.header,
+                HEADER_BYTES as u64 + self.suffix.len() as u64,
+                &expected,
+            ) {
+                self.failed = true;
+                return Err(error);
+            }
+            let mut hash = self.hash.clone();
+            hash.update(&encoded);
+            tracker.commit();
+            self.failed = true;
+            self.log.write_all(&encoded)?;
+            hook(CommitPoint::Appended)?;
+            self.log.sync_data()?;
+            hook(CommitPoint::LogSynced)?;
+            update_witness(&self.witness, &self.header, end, &hash)?;
+            hook(CommitPoint::WitnessSynced)?;
+            self.suffix.extend_from_slice(&encoded);
+            self.overlay.commit_append(overlay);
+            self.hash = hash;
+            self.failed = false;
+            Ok(())
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitPoint {
+    Appended,
+    LogSynced,
+    WitnessSynced,
+}
+
+fn create_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+}
+
+fn new_header(expected: &Expected, limits: RetainedStoreLimits) -> io::Result<[u8; HEADER_BYTES]> {
+    let mut header = [0; HEADER_BYTES];
+    header[..112].copy_from_slice(&expected.header);
+    header[112..120].copy_from_slice(&VERSION);
+    File::open("/dev/urandom")?.read_exact(&mut header[120..LIMITS_OFFSET])?;
+    fill_limits(&mut header, limits);
+    verify_header(&header, expected, limits)?;
+    Ok(header)
+}
+
+fn fill_limits(header: &mut [u8; HEADER_BYTES], limits: RetainedStoreLimits) {
+    for (slot, value) in header[LIMITS_OFFSET..]
+        .chunks_exact_mut(8)
+        .zip(limits.fields())
+    {
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
+}
+
+fn verify_header(
+    header: &[u8; HEADER_BYTES],
+    expected: &Expected,
+    limits: RetainedStoreLimits,
+) -> io::Result<()> {
+    let generation = &header[120..LIMITS_OFFSET];
+    if header[..112] != expected.header
+        || header[112..120] != VERSION
+        || generation == [0; 16]
+        || [&header[8..24], &header[24..40], &header[88..104]].contains(&generation)
+    {
+        return Err(record::invalid_data("retained generation header mismatch"));
+    }
+    let mut configured = *header;
+    fill_limits(&mut configured, limits);
+    if configured != *header {
+        return Err(invalid_input(
+            "retained recovery limits differ from persisted limits",
+        ));
+    }
+    Ok(())
+}
+
+fn marker(header: &[u8; HEADER_BYTES], end: u64, digest: &[u8; 32]) -> [u8; WITNESS_BYTES] {
+    let mut result = [0; WITNESS_BYTES];
+    result[..8].copy_from_slice(&WITNESS_MAGIC);
+    result[8..40].copy_from_slice(&Sha256::digest(header));
+    result[40..48].copy_from_slice(&end.to_le_bytes());
+    result[48..80].copy_from_slice(digest);
+    let crc = crc32fast::hash(&result[..80]);
+    result[80..].copy_from_slice(&crc.to_le_bytes());
+    result
+}
+
+fn decode_marker(
+    bytes: &[u8; WITNESS_BYTES],
+    header: &[u8; HEADER_BYTES],
+) -> io::Result<(u64, [u8; 32])> {
+    let end = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
+    let digest = bytes[48..80].try_into().unwrap();
+    if *bytes != marker(header, end, &digest) {
+        return Err(record::invalid_data(
+            "invalid retained commit witness or generation",
+        ));
+    }
+    Ok((end, digest))
+}
+
+fn update_witness(
+    file: &File,
+    header: &[u8; HEADER_BYTES],
+    end: usize,
+    hash: &Sha256,
+) -> io::Result<()> {
+    file.write_all_at(
+        &marker(header, end as u64, &hash.clone().finalize().into()),
+        0,
+    )?;
+    file.sync_data()
+}
+
+fn read_marker(witness: &File) -> io::Result<[u8; WITNESS_BYTES]> {
+    if witness.metadata()?.len() != WITNESS_BYTES as u64 {
+        return Err(record::invalid_data(
+            "invalid retained commit witness length",
+        ));
+    }
+    let mut bytes = [0; WITNESS_BYTES];
+    witness.read_exact_at(&mut bytes, 0)?;
+    Ok(bytes)
+}
+
+fn verify_files(
+    log: &File,
+    witness: &File,
+    header: &[u8; HEADER_BYTES],
+    log_size: u64,
+    saved: &[u8; WITNESS_BYTES],
+) -> io::Result<()> {
+    let mut observed = [0; HEADER_BYTES];
+    log.read_exact_at(&mut observed, 0)?;
+    if observed != *header || log.metadata()?.len() != log_size || read_marker(witness)? != *saved {
+        return Err(record::invalid_data("retained log or witness changed"));
+    }
+    Ok(())
+}
+
+fn reserve_suffix(suffix: &mut Vec<u8>, bytes: usize) -> io::Result<()> {
+    suffix
+        .try_reserve_exact(bytes)
+        .map_err(|_| io::Error::other("retained suffix allocation failed"))
+}
+
+fn invalid_input(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}

@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Create an independent writable retained generation from a verified base and
+  optional detached suffix, under persisted recovery limits and a witness
+  binding the exact committed suffix.
+
 - Read an independently bound detached suffix through a bounded overlay of
   a verified retained base. Point and page reads apply ordered writes and
   tombstones without loading the complete base live set.

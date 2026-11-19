@@ -164,7 +164,56 @@ Overlay points read only the captured suffix. New-history restore still uses
 its materialized replay path. Writable recovery still needs a committed
 witness and durable generation selection.
 
-## Future authority, recovery and publication (not implemented)
+## Independent writable generations
+
+`retained_candidate::RetainedStore` builds a new directory from a verified
+candidate, optionally importing its independently bound detached suffix.
+The destination is published without replacement after the staged base,
+log and witness are synchronized and the staged generation reopens
+successfully. The writable open reestablishes directory durability before
+tail adoption or writes, including at a visible destination after an
+uncertain creation. Source copies remain independently available.
+
+The first 112 bytes of `records.log` contain the independently retained
+candidate header beginning with `EMDALOG4`. The next eight bytes are
+`EMDARW01`, followed by a fresh, nonzero 16-byte generation identifier.
+Eleven little-endian u64 values record the admission ceilings in this order.
+The four base limits are file bytes, entries, key bytes and verification
+bytes. The two index limits are block count and anchor bytes. The three
+suffix limits are encoded bytes, ordered operations and replay work. The
+last two are overlay entries and overlay key bytes. DB01 and DB02 suffix
+records begin after the 224-byte header. A reopening caller supplies the
+independent base binding and the same limits.
+
+The 84-byte `commit.state` starts with `EMDAWIT4`, followed by SHA-256 of
+the header, the little-endian u64 committed offset relative to the start
+of the suffix, SHA-256 of the committed suffix bytes, and CRC32 of the
+preceding witness bytes. The writable open holds an exclusive store lock
+and verifies the bound base, exact witnessed prefix, whole-record boundary,
+and complete suffix within the persisted budgets. A fully validated tail
+is adopted by synchronizing the log and then updating and synchronizing
+the witness. A missing or malformed witness, changed acknowledged bytes,
+torn suffix, split boundary or recovery limit failure prevents adoption.
+
+Point and page reads merge the verified base with value offsets into the
+bounded suffix buffer. Mutations require exclusive use of the handle.
+Ordered DB02 children are admitted as one atomic append. Preparation
+accounts for every child in replay order and reserves the suffix buffer,
+overlay growth and changed keys before the append. Commit appends the
+complete record, synchronizes the log, updates and synchronizes the
+witness, then publishes changes in memory. An uncertain write poisons
+the handle until reopening. The caps govern the file input and logical
+retained state, while returned pages, staging, allocator overhead and
+filesystem blocks have separate costs.
+
+This is a separately created generation under the same trusted local
+filesystem model. The local witness can detect mismatches and loss below
+an intact boundary, while coordinated rollback of the generation and its
+witness remains possible. Durable online generation selection, lifecycle
+integration and retirement of prior history are covered by the remaining
+design below.
+
+## Future authoritative cutover and reclamation (not implemented)
 
 Authoritative cutover remains prohibited until the old-reader gate and backup
 policy cover empty or legacy-looking suffixes and independently opened stale

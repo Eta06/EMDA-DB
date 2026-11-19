@@ -13,6 +13,8 @@ use std::{
 
 mod indexed_suffix;
 pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
+mod writable;
+pub use writable::{RetainedStore, RetainedStoreLimits};
 
 /// An independently retained copy of the exact candidate header and witness.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,6 +86,10 @@ fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid candidate")
 }
 fn open_regular(path: &Path) -> io::Result<fs::File> {
+    open_regular_with(path, rustix::fs::OFlags::RDONLY)
+}
+
+fn open_regular_with(path: &Path, flags: rustix::fs::OFlags) -> io::Result<fs::File> {
     use rustix::fs::{Mode, OFlags, open};
     // Reject known non-regular files before open; a stable trusted directory is
     // required because type checks cannot prevent a concurrent replacement.
@@ -92,7 +98,7 @@ fn open_regular(path: &Path) -> io::Result<fs::File> {
     }
     let file = fs::File::from(open(
         path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        flags | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )?);
     if !file.metadata()?.is_file() {
@@ -401,7 +407,7 @@ pub fn replay_suffix(
         keys,
         payload,
     };
-    visit_suffix(suffix, suffix_limits, |operation, key, value| {
+    visit_suffix(suffix, suffix_limits, None, |operation, key, value| {
         apply_suffix(&mut state, operation, key, &suffix[value], &mut replay)
     })?;
     Ok(state)
@@ -428,10 +434,16 @@ fn check_suffix_binding(
 fn visit_suffix(
     suffix: &[u8],
     suffix_limits: SuffixLimits,
+    committed: Option<usize>,
     mut visit: impl FnMut(crate::record::Operation, &[u8], std::ops::Range<usize>) -> io::Result<()>,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 
+    if committed.is_some_and(|boundary| boundary > suffix.len()) {
+        return Err(record::invalid_data(
+            "suffix is shorter than the commit witness",
+        ));
+    }
     let mut cursor = 0;
     let mut operations = 0u64;
     while cursor < suffix.len() {
@@ -445,6 +457,11 @@ fn visit_suffix(
         let end = cursor
             .checked_add(usize::try_from(parsed.record_len()).map_err(|_| invalid())?)
             .ok_or_else(invalid)?;
+        if committed.is_some_and(|boundary| cursor < boundary && boundary < end) {
+            return Err(record::invalid_data(
+                "commit witness splits a suffix record",
+            ));
+        }
         let data_end = end.checked_sub(CHECKSUM_SIZE).ok_or_else(invalid)?;
         let payload = suffix.get(header_end..data_end).ok_or_else(invalid)?;
         let checksum = suffix.get(data_end..end).ok_or_else(invalid)?;
@@ -492,7 +509,7 @@ fn visit_suffix(
         }
         cursor = end;
     }
-    Ok(())
+    Ok(operations)
 }
 
 #[cfg(test)]
