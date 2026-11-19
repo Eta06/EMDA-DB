@@ -146,7 +146,7 @@ fuzz_target!(|data: &[u8]| {
             }
             _ => {}
         }
-        let mode = bytes[0] % 13;
+        let mode = bytes[0] % 16;
         let bound = match bytes[2] % 4 {
             0 => IndexValue::Null,
             1 => IndexValue::Boolean(false),
@@ -248,11 +248,35 @@ fuzz_target!(|data: &[u8]| {
                 filters.push(exists("suffix", true));
                 DocumentQueryAccess::CollectionScan
             }
-            _ => {
+            12 => {
                 filters[0] = DocumentFilter::In {
                     path: vec!["tenant".into()],
                     values: vec![json!("t"), json!("u")],
                 };
+                DocumentQueryAccess::CollectionScan
+            }
+            13 | 14 => {
+                let probes = if mode == 13 {
+                    1
+                } else {
+                    filters[0] = DocumentFilter::In {
+                        path: vec!["tenant".into()],
+                        values: vec![json!("t"), json!("u"), json!("t")],
+                    };
+                    2
+                };
+                filters[1] = exists("score", true);
+                filters.push(exists("suffix", true));
+                DocumentQueryAccess::CompoundPrefixIndex {
+                    index: "i".into(),
+                    prefix_fields: 1,
+                    probes,
+                    partial,
+                }
+            }
+            _ => {
+                filters[1] = DocumentFilter::Or(vec![exists("score", true), DocumentFilter::All]);
+                filters.push(exists("suffix", true));
                 DocumentQueryAccess::CollectionScan
             }
         };

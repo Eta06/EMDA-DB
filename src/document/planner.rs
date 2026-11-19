@@ -73,6 +73,13 @@ pub enum DocumentQueryAccess {
         prefix_fields: usize,
         probes: usize,
     },
+    /// Scan a compound index for distinct equality or membership prefixes.
+    CompoundPrefixIndex {
+        index: String,
+        prefix_fields: usize,
+        probes: usize,
+        partial: bool,
+    },
     /// Union the indexed candidates of every branch of a required disjunction.
     DisjunctionIndex {
         /// Distinct index names in ascending order.
@@ -212,6 +219,7 @@ enum Selection {
     Equality(Vec<IndexValue>),
     Membership(Vec<IndexValue>),
     CompoundMembership(Vec<Vec<IndexValue>>),
+    CompoundPrefix(Vec<Vec<IndexValue>>),
     Range {
         equal: Vec<IndexValue>,
         lower: Option<IndexBound>,
@@ -228,29 +236,38 @@ impl Selection {
     fn probe_count(&self) -> usize {
         match self {
             Self::Membership(values) => values.len(),
-            Self::CompoundMembership(tuples) => tuples.len(),
+            Self::CompoundMembership(tuples) | Self::CompoundPrefix(tuples) => tuples.len(),
             Self::MembershipRange { prefixes, .. } => prefixes.len(),
             _ => 1,
         }
     }
 }
 
-// Require indexable equality or membership for every supplied field. Distinct
-// values make tuple probes disjoint. Reject an excessive product before
-// building it. The caller establishes completeness for any omitted fields.
 fn compound_membership(
     required: &[&DocumentFilter],
     fields: &[Vec<String>],
 ) -> Option<Vec<Vec<IndexValue>>> {
+    let (choices, has_membership) = compound_choices(required, fields)?;
+    (has_membership && choices.len() == fields.len()).then(|| expand_tuples(choices))
+}
+
+// Gather the longest constrained prefix. Reject an excessive product before
+// building it. The caller establishes completeness for any omitted fields.
+fn compound_choices(
+    required: &[&DocumentFilter],
+    fields: &[Vec<String>],
+) -> Option<(Vec<Vec<IndexValue>>, bool)> {
     let mut choices = Vec::with_capacity(fields.len());
     let mut probe_count = 1_usize;
     let mut has_membership = false;
     for field in fields {
         let values = if let Some(value) = required_equality(required, field) {
             vec![value]
-        } else {
+        } else if let Some(values) = required_membership(required, field) {
             has_membership = true;
-            required_membership(required, field)?
+            values
+        } else {
+            break;
         };
         probe_count = probe_count.checked_mul(values.len())?;
         if probe_count > MAX_INDEX_PROBES {
@@ -258,9 +275,11 @@ fn compound_membership(
         }
         choices.push(values);
     }
-    if !has_membership {
-        return None;
-    }
+    Some((choices, has_membership))
+}
+
+// The distinct alternatives within each field yield disjoint prefixes.
+fn expand_tuples(choices: Vec<Vec<IndexValue>>) -> Vec<Vec<IndexValue>> {
     let mut tuples = vec![Vec::new()];
     for values in choices {
         let mut next = Vec::with_capacity(tuples.len() * values.len());
@@ -273,7 +292,7 @@ fn compound_membership(
         }
         tuples = next;
     }
-    Some(tuples)
+    tuples
 }
 
 // Keep the tighter bound in the index's actual encoded ordering. Equal bounds
@@ -474,6 +493,29 @@ fn choose_index<'a>(
     Ok(None)
 }
 
+fn choose_prefix<'a>(
+    required: &[&DocumentFilter],
+    indexes: &'a [IndexDefinition],
+) -> Option<(&'a IndexDefinition, Selection)> {
+    for index in indexes
+        .iter()
+        .filter(|index| index.fields.len() > 1 && eligible(index, required))
+    {
+        if let Some((choices, _)) = compound_choices(required, &index.fields) {
+            let prefix_fields = choices.len();
+            if prefix_fields > 0
+                && prefix_fields < index.fields.len()
+                && index.fields[prefix_fields..]
+                    .iter()
+                    .all(|field| required_presence(required, field, true))
+            {
+                return Some((index, Selection::CompoundPrefix(expand_tuples(choices))));
+            }
+        }
+    }
+    None
+}
+
 type Branch<'a> = (&'a IndexDefinition, Selection);
 
 // Find a required OR under zero or more ANDs. The original filter and
@@ -485,6 +527,7 @@ fn choose_disjunction<'a, 'filter>(
     indexes: &'a [IndexDefinition],
     branches: &mut Vec<Branch<'a>>,
     remaining: &mut usize,
+    allow_prefix: bool,
 ) -> io::Result<bool> {
     let mut required = vec![filter];
     while let Some(filter) = required.pop() {
@@ -496,13 +539,25 @@ fn choose_disjunction<'a, 'filter>(
                 let mut complete = true;
                 for branch in filters {
                     context.push(branch);
-                    let planned = match choose_index(context, indexes)? {
+                    let selection = choose_index(context, indexes)?.or_else(|| {
+                        allow_prefix
+                            .then(|| choose_prefix(context, indexes))
+                            .flatten()
+                    });
+                    let planned = match selection {
                         Some((index, selection)) if selection.probe_count() <= *remaining => {
                             *remaining -= selection.probe_count();
                             branches.push((index, selection));
                             true
                         }
-                        _ => choose_disjunction(branch, context, indexes, branches, remaining)?,
+                        _ => choose_disjunction(
+                            branch,
+                            context,
+                            indexes,
+                            branches,
+                            remaining,
+                            allow_prefix,
+                        )?,
                     };
                     context.pop();
                     if !planned {
@@ -520,6 +575,50 @@ fn choose_disjunction<'a, 'filter>(
         }
     }
     Ok(false)
+}
+
+fn plan_query<'a>(
+    filter: &DocumentFilter,
+    indexes: &'a [IndexDefinition],
+) -> io::Result<Option<(DocumentQueryAccess, Vec<Branch<'a>>)>> {
+    if let Some((index, selection)) = choose_index(&[filter], indexes)? {
+        return Ok(Some((
+            describe_selection(index, &selection),
+            vec![(index, selection)],
+        )));
+    }
+    let mut branches = Vec::new();
+    for allow_prefix in [false, true] {
+        if allow_prefix {
+            if let Some((index, selection)) = choose_prefix(&[filter], indexes) {
+                return Ok(Some((
+                    describe_selection(index, &selection),
+                    vec![(index, selection)],
+                )));
+            }
+        }
+        let mut remaining = MAX_INDEX_PROBES;
+        if choose_disjunction(
+            filter,
+            &mut vec![filter],
+            indexes,
+            &mut branches,
+            &mut remaining,
+            allow_prefix,
+        )? {
+            let access = DocumentQueryAccess::DisjunctionIndex {
+                indexes: branches
+                    .iter()
+                    .map(|(index, _)| index.name.clone())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                probes: MAX_INDEX_PROBES - remaining,
+            };
+            return Ok(Some((access, branches)));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Default)]
@@ -543,36 +642,12 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<PlannedDocumentQueryResult> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let mut branches = Vec::new();
-        let access =
-            if let Some((index, selection)) = choose_index(&[&query.filter], &metadata.indexes)? {
-                let access = describe_selection(index, &selection);
-                branches.push((index, selection));
-                access
-            } else {
-                let mut remaining = MAX_INDEX_PROBES;
-                if !choose_disjunction(
-                    &query.filter,
-                    &mut vec![&query.filter],
-                    &metadata.indexes,
-                    &mut branches,
-                    &mut remaining,
-                )? {
-                    return Ok(PlannedDocumentQueryResult {
-                        result: self.query(collection, query)?,
-                        access: DocumentQueryAccess::CollectionScan,
-                    });
-                }
-                DocumentQueryAccess::DisjunctionIndex {
-                    indexes: branches
-                        .iter()
-                        .map(|(index, _)| index.name.clone())
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect(),
-                    probes: MAX_INDEX_PROBES - remaining,
-                }
-            };
+        let Some((access, branches)) = plan_query(&query.filter, &metadata.indexes)? else {
+            return Ok(PlannedDocumentQueryResult {
+                result: self.query(collection, query)?,
+                access: DocumentQueryAccess::CollectionScan,
+            });
+        };
 
         let mut candidates = Candidates::default();
         for (index, selection) in branches {
@@ -606,7 +681,9 @@ impl DocumentTransaction<'_, '_> {
                 None,
                 None,
             ),
-            Selection::CompoundMembership(tuples) => (tuples, None, None),
+            Selection::CompoundMembership(tuples) | Selection::CompoundPrefix(tuples) => {
+                (tuples, None, None)
+            }
             Selection::Range {
                 equal,
                 lower,
@@ -618,8 +695,9 @@ impl DocumentTransaction<'_, '_> {
                 upper,
             } => (prefixes, lower, upper),
         };
-        let unique_equality = index.unique && lower.is_none() && upper.is_none();
+        let unbounded_unique = index.unique && lower.is_none() && upper.is_none();
         for equal in prefixes {
+            let unique_equality = unbounded_unique && equal.len() == index.fields.len();
             let mut after = None;
             loop {
                 // Probe one entry beyond the candidate limit, never silently
@@ -741,6 +819,12 @@ fn describe_selection(index: &IndexDefinition, selection: &Selection) -> Documen
                 }
             }
         }
+        Selection::CompoundPrefix(prefixes) => DocumentQueryAccess::CompoundPrefixIndex {
+            index: index.name.clone(),
+            prefix_fields: prefixes[0].len(),
+            probes: prefixes.len(),
+            partial,
+        },
         Selection::MembershipRange { prefixes, .. } => {
             let prefix_fields = prefixes[0].len();
             let probes = prefixes.len();

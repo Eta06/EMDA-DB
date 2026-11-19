@@ -672,7 +672,7 @@ eight steps equal weight puts overall progress at roughly 34%.
 | --- | ---: | --- |
 | 1. Correctness and foundations | 95% | Shared store locks resolve the traced fork/exec failure mode. Strict macOS and Linux suites and focused fault tests provide the current baseline. Wider fault models and the deferred durability drills remain. |
 | 2. Durable storage and core | 85% | Authority-backed retained recovery, automatic rotation, archive retirement, persistent catalog admission, fixed-buffer suffix replay, and authenticated rebase sizing are exercised. Total memory accounting, full-base open cost, and broader recovery workloads remain. |
-| 3. Document data and queries | 69% | Document transactions work on the retained backend. Guarded maintenance and bounded index unions now cover shared disjunction predicates and compound ranges over membership prefixes. Broader workloads, concurrency and fault campaigns, and richer diagnostics and queries remain. |
+| 3. Document data and queries | 70% | Document transactions work on the retained backend. Guarded maintenance and bounded index unions cover shared disjunction predicates, compound ranges and compound equality or membership prefixes. Broader workloads, concurrency and fault campaigns, and richer diagnostics and queries remain. |
 
 Policy changes take effect through generation selection. The
 [persistent quota tests](../benchmarks/results/2026-11-19-persisted-retained-quotas/README.md)
@@ -749,3 +749,8 @@ cases preserved the earlier selection and recovered to an identical
 full-log checkpoint on retry. The recorded witness may advance to a
 complete tail before a spill emission failure. Both platforms passed the
 sidecar growth regression and bounded rebuild controls.
+
+[Compound prefix planning evidence](../benchmarks/results/2026-11-19-compound-prefix-planner/README.md)
+covers missing-field and partial-index guards, exact probe and candidate limits,
+staged replacements, and read-set conflicts from inserts into empty prefixes.
+All 33 document integration targets passed on macOS and Linux ARM64.

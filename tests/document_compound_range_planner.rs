@@ -1059,11 +1059,7 @@ fn membership_prefix_ranges_preserve_partial_and_suffix_requirements() {
         }
         let mut mixed = predicates.clone();
         mixed[1] = membership("tenant", vec![json!("t"), json!(["array"])]);
-        compare(
-            db,
-            &query(and(mixed), 7),
-            DocumentQueryAccess::CollectionScan,
-        );
+        compare(db, &query(and(mixed), 7), prefix_access(1, 1, true));
         let mut impossible = predicates.clone();
         impossible[3] = cmp("score", Comparison::Less, IndexValue::Integer(2));
         let impossible = query(and(impossible), 7);
@@ -1215,6 +1211,237 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
                 (!conflict).then(|| b"committed".to_vec())
             );
             compare(db, &request, membership_range_access(1, 2, false));
+        });
+    }
+}
+
+fn prefix_access(prefix_fields: usize, probes: usize, partial: bool) -> DocumentQueryAccess {
+    DocumentQueryAccess::CompoundPrefixIndex {
+        index: "compound".into(),
+        prefix_fields,
+        probes,
+        partial,
+    }
+}
+
+#[test]
+fn compound_prefix_requires_trailing_presence_and_scans_unique_tuples() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                unique: true,
+                ..index(
+                    &["tenant", "rank", "flag"],
+                    Some(PartialFilter::Exists {
+                        path: path("active"),
+                        exists: true,
+                    }),
+                )
+            },
+        )
+        .unwrap();
+        for (id, doc) in [
+            (
+                "a",
+                json!({"tenant":"t","rank":1,"flag":null,"active":true}),
+            ),
+            (
+                "b",
+                json!({"tenant":"t","rank":2,"flag":null,"active":false}),
+            ),
+            (
+                "c",
+                json!({"tenant":"u","rank":3,"flag":true,"active":true}),
+            ),
+            ("d", json!({"tenant":"t","rank":4,"active":true})),
+            ("e", json!({"tenant":"t","rank":5,"flag":true})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        let predicates = vec![
+            eq("tenant", json!("t")),
+            exists("rank", true),
+            exists("flag", true),
+            exists("active", true),
+        ];
+        compare(
+            db,
+            &query(and(predicates.clone()), 10),
+            prefix_access(1, 1, true),
+        );
+        let bounded = query(and(predicates.clone()), 2);
+        let plan = db.query_planned("c", &bounded).unwrap();
+        assert_eq!(plan.access, prefix_access(1, 1, true));
+        assert_eq!(plan.result.plan.scanned, 2);
+        assert!(db.query("c", &bounded).is_err());
+        assert_eq!(
+            db.query_planned("c", &query(and(predicates.clone()), 1))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidInput,
+        );
+        for remove in 1..predicates.len() {
+            let mut incomplete = predicates.clone();
+            incomplete.remove(remove);
+            compare(
+                db,
+                &query(and(incomplete), 10),
+                DocumentQueryAccess::CollectionScan,
+            );
+        }
+        let mut union = predicates;
+        union[0] = membership("tenant", vec![json!("u"), json!("t"), json!("t")]);
+        let request = query(and(union), 10);
+        compare(db, &request, prefix_access(1, 2, true));
+        db.transaction_with_read_set(|tx| {
+            assert!(tx.delete("c", "a")?);
+            tx.replace(
+                "c",
+                "d",
+                &json!({"tenant":"u","rank":4,"flag":false,"active":true}),
+                false,
+            )?;
+            let planned = tx.query_planned("c", &request)?;
+            assert_eq!(planned.result.documents, tx.query("c", &request)?.documents);
+            assert_eq!(
+                planned
+                    .result
+                    .documents
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["b", "c", "d"]
+            );
+            Ok(())
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+fn compound_prefix_probe_limits_and_existing_disjunction_preference() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(&["a", "b", "score"], None))
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "tag".into(),
+                ..index(&["tag"], None)
+            },
+        )
+        .unwrap();
+        db.insert("c", "one", &json!({"a":0,"b":0,"score":1}))
+            .unwrap();
+        db.insert("c", "two", &json!({"a":0,"b":0,"score":2}))
+            .unwrap();
+        db.insert("c", "other", &json!({"tag":"other"})).unwrap();
+        let product = |a, b| {
+            and(vec![
+                membership("a", (0..a).map(|n| json!(n)).collect()),
+                membership("b", (0..b).map(|n| json!(n)).collect()),
+                exists("score", true),
+            ])
+        };
+        compare(db, &query(product(16, 16), 4), prefix_access(2, 256, false));
+        compare(
+            db,
+            &query(product(16, 17), 4),
+            DocumentQueryAccess::CollectionScan,
+        );
+        let union = |a, b| {
+            query(
+                DocumentFilter::Or(vec![product(a, b), eq("tag", json!("other"))]),
+                4,
+            )
+        };
+        compare(
+            db,
+            &union(15, 17),
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["compound".into(), "tag".into()],
+                probes: 256,
+            },
+        );
+        compare(db, &union(16, 16), DocumentQueryAccess::CollectionScan);
+        let existing_disjunction = query(
+            and(vec![
+                eq("a", json!(0)),
+                eq("b", json!(0)),
+                exists("score", true),
+                DocumentFilter::Or(vec![eq("score", json!(1)), eq("score", json!(4))]),
+            ]),
+            1,
+        );
+        let plan = db.query_planned("c", &existing_disjunction).unwrap();
+        assert_eq!(
+            plan.access,
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["compound".into()],
+                probes: 2,
+            }
+        );
+        assert_eq!(plan.result.documents[0].id, "one");
+    });
+}
+
+#[test]
+fn empty_compound_prefix_detects_a_concurrent_indexed_insert() {
+    use std::{sync::mpsc, time::Duration};
+    for (doc, conflict) in [
+        (json!({"tenant":"z","flag":null}), true),
+        (json!({"tenant":"z"}), false),
+        (json!({"tenant":"q","flag":true}), false),
+    ] {
+        on_backends(|db| {
+            db.create_collection("c", CollectionSchema::default())
+                .unwrap();
+            db.create_index("c", index(&["tenant", "flag"], None))
+                .unwrap();
+            let request = query(
+                and(vec![
+                    membership("tenant", vec![json!("a"), json!("z")]),
+                    exists("flag", true),
+                ]),
+                4,
+            );
+            let (read, observed) = mpsc::channel();
+            let (committed, written) = mpsc::channel();
+            let doc = &doc;
+            let result = std::thread::scope(|scope| {
+                let writer = scope.spawn(move || {
+                    observed.recv_timeout(Duration::from_secs(10)).unwrap();
+                    committed.send(db.insert("c", "new", doc)).unwrap();
+                });
+                let result = db.transaction_with_read_set(|tx| {
+                    let plan = tx.query_planned("c", &request)?;
+                    assert_eq!(plan.access, prefix_access(1, 2, false));
+                    assert!(plan.result.documents.is_empty());
+                    read.send(()).unwrap();
+                    written.recv_timeout(Duration::from_secs(10)).unwrap()?;
+                    tx.put_raw(b"prefix-phantom", b"committed")
+                });
+                drop(read);
+                writer.join().unwrap();
+                result
+            });
+            if conflict {
+                assert!(database_engine::is_transaction_conflict(
+                    &result.unwrap_err()
+                ));
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                db.transaction(|tx| tx.get_raw(b"prefix-phantom")).unwrap(),
+                (!conflict).then(|| b"committed".to_vec())
+            );
+            compare(db, &request, prefix_access(1, 2, false));
         });
     }
 }

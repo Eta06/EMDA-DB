@@ -162,15 +162,22 @@ a union of branch plans, including when the `Or` appears within an
 with complete branch coverage. The branch and its surrounding required
 conjunction can supply equality fields, scalar bounds, presence proofs and
 partial-index guards. A guard in one alternative does not qualify a sibling.
-The union can combine equality,
-membership and range probes across distinct indexes. All branches share
-one cap of 256 probes and the original document and byte budgets.
-Repeat hits consume budget on each visit. The planner keeps one document
-per ID, restores collection order and evaluates the full filter before
-sorting, pagination and projection. Every probe participates in
-transaction validation, including empty scans. If a branch cannot be
-covered or the probe cap is exceeded, the planner uses the complete
+The union can combine equality, membership, range and compound prefix probes
+across distinct indexes. All branches share one cap of 256 probes and the
+original document and byte budgets. Repeat hits consume budget on each visit.
+The planner keeps one document per ID, restores collection order and evaluates
+the full filter before sorting, pagination and projection. Every probe
+participates in transaction validation, including empty scans. If a branch
+cannot be covered or the probe cap is exceeded, the planner uses the complete
 bounded collection scan.
+
+If the existing access paths cannot cover the query, the planner can scan a
+compound index for a contiguous leading tuple of required equalities or
+membership alternatives. Required predicates must prove that every remaining
+indexed field is present and imply any partial-index guard. Distinct prefixes
+share the 256-probe cap. A prefix can match several rows of a unique index, so
+the planner pages through those results under the same candidate and byte
+limits and applies the full filter.
 
 A partial index is eligible only when a required predicate proves its filter. Presence is proved by required `Exists(true)`, equality, `In`, comparison or array predicates on that path; absence requires `Exists(false)`. `NotIn` does not prove presence because it matches missing paths. Typed partial equality requires the same indexable typed equality on the same path. Explicit null counts as present. For a presence or absence guard, a required nonempty `Or` also proves the guard when every branch proves it. The planner does not infer individual equality or range predicates from `Or` or infer guards from `Not`, and incomplete compound tuples or non-indexable values do not qualify by themselves. If no eligible index qualifies, the method falls back to `query`'s complete scan. The result reports the selected path and actual candidate-document counts. This can succeed for a large collection when the explicit complete scan exceeds its work limit, but it is not a cost-based planner and does not handle arbitrary compound constraints or general boolean implication.
 
