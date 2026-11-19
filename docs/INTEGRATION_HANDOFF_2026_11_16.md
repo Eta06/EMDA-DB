@@ -754,3 +754,12 @@ sidecar growth regression and bounded rebuild controls.
 covers missing-field and partial-index guards, exact probe and candidate limits,
 staged replacements, and read-set conflicts from inserts into empty prefixes.
 All 33 document integration targets passed on macOS and Linux ARM64.
+
+New-history retained restore admits the full output first, then writes
+bounded groups of ordinary records before reopening for verification.
+The [grouped restore evidence](../benchmarks/results/2026-11-19-grouped-retained-restore/README.md)
+checks the exact output limits, process termination after the first
+synchronized group, and complete verified publication. On the sampled
+1,901-key restore, the copy uses 30 synchronization groups. The full
+library suite passed on macOS and on Linux with both ext4 and tmpfs
+test fixtures.

@@ -1908,11 +1908,16 @@ mod tests {
             digest: bytes[184..216].try_into().unwrap(),
         };
         let writes = std::cell::Cell::new(0);
+        let first_group = super::super::compact::MAX_COPY_RECORDS;
         let _ = crate::retained_candidate::restore_with_hooks(
             &root.join("candidate"),
             &root.join("suffix"),
             &root.join("output"),
-            candidate_budgets(),
+            crate::retained_base_v2::Limits {
+                entries: 128,
+                key_bytes: 1024,
+                ..candidate_budgets()
+            },
             crate::retained_base_v2::StagingLimits {
                 value_bytes: 1000,
                 staging_bytes: 10000,
@@ -1925,15 +1930,19 @@ mod tests {
             &binding,
             crate::retained_candidate::RestoreLimits {
                 log_bytes: 10000,
-                live_keys: 10,
-                live_key_bytes: 1000,
+                live_keys: 128,
+                live_key_bytes: 1024,
             },
             crate::directory::sync_existing,
             |at| {
                 if at == "write" {
                     writes.set(writes.get() + 1);
                 }
-                if at == point || (point == "write2" && at == "write" && writes.get() == 2) {
+                if at == point
+                    || (point == "after_first_group"
+                        && at == "write"
+                        && writes.get() == first_group + 1)
+                {
                     println!("RESTORE_READY");
                     std::io::stdout().flush().unwrap();
                     loop {
@@ -1953,7 +1962,7 @@ mod tests {
         for point in [
             "init",
             "write",
-            "write2",
+            "after_first_group",
             "reopen",
             "check",
             "stage_sync",
@@ -1964,9 +1973,24 @@ mod tests {
             let source = root.path().join("source");
             let store = Store::open(&source).unwrap();
             store.put(b"old", b"base").unwrap();
+            if point == "after_first_group" {
+                let keys = (0..super::super::compact::MAX_COPY_RECORDS)
+                    .map(|id| (id as u16).to_be_bytes())
+                    .collect::<Vec<_>>();
+                let operations = keys
+                    .iter()
+                    .map(|key| crate::BatchOperation::Put { key, value: b"v" })
+                    .collect::<Vec<_>>();
+                store.write_batch(&operations).unwrap();
+            }
+            let export_limits = RetainedExportLimits {
+                max_live_keys: 128,
+                max_live_key_bytes: 1024,
+                ..limits()
+            };
             let candidate = root.path().join("candidate");
             let expected = store
-                .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
+                .build_retained_candidate(&candidate, [1; 16], [2; 16], export_limits)
                 .unwrap();
             store.put(b"new", b"suffix").unwrap();
             let suffix = root.path().join("suffix");
@@ -1984,10 +2008,14 @@ mod tests {
                     &candidate,
                     &expected,
                     &suffix,
-                    candidate_budgets(),
+                    crate::retained_base_v2::Limits {
+                        entries: 128,
+                        key_bytes: 1024,
+                        ..candidate_budgets()
+                    },
                     staging,
                     suffix_limits,
-                    limits(),
+                    export_limits,
                 )
                 .unwrap();
             let mut bytes = Vec::new();
@@ -2044,6 +2072,7 @@ mod tests {
             child.wait().unwrap();
             reader.join().unwrap();
             let output = root.path().join("output");
+            assert_eq!(output.exists(), point == "published", "{point}");
             if output.exists() {
                 let reopened = Store::open(&output).unwrap();
                 assert_eq!(
@@ -2053,8 +2082,6 @@ mod tests {
                         (b"old".to_vec(), b"base".to_vec())
                     ]
                 );
-            } else {
-                assert_ne!(point, "published");
             }
             assert_eq!(snapshot(&source), source_before);
             assert_eq!(snapshot(&candidate), candidate_before);

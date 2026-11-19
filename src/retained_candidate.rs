@@ -802,7 +802,9 @@ pub struct RestoreLimits {
 /// must be trusted by the caller; all external directories, their ancestors
 /// and input files must remain trusted and stable throughout. Replay keeps
 /// live keys and authenticated value locations in memory. Each write reads
-/// one value. Input staging limits still count the logical live payload,
+/// one value, and the private output synchronizes in groups of up to 64
+/// records and 4 MiB of encoded data. A larger record is synchronized alone.
+/// Input staging limits still count the logical live payload,
 /// including intermediate states of a batch. The caller must keep the source
 /// and suffix separate from the destination; only candidate descendants are
 /// rejected here. This is not recovery of the old
@@ -899,11 +901,14 @@ pub(crate) fn restore_with_hooks(
                 Some(output.live_keys),
                 Some(output.live_key_bytes),
             )?;
-            for (key, value) in &replay.entries {
-                hook("write")?;
-                store.put(key, &replay.read(value)?)?;
-            }
-            store.close_private_store()?;
+            store.write_private_restore(
+                &replay.entries,
+                restore_replay::RestoreValue::len,
+                |value| {
+                    hook("write")?;
+                    replay.read(value)
+                },
+            )?;
         }
         {
             hook("reopen")?;

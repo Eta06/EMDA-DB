@@ -32,17 +32,34 @@ fn copy_live_records(
     index: &BTreeMap<Vec<u8>, ValueLocation>,
     target: &Log,
 ) -> io::Result<()> {
+    copy_records(
+        target,
+        index
+            .iter()
+            .map(|(key, &location)| (key.as_slice(), location.length, location)),
+        |location| source.read(location),
+    )
+}
+
+fn copy_records<'a, T>(
+    target: &Log,
+    entries: impl Iterator<Item = (&'a [u8], usize, T)>,
+    mut read: impl FnMut(T) -> io::Result<Vec<u8>>,
+) -> io::Result<()> {
     let mut records = Vec::with_capacity(MAX_COPY_RECORDS);
     let mut bytes = 0_usize;
-    for (key, &location) in index {
-        let length = record::HEADER_SIZE + key.len() + location.length + record::CHECKSUM_SIZE;
+    for (key, value_len, value) in entries {
+        let length = record::HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE;
         if !records.is_empty()
             && (records.len() == MAX_COPY_RECORDS || bytes + length > MAX_COPY_BYTES)
         {
             flush_copy(target, &mut records)?;
             bytes = 0;
         }
-        let value = source.read(location)?;
+        let value = read(value)?;
+        if value.len() != value_len {
+            return Err(record::invalid_data("copy source value length changed"));
+        }
         let checksum = crc32fast::hash(&value);
         let encoded = record::encode(Operation::Put, key, &value)?;
         bytes += encoded.len();
@@ -57,6 +74,54 @@ fn copy_live_records(
 }
 
 impl Store {
+    // The retained restore owns this unpublished, newly initialized store.
+    // Only append after admitting the full sorted, distinct live set. The
+    // in-memory index is rebuilt by the mandatory verification reopen.
+    pub(crate) fn write_private_restore<T>(
+        self,
+        entries: &[(Vec<u8>, T)],
+        value_len: impl Fn(&T) -> usize,
+        mut read: impl FnMut(&T) -> io::Result<Vec<u8>>,
+    ) -> io::Result<()> {
+        if self.max_live_keys.is_some_and(|max| entries.len() > max) {
+            return Err(io::Error::other(
+                "configured live key limit would be exceeded",
+            ));
+        }
+        let mut keys = 0_usize;
+        let mut bytes = 0_u64;
+        for (key, value) in entries {
+            keys = keys
+                .checked_add(key.len())
+                .ok_or_else(|| io::Error::other("restored key byte count overflow"))?;
+            bytes = bytes
+                .checked_add((record::HEADER_SIZE + record::CHECKSUM_SIZE) as u64)
+                .and_then(|bytes| bytes.checked_add(key.len() as u64))
+                .and_then(|bytes| bytes.checked_add(value_len(value) as u64))
+                .ok_or_else(|| io::Error::other("restored log size overflow"))?;
+        }
+        if self.max_live_key_bytes.is_some_and(|max| keys > max) {
+            return Err(io::Error::other(
+                "configured live key byte limit would be exceeded",
+            ));
+        }
+        {
+            let _reservation = self
+                .log_quota
+                .as_ref()
+                .map(|quota| quota.reserve(bytes))
+                .transpose()?;
+            copy_records(
+                &self.log,
+                entries
+                    .iter()
+                    .map(|(key, value)| (key.as_slice(), value_len(value), value)),
+                &mut read,
+            )?;
+        }
+        self.close_private_store()
+    }
+
     /// Copies current live keys into a verified new store with no old records.
     ///
     /// Mutations wait for the copy and verification; existing readers can
@@ -332,6 +397,90 @@ mod tests {
         assert_eq!(offset, bytes.len());
         let (_, recovered) = Log::from_io(Box::new(File::open(&path).unwrap())).unwrap();
         assert_eq!(recovered.len(), 130);
+    }
+
+    #[test]
+    fn private_restore_admits_all_output_before_reading_and_flushes_bounded_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let length = record::encode(Operation::Put, b"00", b"v").unwrap().len() as u64;
+        let entries = (0..130_u16)
+            .map(|key| (key.to_be_bytes().to_vec(), b"v"))
+            .collect::<Vec<_>>();
+        let header = {
+            let store = Store::open(&path).unwrap();
+            let header = store.log.len().unwrap();
+            store.close_private_store().unwrap();
+            header
+        };
+        let end = header + length * entries.len() as u64;
+        let key_bytes = 2 * entries.len();
+        for (log_bytes, keys, key_bytes) in [
+            (end - 1, entries.len(), key_bytes),
+            (end, entries.len() - 1, key_bytes),
+            (end, entries.len(), key_bytes - 1),
+        ] {
+            let store = Store::open_with_resource_limits(
+                &path,
+                Some(log_bytes),
+                Some(keys),
+                Some(key_bytes),
+            )
+            .unwrap();
+            assert!(
+                store
+                    .write_private_restore(
+                        &entries,
+                        |value| value.len(),
+                        |_| { panic!("restore read before output admission") }
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                std::fs::metadata(path.join("records.log")).unwrap().len(),
+                header
+            );
+        }
+        let store = Store::open_with_resource_limits(
+            &path,
+            Some(end),
+            Some(entries.len()),
+            Some(key_bytes),
+        )
+        .unwrap();
+        let mut read = 0;
+        store
+            .write_private_restore(
+                &entries,
+                |value| value.len(),
+                |value| {
+                    let flushed = read / MAX_COPY_RECORDS * MAX_COPY_RECORDS;
+                    assert_eq!(
+                        std::fs::metadata(path.join("records.log"))?.len(),
+                        header + length * flushed as u64
+                    );
+                    read += 1;
+                    Ok(value.to_vec())
+                },
+            )
+            .unwrap();
+        assert_eq!(read, entries.len());
+        let store = Store::open_with_resource_limits(
+            &path,
+            Some(end),
+            Some(entries.len()),
+            Some(key_bytes),
+        )
+        .unwrap();
+        assert_eq!(store.log.len().unwrap(), end);
+        store.log.verify_witness().unwrap();
+        assert_eq!(
+            store.scan(None, None, entries.len()).unwrap(),
+            entries
+                .into_iter()
+                .map(|(key, value)| (key, value.to_vec()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

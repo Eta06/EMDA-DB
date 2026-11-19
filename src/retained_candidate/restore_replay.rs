@@ -136,6 +136,10 @@ impl RestoreReplay {
 }
 
 impl RestoreValue {
+    pub(super) fn len(&self) -> usize {
+        self.location.length
+    }
+
     pub(super) fn matches(&self, bytes: &[u8]) -> bool {
         bytes.len() == self.location.length
             && <[u8; 32]>::from(Sha256::digest(bytes)) == self.location.digest
