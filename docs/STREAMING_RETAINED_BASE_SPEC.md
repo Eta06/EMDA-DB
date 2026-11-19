@@ -152,7 +152,13 @@ the file length fails subsequent nonempty reads. A pathname replacement does
 not redirect the captured descriptor. Directory allocations, read scratch
 space, result buffers and allocator overhead have separate costs.
 
-The directory is rebuilt at open. `retained_candidate::IndexedSuffix` adds
+The directory is rebuilt at open. Base-file verification admits the header
+before buffering up to the declared body length and one EOF probe. Indexed
+reads buffer within one authenticated block at a time. Rebasing buffers
+writes to its private staged file and flushes before syncing and validating
+that output. All three paths still validate the complete required bytes.
+
+`retained_candidate::IndexedSuffix` adds
 a read-only view of an independently bound detached suffix over that base.
 The suffix is verified in a private byte buffer subject to the suffix-byte
 limit. Ordered DB01 and DB02 operations update a sorted overlay of keys and

@@ -1,6 +1,6 @@
 //! Sparse in-memory directory over the validated, immutable base file.
 use super::{
-    CHUNK_BYTES, Limits, MAX_KEY_BYTES, Validated, add, entry_lengths, invalid, scan,
+    CHUNK_BYTES, Limits, MAX_KEY_BYTES, Validated, add, entry_lengths, invalid, scan_buffered,
     validate_value_budget,
 };
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
@@ -114,7 +114,7 @@ impl IndexedBase {
             anchor_bytes: 0,
             hash: Sha256::new(),
         };
-        let (metadata, _) = scan(&file, limits, None, None, Some(&mut builder))?;
+        let metadata = scan_buffered(&file, limits, Some(&mut builder))?;
         builder.finish_block();
         Ok(Self {
             file,
@@ -130,7 +130,7 @@ impl IndexedBase {
     pub(crate) fn verify(&self, limits: Limits) -> io::Result<()> {
         let mut file = &self.file;
         file.rewind()?;
-        if super::validate(file, limits)? != self.metadata {
+        if scan_buffered(file, limits, None)? != self.metadata {
             return Err(invalid("retained base changed"));
         }
         Ok(())
@@ -274,11 +274,15 @@ impl IndexedBase {
         result: &mut Vec<Entry>,
         mut select: impl FnMut(&[u8], usize, &mut Vec<Entry>) -> io::Result<Selection>,
     ) -> io::Result<bool> {
+        let mut read_buffer = [0; CHUNK_BYTES];
         let mut reader = BlockReader {
             file: &self.file,
             offset: block.start,
             end: block.end,
             hash: Sha256::new(),
+            buffer: &mut read_buffer,
+            buffer_position: 0,
+            buffer_len: 0,
         };
         let mut key = [0u8; MAX_KEY_BYTES];
         let mut buffer = [0u8; CHUNK_BYTES];
@@ -380,6 +384,9 @@ struct BlockReader<'a> {
     offset: u64,
     end: u64,
     hash: Sha256,
+    buffer: &'a mut [u8; CHUNK_BYTES],
+    buffer_position: usize,
+    buffer_len: usize,
 }
 
 impl BlockReader<'_> {
@@ -388,7 +395,22 @@ impl BlockReader<'_> {
         if end > self.end {
             return Err(invalid("retained base block read exceeds boundary"));
         }
-        self.file.read_exact_at(bytes, self.offset)?;
+        let mut offset = self.offset;
+        let mut output = &mut *bytes;
+        while !output.is_empty() {
+            if self.buffer_position == self.buffer_len {
+                let len = (self.end - offset).min(CHUNK_BYTES as u64) as usize;
+                self.file.read_exact_at(&mut self.buffer[..len], offset)?;
+                self.buffer_len = len;
+                self.buffer_position = 0;
+            }
+            let copied = output.len().min(self.buffer_len - self.buffer_position);
+            let next = self.buffer_position + copied;
+            output[..copied].copy_from_slice(&self.buffer[self.buffer_position..next]);
+            self.buffer_position = next;
+            offset += copied as u64;
+            output = &mut output[copied..];
+        }
         self.hash.update(&*bytes);
         self.offset = end;
         Ok(())

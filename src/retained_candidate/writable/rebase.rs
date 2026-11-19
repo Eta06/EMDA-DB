@@ -6,7 +6,7 @@ use crate::record;
 use crate::retained_base_v2::{self, Limits, encode_header};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     os::unix::fs::FileExt,
     path::Path,
 };
@@ -89,7 +89,7 @@ impl RetainedStore {
                 encoded,
             ],
         );
-        let mut file = create_file(destination)?;
+        let mut file = BufWriter::with_capacity(64 * 1024, create_file(destination)?);
         let mut digest = Sha256::new();
         digest.update(b"EMDA retained base v2\0");
         file.write_all(&header)?;
@@ -108,9 +108,10 @@ impl RetainedStore {
         })?;
         let digest: [u8; 32] = digest.finalize().into();
         file.write_all(&digest)?;
-        file.sync_all()?;
+        file.flush()?;
+        file.get_ref().sync_all()?;
         drop(file);
-        let validated = retained_base_v2::validate(open_regular(destination)?, limits)?;
+        let validated = retained_base_v2::validate_buffered(open_regular(destination)?, limits)?;
         if validated.digest != digest || validated.source_id != source {
             return Err(record::invalid_data("compacted base verification mismatch"));
         }

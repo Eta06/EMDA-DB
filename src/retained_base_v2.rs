@@ -7,7 +7,7 @@
 //! from input; lookup allocates at most the explicit returned-value budget. The
 //! candidate loader stages privately under separate explicit limits.
 use sha2::{Digest, Sha256};
-use std::io::{self, Read};
+use std::io::{self, BufReader, Read};
 
 pub(crate) mod index;
 
@@ -68,7 +68,24 @@ fn add(a: u64, b: u64) -> io::Result<u64> {
 /// Validate one complete stream. Ordinary short reads are retried; an error,
 /// truncation, trailing data or limit violation never yields metadata.
 pub fn validate<R: Read>(reader: R, limits: Limits) -> io::Result<Validated> {
-    scan(reader, limits, None, None, None).map(|(metadata, _)| metadata)
+    scan(reader, limits, None, None).map(|(metadata, _)| metadata)
+}
+
+pub(crate) fn validate_buffered<R: Read>(reader: R, limits: Limits) -> io::Result<Validated> {
+    scan_buffered(reader, limits, None)
+}
+
+// Buffer only the admitted body and its EOF probe. Generic stream callers
+// retain the existing reads and error ordering.
+fn scan_buffered<R: Read>(
+    reader: R,
+    limits: Limits,
+    index: Option<&mut index::Builder>,
+) -> io::Result<Validated> {
+    scan_using(reader, limits, None, None, index, |reader, bytes| {
+        BufReader::with_capacity(CHUNK_BYTES, reader.take(bytes))
+    })
+    .map(|(metadata, _)| metadata)
 }
 
 /// Independently supplied binding for a lookup. The digest must come from a
@@ -106,7 +123,7 @@ pub(crate) fn lookup_with_metadata<R: Read>(
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
     crate::record::validate_key(key)?;
     validate_value_budget(max_value_bytes)?;
-    let (metadata, value) = scan(reader, limits, Some((key, max_value_bytes)), None, None)?;
+    let (metadata, value) = scan(reader, limits, Some((key, max_value_bytes)), None)?;
     if metadata.digest != expected.digest
         || metadata.source_id != expected.source_id
         || metadata.base_id != expected.base_id
@@ -152,22 +169,26 @@ pub(crate) fn load_with_metadata<R: Read>(
     staging_limits: StagingLimits,
 ) -> io::Result<(Validated, StagedEntries)> {
     let mut staged = Vec::new();
-    let (metadata, _) = scan(
-        reader,
-        limits,
-        None,
-        Some((&mut staged, staging_limits)),
-        None,
-    )?;
+    let (metadata, _) = scan(reader, limits, None, Some((&mut staged, staging_limits)))?;
     Ok((metadata, staged))
 }
 
 fn scan<R: Read>(
+    reader: R,
+    limits: Limits,
+    selection: Option<(&[u8], usize)>,
+    staging: Option<(&mut StagedEntries, StagingLimits)>,
+) -> io::Result<(Validated, Option<Vec<u8>>)> {
+    scan_using(reader, limits, selection, staging, None, |reader, _| reader)
+}
+
+fn scan_using<R: Read, B: Read>(
     mut reader: R,
     limits: Limits,
     selection: Option<(&[u8], usize)>,
     mut staging: Option<(&mut StagedEntries, StagingLimits)>,
     mut index: Option<&mut index::Builder>,
+    prepare_body: impl FnOnce(R, u64) -> B,
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
     let mut header = [0u8; HEADER_BYTES as usize];
     // Require a budget for the header before performing any reads.
@@ -207,6 +228,7 @@ fn scan<R: Read>(
     {
         return Err(invalid("invalid totals or budget exceeded"));
     }
+    let mut reader = prepare_body(reader, file_bytes - HEADER_BYTES + 1);
     let mut hash = Sha256::new();
     hash.update(b"EMDA retained base v2\0");
     hash.update(header);
@@ -432,6 +454,38 @@ mod tests {
         let bytes = fixture(16 * 1024 * 1024);
         let result = validate(Short(&bytes), limits()).unwrap();
         assert_eq!(result.file_bytes, bytes.len() as u64);
+    }
+
+    #[test]
+    fn buffered_validation_admits_the_header_before_prefetch_and_bounds_the_eof_probe() {
+        let bytes = fixture(CHUNK_BYTES + 3);
+        let exact = Limits {
+            file_bytes: bytes.len() as u64,
+            work_bytes: bytes.len() as u64 + 1,
+            ..limits()
+        };
+        assert_eq!(
+            validate_buffered(Short(&bytes), exact).unwrap(),
+            validate(&bytes[..], exact).unwrap()
+        );
+        let mut rejected = &bytes[..];
+        let short_budget = Limits {
+            work_bytes: exact.work_bytes - 1,
+            ..exact
+        };
+        assert!(validate_buffered(&mut rejected, short_budget).is_err());
+        assert_eq!(rejected, &bytes[HEADER_BYTES as usize..]);
+
+        let mut extended = bytes.clone();
+        extended.extend([0; 100]);
+        let mut remaining = extended.as_slice();
+        assert_eq!(
+            validate_buffered(&mut remaining, exact)
+                .unwrap_err()
+                .to_string(),
+            "trailing bytes",
+        );
+        assert_eq!(remaining, &extended[bytes.len() + 1..]);
     }
     #[test]
     fn truncation_corruption_and_extra_bytes_fail() {
