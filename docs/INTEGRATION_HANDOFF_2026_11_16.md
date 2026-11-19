@@ -411,3 +411,20 @@ The binary SHA-256 was
 The VM had 226 MiB free on its root filesystem and 568 MiB free on its tmpfs
 after the run. See the [test log](../benchmarks/results/2026-11-19-linux-arm64-strict-lock/test.log)
 and [compressed kernel trace](../benchmarks/results/2026-11-19-linux-arm64-strict-lock/bpf.log.gz).
+
+The shared-lock change at `cd75fdf` releases the advisory lock when the last
+owner in the acquiring process closes, even if a forked child still holds
+its descriptor before exec. Checkpoint handoffs share one lock descriptor.
+The process lifecycle tests at `fdce958` preserve the separate close-on-exec
+control and verify exclusion while an owner is live. After updating those
+tests, all 113 integration targets completed on both local platforms in
+split runs. Linux passed 563 tests with one ignored ENOSPC test, and macOS
+passed 497 tests. Five 16-thread Linux library runs each passed all 633
+tests. The macOS run passed all 471 library tests. See the
+[validation logs](../benchmarks/results/2026-11-19-shared-store-lock/README.md).
+
+The compatibility probe also passed on binaries built from the historical
+`main` revision `324a082` on both platforms. It covers the proposed
+byte-zero retained log marker in selected opens, backup and restore. It
+does not establish compatibility of an actual retained format or cutover.
+See the [historical marker probe](../benchmarks/results/2026-11-19-main-log-marker-probe/README.md).
