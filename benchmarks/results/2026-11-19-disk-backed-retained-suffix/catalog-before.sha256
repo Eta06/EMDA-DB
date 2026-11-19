@@ -1,0 +1,7 @@
+2150dcbd30ccc46148bea71db6cd70689e9561afacbf8af958369b3bcd061adb  ./active.retained
+2948f83e4d0346142c089a34a6d5e061a488976c551c09e286ddddd3c25f4f4a  ./catalog.id
+42373fcf8a3631012fdd2e03f25c1183967c658b1dacd63466c28e7dc3b1ef1b  ./generation-a/records.log
+d78215256640f2462dab67bd19a5458b4647c8e17593ee720cabfacc8401c49d  ./generation-a/base
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./generation-a/store.lock
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./store.lock
+ee395ede18b47efe67c0b0ada85bbc600350b238155fde84af4eb5ca5beb35dc  ./generation-a/commit.state

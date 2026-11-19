@@ -1,0 +1,15 @@
+e6816f6b5844a3e9cdd7d015337a8f7763873b9b
+d1208760f78aedde058d4900e902ea826b6e3fc7
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+Darwin 27.0.0 arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+   File System Personality:   APFS
+9241fca68b6e38b3d131c0bf456b90b53dbea7f5c282c97697796c991de1a8f4  /tmp/emda-disk-suffix-bench.zqFCFa/baseline-exec
+a4c1697e7aab1623c22584d8d838d1f1cf4810e0bd2766e5ec0517e2dc231b61  /tmp/emda-disk-suffix-bench.zqFCFa/final-exec
+a117485e5cdad2b2c26b390c5c6b169459fb675ca8cf59c8f57742765a1ecc15  /tmp/emda-disk-suffix-bench.zqFCFa/suffix_rss.rs
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+TARGET FSTYPE
+/      ext4

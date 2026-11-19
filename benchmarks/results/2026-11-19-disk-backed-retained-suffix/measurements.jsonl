@@ -1,0 +1,8 @@
+{"pair": 0, "build": "baseline", "open_ns": 123420750, "peak_rss_bytes": 55738368}
+{"pair": 0, "build": "final", "open_ns": 191466041, "peak_rss_bytes": 5406720}
+{"pair": 1, "build": "baseline", "open_ns": 118707667, "peak_rss_bytes": 55738368}
+{"pair": 1, "build": "final", "open_ns": 191941084, "peak_rss_bytes": 5406720}
+{"pair": 2, "build": "baseline", "open_ns": 121681416, "peak_rss_bytes": 55738368}
+{"pair": 2, "build": "final", "open_ns": 200780125, "peak_rss_bytes": 5406720}
+{"pair": 3, "build": "baseline", "open_ns": 123291708, "peak_rss_bytes": 55721984}
+{"pair": 3, "build": "final", "open_ns": 196906291, "peak_rss_bytes": 5406720}

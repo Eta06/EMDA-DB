@@ -619,3 +619,12 @@ records exact successor-budget checks, corruption detection for a
 shadowed value, and about 24 MiB less peak process RSS on the sampled
 24 MiB live set. The active and successor files still overlap on disk,
 and open still authenticates the complete admitted base.
+
+Writable retained generations now replay the suffix one physical
+record at a time and authenticate reads from disk against per-value
+digests. Backup and rebase stream from the file. The
+[disk-backed suffix report](../benchmarks/results/2026-11-19-disk-backed-retained-suffix/README.md)
+records rehashed-batch rejection, Linux and macOS regressions, and a
+48 MiB reduction in sampled peak RSS. Open latency increased on that
+fixture. Detached imports still buffer their input, and the catalog
+still retains the old ordinary log at an original-path cutover.
