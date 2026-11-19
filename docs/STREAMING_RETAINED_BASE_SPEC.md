@@ -140,7 +140,8 @@ retained candidate binding before returning a handle. The verification pass
 also builds an in-memory directory containing one anchor key, file range and
 SHA-256 digest per block. A block spans at most 128 KiB of whole entries or
 one larger entry. Explicit block and anchor-byte limits bound the directory.
-Opening scans all base bytes with a fixed value buffer.
+Opening scans all base bytes through a fixed input buffer. The file and
+block digests use the admitted value slices directly from that buffer.
 
 The handle retains the validated base descriptor. A point read searches the
 anchor keys and reads at most one block. An ordered page uses the store's entry
@@ -154,7 +155,8 @@ space, result buffers and allocator overhead have separate costs.
 
 The directory is rebuilt at open. Base-file verification admits the header
 before buffering up to the declared body length and one EOF probe. Indexed
-reads buffer within one authenticated block at a time. Rebasing buffers
+reads authenticate and visit value slices from the same block input buffer.
+Rebasing buffers
 writes to its private staged file and flushes before syncing and validating
 that output. All three paths still validate the complete required bytes.
 

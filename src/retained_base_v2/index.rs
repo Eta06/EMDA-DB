@@ -454,7 +454,6 @@ impl IndexedBase {
             buffer_len: 0,
         };
         let mut key = [0u8; MAX_KEY_BYTES];
-        let mut buffer = [0u8; CHUNK_BYTES];
         while reader.offset < reader.end {
             let mut lengths = [0u8; 8];
             reader.read(&mut lengths)?;
@@ -466,7 +465,6 @@ impl IndexedBase {
             reader.read(key)?;
             let mut value = BlockValue {
                 reader: &mut reader,
-                buffer: &mut buffer,
                 remaining: vl,
             };
             visit(key, &mut value)?;
@@ -497,20 +495,15 @@ fn emit_value(
 
 struct BlockValue<'a, 'b> {
     reader: &'a mut BlockReader<'b>,
-    buffer: &'a mut [u8; CHUNK_BYTES],
     remaining: usize,
 }
 
 impl BlockValue<'_, '_> {
     fn read_chunks(&mut self, mut visit: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
-        while self.remaining != 0 {
-            let bytes = self.remaining.min(self.buffer.len());
-            let chunk = &mut self.buffer[..bytes];
-            self.reader.read(chunk)?;
-            self.remaining -= bytes;
-            visit(chunk)?;
-        }
-        Ok(())
+        self.reader.read_chunks(self.remaining, |bytes| {
+            self.remaining -= bytes.len();
+            visit(bytes)
+        })
     }
 }
 
@@ -569,28 +562,40 @@ struct BlockReader<'a> {
 
 impl BlockReader<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<()> {
-        let end = add(self.offset, bytes.len() as u64)?;
+        let mut written = 0;
+        self.read_chunks(bytes.len(), |chunk| {
+            bytes[written..written + chunk.len()].copy_from_slice(chunk);
+            written += chunk.len();
+            Ok(())
+        })
+    }
+
+    fn read_chunks(
+        &mut self,
+        mut remaining: usize,
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let end = add(self.offset, remaining as u64)?;
         if end > self.end {
             return Err(invalid("retained base block read exceeds boundary"));
         }
-        let mut offset = self.offset;
-        let mut output = &mut *bytes;
-        while !output.is_empty() {
+        while remaining != 0 {
             if self.buffer_position == self.buffer_len {
-                let len = (self.end - offset).min(CHUNK_BYTES as u64) as usize;
-                self.file.read_exact_at(&mut self.buffer[..len], offset)?;
+                let len = (self.end - self.offset).min(CHUNK_BYTES as u64) as usize;
+                self.file
+                    .read_exact_at(&mut self.buffer[..len], self.offset)?;
                 self.buffer_len = len;
                 self.buffer_position = 0;
             }
-            let copied = output.len().min(self.buffer_len - self.buffer_position);
-            let next = self.buffer_position + copied;
-            output[..copied].copy_from_slice(&self.buffer[self.buffer_position..next]);
+            let count = remaining.min(self.buffer_len - self.buffer_position);
+            let next = self.buffer_position + count;
+            let chunk = &self.buffer[self.buffer_position..next];
+            self.hash.update(chunk);
             self.buffer_position = next;
-            offset += copied as u64;
-            output = &mut output[copied..];
+            self.offset += count as u64;
+            remaining -= count;
+            visit(chunk)?;
         }
-        self.hash.update(&*bytes);
-        self.offset = end;
         Ok(())
     }
 }

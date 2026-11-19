@@ -7,7 +7,7 @@
 //! from input; lookup allocates at most the explicit returned-value budget. The
 //! candidate loader stages privately under separate explicit limits.
 use sha2::{Digest, Sha256};
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufRead, BufReader, Read};
 
 pub(crate) mod index;
 
@@ -88,10 +88,36 @@ fn scan_buffered<R: Read>(
     limits: Limits,
     index: Option<&mut index::Builder>,
 ) -> io::Result<Validated> {
-    scan_using(reader, limits, None, None, index, |reader, bytes| {
-        BufReader::with_capacity(CHUNK_BYTES, reader.take(bytes))
-    })
+    scan_using(
+        reader,
+        limits,
+        None,
+        None,
+        index,
+        |reader, bytes| BufReader::with_capacity(CHUNK_BYTES, reader.take(bytes)),
+        visit_buffered_value,
+    )
     .map(|(metadata, _)| metadata)
+}
+
+fn visit_buffered_value(
+    reader: &mut impl BufRead,
+    mut remaining: usize,
+    visit: &mut dyn FnMut(&[u8]),
+) -> io::Result<()> {
+    while remaining != 0 {
+        let bytes = match reader.fill_buf() {
+            Ok([]) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        let count = remaining.min(bytes.len());
+        visit(&bytes[..count]);
+        reader.consume(count);
+        remaining -= count;
+    }
+    Ok(())
 }
 
 /// Independently supplied binding for a lookup. The digest must come from a
@@ -185,7 +211,25 @@ fn scan<R: Read>(
     selection: Option<(&[u8], usize)>,
     staging: Option<(&mut StagedEntries, StagingLimits)>,
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
-    scan_using(reader, limits, selection, staging, None, |reader, _| reader)
+    let mut buffer = [0u8; CHUNK_BYTES];
+    scan_using(
+        reader,
+        limits,
+        selection,
+        staging,
+        None,
+        |reader, _| reader,
+        |reader, mut remaining, visit| {
+            while remaining != 0 {
+                let count = remaining.min(buffer.len());
+                let bytes = &mut buffer[..count];
+                reader.read_exact(bytes)?;
+                visit(bytes);
+                remaining -= count;
+            }
+            Ok(())
+        },
+    )
 }
 
 fn scan_using<R: Read, B: Read>(
@@ -195,6 +239,7 @@ fn scan_using<R: Read, B: Read>(
     mut staging: Option<(&mut StagedEntries, StagingLimits)>,
     mut index: Option<&mut index::Builder>,
     prepare_body: impl FnOnce(R, u64) -> B,
+    mut visit_value: impl FnMut(&mut B, usize, &mut dyn FnMut(&[u8])) -> io::Result<()>,
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
     let mut header = [0u8; HEADER_BYTES as usize];
     // Require a budget for the header before performing any reads.
@@ -241,7 +286,6 @@ fn scan_using<R: Read, B: Read>(
     let mut previous = [0u8; MAX_KEY_BYTES];
     let mut previous_len = 0usize;
     let mut key = [0u8; MAX_KEY_BYTES];
-    let mut buffer = [0u8; CHUNK_BYTES];
     let mut captured = None;
     let mut observed = 0u64;
     let mut keys = 0u64;
@@ -307,22 +351,18 @@ fn scan_using<R: Read, B: Read>(
                 .map_err(|_| io::Error::other("value allocation failed"))?;
             captured = Some(value);
         }
-        let mut remaining = vl;
-        while remaining != 0 {
-            let n = remaining.min(buffer.len());
-            reader.read_exact(&mut buffer[..n])?;
-            hash.update(&buffer[..n]);
+        visit_value(&mut reader, vl, &mut |bytes| {
+            hash.update(bytes);
             if let Some(builder) = index.as_deref_mut() {
-                builder.value_chunk(&buffer[..n]);
+                builder.value_chunk(bytes);
             }
             if selected {
-                captured.as_mut().unwrap().extend_from_slice(&buffer[..n]);
+                captured.as_mut().unwrap().extend_from_slice(bytes);
             }
             if let Some((_, value)) = staged_entry.as_mut() {
-                value.extend_from_slice(&buffer[..n]);
+                value.extend_from_slice(bytes);
             }
-            remaining -= n;
-        }
+        })?;
         if let Some(entry) = staged_entry {
             let entries = &mut staging.as_mut().unwrap().0;
             entries
@@ -493,6 +533,48 @@ mod tests {
         );
         assert_eq!(remaining, &extended[bytes.len() + 1..]);
     }
+    #[test]
+    fn buffered_value_validation_retries_body_interrupts_and_rejects_truncation() {
+        struct Interrupted<'a> {
+            short: Short<'a>,
+            interrupt: bool,
+        }
+        impl Read for Interrupted<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                self.short.read(out)
+            }
+        }
+        fn reader(input: &[u8]) -> Interrupted<'_> {
+            Interrupted {
+                short: Short(input),
+                interrupt: false,
+            }
+        }
+        let bytes = fixture(CHUNK_BYTES + 3);
+        let metadata = validate_buffered(reader(&bytes), limits()).unwrap();
+        assert_eq!(metadata, validate(bytes.as_slice(), limits()).unwrap());
+        let truncated = &bytes[..bytes.len() - 37];
+        assert_eq!(
+            validate_buffered(reader(truncated), limits())
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        let mut corrupted = bytes;
+        let last_value_byte = corrupted.len() - 33;
+        corrupted[last_value_byte] ^= 1;
+        assert_eq!(
+            validate_buffered(reader(&corrupted), limits())
+                .unwrap_err()
+                .to_string(),
+            "digest mismatch"
+        );
+    }
+
     #[test]
     fn truncation_corruption_and_extra_bytes_fail() {
         let bytes = fixture(3);
