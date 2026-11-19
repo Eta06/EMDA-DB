@@ -374,21 +374,25 @@ impl RunWriter {
         if self.cursor != self.table_at {
             return Err(record::invalid_data("spill run payload length mismatch"));
         }
+        let table_bytes = self
+            .count
+            .checked_mul(OFFSET_LEN)
+            .ok_or_else(|| io::Error::other("spill size overflow"))?;
+        let table_end = self
+            .table_at
+            .checked_add(table_bytes)
+            .ok_or_else(|| io::Error::other("spill size overflow"))?;
         self.offsets.flush()?;
         self.offsets.seek(SeekFrom::Start(0))?;
         let mut buffer = [0_u8; IO_BUFFER];
-        loop {
-            let count = self.offsets.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
+        let mut remaining = table_bytes;
+        while remaining != 0 {
+            let count = remaining.min(buffer.len() as u64) as usize;
+            self.offsets.read_exact(&mut buffer[..count])?;
             self.write_hashed(&buffer[..count])?;
+            remaining -= count as u64;
         }
-        let table_end = self
-            .table_at
-            .checked_add(self.count * OFFSET_LEN)
-            .ok_or_else(|| io::Error::other("spill size overflow"))?;
-        if self.cursor != table_end {
+        if self.cursor != table_end || self.offsets.metadata()?.len() != table_bytes {
             return Err(record::invalid_data("spill offset table length mismatch"));
         }
         let digest: [u8; 32] = self.hasher.clone().finalize().into();
@@ -1421,6 +1425,28 @@ mod tests {
             Ok(_) => panic!("expected spill read to fail"),
             Err(error) => error,
         }
+    }
+
+    #[test]
+    fn oversized_offset_sidecar_cannot_extend_the_staged_run() {
+        let directory = tempfile::tempdir().unwrap();
+        let fd = Rc::new(FdInner {
+            open: Cell::new(0),
+            peak: Cell::new(0),
+            limit: 2,
+        });
+        let mut writer = RunWriter::create(directory.path(), 1, &fd, 1, 1).unwrap();
+        writer.write_entry(b"a", Some(loc(100))).unwrap();
+        let table_end = writer.table_at + OFFSET_LEN;
+        let run = File::open(&writer.path).unwrap();
+        writer.offsets.write_all(&[0; IO_BUFFER]).unwrap();
+
+        let error = must_err(writer.finish());
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "spill offset table length mismatch");
+        assert!(run.metadata().unwrap().len() <= table_end);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+        assert_eq!(fd.open.get(), 0);
     }
 
     fn emit_all(
