@@ -734,3 +734,10 @@ and a private reopen checks the complete output before publication. The
 [restore measurement](../benchmarks/results/2026-11-19-retained-restore-locations/README.md)
 records lower peak process RSS and longer restore time on a 128 MiB
 fixture. Total memory accounting and recovery latency remain open.
+
+Runtime ARM64 SHA-256 acceleration reduces restore and eager-open time in
+the [paired recovery measurement](../benchmarks/results/2026-11-19-arm64-sha-restore/README.md).
+Both platforms passed their full library suites, including 722 tests on
+Linux after resetting the verified build cache. Portable and accelerated
+builds exchanged retained files and matched independent digests. The
+measurements cover a warm 128 MiB fixture for each operation.

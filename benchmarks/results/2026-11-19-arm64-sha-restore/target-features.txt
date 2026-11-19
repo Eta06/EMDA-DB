@@ -1,0 +1,16 @@
+sha2 v0.10.9
+├── sha2 feature "default"
+│   └── database-engine v0.1.0 (/Users/emir/Development/EMDA-DB)
+│       └── database-engine feature "default" (command-line)
+└── sha2 feature "std"
+    └── sha2 feature "default" (*)
+sha2 v0.10.9
+├── sha2 feature "asm"
+│   └── database-engine v0.1.0 (/Users/emir/Development/EMDA-DB)
+│       └── database-engine feature "default" (command-line)
+├── sha2 feature "default"
+│   └── database-engine v0.1.0 (/Users/emir/Development/EMDA-DB) (*)
+├── sha2 feature "sha2-asm"
+│   └── sha2 feature "asm" (*)
+└── sha2 feature "std"
+    └── sha2 feature "default" (*)

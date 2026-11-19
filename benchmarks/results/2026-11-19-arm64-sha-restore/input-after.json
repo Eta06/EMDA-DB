@@ -1,0 +1,21 @@
+{
+  "fixture/binding": "d1e5da7ab07de112c588ee0e27f5b3b90eec4bee64200300e5bb2d278ce86a23",
+  "fixture/candidate/base": "d202234d9dd873b5b9b87bf8c47dacfbc75880f92d4b57d23d314e68a873e329",
+  "fixture/candidate/records.log": "1b3fa53051c07aa9e46083a727b184664a7bede3986a72343556ce6bf8881dd3",
+  "fixture/candidate/store.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "fixture/candidate/witness": "aa3e206309ec05cbf4b9325c2e278432ec69ce3707bc312ec2c9c5aec31aef28",
+  "fixture/source/commit.state": "ef174ea67213d53d7ea93ae7ed64dc035cd86e276a11478e7e25b946a8197b62",
+  "fixture/source/records.log": "498955026021468f92dd6f7424820832beda4edabc1d93fd5e453cf7476a91b3",
+  "fixture/source/store.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "fixture/suffix": "d42d95ca6429b06cb4cb950d0fbbe7e436adeb6d47ebdf4654dba2a07cc7da71",
+  "fixture-reopen/catalog/active.retained": "c4bfa5d50c0acda6170c3323aea21981a4272e9d6cf307a286e45ec7a0cc9710",
+  "fixture-reopen/catalog/catalog.id": "939d71fd71d50e8c50499140bf375395c9a5f9d2c1ee78de2861e0c80a28798d",
+  "fixture-reopen/catalog/generation-a/base": "c59ffe5beb61b461db2002bfdf4d2cca8b14e02e4448cefd61b00e6a714dd475",
+  "fixture-reopen/catalog/generation-a/commit.state": "53ff5ed78671c7d3cbdb340be1917fed953a55b3bed08844c0468145adf24b5f",
+  "fixture-reopen/catalog/generation-a/records.log": "0c09ca9a7b1d4d438929b4e7c0e67adf8c3f18577c5b057be1ff036a1f219697",
+  "fixture-reopen/catalog/generation-a/store.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "fixture-reopen/catalog/store.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "fixture-reopen/source/commit.state": "431faea5a28e8f4ba2285df2e84234c600a20bfa805d99685c24b0eb29a4780a",
+  "fixture-reopen/source/records.log": "ba6b539ae1e82559d76c247c377054f556cefb42744dc1693de40c961a4e1993",
+  "fixture-reopen/source/store.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

@@ -1,0 +1,14 @@
+03f64dba3fdf3df2dea960ac167a402324b5e8a4
+5e9517e939c45e99fd4cb81cb843d6998a8f2b8f
+70cd2c623bb01c6f70f66dd5c60ece38d66802fe
+Darwin 27.0.0 arm64
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+Apple M6
+1
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 asimddp sha512 asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp flagm2 frint i8mm bf16 bti afp rpres sme smei16i64 smef64f64 smei8i32 smef16f32 smeb16f32 smef32f32 ebf16 sme2 sme2p1 smei16i32 smebi32i32 smeb16b16 smef16f16 lut smelutv2 smef8f16 smef8f32

@@ -1,0 +1,10 @@
+     Locking 1 package to highest Rust 1.100.0 compatible version
+      Adding sha2-asm v0.6.4
+    Checking subtle v2.6.1
+   Compiling sha2-asm v0.6.4
+    Checking digest v0.10.7
+    Checking hmac v0.12.1
+    Checking sha2 v0.10.9
+    Checking database-engine v0.1.0 (/Users/emir/Development/EMDA-DB)
+    Checking database-engine-fuzz v0.0.0 (/Users/emir/Development/EMDA-DB/fuzz)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.58s
