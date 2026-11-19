@@ -559,3 +559,12 @@ transactions revalidate authority before returning. The
 records the cross-platform cutover and recovery tests. Automatic rotation
 under independent authority, broader recovery and resource evidence, and
 the remaining query and planner work are still open.
+
+Authority-checked retained stores now offer opt-in automatic rotation and
+reclamation. The same path handles byte-key batches and document
+transactions. The
+[rotation and reclamation report](../benchmarks/results/2026-11-19-authority-auto-reclaim/README.md)
+records the verified selection and retirement behavior across authority
+errors and process kills. Remaining Step 2 work includes measuring recovery
+and peak resources across generations and establishing deployment policy for
+legacy archives, supported readers and independently protected authority.
