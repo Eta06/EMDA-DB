@@ -21,6 +21,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::ops::Range;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -198,10 +199,9 @@ impl RunCursor {
         let mut hi = self.count;
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let pos = self.entry_pos(mid)?;
-            let (_end, key, state) = read_entry(
+            let (key, state) = read_entry(
                 &self.file,
-                pos,
+                self.entry_range(mid)?,
                 self.table_at,
                 &self.identity,
                 mid,
@@ -225,13 +225,14 @@ impl RunCursor {
             }
             return Ok(None);
         }
-        let pos = self.entry_pos(self.index)?;
-        if pos != self.expected_pos {
+        let range = self.entry_range(self.index)?;
+        if range.start != self.expected_pos {
             return Err(record::invalid_data("spill run entry offset is not packed"));
         }
-        let (end, key, state) = read_entry(
+        let end = range.end;
+        let (key, state) = read_entry(
             &self.file,
-            pos,
+            range,
             self.table_at,
             &self.identity,
             self.index,
@@ -250,11 +251,19 @@ impl RunCursor {
         Ok(Some((key, state)))
     }
 
-    fn entry_pos(&self, index: u64) -> io::Result<u64> {
-        let mut bytes = [0_u8; 8];
+    fn entry_range(&self, index: u64) -> io::Result<Range<u64>> {
+        let mut bytes = [0_u8; 16];
+        let last = index + 1 == self.count;
+        let size = if last { 8 } else { 16 };
         self.file
-            .read_exact_at(&mut bytes, self.table_at + index * OFFSET_LEN)?;
-        Ok(u64::from_le_bytes(bytes))
+            .read_exact_at(&mut bytes[..size], self.table_at + index * OFFSET_LEN)?;
+        let start = u64::from_le_bytes(bytes[..8].try_into().expect("offset slot"));
+        let end = if last {
+            self.table_at
+        } else {
+            u64::from_le_bytes(bytes[8..].try_into().expect("next offset slot"))
+        };
+        Ok(start..end)
     }
 }
 
@@ -1001,34 +1010,36 @@ fn entry_checksum(
 
 fn read_entry(
     file: &File,
-    pos: u64,
+    range: Range<u64>,
     table_at: u64,
     identity: &[u8; 32],
     index: u64,
     count: u64,
-) -> io::Result<(u64, Vec<u8>, Option<ValueLocation>)> {
+) -> io::Result<(Vec<u8>, Option<ValueLocation>)> {
+    let pos = range.start;
     if pos < HEADER_LEN {
         return Err(record::invalid_data("spill entry overlaps its header"));
     }
-    let Some(available) = table_at.checked_sub(pos) else {
-        return Err(record::invalid_data("spill entry exceeds its run"));
-    };
-    if available < 2 {
-        return Err(record::invalid_data("spill entry exceeds its run"));
-    }
+    let span = range
+        .end
+        .checked_sub(pos)
+        .filter(|&span| {
+            range.end <= table_at && (ENTRY_OVERHEAD + 1..=MAX_ENTRY_ON_DISK as u64).contains(&span)
+        })
+        .ok_or_else(|| record::invalid_data("invalid spill entry span"))? as usize;
     // One read supplies the length, key, tag, location, and CRC. A later
     // pread could observe a different generation of the same slot.
-    let want =
-        usize::try_from(available.min(MAX_ENTRY_ON_DISK as u64)).expect("bounded spill entry");
     let mut buffer = [0_u8; MAX_ENTRY_ON_DISK];
-    file.read_exact_at(&mut buffer[..want], pos)?;
+    file.read_exact_at(&mut buffer[..span], pos)?;
     let key_len = u16::from_le_bytes([buffer[0], buffer[1]]) as usize;
     if key_len == 0 || key_len > MAX_SPILL_KEY_LEN {
         return Err(record::invalid_data("invalid spill key length"));
     }
     let total = 2 + key_len + TAIL_LEN + ENTRY_CRC_LEN;
-    if total as u64 > available {
-        return Err(record::invalid_data("spill entry exceeds its run"));
+    if total != span {
+        return Err(record::invalid_data(
+            "spill entry length does not match its span",
+        ));
     }
     let tag_at = 2 + key_len;
     let body_end = tag_at + TAIL_LEN;
@@ -1073,7 +1084,7 @@ fn read_entry(
         }
         _ => return Err(record::invalid_data("unknown spill entry tag")),
     };
-    Ok((pos + total as u64, key, state))
+    Ok((key, state))
 }
 
 fn hash_prefix(file: &File, len: u64) -> io::Result<[u8; 32]> {
@@ -1081,7 +1092,7 @@ fn hash_prefix(file: &File, len: u64) -> io::Result<[u8; 32]> {
     let mut buffer = [0_u8; IO_BUFFER];
     let mut offset = 0_u64;
     while offset < len {
-        let count = ((len - offset) as usize).min(buffer.len());
+        let count = (len - offset).min(buffer.len() as u64) as usize;
         file.read_exact_at(&mut buffer[..count], offset)?;
         hasher.update(&buffer[..count]);
         offset += count as u64;
@@ -2017,7 +2028,14 @@ mod tests {
         assert_eq!(run_table_end(1, u64::MAX - OFFSET_LEN), None);
         let (session, directory, path) = finished_single_run();
         let file = File::open(&path).unwrap();
-        let error = match read_entry(&file, HEADER_LEN - 1, HEADER_LEN + 32, &[0; 32], 0, 1) {
+        let error = match read_entry(
+            &file,
+            HEADER_LEN - 1..HEADER_LEN + 32,
+            HEADER_LEN + 32,
+            &[0; 32],
+            0,
+            1,
+        ) {
             Ok(_) => panic!("header bytes accepted as a spill entry"),
             Err(error) => error,
         };
@@ -2031,9 +2049,21 @@ mod tests {
         let error = session
             .push(b"a", None, refuse_base)
             .expect_err("retargeted offset");
-        assert_entry_checksum(&error);
+        assert_eq!(error.to_string(), "invalid spill entry span");
         assert_eq!(session.live_count(), 2);
         assert!(session.dirty.is_empty());
+        drop(session);
+        assert_stage_removed(directory.path());
+
+        let (mut session, directory, path) = finished_single_run();
+        session.prepare_for_emit().unwrap();
+        // The preceding entry still has a valid CRC. A neighboring slot
+        // that extends its span by a byte must nevertheless be rejected.
+        write_offset_slot(&path, 1, HEADER_LEN + one_byte_stride() + 1);
+        assert_eq!(
+            must_err(session.next_latest()).to_string(),
+            "spill entry length does not match its span"
+        );
         drop(session);
         assert_stage_removed(directory.path());
 
@@ -2419,13 +2449,21 @@ mod tests {
         }
     }
 
+    fn first_affected_entry(site: &UsedSite) -> usize {
+        // Each table offset ends the previous entry as well as starting its own.
+        match site.kind {
+            UsedByte::TableOffset => site.entry_index.saturating_sub(1),
+            _ => site.entry_index,
+        }
+    }
+
     fn assert_find_closed(cursor: &mut RunCursor, entries: &[SpillEntry], site: &UsedSite) {
+        let first = first_affected_entry(site);
         for (index, (key, state)) in entries.iter().enumerate() {
             match cursor.find(key) {
                 Ok(Find::Found(found)) => {
-                    assert_ne!(
-                        index,
-                        site.entry_index,
+                    assert!(
+                        !(first..=site.entry_index).contains(&index),
                         "lookup returned damaged entry {}",
                         String::from_utf8_lossy(key)
                     );
@@ -2501,7 +2539,7 @@ mod tests {
                 assert_scan_stops_at_damage(
                     || cursor.next_entry(),
                     &entries,
-                    site.entry_index,
+                    first_affected_entry(site),
                     "scan",
                 );
             }
@@ -2513,7 +2551,7 @@ mod tests {
             assert_scan_stops_at_damage(
                 || session.next_latest(),
                 &entries,
-                site.entry_index,
+                first_affected_entry(site),
                 "emission",
             );
             // The file cursor owns the ordering state; the session need not
