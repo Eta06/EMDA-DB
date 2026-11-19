@@ -1,0 +1,14 @@
+cd821c9529bf2054333c23bb4940bcb28aa98ed7
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+433440c2b09dff42cf0294983ba2684b0e57465dc3c21b3d30a0acf42972113a  examples/document_disjunction_bench.rs
+Linux 7.3.0-9-generic aarch64 GNU/Linux
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+rustc 1.101.0-nightly (1c3a65069 2026-11-02)
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        19G   19G  219M  99% /
+tmpfs           2.9G  2.4G  539M  82% /tmp
+tmpfs           2.9G  825M  2.1G  28% /dev/shm

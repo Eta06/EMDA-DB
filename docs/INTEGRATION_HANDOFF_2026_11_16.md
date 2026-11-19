@@ -672,7 +672,7 @@ eight steps equal weight puts overall progress at roughly 34%.
 | --- | ---: | --- |
 | 1. Correctness and foundations | 95% | Shared store locks resolve the traced fork/exec failure mode. Strict macOS and Linux suites and focused fault tests provide the current baseline. Wider fault models and the deferred durability drills remain. |
 | 2. Durable storage and core | 82% | Authority-backed retained recovery, automatic rotation, archive retirement, and persistent catalog admission at creation and rotation are exercised. Total memory accounting, full-base verification cost, and broader recovery workloads remain. |
-| 3. Document data and queries | 65% | Document transactions work on the retained backend. Guarded schema and index maintenance and bounded index unions are implemented. Representative benchmarks, longer concurrency and fault campaigns, and richer diagnostics and queries remain. |
+| 3. Document data and queries | 67% | Document transactions work on the retained backend. Guarded maintenance and bounded index unions now cover common predicates across disjunction branches. Broader workload measurements, concurrency and fault campaigns, and richer diagnostics and queries remain. |
 
 Policy changes take effect through generation selection. The
 [persistent quota tests](../benchmarks/results/2026-11-19-persisted-retained-quotas/README.md)
@@ -684,3 +684,9 @@ part of the service and isolation work.
 cover candidate and backup creation, authority registration, exact staging
 headroom on original-path cutover, and unfenced cleanup after an ordinary
 source grows beyond the abandoned policy.
+
+Document disjunction planning now uses shared required predicates in each
+branch. [Cross-platform evidence](../benchmarks/results/2026-11-19-disjunction-required-predicates/README.md)
+checks scope, empty partial-index phantom conflicts, and a scan-budget case
+that failed before the change. The benchmark verifies identical results on
+the planned path, the collection scan, and SQLite for the sampled query.
