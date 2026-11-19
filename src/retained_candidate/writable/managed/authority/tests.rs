@@ -6,6 +6,8 @@ use std::{
     sync::{Arc, Barrier, Mutex},
 };
 
+pub(super) mod crash;
+
 const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
     base: Limits {
         file_bytes: 8192,

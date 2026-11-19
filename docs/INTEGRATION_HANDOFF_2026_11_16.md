@@ -807,3 +807,9 @@ uses the in-memory block directory to find lengths for suffix-touched keys.
 The merge still authenticates all base blocks, and rotation verifies the
 successor and rechecks the source before selection. A Linux trace records
 the logical reads for a sparse suffix and verifies the reopened successor.
+
+[Authority-backed document interruption tests](../benchmarks/results/2026-11-19-retained-document-commit-kills/README.md)
+cover the durable intent, append, log sync, witness sync and final authority
+record on both platforms. The recovered documents, both indexes and a raw
+receipt agree with the resolved suffix. One simulated incomplete tail fails
+closed, preserving the witness and authority.

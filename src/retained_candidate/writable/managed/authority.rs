@@ -507,7 +507,11 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 attempted.set(true);
                 replace(authority, self.current, pending)
             },
-            |_| Ok(()),
+            |_point| {
+                #[cfg(test)]
+                tests::crash::pause_at_commit_point(_point)?;
+                Ok(())
+            },
         );
         if attempted.get() {
             self.inner.uncertain = true;
