@@ -770,3 +770,10 @@ The [many-key restore comparison](../benchmarks/results/2026-11-19-streamed-rest
 records lower peak RSS on a 399,853-key live set and checks rejection of
 altered keys and values with valid record checksums. Replay still retains
 one live key and value-location index.
+
+The subsequent [suffix-overlay restore](../benchmarks/results/2026-11-19-suffix-overlay-restore/README.md)
+keeps only suffix-touched keys in memory and streams the authenticated
+base into the private output. Ordered intermediate limits still apply to
+the full logical state. The many-key comparison measures peak RSS with a
+sparse suffix. High-cardinality suffixes and large values have separate
+memory costs.

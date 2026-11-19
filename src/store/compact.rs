@@ -32,100 +32,147 @@ fn copy_live_records(
     index: &BTreeMap<Vec<u8>, ValueLocation>,
     target: &Log,
 ) -> io::Result<()> {
-    copy_records(
-        target,
-        index
-            .iter()
-            .map(|(key, &location)| (key.as_slice(), location.length, location)),
-        |location| source.read(location),
-    )
+    let mut copy = GroupedCopy::new(target, None);
+    for (key, &location) in index {
+        copy.put(key, location.length, || source.read(location))?;
+    }
+    copy.finish()
 }
 
-fn copy_records<'a, T>(
-    target: &Log,
-    entries: impl Iterator<Item = (&'a [u8], usize, T)>,
-    mut read: impl FnMut(T) -> io::Result<Vec<u8>>,
-) -> io::Result<()> {
-    let mut records = Vec::with_capacity(MAX_COPY_RECORDS);
-    let mut bytes = 0_usize;
-    for (key, value_len, value) in entries {
-        let length = record::HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE;
-        if !records.is_empty()
-            && (records.len() == MAX_COPY_RECORDS || bytes + length > MAX_COPY_BYTES)
-        {
-            flush_copy(target, &mut records)?;
-            bytes = 0;
+#[derive(Clone, Copy)]
+pub(crate) struct RestoreSize {
+    pub(crate) entries: u64,
+    pub(crate) keys: u64,
+    pub(crate) payload: u64,
+}
+
+impl RestoreSize {
+    fn encoded_bytes(self) -> io::Result<u64> {
+        self.entries
+            .checked_mul((record::HEADER_SIZE + record::CHECKSUM_SIZE) as u64)
+            .and_then(|overhead| overhead.checked_add(self.payload))
+            .ok_or_else(|| io::Error::other("restored log size overflow"))
+    }
+
+    fn consume(&mut self, key_len: usize, value_len: usize) -> io::Result<()> {
+        let exceeded = || record::invalid_data("restored output exceeded admitted size");
+        self.entries = self.entries.checked_sub(1).ok_or_else(exceeded)?;
+        self.keys = self.keys.checked_sub(key_len as u64).ok_or_else(exceeded)?;
+        self.payload = self
+            .payload
+            .checked_sub(key_len as u64)
+            .and_then(|n| n.checked_sub(value_len as u64))
+            .ok_or_else(exceeded)?;
+        Ok(())
+    }
+}
+
+pub(crate) struct GroupedCopy<'a> {
+    target: &'a Log,
+    records: Vec<CopyRecord>,
+    bytes: usize,
+    remaining: Option<RestoreSize>,
+}
+
+impl<'a> GroupedCopy<'a> {
+    fn new(target: &'a Log, remaining: Option<RestoreSize>) -> Self {
+        Self {
+            target,
+            records: Vec::with_capacity(MAX_COPY_RECORDS),
+            bytes: 0,
+            remaining,
         }
-        let value = read(value)?;
+    }
+
+    pub(crate) fn put(
+        &mut self,
+        key: &[u8],
+        value_len: usize,
+        read: impl FnOnce() -> io::Result<Vec<u8>>,
+    ) -> io::Result<()> {
+        if let Some(remaining) = &mut self.remaining {
+            remaining.consume(key.len(), value_len)?;
+        }
+        let length = record::HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE;
+        if !self.records.is_empty()
+            && (self.records.len() == MAX_COPY_RECORDS || self.bytes + length > MAX_COPY_BYTES)
+        {
+            flush_copy(self.target, &mut self.records)?;
+            self.bytes = 0;
+        }
+        let value = read()?;
         if value.len() != value_len {
             return Err(record::invalid_data("copy source value length changed"));
         }
         let checksum = crc32fast::hash(&value);
         let encoded = record::encode(Operation::Put, key, &value)?;
-        bytes += encoded.len();
-        records.push(CopyRecord {
+        self.bytes += encoded.len();
+        self.records.push(CopyRecord {
             encoded,
             key_len: key.len(),
             value_len: value.len(),
             checksum,
         });
+        Ok(())
     }
-    flush_copy(target, &mut records)
+
+    fn finish(mut self) -> io::Result<()> {
+        if self
+            .remaining
+            .is_some_and(|size| size.entries != 0 || size.keys != 0 || size.payload != 0)
+        {
+            return Err(record::invalid_data(
+                "restored output shorter than admitted size",
+            ));
+        }
+        flush_copy(self.target, &mut self.records)
+    }
 }
 
 impl Store {
     // The retained restore owns this unpublished, newly initialized store.
-    // Only append after admitting the full sorted, distinct live set. The
-    // stage is reopened and verified before publication.
+    // Admit the final stream before appending, and check the count and exact
+    // bytes while writing. The stage is reopened and verified before publication.
     pub(crate) fn write_private_restore<T>(
         self,
-        entries: &[(Vec<u8>, T)],
-        value_len: impl Fn(&T) -> usize,
-        mut read: impl FnMut(&T) -> io::Result<Vec<u8>>,
-    ) -> io::Result<u64> {
-        if self.max_live_keys.is_some_and(|max| entries.len() > max) {
+        size: RestoreSize,
+        write: impl FnOnce(&mut GroupedCopy<'_>) -> io::Result<T>,
+    ) -> io::Result<(u64, T)> {
+        if self
+            .max_live_keys
+            .is_some_and(|max| size.entries > max as u64)
+        {
             return Err(io::Error::other(
                 "configured live key limit would be exceeded",
             ));
         }
-        let mut keys = 0_usize;
-        let mut bytes = 0_u64;
-        for (key, value) in entries {
-            keys = keys
-                .checked_add(key.len())
-                .ok_or_else(|| io::Error::other("restored key byte count overflow"))?;
-            bytes = bytes
-                .checked_add((record::HEADER_SIZE + record::CHECKSUM_SIZE) as u64)
-                .and_then(|bytes| bytes.checked_add(key.len() as u64))
-                .and_then(|bytes| bytes.checked_add(value_len(value) as u64))
-                .ok_or_else(|| io::Error::other("restored log size overflow"))?;
-        }
-        if self.max_live_key_bytes.is_some_and(|max| keys > max) {
+        if self
+            .max_live_key_bytes
+            .is_some_and(|max| size.keys > max as u64)
+        {
             return Err(io::Error::other(
                 "configured live key byte limit would be exceeded",
             ));
         }
+        let bytes = size.encoded_bytes()?;
         let end = self
             .log
             .len()?
             .checked_add(bytes)
             .ok_or_else(|| io::Error::other("restored log size overflow"))?;
-        {
+        let result = {
             let _reservation = self
                 .log_quota
                 .as_ref()
                 .map(|quota| quota.reserve(bytes))
                 .transpose()?;
-            copy_records(
-                &self.log,
-                entries
-                    .iter()
-                    .map(|(key, value)| (key.as_slice(), value_len(value), value)),
-                &mut read,
-            )?;
-        }
+            let mut copy = GroupedCopy::new(&self.log, Some(size));
+            let result = write(&mut copy)?;
+            copy.finish()?;
+            result
+        };
         self.close_private_store()?;
-        Ok(end)
+        Ok((end, result))
     }
 
     /// Copies current live keys into a verified new store with no old records.
@@ -421,6 +468,11 @@ mod tests {
         };
         let end = header + length * entries.len() as u64;
         let key_bytes = 2 * entries.len();
+        let size = RestoreSize {
+            entries: entries.len() as u64,
+            keys: key_bytes as u64,
+            payload: (key_bytes + entries.len()) as u64,
+        };
         for (log_bytes, keys, key_bytes) in [
             (end - 1, entries.len(), key_bytes),
             (end, entries.len() - 1, key_bytes),
@@ -435,11 +487,9 @@ mod tests {
             .unwrap();
             assert!(
                 store
-                    .write_private_restore(
-                        &entries,
-                        |value| value.len(),
-                        |_| { panic!("restore read before output admission") }
-                    )
+                    .write_private_restore(size, |_| -> io::Result<()> {
+                        panic!("restore read before output admission")
+                    })
                     .is_err()
             );
             assert_eq!(
@@ -456,19 +506,20 @@ mod tests {
         .unwrap();
         let mut read = 0;
         store
-            .write_private_restore(
-                &entries,
-                |value| value.len(),
-                |value| {
-                    let flushed = read / MAX_COPY_RECORDS * MAX_COPY_RECORDS;
-                    assert_eq!(
-                        std::fs::metadata(path.join("records.log"))?.len(),
-                        header + length * flushed as u64
-                    );
-                    read += 1;
-                    Ok(value.to_vec())
-                },
-            )
+            .write_private_restore(size, |copy| {
+                for (key, value) in &entries {
+                    copy.put(key, value.len(), || {
+                        let flushed = read / MAX_COPY_RECORDS * MAX_COPY_RECORDS;
+                        assert_eq!(
+                            std::fs::metadata(path.join("records.log"))?.len(),
+                            header + length * flushed as u64
+                        );
+                        read += 1;
+                        Ok(value.to_vec())
+                    })?;
+                }
+                Ok(())
+            })
             .unwrap();
         assert_eq!(read, entries.len());
         let store = Store::open_with_resource_limits(

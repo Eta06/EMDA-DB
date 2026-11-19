@@ -1,24 +1,30 @@
 use super::suffix_file::SuffixFile;
 use super::{
-    Limits, ReplayBudget, SuffixExpected, SuffixLimits, apply_suffix_entry, check_binding,
-    check_files, copy_replay_bytes, invalid, open_regular, open_suffix, suffix_capacity,
+    Expected, Limits, ReplayBudget, SuffixExpected, SuffixLimits, charge_suffix_work,
+    check_binding, check_files, copy_replay_bytes, invalid, open_regular, open_suffix,
+    suffix_capacity,
 };
 use crate::retained_base_v2::index::OverlayValue;
 use crate::retained_base_v2::{CapturedValue, FRAME_BYTES, StagingLimits, scan_value_locations};
+use crate::store::{GroupedCopy, RestoreSize};
 use sha2::{Digest, Sha256};
-use std::{fs::File, io, path::Path};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, Seek},
+    path::Path,
+};
 
 pub(super) struct RestoreReplay {
     base: File,
     base_len: u64,
     suffix: File,
     suffix_len: u64,
-    pub(super) entries: Vec<(Vec<u8>, RestoreValue)>,
-}
-
-pub(super) struct RestoreValue {
-    from_suffix: bool,
-    location: CapturedValue,
+    expected: Expected,
+    limits: Limits,
+    staging: StagingLimits,
+    changes: Vec<(Vec<u8>, Option<CapturedValue>)>,
+    pub(super) size: RestoreSize,
 }
 
 impl RestoreReplay {
@@ -36,8 +42,8 @@ impl RestoreReplay {
             start: 0,
             len,
         };
-        // Maintain the detached replay contract: the whole suffix must
-        // match the binding before base validation or replay admission.
+        // Maintain the detached replay contract: authenticate the whole suffix
+        // before using its mutations to admit the base or live states.
         let mut hash = Sha256::new();
         source.copy_to(&mut hash)?;
         if <[u8; 32]>::from(hash.finalize()) != expected.digest
@@ -45,18 +51,21 @@ impl RestoreReplay {
         {
             return Err(invalid());
         }
+        let boundary = Some((len, expected.digest));
+        let mut touched = HashMap::new();
+        source.replay::<()>(boundary, suffix_limits.operations, |key, _| {
+            if !touched.contains_key(key) {
+                touched.try_reserve(1).map_err(io::Error::other)?;
+                touched.insert(copy_replay_bytes(key)?, None);
+            }
+            Ok(())
+        })?;
         check_files(candidate, &expected.candidate)?;
         let base = open_regular(&candidate.join("base"))?;
-        let mut entries = Vec::new();
         let metadata = scan_value_locations(&base, limits, staging, |key, location| {
-            entries.try_reserve(1).map_err(io::Error::other)?;
-            entries.push((
-                copy_replay_bytes(key)?,
-                RestoreValue {
-                    from_suffix: false,
-                    location,
-                },
-            ));
+            if let Some(value) = touched.get_mut(key) {
+                *value = Some(location);
+            }
             Ok(())
         })?;
         check_binding(&metadata, &expected.candidate)?;
@@ -73,37 +82,45 @@ impl RestoreReplay {
             // Every validated entry has two four-byte lengths.
             payload: metadata.file_bytes - FRAME_BYTES - 8 * metadata.entries,
         };
-        source.replay::<Sha256>(
-            Some((len, expected.digest)),
-            suffix_limits.operations,
-            |key, value| {
-                let replacement = value.map(|value| {
-                    (value.length, move || {
-                        Ok(RestoreValue {
-                            from_suffix: true,
-                            location: CapturedValue {
-                                offset: value.offset,
-                                length: value.length,
-                                digest: value.digest,
-                            },
-                        })
-                    })
-                });
-                apply_suffix_entry(
-                    &mut entries,
-                    key,
-                    replacement,
-                    |v| v.location.length,
-                    &mut budget,
-                )
-            },
-        )?;
+        source.replay::<Sha256>(boundary, suffix_limits.operations, |key, value| {
+            // Preserve admission under the published work formula, even
+            // though only suffix-touched keys are stored during replay.
+            let live = usize::try_from(budget.entries).map_err(|_| invalid())?;
+            charge_suffix_work(&mut budget.work, budget.work_limit, live)?;
+            let current = touched.get_mut(key).ok_or_else(invalid)?;
+            let next = budget.changed_live_set(
+                key,
+                current.as_ref().map(|value| value.length),
+                value.as_ref().map(|value| value.length),
+            )?;
+            *current = value.map(|value| CapturedValue {
+                offset: value.offset,
+                length: value.length,
+                digest: value.digest,
+            });
+            (budget.entries, budget.keys, budget.payload) = next;
+            Ok(())
+        })?;
+        let mut changes = Vec::new();
+        changes
+            .try_reserve_exact(touched.len())
+            .map_err(io::Error::other)?;
+        changes.extend(touched);
+        changes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let replay = Self {
             base,
             base_len: metadata.file_bytes,
             suffix,
             suffix_len: expected.end,
-            entries,
+            expected: expected.candidate.clone(),
+            limits,
+            staging,
+            changes,
+            size: RestoreSize {
+                entries: budget.entries,
+                keys: budget.keys,
+                payload: budget.payload,
+            },
         };
         replay.check_lengths()?;
         Ok(replay)
@@ -120,41 +137,76 @@ impl RestoreReplay {
         Ok(())
     }
 
-    pub(super) fn read(&self, value: &RestoreValue) -> io::Result<Vec<u8>> {
-        OverlayValue::Disk {
-            file: if value.from_suffix {
-                &self.suffix
-            } else {
-                &self.base
-            },
-            offset: value.location.offset,
-            len: value.location.length,
-            digest: &value.location.digest,
+    pub(super) fn write(
+        &self,
+        copy: &mut GroupedCopy<'_>,
+        before_value: impl Fn() -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        let mut hash = Sha256::new();
+        let mut changes = self.changes.iter().peekable();
+        let mut base_reader = &self.base;
+        base_reader.rewind()?;
+        let mut emit = |file: &File, key: &[u8], value: &CapturedValue| {
+            copy.put(key, value.length, || {
+                before_value()?;
+                OverlayValue::Disk {
+                    file,
+                    offset: value.offset,
+                    len: value.length,
+                    digest: &value.digest,
+                }
+                .to_owned_bytes()
+            })?;
+            hash_row(&mut hash, key, value.length, value.digest);
+            Ok::<(), io::Error>(())
+        };
+        // The scan may invoke the writer before checking the file digest.
+        // All writes remain private until the complete binding matches.
+        let metadata =
+            scan_value_locations(base_reader, self.limits, self.staging, |key, value| {
+                while let Some((other, replacement)) =
+                    changes.next_if(|(other, _)| other.as_slice() <= key)
+                {
+                    if let Some(replacement) = replacement {
+                        emit(&self.suffix, other, replacement)?;
+                    }
+                    if other.as_slice() == key {
+                        return Ok(());
+                    }
+                }
+                emit(&self.base, key, &value)
+            })?;
+        check_binding(&metadata, &self.expected)?;
+        for (key, value) in changes {
+            if let Some(value) = value {
+                emit(&self.suffix, key, value)?;
+            }
         }
-        .to_owned_bytes()
+        Ok(hash.finalize().into())
     }
 
-    pub(super) fn verify_output(&self, log: &crate::log::Log, end: u64) -> io::Result<()> {
-        let mismatch = || crate::record::invalid_data("restored state mismatch");
-        let mut expected = self.entries.iter();
+    pub(super) fn verify_output(
+        log: &crate::log::Log,
+        end: u64,
+        expected: [u8; 32],
+    ) -> io::Result<()> {
+        let mut hash = Sha256::new();
         log.verify_restored_records(end, |key, length, digest| {
-            let (expected_key, value) = expected.next().ok_or_else(mismatch)?;
-            if key != expected_key || length != value.len() || digest != value.location.digest {
-                return Err(mismatch());
-            }
+            hash_row(&mut hash, key, length, digest);
             Ok(())
         })?;
-        if expected.next().is_some() {
-            return Err(mismatch());
+        if <[u8; 32]>::from(hash.finalize()) != expected {
+            return Err(crate::record::invalid_data("restored state mismatch"));
         }
         Ok(())
     }
 }
 
-impl RestoreValue {
-    pub(super) fn len(&self) -> usize {
-        self.location.length
-    }
+fn hash_row(hash: &mut Sha256, key: &[u8], value_len: usize, value: [u8; 32]) {
+    hash.update((key.len() as u64).to_le_bytes());
+    hash.update(key);
+    hash.update((value_len as u64).to_le_bytes());
+    hash.update(value);
 }
 
 #[cfg(test)]
@@ -192,10 +244,12 @@ mod tests {
             work: 64,
         };
         store.put(b"a", b"base-data").unwrap();
+        store.put(b"m", b"obsolete").unwrap();
         let expected = store
             .build_retained_candidate(&candidate, [3; 16], [4; 16], export)
             .unwrap();
         store.put(b"z", b"suffix-data").unwrap();
+        store.delete(b"m").unwrap();
         let binding = store
             .export_retained_suffix(
                 &candidate,
@@ -232,9 +286,22 @@ mod tests {
                 hook,
             )
         };
-        for (file, value) in [
-            (candidate.join("base"), b"base-data".as_slice()),
-            (suffix.clone(), b"suffix-data".as_slice()),
+        for (file, value, message) in [
+            (
+                candidate.join("base"),
+                b"base-data".as_slice(),
+                "digest mismatch",
+            ),
+            (
+                candidate.join("base"),
+                b"obsolete".as_slice(),
+                "digest mismatch",
+            ),
+            (
+                suffix.clone(),
+                b"suffix-data".as_slice(),
+                "retained suffix value digest mismatch",
+            ),
         ] {
             let original = fs::read(&file).unwrap();
             let mut changed = original.clone();
@@ -253,10 +320,7 @@ mod tests {
                 panic!("restore published from changed input: {result:?}");
             };
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-            assert!(
-                error.to_string().contains("value digest mismatch"),
-                "{error}"
-            );
+            assert!(error.to_string() == message, "{error}");
             assert_eq!(names(), before);
             assert_eq!(fs::read(&file).unwrap(), changed);
             fs::write(&file, original).unwrap();
@@ -319,5 +383,6 @@ mod tests {
             restored.get(b"z").unwrap().as_deref(),
             Some(&b"suffix-data"[..])
         );
+        assert!(restored.get(b"m").unwrap().is_none());
     }
 }

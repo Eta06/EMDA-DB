@@ -30,6 +30,7 @@ use commit::Coordinator;
 pub use commit::{
     GroupCommitStatus, MAX_GROUP_COMMIT_BUFFERED_BYTES, MAX_GROUP_COMMIT_BUFFERED_RECORDS,
 };
+pub(crate) use compact::{GroupedCopy, RestoreSize};
 pub use compact_stream::COMPACTED_CHECKPOINT_FILE;
 pub(crate) use compact_stream::compact_checkpoint;
 pub(crate) use compact_stream::compact_checkpoint_with_hooks;

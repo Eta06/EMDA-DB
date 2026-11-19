@@ -626,41 +626,9 @@ fn apply_suffix_entry<V>(
 ) -> io::Result<()> {
     charge_suffix_work(&mut budget.work, budget.work_limit, state.len())?;
     let position = state.binary_search_by(|entry| entry.0.as_slice().cmp(key));
-    let key_len = u64::try_from(key.len()).map_err(|_| invalid())?;
-    let old_len = position.ok().map(|i| length(&state[i].1) as u64);
-    let mut entries = budget.entries;
-    let mut keys = budget.keys;
-    let mut payload = budget.payload;
-    if let Some(old_len) = old_len {
-        entries = entries.checked_sub(1).ok_or_else(invalid)?;
-        keys = keys.checked_sub(key_len).ok_or_else(invalid)?;
-        payload = payload
-            .checked_sub(key_len)
-            .and_then(|n| n.checked_sub(old_len))
-            .ok_or_else(invalid)?;
-    }
-    if let Some((value_len, make_value)) = replacement {
-        if value_len > budget.staging.value_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "value limit exceeded",
-            ));
-        }
-        entries = entries.checked_add(1).ok_or_else(invalid)?;
-        keys = keys.checked_add(key_len).ok_or_else(invalid)?;
-        payload = payload
-            .checked_add(key_len)
-            .and_then(|n| n.checked_add(value_len as u64))
-            .ok_or_else(invalid)?;
-        if entries > budget.limits.entries
-            || keys > budget.limits.key_bytes
-            || payload > budget.staging.staging_bytes
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "live set limit exceeded",
-            ));
-        }
+    let old_len = position.ok().map(|i| length(&state[i].1));
+    let next = budget.changed_live_set(key, old_len, replacement.as_ref().map(|(len, _)| *len))?;
+    if let Some((_, make_value)) = replacement {
         let new_value = make_value()?;
         match position {
             Ok(i) => state[i].1 = new_value,
@@ -676,8 +644,54 @@ fn apply_suffix_entry<V>(
     } else if let Ok(i) = position {
         state.remove(i);
     }
-    (budget.entries, budget.keys, budget.payload) = (entries, keys, payload);
+    (budget.entries, budget.keys, budget.payload) = next;
     Ok(())
+}
+
+impl ReplayBudget {
+    fn changed_live_set(
+        &self,
+        key: &[u8],
+        old_len: Option<usize>,
+        replacement_len: Option<usize>,
+    ) -> io::Result<(u64, u64, u64)> {
+        let key_len = u64::try_from(key.len()).map_err(|_| invalid())?;
+        let mut entries = self.entries;
+        let mut keys = self.keys;
+        let mut payload = self.payload;
+        if let Some(old_len) = old_len {
+            entries = entries.checked_sub(1).ok_or_else(invalid)?;
+            keys = keys.checked_sub(key_len).ok_or_else(invalid)?;
+            payload = payload
+                .checked_sub(key_len)
+                .and_then(|n| n.checked_sub(old_len as u64))
+                .ok_or_else(invalid)?;
+        }
+        if let Some(value_len) = replacement_len {
+            if value_len > self.staging.value_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "value limit exceeded",
+                ));
+            }
+            entries = entries.checked_add(1).ok_or_else(invalid)?;
+            keys = keys.checked_add(key_len).ok_or_else(invalid)?;
+            payload = payload
+                .checked_add(key_len)
+                .and_then(|n| n.checked_add(value_len as u64))
+                .ok_or_else(invalid)?;
+            if entries > self.limits.entries
+                || keys > self.limits.key_bytes
+                || payload > self.staging.staging_bytes
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "live set limit exceeded",
+                ));
+            }
+        }
+        Ok((entries, keys, payload))
+    }
 }
 
 #[cfg(test)]
@@ -801,11 +815,14 @@ pub struct RestoreLimits {
 /// output creation use distinct limits. The independently retained binding
 /// must be trusted by the caller; all external directories, their ancestors
 /// and input files must remain trusted and stable throughout. Replay keeps
-/// live keys and authenticated value locations in memory. Each write reads
+/// only suffix-touched keys and their locations in memory. That memory grows
+/// with distinct suffix keys, including deleted keys, under the suffix byte
+/// and operation limits. The base is scanned once for admission and again
+/// while streaming the stage. Each write reads
 /// one value, and the private output synchronizes in groups of up to 64
 /// records and 4 MiB of encoded data. A larger record is synchronized alone.
-/// Verification checks the witnessed output in a streaming pass, using the
-/// authenticated replay entries as the expected sequence.
+/// Verification checks the witnessed output against the authenticated
+/// sequence digest in a streaming pass.
 /// Input staging limits still count the logical live payload,
 /// including intermediate states of a batch. The caller must keep the source
 /// and suffix separate from the destination; only candidate descendants are
@@ -895,7 +912,7 @@ pub(crate) fn restore_with_hooks(
             expected,
         )?;
         let mut stage = crate::staging::Stage::directory(parent)?;
-        let end = {
+        let (end, output_digest) = {
             hook("init")?;
             let store = crate::Store::open_with_resource_limits(
                 stage.path(),
@@ -903,14 +920,7 @@ pub(crate) fn restore_with_hooks(
                 Some(output.live_keys),
                 Some(output.live_key_bytes),
             )?;
-            store.write_private_restore(
-                &replay.entries,
-                restore_replay::RestoreValue::len,
-                |value| {
-                    hook("write")?;
-                    replay.read(value)
-                },
-            )?
+            store.write_private_restore(replay.size, |copy| replay.write(copy, || hook("write")))?
         };
         {
             hook("reopen")?;
@@ -925,7 +935,7 @@ pub(crate) fn restore_with_hooks(
                 ));
             }
             hook("check")?;
-            replay.verify_output(&log, end)?;
+            restore_replay::RestoreReplay::verify_output(&log, end, output_digest)?;
         }
         replay.check_lengths()?;
         hook("stage_sync")?;
