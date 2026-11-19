@@ -466,3 +466,12 @@ On the sampled 14,044-key live set, reclamation reduced catalog file length
 from 1,580,757 to 604,672 bytes compared with the initial import.
 The [validation and phase measurements](../benchmarks/results/2026-11-19-managed-retained/README.md)
 include the test logs, resource limits and reproducible probe.
+
+Managed retained catalogs can now resize their limits by publishing a
+verified successor. This recovers a live state that needs a larger base
+even when its suffix has no remaining write capacity. Open enforces
+caller-supplied recovery ceilings and uses the selected generation's
+witness-bound limits. The same ceiling can cover either side of an
+uncertain resize. The [resize validation](../benchmarks/results/2026-11-19-retained-resize/README.md)
+also refreshes document serial histories and kill-race evidence on both
+writable backends and both local platforms.
