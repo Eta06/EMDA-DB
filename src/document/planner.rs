@@ -79,10 +79,10 @@ pub struct PlannedDocumentQueryResult {
     pub access: DocumentQueryAccess,
 }
 
-// Only predicates required by the entire filter are eligible. Never descend
-// into Or or Not: their children need not match every result.
-fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexValue> {
-    let mut pending = vec![filter];
+// Each supplied filter must hold for the current plan. Within it, descend
+// only through And: Or and Not do not require any particular child.
+fn required_equality(required: &[&DocumentFilter], path: &[String]) -> Option<IndexValue> {
+    let mut pending = required.to_vec();
     while let Some(filter) = pending.pop() {
         match filter {
             DocumentFilter::Equal { path: field, value } if field == path => {
@@ -108,8 +108,8 @@ fn required_equality(filter: &DocumentFilter, path: &[String]) -> Option<IndexVa
 // Select one required, wholly indexable list. Deduplication uses the exact
 // scalar index encoding so repeated values cannot duplicate rows or work.
 // Non-indexable lists fall back rather than omitting potential matches.
-fn required_membership(filter: &DocumentFilter, path: &[String]) -> Option<Vec<IndexValue>> {
-    let mut pending = vec![filter];
+fn required_membership(required: &[&DocumentFilter], path: &[String]) -> Option<Vec<IndexValue>> {
+    let mut pending = required.to_vec();
     while let Some(filter) = pending.pop() {
         match filter {
             DocumentFilter::In {
@@ -145,8 +145,8 @@ fn required_membership(filter: &DocumentFilter, path: &[String]) -> Option<Vec<I
 // exist. Explicit Exists is the only currently recognized proof of absence.
 // An Or proves the condition only if every nonempty branch proves it.
 // Not and nested array-element filters do not establish root-path presence.
-fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> bool {
-    let mut pending = vec![filter];
+fn required_presence(required: &[&DocumentFilter], path: &[String], exists: bool) -> bool {
+    let mut pending = required.to_vec();
     while let Some(filter) = pending.pop() {
         match filter {
             DocumentFilter::Exists {
@@ -170,7 +170,7 @@ fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> 
                 if !filters.is_empty()
                     && filters
                         .iter()
-                        .all(|branch| required_presence(branch, path, exists)) =>
+                        .all(|branch| required_presence(&[branch], path, exists)) =>
             {
                 return true;
             }
@@ -180,20 +180,20 @@ fn required_presence(filter: &DocumentFilter, path: &[String], exists: bool) -> 
     false
 }
 
-fn partial_is_implied(filter: &DocumentFilter, partial: &PartialFilter) -> bool {
+fn partial_is_implied(required: &[&DocumentFilter], partial: &PartialFilter) -> bool {
     match partial {
-        PartialFilter::Exists { path, exists } => required_presence(filter, path, *exists),
+        PartialFilter::Exists { path, exists } => required_presence(required, path, *exists),
         PartialFilter::Equals { path, value } => {
-            required_equality(filter, path).as_ref() == Some(value)
+            required_equality(required, path).as_ref() == Some(value)
         }
     }
 }
 
-fn eligible(index: &IndexDefinition, filter: &DocumentFilter) -> bool {
+fn eligible(index: &IndexDefinition, required: &[&DocumentFilter]) -> bool {
     index
         .partial
         .as_ref()
-        .is_none_or(|partial| partial_is_implied(filter, partial))
+        .is_none_or(|partial| partial_is_implied(required, partial))
 }
 
 enum Selection {
@@ -222,18 +222,18 @@ impl Selection {
 // from Or or Not. Distinct values make tuple probes disjoint. Reject an
 // excessive product before building it, then let the caller use a safe scan.
 fn compound_membership(
-    filter: &DocumentFilter,
+    required: &[&DocumentFilter],
     index: &IndexDefinition,
 ) -> Option<Vec<Vec<IndexValue>>> {
     let mut choices = Vec::with_capacity(index.fields.len());
     let mut probe_count = 1_usize;
     let mut has_membership = false;
     for field in &index.fields {
-        let values = if let Some(value) = required_equality(filter, field) {
+        let values = if let Some(value) = required_equality(required, field) {
             vec![value]
         } else {
             has_membership = true;
-            required_membership(filter, field)?
+            required_membership(required, field)?
         };
         probe_count = probe_count.checked_mul(values.len())?;
         if probe_count > MAX_INDEX_PROBES {
@@ -305,12 +305,12 @@ fn tighten(
 }
 
 fn required_range(
-    filter: &DocumentFilter,
+    required: &[&DocumentFilter],
     path: &[String],
 ) -> io::Result<Option<(Option<IndexBound>, Option<IndexBound>)>> {
     let mut lower = None;
     let mut upper = None;
-    let mut pending = vec![filter];
+    let mut pending = required.to_vec();
     while let Some(filter) = pending.pop() {
         match filter {
             DocumentFilter::Compare {
@@ -337,7 +337,7 @@ fn required_range(
 }
 
 fn choose_index<'a>(
-    filter: &DocumentFilter,
+    required: &[&DocumentFilter],
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
     // Prefer a unique exact tuple, then a nonunique one, regardless of range.
@@ -347,12 +347,12 @@ fn choose_index<'a>(
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
-        .filter(|index| eligible(index, filter))
+        .filter(|index| eligible(index, required))
         .find_map(|index| {
             index
                 .fields
                 .iter()
-                .map(|field| required_equality(filter, field))
+                .map(|field| required_equality(required, field))
                 .collect::<Option<Vec<_>>>()
                 .map(|tuple| (index, Selection::Equality(tuple)))
         })
@@ -365,11 +365,11 @@ fn choose_index<'a>(
         .iter()
         .filter(|index| index.fields.len() == 1)
         .chain(indexes.iter().filter(|index| index.fields.len() > 1))
-        .filter(|index| eligible(index, filter))
+        .filter(|index| eligible(index, required))
     {
         let mut equal = Vec::new();
         for (position, field) in index.fields.iter().enumerate() {
-            if let Some(value) = required_equality(filter, field) {
+            if let Some(value) = required_equality(required, field) {
                 equal.push(value);
                 continue;
             }
@@ -378,9 +378,9 @@ fn choose_index<'a>(
             // every later field must be independently required as well.
             if index.fields[position + 1..]
                 .iter()
-                .all(|later| required_presence(filter, later, true))
+                .all(|later| required_presence(required, later, true))
             {
-                if let Some((lower, upper)) = required_range(filter, field)? {
+                if let Some((lower, upper)) = required_range(required, field)? {
                     return Ok(Some((
                         index,
                         Selection::Range {
@@ -402,9 +402,9 @@ fn choose_index<'a>(
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
-        .filter(|index| index.fields.len() == 1 && eligible(index, filter))
+        .filter(|index| index.fields.len() == 1 && eligible(index, required))
         .find_map(|index| {
-            required_membership(filter, &index.fields[0])
+            required_membership(required, &index.fields[0])
                 .map(|values| (index, Selection::Membership(values)))
         })
     {
@@ -416,9 +416,9 @@ fn choose_index<'a>(
         .iter()
         .filter(|index| index.unique)
         .chain(indexes.iter().filter(|index| !index.unique))
-        .filter(|index| index.fields.len() > 1 && eligible(index, filter))
+        .filter(|index| index.fields.len() > 1 && eligible(index, required))
         .find_map(|index| {
-            compound_membership(filter, index)
+            compound_membership(required, index)
                 .map(|tuples| (index, Selection::CompoundMembership(tuples)))
         })
     {
@@ -429,11 +429,12 @@ fn choose_index<'a>(
 
 type Branch<'a> = (&'a IndexDefinition, Selection);
 
-// Find a required OR under zero or more ANDs. Every branch must provide
-// complete candidates for that branch independently. Roll back partial
-// plans when a branch has no index or would exceed the shared probe cap.
-fn choose_disjunction<'a>(
-    filter: &DocumentFilter,
+// Find a required OR under zero or more ANDs. The original filter and
+// each selected ancestor branch remain required within a branch. Sibling
+// alternatives are never added to that context.
+fn choose_disjunction<'a, 'filter>(
+    filter: &'filter DocumentFilter,
+    context: &mut Vec<&'filter DocumentFilter>,
     indexes: &'a [IndexDefinition],
     branches: &mut Vec<Branch<'a>>,
     remaining: &mut usize,
@@ -447,14 +448,17 @@ fn choose_disjunction<'a>(
                 let available = *remaining;
                 let mut complete = true;
                 for branch in filters {
-                    if let Some((index, selection)) = choose_index(branch, indexes)? {
-                        if let Some(next) = remaining.checked_sub(selection.probe_count()) {
+                    context.push(branch);
+                    let planned = match choose_index(context, indexes)? {
+                        Some((index, selection)) if selection.probe_count() <= *remaining => {
+                            *remaining -= selection.probe_count();
                             branches.push((index, selection));
-                            *remaining = next;
-                            continue;
+                            true
                         }
-                    }
-                    if !choose_disjunction(branch, indexes, branches, remaining)? {
+                        _ => choose_disjunction(branch, context, indexes, branches, remaining)?,
+                    };
+                    context.pop();
+                    if !planned {
                         complete = false;
                         break;
                     }
@@ -494,7 +498,7 @@ impl DocumentTransaction<'_, '_> {
         let metadata = self.metadata(collection)?;
         let mut branches = Vec::new();
         let access =
-            if let Some((index, selection)) = choose_index(&query.filter, &metadata.indexes)? {
+            if let Some((index, selection)) = choose_index(&[&query.filter], &metadata.indexes)? {
                 let access = describe_selection(index, &selection);
                 branches.push((index, selection));
                 access
@@ -502,6 +506,7 @@ impl DocumentTransaction<'_, '_> {
                 let mut remaining = MAX_INDEX_PROBES;
                 if !choose_disjunction(
                     &query.filter,
+                    &mut vec![&query.filter],
                     &metadata.indexes,
                     &mut branches,
                     &mut remaining,

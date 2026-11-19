@@ -159,6 +159,123 @@ fn disjunction_merges_partial_equality_and_range_with_one_budget() {
 }
 
 #[test]
+fn disjunction_branches_use_shared_guards_and_compound_fields() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        for definition in [
+            index("code", &["tenant", "code"]),
+            index("score", &["tenant", "score", "rank"]),
+        ] {
+            db.create_index(
+                "items",
+                IndexDefinition {
+                    partial: Some(PartialFilter::Equals {
+                        path: path("published"),
+                        value: IndexValue::Boolean(true),
+                    }),
+                    ..definition
+                },
+            )
+            .unwrap();
+        }
+        for (id, doc) in [
+            (
+                "code",
+                json!({"tenant":1,"published":true,"code":"hit","rank":1}),
+            ),
+            (
+                "range",
+                json!({"tenant":1,"published":true,"score":5,"rank":null}),
+            ),
+            (
+                "wrong-tenant",
+                json!({"tenant":2,"published":true,"code":"hit","rank":1}),
+            ),
+            (
+                "not-published",
+                json!({"tenant":1,"published":false,"score":5,"rank":1}),
+            ),
+            (
+                "missing-rank",
+                json!({"tenant":1,"published":true,"score":5}),
+            ),
+        ] {
+            db.insert("items", id, &doc).unwrap();
+        }
+        let shared = [
+            eq("tenant", json!(1)),
+            DocumentFilter::Exists {
+                path: path("rank"),
+                exists: true,
+            },
+        ];
+        let guard = eq("published", json!(true));
+        let code = eq("code", json!("hit"));
+        let score = DocumentFilter::Compare {
+            path: path("score"),
+            comparison: Comparison::GreaterOrEqual,
+            value: IndexValue::Integer(5),
+        };
+        let filter = |alternatives| {
+            DocumentFilter::And(vec![
+                shared[0].clone(),
+                DocumentFilter::And(vec![shared[1].clone(), alternatives]),
+            ])
+        };
+        let query = request(
+            filter(DocumentFilter::And(vec![
+                guard.clone(),
+                DocumentFilter::Or(vec![
+                    code.clone(),
+                    DocumentFilter::Or(vec![score.clone(), eq("code", json!("empty"))]),
+                ]),
+            ])),
+            2,
+        );
+        let mut scan = query.clone();
+        scan.max_scanned = 5;
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(planned.access, access(&["code", "score"], 3));
+        assert_eq!(planned.result.plan.scanned, 2);
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &scan).unwrap().documents
+        );
+        assert_eq!(
+            planned
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["code", "range"]
+        );
+
+        let query = request(
+            filter(DocumentFilter::Or(vec![
+                DocumentFilter::And(vec![guard, code]),
+                score,
+            ])),
+            5,
+        );
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(planned.access, DocumentQueryAccess::CollectionScan);
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &query).unwrap().documents
+        );
+        assert!(
+            planned
+                .result
+                .documents
+                .iter()
+                .any(|row| row.id == "not-published")
+        );
+    });
+}
+
+#[test]
 fn disjunction_falls_back_for_unindexed_branches_and_shared_probe_overflow() {
     on_backends(|db| {
         db.create_collection("items", CollectionSchema::default())
@@ -243,20 +360,33 @@ fn repeated_disjunct_hits_share_the_document_byte_budget() {
 
 #[test]
 fn empty_disjunction_branches_detect_matching_phantoms() {
-    for matching in [false, true] {
+    for (guarded, matching) in [(false, false), (false, true), (true, false), (true, true)] {
         on_backends(|db| {
             db.create_collection("items", CollectionSchema::default())
                 .unwrap();
-            db.create_index("items", index("left", &["left"])).unwrap();
-            db.create_index("items", index("right", &["right"]))
+            for name in ["left", "right"] {
+                db.create_index(
+                    "items",
+                    IndexDefinition {
+                        partial: guarded.then(|| PartialFilter::Equals {
+                            path: path("active"),
+                            value: IndexValue::Boolean(true),
+                        }),
+                        ..index(name, &[name])
+                    },
+                )
                 .unwrap();
-            let query = request(
-                DocumentFilter::Or(vec![
-                    eq("left", json!(1)),
-                    DocumentFilter::Or(vec![eq("right", json!(2)), eq("right", json!(3))]),
-                ]),
-                4,
-            );
+            }
+            let alternatives = DocumentFilter::Or(vec![
+                eq("left", json!(1)),
+                DocumentFilter::Or(vec![eq("right", json!(2)), eq("right", json!(3))]),
+            ]);
+            let filter = if guarded {
+                DocumentFilter::And(vec![eq("active", json!(true)), alternatives])
+            } else {
+                alternatives
+            };
+            let query = request(filter, 4);
             let (read, observed) = mpsc::channel();
             let (commit, written) = mpsc::channel();
             std::thread::scope(|scope| {
@@ -265,7 +395,7 @@ fn empty_disjunction_branches_detect_matching_phantoms() {
                     db.insert(
                         "items",
                         "new",
-                        &json!({"right": if matching { 3 } else { 4 }}),
+                        &json!({"right": if guarded || matching { 3 } else { 4 }, "active": matching}),
                     )
                     .unwrap();
                     commit.send(()).unwrap();

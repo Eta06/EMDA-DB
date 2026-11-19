@@ -148,9 +148,11 @@ After those existing choices, the planner can also probe a compound index when e
 
 When those single-index choices do not apply, a required `Or` can use
 a union of branch plans, including when the `Or` appears within an
-`And`. Each branch must independently have an eligible index or a
-required disjunction with complete branch coverage. Each partial-index
-guard must follow from its own branch. The union can combine equality,
+`And`. Each branch must have an eligible index or a required disjunction
+with complete branch coverage. The branch and its surrounding required
+conjunction can supply equality fields, scalar bounds, presence proofs and
+partial-index guards. A guard in one alternative does not qualify a sibling.
+The union can combine equality,
 membership and range probes across distinct indexes. All branches share
 one cap of 256 probes and the original document and byte budgets.
 Repeat hits consume budget on each visit. The planner keeps one document

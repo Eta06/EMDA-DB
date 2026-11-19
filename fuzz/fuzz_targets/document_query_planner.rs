@@ -1,7 +1,7 @@
 #![no_main]
 use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentSort, IndexDefinition, Store,
+    DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue, PartialFilter, Store,
 };
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
@@ -33,7 +33,7 @@ fn equal(path: &str, value: Value) -> DocumentFilter {
     }
 }
 fn filter(byte: u8) -> (DocumentFilter, bool) {
-    match byte % 10 {
+    match byte % 12 {
         0 => (equal("email", json!("e0")), true),
         1 => (equal("email", Value::Null), true),
         2 => (equal("email", json!([1])), false),
@@ -70,12 +70,33 @@ fn filter(byte: u8) -> (DocumentFilter, bool) {
             false,
         ),
         8 => (equal("score", json!(i64::from(byte % 4))), false),
-        _ => (
+        9 => (
             DocumentFilter::And(vec![
                 equal("email", json!("e0")),
                 equal("email", json!("e1")),
             ]),
             true,
+        ),
+        10 => (
+            DocumentFilter::And(vec![
+                equal("active", json!(true)),
+                equal("region", json!(1)),
+                DocumentFilter::Or(vec![equal("group", json!(0)), equal("group", json!(2))]),
+            ]),
+            false,
+        ),
+        _ => (
+            DocumentFilter::And(vec![
+                equal("region", json!(1)),
+                DocumentFilter::Or(vec![
+                    DocumentFilter::And(vec![
+                        equal("active", json!(true)),
+                        equal("group", json!(0)),
+                    ]),
+                    equal("group", json!(2)),
+                ]),
+            ]),
+            false,
         ),
     }
 }
@@ -109,13 +130,28 @@ fuzz_target!(|data: &[u8]| {
             )
             .unwrap();
     }
+    store
+        .db()
+        .create_index(
+            "c",
+            IndexDefinition {
+                name: "region_group".into(),
+                fields: vec![vec!["region".into()], vec!["group".into()]],
+                unique: false,
+                partial: Some(PartialFilter::Equals {
+                    path: vec!["active".into()],
+                    value: IndexValue::Boolean(true),
+                }),
+            },
+        )
+        .unwrap();
     for (id, email, score) in [
         ("0", Some(json!("e0")), 0),
         ("1", Some(json!("e1")), 1),
         ("2", Some(Value::Null), 2),
         ("3", None, 3),
     ] {
-        let mut document = json!({"score":score});
+        let mut document = json!({"score":score, "region":1, "group":score, "active":score < 2});
         if let Some(email) = email {
             document["email"] = email;
         }
@@ -132,7 +168,8 @@ fuzz_target!(|data: &[u8]| {
                 .replace(
                     "c",
                     "0",
-                    &json!({"email":"e0", "score":bytes[1] % 4}),
+                    &json!({"email":"e0", "score":bytes[1] % 4, "region":1,
+                        "group":bytes[1] % 4, "active":bytes[1] & 4 != 0}),
                     false,
                 )
                 .unwrap();
@@ -157,12 +194,21 @@ fuzz_target!(|data: &[u8]| {
                 DocumentQueryAccess::UniqueEqualityIndex {
                     index: "email".into(),
                 }
-            } else if matches!(bytes[0] % 10, 7 | 8) {
-                DocumentQueryAccess::EqualityIndex {
-                    index: "score".into(),
-                }
             } else {
-                DocumentQueryAccess::CollectionScan
+                match bytes[0] % 12 {
+                    4 => DocumentQueryAccess::DisjunctionIndex {
+                        indexes: vec!["email".into()],
+                        probes: 2,
+                    },
+                    7 | 8 => DocumentQueryAccess::EqualityIndex {
+                        index: "score".into(),
+                    },
+                    10 => DocumentQueryAccess::DisjunctionIndex {
+                        indexes: vec!["region_group".into()],
+                        probes: 2,
+                    },
+                    _ => DocumentQueryAccess::CollectionScan,
+                }
             }
         );
         assert_eq!(planned.result.documents, scan.documents);

@@ -15,6 +15,10 @@ const FILTER: &str = "SELECT id,body FROM docs WHERE
     (json_extract(body,'$.active')=1 AND json_extract(body,'$.code')=?1)
     OR (json_extract(body,'$.score') BETWEEN ?2 AND ?3)
     ORDER BY id";
+const SHARED_GUARD_FILTER: &str = "SELECT id,body FROM docs WHERE
+    json_extract(body,'$.active')=1 AND
+    (json_extract(body,'$.code')=?1 OR json_extract(body,'$.score') BETWEEN ?2 AND ?3)
+    ORDER BY id";
 
 fn document(number: i64) -> DocumentEntry {
     DocumentEntry {
@@ -93,8 +97,14 @@ fn setup(path: &Path, sqlite: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-fn sqlite_query(sqlite: &Connection, code: i64, low: i64, high: i64) -> Result<Vec<DocumentEntry>> {
-    let mut stmt = sqlite.prepare_cached(FILTER)?;
+fn sqlite_query(
+    sqlite: &Connection,
+    filter: &str,
+    code: i64,
+    low: i64,
+    high: i64,
+) -> Result<Vec<DocumentEntry>> {
+    let mut stmt = sqlite.prepare_cached(filter)?;
     let mut rows = stmt.query(params![code, low, high])?;
     let mut entries = Vec::new();
     while let Some(row) = rows.next()? {
@@ -116,9 +126,19 @@ fn summary(samples: &[u128]) -> Value {
 }
 
 fn main() -> Result<()> {
-    let parent = std::env::args_os()
-        .nth(1)
-        .ok_or("usage: document_disjunction_bench <existing-directory>")?;
+    let mut args = std::env::args_os().skip(1);
+    let usage = "usage: document_disjunction_bench <existing-directory> [shared-guard]";
+    let parent = args.next().ok_or(usage)?;
+    let shared_guard = match args.next() {
+        None => false,
+        Some(argument) if argument == "shared-guard" && args.next().is_none() => true,
+        _ => return Err(usage.into()),
+    };
+    let sql_filter = if shared_guard {
+        SHARED_GUARD_FILTER
+    } else {
+        FILTER
+    };
     let fixture = tempfile::tempdir_in(parent)?;
     let source = fixture.path().join("store");
     let sqlite_path = fixture.path().join("sqlite.db");
@@ -131,12 +151,13 @@ fn main() -> Result<()> {
     let sqlite = Connection::open(&sqlite_path)?;
     sqlite.pragma_update(None, "synchronous", "FULL")?;
     let plan = sqlite
-        .prepare(&format!("EXPLAIN QUERY PLAN {FILTER}"))?
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql_filter}"))?
         .query_map([0, 0, 2], |row| row.get::<_, String>(3))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !["MULTI-INDEX OR", "USING INDEX code", "USING INDEX score"]
-        .into_iter()
-        .all(|expected| plan.iter().any(|line| line.contains(expected)))
+    if !shared_guard
+        && !["MULTI-INDEX OR", "USING INDEX code", "USING INDEX score"]
+            .into_iter()
+            .all(|expected| plan.iter().any(|line| line.contains(expected)))
     {
         return Err(format!("unexpected SQLite plan: {plan:?}").into());
     }
@@ -154,22 +175,27 @@ fn main() -> Result<()> {
         } else {
             (low + 271) % DOCUMENTS
         };
+        let range = DocumentFilter::And(vec![
+            compare_score(Comparison::GreaterOrEqual, low),
+            compare_score(Comparison::LessOrEqual, high),
+        ]);
+        let guard = equal("active", json!(true));
+        let equal_code = equal("code", json!(code));
+        let filter = if shared_guard {
+            DocumentFilter::And(vec![guard, DocumentFilter::Or(vec![equal_code, range])])
+        } else {
+            DocumentFilter::Or(vec![DocumentFilter::And(vec![guard, equal_code]), range])
+        };
         let query = DocumentQuery {
-            filter: DocumentFilter::Or(vec![
-                DocumentFilter::And(vec![
-                    equal("active", json!(true)),
-                    equal("code", json!(code)),
-                ]),
-                DocumentFilter::And(vec![
-                    compare_score(Comparison::GreaterOrEqual, low),
-                    compare_score(Comparison::LessOrEqual, high),
-                ]),
-            ]),
+            filter,
             max_scanned: DOCUMENTS as usize,
             ..Default::default()
         };
         let expected = (0..DOCUMENTS)
-            .filter(|&n| (low..=high).contains(&n) || (n == code && n % 2 == 0))
+            .filter(|&n| {
+                ((low..=high).contains(&n) && (!shared_guard || n % 2 == 0))
+                    || (n == code && n % 2 == 0)
+            })
             .map(document)
             .collect::<Vec<_>>();
         // Rotate among paths so the same engine does not always read first.
@@ -188,7 +214,7 @@ fn main() -> Result<()> {
                     }
                     planned.result.documents
                 }
-                _ => sqlite_query(&sqlite, code, low, high)?,
+                _ => sqlite_query(&sqlite, sql_filter, code, low, high)?,
             };
             let elapsed = start.elapsed().as_nanos();
             if actual != expected {
@@ -204,7 +230,7 @@ fn main() -> Result<()> {
     println!(
         "{}",
         json!({
-            "documents": DOCUMENTS, "warmup": WARMUP, "samples": SAMPLES,
+            "documents": DOCUMENTS, "warmup": WARMUP, "samples": SAMPLES, "shared_guard": shared_guard,
             "candidate_visits": visits, "sqlite_version": rusqlite::version(),
             "sqlite_access": plan, "collection_scan": summary(&times[0]),
             "indexed_disjunction": summary(&times[1]), "sqlite": summary(&times[2]),
