@@ -1,0 +1,29 @@
+{
+  "source_base_bytes": 29360335,
+  "source_log_bytes": 4194621,
+  "revisions": {
+    "2b995e0": {
+      "base": {
+        "bytes": 176161578,
+        "calls": 2718
+      },
+      "log": {
+        "bytes": 25167594,
+        "calls": 1292
+      },
+      "successor_bytes": 25166042
+    },
+    "d4f92aa": {
+      "base": {
+        "bytes": 117441196,
+        "calls": 1814
+      },
+      "log": {
+        "bytes": 16778658,
+        "calls": 713
+      },
+      "successor_bytes": 25166042
+    }
+  },
+  "normalized_successor_sha256": "e43c29e37772283cd30417c1adee7e02921a81c679434acafb80a82a291eac81"
+}
