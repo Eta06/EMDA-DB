@@ -533,3 +533,11 @@ deleting the inactive slot. The [rotation validation report](../benchmarks/resul
 records both uncertainty outcomes and the local Linux process-kill probe.
 Original-path cutover, authority deployment and the deferred durability
 drills remain open.
+
+The file-backed authority provides a checksummed revision record and
+durable CAS for cooperating processes on one host. The
+[provider validation report](../benchmarks/results/2026-11-19-file-retained-authority/README.md)
+records two-process races, process stops around replacement, and a Linux
+cross-filesystem exercise using the bundled provider. The deployment
+must protect authority storage independently of catalog rollback.
+Original-path cutover and the deferred durability drills remain open.
