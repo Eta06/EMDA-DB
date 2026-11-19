@@ -345,3 +345,19 @@ process-kill tests now cover pre-operation boundaries and after rename before
 parent sync; they do not simulate kills inside operations or partial I/O, prove
 parent-sync durability, or establish Linux V3 behavior. This is not a live
 cutover or reclamation.
+
+Subsequent work includes source-bound suffix export, offline restore, running-OS
+restore kill tests, and incremental replay totals; see the local Git history for
+their focused tests. A V2 fault test now covers schema publication alongside a
+document replacement, raw key and partial indexes after zero-byte append and
+post-sync failures. Linux exchange reconciliation remains unimplemented; after
+an uncertain exchange, both paths may be writable and a sidecar alone cannot
+fence older binaries. A related Linux-only fault test remains in the isolated
+`t3-9418d546-3db0cf8affcde41f` worktree, unrun and unintegrated.
+
+The Nov 19 capacity check found 69 GiB free on the Mac and 226 MiB on the
+validation VM root, with 717 MiB free on the VM's separate tmpfs. Use an isolated,
+size-conscious build for targeted Linux validation. The main checkout was at
+`2756483`, with 168 registered worktrees including the main checkout. Preserve
+and verify source changes and evidence before removing any old worktrees or VM
+artifacts.
