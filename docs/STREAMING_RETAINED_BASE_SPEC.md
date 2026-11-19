@@ -293,6 +293,17 @@ after the copy. Applications must coordinate any move of their writers to
 the new path. An uncertain publication can be inspected by opening the
 destination and verifying the selected generation.
 
+`backup_to` captures the active catalog's verified base and exact witnessed
+suffix in a new directory. It publishes the complete bundle after syncing
+and verifying the staged files. The caller must retain the returned binding
+independently, including when publication returns an uncertain outcome.
+`restore_backup` checks that binding and the supplied resource ceilings
+before publishing a fresh writable catalog. Backups retain their snapshot
+after source compaction and reclamation. Restored catalogs and their sources
+can be opened independently, so moving writers still requires application
+coordination. A trusted binding identifies the retained snapshot. Freshness
+after later source writes requires an independent freshness policy.
+
 ## Future migration of existing stores and external authority
 
 Cutover at an existing ordinary store entry point remains prohibited until the old-reader gate and backup

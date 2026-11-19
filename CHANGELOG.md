@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Back up a managed retained generation and restore it under an
+  independently retained binding and explicit recovery limits.
+
 - Copy a witnessed ordinary store directly into a verified managed retained
   catalog under explicit replay and generation limits.
 

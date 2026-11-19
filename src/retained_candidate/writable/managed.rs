@@ -26,6 +26,8 @@ const CATALOG_MAGIC: &[u8; 8] = b"EMDACT01";
 const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 
+mod backup;
+
 #[cfg(test)]
 mod tests;
 

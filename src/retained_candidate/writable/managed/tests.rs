@@ -65,6 +65,144 @@ impl Fixture {
 }
 
 #[test]
+fn managed_backup_restores_the_captured_generation_after_source_reclamation() {
+    let f = Fixture::new(LIMITS);
+    let backup = f.tmp.path().join("backup");
+    let restored = f.tmp.path().join("restored");
+    let mut store = f.open();
+    store.compact().unwrap();
+    assert!(store.reclaim_inactive().unwrap());
+    store
+        .write_batch(&[
+            BatchOperation::Delete { key: b"a" },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"captured",
+            },
+        ])
+        .unwrap();
+    let captured = store.scan(None, None, 4).unwrap();
+    let source_id = store.generation_id().unwrap();
+    let expected = store.backup_to(&backup).unwrap();
+    assert_eq!(expected.end, store.store.suffix.len() as u64);
+    store.put(b"b", b"changed").unwrap();
+    store.compact().unwrap();
+    assert!(store.reclaim_inactive().unwrap());
+    let restored_id =
+        ManagedRetainedStore::restore_backup(&backup, &restored, LIMITS, &expected).unwrap();
+    assert_ne!(restored_id, source_id);
+    let mut recovered = ManagedRetainedStore::open(&restored, LIMITS).unwrap();
+    assert_eq!(recovered.scan(None, None, 4).unwrap(), captured);
+    assert!(Store::open(backup.join("candidate")).is_err());
+    recovered.put(b"new", b"recovery").unwrap();
+    recovered.compact().unwrap();
+    assert!(recovered.reclaim_inactive().unwrap());
+    drop(recovered);
+    assert_eq!(
+        ManagedRetainedStore::open(&restored, LIMITS)
+            .unwrap()
+            .get(b"new", 8)
+            .unwrap()
+            .unwrap(),
+        b"recovery"
+    );
+    assert_eq!(store.get(b"b", 7).unwrap().unwrap(), b"changed");
+}
+
+#[test]
+fn managed_backup_rollback_binding_and_limits_reject_before_restore_publication() {
+    let f = Fixture::new(LIMITS);
+    let backup = f.tmp.path().join("backup");
+    let destination = f.tmp.path().join("restored");
+    let mut store = f.open();
+    let earlier = store.backup_to(f.tmp.path().join("earlier")).unwrap();
+    store.put(b"b", b"later").unwrap();
+    let expected = store.backup_to(&backup).unwrap();
+    let suffix = backup.join("suffix");
+    let suffix_before = fs::read(&suffix).unwrap();
+    let base = backup.join("candidate/base");
+    let base_before = fs::read(&base).unwrap();
+
+    assert!(matches!(
+        ManagedRetainedStore::restore_backup(&backup, &destination, LIMITS, &earlier),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    let limit = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            bytes: expected.end - 1,
+            ..LIMITS.suffix
+        },
+        ..LIMITS
+    };
+    assert!(matches!(
+        ManagedRetainedStore::restore_backup(&backup, &destination, limit, &expected),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    for (path, original) in [(&suffix, &suffix_before), (&base, &base_before)] {
+        let mut corrupt = original.clone();
+        corrupt[8] ^= 0x10;
+        fs::write(path, corrupt).unwrap();
+        assert!(matches!(
+            ManagedRetainedStore::restore_backup(&backup, &destination, LIMITS, &expected),
+            Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+        ));
+        fs::write(path, original).unwrap();
+    }
+    assert!(!destination.exists());
+    assert!(matches!(
+        store.backup_to(f.root.join("inside")),
+        Err(crate::SuffixExportFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(matches!(
+        ManagedRetainedStore::restore_backup(&backup, backup.join("inside"), LIMITS, &expected),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    ManagedRetainedStore::restore_backup(&backup, &destination, LIMITS, &expected).unwrap();
+}
+
+#[test]
+fn managed_backup_uncertainty_returns_the_verified_binding() {
+    let f = Fixture::new(LIMITS);
+    let backup = f.tmp.path().join("backup");
+    let restored = f.tmp.path().join("restored");
+    let mut store = f.open();
+    store.put(b"b", b"captured").unwrap();
+    let error = store
+        .backup_using(&backup, |_| Err(io::Error::other("sync interrupted")))
+        .unwrap_err();
+    let crate::SuffixExportFailure::OutcomeUnknown { error, expected } = error else {
+        panic!("unexpected backup failure: {error:?}");
+    };
+    assert_eq!(error.to_string(), "sync interrupted");
+    ManagedRetainedStore::restore_backup(&backup, &restored, LIMITS, &expected).unwrap();
+    assert_eq!(
+        ManagedRetainedStore::open(&restored, LIMITS)
+            .unwrap()
+            .get(b"b", 8)
+            .unwrap()
+            .unwrap(),
+        b"captured"
+    );
+}
+
+#[test]
+fn managed_backup_refuses_changed_witnessed_suffix() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.put(b"b", b"captured").unwrap();
+    let source = Slot::A.path(&f.root).join("records.log");
+    let file = OpenOptions::new().write(true).open(source).unwrap();
+    file.write_all_at(&[0], store.store.header.len as u64)
+        .unwrap();
+    let destination = f.tmp.path().join("backup");
+    assert!(matches!(
+        store.backup_to(&destination),
+        Err(crate::SuffixExportFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(!destination.exists());
+}
+
+#[test]
 fn ordinary_import_preserves_source_and_carries_ordered_batch_peaks() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");
@@ -681,6 +819,12 @@ fn managed_cutover_crash_child() {
         );
         panic!("managed import did not stop at the boundary: {result:?}");
     }
+    if point == "backup" {
+        let root = Path::new(&root);
+        let store = ManagedRetainedStore::open(root.join("catalog"), LIMITS).unwrap();
+        let result = store.backup_using(&root.join("interrupted-backup"), |_| pause());
+        panic!("managed backup did not stop at the boundary: {result:?}");
+    }
     let mut store = ManagedRetainedStore::open(root, LIMITS).unwrap();
     if point == "retire" {
         store.compact().unwrap();
@@ -692,6 +836,33 @@ fn managed_cutover_crash_child() {
         |_| if point == "after" { pause() } else { Ok(()) },
     );
     panic!("managed cutover did not stop at the boundary: {result:?}");
+}
+
+#[test]
+fn killed_backup_can_restore_the_witnessed_snapshot_with_a_retained_binding() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.put(b"b", b"captured").unwrap();
+    let expected = store
+        .backup_to(f.tmp.path().join("original-backup"))
+        .unwrap();
+    drop(store);
+    kill_at_boundary(f.tmp.path(), "backup");
+    let restored = f.tmp.path().join("restored");
+    ManagedRetainedStore::restore_backup(
+        f.tmp.path().join("interrupted-backup"),
+        &restored,
+        LIMITS,
+        &expected,
+    )
+    .unwrap();
+    assert_eq!(
+        ManagedRetainedStore::open(&restored, LIMITS)
+            .unwrap()
+            .scan(None, None, 8)
+            .unwrap(),
+        f.open().scan(None, None, 8).unwrap()
+    );
 }
 
 #[test]
