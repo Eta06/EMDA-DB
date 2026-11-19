@@ -12,6 +12,7 @@
 //! on the bytes of a single read before using the key or value. All opens
 //! compare the trailer with the digest retained by the writer. Merge and
 //! emission also hash the whole run before opening a cursor.
+//! Random lookup skips runs outside the key bounds retained by that writer.
 
 use crate::log::ValueLocation;
 use crate::record;
@@ -104,6 +105,8 @@ struct RunMeta {
     path: PathBuf,
     bytes: u64,
     entries: u64,
+    first_key: Vec<u8>,
+    last_key: Vec<u8>,
 }
 
 struct FdInner {
@@ -276,6 +279,8 @@ struct RunWriter {
     cursor: u64,
     count: u64,
     key_bytes: u64,
+    first_key: Vec<u8>,
+    last_key: Vec<u8>,
     expected_count: u64,
     expected_key_bytes: u64,
     table_at: u64,
@@ -334,6 +339,8 @@ impl RunWriter {
             cursor: 0,
             count: 0,
             key_bytes: 0,
+            first_key: Vec::new(),
+            last_key: Vec::new(),
             expected_count,
             expected_key_bytes,
             table_at,
@@ -355,6 +362,9 @@ impl RunWriter {
 
     fn write_entry(&mut self, key: &[u8], state: Option<ValueLocation>) -> io::Result<()> {
         record::validate_key(key)?;
+        if self.last_key.as_slice() >= key {
+            return Err(record::invalid_data("spill keys are not strictly ordered"));
+        }
         let offset = self.cursor;
         let index = self.count;
         self.offsets.write_all(&offset.to_le_bytes())?;
@@ -386,6 +396,11 @@ impl RunWriter {
         );
         self.write_hashed(&body)?;
         self.write_hashed(&crc.to_le_bytes())?;
+        if self.count == 0 {
+            self.first_key.extend_from_slice(key);
+        }
+        self.last_key.clear();
+        self.last_key.extend_from_slice(key);
         self.count += 1;
         self.key_bytes += key.len() as u64;
         Ok(())
@@ -446,6 +461,8 @@ impl RunWriter {
             path: self.path.clone(),
             bytes,
             entries: self.count,
+            first_key: std::mem::take(&mut self.first_key),
+            last_key: std::mem::take(&mut self.last_key),
         })
     }
 
@@ -663,6 +680,12 @@ impl SpillSession {
 
     fn lookup_persisted(&self, key: &[u8]) -> io::Result<Find> {
         for run in self.runs.iter().rev() {
+            // These bounds come from the verified writer, so even damage to
+            // the file cannot make an out-of-range probe return a value.
+            // Merge and emission still check every surviving run.
+            if key < run.first_key.as_slice() || key > run.last_key.as_slice() {
+                continue;
+            }
             // The whole run is not rehashed on this path. The header and
             // trailer match the run metadata, and `find` checks every
             // probed entry before using its key or value.
@@ -766,10 +789,10 @@ impl SpillSession {
     fn write_merge(&mut self, count: u64, key_bytes: u64) -> io::Result<RunMeta> {
         let directory = self.stage_dir()?;
         let id = self.allocate_id();
-        let runs = self.runs.clone();
+        let runs = &self.runs;
         let generations = runs.iter().map(|run| run.id).collect::<Vec<_>>();
         let fd = Rc::clone(&self.fd);
-        self.with_inputs(&runs, |cursors| {
+        self.with_inputs(runs, |cursors| {
             let mut writer = RunWriter::create(&directory, id, &fd, count, key_bytes)?;
             merge_walk(cursors, &generations, |key, state| {
                 writer.write_entry(key, state)
@@ -1509,6 +1532,59 @@ mod tests {
         assert!(session.dirty.is_empty());
         assert_eq!(session.runs.len(), 2);
         (session, directory)
+    }
+
+    #[test]
+    fn run_key_bounds_skip_only_impossible_lookups_and_emission_still_verifies() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session =
+            SpillSession::create(directory.path(), limits(2, 1 << 20, 100), 1, 1).unwrap();
+        session.push(b"b", Some(loc(100)), |_| Ok(None)).unwrap();
+        session.push(b"d", None, |_| Ok(None)).unwrap();
+        session.write_dirty().unwrap();
+        assert!(matches!(
+            session.lookup_persisted(b"b").unwrap(),
+            Find::Found(Some(value)) if value == loc(100)
+        ));
+        assert!(matches!(
+            session.lookup_persisted(b"d").unwrap(),
+            Find::Found(None)
+        ));
+        assert!(matches!(
+            session.lookup_persisted(b"c").unwrap(),
+            Find::Absent
+        ));
+
+        let path = &session.runs[0].path;
+        // A forged key outside the retained range cannot influence replay.
+        // A later merge must still reject the damaged file before emission.
+        let file = OpenOptions::new().write(true).open(path).unwrap();
+        file.write_all_at(b"a", one_byte_key_at(0)).unwrap();
+        drop(file);
+        for key in [b"a", b"e"] {
+            assert!(matches!(
+                session.lookup_persisted(key).unwrap(),
+                Find::Absent
+            ));
+        }
+        session
+            .push(b"a", None, |key| {
+                assert_eq!(key, b"a");
+                Ok(Some(loc(200)))
+            })
+            .unwrap();
+        assert_eq!(session.live_count(), 1);
+        assert_eq!(session.peak(), 2);
+        let mut emitted = Vec::new();
+        assert_eq!(
+            emit_all(&mut session, &mut emitted)
+                .unwrap_err()
+                .to_string(),
+            "spill run checksum mismatch"
+        );
+        assert!(emitted.is_empty());
+        drop(session);
+        assert_stage_removed(directory.path());
     }
 
     #[test]
