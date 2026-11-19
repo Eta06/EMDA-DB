@@ -91,8 +91,8 @@ pub trait RetainedAuthority {
     ) -> io::Result<bool>;
 }
 
-/// A bounded retained catalog whose writes require durable external consent.
-/// The current protocol supports appending to a single generation.
+/// A bounded retained catalog whose appends and generation switches require
+/// durable external consent.
 pub struct AuthorizedRetainedStore<A> {
     inner: ManagedRetainedStore,
     authority: A,
@@ -138,10 +138,13 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         let current = authority
             .read()?
             .ok_or_else(|| record::invalid_data("retained authority record is absent"))?;
-        let inner =
-            ManagedRetainedStore::open_role(root.as_ref(), limits, AUTHORIZED_MAGIC, |observed| {
-                current.check(observed)
-            })?;
+        let inner = ManagedRetainedStore::open_role(
+            root.as_ref(),
+            limits,
+            AUTHORIZED_MAGIC,
+            |root, catalog| select_authorized(root, catalog, current.committed),
+            |observed| current.check(observed),
+        )?;
         let mut this = Self {
             inner,
             authority,
@@ -184,6 +187,52 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         operations: &[BatchOperation<'_>],
     ) -> Result<(), MutationFailure> {
         self.write(encode_batch(operations))
+    }
+
+    /// Compact into the inactive slot and select it with one authority CAS.
+    /// The successor is verified and synchronized before selection. An
+    /// occupied inactive slot requires explicit reclamation.
+    pub fn compact(&mut self) -> Result<[u8; 16], PublicationFailure> {
+        self.compact_with_limits(self.inner.store.limits)
+    }
+
+    /// Compact and adopt new limits. If selection is uncertain, retain both
+    /// generations and reopen with a ceiling that admits either configuration.
+    pub fn compact_with_limits(
+        &mut self,
+        limits: RetainedStoreLimits,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.verify_current()?;
+            let mut next = self.current.finalized(self.current.committed)?;
+            let (active, store) = self.inner.prepare_successor(limits)?;
+            let point = AuthorityPoint::from_store(active.catalog, &store);
+            next.committed = point;
+            tracker.begin_publication();
+            self.inner.uncertain = true;
+            self.advance(next)?;
+            self.inner.store = store;
+            self.inner.active = active;
+            self.inner.uncertain = false;
+            Ok(point.generation)
+        })
+    }
+
+    /// Retire the catalog-owned inactive slot after fencing pending selection
+    /// attempts from older revisions. A failed comparison leaves both slots.
+    pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
+        self.verify_current()?;
+        let inactive = self.inner.active.slot.other().path(&self.inner.root);
+        match fs::symlink_metadata(&inactive) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+            Ok(_) => {}
+        }
+        let fence = self.current.finalized(self.current.committed)?;
+        self.inner.uncertain = true;
+        self.advance(fence)?;
+        self.inner.uncertain = false;
+        self.inner.reclaim_inactive()
     }
 
     fn write(&mut self, encoded: io::Result<Vec<u8>>) -> Result<(), MutationFailure> {
@@ -248,6 +297,58 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         self.current = next;
         Ok(())
     }
+}
+
+fn select_authorized(root: &Path, catalog: [u8; 16], point: AuthorityPoint) -> io::Result<Active> {
+    if point.catalog != catalog {
+        return Err(record::invalid_data("retained authority catalog mismatch"));
+    }
+    let mut selected = None;
+    for slot in [Slot::A, Slot::B] {
+        let path = slot.path(root);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+        let result = open_regular(&path.join("records.log"))
+            .and_then(|log| Header::read(&log, GenerationRole::Authorized(catalog)));
+        let header = match result {
+            Ok(header) => header,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::InvalidData
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if header.id() != point.generation
+            || <[u8; 32]>::from(Sha256::digest(header.bytes())) != point.header_digest
+        {
+            continue;
+        }
+        if selected.is_some() {
+            return Err(record::invalid_data(
+                "duplicate authorized retained generation",
+            ));
+        }
+        selected = Some(Active {
+            catalog,
+            slot,
+            generation: header.id(),
+            expected: crate::retained_candidate::binding_from_header(
+                header.bytes()[..112].try_into().unwrap(),
+            ),
+        });
+    }
+    selected
+        .ok_or_else(|| record::invalid_data("independently selected retained generation is absent"))
 }
 
 fn replace(

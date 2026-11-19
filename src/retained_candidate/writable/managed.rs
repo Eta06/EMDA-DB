@@ -257,20 +257,23 @@ impl ManagedRetainedStore {
     /// The selected generation's persisted limits must fit within the
     /// recovery ceiling. Writes use the persisted limits.
     pub fn open(root: impl AsRef<Path>, ceiling: RetainedStoreLimits) -> io::Result<Self> {
-        Self::open_role(root.as_ref(), ceiling, CATALOG_MAGIC, |_| Ok(()))
+        Self::open_role(root.as_ref(), ceiling, CATALOG_MAGIC, Active::load, |_| {
+            Ok(())
+        })
     }
 
     fn open_role(
         root: &Path,
         ceiling: RetainedStoreLimits,
         catalog_magic: &'static [u8; 8],
+        select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
         authorize: impl FnOnce(AuthorityPoint) -> io::Result<()>,
     ) -> io::Result<Self> {
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
         lock.verify_identity(&root)?;
         let catalog = read_catalog(&root, catalog_magic)?;
-        let active = Active::load(&root, catalog)?;
+        let active = select(&root, catalog)?;
         let path = active.slot.path(&root);
         let store = RetainedStore::open_role(
             &path,
@@ -488,45 +491,8 @@ impl ManagedRetainedStore {
     ) -> Result<[u8; 16], PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             self.verify_selection()?;
-            let slot = self.active.slot.other();
-            let destination = slot.path(&self.root);
-            match fs::symlink_metadata(&destination) {
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "inactive generation slot is occupied",
-                    ));
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
-            let mut stage = crate::staging::Stage::directory(&self.root)?;
-            let expected = self
-                .store
-                .write_rebased_base(&stage.path().join("base"), limits.base)?;
-            let next = RetainedStore::initialize(
-                stage.path(),
-                limits,
-                &expected,
-                Vec::new(),
-                GenerationRole::Managed(self.active.catalog),
-            )?;
-            let generation = next.generation_id();
-            if generation == self.active.generation {
-                return Err(record::invalid_data(
-                    "retained generation identifier collision",
-                ));
-            }
-            stage.publish(&destination)?;
-            sync_existing(&self.root)?;
-            stage.publication_synchronized();
-            next._lock.verify_identity(&destination)?;
-            let active = Active {
-                catalog: self.active.catalog,
-                slot,
-                generation,
-                expected,
-            };
+            let (active, next) = self.prepare_successor(limits)?;
+            let generation = active.generation;
             let (mut selection, mut file) = crate::staging::Stage::file(&self.root)?;
             file.write_all(&active.encode())?;
             file.sync_all()?;
@@ -543,6 +509,52 @@ impl ManagedRetainedStore {
             self.uncertain = false;
             Ok(generation)
         })
+    }
+
+    fn prepare_successor(
+        &self,
+        limits: RetainedStoreLimits,
+    ) -> io::Result<(Active, RetainedStore)> {
+        let slot = self.active.slot.other();
+        let destination = slot.path(&self.root);
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "inactive generation slot is occupied",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let mut stage = crate::staging::Stage::directory(&self.root)?;
+        let expected = self
+            .store
+            .write_rebased_base(&stage.path().join("base"), limits.base)?;
+        let next = RetainedStore::initialize(
+            stage.path(),
+            limits,
+            &expected,
+            Vec::new(),
+            generation_role(self.catalog_magic, self.active.catalog),
+        )?;
+        let generation = next.generation_id();
+        if generation == self.active.generation {
+            return Err(record::invalid_data(
+                "retained generation identifier collision",
+            ));
+        }
+        stage.publish(&destination)?;
+        sync_existing(&self.root)?;
+        stage.publication_synchronized();
+        next._lock.verify_identity(&destination)?;
+        let active = Active {
+            catalog: self.active.catalog,
+            slot,
+            generation,
+            expected,
+        };
+        Ok((active, next))
     }
 
     /// Retire only the catalog-owned inactive slot after verifying and
@@ -571,7 +583,7 @@ impl ManagedRetainedStore {
         self.store.verify_complete()?;
         sync_existing(&self.root)?;
         let _retired_lock = lock_directory(&inactive)?;
-        check_retired(&inactive, &self.active)?;
+        check_retired(&inactive, &self.active, self.catalog_magic)?;
         let mut stage = crate::staging::Stage::directory(&self.root)?;
         let moved = stage.child_path("retired".as_ref())?;
         crate::backup::publish_directory(&inactive, &moved)?;
@@ -620,7 +632,7 @@ fn check_separation(source: &Path, parent: &Path) -> io::Result<()> {
 
 fn verify_active(root: &Path, active: &Active, magic: &[u8; 8]) -> io::Result<()> {
     if read_catalog(root, magic)? != active.catalog
-        || Active::load(root, active.catalog)? != *active
+        || (magic == CATALOG_MAGIC && Active::load(root, active.catalog)? != *active)
     {
         return Err(record::invalid_data("active retained selection changed"));
     }
@@ -743,7 +755,7 @@ impl Active {
     }
 }
 
-fn check_retired(path: &Path, active: &Active) -> io::Result<()> {
+fn check_retired(path: &Path, active: &Active, magic: &[u8; 8]) -> io::Result<()> {
     let mut count = 0;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
@@ -761,7 +773,7 @@ fn check_retired(path: &Path, active: &Active) -> io::Result<()> {
         ));
     }
     let log = open_regular(&path.join("records.log"))?;
-    let retired = Header::read(&log, GenerationRole::Managed(active.catalog))?;
+    let retired = Header::read(&log, generation_role(magic, active.catalog))?;
     let id = retired.id();
     if !retired.bytes().starts_with(b"EMDALOG4") || id == [0; 16] || id == active.generation {
         return Err(record::invalid_data(

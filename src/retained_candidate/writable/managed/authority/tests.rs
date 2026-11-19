@@ -268,3 +268,96 @@ fn competing_copies_can_acknowledge_only_one_append() {
         expected
     );
 }
+
+#[test]
+fn selected_rotation_resets_the_suffix_and_reuses_both_slots() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"ack", b"kept").unwrap();
+    let old = store.current.committed;
+    let next = store.compact().unwrap();
+    assert_ne!(next, old.generation);
+    assert_eq!(f.provider.read().unwrap().unwrap().committed.suffix_end, 0);
+    assert!(
+        matches!(store.compact(), Err(PublicationFailure::NotPublished(error))
+        if error.kind() == io::ErrorKind::AlreadyExists)
+    );
+    fs::remove_file(f.root.join(ACTIVE_FILE)).unwrap();
+    drop(store);
+    let mut store = f.open();
+    assert_eq!(store.current.committed.generation, next);
+    assert_eq!(store.get(b"ack", 4).unwrap().unwrap(), b"kept");
+    assert!(store.reclaim_inactive().unwrap());
+    assert!(!Slot::A.path(&f.root).exists());
+    store.delete(b"base").unwrap();
+    store.compact().unwrap();
+    assert!(store.reclaim_inactive().unwrap());
+    assert!(!Slot::B.path(&f.root).exists());
+    drop(store);
+    let mut reopened = f.open();
+    assert_eq!(reopened.get(b"base", 8).unwrap(), None);
+    assert_eq!(reopened.get(b"ack", 4).unwrap().unwrap(), b"kept");
+}
+
+#[test]
+fn rotation_recovers_exact_authority_choice_after_uncertain_selection() {
+    for selected in [false, true] {
+        let mut f = Fixture::prepare();
+        f.register();
+        let mut store = f.open();
+        store.put(b"ack", b"retained").unwrap();
+        let prior = store.current.committed;
+        store.authority.fault = Some((3, selected));
+        let result = store.compact();
+        assert!(matches!(result, Err(PublicationFailure::OutcomeUnknown(_))));
+        assert!(store.get(b"ack", 8).is_err());
+        assert!(Slot::A.path(&f.root).is_dir());
+        assert!(Slot::B.path(&f.root).is_dir());
+        drop(store);
+        let mut recovered = f.open();
+        assert_eq!(recovered.current.committed != prior, selected);
+        assert_eq!(recovered.get(b"ack", 8).unwrap().unwrap(), b"retained");
+        assert!(recovered.reclaim_inactive().unwrap());
+        assert_eq!(Slot::B.path(&f.root).exists(), selected);
+        assert_eq!(Slot::A.path(&f.root).exists(), !selected);
+        recovered.put(b"next", b"latest").unwrap();
+    }
+}
+
+#[test]
+fn selected_missing_or_corrupt_successor_cannot_fall_back() {
+    for missing in [false, true] {
+        let mut f = Fixture::prepare();
+        f.register();
+        let mut store = f.open();
+        store.put(b"ack", b"retained").unwrap();
+        store.compact().unwrap();
+        drop(store);
+        let selected = Slot::B.path(&f.root).join("base");
+        if missing {
+            fs::rename(&selected, selected.with_extension("saved")).unwrap();
+        } else {
+            fs::write(&selected, b"corrupt").unwrap();
+        }
+        let old = Slot::A.path(&f.root).join("commit.state");
+        let witness = fs::read(&old).unwrap();
+        assert!(AuthorizedRetainedStore::open(&f.root, LIMITS, f.provider.clone()).is_err());
+        assert_eq!(fs::read(&old).unwrap(), witness);
+    }
+}
+
+#[test]
+fn reclamation_fence_failure_keeps_the_inactive_generation() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.compact().unwrap();
+    store.authority.fault = Some((2, true));
+    assert!(store.reclaim_inactive().is_err());
+    assert!(Slot::A.path(&f.root).exists());
+    assert!(store.get(b"base", 8).is_err());
+    drop(store);
+    assert!(f.open().reclaim_inactive().unwrap());
+    assert!(!Slot::A.path(&f.root).exists());
+}

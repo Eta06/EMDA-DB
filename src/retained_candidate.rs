@@ -75,14 +75,18 @@ pub(crate) fn binding(base: &Validated, log_id: [u8; 16]) -> io::Result<Expected
     header[56..88].copy_from_slice(&base.digest);
     header[88..104].copy_from_slice(&log_id);
     // Bytes 104..112 encode the empty suffix boundary, zero.
+    Ok(binding_from_header(header))
+}
+
+fn binding_from_header(header: [u8; 112]) -> Expected {
     let mut hash = Sha256::new();
     hash.update(b"EMDA experimental candidate header v1\0");
     hash.update(header);
-    Ok(Expected {
+    Expected {
         header,
         witness: hash.finalize().into(),
-        base_digest: base.digest,
-    })
+        base_digest: header[56..88].try_into().unwrap(),
+    }
 }
 
 fn invalid() -> io::Error {

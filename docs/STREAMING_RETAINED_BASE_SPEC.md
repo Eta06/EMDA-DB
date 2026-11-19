@@ -322,9 +322,18 @@ bytes match one of its two exact endpoints. It synchronizes or adopts
 the matching state before finalizing the recovery choice. An unrelated or
 partial suffix fails closed. A stale copy can lose the CAS and must reopen
 against the current record. Revisions advance even when recovery selects
-the prior suffix. Authority-selected compaction and reclamation remain
-future work, so the persisted suffix limits govern the lifetime of this
-single-generation prototype.
+the prior suffix.
+
+Authorized compaction writes the successor into the empty slot under
+the exclusive catalog lock. It synchronizes and verifies the successor
+before a single authority CAS selects its generation and empty suffix.
+Reopen uses that record to find and verify the exact generation. A local
+selector cannot revert an authority choice. A missing or corrupt selected
+generation fails closed. An uncertain selection retains both slots.
+Reclamation advances the authority revision without changing its selected
+point before removing the inactive slot. Earlier in-flight selection
+attempts lose their CAS, and a fresh rotation must build a fresh successor.
+Explicit reclamation is required before reusing the other slot.
 
 Cutover at an existing ordinary store entry point remains prohibited until the old-reader gate and backup
 policy cover empty or legacy-looking suffixes and independently opened stale
