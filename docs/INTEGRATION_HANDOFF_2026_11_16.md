@@ -366,3 +366,27 @@ size-conscious build for targeted Linux validation. The main checkout was at
 `2756483`, with 168 registered worktrees including the main checkout. Preserve
 and verify source changes and evidence before removing any old worktrees or VM
 artifacts.
+
+### Maintainer status, November 19
+
+Step 2, durable storage and core operations, is the main implementation focus.
+Steps 1 and 3 continue in parallel. The estimates below are maintainer judgment
+against the [roadmap exit criteria](ROADMAP.md), with roughly 29% overall if
+the eight steps are weighted equally.
+
+| Step | Estimate | Evidence and remaining work |
+| --- | ---: | --- |
+| 1. Correctness and foundations | 88% | Witness recovery and fault coverage have expanded. Intermittent Linux lock failures remain open. Physical power-loss testing and independent off-host restore are deferred. |
+| 2. Durable storage and core | 60% | Bounded offline rebuild and retained export, replay and new-store restore are implemented. Live reclamation, durable cutover reconciliation and end-to-end memory and recovery bounds remain open. |
+| 3. Document data and queries | 56% | CRUD, schemas, indexed queries and controlled maintenance and fault tests are in place. Richer query planning and broader workloads and fault evidence remain open. |
+| 4. Relational and SQL | 0% | SQL interface and execution remain pending. |
+| 5. Secure service and project isolation | 3% | Embedded admission controls and design groundwork exist. The secure service and project-wide isolation remain pending. |
+| 6. Performance and scalability | 18% | Benchmarks and resource evidence cover selected local workloads. Broader workload and scalability evidence remains pending. |
+| 7. Replication and operations | 5% | Local backup, restore and format tooling exist. Replication and failover remain pending. |
+| 8. Broader features and tooling | 3% | Feature inventory and design groundwork exist. Most implementation remains pending. |
+
+The long-lived local branches are `main`, `development` (the former
+integration branch), and `features` (created from the development baseline).
+Keep delegated worktrees short-lived and preserve unique changes and evidence
+before removing them. A local archive outside the checkout records the original
+branch and worktree inventory, complete Git bundle and checkout snapshots.
