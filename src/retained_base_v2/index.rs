@@ -144,10 +144,19 @@ impl OverlayValue<'_> {
         Ok(bytes)
     }
 
-    fn visit_chunks(self, mut visit: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+    fn visit_chunks(self, visit: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        self.visit_chunks_with(&mut [0; CHUNK_BYTES], visit)
+    }
+
+    pub(crate) fn visit_chunks_with(
+        self,
+        scratch: &mut [u8],
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        assert!(!scratch.is_empty());
         match self {
             Self::Inline(bytes) => {
-                for chunk in bytes.chunks(CHUNK_BYTES) {
+                for chunk in bytes.chunks(scratch.len()) {
                     visit(chunk)?;
                 }
             }
@@ -157,7 +166,6 @@ impl OverlayValue<'_> {
                 len,
                 digest,
             } => {
-                let mut scratch = [0; CHUNK_BYTES];
                 let mut hash = Sha256::new();
                 let mut remaining = len;
                 while remaining != 0 {

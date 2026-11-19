@@ -147,16 +147,16 @@ impl RestoreReplay {
         let mut base_reader = &self.base;
         base_reader.rewind()?;
         let mut emit = |file: &File, key: &[u8], value: &CapturedValue| {
-            copy.put(key, value.length, || {
-                before_value()?;
+            copy.put_retained(
+                key,
                 OverlayValue::Disk {
                     file,
                     offset: value.offset,
                     len: value.length,
                     digest: &value.digest,
-                }
-                .to_owned_bytes()
-            })?;
+                },
+                &before_value,
+            )?;
             hash_row(&mut hash, key, value.length, value.digest);
             Ok::<(), io::Error>(())
         };

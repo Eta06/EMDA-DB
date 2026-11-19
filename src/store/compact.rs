@@ -1,9 +1,11 @@
 //! Verified, non-overwriting compaction to a separate store.
 use super::*;
 use crate::log::AppendRecord;
+use crate::retained_base_v2::index::OverlayValue;
 
 pub(super) const MAX_COPY_RECORDS: usize = 64;
 pub(super) const MAX_COPY_BYTES: usize = 4 * 1024 * 1024;
+const LARGE_RESTORE_BUFFER_BYTES: usize = 1024 * 1024;
 
 pub(super) struct CopyRecord {
     pub(super) encoded: Vec<u8>,
@@ -84,7 +86,7 @@ impl<'a> GroupedCopy<'a> {
         }
     }
 
-    pub(crate) fn put(
+    fn put(
         &mut self,
         key: &[u8],
         value_len: usize,
@@ -114,6 +116,37 @@ impl<'a> GroupedCopy<'a> {
             checksum,
         });
         Ok(())
+    }
+
+    /// Small values share grouped synchronization. A record that cannot fit
+    /// in a group uses the fixed-size authenticated reader and its own sync.
+    pub(crate) fn put_retained(
+        &mut self,
+        key: &[u8],
+        value: OverlayValue<'_>,
+        before_value: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        let value_len = value.len();
+        if record::HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE <= MAX_COPY_BYTES {
+            return self.put(key, value_len, || {
+                before_value()?;
+                value.to_owned_bytes()
+            });
+        }
+        if let Some(remaining) = &mut self.remaining {
+            remaining.consume(key.len(), value_len)?;
+        }
+        flush_copy(self.target, &mut self.records)?;
+        self.bytes = 0;
+        let mut scratch = Vec::new();
+        scratch
+            .try_reserve_exact(LARGE_RESTORE_BUFFER_BYTES)
+            .map_err(io::Error::other)?;
+        scratch.resize(LARGE_RESTORE_BUFFER_BYTES, 0);
+        before_value()?;
+        self.target.append_private_put(key, value_len, |append| {
+            value.visit_chunks_with(&mut scratch, append)
+        })
     }
 
     fn finish(mut self) -> io::Result<()> {
@@ -450,6 +483,67 @@ mod tests {
         assert_eq!(offset, bytes.len());
         let (_, recovered) = Log::from_io(Box::new(File::open(&path).unwrap())).unwrap();
         assert_eq!(recovered.len(), 130);
+    }
+
+    #[test]
+    fn failed_large_restore_value_leaves_its_record_unwitnessed() {
+        use sha2::{Digest, Sha256};
+
+        let root = tempfile::tempdir().unwrap();
+        let length = MAX_COPY_BYTES + 1;
+        let digest = Sha256::digest(vec![0; length]).into();
+        for truncate in [false, true] {
+            let path = root.path().join(format!("source-{truncate}"));
+            let source = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .unwrap();
+            source.set_len(length as u64).unwrap();
+            if truncate {
+                source.set_len(length as u64 - 1).unwrap();
+            } else {
+                source.write_all_at(&[1], length as u64 - 1).unwrap();
+            }
+            let stage = crate::staging::Stage::directory(root.path()).unwrap();
+            let target = Store::open(stage.path()).unwrap();
+            let initial = target.log.len().unwrap();
+            let mut copy = GroupedCopy::new(&target.log, None);
+            copy.put(b"a", 1, || Ok(vec![42])).unwrap();
+            let witnessed =
+                initial + record::encode(Operation::Put, b"a", &[42]).unwrap().len() as u64;
+            let error = copy
+                .put_retained(
+                    b"b",
+                    OverlayValue::Disk {
+                        file: &source,
+                        offset: 0,
+                        len: length,
+                        digest: &digest,
+                    },
+                    || Ok(()),
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                if truncate {
+                    io::ErrorKind::UnexpectedEof
+                } else {
+                    io::ErrorKind::InvalidData
+                }
+            );
+            let (log, boundary) = Log::open_checkpoint_view(stage.path()).unwrap();
+            assert_eq!(boundary, witnessed);
+            assert!(log.len().unwrap() > witnessed + MAX_COPY_BYTES as u64 / 2);
+            assert!(log.visit_records(0, Some(boundary), |_, _| Ok(())).is_err());
+            let stage_path = stage.path().to_owned();
+            drop(log);
+            drop(copy);
+            drop(target);
+            drop(stage);
+            assert!(!stage_path.exists());
+        }
     }
 
     #[test]

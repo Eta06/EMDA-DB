@@ -820,7 +820,8 @@ pub struct RestoreLimits {
 /// and operation limits. The base is scanned once for admission and again
 /// while streaming the stage. Each write reads
 /// one value, and the private output synchronizes in groups of up to 64
-/// records and 4 MiB of encoded data. A larger record is synchronized alone.
+/// records and 4 MiB of encoded data. A larger record is copied in fixed-size
+/// chunks and synchronized after its value digest and length are checked.
 /// Verification checks the witnessed output against the authenticated
 /// sequence digest in a streaming pass.
 /// Input staging limits still count the logical live payload,

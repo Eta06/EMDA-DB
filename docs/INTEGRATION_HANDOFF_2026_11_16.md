@@ -777,3 +777,8 @@ base into the private output. Ordered intermediate limits still apply to
 the full logical state. The many-key comparison measures peak RSS with a
 sparse suffix. High-cardinality suffixes and large values have separate
 memory costs.
+
+The [large-value restore writer](../benchmarks/results/2026-11-19-chunked-retained-restore/README.md)
+streams oversized records through a fixed buffer and advances the witness
+only after validating the length and authenticated value digest. The 128 MiB
+fixture records lower peak RSS and longer median restore time on macOS.

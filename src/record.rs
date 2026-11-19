@@ -58,11 +58,15 @@ impl Header {
 }
 
 pub(crate) fn validate(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
+    validate_lengths(operation, key, value.len())
+}
+
+fn validate_lengths(operation: Operation, key: &[u8], value_len: usize) -> io::Result<()> {
     validate_key(key)?;
-    if value.len() > MAX_VALUE {
+    if value_len > MAX_VALUE {
         return Err(invalid_input("value exceeds 16 MiB"));
     }
-    if operation == Operation::Delete && !value.is_empty() {
+    if operation == Operation::Delete && value_len != 0 {
         return Err(invalid_input("delete records cannot have a value"));
     }
     if operation == Operation::Batch && key != [0] {
@@ -71,22 +75,34 @@ pub(crate) fn validate(operation: Operation, key: &[u8], value: &[u8]) -> io::Re
     Ok(())
 }
 
-pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<Vec<u8>> {
-    validate(operation, key, value)?;
-    let mut record = Vec::with_capacity(HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE);
-    record.extend_from_slice(if operation == Operation::Batch {
+pub(crate) fn encode_header(
+    operation: Operation,
+    key: &[u8],
+    value_len: usize,
+) -> io::Result<[u8; HEADER_SIZE]> {
+    validate_lengths(operation, key, value_len)?;
+    let mut header = [0; HEADER_SIZE];
+    header[..4].copy_from_slice(if operation == Operation::Batch {
         BATCH_MAGIC
     } else {
         MAGIC
     });
-    record.push(match operation {
+    header[4] = match operation {
         Operation::Put => 1,
         Operation::Delete => 2,
         Operation::Batch => 3,
-    });
-    record.extend_from_slice(&(key.len() as u32).to_le_bytes());
-    record.extend_from_slice(&(value.len() as u32).to_le_bytes());
-    record.extend_from_slice(&crc32fast::hash(&record).to_le_bytes());
+    };
+    header[5..9].copy_from_slice(&(key.len() as u32).to_le_bytes());
+    header[9..13].copy_from_slice(&(value_len as u32).to_le_bytes());
+    let checksum = crc32fast::hash(&header[..13]).to_le_bytes();
+    header[13..].copy_from_slice(&checksum);
+    Ok(header)
+}
+
+pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<Vec<u8>> {
+    let header = encode_header(operation, key, value.len())?;
+    let mut record = Vec::with_capacity(HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE);
+    record.extend_from_slice(&header);
     record.extend_from_slice(key);
     record.extend_from_slice(value);
     record.extend_from_slice(&crc32fast::hash(&record).to_le_bytes());

@@ -517,12 +517,9 @@ impl Log {
         self.file.read_exact_at(buffer, offset)
     }
 
-    pub(crate) fn append_batch_unsynced<'a>(
-        &self,
-        records: impl ExactSizeIterator<Item = AppendRecord<'a>>,
-    ) -> io::Result<Vec<ValueLocation>> {
+    fn checked_append_offset(&self) -> io::Result<u64> {
         self.require_attached_witness()?;
-        let mut offset = self.file.len()?;
+        let offset = self.file.len()?;
         if let Some(anchor) = &self.anchor {
             anchor.verify(LOG_HEADER_SIZE as u64)?;
         }
@@ -534,6 +531,14 @@ impl Log {
         if let Some(witness) = &self.witness {
             witness.verify(offset)?;
         }
+        Ok(offset)
+    }
+
+    pub(crate) fn append_batch_unsynced<'a>(
+        &self,
+        records: impl ExactSizeIterator<Item = AppendRecord<'a>>,
+    ) -> io::Result<Vec<ValueLocation>> {
+        let mut offset = self.checked_append_offset()?;
         let mut locations = Vec::with_capacity(records.len());
         let mut buffers = Vec::with_capacity(records.len());
         for record in records {
@@ -557,6 +562,44 @@ impl Log {
             self.file.append_vectored(&mut buffers)?;
         }
         Ok(locations)
+    }
+
+    /// Appends one ordinary record to an exclusively owned private stage.
+    /// The producer must propagate append errors and authenticate the complete
+    /// value before returning success.
+    /// If any step fails, discard the stage. Partial bytes may be present.
+    pub(crate) fn append_private_put(
+        &self,
+        key: &[u8],
+        value_len: usize,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let header = record::encode_header(Operation::Put, key, value_len)?;
+        let offset = self.checked_append_offset()?;
+        let size = HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE;
+        let end = offset
+            .checked_add(size as u64)
+            .ok_or_else(|| io::Error::other("log offset overflow"))?;
+        let mut checksum = crc32fast::Hasher::new();
+        checksum.update(&header);
+        checksum.update(key);
+        self.file
+            .append_vectored(&mut [IoSlice::new(&header), IoSlice::new(key)])?;
+        let mut remaining = value_len;
+        produce(&mut |bytes| {
+            remaining = remaining
+                .checked_sub(bytes.len())
+                .ok_or_else(|| record::invalid_data("stream exceeded declared value length"))?;
+            checksum.update(bytes);
+            self.file.append_all(bytes)
+        })?;
+        if remaining != 0 {
+            return Err(record::invalid_data(
+                "stream ended before declared value length",
+            ));
+        }
+        self.file.append_all(&checksum.finalize().to_le_bytes())?;
+        self.sync_validated_boundary(end)
     }
 
     pub(crate) fn sync_data(&self) -> io::Result<()> {
