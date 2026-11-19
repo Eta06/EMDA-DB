@@ -672,7 +672,7 @@ eight steps equal weight puts overall progress at roughly 34%.
 | --- | ---: | --- |
 | 1. Correctness and foundations | 95% | Shared store locks resolve the traced fork/exec failure mode. Strict macOS and Linux suites and focused fault tests provide the current baseline. Wider fault models and the deferred durability drills remain. |
 | 2. Durable storage and core | 82% | Authority-backed retained recovery, automatic rotation, archive retirement, and persistent catalog admission at creation and rotation are exercised. Total memory accounting, full-base verification cost, and broader recovery workloads remain. |
-| 3. Document data and queries | 67% | Document transactions work on the retained backend. Guarded maintenance and bounded index unions now cover common predicates across disjunction branches. Broader workload measurements, concurrency and fault campaigns, and richer diagnostics and queries remain. |
+| 3. Document data and queries | 69% | Document transactions work on the retained backend. Guarded maintenance and bounded index unions now cover shared disjunction predicates and compound ranges over membership prefixes. Broader workloads, concurrency and fault campaigns, and richer diagnostics and queries remain. |
 
 Policy changes take effect through generation selection. The
 [persistent quota tests](../benchmarks/results/2026-11-19-persisted-retained-quotas/README.md)
@@ -690,3 +690,8 @@ branch. [Cross-platform evidence](../benchmarks/results/2026-11-19-disjunction-r
 checks scope, empty partial-index phantom conflicts, and a scan-budget case
 that failed before the change. The benchmark verifies identical results on
 the planned path, the collection scan, and SQLite for the sampled query.
+
+[Compound range evidence](../benchmarks/results/2026-11-19-membership-prefix-ranges/README.md)
+checks required `In` prefixes, trailing-field and partial-index guards,
+staged changes, shared probe limits, and empty-range phantom protection.
+The matched benchmark uses real compound-index searches in both engines.

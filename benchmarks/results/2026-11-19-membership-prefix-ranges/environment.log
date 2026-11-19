@@ -1,0 +1,10 @@
+3172230eb4b84a786942e01c21ee426482d67d94
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+c35a8cf866e7182e8a9f9e42a8434873e6da7f6e0acfae80793bbe97af73f383  examples/compound_range_query_bench.rs
+Linux 7.3.0-9-generic aarch64 GNU/Linux
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+rustc 1.101.0-nightly (1c3a65069 2026-11-02)
