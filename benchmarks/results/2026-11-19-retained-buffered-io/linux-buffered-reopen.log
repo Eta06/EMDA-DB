@@ -1,0 +1,4 @@
+open_ns=81241671
+revision=522 suffix_bytes=611274 generation=[f7, de, 8d, 74, 6b, 2c, 91, 4e, 29, fd, 29, 8c, 4c, 9f, 8f, 74]
+suffix_work=60000000
+phase=reopen backend=retained keys=131072 epoch=8

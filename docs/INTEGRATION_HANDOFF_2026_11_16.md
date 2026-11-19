@@ -577,3 +577,12 @@ reopen RSS in every sampled profile and took longer to reopen. The
 report records the cost of synchronous rotation, the retained legacy
 archive and observed staging peaks. End-to-end resource bounds and
 deployment-scale cold-cache validation remain open.
+
+Retained base verification and indexed reads now buffer file I/O within
+the existing byte budgets. Rebase writes buffer privately before the
+existing flush, sync and validation sequence. On the same warmed fixture,
+the [buffered I/O report](../benchmarks/results/2026-11-19-retained-buffered-io/README.md)
+records median reopen times of 71 ms on macOS and 61 ms on Linux, down
+from 195 ms and 150 ms. The Linux trace counted the same synchronization
+calls. Full-base verification and the separately documented resource and
+deployment gates still apply.
