@@ -451,3 +451,18 @@ rejected an actual new generation with a committed suffix on both
 platforms. See the [validation report](../benchmarks/results/2026-11-19-writable-retained/README.md).
 Step 2 still requires durable active-generation selection, coordinated
 retirement and resource evidence for the complete workflow.
+
+The next Step 2 slice adds durable active selection for managed retained
+catalogs. The catalog lock spans cutover and open synchronizes the selected
+mapping before admitting writes. Rebase verifies the active data and carries
+the historical count and key-byte peaks forward. Explicit reclamation checks
+the selector and removes only a verified inactive generation owned by the
+catalog. These catalogs use a separate open API. Ordinary store directories
+still require a migration and retirement protocol.
+
+At `005c1b6` the 16-thread library suite passed 494 tests on macOS and 656 on
+Linux ARM64. Both also passed nine indexed and format integration tests.
+On the sampled 14,044-key live set, reclamation reduced catalog file length
+from 1,580,757 to 604,672 bytes compared with the initial import.
+The [validation and phase measurements](../benchmarks/results/2026-11-19-managed-retained/README.md)
+include the test logs, resource limits and reproducible probe.
