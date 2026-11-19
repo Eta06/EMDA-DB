@@ -7,7 +7,29 @@
 //! retained. This buffer is not a bound on the live key index, returned
 //! values, other allocations, or recovery time.
 use crate::log_io::LogIo;
-use std::io;
+use std::{fs::File, io, os::unix::fs::FileExt};
+
+/// A private read cursor over a retained descriptor shared by several readers.
+pub(crate) struct PositionalReader<'a> {
+    file: &'a File,
+    offset: u64,
+}
+
+impl<'a> PositionalReader<'a> {
+    pub(crate) fn new(file: &'a File, offset: u64) -> Self {
+        Self { file, offset }
+    }
+}
+
+impl io::Read for PositionalReader<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.file.read_at(buffer, self.offset)?;
+        self.offset = self.offset.checked_add(count as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "file read offset overflow")
+        })?;
+        Ok(count)
+    }
+}
 
 /// Maximum log bytes held while checksumming one slice of a record payload.
 ///
@@ -138,7 +160,26 @@ impl<'a> RecoveryReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Seek, Write};
     use std::sync::Mutex;
+
+    #[test]
+    fn positional_readers_keep_the_open_file_cursor_and_each_other_independent() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"abcdef").unwrap();
+        let mut first = PositionalReader::new(&file, 0);
+        let mut second = PositionalReader::new(&file, 3);
+        let mut bytes = [0; 2];
+        first.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"ab");
+        second.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"de");
+        first.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"cd");
+        assert_eq!(second.read(&mut bytes).unwrap(), 1);
+        assert_eq!(bytes[0], b'f');
+        assert_eq!(file.stream_position().unwrap(), 6);
+    }
 
     struct Memory {
         bytes: Vec<u8>,

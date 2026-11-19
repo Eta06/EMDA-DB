@@ -404,8 +404,11 @@ the new path. An uncertain publication can be inspected by opening the
 destination and verifying the selected generation.
 
 `backup_to` captures the active catalog's verified base and exact witnessed
-suffix in a new directory. It publishes the complete bundle after syncing
-and verifying the staged files. The caller must retain the returned binding
+suffix in a new directory. It copies from the open generation descriptors
+using independent read positions, then syncs and checks the staged files
+against the captured binding. Source base identity, log length, witness and
+catalog selection are checked through publication preparation. The caller
+must retain the returned binding
 independently, including when publication returns an uncertain outcome.
 `restore_backup` checks that binding and the supplied resource ceilings
 before publishing a fresh writable catalog. Backups retain their snapshot

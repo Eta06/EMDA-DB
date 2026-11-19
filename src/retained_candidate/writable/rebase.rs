@@ -27,7 +27,7 @@ impl RetainedStore {
         self.verify_boundary(&digest)
     }
 
-    fn verify_boundary(&self, digest: &[u8; 32]) -> io::Result<()> {
+    pub(super) fn verify_boundary(&self, digest: &[u8; 32]) -> io::Result<()> {
         verify_files(
             &self.log,
             &self.witness,

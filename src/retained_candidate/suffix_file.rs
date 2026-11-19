@@ -4,12 +4,11 @@ use super::{
 };
 use crate::record::batch::stream::{self, StreamValue, Update, ValueHash};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Header, Operation};
-use crate::recovery::RecoveryReader;
+use crate::recovery::{PositionalReader, RecoveryReader};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self, Read, Write},
-    os::unix::fs::FileExt,
     path::Path,
 };
 
@@ -69,7 +68,7 @@ pub(super) struct SuffixFile<'a> {
     pub len: usize,
 }
 
-impl<'a> SuffixFile<'a> {
+impl SuffixFile<'_> {
     /// Verify one physical record before visiting any of its operations.
     /// The value hash is optional for callers that only need key history.
     /// Offsets passed to the visitor are relative to the suffix start.
@@ -153,20 +152,13 @@ impl<'a> SuffixFile<'a> {
     }
 
     pub(super) fn copy_to(self, output: &mut impl Write) -> io::Result<()> {
-        if io::copy(&mut self.reader(), output)? != self.len as u64 {
+        let mut reader = PositionalReader::new(self.file, self.start).take(self.len as u64);
+        if io::copy(&mut reader, output)? != self.len as u64 {
             return Err(record::invalid_data(
                 "retained suffix shortened during copy",
             ));
         }
         Ok(())
-    }
-
-    fn reader(self) -> SuffixReader<'a> {
-        SuffixReader {
-            file: self.file,
-            position: self.start,
-            remaining: self.len,
-        }
     }
 }
 
@@ -233,29 +225,11 @@ fn verify_boundary(
     Ok(())
 }
 
-struct SuffixReader<'a> {
-    file: &'a File,
-    position: u64,
-    remaining: usize,
-}
-
-impl Read for SuffixReader<'_> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let len = buffer.len().min(self.remaining);
-        if len == 0 {
-            return Ok(0);
-        }
-        let read = self.file.read_at(&mut buffer[..len], self.position)?;
-        self.position += read as u64;
-        self.remaining -= read;
-        Ok(read)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::retained_candidate::Expected;
+    use std::os::unix::fs::FileExt;
 
     struct NoValueDigest;
 

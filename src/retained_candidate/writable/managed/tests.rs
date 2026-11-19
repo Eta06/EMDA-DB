@@ -607,6 +607,101 @@ fn managed_backup_uncertainty_returns_the_verified_binding() {
 }
 
 #[test]
+fn concurrent_managed_backups_use_independent_source_read_positions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source_path = tmp.path().join("source");
+    let root = tmp.path().join("catalog");
+    let limits = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: 2 * 1024 * 1024,
+            work_bytes: 2 * 1024 * 1024 + 1,
+            ..LIMITS.base
+        },
+        ..LIMITS
+    };
+    let source = Store::open(&source_path).unwrap();
+    let value = vec![0x78; 1024 * 1024];
+    source.put(b"a", &value).unwrap();
+    ManagedRetainedStore::copy_from_store(
+        source,
+        &source_path,
+        &root,
+        RetainedExportLimits {
+            max_log_bytes: limits.base.file_bytes,
+            max_output_bytes: limits.base.file_bytes,
+            ..EXPORT_LIMITS
+        },
+        limits,
+    )
+    .unwrap();
+    let mut store = ManagedRetainedStore::open(&root, limits).unwrap();
+    store.put(b"b", b"captured").unwrap();
+    let before = store.scan(None, None, 8).unwrap();
+
+    let start = std::sync::Barrier::new(6);
+    let backups = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..6)
+            .map(|index| {
+                let path = tmp.path().join(format!("backup-{index}"));
+                let store = &store;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    let binding = store.backup_to(&path).unwrap();
+                    (path, binding)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for (index, (backup, binding)) in backups.iter().enumerate() {
+        let destination = tmp.path().join(format!("restored-{index}"));
+        ManagedRetainedStore::restore_backup(backup, &destination, limits, binding).unwrap();
+        let recovered = ManagedRetainedStore::open(&destination, limits).unwrap();
+        assert_eq!(recovered.scan(None, None, 8).unwrap(), before);
+    }
+    assert_eq!(store.scan(None, None, 8).unwrap(), before);
+}
+
+#[test]
+fn managed_backup_rejects_corrupt_bytes_and_a_substituted_base_path() {
+    let f = Fixture::new(LIMITS);
+    let store = f.open();
+    let base = Slot::A.path(&f.root).join("base");
+    let original = fs::read(&base).unwrap();
+    let backup = f.tmp.path().join("backup");
+    let mut altered = original.clone();
+    let trailer = altered.len() - 32;
+    altered[trailer - 1] ^= 1;
+    let mut hash = Sha256::new();
+    hash.update(b"EMDA retained base v2\0");
+    hash.update(&altered[..trailer]);
+    altered[trailer..].copy_from_slice(&hash.finalize());
+    fs::write(&base, &altered).unwrap();
+    assert!(matches!(
+        store.backup_to(&backup),
+        Err(crate::SuffixExportFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(!backup.exists());
+    assert_eq!(fs::read(&base).unwrap(), altered);
+    fs::write(&base, &original).unwrap();
+
+    let hidden = f.tmp.path().join("original-base");
+    fs::rename(&base, &hidden).unwrap();
+    fs::write(&base, &original).unwrap();
+    assert!(matches!(
+        store.backup_to(&backup),
+        Err(crate::SuffixExportFailure::NotPublished(error)) if error.to_string() == "retained base path or length changed"
+    ));
+    assert!(!backup.exists());
+    fs::rename(&hidden, &base).unwrap();
+    store.backup_to(&backup).unwrap();
+}
+
+#[test]
 fn managed_backup_refuses_changed_witnessed_suffix() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();

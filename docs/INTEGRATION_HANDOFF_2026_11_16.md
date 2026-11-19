@@ -834,3 +834,8 @@ of the exact proposed size still fails the authority digest check.
 checks that over-budget single puts avoid per-value index hashing while
 retaining checksum and witness-digest error precedence. It verifies an
 exact-budget value location and preservation of the committed prefix.
+
+[Positional retained backup validation](../benchmarks/results/2026-11-19-positional-retained-backup/README.md)
+reproduces shared-cursor failures on the prior revision. Concurrent backups
+now read pinned source files with independent positions and verify the
+synced output against the captured binding before publishing.

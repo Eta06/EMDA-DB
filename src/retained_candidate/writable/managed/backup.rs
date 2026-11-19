@@ -29,7 +29,10 @@ impl ManagedRetainedStore {
         let mut verified = None;
         let result = crate::publication_outcome::track(|tracker| {
             self.verify_selection()?;
-            self.store.verify_complete()?;
+            let digest = self.store.hash.clone().finalize().into();
+            self.store.verify_boundary(&digest)?;
+            let base_path = self.active.slot.path(&self.root).join("base");
+            self.store.base.check_path(&base_path)?;
             let parent = crate::backup::parent_directory(destination)?;
             check_separation(&self.root, parent)?;
             let mut stage = crate::staging::Stage::directory(parent)?;
@@ -39,16 +42,13 @@ impl ManagedRetainedStore {
             let expected = SuffixExpected {
                 candidate: self.active.expected.clone(),
                 end: self.store.suffix_len as u64,
-                digest: self.store.hash.clone().finalize().into(),
+                digest,
             };
             let limits = self.store.limits;
-            copy_base(
-                &self.active.slot.path(&self.root),
-                &candidate,
-                limits,
-                &expected.candidate,
-                u64::MAX,
-            )?;
+            let mut base = create_file(&candidate.join("base"))?;
+            self.store.base.copy_to(&mut base)?;
+            base.sync_all()?;
+            drop(base);
             write_new(&candidate.join("records.log"), &expected.candidate.header)?;
             write_new(&candidate.join("witness"), &expected.candidate.witness)?;
             write_new(&candidate.join("store.lock"), &[])?;
@@ -58,6 +58,8 @@ impl ManagedRetainedStore {
             drop(output);
             verify_backup(stage.path(), limits, &expected)?;
             sync_existing(&candidate)?;
+            self.store.base.check_path(&base_path)?;
+            self.store.verify_boundary(&digest)?;
             self.verify_selection()?;
             verified = Some(expected);
             tracker.begin_publication();

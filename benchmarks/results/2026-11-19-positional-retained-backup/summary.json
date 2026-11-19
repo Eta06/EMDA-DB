@@ -1,0 +1,40 @@
+{
+  "baseline_revision": "ebf22fa",
+  "source_sizes": {
+    "base": 29360335,
+    "suffix": 4194381
+  },
+  "builds": {
+    "baseline": {
+      "base": {
+        "bytes": 88081005,
+        "calls": 904
+      },
+      "log": {
+        "bytes": 12584103,
+        "calls": 1095
+      }
+    },
+    "pinned": {
+      "base": {
+        "bytes": 58720670,
+        "calls": 900
+      },
+      "log": {
+        "bytes": 8389722,
+        "calls": 582
+      }
+    }
+  },
+  "matched_backup_sha256": {
+    "candidate/base": "2aaec2d17271352a160ea9a7fb1c9d183d97b33e6ee6de2a445a896dc7ce2419",
+    "candidate/records.log": "90285472902ea70c04e332d08c6d0db14f9f55dcf7512ec557aae4cfed0dd99f",
+    "candidate/witness": "a683bb446618ee1cd5ad0d8975043ebcdd0ec849dce94a8bab41b9d175b69ff8",
+    "candidate/store.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "suffix": "4b2de72aa11956936d9ccf7479d9d7d4ff6943245e3c79d0bd1d294fd2c7a758"
+  },
+  "source_read_bytes_saved": {
+    "base": 29360335,
+    "log": 4194381
+  }
+}

@@ -3,12 +3,14 @@ use super::{
     CHUNK_BYTES, FRAME_BYTES, HEADER_BYTES, Limits, MAX_KEY_BYTES, Validated, add, encode_header,
     entry_lengths, invalid, scan_buffered, validate_value_budget,
 };
+use crate::recovery::PositionalReader;
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Seek},
-    os::unix::fs::FileExt,
+    io::{self, Read, Write},
+    os::unix::fs::{FileExt, MetadataExt},
+    path::Path,
 };
 
 // Whole entries are kept in one block, so an entry larger than this occupies
@@ -219,10 +221,32 @@ impl IndexedBase {
     }
 
     pub(crate) fn verify(&self, limits: Limits) -> io::Result<()> {
-        let mut file = &self.file;
-        file.rewind()?;
-        if scan_buffered(file, limits, None)? != self.metadata {
+        let reader = PositionalReader::new(&self.file, 0);
+        if scan_buffered(reader, limits, None)? != self.metadata {
             return Err(invalid("retained base changed"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_path(&self, path: &Path) -> io::Result<()> {
+        let entry = path.symlink_metadata()?;
+        let pinned = self.file.metadata()?;
+        if !entry.is_file()
+            || (entry.dev(), entry.ino()) != (pinned.dev(), pinned.ino())
+            || entry.len() != self.metadata.file_bytes
+        {
+            return Err(invalid("retained base path or length changed"));
+        }
+        Ok(())
+    }
+
+    /// Copy the captured bytes into private staging for digest verification.
+    pub(crate) fn copy_to(&self, output: &mut impl Write) -> io::Result<()> {
+        let length = self.metadata.file_bytes;
+        let reader = PositionalReader::new(&self.file, 0).take(length);
+        let mut reader = io::BufReader::with_capacity(CHUNK_BYTES, reader);
+        if io::copy(&mut reader, output)? != length {
+            return Err(invalid("retained base shortened during copy"));
         }
         Ok(())
     }
