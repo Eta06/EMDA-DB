@@ -74,11 +74,22 @@ impl AuthorityRecord {
         Ok(())
     }
 
-    fn check(&self, observed: AuthorityPoint) -> io::Result<()> {
+    pub(super) fn check(&self, observed: AuthorityPoint) -> io::Result<()> {
         self.validate()?;
         if self.committed != observed && self.pending != Some(observed) {
             return Err(record::invalid_data(
                 "retained state does not match independent authority",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_end(&self, end: u64) -> io::Result<()> {
+        if end != self.committed.suffix_end
+            && !self.pending.is_some_and(|next| end == next.suffix_end)
+        {
+            return Err(record::invalid_data(
+                "retained suffix length does not match independent authority",
             ));
         }
         Ok(())
@@ -235,7 +246,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             role,
             storage_limits,
             |root, catalog| select_authorized(root, catalog, current.committed),
-            |observed| current.check(observed),
+            Some(current),
         )?;
         let mut this = Self {
             inner,

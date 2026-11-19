@@ -289,6 +289,9 @@ guesses a replacement selection from directory contents.
 Managed open accepts a recovery ceiling for each resource and checks the
 witness-bound persisted limits before loading the generation. The persisted
 values, available through `limits`, govern writes and ordinary compaction.
+Before reading record payloads, the opener checks the physical base length
+against the expected binding and the admitted byte and work limits. A
+matching length still requires full base validation.
 `compact_with_limits` verifies the active generation under its existing
 limits and publishes a successor with the explicitly requested values. This
 allows compaction when a readable live set has outgrown the current base
@@ -437,12 +440,13 @@ The provider uses a blocking file lock and synchronous I/O.
 An append first reserves a fresh authority revision naming the exact prior
 and proposed suffix fingerprints. The local log and witness synchronize
 before a second CAS finalizes the proposal and allows acknowledgement.
-When an intent remains pending, reopen checks whether the verified local
-bytes match one of its two exact endpoints. It synchronizes or adopts
-the matching state before finalizing the recovery choice. An unrelated or
-partial suffix fails closed. A stale copy can lose the CAS and must reopen
-against the current record. Revisions advance even when recovery selects
-the prior suffix.
+Before replay, reopen admits only the physical suffix length named by the
+committed point or the pending proposal. It verifies the entire admitted
+suffix and checks its digest against the exact authority point. When an
+intent remains pending, it synchronizes or adopts the matching state before
+finalizing the recovery choice. An unrelated or partial suffix fails
+closed. A stale copy can lose the CAS and must reopen against the current
+record. Revisions advance even when recovery selects the prior suffix.
 
 Authorized compaction writes the successor into the empty slot under
 the exclusive catalog lock. It synchronizes and verifies the successor

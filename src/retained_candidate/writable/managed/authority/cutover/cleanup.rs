@@ -135,13 +135,13 @@ fn discard(
             &active.expected,
             generation_role(CUTOVER_MAGIC, catalog),
             Some(active.generation),
-            |_| Ok(()),
-            |_, _, end, _| {
+            |_, end| {
                 if end != 0 {
                     return Err(record::invalid_data("cutover preparation has been written"));
                 }
                 Ok(())
             },
+            |_, _, _, _| Ok(()),
         )?;
         verify_archives(&root, &path)?;
         lock.verify_identity(&path)?;

@@ -1,0 +1,23 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.08s
+     Running unittests src/lib.rs (target/debug/build/database-engine/192e494630015762/out/database_engine-192e494630015762)
+
+running 1 test
+test retained_candidate::writable::tests::recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix ... FAILED
+
+failures:
+
+---- retained_candidate::writable::tests::recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix stdout ----
+
+thread 'retained_candidate::writable::tests::recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix' (9668138) panicked at src/retained_candidate/writable/tests.rs:452:9:
+assertion `left == right` failed
+  left: "incomplete retained suffix header"
+ right: "retained base length does not match its binding"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    retained_candidate::writable::tests::recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 568 filtered out; finished in 0.48s
+
+error: test failed, to rerun pass `--lib`

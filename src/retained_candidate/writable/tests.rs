@@ -434,6 +434,46 @@ fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
 }
 
 #[test]
+fn recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix() {
+    let f = Fixture::new(LIMITS);
+    let path = f.path.join("base");
+    let base = fs::read(&path).unwrap();
+    let witness = fs::read(f.witness()).unwrap();
+    let mut log = fs::read(f.log()).unwrap();
+    // With the base intact, the short suffix would fail during decoding.
+    f.append_unacknowledged(&[0]);
+    let error = f.open(LIMITS).err().unwrap();
+    assert_eq!(error.to_string(), "incomplete retained suffix header");
+    log.push(0);
+    for altered in [&base[..base.len() - 1], &[base.as_slice(), &[0]].concat()] {
+        fs::write(&path, altered).unwrap();
+        let error = f.open(LIMITS).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "retained base length does not match its binding"
+        );
+        assert_eq!(fs::read(f.log()).unwrap(), log);
+        assert_eq!(fs::read(f.witness()).unwrap(), witness);
+        assert_eq!(fs::read(&path).unwrap(), altered);
+    }
+    fs::write(&path, &base).unwrap();
+    log.pop();
+    log.extend_from_slice(&record::encode(Operation::Put, b"pending", b"proposed").unwrap());
+    fs::write(f.log(), &log).unwrap();
+    let store = f.open(LIMITS).unwrap();
+    assert_eq!(
+        store.get(b"a", 4).unwrap().as_deref(),
+        Some(b"base".as_slice())
+    );
+    assert_eq!(
+        store.get(b"pending", 8).unwrap().as_deref(),
+        Some(b"proposed".as_slice())
+    );
+    assert_ne!(fs::read(f.witness()).unwrap(), witness);
+}
+
+#[test]
 fn tampered_or_incomplete_suffix_leaves_witness_unchanged() {
     for mode in ["short header", "torn", "split", "missing", "substituted"] {
         let f = Fixture::new(LIMITS);

@@ -221,7 +221,7 @@ fn process_kills_recover_document_indexes_and_raw_receipt_together() {
             fs::write(&log_path, torn).unwrap();
             assert!(matches!(open(), Err(error)
                     if error.kind() == io::ErrorKind::InvalidData
-                        && error.to_string() == "incomplete retained suffix record"));
+                        && error.to_string() == "retained suffix length does not match independent authority"));
             assert_eq!(fs::read(&log_path).unwrap(), torn);
             assert_eq!(fs::read(&witness_path).unwrap(), witness_before);
             assert_eq!(authority.read().unwrap(), Some(visible));

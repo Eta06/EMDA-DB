@@ -371,6 +371,70 @@ fn authority_rejects_rolled_back_and_unregistered_tails_without_adopting_them() 
 }
 
 #[test]
+fn recovery_admits_only_authorized_ends_and_authenticates_the_accepted_length() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"earlier", b"acknowledged").unwrap();
+    store.authority.fault = Some((store.current.revision + 1, true));
+    assert!(matches!(
+        store.put(b"pending", b"proposed"),
+        Err(MutationFailure::Rejected(_))
+    ));
+    drop(store);
+
+    let slot = Slot::A.path(&f.root);
+    let path = slot.join("records.log");
+    let witness_path = slot.join("commit.state");
+    let witness = fs::read(&witness_path).unwrap();
+    let prefix = fs::read(&path).unwrap();
+    let authority = f.provider.read().unwrap().unwrap();
+    let proposed = record::encode(Operation::Put, b"pending", b"proposed").unwrap();
+    let substitute = record::encode(Operation::Put, b"pending", b"replaced").unwrap();
+    assert_eq!(proposed.len(), substitute.len());
+    assert_eq!(
+        authority.pending.unwrap().suffix_end,
+        authority.committed.suffix_end + proposed.len() as u64
+    );
+    for (tail, message) in [
+        (
+            &proposed[..proposed.len() - 1],
+            "retained suffix length does not match independent authority",
+        ),
+        (
+            substitute.as_slice(),
+            "retained state does not match independent authority",
+        ),
+    ] {
+        let mut log = prefix.clone();
+        log.extend_from_slice(tail);
+        fs::write(&path, &log).unwrap();
+        let error = AuthorizedRetainedStore::open(&f.root, LIMITS, f.provider.clone())
+            .err()
+            .expect("the unapproved suffix must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), message);
+        assert_eq!(fs::read(&path).unwrap(), log);
+        assert_eq!(fs::read(&witness_path).unwrap(), witness);
+        assert_eq!(f.provider.read().unwrap(), Some(authority));
+    }
+
+    fs::write(&path, [prefix, proposed].concat()).unwrap();
+    let mut reopened = f.open();
+    assert_eq!(
+        reopened.get(b"earlier", 12).unwrap().as_deref(),
+        Some(b"acknowledged".as_slice())
+    );
+    assert_eq!(
+        reopened.get(b"pending", 8).unwrap().as_deref(),
+        Some(b"proposed".as_slice())
+    );
+    let resolved = f.provider.read().unwrap().unwrap();
+    assert!(resolved.pending.is_none());
+    assert_eq!(resolved.committed, authority.pending.unwrap());
+}
+
+#[test]
 fn recovery_adopts_an_exact_proposed_tail_before_finalizing_a_pending_intent() {
     let mut f = Fixture::prepare();
     f.register();

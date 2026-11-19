@@ -401,7 +401,7 @@ impl ManagedRetainedStore {
             CATALOG_MAGIC,
             None,
             Active::load,
-            |_| Ok(()),
+            None,
         )
     }
 
@@ -422,7 +422,7 @@ impl ManagedRetainedStore {
             CATALOG_MAGIC,
             Some(storage_limits),
             Active::load,
-            |_| Ok(()),
+            None,
         )?;
         if suffix_threshold.is_some() {
             store.finish_maintenance()?;
@@ -437,7 +437,7 @@ impl ManagedRetainedStore {
         catalog_magic: &'static [u8; 8],
         requested_storage: Option<CatalogStorageLimits>,
         select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
-        authorize: impl FnOnce(AuthorityPoint) -> io::Result<()>,
+        authority: Option<AuthorityRecord>,
     ) -> io::Result<Self> {
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
@@ -452,7 +452,10 @@ impl ManagedRetainedStore {
             &active.expected,
             generation_role(catalog_magic, catalog),
             Some(active.generation),
-            |header| {
+            |header, end| {
+                if let Some(authority) = authority {
+                    authority.check_end(end)?;
+                }
                 storage = catalog_storage(
                     &root,
                     catalog_magic,
@@ -464,7 +467,9 @@ impl ManagedRetainedStore {
                 Ok(())
             },
             |directory, header, end, digest| {
-                authorize(AuthorityPoint::new(catalog, header, end, digest))?;
+                if let Some(authority) = authority {
+                    authority.check(AuthorityPoint::new(catalog, header, end, digest))?;
+                }
                 sync_existing(directory)?;
                 lock.verify_identity(&root)?;
                 verify_active(&root, &active, catalog_magic)

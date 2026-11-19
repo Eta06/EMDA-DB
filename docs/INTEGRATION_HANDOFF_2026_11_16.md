@@ -824,3 +824,8 @@ covers compound tuples and later-field ranges when separate required
 disjunctions supply choices on different fields. Complete branch plans
 retain priority. The new regression verifies the candidate and probe limits
 and confirms that empty probes still protect against matching inserts.
+
+[Retained recovery admission](../benchmarks/results/2026-11-19-retained-recovery-preflight/README.md)
+checks the base's bound length and authority-approved suffix endpoints
+before reading record bodies. The regressions verify that a valid substitute
+of the exact proposed size still fails the authority digest check.

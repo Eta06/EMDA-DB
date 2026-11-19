@@ -225,7 +225,7 @@ impl RetainedStore {
             expected,
             role,
             None,
-            |_| Ok(()),
+            |_, _| Ok(()),
             |directory, _, actual_end, actual_digest| {
                 if (actual_end, actual_digest) != (end, digest) {
                     return Err(record::invalid_data("staged retained suffix changed"));
@@ -266,7 +266,7 @@ impl RetainedStore {
             expected,
             GenerationRole::Standalone,
             None,
-            |_| Ok(()),
+            |_, _| Ok(()),
             |directory, _, _, _| sync_directory(directory),
         )
     }
@@ -277,7 +277,7 @@ impl RetainedStore {
         expected: &Expected,
         role: GenerationRole,
         generation: Option<[u8; 16]>,
-        preflight: impl FnOnce(&Header) -> io::Result<()>,
+        preflight: impl FnOnce(&Header, u64) -> io::Result<()>,
         authorize: impl FnOnce(&Path, &Header, u64, [u8; 32]) -> io::Result<()>,
     ) -> io::Result<Self> {
         if !dir.symlink_metadata()?.file_type().is_dir() {
@@ -294,7 +294,6 @@ impl RetainedStore {
         let saved = read_marker(&witness)?;
         let (committed, committed_hash) = decode_marker(&saved, header.bytes())?;
         let limits = header.recovery_limits(limits)?;
-        preflight(&header)?;
         let log_size = log.metadata()?.len();
         let suffix_len = log_size
             .checked_sub(header.len as u64)
@@ -306,6 +305,22 @@ impl RetainedStore {
         }
         if suffix_len > limits.suffix.bytes {
             return Err(invalid_input("suffix byte limit exceeded"));
+        }
+        preflight(&header, suffix_len)?;
+        let base = open_regular(&dir.join("base"))?;
+        let base_bytes = base.metadata()?.len();
+        let expected_base_bytes = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+        if base_bytes != expected_base_bytes {
+            return Err(record::invalid_data(
+                "retained base length does not match its binding",
+            ));
+        }
+        if base_bytes > limits.base.file_bytes
+            || base_bytes
+                .checked_add(1)
+                .is_none_or(|work| work > limits.base.work_bytes)
+        {
+            return Err(record::invalid_data("retained base byte limit exceeded"));
         }
         let suffix_len = usize::try_from(suffix_len)
             .map_err(|_| invalid_input("suffix length exceeds platform range"))?;
@@ -321,7 +336,7 @@ impl RetainedStore {
             limits.suffix,
             limits.overlay,
         )?;
-        let base = IndexedBase::open(open_regular(&dir.join("base"))?, limits.base, limits.index)?;
+        let base = IndexedBase::open(base, limits.base, limits.index)?;
         check_binding(base.metadata(), expected)?;
         authorize(
             dir,
