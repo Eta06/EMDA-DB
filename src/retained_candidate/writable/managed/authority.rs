@@ -216,6 +216,20 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         self.write(encode_batch(operations))
     }
 
+    pub(crate) fn checked_document_reader(&mut self) -> io::Result<&ManagedRetainedStore> {
+        self.verify_current()?;
+        Ok(&self.inner)
+    }
+
+    pub(crate) fn write_batch_checking(
+        &mut self,
+        operations: &[BatchOperation<'_>],
+        admit: impl Fn() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        admit().map_err(MutationFailure::Rejected)?;
+        self.write_checking(encode_batch(operations), admit)
+    }
+
     /// Compact into the inactive slot and select it with one authority CAS.
     /// The successor is verified and synchronized before selection. An
     /// occupied inactive slot requires explicit reclamation.
@@ -263,6 +277,14 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     }
 
     fn write(&mut self, encoded: io::Result<Vec<u8>>) -> Result<(), MutationFailure> {
+        self.write_checking(encoded, || Ok(()))
+    }
+
+    fn write_checking(
+        &mut self,
+        encoded: io::Result<Vec<u8>>,
+        admit: impl FnOnce() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
         let encoded = encoded.map_err(MutationFailure::Rejected)?;
         self.verify_current().map_err(MutationFailure::Rejected)?;
         let mut hash = self.inner.store.hash.clone();
@@ -294,6 +316,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         let result = self.inner.store.write_encoded(
             &encoded,
             || {
+                admit()?;
                 attempted.set(true);
                 replace(authority, self.current, pending)
             },

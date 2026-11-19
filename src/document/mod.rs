@@ -45,7 +45,7 @@ pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use transaction::DocumentTransaction;
 pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES};
 
-use crate::retained_candidate::ManagedRetainedStore;
+use crate::retained_candidate::{AuthorizedRetainedStore, ManagedRetainedStore, RetainedAuthority};
 use crate::{
     CancellationToken, CheckpointStore, CheckpointTransactionMode, ControlledTransactionError,
     Store, TimedTransactionError, TransactionFailure, TransactionMode,
@@ -75,7 +75,7 @@ pub struct DocumentDatabase<'a> {
 enum Backend<'a> {
     Store(&'a Store),
     Checkpoint(&'a CheckpointStore),
-    Retained(Mutex<&'a mut ManagedRetainedStore>),
+    Retained(Mutex<&'a mut dyn retained::Backend>),
 }
 
 impl<'a> DocumentDatabase<'a> {
@@ -98,6 +98,17 @@ impl<'a> DocumentDatabase<'a> {
     /// returns `WouldBlock` immediately. Separate views cannot borrow the
     /// same catalog at once.
     pub fn with_managed_retained_store(store: &'a mut ManagedRetainedStore) -> Self {
+        Self {
+            backend: Backend::Retained(Mutex::new(store)),
+        }
+    }
+
+    /// Exclusively borrows an authority-checked retained catalog. Document
+    /// transactions, including read-only transactions, validate authority.
+    /// All modes serialize transactions and reject concurrent or reentrant calls.
+    pub fn with_authorized_retained_store<A: RetainedAuthority + Send>(
+        store: &'a mut AuthorizedRetainedStore<A>,
+    ) -> Self {
         Self {
             backend: Backend::Retained(Mutex::new(store)),
         }

@@ -1,6 +1,7 @@
 use database_engine::retained_base_v2::Limits;
 use database_engine::retained_candidate::{
-    IndexLimits, ManagedRetainedStore, OverlayLimits, RetainedStoreLimits, SuffixLimits,
+    AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits, ManagedRetainedStore,
+    OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
     CancellationToken, CollectionSchema, DocumentDatabase, DocumentTransactionMode,
@@ -34,10 +35,15 @@ const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
     },
 };
 
-fn prepare(root: &Path) -> ManagedRetainedStore {
-    let source = root.join("source");
-    let catalog = root.join("catalog");
-    let store = Store::open(&source).unwrap();
+const EXPORT: RetainedExportLimits = RetainedExportLimits {
+    max_log_bytes: 1_000_000,
+    max_live_keys: 5_000,
+    max_live_key_bytes: 250_000,
+    max_output_bytes: 1_000_000,
+};
+
+fn seed(source: &Path) -> Store {
+    let store = Store::open(source).unwrap();
     let db = DocumentDatabase::new(&store);
     db.create_collection("items", CollectionSchema::default())
         .unwrap();
@@ -53,20 +59,92 @@ fn prepare(root: &Path) -> ManagedRetainedStore {
         },
     )
     .unwrap();
-    ManagedRetainedStore::copy_from_store(
-        store,
-        &source,
-        &catalog,
-        RetainedExportLimits {
-            max_log_bytes: 1_000_000,
-            max_live_keys: 5_000,
-            max_live_key_bytes: 250_000,
-            max_output_bytes: 1_000_000,
-        },
-        LIMITS,
-    )
-    .unwrap();
+    store
+}
+
+fn prepare(root: &Path) -> ManagedRetainedStore {
+    let source = root.join("source");
+    let catalog = root.join("catalog");
+    ManagedRetainedStore::copy_from_store(seed(&source), &source, &catalog, EXPORT, LIMITS)
+        .unwrap();
     ManagedRetainedStore::open_with_auto_reclaim(&catalog, LIMITS, NonZeroU64::MIN).unwrap()
+}
+
+#[test]
+fn authorized_cutover_preserves_document_transactions_through_reclamation() {
+    type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let authority = dir.path().join("authority");
+    let initial = Catalog::cutover_from_store(seed(&source), &source, EXPORT, LIMITS).unwrap();
+    let mut provider = FileRetainedAuthority::create(&authority).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let open = || {
+        Catalog::open(
+            &source,
+            LIMITS,
+            FileRetainedAuthority::open(&authority).unwrap(),
+        )
+        .unwrap()
+    };
+    let mut store = open();
+    {
+        let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+        let token = CancellationToken::new();
+        assert!(matches!(
+            db.transaction_detailed(
+                DocumentTransactionMode::ReadSetFifo,
+                None,
+                Some(&token),
+                |tx| {
+                    tx.replace("items", "a", &json!({"n": 0}), false)?;
+                    tx.put_raw(b"cancelled", b"never committed")?;
+                    token.cancel();
+                    Ok(())
+                }
+            ),
+            Err(TransactionFailure::Cancelled)
+        ));
+        assert_eq!(provider.read().unwrap(), Some(initial));
+
+        db.transaction_with_read_set(|tx| {
+            tx.delete("items", "a")?;
+            tx.insert("items", "m", &json!({"n": 3}))?;
+            tx.replace("items", "z", &json!({"n": 7}), false)?;
+            tx.put_raw(b"receipt", b"committed")?;
+            let rows = tx
+                .query_index("items", "score", &IndexQuery::default())?
+                .documents;
+            assert_eq!(
+                rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+                ["m", "z"]
+            );
+            assert_eq!(rows[1].document, json!({"n": 7}));
+            Ok(())
+        })
+        .unwrap();
+    }
+    let committed = provider.read().unwrap().unwrap();
+    assert_eq!(committed.revision, initial.revision + 2);
+    assert!(committed.pending.is_none());
+    assert_eq!(store.get(b"cancelled", 32).unwrap(), None);
+    assert_ne!(store.compact().unwrap(), committed.committed.generation);
+    assert!(store.reclaim_inactive().unwrap());
+    drop(store);
+
+    let mut store = open();
+    let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+    assert_eq!(db.get("items", "a").unwrap(), None);
+    assert_eq!(db.get("items", "m").unwrap(), Some(json!({"n": 3})));
+    assert_eq!(db.get("items", "z").unwrap(), Some(json!({"n": 7})));
+    assert!(db.insert("items", "duplicate", &json!({"n": 7})).is_err());
+    assert_eq!(
+        db.transaction(|tx| tx.get_raw(b"receipt"))
+            .unwrap()
+            .unwrap(),
+        b"committed"
+    );
+    db.verify_collection("items").unwrap();
 }
 
 #[test]

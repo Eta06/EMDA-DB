@@ -1,6 +1,6 @@
 # Experimental document model
 
-This is an embedded prototype over the same witnessed storage and transactions as the byte-key API. It is not MongoDB compatible or production-ready. It runs on `Store`, `CheckpointStore`, or `ManagedRetainedStore` through `DocumentDatabase`. It has no network API, access control, project isolation, distributed transactions, automatic retries, or SQL interface. Read the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md) before using it.
+This is an embedded prototype over the same witnessed storage and transactions as the byte-key API. It is not MongoDB compatible or production-ready. It runs on `Store`, `CheckpointStore`, `ManagedRetainedStore`, or `AuthorizedRetainedStore` through `DocumentDatabase`. It has no network API, access control, project isolation, distributed transactions, automatic retries, or SQL interface. Read the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md) before using it.
 
 ## A small example
 
@@ -49,6 +49,17 @@ leave completed generation maintenance visible. The staged document and
 raw-key changes share the ordinary atomic-batch count and byte limits.
 Release the document view before using catalog operations such as backup
 or explicit compaction.
+
+`DocumentDatabase::with_authorized_retained_store` uses the same serialized
+transaction model on an open authority-checked catalog, including a catalog
+opened at its original path after cutover. It checks authority at admission
+and again before returning a successful read-only result. Writes check
+cancellation and deadlines before submitting the authority intent, then use
+the authority-fenced durable append protocol. Once intent submission begins,
+I/O is allowed to finish across a cancellation or deadline. Use
+`transaction_detailed` to distinguish a rejected transaction from one whose
+local append might have committed. Reopen after an authority error to resolve
+the outcome against the trusted authority.
 
 Create collections explicitly with a `CollectionSchema`; an empty schema accepts arbitrary object fields within limits. Each of at most 64 distinct field rules declares a path, type, required flag and nullable flag. Missing and explicit null differ; nullable does not make a field optional. An intermediate non-object makes a nested path missing. Integer rules accept signed 64-bit integers. Unlisted fields are allowed. Replacing a schema validates all existing documents atomically, subject to a 256-document/32 MiB scan limit.
 

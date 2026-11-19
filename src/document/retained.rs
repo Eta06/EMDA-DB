@@ -1,5 +1,5 @@
 use super::DocumentTransaction;
-use crate::retained_candidate::ManagedRetainedStore;
+use crate::retained_candidate::{AuthorizedRetainedStore, ManagedRetainedStore, RetainedAuthority};
 use crate::{
     BatchOperation, CancellationToken, ControlledTransactionError, Entry, MAX_ATOMIC_BATCH_BYTES,
     MAX_ATOMIC_BATCH_OPERATIONS, MutationFailure, TimedTransactionError, TransactionFailure,
@@ -19,6 +19,44 @@ pub(super) struct RetainedTransaction<'store> {
     cancellation: Option<&'store CancellationToken>,
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     encoded_bytes: usize,
+}
+
+pub(super) trait Backend: Send {
+    fn checked_reader(&mut self) -> io::Result<&ManagedRetainedStore>;
+    fn commit(
+        &mut self,
+        operations: &[BatchOperation<'_>],
+        admit: &dyn Fn() -> io::Result<()>,
+    ) -> Result<(), MutationFailure>;
+}
+
+impl Backend for ManagedRetainedStore {
+    fn checked_reader(&mut self) -> io::Result<&ManagedRetainedStore> {
+        self.generation_id()?;
+        Ok(self)
+    }
+
+    fn commit(
+        &mut self,
+        operations: &[BatchOperation<'_>],
+        admit: &dyn Fn() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        self.write_batch_checking(operations, admit)
+    }
+}
+
+impl<A: RetainedAuthority + Send> Backend for AuthorizedRetainedStore<A> {
+    fn checked_reader(&mut self) -> io::Result<&ManagedRetainedStore> {
+        self.checked_document_reader()
+    }
+
+    fn commit(
+        &mut self,
+        operations: &[BatchOperation<'_>],
+        admit: &dyn Fn() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        self.write_batch_checking(operations, admit)
+    }
 }
 
 impl RetainedTransaction<'_> {
@@ -71,7 +109,7 @@ impl RetainedTransaction<'_> {
 }
 
 pub(super) fn run<T>(
-    store: &Mutex<&mut ManagedRetainedStore>,
+    store: &Mutex<&mut dyn Backend>,
     deadline: Option<Instant>,
     cancellation: Option<&CancellationToken>,
     action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> io::Result<T>,
@@ -88,12 +126,12 @@ pub(super) fn run<T>(
             )));
         }
     };
-    store
-        .generation_id()
+    let reader = store
+        .checked_reader()
         .map_err(TransactionFailure::Rejected)?;
     admit().map_err(reject)?;
     let mut staged = RetainedTransaction {
-        store: &store,
+        store: reader,
         deadline,
         cancellation,
         staged: BTreeMap::new(),
@@ -106,7 +144,12 @@ pub(super) fn run<T>(
         .map_err(TransactionFailure::Callback)?;
     admit().map_err(reject)?;
     let RetainedTransaction { staged, .. } = staged;
-    if !staged.is_empty() {
+    if staged.is_empty() {
+        store
+            .checked_reader()
+            .map_err(TransactionFailure::Rejected)?;
+        admit().map_err(reject)?;
+    } else {
         let operations = staged
             .iter()
             .map(|(key, value)| match value {
@@ -115,7 +158,7 @@ pub(super) fn run<T>(
             })
             .collect::<Vec<_>>();
         store
-            .write_batch_checking(&operations, admit)
+            .commit(&operations, &admit)
             .map_err(|failure| match failure {
                 MutationFailure::Rejected(error) => reject(error),
                 MutationFailure::OutcomeUnknown(error) => TransactionFailure::OutcomeUnknown(error),

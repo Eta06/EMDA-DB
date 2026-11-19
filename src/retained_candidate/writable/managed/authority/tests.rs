@@ -178,6 +178,90 @@ fn reopening_resolves_either_side_of_uncertain_authority_updates() {
 }
 
 #[test]
+fn document_commit_recovers_index_and_receipt_together_after_authority_faults() {
+    use crate::{
+        CollectionSchema, DocumentDatabase, DocumentTransactionMode, IndexDefinition, IndexQuery,
+        TransactionFailure,
+    };
+    use serde_json::json;
+
+    for (phase, after) in [(1, false), (1, true), (2, false), (2, true)] {
+        let mut f = Fixture::prepare();
+        f.register();
+        let mut store = f.open();
+        let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "items",
+            IndexDefinition {
+                name: "score".into(),
+                fields: vec![vec!["n".into()]],
+                unique: true,
+                partial: None,
+            },
+        )
+        .unwrap();
+        let revision = store.current.revision;
+        store.authority.fault = Some((revision + phase, after));
+        let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+        let result = db.transaction_detailed(DocumentTransactionMode::ReadSet, None, None, |tx| {
+            tx.insert("items", "a", &json!({"n": 1}))?;
+            tx.put_raw(b"receipt", b"written")
+        });
+        let committed = phase == 2;
+        match result {
+            Err(TransactionFailure::Rejected(error)) if !committed => {
+                assert!(error.to_string().contains("injected authority failure"));
+            }
+            Err(TransactionFailure::OutcomeUnknown(error)) if committed => {
+                assert!(error.to_string().contains("injected authority failure"));
+            }
+            _ => panic!("unexpected document transaction outcome: {result:?}"),
+        }
+        assert!(db.get("items", "a").is_err());
+        drop(store);
+
+        let mut recovered = f.open();
+        let db = DocumentDatabase::with_authorized_retained_store(&mut recovered);
+        assert_eq!(
+            db.get("items", "a").unwrap(),
+            committed.then(|| json!({"n": 1}))
+        );
+        assert_eq!(
+            db.query_index("items", "score", &IndexQuery::default())
+                .unwrap()
+                .documents
+                .len(),
+            usize::from(committed)
+        );
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(),
+            committed.then(|| b"written".to_vec())
+        );
+        db.verify_collection("items").unwrap();
+    }
+}
+
+#[test]
+fn document_read_rejects_an_authority_change_during_the_callback() {
+    use crate::{DocumentDatabase, DocumentTransactionMode, TransactionFailure};
+
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+    let next = f.initial.finalized(f.initial.committed).unwrap();
+    assert!(
+        matches!(db.transaction_detailed(DocumentTransactionMode::ReadSet, None, None, |tx| {
+        assert_eq!(tx.get_raw(b"base")?.unwrap(), b"imported");
+        assert!(f.provider.compare_and_swap(Some(f.initial), next)?);
+        Ok(())
+    }), Err(TransactionFailure::Rejected(error)) if error.to_string() == "retained authority changed")
+    );
+}
+
+#[test]
 fn authority_rejects_rolled_back_and_unregistered_tails_without_adopting_them() {
     let mut f = Fixture::prepare();
     f.register();
