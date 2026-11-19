@@ -829,3 +829,8 @@ and confirms that empty probes still protect against matching inserts.
 checks the base's bound length and authority-approved suffix endpoints
 before reading record bodies. The regressions verify that a valid substitute
 of the exact proposed size still fails the authority digest check.
+
+[Retained operation-admission validation](../benchmarks/results/2026-11-19-retained-suffix-admission/README.md)
+checks that over-budget single puts avoid per-value index hashing while
+retaining checksum and witness-digest error precedence. It verifies an
+exact-budget value location and preservation of the committed prefix.

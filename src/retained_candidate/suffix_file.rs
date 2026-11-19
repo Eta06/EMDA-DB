@@ -119,8 +119,16 @@ impl<'a> SuffixFile<'a> {
                 )
                 .map(Changes::Batch)
             } else {
-                read_single::<D>(&mut reader, &mut hash, &header_bytes, &header, key, offset)
-                    .map(Changes::Single)
+                read_single::<D>(
+                    &mut reader,
+                    &mut hash,
+                    &header_bytes,
+                    &header,
+                    key,
+                    offset,
+                    admit_operations(remaining_operations, 1),
+                )
+                .map(Changes::Single)
             };
             // At a complete acknowledged boundary, retain the established
             // digest error precedence over parsing or admission errors.
@@ -135,7 +143,6 @@ impl<'a> SuffixFile<'a> {
                     }
                 }
                 Changes::Single(location) => {
-                    admit_operations(remaining_operations, 1)?;
                     remaining_operations -= 1;
                     visit(key, location)?;
                 }
@@ -175,17 +182,22 @@ fn read_single<D: ValueHash>(
     header: &Header,
     key: &mut [u8],
     offset: usize,
+    admission: io::Result<()>,
 ) -> io::Result<Option<StreamValue<D::Output>>> {
     reader.read_exact(key)?;
     hash.update(&*key);
     let mut checksum = crc32fast::Hasher::new();
     checksum.update(header_bytes);
     checksum.update(key);
-    let mut value_hash = D::default();
+    // The record and suffix checks still cover rejected records, but only
+    // an admitted put produces an indexed value location and digest.
+    let mut value_hash = (admission.is_ok() && header.operation == Operation::Put).then(D::default);
     reader.read_with(header.value_len, |bytes| {
         hash.update(bytes);
         checksum.update(bytes);
-        value_hash.update_value(bytes);
+        if let Some(value_hash) = &mut value_hash {
+            value_hash.update_value(bytes);
+        }
     })?;
     let mut stored = [0; CHECKSUM_SIZE];
     reader.read_exact(&mut stored)?;
@@ -193,7 +205,8 @@ fn read_single<D: ValueHash>(
     if checksum.finalize() != u32::from_le_bytes(stored) {
         return Err(record::invalid_data("record checksum mismatch"));
     }
-    Ok((header.operation == Operation::Put).then(|| StreamValue {
+    admission?;
+    Ok(value_hash.map(|value_hash| StreamValue {
         offset: (offset + HEADER_SIZE + header.key_len) as u64,
         length: header.value_len,
         digest: value_hash.finish(),
@@ -243,6 +256,102 @@ impl Read for SuffixReader<'_> {
 mod tests {
     use super::*;
     use crate::retained_candidate::Expected;
+
+    struct NoValueDigest;
+
+    impl Default for NoValueDigest {
+        fn default() -> Self {
+            panic!("an over-budget put must not initialize a value digest");
+        }
+    }
+
+    impl ValueHash for NoValueDigest {
+        type Output = ();
+
+        fn update_value(&mut self, _: &[u8]) {
+            unreachable!()
+        }
+
+        fn finish(self) -> Self::Output {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn over_budget_single_put_checks_record_and_witness_without_hashing_for_the_index() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("suffix");
+        let prefix = b"outside suffix";
+        let value = vec![0x4a; 256 * 1024 + 7];
+        let put = record::encode(Operation::Put, b"key", &value).unwrap();
+        let end = put.len();
+        let digest = Sha256::digest(&put).into();
+        let mut damaged = put.clone();
+        damaged[end - CHECKSUM_SIZE - 1] ^= 1;
+        for (bytes, committed, kind, message) in [
+            (
+                &put,
+                None,
+                io::ErrorKind::InvalidInput,
+                "suffix operation limit exceeded",
+            ),
+            (
+                &damaged,
+                None,
+                io::ErrorKind::InvalidData,
+                "record checksum mismatch",
+            ),
+            (
+                &put,
+                Some((end, digest)),
+                io::ErrorKind::InvalidInput,
+                "suffix operation limit exceeded",
+            ),
+            (
+                &damaged,
+                Some((end, digest)),
+                io::ErrorKind::InvalidData,
+                "committed suffix digest mismatch",
+            ),
+        ] {
+            std::fs::write(&path, [prefix.as_slice(), bytes].concat()).unwrap();
+            let file = File::open(&path).unwrap();
+            let suffix = SuffixFile {
+                file: &file,
+                start: prefix.len() as u64,
+                len: end,
+            };
+            let error = suffix
+                .replay::<NoValueDigest>(committed, 0, |_, _| {
+                    panic!("an over-budget record must not reach the index");
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.to_string(), message);
+        }
+
+        std::fs::write(&path, [prefix.as_slice(), &put].concat()).unwrap();
+        let file = File::open(&path).unwrap();
+        let suffix = SuffixFile {
+            file: &file,
+            start: prefix.len() as u64,
+            len: end,
+        };
+        let mut visits = 0;
+        let hash = suffix
+            .replay::<Sha256>(Some((end, digest)), 1, |key, location| {
+                assert_eq!(key, b"key");
+                let location = location.unwrap();
+                assert_eq!(location.offset, (HEADER_SIZE + key.len()) as u64);
+                assert_eq!(location.length, value.len());
+                assert_eq!(location.digest, <[u8; 32]>::from(Sha256::digest(&value)));
+                visits += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(visits, 1);
+        assert_eq!(<[u8; 32]>::from(hash.finalize()), digest);
+    }
 
     #[test]
     fn streamed_batch_checks_crc_and_budget_before_visiting_any_child() {

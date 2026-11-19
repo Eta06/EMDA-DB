@@ -525,6 +525,7 @@ fn different_generation_witness_and_over_budget_tail_are_rejected() {
     let limits = RetainedStoreLimits {
         suffix: SuffixLimits {
             operations: 1,
+            bytes: 256 * 1024,
             ..LIMITS.suffix
         },
         ..LIMITS
@@ -544,11 +545,24 @@ fn different_generation_witness_and_over_budget_tail_are_rejected() {
         io::ErrorKind::InvalidData
     );
     fs::write(f.witness(), &before).unwrap();
-    f.append_unacknowledged(&record::encode(Operation::Put, b"two", b"two").unwrap());
+    let prefix = fs::read(f.log()).unwrap();
+    let tail = record::encode(Operation::Put, b"two", &vec![4; 128 * 1024]).unwrap();
+    f.append_unacknowledged(&tail);
     let error = f.open(limits).err().unwrap();
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     assert!(error.to_string().contains("operation limit"));
     assert_eq!(fs::read(f.witness()).unwrap(), before);
+    assert_eq!(
+        fs::read(f.log()).unwrap(),
+        [prefix.as_slice(), &tail].concat()
+    );
+    fs::write(f.log(), prefix).unwrap();
+    let recovered = f.open(limits).unwrap();
+    assert_eq!(
+        recovered.get(b"one", 3).unwrap().as_deref(),
+        Some(b"one".as_slice())
+    );
+    assert_eq!(recovered.get(b"two", 3).unwrap(), None);
 }
 
 #[test]
