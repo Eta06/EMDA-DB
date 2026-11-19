@@ -100,7 +100,7 @@ pub(crate) fn lookup_with_metadata<R: Read>(
     Ok((metadata, value))
 }
 
-fn validate_value_budget(max_value_bytes: usize) -> io::Result<()> {
+pub(crate) fn validate_value_budget(max_value_bytes: usize) -> io::Result<()> {
     if max_value_bytes > crate::record::MAX_VALUE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

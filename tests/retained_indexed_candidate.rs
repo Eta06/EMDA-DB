@@ -1,7 +1,9 @@
 //! Disk-backed access to a fully verified, non-authoritative retained base.
-use database_engine::retained_base_v2::Limits;
-use database_engine::retained_candidate::{Expected, IndexLimits, IndexedCandidate};
-use database_engine::{RetainedExportLimits, Store};
+use database_engine::retained_base_v2::{Limits, StagingLimits};
+use database_engine::retained_candidate::{
+    Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits, SuffixLimits,
+};
+use database_engine::{BatchOperation, RetainedExportLimits, Store};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::fs::FileExt;
@@ -14,6 +16,12 @@ const BASE_LIMITS: Limits = Limits {
     key_bytes: 64,
     work_bytes: 40 * 1024 * 1024 + 1,
 };
+const EXPORT_LIMITS: RetainedExportLimits = RetainedExportLimits {
+    max_log_bytes: BASE_LIMITS.file_bytes,
+    max_live_keys: BASE_LIMITS.entries as usize,
+    max_live_key_bytes: BASE_LIMITS.key_bytes as usize,
+    max_output_bytes: BASE_LIMITS.file_bytes,
+};
 
 fn candidate(root: &Path, entries: &[(&[u8], &[u8])]) -> Expected {
     let store = Store::open(root.join("source")).unwrap();
@@ -21,17 +29,7 @@ fn candidate(root: &Path, entries: &[(&[u8], &[u8])]) -> Expected {
         store.put(key, value).unwrap();
     }
     store
-        .build_retained_candidate(
-            root.join("candidate"),
-            [3; 16],
-            [4; 16],
-            RetainedExportLimits {
-                max_log_bytes: BASE_LIMITS.file_bytes,
-                max_live_keys: BASE_LIMITS.entries as usize,
-                max_live_key_bytes: BASE_LIMITS.key_bytes as usize,
-                max_output_bytes: BASE_LIMITS.file_bytes,
-            },
-        )
+        .build_retained_candidate(root.join("candidate"), [3; 16], [4; 16], EXPORT_LIMITS)
         .unwrap()
 }
 
@@ -190,4 +188,228 @@ fn empty_candidate_needs_no_anchors() {
     assert_eq!(reader.metadata().entries, 0);
     assert_eq!(reader.get(b"absent", 0).unwrap(), None);
     assert!(reader.scan(None, None, 1).unwrap().is_empty());
+}
+
+#[test]
+fn indexed_suffix_matches_full_replay_across_batch_edits_and_page_boundaries() {
+    let root = tempfile::tempdir().unwrap();
+    let expected = candidate(
+        root.path(),
+        &[
+            (b"b", b"old"),
+            (b"d", b"delete"),
+            (b"f", b"untouched"),
+            (b"h", b"old"),
+        ],
+    );
+    let store = Store::open(root.path().join("source")).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"a",
+                value: b"first",
+            },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"temporary",
+            },
+            BatchOperation::Delete { key: b"d" },
+            BatchOperation::Put {
+                key: b"c",
+                value: b"middle",
+            },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"",
+            },
+            BatchOperation::Delete { key: b"x" },
+        ])
+        .unwrap();
+    store.delete(b"h").unwrap();
+    store.put(b"z", b"last").unwrap();
+    let path = root.path().join("candidate");
+    let suffix = root.path().join("suffix");
+    let suffix_limits = SuffixLimits {
+        bytes: 8192,
+        operations: 8,
+        work: 1000,
+    };
+    let binding = store
+        .export_retained_suffix(
+            &path,
+            &expected,
+            &suffix,
+            BASE_LIMITS,
+            StagingLimits {
+                value_bytes: 64,
+                staging_bytes: 1024,
+            },
+            suffix_limits,
+            EXPORT_LIMITS,
+        )
+        .unwrap();
+    let index = IndexLimits {
+        blocks: 1,
+        anchor_bytes: 1,
+    };
+    let overlay = OverlayLimits {
+        entries: 7,
+        key_bytes: 7,
+    };
+    let open = |suffix_limits, overlay| {
+        IndexedSuffix::open(
+            &path,
+            &suffix,
+            BASE_LIMITS,
+            index,
+            suffix_limits,
+            overlay,
+            &binding,
+        )
+    };
+    for (reduced_suffix, reduced_overlay, message) in [
+        (
+            suffix_limits,
+            OverlayLimits {
+                entries: 6,
+                ..overlay
+            },
+            "overlay entry limit",
+        ),
+        (
+            suffix_limits,
+            OverlayLimits {
+                key_bytes: 6,
+                ..overlay
+            },
+            "overlay key byte limit",
+        ),
+        (
+            SuffixLimits {
+                bytes: binding.end - 1,
+                ..suffix_limits
+            },
+            overlay,
+            "suffix byte limit",
+        ),
+        (
+            SuffixLimits {
+                operations: 7,
+                ..suffix_limits
+            },
+            overlay,
+            "suffix operation limit",
+        ),
+        (
+            SuffixLimits {
+                work: 0,
+                ..suffix_limits
+            },
+            overlay,
+            "suffix work limit",
+        ),
+    ] {
+        let error = open(reduced_suffix, reduced_overlay).err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(message), "{error}");
+    }
+    let view = open(
+        SuffixLimits {
+            bytes: binding.end,
+            ..suffix_limits
+        },
+        overlay,
+    )
+    .unwrap();
+    let expected_state = store.scan(None, None, 10).unwrap();
+    assert_eq!(view.candidate_metadata().entries, 4);
+    assert_eq!(view.scan(None, None, 10).unwrap(), expected_state);
+    assert_eq!(view.scan(None, Some(b"b"), 1).unwrap(), expected_state[..1]);
+    assert_eq!(
+        view.scan(Some(b"a"), Some(b"f"), 10).unwrap(),
+        expected_state[1..3]
+    );
+    assert_eq!(view.scan(Some(b"z"), None, 10).unwrap(), vec![]);
+    let mut after = None;
+    for entry in expected_state {
+        let page = view.scan(after.as_deref(), None, 1).unwrap();
+        assert_eq!(page, [entry]);
+        after = Some(page.into_iter().next().unwrap().0);
+    }
+    assert!(view.scan(after.as_deref(), None, 1).unwrap().is_empty());
+    assert_eq!(view.get(b"b", 0).unwrap(), Some(vec![]));
+    assert_eq!(view.get(b"f", 9).unwrap(), Some(b"untouched".to_vec()));
+    assert_eq!(
+        view.get(b"a", 4).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    for absent in [b"d", b"h", b"x"] {
+        assert_eq!(view.get(absent, 0).unwrap(), None);
+    }
+
+    // The parsed overlay keeps only offsets into the same owned bytes that
+    // were verified. Replacing the source suffix cannot change existing reads.
+    fs::write(&suffix, vec![0; binding.end as usize]).unwrap();
+    assert!(open(suffix_limits, overlay).is_err());
+    assert_eq!(view.get(b"z", 4).unwrap(), Some(b"last".to_vec()));
+}
+
+#[test]
+fn suffix_values_share_the_page_byte_budget_with_base_values() {
+    let root = tempfile::tempdir().unwrap();
+    let max = vec![23; MAX_VALUE];
+    let expected = candidate(root.path(), &[(b"a", &max), (b"z", b"base tail")]);
+    let store = Store::open(root.path().join("source")).unwrap();
+    store.put(b"b", &max).unwrap();
+    store.put(b"c", b"suffix tail").unwrap();
+    let path = root.path().join("candidate");
+    let suffix = root.path().join("suffix");
+    let limits = SuffixLimits {
+        bytes: MAX_VALUE as u64 + 1024,
+        operations: 2,
+        work: 100,
+    };
+    let binding = store
+        .export_retained_suffix(
+            &path,
+            &expected,
+            &suffix,
+            BASE_LIMITS,
+            StagingLimits {
+                value_bytes: MAX_VALUE,
+                staging_bytes: 2 * MAX_VALUE as u64 + 1024,
+            },
+            limits,
+            EXPORT_LIMITS,
+        )
+        .unwrap();
+    let view = IndexedSuffix::open(
+        &path,
+        &suffix,
+        BASE_LIMITS,
+        IndexLimits {
+            blocks: 2,
+            anchor_bytes: 2,
+        },
+        limits,
+        OverlayLimits {
+            entries: 2,
+            key_bytes: 2,
+        },
+        &binding,
+    )
+    .unwrap();
+    let first = view.scan(None, None, 4).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].0, b"a");
+    assert_eq!(first[0].1, max);
+    let next = view.scan(Some(b"a"), None, 4).unwrap();
+    assert_eq!(
+        next,
+        [
+            (b"b".to_vec(), max),
+            (b"c".to_vec(), b"suffix tail".to_vec()),
+            (b"z".to_vec(), b"base tail".to_vec()),
+        ]
+    );
 }

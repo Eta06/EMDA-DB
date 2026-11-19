@@ -152,10 +152,17 @@ the file length fails subsequent nonempty reads. A pathname replacement does
 not redirect the captured descriptor. Directory allocations, read scratch
 space, result buffers and allocator overhead have separate costs.
 
-The directory is rebuilt at open. It covers only the retained base, so the
-detached suffix replay and new-history restore still use their own materialized
-state. Writable recovery needs a bounded overlay over this base and an
-authoritative binding before it can publish a generation.
+The directory is rebuilt at open. `retained_candidate::IndexedSuffix` adds
+a read-only view of an independently bound detached suffix over that base.
+The suffix is verified in a private byte buffer subject to the suffix-byte
+limit. Ordered DB01 and DB02 operations update a sorted overlay of keys and
+offsets into the verified buffer. Tombstones remain in the overlay and count
+toward its explicit key and entry limits. Overlay work is charged separately
+from the base verification. A merged page applies one result budget across
+both sources, with suffix replacements and deletions taking precedence.
+Overlay points read only the captured suffix. New-history restore still uses
+its materialized replay path. Writable recovery still needs a committed
+witness and durable generation selection.
 
 ## Future authority, recovery and publication (not implemented)
 

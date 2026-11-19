@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Read an independently bound detached suffix through a bounded overlay of
+  a verified retained base. Point and page reads apply ordered writes and
+  tombstones without loading the complete base live set.
+
 - Add read-only indexed access to verified retained candidates. Point lookups
   and ordered pages read through one captured base descriptor and verify
   touched blocks under bounded directory and result limits.

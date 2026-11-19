@@ -132,7 +132,7 @@ impl IndexedBase {
         };
         let mut result = Vec::new();
         let mut found = false;
-        self.read_block(&self.blocks[position], &mut result, |candidate, len| {
+        self.read_block(&self.blocks[position], &mut result, |candidate, len, _| {
             if found {
                 return Ok(Selection::Stop);
             }
@@ -158,6 +158,18 @@ impl IndexedBase {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        self.scan_merged(after, before, limit, std::iter::empty())
+    }
+
+    // The overlay supplies sorted distinct keys already restricted to the
+    // requested bounds. None marks a deletion.
+    pub(crate) fn scan_merged<'a>(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        overlay: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+    ) -> io::Result<Vec<Entry>> {
         for key in [after, before].into_iter().flatten() {
             crate::record::validate_key(key)?;
         }
@@ -173,28 +185,47 @@ impl IndexedBase {
         self.check_length()?;
         let start = after.and_then(|key| self.preceding_block(key)).unwrap_or(0);
         let mut result = Vec::new();
-        let mut count = 0;
-        let mut bytes = 0;
+        let mut budget = PageBudget {
+            bytes: 0,
+            limit,
+            exhausted: false,
+        };
+        let mut overlay = overlay.peekable();
         for block in &self.blocks[start..] {
             if before.is_some_and(|key| block.first_key.as_slice() >= key) {
                 break;
             }
-            let stopped = self.read_block(block, &mut result, |key, len| {
+            let stopped = self.read_block(block, &mut result, |key, len, result| {
                 if after.is_some_and(|bound| key <= bound) {
                     return Ok(Selection::Skip);
                 }
-                if before.is_some_and(|bound| key >= bound)
-                    || count == limit
-                    || bytes + key.len() + len > MAX_SCAN_BYTES
-                {
+                if before.is_some_and(|bound| key >= bound) {
                     return Ok(Selection::Stop);
                 }
-                count += 1;
-                bytes += key.len() + len;
-                Ok(Selection::Take)
+                while overlay.peek().is_some_and(|&(other, _)| other <= key) {
+                    let (other, value) = overlay.next().unwrap();
+                    if !budget.push_overlay(result, other, value)? {
+                        return Ok(Selection::Stop);
+                    }
+                    if other == key {
+                        return Ok(Selection::Skip);
+                    }
+                }
+                if budget.admit(result.len(), key, len) {
+                    Ok(Selection::Take)
+                } else {
+                    Ok(Selection::Stop)
+                }
             })?;
-            if stopped || count == limit {
+            if stopped || result.len() == limit {
                 break;
+            }
+        }
+        if !budget.exhausted {
+            for (key, value) in overlay {
+                if !budget.push_overlay(&mut result, key, value)? {
+                    break;
+                }
             }
         }
         Ok(result)
@@ -217,7 +248,7 @@ impl IndexedBase {
         &self,
         block: &Block,
         result: &mut Vec<Entry>,
-        mut select: impl FnMut(&[u8], usize) -> io::Result<Selection>,
+        mut select: impl FnMut(&[u8], usize, &mut Vec<Entry>) -> io::Result<Selection>,
     ) -> io::Result<bool> {
         let mut reader = BlockReader {
             file: &self.file,
@@ -240,7 +271,7 @@ impl IndexedBase {
             let selected = if stopped {
                 false
             } else {
-                match select(key, vl)? {
+                match select(key, vl, result)? {
                     Selection::Skip => false,
                     Selection::Take => true,
                     Selection::Stop => {
@@ -263,11 +294,7 @@ impl IndexedBase {
                 remaining -= bytes;
             }
             if selected {
-                let mut owned_key = Vec::new();
-                owned_key.try_reserve_exact(kl).map_err(allocation)?;
-                owned_key.extend_from_slice(key);
-                result.try_reserve(1).map_err(allocation)?;
-                result.push((owned_key, value));
+                push_entry(result, key, value)?;
             }
         }
         let digest: [u8; 32] = reader.hash.finalize().into();
@@ -276,6 +303,52 @@ impl IndexedBase {
         }
         Ok(stopped)
     }
+}
+
+struct PageBudget {
+    bytes: usize,
+    limit: usize,
+    exhausted: bool,
+}
+
+impl PageBudget {
+    fn admit(&mut self, count: usize, key: &[u8], value_len: usize) -> bool {
+        let bytes = self.bytes + key.len() + value_len;
+        if count == self.limit || bytes > MAX_SCAN_BYTES {
+            self.exhausted = true;
+            return false;
+        }
+        self.bytes = bytes;
+        true
+    }
+
+    fn push_overlay(
+        &mut self,
+        result: &mut Vec<Entry>,
+        key: &[u8],
+        value: Option<&[u8]>,
+    ) -> io::Result<bool> {
+        let Some(value) = value else {
+            return Ok(true);
+        };
+        if !self.admit(result.len(), key, value.len()) {
+            return Ok(false);
+        }
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(value.len()).map_err(allocation)?;
+        copy.extend_from_slice(value);
+        push_entry(result, key, copy)?;
+        Ok(true)
+    }
+}
+
+fn push_entry(result: &mut Vec<Entry>, key: &[u8], value: Vec<u8>) -> io::Result<()> {
+    let mut owned_key = Vec::new();
+    owned_key.try_reserve_exact(key.len()).map_err(allocation)?;
+    owned_key.extend_from_slice(key);
+    result.try_reserve(1).map_err(allocation)?;
+    result.push((owned_key, value));
+    Ok(())
 }
 
 struct BlockReader<'a> {

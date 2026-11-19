@@ -2302,7 +2302,9 @@ mod tests {
     #[test]
     fn seeded_suffix_matches_full_log_store_and_preserves_inputs() {
         use crate::retained_base_v2::StagingLimits;
-        use crate::retained_candidate::{SuffixExpected, SuffixLimits, replay_suffix};
+        use crate::retained_candidate::{
+            IndexLimits, IndexedSuffix, OverlayLimits, SuffixExpected, SuffixLimits, replay_suffix,
+        };
         use std::collections::BTreeMap;
 
         for seed in 1u64..=8 {
@@ -2394,6 +2396,36 @@ mod tests {
                 .collect();
             assert_eq!(actual, ordinary, "seed {seed}");
             assert_eq!(actual, model.into_iter().collect::<Vec<_>>());
+            let suffix_path = root.path().join("suffix");
+            std::fs::write(&suffix_path, suffix).unwrap();
+            let indexed = IndexedSuffix::open(
+                &dest,
+                &suffix_path,
+                candidate_budgets(),
+                IndexLimits {
+                    blocks: 1,
+                    anchor_bytes: 1,
+                },
+                SuffixLimits { work: 1000, ..cap },
+                OverlayLimits {
+                    entries: 6,
+                    key_bytes: 6,
+                },
+                &expected,
+            )
+            .unwrap();
+            for after in [None, Some(b"a".as_slice()), Some(b"c"), Some(b"f")] {
+                for before in [None, Some(b"b".as_slice()), Some(b"e"), Some(b"g")] {
+                    for limit in [1, 2, 6] {
+                        let expected_page = store.scan(after, before, limit).unwrap();
+                        assert_eq!(
+                            indexed.scan(after, before, limit).unwrap(),
+                            expected_page,
+                            "seed {seed}, after {after:?}, before {before:?}, limit {limit}"
+                        );
+                    }
+                }
+            }
             for reduced in [
                 SuffixLimits {
                     bytes: cap.bytes - 1,

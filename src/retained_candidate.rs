@@ -11,6 +11,9 @@ use std::{
     path::Path,
 };
 
+mod indexed_suffix;
+pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
+
 /// An independently retained copy of the exact candidate header and witness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Expected {
@@ -331,15 +334,20 @@ pub fn open_exported_suffix(
     suffix_limits: SuffixLimits,
     expected: &SuffixExpected,
 ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    if expected.end > suffix_limits.bytes {
+    let bytes = read_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
+    replay_suffix(directory, limits, staging, &bytes, suffix_limits, expected)
+}
+
+fn read_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<Vec<u8>> {
+    if end > limits.bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "suffix byte limit exceeded",
         ));
     }
-    let len = usize::try_from(expected.end).map_err(|_| invalid())?;
-    let mut file = open_regular(suffix_path.as_ref())?;
-    if file.metadata()?.len() != expected.end {
+    let len = usize::try_from(end).map_err(|_| invalid())?;
+    let mut file = open_regular(path)?;
+    if file.metadata()?.len() != end {
         return Err(invalid());
     }
     let mut bytes = Vec::new();
@@ -352,7 +360,7 @@ pub fn open_exported_suffix(
     if file.read(&mut extra)? != 0 {
         return Err(invalid());
     }
-    replay_suffix(directory, limits, staging, &bytes, suffix_limits, expected)
+    Ok(bytes)
 }
 
 /// Validate and privately replay a detached suffix against an independently
@@ -368,17 +376,7 @@ pub fn replay_suffix(
     suffix_limits: SuffixLimits,
     expected: &SuffixExpected,
 ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
-    let length = u64::try_from(suffix.len()).map_err(|_| invalid())?;
-    if length > suffix_limits.bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "suffix byte limit exceeded",
-        ));
-    }
-    if length != expected.end || <[u8; 32]>::from(Sha256::digest(suffix)) != expected.digest {
-        return Err(invalid());
-    }
+    check_suffix_binding(suffix, suffix_limits, expected)?;
     let mut state = load(directory, limits, staging, &expected.candidate)?;
     let initial_work = u64::try_from(state.len()).map_err(|_| invalid())?;
     if initial_work > suffix_limits.work {
@@ -394,8 +392,6 @@ pub fn replay_suffix(
             "live set limit exceeded",
         ));
     }
-    let mut cursor = 0usize;
-    let mut operations = 0u64;
     let mut replay = ReplayBudget {
         limits,
         staging,
@@ -405,6 +401,39 @@ pub fn replay_suffix(
         keys,
         payload,
     };
+    visit_suffix(suffix, suffix_limits, |operation, key, value| {
+        apply_suffix(&mut state, operation, key, &suffix[value], &mut replay)
+    })?;
+    Ok(state)
+}
+
+fn check_suffix_binding(
+    suffix: &[u8],
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+) -> io::Result<()> {
+    let length = u64::try_from(suffix.len()).map_err(|_| invalid())?;
+    if length > suffix_limits.bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "suffix byte limit exceeded",
+        ));
+    }
+    if length != expected.end || <[u8; 32]>::from(Sha256::digest(suffix)) != expected.digest {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn visit_suffix(
+    suffix: &[u8],
+    suffix_limits: SuffixLimits,
+    mut visit: impl FnMut(crate::record::Operation, &[u8], std::ops::Range<usize>) -> io::Result<()>,
+) -> io::Result<()> {
+    use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
+
+    let mut cursor = 0;
+    let mut operations = 0u64;
     while cursor < suffix.len() {
         let header_end = cursor.checked_add(HEADER_SIZE).ok_or_else(invalid)?;
         let header: &[u8; HEADER_SIZE] = suffix
@@ -425,6 +454,7 @@ pub fn replay_suffix(
             u32::from_le_bytes(checksum.try_into().unwrap()),
         )?;
         let (key, value) = payload.split_at(parsed.key_len);
+        let value_start = header_end.checked_add(parsed.key_len).ok_or_else(invalid)?;
         if parsed.operation == Operation::Batch {
             if key != [0] {
                 return Err(invalid());
@@ -444,13 +474,11 @@ pub fn replay_suffix(
                 .map_err(|_| io::Error::other("batch allocation failed"))?;
             let decoded = record::batch::decode_payload_into(value, decoded)?;
             for op in decoded {
-                apply_suffix(
-                    &mut state,
-                    op.operation,
-                    op.key,
-                    &value[op.value_offset..op.value_offset + op.value_len],
-                    &mut replay,
-                )?;
+                let start = value_start
+                    .checked_add(op.value_offset)
+                    .ok_or_else(invalid)?;
+                let end = start.checked_add(op.value_len).ok_or_else(invalid)?;
+                visit(op.operation, op.key, start..end)?;
             }
         } else {
             operations = operations.checked_add(1).ok_or_else(invalid)?;
@@ -460,11 +488,11 @@ pub fn replay_suffix(
                     "suffix operation limit exceeded",
                 ));
             }
-            apply_suffix(&mut state, parsed.operation, key, value, &mut replay)?;
+            visit(parsed.operation, key, value_start..data_end)?;
         }
         cursor = end;
     }
-    Ok(state)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -513,6 +541,24 @@ fn live_totals(state: &[(Vec<u8>, Vec<u8>)]) -> io::Result<(u64, u64, u64)> {
     ))
 }
 
+fn charge_suffix_work(work: &mut u64, limit: u64, entries: usize) -> io::Result<()> {
+    // Conservatively bound binary search comparisons and vector shifts.
+    // The extra unit covers the final binary-search comparison.
+    let cost = u64::try_from(entries)
+        .map_err(|_| invalid())?
+        .checked_mul(3)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(invalid)?;
+    *work = work.checked_add(cost).ok_or_else(invalid)?;
+    if *work > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "suffix work limit exceeded",
+        ));
+    }
+    Ok(())
+}
+
 fn apply_suffix(
     state: &mut Vec<(Vec<u8>, Vec<u8>)>,
     operation: crate::record::Operation,
@@ -520,20 +566,7 @@ fn apply_suffix(
     value: &[u8],
     budget: &mut ReplayBudget,
 ) -> io::Result<()> {
-    // Conservatively bound binary search comparisons and vector shifts.
-    // The extra unit covers the final binary-search comparison.
-    let cost = u64::try_from(state.len())
-        .map_err(|_| invalid())?
-        .checked_mul(3)
-        .and_then(|n| n.checked_add(1))
-        .ok_or_else(invalid)?;
-    budget.work = budget.work.checked_add(cost).ok_or_else(invalid)?;
-    if budget.work > budget.work_limit {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "suffix work limit exceeded",
-        ));
-    }
+    charge_suffix_work(&mut budget.work, budget.work_limit, state.len())?;
     let position = state.binary_search_by(|entry| entry.0.as_slice().cmp(key));
     if operation == crate::record::Operation::Delete {
         if let Ok(index) = position {
