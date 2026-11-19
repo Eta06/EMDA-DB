@@ -1,6 +1,6 @@
 use super::{
     IndexLimits, IndexedCandidate, Limits, SuffixExpected, SuffixLimits, allocation_point,
-    charge_suffix_work, check_suffix_binding, read_suffix, visit_suffix,
+    charge_suffix_work, check_suffix_binding, read_suffix, suffix_capacity, visit_suffix,
 };
 use crate::record::{self, Operation};
 use crate::retained_base_v2::index::IndexedBase;
@@ -286,7 +286,7 @@ fn remaining_operations(limits: SuffixLimits, used: u64) -> io::Result<SuffixLim
     let operations = limits
         .operations
         .checked_sub(used)
-        .ok_or_else(|| invalid_overlay("suffix operation limit exceeded"))?;
+        .ok_or_else(|| suffix_capacity("suffix operation limit exceeded"))?;
     Ok(SuffixLimits {
         operations,
         ..limits
@@ -306,9 +306,9 @@ fn admit_key(
     let key_bytes = key_bytes
         .checked_add(key.len())
         .filter(|&sum| sum <= limits.key_bytes)
-        .ok_or_else(|| invalid_overlay("suffix overlay key byte limit exceeded"))?;
+        .ok_or_else(|| suffix_capacity("suffix overlay key byte limit exceeded"))?;
     if count >= limits.entries {
-        return Err(invalid_overlay("suffix overlay entry limit exceeded"));
+        return Err(suffix_capacity("suffix overlay entry limit exceeded"));
     }
     Ok(key_bytes)
 }

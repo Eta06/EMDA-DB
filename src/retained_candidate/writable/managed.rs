@@ -1,12 +1,12 @@
 use super::{
     Expected, Header, RecoveryLimits, RetainedStore, RetainedStoreLimits, StoreLock, copy_base,
-    create_file, decode_marker, invalid_input, open_regular, open_regular_with, random_id,
-    read_marker,
+    create_file, decode_marker, encode_batch, invalid_input, open_regular, open_regular_with,
+    random_id, read_marker, suffix_end,
 };
 use crate::directory::sync_existing;
-use crate::record;
+use crate::record::{self, Operation};
 use crate::retained_candidate::{
-    SuffixExpected, check_files, check_suffix_binding, exact, read_suffix,
+    SuffixCapacity, SuffixExpected, check_files, check_suffix_binding, exact, read_suffix,
 };
 use crate::{BatchOperation, Entry, MutationFailure, PublicationFailure};
 use rustix::fs::OFlags;
@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{self, Write},
+    num::NonZeroU64,
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
 };
@@ -39,6 +40,8 @@ pub struct ManagedRetainedStore {
     root: PathBuf,
     active: Active,
     uncertain: bool,
+    auto_reclaim: Option<NonZeroU64>,
+    cleanup_pending: bool,
     lock: StoreLock,
 }
 
@@ -156,8 +159,30 @@ impl ManagedRetainedStore {
             root,
             active,
             uncertain: false,
+            auto_reclaim: None,
+            cleanup_pending: false,
             lock,
         })
+    }
+
+    /// Recover a managed catalog and retire any verified inactive slot before
+    /// returning. This handle compacts when a write would cross the suffix
+    /// byte threshold or exhaust suffix admission. The write must fit an
+    /// empty suffix. Maintenance is synchronous and can reject a write before
+    /// its append. A selection-uncertain handle requires reopen.
+    ///
+    /// The policy is per open. The catalog root is reserved for engine files.
+    /// Open and subsequent automatic maintenance clean abandoned private
+    /// stages inside that root.
+    pub fn open_with_auto_reclaim(
+        root: impl AsRef<Path>,
+        ceiling: RetainedStoreLimits,
+        suffix_threshold: NonZeroU64,
+    ) -> io::Result<Self> {
+        let mut store = Self::open(root, ceiling)?;
+        store.finish_maintenance()?;
+        store.auto_reclaim = Some(suffix_threshold);
+        Ok(store)
     }
 
     pub fn generation_id(&self) -> io::Result<[u8; 16]> {
@@ -187,21 +212,77 @@ impl ManagedRetainedStore {
     }
 
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
-        self.prepare_write()?;
-        self.store.put(key, value)
+        self.write(|| record::encode(Operation::Put, key, value))
     }
 
     pub fn delete(&mut self, key: &[u8]) -> Result<(), MutationFailure> {
-        self.prepare_write()?;
-        self.store.delete(key)
+        self.write(|| record::encode(Operation::Delete, key, &[]))
     }
 
     pub fn write_batch(
         &mut self,
         operations: &[BatchOperation<'_>],
     ) -> Result<(), MutationFailure> {
+        self.write(|| encode_batch(operations))
+    }
+
+    fn write(
+        &mut self,
+        encode: impl FnOnce() -> io::Result<Vec<u8>>,
+    ) -> Result<(), MutationFailure> {
         self.prepare_write()?;
-        self.store.write_batch(operations)
+        let bytes = encode().map_err(MutationFailure::Rejected)?;
+        let Some(threshold) = self.auto_reclaim else {
+            return self.store.write_encoded(&bytes, |_| Ok(()));
+        };
+        if self.cleanup_pending {
+            self.finish_maintenance()
+                .map_err(MutationFailure::Rejected)?;
+        }
+        let suffix_len = self.store.suffix.len() as u64;
+        if suffix_len == 0 {
+            return self.store.write_encoded(&bytes, |_| Ok(()));
+        }
+        if suffix_len.saturating_add(bytes.len() as u64) <= threshold.get() {
+            match self.store.write_encoded(&bytes, |_| Ok(())) {
+                Err(MutationFailure::Rejected(ref error))
+                    if error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<SuffixCapacity>()) => {}
+                result => return result,
+            }
+        }
+        self.compact_for_write(&bytes)?;
+        self.prepare_write()?;
+        self.store.write_encoded(&bytes, |_| Ok(()))
+    }
+
+    fn compact_for_write(&mut self, bytes: &[u8]) -> Result<(), MutationFailure> {
+        let limits = self.store.limits;
+        suffix_end(0, bytes.len(), limits).map_err(MutationFailure::Rejected)?;
+        super::Overlay::default()
+            .prepare_append(bytes, 0, limits.suffix, limits.overlay)
+            .map_err(MutationFailure::Rejected)?;
+        self.finish_maintenance()
+            .map_err(MutationFailure::Rejected)?;
+        self.compact().map_err(|error| {
+            let kind = match &error {
+                PublicationFailure::NotPublished(cause)
+                | PublicationFailure::OutcomeUnknown(cause) => cause.kind(),
+            };
+            MutationFailure::Rejected(io::Error::new(kind, error))
+        })?;
+        self.cleanup_pending = true;
+        self.finish_maintenance().map_err(MutationFailure::Rejected)
+    }
+
+    fn finish_maintenance(&mut self) -> io::Result<()> {
+        self.cleanup_pending = true;
+        self.verify_selection()?;
+        crate::cleanup_abandoned_staging(&self.root)?;
+        self.reclaim_inactive()?;
+        self.cleanup_pending = false;
+        Ok(())
     }
 
     /// Compact the complete live state to a verified base and empty suffix in

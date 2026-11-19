@@ -263,6 +263,20 @@ reject a rebase before changing the selection. The two slots, temporary
 stages, directory entries, returned pages and allocator overhead have
 separate storage and memory costs.
 
+`open_with_auto_reclaim` opts one handle into synchronous maintenance. On
+open it clears abandoned private stages within the catalog and retires any
+verified inactive generation. Before writing to a nonempty suffix, it rotates
+if the projected byte count crosses the configured threshold or if the
+append exhausts a persisted suffix or overlay limit. The triggering mutation
+must fit in an empty suffix. Maintenance selects the new generation and
+retires the previous one before submitting the mutation, so a maintenance
+failure rejects that mutation even if the generation switched. An uncertain
+selection still requires reopening. An oversized live set may require a
+manual `compact_with_limits` before automatic maintenance can proceed.
+The threshold is a maintenance trigger. A single record in an empty suffix
+can exceed it while staying within the persisted limits. Maintenance runs
+on the caller's write path and temporarily uses both slots.
+
 Catalogs use trusted local directories and the ordinary rollback model.
 The original ordinary store remains independently addressable after
 import. The catalog's safe retirement applies to its own inactive slots.

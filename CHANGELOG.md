@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in automatic managed retained compaction and reclamation on
+  suffix pressure, with recovery of abandoned catalog stages on open.
+
 - Resize managed retained recovery limits during a verified generation
   switch. A single caller-supplied recovery ceiling can cover either
   generation after an uncertain selection.

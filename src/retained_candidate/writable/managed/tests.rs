@@ -352,10 +352,144 @@ fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
     assert_eq!(error.to_string(), "after move");
     assert_eq!(store.scan(None, None, 4).unwrap(), before);
     assert!(!store.reclaim_inactive().unwrap());
-    let cleaned = crate::cleanup_abandoned_staging(&f.root).unwrap();
-    assert_eq!(cleaned.removed_payloads, 1);
+    assert!(fs::read_dir(&f.root).unwrap().count() > 4);
     drop(store);
-    assert_eq!(f.open().scan(None, None, 4).unwrap(), before);
+    let recovered =
+        ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN).unwrap();
+    assert_eq!(fs::read_dir(&f.root).unwrap().count(), 4);
+    assert_eq!(recovered.scan(None, None, 4).unwrap(), before);
+}
+
+#[test]
+fn automatic_reclaim_recycles_both_slots_and_preserves_acknowledged_mutations() {
+    let f = Fixture::new(LIMITS);
+    let mut store =
+        ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN).unwrap();
+    let original = store.generation_id().unwrap();
+    store.put(b"a", b"updated").unwrap();
+    assert_eq!(store.generation_id().unwrap(), original);
+    store
+        .write_batch(&[
+            BatchOperation::Delete { key: b"z" },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"added",
+            },
+        ])
+        .unwrap();
+    let second = store.generation_id().unwrap();
+    assert_ne!(second, original);
+    assert!(!Slot::A.path(&f.root).exists());
+    store.delete(b"a").unwrap();
+    assert_ne!(store.generation_id().unwrap(), second);
+    assert!(!Slot::B.path(&f.root).exists());
+    drop(store);
+    assert_eq!(
+        f.open().scan(None, None, 4).unwrap(),
+        [(b"b".to_vec(), b"added".to_vec())]
+    );
+}
+
+#[test]
+fn automatic_reclaim_relaxes_accumulated_suffix_pressure_but_rejects_oversize_mutations() {
+    for limits in [
+        RetainedStoreLimits {
+            suffix: SuffixLimits {
+                bytes: 32,
+                ..LIMITS.suffix
+            },
+            ..LIMITS
+        },
+        RetainedStoreLimits {
+            suffix: SuffixLimits {
+                operations: 1,
+                ..LIMITS.suffix
+            },
+            ..LIMITS
+        },
+        RetainedStoreLimits {
+            suffix: SuffixLimits {
+                work: 1,
+                ..LIMITS.suffix
+            },
+            ..LIMITS
+        },
+        RetainedStoreLimits {
+            overlay: OverlayLimits {
+                entries: 1,
+                ..LIMITS.overlay
+            },
+            ..LIMITS
+        },
+        RetainedStoreLimits {
+            overlay: OverlayLimits {
+                key_bytes: 1,
+                ..LIMITS.overlay
+            },
+            ..LIMITS
+        },
+    ] {
+        let f = Fixture::new(limits);
+        let mut store =
+            ManagedRetainedStore::open_with_auto_reclaim(&f.root, limits, NonZeroU64::MAX).unwrap();
+        store.put(b"a", b"one").unwrap();
+        let generation = store.generation_id().unwrap();
+        let impossible = store.write_batch(&[
+            BatchOperation::Delete { key: b"z" },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"two",
+            },
+        ]);
+        assert!(
+            matches!(impossible, Err(MutationFailure::Rejected(error)) if error.kind() == io::ErrorKind::InvalidInput)
+        );
+        assert_eq!(store.generation_id().unwrap(), generation);
+        assert!(!Slot::B.path(&f.root).exists());
+        store.put(b"b", b"two").unwrap();
+        assert_ne!(store.generation_id().unwrap(), generation);
+        assert!(!Slot::A.path(&f.root).exists());
+        drop(store);
+        let reopened = ManagedRetainedStore::open(&f.root, limits).unwrap();
+        assert_eq!(reopened.get(b"a", 3).unwrap().unwrap(), b"one");
+        assert_eq!(reopened.get(b"b", 3).unwrap().unwrap(), b"two");
+        assert_eq!(reopened.get(b"z", 4).unwrap().unwrap(), b"kept");
+    }
+}
+
+#[test]
+fn failed_automatic_rebase_rejects_the_triggering_append() {
+    let limits = RetainedStoreLimits {
+        base: Limits {
+            entries: 2,
+            ..LIMITS.base
+        },
+        ..LIMITS
+    };
+    let f = Fixture::new(limits);
+    let mut store =
+        ManagedRetainedStore::open_with_auto_reclaim(&f.root, limits, NonZeroU64::MIN).unwrap();
+    store.put(b"b", b"acknowledged").unwrap();
+    let active = Slot::A.path(&f.root);
+    let log = fs::read(active.join("records.log")).unwrap();
+    let witness = fs::read(active.join("commit.state")).unwrap();
+    let selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    assert!(matches!(
+        store.delete(b"z"),
+        Err(MutationFailure::Rejected(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert_eq!(fs::read(active.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(active.join("commit.state")).unwrap(), witness);
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
+    assert_eq!(store.get(b"z", 4).unwrap().unwrap(), b"kept");
+    store.compact_with_limits(LIMITS).unwrap();
+    store.delete(b"z").unwrap();
+    drop(store);
+    let reopened =
+        ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN).unwrap();
+    assert_eq!(reopened.get(b"z", 4).unwrap(), None);
+    assert_eq!(reopened.get(b"b", 12).unwrap().unwrap(), b"acknowledged");
+    assert_eq!(fs::read_dir(&f.root).unwrap().count(), 4);
 }
 
 #[test]
@@ -395,6 +529,11 @@ fn managed_cutover_crash_child() {
         }
     };
     let mut store = ManagedRetainedStore::open(root, LIMITS).unwrap();
+    if point == "retire" {
+        store.compact().unwrap();
+        let result = store.reclaim_using(|_| pause());
+        panic!("managed reclamation did not stop at the boundary: {result:?}");
+    }
     let result = store.compact_using(
         || if point == "before" { pause() } else { Ok(()) },
         |_| if point == "after" { pause() } else { Ok(()) },
@@ -411,7 +550,7 @@ fn killed_catalog_owner_recovers_the_visible_selection() {
         time::Duration,
     };
 
-    for point in ["before", "after"] {
+    for point in ["before", "after", "retire"] {
         let f = Fixture::new(LIMITS);
         let mut store = f.open();
         store.put(b"safe", b"acknowledged").unwrap();
@@ -446,14 +585,16 @@ fn killed_catalog_owner_recovers_the_visible_selection() {
         kill.unwrap();
         assert!(!status.success());
 
-        let mut recovered = f.open();
+        let mut recovered =
+            ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MAX).unwrap();
         assert_eq!(recovered.generation_id().unwrap() == old, point == "before");
         assert_eq!(
             recovered.get(b"safe", 16).unwrap(),
             Some(b"acknowledged".to_vec())
         );
+        assert_eq!(fs::read_dir(&f.root).unwrap().count(), 4);
         recovered.put(b"new", point.as_bytes()).unwrap();
-        assert!(recovered.reclaim_inactive().unwrap());
+        assert!(!recovered.reclaim_inactive().unwrap());
         drop(recovered);
         assert_eq!(
             f.open().get(b"new", 8).unwrap(),

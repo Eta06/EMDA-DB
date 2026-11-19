@@ -2,7 +2,10 @@ use super::indexed_suffix::Overlay;
 use super::{
     Expected, IndexLimits, Limits, OverlayLimits, SuffixLimits, check_binding, check_files,
 };
-use super::{SuffixExpected, check_suffix_binding, open_regular, open_regular_with, read_suffix};
+use super::{
+    SuffixExpected, check_suffix_binding, open_regular, open_regular_with, read_suffix,
+    suffix_capacity,
+};
 use crate::record::{self, Operation};
 use crate::retained_base_v2::index::IndexedBase;
 use crate::store_lock::StoreLock;
@@ -345,16 +348,7 @@ impl RetainedStore {
         &mut self,
         operations: &[BatchOperation<'_>],
     ) -> Result<(), MutationFailure> {
-        self.write(
-            || {
-                record::encode(
-                    Operation::Batch,
-                    &[0],
-                    &record::batch::encode_payload(operations)?,
-                )
-            },
-            |_| Ok(()),
-        )
+        self.write(|| encode_batch(operations), |_| Ok(()))
     }
 
     fn ensure_healthy(&self) -> io::Result<()> {
@@ -369,19 +363,23 @@ impl RetainedStore {
     fn write(
         &mut self,
         encode: impl FnOnce() -> io::Result<Vec<u8>>,
+        hook: impl FnMut(CommitPoint) -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        self.ensure_healthy().map_err(MutationFailure::Rejected)?;
+        let encoded = encode().map_err(MutationFailure::Rejected)?;
+        self.write_encoded(&encoded, hook)
+    }
+
+    fn write_encoded(
+        &mut self,
+        encoded: &[u8],
         mut hook: impl FnMut(CommitPoint) -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         crate::transaction_outcome::mutation(|tracker| {
             self.ensure_healthy()?;
-            let encoded = encode()?;
-            let end = self
-                .suffix
-                .len()
-                .checked_add(encoded.len())
-                .filter(|&n| n as u64 <= self.limits.suffix.bytes)
-                .ok_or_else(|| invalid_input("suffix byte limit exceeded"))?;
+            let end = suffix_end(self.suffix.len(), encoded.len(), self.limits)?;
             let overlay = self.overlay.prepare_append(
-                &encoded,
+                encoded,
                 self.suffix.len(),
                 self.limits.suffix,
                 self.limits.overlay,
@@ -403,22 +401,37 @@ impl RetainedStore {
                 return Err(error);
             }
             let mut hash = self.hash.clone();
-            hash.update(&encoded);
+            hash.update(encoded);
             tracker.commit();
             self.failed = true;
-            self.log.write_all(&encoded)?;
+            self.log.write_all(encoded)?;
             hook(CommitPoint::Appended)?;
             self.log.sync_data()?;
             hook(CommitPoint::LogSynced)?;
             update_witness(&self.witness, self.header.bytes(), end, &hash)?;
             hook(CommitPoint::WitnessSynced)?;
-            self.suffix.extend_from_slice(&encoded);
+            self.suffix.extend_from_slice(encoded);
             self.overlay.commit_append(overlay);
             self.hash = hash;
             self.failed = false;
             Ok(())
         })
     }
+}
+
+fn suffix_end(current: usize, incoming: usize, limits: RetainedStoreLimits) -> io::Result<usize> {
+    current
+        .checked_add(incoming)
+        .filter(|&n| n as u64 <= limits.suffix.bytes)
+        .ok_or_else(|| suffix_capacity("suffix byte limit exceeded"))
+}
+
+fn encode_batch(operations: &[BatchOperation<'_>]) -> io::Result<Vec<u8>> {
+    record::encode(
+        Operation::Batch,
+        &[0],
+        &record::batch::encode_payload(operations)?,
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

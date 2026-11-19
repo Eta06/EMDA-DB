@@ -479,10 +479,7 @@ fn visit_suffix(
             let count = record::batch::payload_count(value)?;
             operations = operations.checked_add(count as u64).ok_or_else(invalid)?;
             if operations > suffix_limits.operations {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "suffix operation limit exceeded",
-                ));
+                return Err(suffix_capacity("suffix operation limit exceeded"));
             }
             allocation_point()?;
             let mut decoded = Vec::new();
@@ -500,10 +497,7 @@ fn visit_suffix(
         } else {
             operations = operations.checked_add(1).ok_or_else(invalid)?;
             if operations > suffix_limits.operations {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "suffix operation limit exceeded",
-                ));
+                return Err(suffix_capacity("suffix operation limit exceeded"));
             }
             visit(parsed.operation, key, value_start..data_end)?;
         }
@@ -558,6 +552,21 @@ fn live_totals(state: &[(Vec<u8>, Vec<u8>)]) -> io::Result<(u64, u64, u64)> {
     ))
 }
 
+#[derive(Debug)]
+struct SuffixCapacity(&'static str);
+
+impl std::fmt::Display for SuffixCapacity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for SuffixCapacity {}
+
+fn suffix_capacity(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, SuffixCapacity(message))
+}
+
 fn charge_suffix_work(work: &mut u64, limit: u64, entries: usize) -> io::Result<()> {
     // Conservatively bound binary search comparisons and vector shifts.
     // The extra unit covers the final binary-search comparison.
@@ -568,10 +577,7 @@ fn charge_suffix_work(work: &mut u64, limit: u64, entries: usize) -> io::Result<
         .ok_or_else(invalid)?;
     *work = work.checked_add(cost).ok_or_else(invalid)?;
     if *work > limit {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "suffix work limit exceeded",
-        ));
+        return Err(suffix_capacity("suffix work limit exceeded"));
     }
     Ok(())
 }
