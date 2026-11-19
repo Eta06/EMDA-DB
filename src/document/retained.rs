@@ -154,17 +154,22 @@ pub(super) fn into_controlled(error: TransactionFailure) -> ControlledTransactio
     match error {
         TransactionFailure::Cancelled => ControlledTransactionError::Cancelled,
         TransactionFailure::DeadlineExceeded => ControlledTransactionError::DeadlineExceeded,
-        TransactionFailure::Callback(error)
-        | TransactionFailure::Rejected(error)
-        | TransactionFailure::OutcomeUnknown(error) => ControlledTransactionError::Operation(error),
+        TransactionFailure::Callback(error) => {
+            crate::cancellation::classify(TimedTransactionError::Operation(error))
+        }
+        TransactionFailure::Rejected(error) | TransactionFailure::OutcomeUnknown(error) => {
+            ControlledTransactionError::Operation(error)
+        }
     }
 }
 
 pub(super) fn into_timed(error: TransactionFailure) -> TimedTransactionError {
-    match into_controlled(error) {
-        ControlledTransactionError::DeadlineExceeded => TimedTransactionError::DeadlineExceeded,
-        ControlledTransactionError::Operation(error) => TimedTransactionError::Operation(error),
-        error @ ControlledTransactionError::Cancelled => {
+    match error {
+        TransactionFailure::DeadlineExceeded => TimedTransactionError::DeadlineExceeded,
+        TransactionFailure::Callback(error)
+        | TransactionFailure::Rejected(error)
+        | TransactionFailure::OutcomeUnknown(error) => TimedTransactionError::Operation(error),
+        error @ TransactionFailure::Cancelled => {
             TimedTransactionError::Operation(io::Error::new(io::ErrorKind::Interrupted, error))
         }
     }

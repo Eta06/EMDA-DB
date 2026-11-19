@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Preserve the typed controlled-cancellation outcome when a retained
+  document callback returns an engine cancellation from a staged operation.
+
 - Run bounded document transactions over imported and restored managed
   retained catalogs, including atomic indexes and raw-key writes.
 

@@ -6,9 +6,16 @@ use database_engine::{
 };
 use serde_json::json;
 use std::io::{self, ErrorKind};
+use std::num::NonZeroU64;
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+use database_engine::RetainedExportLimits;
+use database_engine::retained_base_v2::Limits;
+use database_engine::retained_candidate::{
+    IndexLimits, ManagedRetainedStore, OverlayLimits, RetainedStoreLimits, SuffixLimits,
+};
 
 mod support;
 use support::retry_lock;
@@ -56,6 +63,7 @@ enum Operation {
 #[derive(Debug)]
 enum Outcome {
     Conflict,
+    Busy,
     Duplicate,
     Cancelled,
     Write(Observation),
@@ -87,7 +95,7 @@ fn serializes(events: &[Event], final_state: &State) -> bool {
             }
             let mut next = state.clone();
             match (&event.operation, &event.outcome) {
-                (_, Outcome::Conflict | Outcome::Cancelled) => {}
+                (_, Outcome::Conflict | Outcome::Busy | Outcome::Cancelled) => {}
                 (Operation::Claim(_), Outcome::Duplicate) if state.claim.is_some() => {}
                 (Operation::Claim(id), Outcome::Claimed) if state.claim.is_none() => {
                     next.claim = Some(id);
@@ -178,7 +186,12 @@ fn write_amounts(tx: &mut DocumentTransaction<'_, '_>, amounts: [i64; 2]) -> io:
     tx.put_raw(b"mirror", &mirror(amounts))
 }
 
-fn execute(db: &DocumentDatabase<'_>, operation: Operation, mode: usize) -> Outcome {
+fn execute(
+    db: &DocumentDatabase<'_>,
+    operation: Operation,
+    mode: usize,
+    retained: bool,
+) -> Outcome {
     let action = |tx: &mut DocumentTransaction<'_, '_>| match operation {
         Operation::Observe => observe(tx).map(Outcome::Read),
         Operation::Claim(id) => {
@@ -254,6 +267,13 @@ fn execute(db: &DocumentDatabase<'_>, operation: Operation, mode: usize) -> Outc
             if database_engine::is_transaction_conflict(&error) =>
         {
             Outcome::Conflict
+        }
+        Err(ControlledTransactionError::Operation(error))
+            if retained
+                && error.kind() == ErrorKind::WouldBlock
+                && error.to_string() == "retained document transaction is already active" =>
+        {
+            Outcome::Busy
         }
         Err(ControlledTransactionError::Operation(error))
             if error.kind() == ErrorKind::AlreadyExists =>
@@ -412,13 +432,7 @@ impl TestStore {
     }
 }
 
-#[test]
-fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
-    let histories = std::env::var("EMDA_DOCUMENT_MODEL_HISTORIES")
-        .ok()
-        .map(|value| value.parse::<usize>().unwrap())
-        .unwrap_or(128);
-    assert!((1..=8192).contains(&histories));
+fn record_history(db: &DocumentDatabase<'_>, iteration: usize, retained: bool) -> Vec<Event> {
     let operations = [
         Operation::Transfer(0),
         Operation::Transfer(1),
@@ -427,6 +441,45 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
         Operation::Claim("c"),
         Operation::Claim("d"),
     ];
+    let barrier = Barrier::new(operations.len() + 1);
+    let clock = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for offset in 0..operations.len() {
+            let operation = operations[(offset + iteration) % operations.len()];
+            let (db, barrier, clock) = (db, &barrier, &clock);
+            handles.push(scope.spawn(move || {
+                barrier.wait();
+                if (iteration + offset) % 3 == 0 {
+                    std::thread::yield_now();
+                }
+                let start = clock.fetch_add(1, Ordering::SeqCst);
+                // Vary mode independently of operation across iterations.
+                let outcome = execute(db, operation, iteration * 2 + offset, retained);
+                let end = clock.fetch_add(1, Ordering::SeqCst);
+                Event {
+                    operation,
+                    outcome,
+                    start,
+                    end,
+                }
+            }));
+        }
+        barrier.wait();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    })
+}
+
+#[test]
+fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
+    let histories = std::env::var("EMDA_DOCUMENT_MODEL_HISTORIES")
+        .ok()
+        .map(|value| value.parse::<usize>().unwrap())
+        .unwrap_or(128);
+    assert!((1..=8192).contains(&histories));
     for checkpoint_mode in [false, true] {
         let mut cancelled = 0_usize;
         let mut completed = 0_usize;
@@ -448,41 +501,12 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
             };
             let db = backend.database();
             reset(&db);
-            let barrier = Barrier::new(operations.len() + 1);
-            let clock = AtomicUsize::new(0);
-            let events = std::thread::scope(|scope| {
-                let mut handles = Vec::new();
-                for offset in 0..operations.len() {
-                    let operation = operations[(offset + iteration) % operations.len()];
-                    let (db, barrier, clock) = (&db, &barrier, &clock);
-                    handles.push(scope.spawn(move || {
-                        barrier.wait();
-                        if (iteration + offset) % 3 == 0 {
-                            std::thread::yield_now();
-                        }
-                        let start = clock.fetch_add(1, Ordering::SeqCst);
-                        // Vary mode independently of operation across iterations.
-                        let outcome = execute(db, operation, iteration * 2 + offset);
-                        let end = clock.fetch_add(1, Ordering::SeqCst);
-                        Event {
-                            operation,
-                            outcome,
-                            start,
-                            end,
-                        }
-                    }));
-                }
-                barrier.wait();
-                handles
-                    .into_iter()
-                    .map(|handle| handle.join().unwrap())
-                    .collect::<Vec<_>>()
-            });
+            let events = record_history(&db, iteration, false);
             let expected = read_state(&db);
             for event in &events {
                 match &event.outcome {
                     Outcome::Cancelled => cancelled += 1,
-                    Outcome::Conflict | Outcome::Duplicate => rejected += 1,
+                    Outcome::Conflict | Outcome::Busy | Outcome::Duplicate => rejected += 1,
                     _ => completed += 1,
                 }
             }
@@ -506,4 +530,101 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
             "checkpoint={checkpoint_mode} histories={histories} cancelled={cancelled} completed={completed} rejected={rejected}"
         );
     }
+}
+
+#[test]
+fn retained_document_histories_serialize_and_recover_across_reclamation() {
+    let histories = std::env::var("EMDA_RETAINED_DOCUMENT_MODEL_HISTORIES")
+        .ok()
+        .map(|value| value.parse::<usize>().unwrap())
+        .unwrap_or(48);
+    assert!((1..=8192).contains(&histories));
+    let limits = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: 65_536,
+            entries: 256,
+            key_bytes: 8_192,
+            work_bytes: 65_537,
+        },
+        index: IndexLimits {
+            blocks: 4,
+            anchor_bytes: 1_024,
+        },
+        suffix: SuffixLimits {
+            bytes: 65_536,
+            operations: 256,
+            work: 65_536,
+        },
+        overlay: OverlayLimits {
+            entries: 256,
+            key_bytes: 8_192,
+        },
+    };
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let catalog = root.path().join("catalog");
+    let initial = retry_lock(|| Store::open(&source)).unwrap();
+    initialize(&DocumentDatabase::new(&initial));
+    ManagedRetainedStore::copy_from_store(
+        initial,
+        &source,
+        &catalog,
+        RetainedExportLimits {
+            max_log_bytes: 65_536,
+            max_live_keys: 256,
+            max_live_key_bytes: 8_192,
+            max_output_bytes: 65_536,
+        },
+        limits,
+    )
+    .unwrap();
+
+    let mut backend =
+        ManagedRetainedStore::open_with_auto_reclaim(&catalog, limits, NonZeroU64::MIN).unwrap();
+    let initial_generation = backend.generation_id().unwrap();
+    backend.put(b"mirror", &mirror([3, 2])).unwrap();
+    drop(backend);
+
+    let (mut cancelled, mut busy, mut completed, mut rotations) = (0, 0, 0, 0);
+    let mut generation = initial_generation;
+    for iteration in 0..histories {
+        let mut backend =
+            ManagedRetainedStore::open_with_auto_reclaim(&catalog, limits, NonZeroU64::MIN)
+                .unwrap();
+        let expected = {
+            let db = DocumentDatabase::with_managed_retained_store(&mut backend);
+            reset(&db);
+            let events = record_history(&db, iteration, true);
+            let expected = read_state(&db);
+            assert!(
+                serializes(&events, &expected),
+                "retained iteration={iteration} history={events:?} final={expected:?}"
+            );
+            for event in events {
+                match event.outcome {
+                    Outcome::Cancelled => cancelled += 1,
+                    Outcome::Busy => busy += 1,
+                    Outcome::Duplicate | Outcome::Conflict => {}
+                    _ => completed += 1,
+                }
+            }
+            expected
+        };
+        let next = backend.generation_id().unwrap();
+        rotations += usize::from(next != generation);
+        generation = next;
+        drop(backend);
+        let mut recovered = ManagedRetainedStore::open(&catalog, limits).unwrap();
+        let db = DocumentDatabase::with_managed_retained_store(&mut recovered);
+        assert_eq!(
+            read_state(&db),
+            expected,
+            "retained iteration={iteration} recovery"
+        );
+    }
+    assert_eq!(rotations, histories);
+    assert!(cancelled >= histories);
+    println!(
+        "retained histories={histories} cancelled={cancelled} completed={completed} busy={busy} rotation_histories={rotations}"
+    );
 }

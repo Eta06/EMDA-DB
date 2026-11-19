@@ -135,6 +135,25 @@ fn retained_document_controls_and_staging_failures_leave_no_changes() {
         }),
         Err(TransactionFailure::Cancelled)
     ));
+    let token = CancellationToken::new();
+    let result = db.transaction_controlled(&token, None, mode, |tx| {
+        tx.put_raw(b"receipt", b"cancelled during callback")?;
+        token.cancel();
+        tx.get_raw(b"receipt")
+    });
+    assert!(matches!(
+        result,
+        Err(database_engine::ControlledTransactionError::Cancelled)
+    ));
+    let token = CancellationToken::new();
+    let result = db.transaction_controlled(&token, None, mode, |_| {
+        Err::<(), _>(io::Error::new(io::ErrorKind::Interrupted, "callback I/O"))
+    });
+    assert!(matches!(
+        result,
+        Err(database_engine::ControlledTransactionError::Operation(error))
+            if error.kind() == io::ErrorKind::Interrupted
+    ));
     assert!(matches!(
         db.transaction_detailed(mode, Some(Instant::now()), None, |_| panic!(
             "expired callback"
