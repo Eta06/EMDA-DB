@@ -605,3 +605,10 @@ records substituted-cursor rejection, recovery with a deleted cursor
 document, retained rotation, and rejection by the previous engine while
 a guarded job is pending. Same-job replay and deployment key management
 remain separate verification gates.
+
+Original-path retained cutover now drains buffered base output before
+sync and staged validation. The [paired cutover report](../benchmarks/results/2026-11-19-buffered-retained-export/README.md)
+records APFS and ext4 timings, identical Linux fsync counts, and V2/V3
+kernel file-size failures that preserve the ordinary store and permit
+retry. The original archive is retained, and reopen still verifies the
+full admitted base.
