@@ -25,6 +25,77 @@ pub(super) fn catalog_usage(root: &Path) -> CatalogStorageLimits {
 }
 
 #[test]
+fn persisted_catalog_quota_survives_selection_uncertainty_and_later_rotation() {
+    let f = Fixture::new(LIMITS);
+    let old = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let used = catalog_usage(&f.root);
+    let policy = CatalogStorageLimits {
+        bytes: used.bytes + 1024,
+        entries: used.entries + 8,
+    };
+    let mut store = f.open();
+    assert!(matches!(
+        store.compact_with_persisted_storage_limits(used),
+        Err(PublicationFailure::NotPublished(_))
+    ));
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), old);
+    assert!(!Slot::B.path(&f.root).exists());
+    assert!(matches!(
+        store.compact_using_limits(
+            LIMITS,
+            Some(policy),
+            || Ok(()),
+            |_| Err(io::Error::other("injected selection sync failure"))
+        ),
+        Err(PublicationFailure::OutcomeUnknown(_))
+    ));
+    assert!(store.get(b"a", 4).is_err());
+    drop(store);
+
+    let mut store = f.open();
+    assert_eq!(store.store.header.storage_limits(), Some(policy));
+    assert_eq!(store.get(b"a", 4).unwrap().unwrap(), b"old");
+    assert!(store.reclaim_inactive().unwrap());
+    let generation = store.compact().unwrap();
+    assert_eq!(store.store.header.storage_limits(), Some(policy));
+    assert!(store.reclaim_inactive().unwrap());
+    let log = store.active.slot.path(&f.root).join("records.log");
+    let witness = log.with_file_name("commit.state");
+    let before = fs::read(&log).unwrap();
+    let committed = fs::read(&witness).unwrap();
+    drop(store);
+    let mut store = ManagedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        CatalogStorageLimits {
+            bytes: 64 * 1024,
+            entries: 100,
+        },
+        None,
+    )
+    .unwrap();
+    assert_eq!(store.generation_id().unwrap(), generation);
+    let value = [7; 1024];
+    assert!(
+        matches!(store.put(b"too-large", &value), Err(MutationFailure::Rejected(ref cause))
+        if cause.to_string() == "catalog byte limit exceeded")
+    );
+    assert_eq!(fs::read(&log).unwrap(), before);
+    assert_eq!(fs::read(&witness).unwrap(), committed);
+    drop(store);
+    let tail = record::encode(Operation::Put, b"too-large", &value).unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(&log)
+        .unwrap()
+        .write_all(&tail)
+        .unwrap();
+    let error = ManagedRetainedStore::open(&f.root, LIMITS).err().unwrap();
+    assert_eq!(error.to_string(), "catalog byte limit exceeded");
+    assert_eq!(fs::read(&witness).unwrap(), committed);
+}
+
+#[test]
 fn catalog_storage_caps_appends_and_rejects_oversize_recovery_before_adoption() {
     let f = Fixture::new(LIMITS);
     let used = catalog_usage(&f.root);
@@ -877,6 +948,7 @@ fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
     assert!(matches!(
         store.compact_using_limits(
             smaller,
+            None,
             || Ok(()),
             |_| Err(io::Error::other("selection sync"))
         ),

@@ -37,6 +37,58 @@ fn seed(path: &Path) -> Store {
 }
 
 #[test]
+fn persisted_catalog_quota_follows_authority_and_covers_original_root() {
+    use crate::retained_candidate::writable::managed::tests::catalog_usage;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    let authority_path = tmp.path().join("authority");
+    let initial = Catalog::cutover_from_store(seed(&root), &root, EXPORT, LIMITS).unwrap();
+    let mut provider = FileRetainedAuthority::create(&authority_path).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let original = catalog_usage(&root);
+    let policy = CatalogStorageLimits {
+        bytes: original.bytes + 850,
+        entries: original.entries + 8,
+    };
+    let mut store = Catalog::open(&root, LIMITS, provider).unwrap();
+    let next = store.compact_with_persisted_storage_limits(policy).unwrap();
+    assert_ne!(next, initial.committed.generation);
+    let selected = store.current;
+    let digest: [u8; 32] = Sha256::digest(store.inner.store.header.bytes()).into();
+    assert_eq!(selected.committed.header_digest, digest);
+    assert!(store.reclaim_inactive().unwrap());
+    let authority_after_reclamation = store.current;
+    drop(store);
+    let mut store = Catalog::open(
+        &root,
+        LIMITS,
+        FileRetainedAuthority::open(&authority_path).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(store.current, authority_after_reclamation);
+    assert_eq!(store.inner.store.header.storage_limits(), Some(policy));
+    let used = catalog_usage(&root);
+    let extra = root.join("reserved-input");
+    // This independently preserved file is charged even though it is
+    // outside the selected catalog subdirectory.
+    fs::write(&extra, vec![0; (policy.bytes - used.bytes) as usize]).unwrap();
+    assert!(matches!(
+        store.put(b"small", b"x"),
+        Err(MutationFailure::Rejected(ref cause)) if cause.to_string() == "catalog byte limit exceeded"
+    ));
+    assert_eq!(
+        store.authority.read().unwrap(),
+        Some(authority_after_reclamation)
+    );
+    fs::remove_file(extra).unwrap();
+    store.put(b"small", b"x").unwrap();
+    assert_eq!(
+        store.get(b"small", 1).unwrap().as_deref(),
+        Some(b"x".as_slice())
+    );
+}
+
+#[test]
 fn catalog_storage_counts_cutover_archive_and_checks_before_authority_update() {
     use crate::retained_candidate::writable::managed::tests::catalog_usage;
 

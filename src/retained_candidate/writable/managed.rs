@@ -31,8 +31,8 @@ const ACTIVE_BYTES: usize = 256;
 mod authority;
 mod backup;
 mod storage;
-use storage::CatalogStorage;
 pub use storage::CatalogStorageLimits;
+use storage::{CatalogStorage, intersect};
 
 pub use authority::{
     AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CutoverArchiveBinding,
@@ -59,6 +59,7 @@ pub struct ManagedRetainedStore {
     auto_reclaim: Option<NonZeroU64>,
     cleanup_pending: bool,
     storage: Option<CatalogStorage>,
+    requested_storage: Option<CatalogStorageLimits>,
     lock: StoreLock,
 }
 
@@ -233,6 +234,7 @@ impl ManagedRetainedStore {
                 &expected,
                 suffix,
                 generation_role(catalog_magic, catalog),
+                None,
             )?;
             let point = AuthorityPoint::from_store(catalog, &store);
             drop(store);
@@ -267,10 +269,10 @@ impl ManagedRetainedStore {
         )
     }
 
-    /// Recover with a whole-catalog logical storage limit. Pass the same
-    /// policy on subsequent opens. Admission checks precede tail recovery,
-    /// appends and generation publication. Optional automatic reclamation
-    /// follows the same limit.
+    /// Recover with a per-open whole-catalog logical storage limit. When the
+    /// selected generation carries a persistent limit, the lower ceiling for
+    /// each resource applies. Admission checks precede tail recovery, appends
+    /// and generation publication. Automatic reclamation follows the same limit.
     pub fn open_with_storage_limits(
         root: impl AsRef<Path>,
         ceiling: RetainedStoreLimits,
@@ -278,15 +280,11 @@ impl ManagedRetainedStore {
         suffix_threshold: Option<NonZeroU64>,
     ) -> io::Result<Self> {
         let root = root.as_ref();
-        let storage = CatalogStorage {
-            root: root.to_path_buf(),
-            limits: storage_limits,
-        };
         let mut store = Self::open_role(
             root,
             ceiling,
             CATALOG_MAGIC,
-            Some(storage),
+            Some(storage_limits),
             Active::load,
             |_| Ok(()),
         )?;
@@ -301,20 +299,14 @@ impl ManagedRetainedStore {
         root: &Path,
         ceiling: RetainedStoreLimits,
         catalog_magic: &'static [u8; 8],
-        storage: Option<CatalogStorage>,
+        requested_storage: Option<CatalogStorageLimits>,
         select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
         authorize: impl FnOnce(AuthorityPoint) -> io::Result<()>,
     ) -> io::Result<Self> {
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
         lock.verify_identity(&root)?;
-        let storage = storage
-            .map(|mut storage| -> io::Result<_> {
-                storage.root = storage.root.canonicalize()?;
-                storage.room(0, 0)?;
-                Ok(storage)
-            })
-            .transpose()?;
+        let mut storage = None;
         let catalog = read_catalog(&root, catalog_magic)?;
         let active = select(&root, catalog)?;
         let path = active.slot.path(&root);
@@ -324,6 +316,17 @@ impl ManagedRetainedStore {
             &active.expected,
             generation_role(catalog_magic, catalog),
             Some(active.generation),
+            |header| {
+                storage = catalog_storage(
+                    &root,
+                    catalog_magic,
+                    intersect(requested_storage, header.storage_limits()),
+                );
+                if let Some(storage) = &storage {
+                    storage.room(0, 0)?;
+                }
+                Ok(())
+            },
             |directory, header, end, digest| {
                 authorize(AuthorityPoint::new(catalog, header, end, digest))?;
                 sync_existing(directory)?;
@@ -340,6 +343,7 @@ impl ManagedRetainedStore {
             auto_reclaim: None,
             cleanup_pending: false,
             storage,
+            requested_storage,
             lock,
         })
     }
@@ -528,7 +532,17 @@ impl ManagedRetainedStore {
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], PublicationFailure> {
-        self.compact_using_limits(limits, || Ok(()), sync_existing)
+        self.compact_using_limits(limits, None, || Ok(()), sync_existing)
+    }
+
+    /// Publish a successor with persistent catalog storage limits. The
+    /// preparation must fit both the live and requested policies. Retain
+    /// headroom for rotation and reclamation before lowering a limit.
+    pub fn compact_with_persisted_storage_limits(
+        &mut self,
+        limits: CatalogStorageLimits,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        self.compact_using_limits(self.store.limits, Some(limits), || Ok(()), sync_existing)
     }
 
     #[cfg(test)]
@@ -537,18 +551,20 @@ impl ManagedRetainedStore {
         before_select: impl FnOnce() -> io::Result<()>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], PublicationFailure> {
-        self.compact_using_limits(self.store.limits, before_select, sync_selection)
+        self.compact_using_limits(self.store.limits, None, before_select, sync_selection)
     }
 
     fn compact_using_limits(
         &mut self,
         limits: RetainedStoreLimits,
+        persisted_storage: Option<CatalogStorageLimits>,
         before_select: impl FnOnce() -> io::Result<()>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             self.verify_selection()?;
-            let (active, next) = self.prepare_successor(limits, self.auto_reclaim.is_some())?;
+            let (active, next, storage) =
+                self.prepare_successor(limits, self.auto_reclaim.is_some(), persisted_storage)?;
             let generation = active.generation;
             let (mut selection, mut file) = crate::staging::Stage::file(&self.root)?;
             file.write_all(&active.encode())?;
@@ -563,6 +579,7 @@ impl ManagedRetainedStore {
             selection.publication_synchronized();
             self.store = next;
             self.active = active;
+            self.storage = storage;
             self.uncertain = false;
             Ok(generation)
         })
@@ -572,7 +589,8 @@ impl ManagedRetainedStore {
         &self,
         limits: RetainedStoreLimits,
         reclaim_after: bool,
-    ) -> io::Result<(Active, RetainedStore)> {
+        persisted_storage: Option<CatalogStorageLimits>,
+    ) -> io::Result<(Active, RetainedStore, Option<CatalogStorage>)> {
         let slot = self.active.slot.other();
         let destination = slot.path(&self.root);
         match fs::symlink_metadata(&destination) {
@@ -586,7 +604,16 @@ impl ManagedRetainedStore {
             Err(error) => return Err(error),
         }
         use crate::staging::Stage;
-        let generation_metadata = (super::MANAGED_HEADER_BYTES + super::WITNESS_BYTES) as u64;
+        let persisted_storage = persisted_storage.or_else(|| self.store.header.storage_limits());
+        let next_limits = intersect(self.requested_storage, persisted_storage);
+        let admission_limits =
+            intersect(self.storage.as_ref().map(|quota| quota.limits), next_limits);
+        let header_bytes = if persisted_storage.is_some() {
+            super::QUOTA_HEADER_BYTES
+        } else {
+            super::MANAGED_HEADER_BYTES
+        };
+        let generation_metadata = (header_bytes + super::WITNESS_BYTES) as u64;
         let selection_bytes = if self.catalog_magic == CATALOG_MAGIC {
             Stage::FILE_MARKER_BYTES + ACTIVE_BYTES as u64
         } else {
@@ -603,10 +630,13 @@ impl ManagedRetainedStore {
         } else {
             6
         };
-        let max_base_bytes = self.storage_room(
-            Stage::DIRECTORY_MARKER_BYTES + generation_metadata + selection_bytes,
-            entries,
-        )?;
+        let max_base_bytes = catalog_storage(&self.root, self.catalog_magic, admission_limits)
+            .map_or(Ok(u64::MAX), |quota| {
+                quota.room(
+                    Stage::DIRECTORY_MARKER_BYTES + generation_metadata + selection_bytes,
+                    entries,
+                )
+            })?;
         let mut stage = Stage::directory(&self.root)?;
         let expected = self.store.write_rebased_base(
             &stage.path().join("base"),
@@ -619,6 +649,7 @@ impl ManagedRetainedStore {
             &expected,
             None,
             generation_role(self.catalog_magic, self.active.catalog),
+            persisted_storage,
         )?;
         let generation = next.generation_id();
         if generation == self.active.generation {
@@ -636,7 +667,8 @@ impl ManagedRetainedStore {
             generation,
             expected,
         };
-        Ok((active, next))
+        let storage = catalog_storage(&self.root, self.catalog_magic, next_limits);
+        Ok((active, next, storage))
     }
 
     /// Retire only the catalog-owned inactive slot after verifying and
@@ -786,6 +818,24 @@ fn generation_role(magic: &[u8; 8], catalog: [u8; 16]) -> GenerationRole {
     } else {
         GenerationRole::Managed(catalog)
     }
+}
+
+fn catalog_storage(
+    catalog: &Path,
+    magic: &[u8; 8],
+    limits: Option<CatalogStorageLimits>,
+) -> Option<CatalogStorage> {
+    limits.map(|limits| CatalogStorage {
+        root: if magic == CUTOVER_MAGIC {
+            catalog
+                .parent()
+                .expect("cutover catalog has an original-path parent")
+                .to_path_buf()
+        } else {
+            catalog.to_path_buf()
+        },
+        limits,
+    })
 }
 
 fn catalog_bytes(id: [u8; 16], magic: &[u8; 8]) -> [u8; 56] {

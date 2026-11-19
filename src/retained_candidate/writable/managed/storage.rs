@@ -1,6 +1,6 @@
 use std::{fs, io, path::PathBuf};
 
-/// Per-open limits on logical bytes in regular files and the number of
+/// Limits on logical bytes in regular files and the number of
 /// directory entries inside the catalog, including stages and old slots.
 /// Hard links are counted separately. Symbolic links and special files
 /// are rejected. Filesystem block allocation and external storage are
@@ -9,6 +9,19 @@ use std::{fs, io, path::PathBuf};
 pub struct CatalogStorageLimits {
     pub bytes: u64,
     pub entries: u64,
+}
+
+pub(super) fn intersect(
+    first: Option<CatalogStorageLimits>,
+    second: Option<CatalogStorageLimits>,
+) -> Option<CatalogStorageLimits> {
+    match (first, second) {
+        (Some(first), Some(second)) => Some(CatalogStorageLimits {
+            bytes: first.bytes.min(second.bytes),
+            entries: first.entries.min(second.entries),
+        }),
+        (first, second) => first.or(second),
+    }
 }
 
 pub(super) struct CatalogStorage {

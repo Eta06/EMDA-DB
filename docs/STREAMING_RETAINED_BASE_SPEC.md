@@ -329,13 +329,21 @@ reserves room for its private staging marker and directory. Automatic
 rotation accounts for that headroom before selecting the successor.
 Stale staging artifacts consume budget until cleanup.
 
-The limits apply to this open handle and must be supplied again on
-reopen. The API leaves the storage format and persisted generation
-ceilings intact. A manual reclamation may need a higher open ceiling
-when a catalog is already full. These are logical accounting limits
-for trusted, stable directories. Filesystem allocation, copies and
-authority files elsewhere, initial publication, and writes made through
-unlimited handles have their own policies.
+`compact_with_persisted_storage_limits` publishes a successor whose
+witness-bound header carries both catalog ceilings (`EMDARW04` for
+managed selection and `EMDARW05` for authority selection). The authority
+also binds the selected header digest. Preparation must fit the current
+and requested ceilings. After selection, every supported open checks
+the selected policy before suffix replay or tail adoption. An additional
+per-open ceiling can only tighten it. Ordinary rotation carries the
+selected policy forward. After an uncertain selection, reopen resolves
+which generation and policy apply. Readers that lack the new header
+version reject a quota-bearing selection.
+
+Leave room for reclamation and future rotation when setting a ceiling.
+These limits account for logical bytes and entries in trusted, stable
+directories. Initial publication, independent restores, filesystem
+allocation, external authority files and backups have separate policies.
 
 Catalogs use trusted local directories and the ordinary rollback model.
 The original ordinary store remains independently addressable after

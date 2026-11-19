@@ -20,10 +20,13 @@ use std::{
 const VERSION: [u8; 8] = *b"EMDARW01";
 const MANAGED_VERSION: [u8; 8] = *b"EMDARW02";
 const AUTHORIZED_VERSION: [u8; 8] = *b"EMDARW03";
+const MANAGED_QUOTA_VERSION: [u8; 8] = *b"EMDARW04";
+const AUTHORIZED_QUOTA_VERSION: [u8; 8] = *b"EMDARW05";
 const WITNESS_MAGIC: [u8; 8] = *b"EMDAWIT4";
 const LIMITS_OFFSET: usize = 136;
 const HEADER_BYTES: usize = LIMITS_OFFSET + 11 * 8;
 const MANAGED_HEADER_BYTES: usize = HEADER_BYTES + 16;
+const QUOTA_HEADER_BYTES: usize = MANAGED_HEADER_BYTES + 16;
 const WITNESS_BYTES: usize = 84;
 
 mod managed;
@@ -174,8 +177,14 @@ impl RetainedStore {
             let mut stage = crate::staging::Stage::directory(parent)?;
             let dir = stage.path();
             copy_base(candidate, dir, limits, expected)?;
-            let verified =
-                Self::initialize(dir, limits, expected, suffix, GenerationRole::Standalone)?;
+            let verified = Self::initialize(
+                dir,
+                limits,
+                expected,
+                suffix,
+                GenerationRole::Standalone,
+                None,
+            )?;
             let id = verified.generation_id();
             drop(verified);
             tracker.begin_publication();
@@ -192,9 +201,13 @@ impl RetainedStore {
         expected: &Expected,
         suffix: Option<SuffixImport>,
         role: GenerationRole,
+        storage_limits: Option<CatalogStorageLimits>,
     ) -> io::Result<Self> {
         create_file(&dir.join("store.lock"))?.sync_all()?;
-        let header = Header::new(expected, limits, role)?;
+        let mut header = Header::new(expected, limits, role)?;
+        if let Some(storage_limits) = storage_limits {
+            header.set_storage_limits(role, storage_limits)?;
+        }
         let mut log = create_file(&dir.join("records.log"))?;
         log.write_all(header.bytes())?;
         let (end, digest) = match suffix {
@@ -212,6 +225,7 @@ impl RetainedStore {
             expected,
             role,
             None,
+            |_| Ok(()),
             |directory, _, actual_end, actual_digest| {
                 if (actual_end, actual_digest) != (end, digest) {
                     return Err(record::invalid_data("staged retained suffix changed"));
@@ -252,6 +266,7 @@ impl RetainedStore {
             expected,
             GenerationRole::Standalone,
             None,
+            |_| Ok(()),
             |directory, _, _, _| sync_directory(directory),
         )
     }
@@ -262,6 +277,7 @@ impl RetainedStore {
         expected: &Expected,
         role: GenerationRole,
         generation: Option<[u8; 16]>,
+        preflight: impl FnOnce(&Header) -> io::Result<()>,
         authorize: impl FnOnce(&Path, &Header, u64, [u8; 32]) -> io::Result<()>,
     ) -> io::Result<Self> {
         if !dir.symlink_metadata()?.file_type().is_dir() {
@@ -278,6 +294,7 @@ impl RetainedStore {
         let saved = read_marker(&witness)?;
         let (committed, committed_hash) = decode_marker(&saved, header.bytes())?;
         let limits = header.recovery_limits(limits)?;
+        preflight(&header)?;
         let log_size = log.metadata()?.len();
         let suffix_len = log_size
             .checked_sub(header.len as u64)
@@ -527,16 +544,16 @@ fn random_id() -> io::Result<[u8; 16]> {
 }
 
 struct Header {
-    bytes: [u8; MANAGED_HEADER_BYTES],
+    bytes: [u8; QUOTA_HEADER_BYTES],
     len: usize,
 }
 
 impl Header {
     fn for_role(role: GenerationRole) -> Self {
-        let mut bytes = [0; MANAGED_HEADER_BYTES];
+        let mut bytes = [0; QUOTA_HEADER_BYTES];
         let (version, len) = match role {
             GenerationRole::Managed(id) | GenerationRole::Authorized(id) => {
-                bytes[HEADER_BYTES..].copy_from_slice(&id);
+                bytes[HEADER_BYTES..MANAGED_HEADER_BYTES].copy_from_slice(&id);
                 (
                     if matches!(role, GenerationRole::Authorized(_)) {
                         AUTHORIZED_VERSION
@@ -569,14 +586,52 @@ impl Header {
         let expected = Self::for_role(role);
         let mut observed = Self::for_role(role);
         log.read_exact_at(&mut observed.bytes[..observed.len], 0)?;
-        if observed.bytes[112..120] != expected.bytes[112..120]
-            || observed.bytes[HEADER_BYTES..] != expected.bytes[HEADER_BYTES..]
+        let version = &observed.bytes[112..120];
+        if quota_version(role).is_some_and(|quota| version == quota) {
+            log.read_exact_at(
+                &mut observed.bytes[MANAGED_HEADER_BYTES..],
+                MANAGED_HEADER_BYTES as u64,
+            )?;
+            observed.len = QUOTA_HEADER_BYTES;
+        } else if version != &expected.bytes[112..120] {
+            return Err(record::invalid_data(
+                "unsupported retained generation version",
+            ));
+        }
+        if observed.bytes[HEADER_BYTES..MANAGED_HEADER_BYTES]
+            != expected.bytes[HEADER_BYTES..MANAGED_HEADER_BYTES]
         {
             return Err(record::invalid_data(
                 "retained generation ownership mismatch",
             ));
         }
         Ok(observed)
+    }
+
+    fn set_storage_limits(
+        &mut self,
+        role: GenerationRole,
+        limits: CatalogStorageLimits,
+    ) -> io::Result<()> {
+        let version = quota_version(role)
+            .ok_or_else(|| invalid_input("standalone generation has no catalog"))?;
+        self.bytes[112..120].copy_from_slice(&version);
+        self.bytes[MANAGED_HEADER_BYTES..MANAGED_HEADER_BYTES + 8]
+            .copy_from_slice(&limits.bytes.to_le_bytes());
+        self.bytes[MANAGED_HEADER_BYTES + 8..].copy_from_slice(&limits.entries.to_le_bytes());
+        self.len = QUOTA_HEADER_BYTES;
+        Ok(())
+    }
+
+    fn storage_limits(&self) -> Option<CatalogStorageLimits> {
+        (self.len == QUOTA_HEADER_BYTES).then(|| CatalogStorageLimits {
+            bytes: u64::from_le_bytes(
+                self.bytes[MANAGED_HEADER_BYTES..MANAGED_HEADER_BYTES + 8]
+                    .try_into()
+                    .unwrap(),
+            ),
+            entries: u64::from_le_bytes(self.bytes[MANAGED_HEADER_BYTES + 8..].try_into().unwrap()),
+        })
     }
 
     fn bytes(&self) -> &[u8] {
@@ -674,6 +729,14 @@ impl Header {
     }
 }
 
+fn quota_version(role: GenerationRole) -> Option<[u8; 8]> {
+    match role {
+        GenerationRole::Standalone => None,
+        GenerationRole::Managed(_) => Some(MANAGED_QUOTA_VERSION),
+        GenerationRole::Authorized(_) => Some(AUTHORIZED_QUOTA_VERSION),
+    }
+}
+
 fn marker(header: &[u8], end: u64, digest: &[u8; 32]) -> [u8; WITNESS_BYTES] {
     let mut result = [0; WITNESS_BYTES];
     result[..8].copy_from_slice(&WITNESS_MAGIC);
@@ -722,7 +785,7 @@ fn verify_files(
     log_size: u64,
     saved: &[u8; WITNESS_BYTES],
 ) -> io::Result<()> {
-    let mut observed = [0; MANAGED_HEADER_BYTES];
+    let mut observed = [0; QUOTA_HEADER_BYTES];
     log.read_exact_at(&mut observed[..header.len()], 0)?;
     if observed[..header.len()] != *header
         || log.metadata()?.len() != log_size

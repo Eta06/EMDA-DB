@@ -151,10 +151,10 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         Self::open_using(root.as_ref(), limits, authority, None)
     }
 
-    /// Recover with a logical storage limit covering the entire original
-    /// path, including any archives, abandoned preparations and stages.
-    /// Authority-provider storage must be outside that path.
-    /// Pass the same limit on subsequent opens.
+    /// Recover with a per-open catalog limit, intersected with any persistent
+    /// limit on the selected generation. For original-path cutovers this
+    /// covers archives, abandoned preparations and stages. Authority-provider
+    /// storage must be outside the measured tree.
     pub fn open_with_storage_limits(
         root: impl AsRef<Path>,
         limits: RetainedStoreLimits,
@@ -198,10 +198,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             &catalog_path,
             limits,
             role,
-            storage_limits.map(|limits| CatalogStorage {
-                root: root.to_path_buf(),
-                limits,
-            }),
+            storage_limits,
             |root, catalog| select_authorized(root, catalog, current.committed),
             |observed| current.check(observed),
         )?;
@@ -314,12 +311,32 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], PublicationFailure> {
+        self.compact_using_limits(limits, None)
+    }
+
+    /// Select a successor carrying persistent catalog storage limits. For
+    /// an original-path catalog, the policy covers the whole original
+    /// directory. Put the independent authority outside that scope.
+    pub fn compact_with_persisted_storage_limits(
+        &mut self,
+        limits: CatalogStorageLimits,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        self.compact_using_limits(self.inner.store.limits, Some(limits))
+    }
+
+    fn compact_using_limits(
+        &mut self,
+        limits: RetainedStoreLimits,
+        persisted_storage: Option<CatalogStorageLimits>,
+    ) -> Result<[u8; 16], PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             self.verify_current()?;
             let mut next = self.current.finalized(self.current.committed)?;
-            let (active, store) = self
-                .inner
-                .prepare_successor(limits, self.auto_reclaim.is_some())?;
+            let (active, store, storage) = self.inner.prepare_successor(
+                limits,
+                self.auto_reclaim.is_some(),
+                persisted_storage,
+            )?;
             let point = AuthorityPoint::from_store(active.catalog, &store);
             next.committed = point;
             tracker.begin_publication();
@@ -327,6 +344,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             self.advance(next)?;
             self.inner.store = store;
             self.inner.active = active;
+            self.inner.storage = storage;
             self.inner.uncertain = false;
             self.cleanup_pending = self.auto_reclaim.is_some();
             Ok(point.generation)
