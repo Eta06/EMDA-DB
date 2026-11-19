@@ -1,0 +1,11 @@
+Current reader opened both selected generations
+Old reader rejected managed: retained generation ownership mismatch
+Old reader rejected authorized: independently selected retained generation is absent
+Current reader opened both selected generations
+./managed/generation-a/records.log
+./managed/generation-b/records.log
+./source/records.log
+./cutover/retained-cutover-b47109cfbea75156cc489245ff8c3985/generation-a/records.log
+./cutover/retained-cutover-b47109cfbea75156cc489245ff8c3985/generation-b/records.log
+./cutover/records.log
+All file paths and hashes unchanged by the old reader

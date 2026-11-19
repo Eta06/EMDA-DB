@@ -653,12 +653,29 @@ record. A fenced catalog checks current authority and accepts the
 original archive fingerprints even after its own archive is retired.
 The [cleanup regression](../benchmarks/results/2026-11-19-abandoned-cutover-cleanup/README.md)
 covers process interruption, protected source and selected catalogs,
-and repeat cleanup. Whole-catalog disk admission remains open.
+and repeat cleanup.
 
 Retained managed and authorized catalogs can opt in to a per-open
 limit for all logical file bytes and directory entries under the
 catalog root. The original-path form includes archives, preparations
 and stages. [Storage admission evidence](../benchmarks/results/2026-11-19-retained-catalog-storage/README.md)
 covers rejection before tail adoption or authority update, exact
-rotation allowances, and reclamation headroom. Persisting the policy
-and charging deployment-wide storage remain open.
+rotation allowances, and reclamation headroom.
+
+### Current status after persistent catalog admission
+
+Step 2 is the current implementation focus. These estimates are
+maintainer judgment against the roadmap exit criteria. Giving all
+eight steps equal weight puts overall progress at roughly 34%.
+
+| Step | Estimate | Verified scope and remaining work |
+| --- | ---: | --- |
+| 1. Correctness and foundations | 95% | Shared store locks resolve the traced fork/exec failure mode. Strict macOS and Linux suites and focused fault tests provide the current baseline. Wider fault models and the deferred durability drills remain. |
+| 2. Durable storage and core | 80% | Authority-backed retained recovery, automatic rotation, archive retirement, and persistent catalog admission are exercised. Initial publication limits, total memory accounting, full-base verification cost, and broader recovery workloads remain. |
+| 3. Document data and queries | 65% | Document transactions work on the retained backend. Guarded schema and index maintenance and bounded index unions are implemented. Representative benchmarks, longer concurrency and fault campaigns, and richer diagnostics and queries remain. |
+
+Policy changes take effect through generation selection. The
+[persistent quota tests](../benchmarks/results/2026-11-19-persisted-retained-quotas/README.md)
+cover selection uncertainty, historical reader rejection, normal reopen
+and original-path accounting. Project-wide resource enforcement remains
+part of the service and isolation work.
