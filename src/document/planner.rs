@@ -61,6 +61,18 @@ pub enum DocumentQueryAccess {
         fields: usize,
         probes: usize,
     },
+    /// Scan a compound range for each distinct equality/membership prefix.
+    CompoundMembershipRangeIndex {
+        index: String,
+        prefix_fields: usize,
+        probes: usize,
+    },
+    /// Scan an implied partial compound range for each distinct prefix.
+    PartialCompoundMembershipRangeIndex {
+        index: String,
+        prefix_fields: usize,
+        probes: usize,
+    },
     /// Union the indexed candidates of every branch of a required disjunction.
     DisjunctionIndex {
         /// Distinct index names in ascending order.
@@ -205,6 +217,11 @@ enum Selection {
         lower: Option<IndexBound>,
         upper: Option<IndexBound>,
     },
+    MembershipRange {
+        prefixes: Vec<Vec<IndexValue>>,
+        lower: Option<IndexBound>,
+        upper: Option<IndexBound>,
+    },
 }
 
 impl Selection {
@@ -212,23 +229,23 @@ impl Selection {
         match self {
             Self::Membership(values) => values.len(),
             Self::CompoundMembership(tuples) => tuples.len(),
+            Self::MembershipRange { prefixes, .. } => prefixes.len(),
             _ => 1,
         }
     }
 }
 
-// A compound entry omits any document missing one of its fields. Require an
-// indexable equality or membership predicate for every field; never infer one
-// from Or or Not. Distinct values make tuple probes disjoint. Reject an
-// excessive product before building it, then let the caller use a safe scan.
+// Require indexable equality or membership for every supplied field. Distinct
+// values make tuple probes disjoint. Reject an excessive product before
+// building it. The caller establishes completeness for any omitted fields.
 fn compound_membership(
     required: &[&DocumentFilter],
-    index: &IndexDefinition,
+    fields: &[Vec<String>],
 ) -> Option<Vec<Vec<IndexValue>>> {
-    let mut choices = Vec::with_capacity(index.fields.len());
+    let mut choices = Vec::with_capacity(fields.len());
     let mut probe_count = 1_usize;
     let mut has_membership = false;
-    for field in &index.fields {
+    for field in fields {
         let values = if let Some(value) = required_equality(required, field) {
             vec![value]
         } else {
@@ -336,6 +353,24 @@ fn required_range(
     )))
 }
 
+fn compound_bounds(
+    required: &[&DocumentFilter],
+    fields: &[Vec<String>],
+    position: usize,
+) -> io::Result<Option<(Option<IndexBound>, Option<IndexBound>)>> {
+    // Compound entries omit a document if any indexed field is missing.
+    // The range requires this field and the prefix predicates require the
+    // earlier fields. Every later field needs its own proof of presence.
+    if fields[position + 1..]
+        .iter()
+        .all(|later| required_presence(required, later, true))
+    {
+        required_range(required, &fields[position])
+    } else {
+        Ok(None)
+    }
+}
+
 fn choose_index<'a>(
     required: &[&DocumentFilter],
     indexes: &'a [IndexDefinition],
@@ -373,23 +408,15 @@ fn choose_index<'a>(
                 equal.push(value);
                 continue;
             }
-            // Compound entries omit a document if any indexed field is
-            // missing. The required range proves this field is present;
-            // every later field must be independently required as well.
-            if index.fields[position + 1..]
-                .iter()
-                .all(|later| required_presence(required, later, true))
-            {
-                if let Some((lower, upper)) = required_range(required, field)? {
-                    return Ok(Some((
-                        index,
-                        Selection::Range {
-                            equal,
-                            lower,
-                            upper,
-                        },
-                    )));
-                }
+            if let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? {
+                return Ok(Some((
+                    index,
+                    Selection::Range {
+                        equal,
+                        lower,
+                        upper,
+                    },
+                )));
             }
             break;
         }
@@ -418,11 +445,31 @@ fn choose_index<'a>(
         .chain(indexes.iter().filter(|index| !index.unique))
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
         .find_map(|index| {
-            compound_membership(required, index)
+            compound_membership(required, &index.fields)
                 .map(|tuples| (index, Selection::CompoundMembership(tuples)))
         })
     {
         return Ok(Some(selected));
+    }
+    for index in indexes
+        .iter()
+        .filter(|index| index.fields.len() > 1 && eligible(index, required))
+    {
+        for position in 1..index.fields.len() {
+            let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? else {
+                continue;
+            };
+            if let Some(prefixes) = compound_membership(required, &index.fields[..position]) {
+                return Ok(Some((
+                    index,
+                    Selection::MembershipRange {
+                        prefixes,
+                        lower,
+                        upper,
+                    },
+                )));
+            }
+        }
     }
     Ok(None)
 }
@@ -552,24 +599,27 @@ impl DocumentTransaction<'_, '_> {
         max_scanned: usize,
         candidates: &mut Candidates,
     ) -> io::Result<()> {
-        let unique_equality = index.unique && !matches!(selection, Selection::Range { .. });
-        let probes = match selection {
-            Selection::Equality(values) => vec![(values, None, None)],
-            Selection::Membership(values) => values
-                .into_iter()
-                .map(|value| (vec![value], None, None))
-                .collect(),
-            Selection::CompoundMembership(tuples) => tuples
-                .into_iter()
-                .map(|tuple| (tuple, None, None))
-                .collect(),
+        let (prefixes, lower, upper) = match selection {
+            Selection::Equality(values) => (vec![values], None, None),
+            Selection::Membership(values) => (
+                values.into_iter().map(|value| vec![value]).collect(),
+                None,
+                None,
+            ),
+            Selection::CompoundMembership(tuples) => (tuples, None, None),
             Selection::Range {
                 equal,
                 lower,
                 upper,
-            } => vec![(equal, lower, upper)],
+            } => (vec![equal], lower, upper),
+            Selection::MembershipRange {
+                prefixes,
+                lower,
+                upper,
+            } => (prefixes, lower, upper),
         };
-        for (equal, lower, upper) in probes {
+        let unique_equality = index.unique && lower.is_none() && upper.is_none();
+        for equal in prefixes {
             let mut after = None;
             loop {
                 // Probe one entry beyond the candidate limit, never silently
@@ -688,6 +738,23 @@ fn describe_selection(index: &IndexDefinition, selection: &Selection) -> Documen
                     index: index.name.clone(),
                     fields: index.fields.len(),
                     probes: tuples.len(),
+                }
+            }
+        }
+        Selection::MembershipRange { prefixes, .. } => {
+            let prefix_fields = prefixes[0].len();
+            let probes = prefixes.len();
+            if partial {
+                DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+                    index: index.name.clone(),
+                    prefix_fields,
+                    probes,
+                }
+            } else {
+                DocumentQueryAccess::CompoundMembershipRangeIndex {
+                    index: index.name.clone(),
+                    prefix_fields,
+                    probes,
                 }
             }
         }

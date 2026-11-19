@@ -146,7 +146,7 @@ fuzz_target!(|data: &[u8]| {
             }
             _ => {}
         }
-        let mode = bytes[0] % 10;
+        let mode = bytes[0] % 13;
         let bound = match bytes[2] % 4 {
             0 => IndexValue::Null,
             1 => IndexValue::Boolean(false),
@@ -212,12 +212,47 @@ fuzz_target!(|data: &[u8]| {
                 ];
                 DocumentQueryAccess::CollectionScan
             }
-            _ => {
+            9 => {
                 filters = vec![
                     eq("tenant", json!("t")),
                     DocumentFilter::Not(Box::new(score_range)),
                     exists("suffix", true),
                 ];
+                DocumentQueryAccess::CollectionScan
+            }
+            10 => {
+                filters[0] = DocumentFilter::In {
+                    path: vec!["tenant".into()],
+                    values: vec![json!("u"), json!("t"), json!("u")],
+                };
+                filters.push(exists("suffix", true));
+                if partial {
+                    DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+                        index: "i".into(),
+                        prefix_fields: 1,
+                        probes: 2,
+                    }
+                } else {
+                    DocumentQueryAccess::CompoundMembershipRangeIndex {
+                        index: "i".into(),
+                        prefix_fields: 1,
+                        probes: 2,
+                    }
+                }
+            }
+            11 => {
+                filters[0] = DocumentFilter::In {
+                    path: vec!["tenant".into()],
+                    values: vec![json!("t"), json!(["u"])],
+                };
+                filters.push(exists("suffix", true));
+                DocumentQueryAccess::CollectionScan
+            }
+            _ => {
+                filters[0] = DocumentFilter::In {
+                    path: vec!["tenant".into()],
+                    values: vec![json!("t"), json!("u")],
+                };
                 DocumentQueryAccess::CollectionScan
             }
         };

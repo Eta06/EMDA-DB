@@ -25,6 +25,12 @@ fn exists(name: &str, present: bool) -> DocumentFilter {
         exists: present,
     }
 }
+fn membership(name: &str, values: Vec<Value>) -> DocumentFilter {
+    DocumentFilter::In {
+        path: path(name),
+        values,
+    }
+}
 fn cmp(name: &str, comparison: Comparison, value: IndexValue) -> DocumentFilter {
     DocumentFilter::Compare {
         path: path(name),
@@ -60,6 +66,26 @@ fn access(equal: usize, partial: bool) -> DocumentQueryAccess {
         DocumentQueryAccess::CompoundRangeIndex {
             index: "compound".into(),
             equality_fields: equal,
+        }
+    }
+}
+
+fn membership_range_access(
+    prefix_fields: usize,
+    probes: usize,
+    partial: bool,
+) -> DocumentQueryAccess {
+    if partial {
+        DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+            index: "compound".into(),
+            prefix_fields,
+            probes,
+        }
+    } else {
+        DocumentQueryAccess::CompoundMembershipRangeIndex {
+            index: "compound".into(),
+            prefix_fields,
+            probes,
         }
     }
 }
@@ -942,4 +968,253 @@ fn or_presence_compound_range_conflicts_on_concurrent_phantom() {
         compare(db, &request, access(1, false));
         assert_eq!(db.query("c", &request).unwrap().documents.len(), 1);
     });
+}
+
+#[test]
+fn membership_prefix_ranges_preserve_partial_and_suffix_requirements() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                unique: true,
+                ..index(
+                    &["region", "tenant", "score", "flag"],
+                    Some(PartialFilter::Equals {
+                        path: path("active"),
+                        value: IndexValue::Boolean(true),
+                    }),
+                )
+            },
+        )
+        .unwrap();
+        for (id, document) in [
+            (
+                "a",
+                json!({"region":1,"tenant":"t","score":2,"flag":null,"active":true}),
+            ),
+            (
+                "b",
+                json!({"region":1,"tenant":"t","score":3,"flag":true,"active":true}),
+            ),
+            (
+                "c",
+                json!({"region":1,"tenant":null,"score":3,"flag":true,"active":true}),
+            ),
+            (
+                "d",
+                json!({"region":1,"tenant":"t","score":3,"active":true}),
+            ),
+            (
+                "e",
+                json!({"region":1,"tenant":"t","score":3,"flag":true,"active":false}),
+            ),
+            (
+                "f",
+                json!({"region":2,"tenant":"t","score":3,"flag":true,"active":true}),
+            ),
+            (
+                "g",
+                json!({"region":1,"tenant":"t","score":4,"flag":true,"active":true}),
+            ),
+        ] {
+            db.insert("c", id, &document).unwrap();
+        }
+        let predicates = vec![
+            eq("region", json!(1)),
+            membership("tenant", vec![Value::Null, json!("t"), json!("t")]),
+            cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(2)),
+            cmp("score", Comparison::Less, IndexValue::Integer(4)),
+            exists("flag", true),
+            eq("active", json!(true)),
+        ];
+        let full_scan = query(and(predicates.clone()), 7);
+        let request = query(and(predicates.clone()), 3);
+        let planned = db.query_planned("c", &request).unwrap();
+        assert_eq!(planned.access, membership_range_access(2, 2, true));
+        assert_eq!(planned.result.plan.scanned, 3);
+        assert_eq!(
+            planned.result.documents,
+            db.query("c", &full_scan).unwrap().documents
+        );
+        assert_eq!(
+            planned
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
+
+        for missing in [4, 5] {
+            let mut unsafe_to_plan = predicates.clone();
+            unsafe_to_plan.remove(missing);
+            compare(
+                db,
+                &query(and(unsafe_to_plan), 7),
+                DocumentQueryAccess::CollectionScan,
+            );
+        }
+        let mut mixed = predicates.clone();
+        mixed[1] = membership("tenant", vec![json!("t"), json!(["array"])]);
+        compare(
+            db,
+            &query(and(mixed), 7),
+            DocumentQueryAccess::CollectionScan,
+        );
+        let mut impossible = predicates.clone();
+        impossible[3] = cmp("score", Comparison::Less, IndexValue::Integer(2));
+        let impossible = query(and(impossible), 7);
+        compare(db, &impossible, membership_range_access(2, 2, true));
+        assert!(
+            db.query_planned("c", &impossible)
+                .unwrap()
+                .result
+                .documents
+                .is_empty()
+        );
+
+        let over = query(and(predicates), 2);
+        assert_eq!(
+            db.query_planned("c", &over).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        db.transaction_with_read_set(|tx| {
+            assert!(tx.delete("c", "a")?);
+            tx.replace(
+                "c",
+                "d",
+                &json!({"region":1,"tenant":"t","score":2,"flag":false,"active":true}),
+                false,
+            )?;
+            let staged = tx.query_planned("c", &request)?;
+            assert_eq!(staged.access, membership_range_access(2, 2, true));
+            assert_eq!(
+                staged.result.documents,
+                tx.query("c", &full_scan)?.documents
+            );
+            assert_eq!(
+                staged
+                    .result
+                    .documents
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["b", "c", "d"]
+            );
+            Ok(())
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+fn membership_range_probe_products_share_the_disjunction_limit() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(&["a", "b", "score"], None))
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "tag".into(),
+                ..index(&["tag"], None)
+            },
+        )
+        .unwrap();
+        db.insert("c", "product", &json!({"a":0,"b":0,"score":3}))
+            .unwrap();
+        db.insert("c", "separate", &json!({"tag":"other"})).unwrap();
+        let range = |a, b| {
+            and(vec![
+                membership("a", (0..a).map(|n| json!(n)).collect()),
+                membership("b", (0..b).map(|n| json!(n)).collect()),
+                cmp("score", Comparison::Greater, IndexValue::Integer(2)),
+            ])
+        };
+        compare(
+            db,
+            &query(range(16, 16), 4),
+            membership_range_access(2, 256, false),
+        );
+        compare(
+            db,
+            &query(range(16, 17), 4),
+            DocumentQueryAccess::CollectionScan,
+        );
+        let disjunction = |a, b| DocumentFilter::Or(vec![range(a, b), eq("tag", json!("other"))]);
+        compare(
+            db,
+            &query(disjunction(15, 17), 4),
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["compound".into(), "tag".into()],
+                probes: 256,
+            },
+        );
+        compare(
+            db,
+            &query(disjunction(16, 16), 4),
+            DocumentQueryAccess::CollectionScan,
+        );
+    });
+}
+
+#[test]
+fn empty_membership_prefix_ranges_detect_matching_phantoms() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    for (tenant, score, conflict) in [("z", 3, true), ("z", 4, false), ("m", 3, false)] {
+        on_backends(|db| {
+            db.create_collection("c", CollectionSchema::default())
+                .unwrap();
+            db.create_index("c", index(&["tenant", "score"], None))
+                .unwrap();
+            let request = query(
+                and(vec![
+                    membership("tenant", vec![json!("a"), json!("z")]),
+                    cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(3)),
+                    cmp("score", Comparison::Less, IndexValue::Integer(4)),
+                ]),
+                4,
+            );
+            let (observed, read) = mpsc::channel();
+            let (committed, written) = mpsc::channel();
+            let result = std::thread::scope(|scope| {
+                let writer = scope.spawn(move || {
+                    read.recv_timeout(Duration::from_secs(10)).unwrap();
+                    committed
+                        .send(db.insert("c", "new", &json!({"tenant":tenant,"score":score})))
+                        .unwrap();
+                });
+                let result = db.transaction_with_read_set(|tx| {
+                    let plan = tx.query_planned("c", &request)?;
+                    assert_eq!(plan.access, membership_range_access(1, 2, false));
+                    assert!(plan.result.documents.is_empty());
+                    observed.send(()).unwrap();
+                    written.recv_timeout(Duration::from_secs(10)).unwrap()?;
+                    tx.put_raw(b"membership-range-phantom", b"committed")
+                });
+                drop(observed);
+                writer.join().unwrap();
+                result
+            });
+            if conflict {
+                assert!(database_engine::is_transaction_conflict(
+                    &result.unwrap_err()
+                ));
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                db.transaction(|tx| tx.get_raw(b"membership-range-phantom"))
+                    .unwrap(),
+                (!conflict).then(|| b"committed".to_vec())
+            );
+            compare(db, &request, membership_range_access(1, 2, false));
+        });
+    }
 }

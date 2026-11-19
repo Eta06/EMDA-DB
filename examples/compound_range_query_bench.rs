@@ -1,4 +1,4 @@
-//! Single-client, read-only comparison of a compound equality-prefix range query.
+//! Single-client, read-only comparison of compound prefix range queries.
 use database_engine::{
     CollectionSchema, Comparison, DocumentDatabase, DocumentFilter, DocumentQuery,
     DocumentQueryAccess, IndexDefinition, IndexQuery, IndexValue, Store,
@@ -11,11 +11,18 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 type Row = (String, Value);
 const WARMUP: usize = 10;
 
-fn document(number: usize, matches: usize, total: usize) -> Row {
+fn document(number: usize, matches: usize, total: usize, membership: bool) -> Row {
+    let tenant = if membership && number % 3 == 1 {
+        "alternate"
+    } else if number < matches || number % 3 == 0 {
+        "target"
+    } else {
+        "other"
+    };
     (
         format!("id-{number:05}"),
         json!({
-            "tenant": if number < matches || number % 3 == 0 { "target" } else { "other" },
+            "tenant": tenant,
             "number": total - 1 - number,
             "payload": "small document value",
         }),
@@ -24,16 +31,11 @@ fn document(number: usize, matches: usize, total: usize) -> Row {
 fn prototype_rows(
     db: &DocumentDatabase<'_>,
     query: &DocumentQuery,
-    planned: bool,
+    plan: Option<&DocumentQueryAccess>,
 ) -> Result<Vec<Row>> {
-    let result = if planned {
+    let result = if let Some(plan) = plan {
         let planned = db.query_planned("docs", query)?;
-        if planned.access
-            != (DocumentQueryAccess::CompoundRangeIndex {
-                index: "tenant_number".into(),
-                equality_fields: 1,
-            })
-        {
+        if &planned.access != plan {
             return Err("unexpected prototype planner access path".into());
         }
         planned.result
@@ -46,14 +48,9 @@ fn prototype_rows(
         .map(|row| (row.id, row.document))
         .collect())
 }
-fn sqlite_rows(connection: &Connection, indexed: bool, threshold: i64) -> Result<Vec<Row>> {
-    let sql = if indexed {
-        "SELECT id, body FROM docs INDEXED BY docs_tenant_number WHERE json_extract(body, '$.tenant') = ?1 AND json_extract(body, '$.number') >= ?2 ORDER BY id"
-    } else {
-        "SELECT id, body FROM docs INDEXED BY sqlite_autoindex_docs_1 WHERE json_extract(body, '$.tenant') = ?1 AND json_extract(body, '$.number') >= ?2 ORDER BY id"
-    };
+fn sqlite_rows(connection: &Connection, sql: &str, threshold: i64) -> Result<Vec<Row>> {
     let mut statement = connection.prepare_cached(sql)?;
-    let rows = statement.query_map(params!["target", threshold], |row| {
+    let rows = statement.query_map([threshold], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     rows.map(|row| {
@@ -74,9 +71,15 @@ fn peak_rss_kib() -> Option<u64> {
 }
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
-    if args.len() != 5 {
-        return Err("usage: compound_range_query_bench DIRECTORY DOCUMENTS MATCHES CYCLES".into());
-    }
+    let membership =
+        match args.as_slice() {
+            [_, _, _, _, _] => false,
+            [_, _, _, _, _, mode] if mode == "membership" => true,
+            _ => return Err(
+                "usage: compound_range_query_bench DIRECTORY DOCUMENTS MATCHES CYCLES [membership]"
+                    .into(),
+            ),
+        };
     let parent = Path::new(&args[1]);
     let documents: usize = args[2].parse()?;
     let matches: usize = args[3].parse()?;
@@ -111,32 +114,38 @@ fn main() -> Result<()> {
         return Err("SQLite WAL/FULL required".into());
     }
     sqlite.execute_batch("CREATE TABLE docs(id TEXT PRIMARY KEY, body TEXT NOT NULL CHECK(json_valid(body))) WITHOUT ROWID; CREATE INDEX docs_tenant_number ON docs(json_extract(body,'$.tenant'),json_extract(body,'$.number')); ")?;
-    let index_plan: String = sqlite.query_row(
-        "EXPLAIN QUERY PLAN SELECT id,body FROM docs INDEXED BY docs_tenant_number WHERE json_extract(body,'$.tenant')=?1 AND json_extract(body,'$.number')>=?2 ORDER BY id",
-        params!["target", (documents - matches) as i64], |row| row.get(3),
-    )?;
+    let tenant = if membership {
+        "IN ('target', 'alternate')"
+    } else {
+        "= 'target'"
+    };
+    let sql = |index| {
+        format!(
+            "SELECT id,body FROM docs INDEXED BY {index} WHERE json_extract(body,'$.tenant') {tenant} AND json_extract(body,'$.number')>=?1 ORDER BY id"
+        )
+    };
+    let indexed_sql = sql("docs_tenant_number");
+    let scan_sql = sql("sqlite_autoindex_docs_1");
+    let threshold = (documents - matches) as i64;
+    let explain = |sql: &str| -> Result<Vec<String>> {
+        let mut statement = sqlite.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+        let rows = statement.query_map([threshold], |row| row.get(3))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    };
+    let full_index_plan = explain(&indexed_sql)?;
+    let index_plan = &full_index_plan[0];
     if !index_plan.contains("USING INDEX docs_tenant_number") {
         return Err("SQLite did not select its compound range index".into());
     }
-    let full_index_plan = {
-        let mut statement = sqlite.prepare("EXPLAIN QUERY PLAN SELECT id,body FROM docs INDEXED BY docs_tenant_number WHERE json_extract(body,'$.tenant')=?1 AND json_extract(body,'$.number')>=?2 ORDER BY id")?;
-        let rows = statement.query_map(params!["target", (documents - matches) as i64], |row| {
-            row.get::<_, String>(3)
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()?
-    };
-    let scan_plan: String = sqlite.query_row(
-        "EXPLAIN QUERY PLAN SELECT id,body FROM docs INDEXED BY sqlite_autoindex_docs_1 WHERE json_extract(body,'$.tenant')=?1 AND json_extract(body,'$.number')>=?2 ORDER BY id",
-        params!["target", (documents - matches) as i64],
-        |row| row.get(3),
-    )?;
+    let full_scan_plan = explain(&scan_sql)?;
+    let scan_plan = &full_scan_plan[0];
     if !scan_plan.contains("SCAN docs") || scan_plan.contains("USING INDEX") {
         return Err("SQLite scan did not use the expected access path".into());
     }
     let sqlite_version: String =
         sqlite.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
     let all = (0..documents)
-        .map(|n| document(n, matches, documents))
+        .map(|n| document(n, matches, documents, membership))
         .collect::<Vec<_>>();
     for chunk in all.chunks(32) {
         db.transaction(|tx| {
@@ -155,22 +164,43 @@ fn main() -> Result<()> {
         transaction.commit()?;
     }
     let expected = all[..matches].to_vec();
+    let tenant = if membership {
+        DocumentFilter::In {
+            path: vec!["tenant".into()],
+            values: vec![json!("target"), json!("alternate")],
+        }
+    } else {
+        DocumentFilter::Equal {
+            path: vec!["tenant".into()],
+            value: json!("target"),
+        }
+    };
     let query = DocumentQuery {
         filter: DocumentFilter::And(vec![
-            DocumentFilter::Equal {
-                path: vec!["tenant".into()],
-                value: json!("target"),
-            },
+            tenant,
             DocumentFilter::Compare {
                 path: vec!["number".into()],
                 comparison: Comparison::GreaterOrEqual,
-                value: IndexValue::Integer((documents - matches) as i64),
+                value: IndexValue::Integer(threshold),
             },
         ]),
         max_scanned: 1024,
         limit: 256,
         ..Default::default()
     };
+    let plan = if membership {
+        DocumentQueryAccess::CompoundMembershipRangeIndex {
+            index: "tenant_number".into(),
+            prefix_fields: 1,
+            probes: 2,
+        }
+    } else {
+        DocumentQueryAccess::CompoundRangeIndex {
+            index: "tenant_number".into(),
+            equality_fields: 1,
+        }
+    };
+    let candidates = db.query_planned("docs", &query)?.result.plan.scanned;
     let labels = [
         "prototype_scan",
         "prototype_planned",
@@ -183,10 +213,10 @@ fn main() -> Result<()> {
             let variant = (cycle + offset) % labels.len();
             let start = Instant::now();
             let rows = match variant {
-                0 => prototype_rows(&db, &query, false)?,
-                1 => prototype_rows(&db, &query, true)?,
-                2 => sqlite_rows(&sqlite, false, (documents - matches) as i64)?,
-                _ => sqlite_rows(&sqlite, true, (documents - matches) as i64)?,
+                0 => prototype_rows(&db, &query, None)?,
+                1 => prototype_rows(&db, &query, Some(&plan))?,
+                2 => sqlite_rows(&sqlite, &scan_sql, threshold)?,
+                _ => sqlite_rows(&sqlite, &indexed_sql, threshold)?,
             };
             let elapsed = start.elapsed().as_nanos();
             if rows != expected {
@@ -240,7 +270,7 @@ fn main() -> Result<()> {
     println!(
         "{}",
         json!({
-            "documents":documents,"matches":matches,"cycles":cycles,"warmup_cycles":WARMUP,
+            "documents":documents,"matches":matches,"cycles":cycles,"warmup_cycles":WARMUP,"membership":membership,"planned_candidates":candidates,
         "samples_ns":samples,"sqlite_query_plan":index_plan,"sqlite_full_plan":full_index_plan,"sqlite_scan_plan":scan_plan,
         "sqlite_version":sqlite_version,"sqlite_journal":mode,
             "sqlite_synchronous":synchronous,"peak_rss_kib":peak_rss_kib(),

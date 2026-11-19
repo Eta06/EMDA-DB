@@ -144,7 +144,17 @@ Array predicates `ArrayContains`, `ArrayContainsAny`, `ArrayContainsAll`, and `A
 
 A required singleton `In` with an indexable value is also an equality for planning, including partial-equality proof. For a required multi-value `In` whose values are all indexable, the planner may use a single-field index as a union of exact-value probes. It deduplicates input values by index encoding, combines the existing candidate and original-document-byte limits across all probes, restores ID order, and applies the complete filter before pagination and projection. Probes share the transaction's read-set protections. Equality and range choices retain their earlier priority; a multi-value list does not use this union when any listed value is non-indexable. The 256-value input limit bounds distinct single-field probes; these are not total time or memory guarantees.
 
-After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. A product above that cap or an unconstrained field cannot use this compound union; without an earlier eligible path, the query falls back to a collection scan. An implied partial index is eligible under the same existing guard rules. Full tuples prevent omitted missing fields from producing incomplete results; `Or`, `Not` and non-indexable alternatives do not prove a tuple. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes. The probe cap bounds complete tuples. Compound prefixes, ranges mixed with membership and implicit array-element matching still require another eligible access path.
+After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. A product above that cap or an unconstrained field cannot use this compound union. An implied partial index is eligible under the same guard rules. Full tuples prevent omitted missing fields from producing incomplete results. `Or`, `Not` and non-indexable alternatives do not prove a tuple. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes.
+
+A compound index can also answer a required scalar range after a prefix of
+required indexable equality and `In` predicates, with at least one multi-value
+`In` in that prefix. The planner builds at most 256 distinct prefixes and
+applies the same range to each. Every indexed field after the range must be
+provably present. Partial indexes also require proof of their guard. This plan
+follows the earlier equality, range and membership choices in priority. It
+shares the same candidate and byte limits and registers read-set dependencies
+for every range, including empty ones. When no eligible path covers the full
+query, the planner performs the bounded collection scan.
 
 When those single-index choices do not apply, a required `Or` can use
 a union of branch plans, including when the `Or` appears within an
