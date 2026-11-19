@@ -297,9 +297,26 @@ fn disjunction_falls_back_for_unindexed_branches_and_shared_probe_overflow() {
             (
                 DocumentFilter::Or(vec![
                     DocumentFilter::And(vec![in_range("a", 16), in_range("b", 16)]),
+                    DocumentFilter::And(vec![eq("a", json!(0)), eq("b", json!(0))]),
+                ]),
+                access(&["compound"], 256),
+            ),
+            (
+                DocumentFilter::Or(vec![
+                    DocumentFilter::And(vec![in_range("a", 16), in_range("b", 16)]),
                     eq("tag", json!("lone")),
                 ]),
                 DocumentQueryAccess::CollectionScan,
+            ),
+            (
+                DocumentFilter::And(vec![
+                    DocumentFilter::Or(vec![
+                        DocumentFilter::And(vec![in_range("a", 16), in_range("b", 16)]),
+                        eq("tag", json!("lone")),
+                    ]),
+                    DocumentFilter::Or(vec![eq("tag", json!("lone")), eq("tag", json!("other"))]),
+                ]),
+                access(&["tag"], 2),
             ),
             (
                 DocumentFilter::Or(vec![eq("tag", json!("lone")), eq("other", json!([1]))]),
@@ -329,7 +346,7 @@ fn disjunction_falls_back_for_unindexed_branches_and_shared_probe_overflow() {
 }
 
 #[test]
-fn repeated_disjunct_hits_share_the_document_byte_budget() {
+fn overlapping_disjunct_ranges_share_the_document_byte_budget() {
     on_backends(|db| {
         db.create_collection("items", CollectionSchema::default())
             .unwrap();
@@ -341,7 +358,15 @@ fn repeated_disjunct_hits_share_the_document_byte_budget() {
         )
         .unwrap();
         let query = |probes| {
-            let filter = DocumentFilter::Or(vec![eq("tag", json!(1)); probes]);
+            let filter = DocumentFilter::Or(
+                (0..probes)
+                    .map(|offset| DocumentFilter::Compare {
+                        path: path("tag"),
+                        comparison: Comparison::GreaterOrEqual,
+                        value: IndexValue::Integer(1 - offset),
+                    })
+                    .collect(),
+            );
             let mut query = request(filter, 34);
             query.projection = Some(vec![path("tag")]);
             query
@@ -354,6 +379,57 @@ fn repeated_disjunct_hits_share_the_document_byte_budget() {
         assert_eq!(
             db.query_planned("items", &query(34)).unwrap_err().kind(),
             ErrorKind::InvalidInput
+        );
+    });
+}
+
+#[test]
+fn overlapping_membership_deduplicates_probes_and_keeps_residual_predicates() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index("items", index("tag", &["tag"])).unwrap();
+        for (id, tag, visible) in [
+            ("a", 1, true),
+            ("b", 2, false),
+            ("c", 3, true),
+            ("d", 4, false),
+        ] {
+            db.insert("items", id, &json!({"tag": tag, "visible": visible}))
+                .unwrap();
+        }
+        let branch = |values, visible| {
+            DocumentFilter::And(vec![
+                DocumentFilter::In {
+                    path: path("tag"),
+                    values,
+                },
+                eq("visible", json!(visible)),
+            ])
+        };
+        let mut query = request(
+            DocumentFilter::Or(vec![
+                branch(vec![json!(1), json!(2)], true),
+                branch(vec![json!(2), json!(3)], false),
+            ]),
+            3,
+        );
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(planned.access, access(&["tag"], 3));
+        assert_eq!(planned.result.plan.scanned, 3);
+        query.max_scanned = 4;
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &query).unwrap().documents
+        );
+        assert_eq!(
+            planned
+                .result
+                .documents
+                .iter()
+                .map(|doc| doc.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
         );
     });
 }
@@ -379,7 +455,11 @@ fn empty_disjunction_branches_detect_matching_phantoms() {
             }
             let alternatives = DocumentFilter::Or(vec![
                 eq("left", json!(1)),
-                DocumentFilter::Or(vec![eq("right", json!(2)), eq("right", json!(3))]),
+                DocumentFilter::Or(vec![
+                    eq("right", json!(2)),
+                    eq("right", json!(3)),
+                    eq("right", json!(3)),
+                ]),
             ]);
             let filter = if guarded {
                 DocumentFilter::And(vec![eq("active", json!(true)), alternatives])

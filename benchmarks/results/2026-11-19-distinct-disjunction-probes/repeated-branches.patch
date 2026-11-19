@@ -1,0 +1,21 @@
+--- a/examples/document_disjunction_bench.rs
++++ b/examples/document_disjunction_bench.rs
+@@ -163,0 +164,2 @@
++    let repeats: usize = std::env::var("EMDA_BRANCH_REPEATS")?.parse()?;
++    let expected_probes: usize = std::env::var("EMDA_EXPECTED_PROBES")?.parse()?;
+@@ -166 +168 @@
+-        probes: 2,
++        probes: expected_probes,
+@@ -183,0 +186,3 @@
++        let repeat = |branches: Vec<DocumentFilter>| {
++            DocumentFilter::Or(branches.into_iter().cycle().take(2 * repeats).collect())
++        };
+@@ -185 +190 @@
+-            DocumentFilter::And(vec![guard, DocumentFilter::Or(vec![equal_code, range])])
++            DocumentFilter::And(vec![guard, repeat(vec![equal_code, range])])
+@@ -187 +192 @@
+-            DocumentFilter::Or(vec![DocumentFilter::And(vec![guard, equal_code]), range])
++            repeat(vec![DocumentFilter::And(vec![guard, equal_code]), range])
+@@ -234 +239 @@
+-            "candidate_visits": visits, "sqlite_version": rusqlite::version(),
++            "branch_repeats": repeats, "expected_probes": expected_probes, "candidate_visits": visits, "sqlite_version": rusqlite::version(),

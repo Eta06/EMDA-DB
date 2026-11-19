@@ -8,7 +8,7 @@ use std::io;
 
 /// Types supported by the initial index encoding. Numbers are signed 64-bit
 /// integers; floating-point and larger unsigned numbers are not indexed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IndexValue {
     /// Explicit JSON null. Missing fields are not indexed.
     Null,

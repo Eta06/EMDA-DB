@@ -7,7 +7,7 @@ use super::{
     transaction::{DocumentTransaction, Metadata},
 };
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, hash_map::Entry};
 use std::io;
 
 // Bound the Cartesian product before allocating tuple probes.
@@ -84,7 +84,7 @@ pub enum DocumentQueryAccess {
     DisjunctionIndex {
         /// Distinct index names in ascending order.
         indexes: Vec<String>,
-        /// Total equality or range probes across all branches.
+        /// Distinct equality and range probes across all branches.
         probes: usize,
     },
 }
@@ -232,14 +232,44 @@ enum Selection {
     },
 }
 
+#[derive(PartialEq, Eq, Hash)]
+struct IndexProbe<'a> {
+    index: &'a str,
+    equal: Vec<IndexValue>,
+    lower: Option<IndexBound>,
+    upper: Option<IndexBound>,
+    unique_equality: bool,
+}
+
 impl Selection {
-    fn probe_count(&self) -> usize {
-        match self {
-            Self::Membership(values) => values.len(),
-            Self::CompoundMembership(tuples) | Self::CompoundPrefix(tuples) => tuples.len(),
-            Self::MembershipRange { prefixes, .. } => prefixes.len(),
-            _ => 1,
-        }
+    fn into_probes(self, index: &IndexDefinition) -> impl Iterator<Item = IndexProbe<'_>> {
+        let (prefixes, lower, upper) = match self {
+            Self::Equality(values) => (vec![values], None, None),
+            Self::Membership(values) => (
+                values.into_iter().map(|value| vec![value]).collect(),
+                None,
+                None,
+            ),
+            Self::CompoundMembership(tuples) | Self::CompoundPrefix(tuples) => (tuples, None, None),
+            Self::Range {
+                equal,
+                lower,
+                upper,
+            } => (vec![equal], lower, upper),
+            Self::MembershipRange {
+                prefixes,
+                lower,
+                upper,
+            } => (prefixes, lower, upper),
+        };
+        let unbounded_unique = index.unique && lower.is_none() && upper.is_none();
+        prefixes.into_iter().map(move |equal| IndexProbe {
+            index: &index.name,
+            unique_equality: unbounded_unique && equal.len() == index.fields.len(),
+            equal,
+            lower: lower.clone(),
+            upper: upper.clone(),
+        })
     }
 }
 
@@ -516,7 +546,25 @@ fn choose_prefix<'a>(
     None
 }
 
-type Branch<'a> = (&'a IndexDefinition, Selection);
+// Keep the first occurrence of each exact probe, including its index and
+// bound inclusivity. Its ordinal preserves scan order and supports rollback.
+fn admit_probes<'a>(
+    planned: &mut HashMap<IndexProbe<'a>, usize>,
+    probes: impl Iterator<Item = IndexProbe<'a>>,
+) -> bool {
+    let start = planned.len();
+    for probe in probes {
+        let ordinal = planned.len();
+        if let Entry::Vacant(entry) = planned.entry(probe) {
+            if ordinal == MAX_INDEX_PROBES {
+                planned.retain(|_, ordinal| *ordinal < start);
+                return false;
+            }
+            entry.insert(ordinal);
+        }
+    }
+    true
+}
 
 // Find a required OR under zero or more ANDs. The original filter and
 // each selected ancestor branch remain required within a branch. Sibling
@@ -525,8 +573,7 @@ fn choose_disjunction<'a, 'filter>(
     filter: &'filter DocumentFilter,
     context: &mut Vec<&'filter DocumentFilter>,
     indexes: &'a [IndexDefinition],
-    branches: &mut Vec<Branch<'a>>,
-    remaining: &mut usize,
+    planned: &mut HashMap<IndexProbe<'a>, usize>,
     allow_prefix: bool,
 ) -> io::Result<bool> {
     let mut required = vec![filter];
@@ -534,8 +581,7 @@ fn choose_disjunction<'a, 'filter>(
         match filter {
             DocumentFilter::And(filters) => required.extend(filters.iter().rev()),
             DocumentFilter::Or(filters) if !filters.is_empty() => {
-                let start = branches.len();
-                let available = *remaining;
+                let start = planned.len();
                 let mut complete = true;
                 for branch in filters {
                     context.push(branch);
@@ -544,23 +590,13 @@ fn choose_disjunction<'a, 'filter>(
                             .then(|| choose_prefix(context, indexes))
                             .flatten()
                     });
-                    let planned = match selection {
-                        Some((index, selection)) if selection.probe_count() <= *remaining => {
-                            *remaining -= selection.probe_count();
-                            branches.push((index, selection));
-                            true
-                        }
-                        _ => choose_disjunction(
-                            branch,
-                            context,
-                            indexes,
-                            branches,
-                            remaining,
-                            allow_prefix,
-                        )?,
-                    };
+                    let covered = selection.is_some_and(|(index, selection)| {
+                        admit_probes(planned, selection.into_probes(index))
+                    });
+                    let covered = covered
+                        || choose_disjunction(branch, context, indexes, planned, allow_prefix)?;
                     context.pop();
-                    if !planned {
+                    if !covered {
                         complete = false;
                         break;
                     }
@@ -568,8 +604,7 @@ fn choose_disjunction<'a, 'filter>(
                 if complete {
                     return Ok(true);
                 }
-                branches.truncate(start);
-                *remaining = available;
+                planned.retain(|_, ordinal| *ordinal < start);
             }
             _ => {}
         }
@@ -580,42 +615,46 @@ fn choose_disjunction<'a, 'filter>(
 fn plan_query<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
-) -> io::Result<Option<(DocumentQueryAccess, Vec<Branch<'a>>)>> {
+) -> io::Result<Option<(DocumentQueryAccess, Vec<IndexProbe<'a>>)>> {
     if let Some((index, selection)) = choose_index(&[filter], indexes)? {
         return Ok(Some((
             describe_selection(index, &selection),
-            vec![(index, selection)],
+            selection.into_probes(index).collect(),
         )));
     }
-    let mut branches = Vec::new();
+    let mut planned = HashMap::new();
     for allow_prefix in [false, true] {
         if allow_prefix {
             if let Some((index, selection)) = choose_prefix(&[filter], indexes) {
                 return Ok(Some((
                     describe_selection(index, &selection),
-                    vec![(index, selection)],
+                    selection.into_probes(index).collect(),
                 )));
             }
         }
-        let mut remaining = MAX_INDEX_PROBES;
         if choose_disjunction(
             filter,
             &mut vec![filter],
             indexes,
-            &mut branches,
-            &mut remaining,
+            &mut planned,
             allow_prefix,
         )? {
             let access = DocumentQueryAccess::DisjunctionIndex {
-                indexes: branches
-                    .iter()
-                    .map(|(index, _)| index.name.clone())
+                indexes: planned
+                    .keys()
+                    .map(|probe| probe.index)
                     .collect::<BTreeSet<_>>()
                     .into_iter()
+                    .map(str::to_owned)
                     .collect(),
-                probes: MAX_INDEX_PROBES - remaining,
+                probes: planned.len(),
             };
-            return Ok(Some((access, branches)));
+            let mut probes: Vec<_> = planned.into_iter().collect();
+            probes.sort_unstable_by_key(|(_, ordinal)| *ordinal);
+            return Ok(Some((
+                access,
+                probes.into_iter().map(|(probe, _)| probe).collect(),
+            )));
         }
     }
     Ok(None)
@@ -642,7 +681,7 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<PlannedDocumentQueryResult> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let Some((access, branches)) = plan_query(&query.filter, &metadata.indexes)? else {
+        let Some((access, probes)) = plan_query(&query.filter, &metadata.indexes)? else {
             return Ok(PlannedDocumentQueryResult {
                 result: self.query(collection, query)?,
                 access: DocumentQueryAccess::CollectionScan,
@@ -650,12 +689,11 @@ impl DocumentTransaction<'_, '_> {
         };
 
         let mut candidates = Candidates::default();
-        for (index, selection) in branches {
+        for probe in probes {
             self.collect_index_candidates(
                 collection,
                 &metadata,
-                index,
-                selection,
+                probe,
                 query.max_scanned,
                 &mut candidates,
             )?;
@@ -669,92 +707,73 @@ impl DocumentTransaction<'_, '_> {
         &self,
         collection: &str,
         metadata: &Metadata,
-        index: &IndexDefinition,
-        selection: Selection,
+        probe: IndexProbe<'_>,
         max_scanned: usize,
         candidates: &mut Candidates,
     ) -> io::Result<()> {
-        let (prefixes, lower, upper) = match selection {
-            Selection::Equality(values) => (vec![values], None, None),
-            Selection::Membership(values) => (
-                values.into_iter().map(|value| vec![value]).collect(),
-                None,
-                None,
-            ),
-            Selection::CompoundMembership(tuples) | Selection::CompoundPrefix(tuples) => {
-                (tuples, None, None)
+        let IndexProbe {
+            index,
+            equal,
+            lower,
+            upper,
+            unique_equality,
+        } = probe;
+        let mut after = None;
+        loop {
+            // Probe one entry beyond the candidate limit, never silently
+            // returning a prefix. Unique equality probes two to detect a
+            // corrupt duplicate rather than accepting it as one result.
+            let limit = if unique_equality {
+                2
+            } else {
+                (max_scanned - candidates.visits + 1).min(256)
+            };
+            let indexed = self.query_index_with_metadata(
+                collection,
+                index,
+                &IndexQuery {
+                    equal: equal.clone(),
+                    lower: lower.clone(),
+                    upper: upper.clone(),
+                    after,
+                    limit,
+                },
+                metadata,
+            )?;
+            let page = indexed.page;
+            if unique_equality && page.documents.len() > 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unique index contains multiple matches",
+                ));
             }
-            Selection::Range {
-                equal,
-                lower,
-                upper,
-            } => (vec![equal], lower, upper),
-            Selection::MembershipRange {
-                prefixes,
-                lower,
-                upper,
-            } => (prefixes, lower, upper),
-        };
-        let unbounded_unique = index.unique && lower.is_none() && upper.is_none();
-        for equal in prefixes {
-            let unique_equality = unbounded_unique && equal.len() == index.fields.len();
-            let mut after = None;
-            loop {
-                // Probe one entry beyond the candidate limit, never silently
-                // returning a prefix. Unique equality probes two to detect a
-                // corrupt duplicate rather than accepting it as one result.
-                let limit = if unique_equality {
-                    2
-                } else {
-                    (max_scanned - candidates.visits + 1).min(256)
-                };
-                let indexed = self.query_index_with_metadata(
-                    collection,
-                    &index.name,
-                    &IndexQuery {
-                        equal: equal.clone(),
-                        lower: lower.clone(),
-                        upper: upper.clone(),
-                        after,
-                        limit,
-                    },
-                    metadata,
-                )?;
-                let page = indexed.page;
-                if unique_equality && page.documents.len() > 1 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "unique index contains multiple matches",
-                    ));
-                }
-                candidates.bytes = candidates
-                    .bytes
-                    .checked_add(indexed.document_key_value_bytes)
-                    .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-                if candidates.bytes > filter::MAX_SCAN_BYTES
-                    || page.documents.len() > max_scanned - candidates.visits
-                {
-                    return Err(key::invalid("document scan exceeds the operation limit"));
-                }
-                if page.documents.is_empty() {
-                    break;
-                }
-                // Count every visit, but retain one document per ID in
-                // collection order for filtering and pagination.
-                candidates.visits += page.documents.len();
-                for entry in page.documents {
-                    candidates.rows.entry(entry.id).or_insert(entry.document);
-                }
-                if unique_equality {
-                    break;
-                }
-                after = Some(page.next.ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "index page lost its continuation cursor",
-                    )
-                })?);
+            candidates.bytes = candidates
+                .bytes
+                .checked_add(indexed.document_key_value_bytes)
+                .ok_or_else(|| key::invalid("scan byte count overflow"))?;
+            if candidates.bytes > filter::MAX_SCAN_BYTES
+                || page.documents.len() > max_scanned - candidates.visits
+            {
+                return Err(key::invalid("document scan exceeds the operation limit"));
             }
+            if page.documents.is_empty() {
+                break;
+            }
+            // Count every visit, but retain one document per ID in
+            // collection order for filtering and pagination.
+            candidates.visits += page.documents.len();
+            for entry in page.documents {
+                candidates.rows.entry(entry.id).or_insert(entry.document);
+            }
+            if unique_equality {
+                break;
+            }
+            after = Some(page.next.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "index page lost its continuation cursor",
+                )
+            })?);
         }
         Ok(())
     }

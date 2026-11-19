@@ -11,7 +11,7 @@ const MAX_QUERY_DOCUMENTS: usize = 256;
 const MAX_QUERY_BYTES: usize = 16 * 1024 * 1024;
 
 /// An inclusive or exclusive bound on the first field after equality fields.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IndexBound {
     /// A typed scalar in the index's ordering.
     pub value: IndexValue,

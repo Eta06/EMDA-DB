@@ -782,3 +782,9 @@ The [large-value restore writer](../benchmarks/results/2026-11-19-chunked-retain
 streams oversized records through a fixed buffer and advances the witness
 only after validating the length and authenticated value digest. The 128 MiB
 fixture records lower peak RSS and longer median restore time on macOS.
+
+The [distinct-probe planner](../benchmarks/results/2026-11-19-distinct-disjunction-probes/README.md)
+counts identical index probes once across disjunction branches, preserving
+the first scan order and read-set validation. The branch-overlap tests
+cover the exact probe cap, shared budgets and residual filtering. All 33
+document integration targets passed on macOS and Linux.

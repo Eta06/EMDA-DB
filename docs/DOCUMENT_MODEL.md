@@ -163,8 +163,11 @@ with complete branch coverage. The branch and its surrounding required
 conjunction can supply equality fields, scalar bounds, presence proofs and
 partial-index guards. A guard in one alternative does not qualify a sibling.
 The union can combine equality, membership, range and compound prefix probes
-across distinct indexes. All branches share one cap of 256 probes and the
-original document and byte budgets. Repeat hits consume budget on each visit.
+across distinct indexes. A probe with the same index, equality tuple and
+range bounds, including inclusivity, runs once in its first occurrence.
+All branches share one cap of 256 distinct probes and the original
+document and byte budgets. Hits from distinct probes consume budget on
+each visit, even when their ranges overlap.
 The planner keeps one document per ID, restores collection order and evaluates
 the full filter before sorting, pagination and projection. Every probe
 participates in transaction validation, including empty scans. If a branch
