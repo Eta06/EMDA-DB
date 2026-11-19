@@ -84,7 +84,7 @@ fn managed_backup_restores_the_captured_generation_after_source_reclamation() {
     let captured = store.scan(None, None, 4).unwrap();
     let source_id = store.generation_id().unwrap();
     let expected = store.backup_to(&backup).unwrap();
-    assert_eq!(expected.end, store.store.suffix.len() as u64);
+    assert_eq!(expected.end, store.store.suffix_len as u64);
     store.put(b"b", b"changed").unwrap();
     store.compact().unwrap();
     assert!(store.reclaim_inactive().unwrap());
@@ -607,10 +607,11 @@ fn rebase_stream_authenticates_base_values_hidden_by_tombstones() {
         .unwrap();
     // Change the first value byte of the deleted key without changing length.
     base.write_all_at(b"X", 112 + 8 + 1).unwrap();
-    let stream = store
-        .store
-        .overlay
-        .visit_merged(&store.store.base, &store.store.suffix, |_| Ok(()));
+    let stream = store.store.overlay.visit_merged(
+        &store.store.base,
+        OverlaySource::Disk(store.store.suffix_file()),
+        |_| Ok(()),
+    );
     let error = stream.unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(error.to_string(), "retained base block digest mismatch");

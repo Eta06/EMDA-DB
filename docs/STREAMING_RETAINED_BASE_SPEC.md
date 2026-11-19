@@ -201,16 +201,26 @@ is adopted by synchronizing the log and then updating and synchronizing
 the witness. A missing or malformed witness, changed acknowledged bytes,
 torn suffix, split boundary or recovery limit failure prevents adoption.
 
-Point and page reads merge the verified base with value offsets into the
-bounded suffix buffer. Mutations require exclusive use of the handle.
+Writable recovery reuses a buffer for one physical record, bounded by
+the format maximum, plus fixed-size read buffering. It drops that
+buffer before opening the base. The overlay keeps the last value's
+file offset, length and SHA-256 digest for each touched live key.
+Point and page reads authenticate selected suffix values against
+those digests. Tombstones and staged transaction edits participate in
+the same ordered merge. Backup copies the suffix in bounded chunks
+and checks the staged digest. Rebase authenticates the actual suffix
+bytes used to calculate historical peaks.
+
+Mutations require exclusive use of the handle.
 Ordered DB02 children are admitted as one atomic append. Preparation
-accounts for every child in replay order and reserves the suffix buffer,
-overlay growth and changed keys before the append. Commit appends the
+accounts for every child in replay order and reserves overlay growth
+and changed keys before the append. Commit appends the
 complete record, synchronizes the log, updates and synchronizes the
 witness, then publishes changes in memory. An uncertain write poisons
 the handle until reopening. The caps govern the file input and logical
-retained state, while returned pages, staging, allocator overhead and
-filesystem blocks have separate costs.
+retained state, while returned pages, encoded appends, staging,
+detached-suffix imports, allocator overhead and filesystem blocks
+have separate costs. No on-disk fields change.
 
 This is a separately created generation under the same trusted local
 filesystem model. The local witness can detect mismatches and loss below

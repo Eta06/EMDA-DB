@@ -1,6 +1,6 @@
 use super::{
-    Expected, RetainedStore, create_file, invalid_input, marker, open_regular, random_id,
-    verify_files,
+    Expected, OverlaySource, RetainedStore, create_file, invalid_input, marker, open_regular,
+    random_id, verify_files,
 };
 use crate::record;
 use crate::retained_base_v2::index::EntryPart;
@@ -8,7 +8,6 @@ use crate::retained_base_v2::{self, Limits, encode_header};
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufWriter, Write},
-    os::unix::fs::FileExt,
     path::Path,
 };
 
@@ -17,12 +16,9 @@ impl RetainedStore {
     // digest and the cached view, before discarding an older generation.
     pub(super) fn verify_complete(&self) -> io::Result<()> {
         self.ensure_healthy()?;
-        let expected = marker(
-            self.header.bytes(),
-            self.suffix.len() as u64,
-            &self.hash.clone().finalize().into(),
-        );
-        let total = self.header.len as u64 + self.suffix.len() as u64;
+        let digest: [u8; 32] = self.hash.clone().finalize().into();
+        let expected = marker(self.header.bytes(), self.suffix_len as u64, &digest);
+        let total = self.header.len as u64 + self.suffix_len as u64;
         verify_files(
             &self.log,
             &self.witness,
@@ -30,14 +26,10 @@ impl RetainedStore {
             total,
             &expected,
         )?;
-        let mut offset = self.header.len as u64;
-        let mut buffer = [0; 64 * 1024];
-        for bytes in self.suffix.chunks(buffer.len()) {
-            self.log.read_exact_at(&mut buffer[..bytes.len()], offset)?;
-            if buffer[..bytes.len()] != *bytes {
-                return Err(record::invalid_data("retained suffix changed"));
-            }
-            offset += bytes.len() as u64;
+        let mut observed = Sha256::new();
+        self.suffix_file().copy_to(&mut observed)?;
+        if <[u8; 32]>::from(observed.finalize()) != digest {
+            return Err(record::invalid_data("retained suffix changed"));
         }
         self.base.verify(self.limits.base)?;
         verify_files(
@@ -55,9 +47,12 @@ impl RetainedStore {
         limits: Limits,
     ) -> io::Result<Expected> {
         self.verify_complete()?;
-        let peaks = self
-            .overlay
-            .live_peaks(&self.base, &self.suffix, self.limits.suffix)?;
+        let peaks = self.overlay.live_peaks(
+            &self.base,
+            self.suffix_file(),
+            self.limits.suffix,
+            self.hash.clone().finalize().into(),
+        )?;
         if peaks.entries > limits.entries || peaks.key_bytes > limits.key_bytes {
             return Err(invalid_input(
                 "compacted base exceeds entry or key byte limit",
@@ -69,15 +64,18 @@ impl RetainedStore {
             .checked_sub(144)
             .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
         let available = space;
-        self.overlay
-            .visit_merged(&self.base, &self.suffix, |part| {
+        self.overlay.visit_merged(
+            &self.base,
+            OverlaySource::Disk(self.suffix_file()),
+            |part| {
                 if let EntryPart::Header { key, value_len } = part {
                     space = space
                         .checked_sub(entry_bytes(key, value_len))
                         .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
                 }
                 Ok(())
-            })?;
+            },
+        )?;
         let encoded = available - space;
         let source = self.generation_id();
         let base = random_id()?;
@@ -85,7 +83,7 @@ impl RetainedStore {
             source,
             base,
             [
-                self.header.len as u64 + self.suffix.len() as u64,
+                self.header.len as u64 + self.suffix_len as u64,
                 peaks.entries,
                 peaks.key_bytes,
                 peaks.peak_entries,
@@ -105,8 +103,10 @@ impl RetainedStore {
                 digest.update(bytes);
                 Ok(())
             };
-            self.overlay
-                .visit_merged(&self.base, &self.suffix, |part| match part {
+            self.overlay.visit_merged(
+                &self.base,
+                OverlaySource::Disk(self.suffix_file()),
+                |part| match part {
                     EntryPart::Header { key, value_len } => {
                         remaining = remaining
                             .checked_sub(entry_bytes(key, value_len))
@@ -118,7 +118,8 @@ impl RetainedStore {
                         write(key)
                     }
                     EntryPart::Value(bytes) => write(bytes),
-                })?;
+                },
+            )?;
         }
         if remaining != 0 {
             return Err(record::invalid_data("compacted base shrank during export"));

@@ -1,7 +1,7 @@
 use super::{
-    Expected, GenerationRole, Header, RecoveryLimits, RetainedStore, RetainedStoreLimits,
-    StoreLock, copy_base, create_file, decode_marker, encode_batch, invalid_input, open_regular,
-    open_regular_with, random_id, read_marker, suffix_end,
+    Expected, GenerationRole, Header, OverlaySource, RecoveryLimits, RetainedStore,
+    RetainedStoreLimits, StoreLock, copy_base, create_file, decode_marker, encode_batch,
+    invalid_input, open_regular, open_regular_with, random_id, read_marker, suffix_end,
 };
 use crate::directory::sync_existing;
 use crate::record::{self, Operation};
@@ -371,7 +371,7 @@ impl ManagedRetainedStore {
         self.ensure_selected()?;
         self.store.overlay.scan_with(
             &self.store.base,
-            &self.store.suffix,
+            OverlaySource::Disk(self.store.suffix_file()),
             (Some(after), Some(before)),
             limit,
             staged,
@@ -400,7 +400,7 @@ impl ManagedRetainedStore {
             self.finish_maintenance()
                 .map_err(MutationFailure::Rejected)?;
         }
-        let suffix_len = self.store.suffix.len() as u64;
+        let suffix_len = self.store.suffix_len as u64;
         if suffix_len == 0 {
             return self.store.write_encoded(&bytes, admit, |_| Ok(()));
         }

@@ -38,7 +38,7 @@ impl ManagedRetainedStore {
             fs::DirBuilder::new().mode(0o700).create(&candidate)?;
             let expected = SuffixExpected {
                 candidate: self.active.expected.clone(),
-                end: self.store.suffix.len() as u64,
+                end: self.store.suffix_len as u64,
                 digest: self.store.hash.clone().finalize().into(),
             };
             let limits = self.store.limits;
@@ -51,7 +51,10 @@ impl ManagedRetainedStore {
             write_new(&candidate.join("records.log"), &expected.candidate.header)?;
             write_new(&candidate.join("witness"), &expected.candidate.witness)?;
             write_new(&candidate.join("store.lock"), &[])?;
-            write_new(&suffix, &self.store.suffix)?;
+            let mut output = create_file(&suffix)?;
+            self.store.suffix_file().copy_to(&mut output)?;
+            output.sync_all()?;
+            drop(output);
             check_files(&candidate, &expected.candidate)?;
             let base = crate::retained_base_v2::validate_buffered(
                 open_regular(&candidate.join("base"))?,

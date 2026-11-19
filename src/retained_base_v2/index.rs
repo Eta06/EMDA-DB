@@ -105,6 +105,84 @@ pub(crate) enum EntryPart<'a> {
     Value(&'a [u8]),
 }
 
+pub(crate) enum OverlayValue<'a> {
+    Inline(&'a [u8]),
+    Disk {
+        file: &'a File,
+        offset: u64,
+        len: usize,
+        digest: &'a [u8; 32],
+    },
+}
+
+impl OverlayValue<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Inline(bytes) => bytes.len(),
+            Self::Disk { len, .. } => *len,
+        }
+    }
+
+    pub(crate) fn to_owned_bytes(&self) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(self.len()).map_err(allocation)?;
+        match *self {
+            Self::Inline(value) => bytes.extend_from_slice(value),
+            Self::Disk {
+                file,
+                offset,
+                len,
+                digest,
+            } => {
+                bytes.resize(len, 0);
+                if len != 0 {
+                    file.read_exact_at(&mut bytes, offset)?;
+                }
+                verify_overlay_digest(Sha256::digest(&bytes).into(), digest)?;
+            }
+        }
+        Ok(bytes)
+    }
+
+    fn visit_chunks(self, mut visit: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        match self {
+            Self::Inline(bytes) => {
+                for chunk in bytes.chunks(CHUNK_BYTES) {
+                    visit(chunk)?;
+                }
+            }
+            Self::Disk {
+                file,
+                mut offset,
+                len,
+                digest,
+            } => {
+                let mut scratch = [0; CHUNK_BYTES];
+                let mut hash = Sha256::new();
+                let mut remaining = len;
+                while remaining != 0 {
+                    let bytes = remaining.min(scratch.len());
+                    let chunk = &mut scratch[..bytes];
+                    file.read_exact_at(chunk, offset)?;
+                    hash.update(&*chunk);
+                    visit(chunk)?;
+                    offset += bytes as u64;
+                    remaining -= bytes;
+                }
+                verify_overlay_digest(hash.finalize().into(), digest)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn verify_overlay_digest(actual: [u8; 32], expected: &[u8; 32]) -> io::Result<()> {
+    if actual != *expected {
+        return Err(invalid("retained suffix value digest mismatch"));
+    }
+    Ok(())
+}
+
 enum Selection {
     Skip,
     Take,
@@ -156,14 +234,14 @@ impl IndexedBase {
     // until every block has authenticated, including those hidden by tombstones.
     pub(crate) fn visit_merged<'a>(
         &self,
-        overlay: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+        overlay: impl Iterator<Item = (&'a [u8], Option<OverlayValue<'a>>)>,
         mut visit: impl FnMut(EntryPart<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.check_length()?;
         let mut overlay = overlay.peekable();
         for block in &self.blocks {
             self.visit_block(block, |key, value| {
-                while overlay.peek().is_some_and(|&(other, _)| other <= key) {
+                while overlay.peek().is_some_and(|(other, _)| *other <= key) {
                     let (other, replacement) = overlay.next().unwrap();
                     emit_value(other, replacement, &mut visit)?;
                     if other == key {
@@ -228,7 +306,7 @@ impl IndexedBase {
         after: Option<&[u8]>,
         before: Option<&[u8]>,
         limit: usize,
-        overlay: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+        overlay: impl Iterator<Item = (&'a [u8], Option<OverlayValue<'a>>)>,
     ) -> io::Result<Vec<Entry>> {
         for key in [after, before].into_iter().flatten() {
             crate::record::validate_key(key)?;
@@ -262,7 +340,7 @@ impl IndexedBase {
                 if before.is_some_and(|bound| key >= bound) {
                     return Ok(Selection::Stop);
                 }
-                while overlay.peek().is_some_and(|&(other, _)| other <= key) {
+                while overlay.peek().is_some_and(|(other, _)| *other <= key) {
                     let (other, value) = overlay.next().unwrap();
                     if !budget.push_overlay(result, other, value)? {
                         return Ok(Selection::Stop);
@@ -378,7 +456,7 @@ impl IndexedBase {
 
 fn emit_value(
     key: &[u8],
-    value: Option<&[u8]>,
+    value: Option<OverlayValue<'_>>,
     visit: &mut impl FnMut(EntryPart<'_>) -> io::Result<()>,
 ) -> io::Result<()> {
     let Some(value) = value else {
@@ -388,10 +466,7 @@ fn emit_value(
         key,
         value_len: value.len(),
     })?;
-    for chunk in value.chunks(CHUNK_BYTES) {
-        visit(EntryPart::Value(chunk))?;
-    }
-    Ok(())
+    value.visit_chunks(|bytes| visit(EntryPart::Value(bytes)))
 }
 
 struct BlockValue<'a, 'b> {
@@ -434,7 +509,7 @@ impl PageBudget {
         &mut self,
         result: &mut Vec<Entry>,
         key: &[u8],
-        value: Option<&[u8]>,
+        value: Option<OverlayValue<'_>>,
     ) -> io::Result<bool> {
         let Some(value) = value else {
             return Ok(true);
@@ -442,10 +517,7 @@ impl PageBudget {
         if !self.admit(result.len(), key, value.len()) {
             return Ok(false);
         }
-        let mut copy = Vec::new();
-        copy.try_reserve_exact(value.len()).map_err(allocation)?;
-        copy.extend_from_slice(value);
-        push_entry(result, key, copy)?;
+        push_entry(result, key, value.to_owned_bytes()?)?;
         Ok(true)
     }
 }

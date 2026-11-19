@@ -1,4 +1,5 @@
-use super::indexed_suffix::Overlay;
+use super::indexed_suffix::{Overlay, OverlaySource};
+use super::suffix_file::SuffixFile;
 use super::{
     Expected, IndexLimits, Limits, OverlayLimits, SuffixLimits, check_binding, check_files,
 };
@@ -95,7 +96,7 @@ pub struct RetainedStore {
     log: File,
     witness: File,
     header: Header,
-    suffix: Vec<u8>,
+    suffix_len: usize,
     hash: Sha256,
     overlay: Overlay,
     limits: RetainedStoreLimits,
@@ -292,17 +293,25 @@ impl RetainedStore {
         let suffix_len = usize::try_from(suffix_len)
             .map_err(|_| invalid_input("suffix length exceeds platform range"))?;
         let committed = usize::try_from(committed).unwrap();
-        let mut suffix = Vec::new();
-        reserve_suffix(&mut suffix, suffix_len)?;
-        suffix.resize(suffix_len, 0);
-        log.read_exact_at(&mut suffix, header.len as u64)?;
         let mut hash = Sha256::new();
-        hash.update(&suffix[..committed]);
-        if <[u8; 32]>::from(hash.clone().finalize()) != committed_hash {
+        if committed == 0 && <[u8; 32]>::from(hash.clone().finalize()) != committed_hash {
             return Err(record::invalid_data("committed suffix digest mismatch"));
         }
-        hash.update(&suffix[committed..]);
-        let overlay = Overlay::build(&suffix, limits.suffix, limits.overlay, Some(committed))?;
+        let mut overlay = Overlay::default();
+        SuffixFile {
+            file: &log,
+            start: header.len as u64,
+            len: suffix_len,
+        }
+        .visit_records(Some(committed), |offset, bytes| {
+            hash.update(bytes);
+            if offset + bytes.len() == committed
+                && <[u8; 32]>::from(hash.clone().finalize()) != committed_hash
+            {
+                return Err(record::invalid_data("committed suffix digest mismatch"));
+            }
+            overlay.apply(bytes, offset, limits.suffix, limits.overlay)
+        })?;
         let base = IndexedBase::open(open_regular(&dir.join("base"))?, limits.base, limits.index)?;
         check_binding(base.metadata(), expected)?;
         authorize(
@@ -322,7 +331,7 @@ impl RetainedStore {
             log,
             witness,
             header,
-            suffix,
+            suffix_len,
             hash,
             overlay,
             limits,
@@ -338,8 +347,12 @@ impl RetainedStore {
 
     pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         self.ensure_healthy()?;
-        self.overlay
-            .get(&self.base, &self.suffix, key, max_value_bytes)
+        self.overlay.get(
+            &self.base,
+            OverlaySource::Disk(self.suffix_file()),
+            key,
+            max_value_bytes,
+        )
     }
 
     pub fn scan(
@@ -349,8 +362,21 @@ impl RetainedStore {
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
         self.ensure_healthy()?;
-        self.overlay
-            .scan(&self.base, &self.suffix, after, before, limit)
+        self.overlay.scan(
+            &self.base,
+            OverlaySource::Disk(self.suffix_file()),
+            after,
+            before,
+            limit,
+        )
+    }
+
+    fn suffix_file(&self) -> SuffixFile<'_> {
+        SuffixFile {
+            file: &self.log,
+            start: self.header.len as u64,
+            len: self.suffix_len,
+        }
     }
 
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
@@ -395,24 +421,23 @@ impl RetainedStore {
     ) -> Result<(), MutationFailure> {
         crate::transaction_outcome::mutation(|tracker| {
             self.ensure_healthy()?;
-            let end = suffix_end(self.suffix.len(), encoded.len(), self.limits)?;
+            let end = suffix_end(self.suffix_len, encoded.len(), self.limits)?;
             let overlay = self.overlay.prepare_append(
                 encoded,
-                self.suffix.len(),
+                self.suffix_len,
                 self.limits.suffix,
                 self.limits.overlay,
             )?;
-            reserve_suffix(&mut self.suffix, encoded.len())?;
             let expected = marker(
                 self.header.bytes(),
-                self.suffix.len() as u64,
+                self.suffix_len as u64,
                 &self.hash.clone().finalize().into(),
             );
             if let Err(error) = verify_files(
                 &self.log,
                 &self.witness,
                 self.header.bytes(),
-                self.header.len as u64 + self.suffix.len() as u64,
+                self.header.len as u64 + self.suffix_len as u64,
                 &expected,
             ) {
                 self.failed = true;
@@ -429,7 +454,7 @@ impl RetainedStore {
             hook(CommitPoint::LogSynced)?;
             update_witness(&self.witness, self.header.bytes(), end, &hash)?;
             hook(CommitPoint::WitnessSynced)?;
-            self.suffix.extend_from_slice(encoded);
+            self.suffix_len = end;
             self.overlay.commit_append(overlay);
             self.hash = hash;
             self.failed = false;
@@ -706,12 +731,6 @@ fn verify_files(
         return Err(record::invalid_data("retained log or witness changed"));
     }
     Ok(())
-}
-
-fn reserve_suffix(suffix: &mut Vec<u8>, bytes: usize) -> io::Result<()> {
-    suffix
-        .try_reserve_exact(bytes)
-        .map_err(|_| io::Error::other("retained suffix allocation failed"))
 }
 
 fn invalid_input(message: &'static str) -> io::Error {

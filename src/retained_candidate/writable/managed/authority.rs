@@ -34,7 +34,7 @@ impl AuthorityPoint {
         Self::new(
             catalog,
             &store.header,
-            store.suffix.len() as u64,
+            store.suffix_len as u64,
             store.hash.clone().finalize().into(),
         )
     }
@@ -319,7 +319,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             self.finish_maintenance()
                 .map_err(MutationFailure::Rejected)?;
         }
-        let suffix_len = self.inner.store.suffix.len() as u64;
+        let suffix_len = self.inner.store.suffix_len as u64;
         if suffix_len == 0 {
             return self.append(&encoded, admit);
         }
@@ -370,7 +370,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         let mut hash = self.inner.store.hash.clone();
         hash.update(encoded);
         let end = suffix_end(
-            self.inner.store.suffix.len(),
+            self.inner.store.suffix_len,
             encoded.len(),
             self.inner.store.limits,
         )

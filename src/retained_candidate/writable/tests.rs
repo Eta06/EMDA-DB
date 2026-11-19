@@ -126,6 +126,73 @@ impl Fixture {
 }
 
 #[test]
+fn disk_suffix_reads_authenticate_selected_batch_values() {
+    let limits = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            bytes: 256 * 1024,
+            ..LIMITS.suffix
+        },
+        ..LIMITS
+    };
+    let f = Fixture::new(limits);
+    let value = vec![0x78; 70 * 1024];
+    let altered = vec![0x79; value.len()];
+    let mut store = f.open(limits).unwrap();
+    store.put(b"b", b"prefix").unwrap();
+    let offset = store.header.len as u64 + store.suffix_len as u64;
+    let batch = |value| {
+        [
+            BatchOperation::Put {
+                key: b"d",
+                value: b"overwritten",
+            },
+            BatchOperation::Delete { key: b"a" },
+            BatchOperation::Put { key: b"d", value },
+            BatchOperation::Put {
+                key: b"x",
+                value: b"",
+            },
+        ]
+    };
+    store.write_batch(&batch(&value)).unwrap();
+    assert_eq!(store.get(b"d", value.len()).unwrap(), Some(value.clone()));
+    drop(store);
+    let store = f.open(limits).unwrap();
+    assert_eq!(
+        store.scan(None, None, 2).unwrap(),
+        vec![
+            (b"b".to_vec(), b"prefix".to_vec()),
+            (b"d".to_vec(), value.clone())
+        ]
+    );
+    assert_eq!(store.get(b"x", 0).unwrap(), Some(vec![]));
+    let witness = fs::read(f.witness()).unwrap();
+    let forged = encode_batch(&batch(&altered)).unwrap();
+    assert_eq!(
+        offset + forged.len() as u64,
+        fs::metadata(f.log()).unwrap().len()
+    );
+    OpenOptions::new()
+        .write(true)
+        .open(f.log())
+        .unwrap()
+        .write_all_at(&forged, offset)
+        .unwrap();
+    for error in [
+        store.get(b"d", altered.len()).unwrap_err(),
+        store.scan(None, None, 4).unwrap_err(),
+    ] {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "retained suffix value digest mismatch");
+    }
+    assert_eq!(store.get(b"b", 6).unwrap(), Some(b"prefix".to_vec()));
+    drop(store);
+    let error = f.open(limits).err().unwrap();
+    assert_eq!(error.to_string(), "committed suffix digest mismatch");
+    assert_eq!(fs::read(f.witness()).unwrap(), witness);
+}
+
+#[test]
 fn writable_generation_preserves_old_reader_gate_and_reopens_with_the_same_limits() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open(LIMITS).unwrap();
@@ -368,11 +435,12 @@ fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
 
 #[test]
 fn tampered_or_incomplete_suffix_leaves_witness_unchanged() {
-    for mode in ["torn", "split", "missing", "substituted"] {
+    for mode in ["short header", "torn", "split", "missing", "substituted"] {
         let f = Fixture::new(LIMITS);
         f.open(LIMITS).unwrap().put(b"key", b"a").unwrap();
         let next = record::encode(Operation::Put, b"new", b"b").unwrap();
         match mode {
+            "short header" => f.append_unacknowledged(&next[..record::HEADER_SIZE - 1]),
             "torn" => f.append_unacknowledged(&next[..next.len() - 1]),
             "split" => {
                 f.append_unacknowledged(&next);

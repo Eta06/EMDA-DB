@@ -13,6 +13,7 @@ use std::{
 
 mod indexed_suffix;
 pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
+mod suffix_file;
 mod writable;
 pub use writable::{
     AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority,
@@ -414,7 +415,7 @@ pub fn replay_suffix(
         keys,
         payload,
     };
-    visit_suffix(suffix, suffix_limits, None, |operation, key, value| {
+    visit_suffix(suffix, suffix_limits, |operation, key, value| {
         apply_suffix(&mut state, operation, key, &suffix[value], &mut replay)
     })?;
     Ok(state)
@@ -441,16 +442,10 @@ fn check_suffix_binding(
 fn visit_suffix(
     suffix: &[u8],
     suffix_limits: SuffixLimits,
-    committed: Option<usize>,
     mut visit: impl FnMut(crate::record::Operation, &[u8], std::ops::Range<usize>) -> io::Result<()>,
 ) -> io::Result<u64> {
     use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 
-    if committed.is_some_and(|boundary| boundary > suffix.len()) {
-        return Err(record::invalid_data(
-            "suffix is shorter than the commit witness",
-        ));
-    }
     let mut cursor = 0;
     let mut operations = 0u64;
     while cursor < suffix.len() {
@@ -464,11 +459,6 @@ fn visit_suffix(
         let end = cursor
             .checked_add(usize::try_from(parsed.record_len()).map_err(|_| invalid())?)
             .ok_or_else(invalid)?;
-        if committed.is_some_and(|boundary| cursor < boundary && boundary < end) {
-            return Err(record::invalid_data(
-                "commit witness splits a suffix record",
-            ));
-        }
         let data_end = end.checked_sub(CHECKSUM_SIZE).ok_or_else(invalid)?;
         let payload = suffix.get(header_end..data_end).ok_or_else(invalid)?;
         let checksum = suffix.get(data_end..end).ok_or_else(invalid)?;

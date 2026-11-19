@@ -3,8 +3,11 @@ use super::{
     charge_suffix_work, check_suffix_binding, read_suffix, suffix_capacity, visit_suffix,
 };
 use crate::record::{self, Operation};
-use crate::retained_base_v2::index::{EntryPart, IndexedBase};
+use crate::retained_base_v2::index::{EntryPart, IndexedBase, OverlayValue};
+use sha2::{Digest, Sha256};
 use std::{io, ops::Range, path::Path};
+
+use super::suffix_file::SuffixFile;
 
 /// Separate overlay bounds for a detached suffix. Distinct touched keys and
 /// their bytes count even when their final operation is a deletion.
@@ -34,7 +37,18 @@ pub(super) struct Overlay {
 
 struct OverlayEntry {
     key: Vec<u8>,
-    value: Option<Range<usize>>,
+    value: Option<ValueLocation>,
+}
+
+struct ValueLocation {
+    range: Range<usize>,
+    digest: [u8; 32],
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum OverlaySource<'a> {
+    Inline(&'a [u8]),
+    Disk(SuffixFile<'a>),
 }
 
 impl IndexedSuffix {
@@ -55,7 +69,8 @@ impl IndexedSuffix {
     ) -> io::Result<Self> {
         let suffix = read_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
         check_suffix_binding(&suffix, suffix_limits, expected)?;
-        let overlay = Overlay::build(&suffix, suffix_limits, overlay_limits, None)?;
+        let mut overlay = Overlay::default();
+        overlay.apply(&suffix, 0, suffix_limits, overlay_limits)?;
         let candidate =
             IndexedCandidate::open(directory, limits, index_limits, &expected.candidate)?;
         Ok(Self {
@@ -68,8 +83,12 @@ impl IndexedSuffix {
     /// Return the last suffix value unless the key was untouched, in which
     /// case the base block is checked and searched. A tombstone hides the base.
     pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
-        self.overlay
-            .get(&self.candidate.base, &self.suffix, key, max_value_bytes)
+        self.overlay.get(
+            &self.candidate.base,
+            OverlaySource::Inline(&self.suffix),
+            key,
+            max_value_bytes,
+        )
     }
 
     /// Merge touched suffix keys with authenticated base blocks into one
@@ -81,8 +100,13 @@ impl IndexedSuffix {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<crate::Entry>> {
-        self.overlay
-            .scan(&self.candidate.base, &self.suffix, after, before, limit)
+        self.overlay.scan(
+            &self.candidate.base,
+            OverlaySource::Inline(&self.suffix),
+            after,
+            before,
+            limit,
+        )
     }
 
     pub fn candidate_metadata(&self) -> &crate::retained_base_v2::Validated {
@@ -94,7 +118,7 @@ impl Overlay {
     pub(super) fn visit_merged(
         &self,
         base: &IndexedBase,
-        suffix: &[u8],
+        suffix: OverlaySource<'_>,
         visit: impl FnMut(EntryPart<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
         let changes = self
@@ -107,8 +131,9 @@ impl Overlay {
     pub(super) fn live_peaks(
         &self,
         base: &IndexedBase,
-        suffix: &[u8],
+        suffix: SuffixFile<'_>,
         limits: SuffixLimits,
+        expected: [u8; 32],
     ) -> io::Result<LivePeaks> {
         let mut present = Vec::new();
         present
@@ -127,40 +152,44 @@ impl Overlay {
             peak_entries: initial.peak_entries,
             peak_key_bytes: initial.peak_key_bytes,
         };
-        visit_suffix(suffix, limits, None, |operation, key, _| {
-            let position = find(&self.entries, key)
-                .map_err(|_| record::invalid_data("overlay lost a suffix key"))?;
-            let exists = operation == Operation::Put;
-            if exists != present[position] {
-                let size = key.len() as u64;
-                let delta = |number: u64, amount| {
-                    if exists {
-                        number.checked_add(amount)
-                    } else {
-                        number.checked_sub(amount)
+        let mut operations = 0;
+        let mut hash = Sha256::new();
+        suffix.visit_records(None, |_, bytes| {
+            hash.update(bytes);
+            operations += visit_suffix(
+                bytes,
+                remaining_operations(limits, operations)?,
+                |operation, key, _| {
+                    let position = find(&self.entries, key)
+                        .map_err(|_| record::invalid_data("overlay lost a suffix key"))?;
+                    let exists = operation == Operation::Put;
+                    if exists != present[position] {
+                        let size = key.len() as u64;
+                        let delta = |number: u64, amount| {
+                            if exists {
+                                number.checked_add(amount)
+                            } else {
+                                number.checked_sub(amount)
+                            }
+                            .ok_or_else(|| record::invalid_data("retained live total overflow"))
+                        };
+                        peaks.entries = delta(peaks.entries, 1)?;
+                        peaks.key_bytes = delta(peaks.key_bytes, size)?;
+                        peaks.peak_entries = peaks.peak_entries.max(peaks.entries);
+                        peaks.peak_key_bytes = peaks.peak_key_bytes.max(peaks.key_bytes);
+                        present[position] = exists;
                     }
-                    .ok_or_else(|| record::invalid_data("retained live total overflow"))
-                };
-                peaks.entries = delta(peaks.entries, 1)?;
-                peaks.key_bytes = delta(peaks.key_bytes, size)?;
-                peaks.peak_entries = peaks.peak_entries.max(peaks.entries);
-                peaks.peak_key_bytes = peaks.peak_key_bytes.max(peaks.key_bytes);
-                present[position] = exists;
-            }
+                    Ok(())
+                },
+            )?;
             Ok(())
         })?;
+        if <[u8; 32]>::from(hash.finalize()) != expected {
+            return Err(record::invalid_data(
+                "retained suffix changed during rebase",
+            ));
+        }
         Ok(peaks)
-    }
-
-    pub(super) fn build(
-        suffix: &[u8],
-        suffix_limits: SuffixLimits,
-        overlay_limits: OverlayLimits,
-        committed: Option<usize>,
-    ) -> io::Result<Self> {
-        let mut overlay = Self::default();
-        overlay.apply(suffix, suffix_limits, overlay_limits, committed)?;
-        Ok(overlay)
     }
 
     pub(super) fn prepare_append(
@@ -175,11 +204,10 @@ impl Overlay {
         let mut work = self.work;
         let mut added = 0;
         let remaining = remaining_operations(suffix_limits, self.operations)?;
-        let operations = visit_suffix(record, remaining, None, |operation, key, range| {
+        let operations = visit_suffix(record, remaining, |operation, key, range| {
             let current = self.entries.len() + added;
             charge_suffix_work(&mut work, suffix_limits.work, current)?;
-            let value =
-                (operation == Operation::Put).then_some(offset + range.start..offset + range.end);
+            let value = value_location(operation, record, offset, range);
             match find(&changes, key) {
                 Ok(position) => changes[position].value = value,
                 Err(position) => {
@@ -213,17 +241,17 @@ impl Overlay {
         self.work = prepared.work;
     }
 
-    fn apply(
+    pub(super) fn apply(
         &mut self,
         suffix: &[u8],
+        offset: usize,
         suffix_limits: SuffixLimits,
         overlay_limits: OverlayLimits,
-        committed: Option<usize>,
     ) -> io::Result<()> {
         let remaining = remaining_operations(suffix_limits, self.operations)?;
-        let operations = visit_suffix(suffix, remaining, committed, |operation, key, value| {
+        let operations = visit_suffix(suffix, remaining, |operation, key, value| {
             charge_suffix_work(&mut self.work, suffix_limits.work, self.entries.len())?;
-            let value = (operation == Operation::Put).then_some(value);
+            let value = value_location(operation, suffix, offset, value);
             match find(&self.entries, key) {
                 Ok(position) => self.entries[position].value = value,
                 Err(position) => {
@@ -241,7 +269,7 @@ impl Overlay {
     pub(super) fn get(
         &self,
         base: &IndexedBase,
-        suffix: &[u8],
+        suffix: OverlaySource<'_>,
         key: &[u8],
         max_value_bytes: usize,
     ) -> io::Result<Option<Vec<u8>>> {
@@ -259,13 +287,13 @@ impl Overlay {
         if value.len() > max_value_bytes {
             return Err(invalid_overlay("value budget exceeded"));
         }
-        Ok(Some(copy(value)?))
+        Ok(Some(value.to_owned_bytes()?))
     }
 
     pub(super) fn scan(
         &self,
         base: &IndexedBase,
-        suffix: &[u8],
+        suffix: OverlaySource<'_>,
         after: Option<&[u8]>,
         before: Option<&[u8]>,
         limit: usize,
@@ -276,7 +304,7 @@ impl Overlay {
     pub(super) fn scan_with<'a>(
         &'a self,
         base: &'a IndexedBase,
-        suffix: &'a [u8],
+        suffix: OverlaySource<'a>,
         (after, before): (Option<&[u8]>, Option<&[u8]>),
         limit: usize,
         staged: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
@@ -289,7 +317,9 @@ impl Overlay {
             .take_while(|entry| before.is_none_or(|key| entry.key.as_slice() < key))
             .map(|entry| (entry.key.as_slice(), value_at(suffix, entry)));
         let mut overlay = overlay.peekable();
-        let mut staged = staged.peekable();
+        let mut staged = staged
+            .map(|(key, value)| (key, value.map(OverlayValue::Inline)))
+            .peekable();
         let changes = std::iter::from_fn(|| match (overlay.peek(), staged.peek()) {
             (Some((old, _)), Some((new, _))) if old < new => overlay.next(),
             (Some((old, _)), Some((new, _))) if old == new => {
@@ -352,7 +382,7 @@ fn insert(
     entries: &mut Vec<OverlayEntry>,
     position: usize,
     key: &[u8],
-    value: Option<Range<usize>>,
+    value: Option<ValueLocation>,
 ) -> io::Result<()> {
     allocation_point()?;
     let key = copy(key)?;
@@ -361,8 +391,29 @@ fn insert(
     Ok(())
 }
 
-fn value_at<'a>(suffix: &'a [u8], entry: &OverlayEntry) -> Option<&'a [u8]> {
-    entry.value.clone().map(|range| &suffix[range])
+fn value_location(
+    operation: Operation,
+    bytes: &[u8],
+    offset: usize,
+    range: Range<usize>,
+) -> Option<ValueLocation> {
+    (operation == Operation::Put).then(|| ValueLocation {
+        digest: Sha256::digest(&bytes[range.clone()]).into(),
+        range: offset + range.start..offset + range.end,
+    })
+}
+
+fn value_at<'a>(suffix: OverlaySource<'a>, entry: &'a OverlayEntry) -> Option<OverlayValue<'a>> {
+    let value = entry.value.as_ref()?;
+    Some(match suffix {
+        OverlaySource::Inline(bytes) => OverlayValue::Inline(&bytes[value.range.clone()]),
+        OverlaySource::Disk(suffix) => OverlayValue::Disk {
+            file: suffix.file,
+            offset: suffix.start + value.range.start as u64,
+            len: value.range.len(),
+            digest: &value.digest,
+        },
+    })
 }
 
 fn copy(bytes: &[u8]) -> io::Result<Vec<u8>> {
