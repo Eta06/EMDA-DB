@@ -509,3 +509,10 @@ batch and merges staged mutations into indexed reads. The
 [document validation report](../benchmarks/results/2026-11-19-managed-retained-documents/README.md)
 records indexed queries, rollback and control checks, and a verified
 restore after automatic reclamation on both local platforms.
+
+The retained document history checker now exercises modelled transfers,
+indexed reads, unique claims, busy admission and cancellation through
+automatic rotation. In the [cross-platform campaign](../benchmarks/results/2026-11-19-retained-document-histories/README.md),
+768 histories and 224 retained process-kill races passed on macOS, Linux
+tmpfs and Linux ext4. The process-kill cases recovered all acknowledged
+transactions and agreed across documents, indexes and raw-key receipts.

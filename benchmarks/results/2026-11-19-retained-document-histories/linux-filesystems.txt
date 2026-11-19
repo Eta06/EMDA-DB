@@ -1,0 +1,3 @@
+Filesystem     Type  1K-blocks     Used Available Use% Mounted on
+/dev/vda1      ext4   19220244 18975664    228196  99% /
+tmpfs          tmpfs   3020724  2794152    226572  93% /tmp
