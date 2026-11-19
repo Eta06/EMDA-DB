@@ -2,6 +2,7 @@
 use super::*;
 use sha2::{Digest, Sha256};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt;
 
 /// Explicit limits for full replay and the resulting file.
 #[derive(Clone, Copy, Debug)]
@@ -407,6 +408,7 @@ impl Store {
 
     /// Export into a directory stage held by the caller. The caller must keep
     /// the source and stage trusted and stable, as for the public export.
+    #[cfg(test)]
     pub(crate) fn export_retained_base_in_stage(
         &self,
         stage: &crate::staging::Stage,
@@ -424,6 +426,32 @@ impl Store {
             limits,
             crate::directory::sync_existing,
             |_| Ok(()),
+        )
+    }
+
+    /// Write a verified base into an exclusively owned directory stage.
+    /// The caller discards the whole stage if an export step fails.
+    pub(crate) fn write_retained_base_in_stage(
+        &self,
+        stage: &crate::staging::Stage,
+        name: &std::ffi::OsStr,
+        base_id: [u8; 16],
+        limits: RetainedExportLimits,
+    ) -> io::Result<crate::retained_base_v2::Validated> {
+        let destination = stage.child_path(name)?;
+        self.write_retained_base_using(
+            base_id,
+            limits,
+            |_| Ok(()),
+            || {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(destination)?;
+                Ok((file, || Ok(())))
+            },
         )
     }
 
@@ -455,151 +483,167 @@ impl Store {
         base_id: [u8; 16],
         limits: RetainedExportLimits,
         sync: impl FnOnce(&Path) -> io::Result<()>,
-        mut hook: impl FnMut(&str) -> io::Result<()>,
+        hook: impl FnMut(&str) -> io::Result<()>,
     ) -> Result<crate::retained_base_v2::Validated, crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            let _writer = self
-                .writes
-                .write()
-                .map_err(|_| io::Error::other("write barrier poisoned"))?;
-            let inner = self.read()?;
-            if self.commits.failed() {
-                return Err(uncertain_error());
-            }
-            let source = self.log.id().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "retained export requires a witnessed store",
-                )
-            })?;
-            if base_id == [0; 16] || base_id == source {
+            self.write_retained_base_using(base_id, limits, hook, || {
+                let parent = match owned_parent {
+                    Some(parent) => parent,
+                    None => backup::parent_directory(destination)?,
+                };
+                let (mut stage, file) = crate::staging::Stage::file(parent)?;
+                Ok((file, move || {
+                    tracker.begin_publication();
+                    stage.publish(destination)?;
+                    sync(parent)?;
+                    stage.publication_synchronized();
+                    Ok(())
+                }))
+            })
+        })
+    }
+
+    fn write_retained_base_using<F: FnOnce() -> io::Result<()>>(
+        &self,
+        base_id: [u8; 16],
+        limits: RetainedExportLimits,
+        mut hook: impl FnMut(&str) -> io::Result<()>,
+        open_output: impl FnOnce() -> io::Result<(File, F)>,
+    ) -> io::Result<crate::retained_base_v2::Validated> {
+        let _writer = self
+            .writes
+            .write()
+            .map_err(|_| io::Error::other("write barrier poisoned"))?;
+        let inner = self.read()?;
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        let source = self.log.id().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "retained export requires a witnessed store",
+            )
+        })?;
+        if base_id == [0; 16] || base_id == source {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid base identifier",
+            ));
+        }
+        let (peak, peak_bytes) = self.log.verify_index_peaks_with_limits(
+            &inner.index,
+            Some(crate::log::PeakVerificationLimits {
+                max_log_bytes: limits.max_log_bytes,
+                max_live_keys: limits.max_live_keys,
+                max_live_key_bytes: limits.max_live_key_bytes,
+            }),
+        )?;
+        hook("after_replay")?;
+        let boundary = self.log.len()?;
+        let mut encoded = 0u64;
+        let mut key_bytes = 0u64;
+        for (key, location) in inner.index.iter() {
+            crate::record::validate_key(key)?;
+            if location.length > 16 * 1024 * 1024 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "invalid base identifier",
+                    "value too large",
                 ));
             }
-            let (peak, peak_bytes) = self.log.verify_index_peaks_with_limits(
-                &inner.index,
-                Some(crate::log::PeakVerificationLimits {
-                    max_log_bytes: limits.max_log_bytes,
-                    max_live_keys: limits.max_live_keys,
-                    max_live_key_bytes: limits.max_live_key_bytes,
-                }),
-            )?;
-            hook("after_replay")?;
-            let boundary = self.log.len()?;
-            let mut encoded = 0u64;
-            let mut key_bytes = 0u64;
-            for (key, location) in inner.index.iter() {
-                crate::record::validate_key(key)?;
-                if location.length > 16 * 1024 * 1024 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "value too large",
-                    ));
-                }
-                key_bytes = key_bytes
-                    .checked_add(key.len() as u64)
-                    .ok_or_else(|| io::Error::other("key bytes overflow"))?;
-                encoded = encoded
-                    .checked_add(8)
-                    .and_then(|n| n.checked_add(key.len() as u64))
-                    .and_then(|n| n.checked_add(location.length as u64))
-                    .ok_or_else(|| io::Error::other("output overflow"))?;
-            }
-            let size = encoded
-                .checked_add(144)
+            key_bytes = key_bytes
+                .checked_add(key.len() as u64)
+                .ok_or_else(|| io::Error::other("key bytes overflow"))?;
+            encoded = encoded
+                .checked_add(8)
+                .and_then(|n| n.checked_add(key.len() as u64))
+                .and_then(|n| n.checked_add(location.length as u64))
                 .ok_or_else(|| io::Error::other("output overflow"))?;
-            if size > limits.max_output_bytes || size == u64::MAX {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "output budget exceeded",
-                ));
+        }
+        let size = encoded
+            .checked_add(144)
+            .ok_or_else(|| io::Error::other("output overflow"))?;
+        if size > limits.max_output_bytes || size == u64::MAX {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "output budget exceeded",
+            ));
+        }
+        let header = crate::retained_base_v2::encode_header(
+            source,
+            base_id,
+            [
+                boundary,
+                inner.index.len() as u64,
+                key_bytes,
+                peak as u64,
+                peak_bytes as u64,
+                encoded,
+            ],
+        );
+        let (file, publish) = open_output()?;
+        let mut file = BufWriter::with_capacity(64 * 1024, file);
+        let mut hash = Sha256::new();
+        hash.update(b"EMDA retained base v2\0");
+        file.write_all(&header)?;
+        hash.update(header);
+        let mut buffer = [0u8; 65536];
+        for (key, location) in inner.index.iter() {
+            let mut lengths = [0u8; 8];
+            lengths[..4].copy_from_slice(&(key.len() as u32).to_le_bytes());
+            lengths[4..].copy_from_slice(&(location.length as u32).to_le_bytes());
+            file.write_all(&lengths)?;
+            hash.update(lengths);
+            file.write_all(key)?;
+            hash.update(key);
+            let mut crc = crc32fast::Hasher::new();
+            let mut offset = location.offset;
+            let mut remaining = location.length;
+            while remaining > 0 {
+                let n = remaining.min(buffer.len());
+                hook("value_read")?;
+                self.log.read_bytes(&mut buffer[..n], offset)?;
+                crc.update(&buffer[..n]);
+                hash.update(&buffer[..n]);
+                file.write_all(&buffer[..n])?;
+                offset = offset
+                    .checked_add(n as u64)
+                    .ok_or_else(|| io::Error::other("offset overflow"))?;
+                remaining -= n;
             }
-            let header = crate::retained_base_v2::encode_header(
-                source,
-                base_id,
-                [
-                    boundary,
-                    inner.index.len() as u64,
-                    key_bytes,
-                    peak as u64,
-                    peak_bytes as u64,
-                    encoded,
-                ],
-            );
-            let parent = match owned_parent {
-                Some(parent) => parent,
-                None => backup::parent_directory(destination)?,
-            };
-            let (mut stage, file) = crate::staging::Stage::file(parent)?;
-            let mut file = BufWriter::with_capacity(64 * 1024, file);
-            let mut hash = Sha256::new();
-            hash.update(b"EMDA retained base v2\0");
-            file.write_all(&header)?;
-            hash.update(header);
-            let mut buffer = [0u8; 65536];
-            for (key, location) in inner.index.iter() {
-                let mut lengths = [0u8; 8];
-                lengths[..4].copy_from_slice(&(key.len() as u32).to_le_bytes());
-                lengths[4..].copy_from_slice(&(location.length as u32).to_le_bytes());
-                file.write_all(&lengths)?;
-                hash.update(lengths);
-                file.write_all(key)?;
-                hash.update(key);
-                let mut crc = crc32fast::Hasher::new();
-                let mut offset = location.offset;
-                let mut remaining = location.length;
-                while remaining > 0 {
-                    let n = remaining.min(buffer.len());
-                    hook("value_read")?;
-                    self.log.read_bytes(&mut buffer[..n], offset)?;
-                    crc.update(&buffer[..n]);
-                    hash.update(&buffer[..n]);
-                    file.write_all(&buffer[..n])?;
-                    offset = offset
-                        .checked_add(n as u64)
-                        .ok_or_else(|| io::Error::other("offset overflow"))?;
-                    remaining -= n;
-                }
-                if crc.finalize() != location.checksum {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "stored value checksum mismatch",
-                    ));
-                }
-            }
-            let digest: [u8; 32] = hash.finalize().into();
-            file.write_all(&digest)?;
-            let mut file = file.into_inner().map_err(|error| error.into_error())?;
-            hook("output_sync")?;
-            file.sync_all()?;
-            file.seek(SeekFrom::Start(0))?;
-            let result = crate::retained_base_v2::validate_buffered(
-                &mut file,
-                crate::retained_base_v2::Limits {
-                    file_bytes: limits.max_output_bytes,
-                    entries: limits.max_live_keys as u64,
-                    key_bytes: limits.max_live_key_bytes as u64,
-                    work_bytes: size + 1,
-                },
-            )?;
-            if result.digest != digest || result.source_id != source || result.boundary != boundary
-            {
+            if crc.finalize() != location.checksum {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "export verification mismatch",
+                    "stored value checksum mismatch",
                 ));
             }
-            // Recheck source witness after the final value read.
-            hook("before_witness")?;
-            self.log.verify_witness()?;
-            tracker.begin_publication();
-            stage.publish(destination)?;
-            sync(parent)?;
-            stage.publication_synchronized();
-            Ok(result)
-        })
+        }
+        let digest: [u8; 32] = hash.finalize().into();
+        file.write_all(&digest)?;
+        let mut file = file.into_inner().map_err(|error| error.into_error())?;
+        hook("output_sync")?;
+        file.sync_all()?;
+        file.seek(SeekFrom::Start(0))?;
+        let result = crate::retained_base_v2::validate_buffered(
+            &mut file,
+            crate::retained_base_v2::Limits {
+                file_bytes: limits.max_output_bytes,
+                entries: limits.max_live_keys as u64,
+                key_bytes: limits.max_live_key_bytes as u64,
+                work_bytes: size + 1,
+            },
+        )?;
+        if result.digest != digest || result.source_id != source || result.boundary != boundary {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "export verification mismatch",
+            ));
+        }
+        // Recheck source witness after the final value read.
+        hook("before_witness")?;
+        self.log.verify_witness()?;
+        drop(file);
+        publish()?;
+        Ok(result)
     }
 }
 

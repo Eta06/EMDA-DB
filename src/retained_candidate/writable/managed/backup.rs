@@ -47,6 +47,7 @@ impl ManagedRetainedStore {
                 &candidate,
                 limits,
                 &expected.candidate,
+                u64::MAX,
             )?;
             write_new(&candidate.join("records.log"), &expected.candidate.header)?;
             write_new(&candidate.join("witness"), &expected.candidate.witness)?;
@@ -89,17 +90,45 @@ impl ManagedRetainedStore {
         limits: RetainedStoreLimits,
         expected: &SuffixExpected,
     ) -> Result<[u8; 16], PublicationFailure> {
-        let backup = backup.as_ref();
-        let destination = destination.as_ref();
+        Self::restore_backup_using(
+            backup.as_ref(),
+            destination.as_ref(),
+            limits.into(),
+            expected,
+        )
+    }
+
+    /// Restore a backup into a new catalog under a persistent storage quota.
+    pub fn restore_backup_with_storage_limits(
+        backup: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        storage: CatalogStorageLimits,
+        expected: &SuffixExpected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::restore_backup_using(
+            backup.as_ref(),
+            destination.as_ref(),
+            InitialLimits::with_storage(limits, storage),
+            expected,
+        )
+    }
+
+    fn restore_backup_using(
+        backup: &Path,
+        destination: &Path,
+        limits: InitialLimits,
+        expected: &SuffixExpected,
+    ) -> Result<[u8; 16], PublicationFailure> {
         let parent = crate::backup::parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(backup, parent).map_err(PublicationFailure::NotPublished)?;
-        Self::create_from_suffix(
-            backup.join(CANDIDATE),
-            backup.join(SUFFIX),
+        Self::create_using(
+            &backup.join(CANDIDATE),
             destination,
             limits,
-            expected,
+            &expected.candidate,
+            Some((&backup.join(SUFFIX), expected)),
         )
     }
 }

@@ -176,7 +176,7 @@ impl RetainedStore {
                 .transpose()?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let dir = stage.path();
-            copy_base(candidate, dir, limits, expected)?;
+            copy_base(candidate, dir, limits, expected, u64::MAX)?;
             let verified = Self::initialize(
                 dir,
                 limits,
@@ -515,8 +515,12 @@ fn copy_base(
     dir: &Path,
     limits: RetainedStoreLimits,
     expected: &Expected,
+    max_output_bytes: u64,
 ) -> io::Result<()> {
     let size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+    if size > max_output_bytes {
+        return Err(invalid_input("catalog byte limit exceeded"));
+    }
     if size > limits.base.file_bytes
         || size
             .checked_add(1)
@@ -524,9 +528,11 @@ fn copy_base(
     {
         return Err(invalid_input("retained base byte limit exceeded"));
     }
-    let base = open_regular(&candidate.join("base"))?;
+    let mut base = open_regular(&candidate.join("base"))?.take(size);
     let mut target = create_file(&dir.join("base"))?;
-    if io::copy(&mut base.take(size + 1), &mut target)? != size {
+    let copied = io::copy(&mut base, &mut target)?;
+    base.set_limit(1);
+    if copied != size || io::copy(&mut base, &mut io::sink())? != 0 {
         return Err(record::invalid_data(
             "retained base length changed during copy",
         ));

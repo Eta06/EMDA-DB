@@ -31,6 +31,14 @@ pub(super) struct CatalogStorage {
 
 impl CatalogStorage {
     pub(super) fn room(&self, reserve_bytes: u64, reserve_entries: u64) -> io::Result<u64> {
+        Ok(self.remaining(reserve_bytes, reserve_entries)?.bytes)
+    }
+
+    pub(super) fn remaining(
+        &self,
+        reserve_bytes: u64,
+        reserve_entries: u64,
+    ) -> io::Result<CatalogStorageLimits> {
         let mut bytes = self
             .limits
             .bytes
@@ -63,14 +71,14 @@ impl CatalogStorage {
                 ));
             }
         }
-        Ok(bytes)
+        Ok(CatalogStorageLimits { bytes, entries })
     }
 }
 
-fn byte_limit() -> io::Error {
+pub(super) fn byte_limit() -> io::Error {
     super::invalid_input("catalog byte limit exceeded")
 }
 
-fn entry_limit() -> io::Error {
+pub(super) fn entry_limit() -> io::Error {
     super::invalid_input("catalog entry limit exceeded")
 }

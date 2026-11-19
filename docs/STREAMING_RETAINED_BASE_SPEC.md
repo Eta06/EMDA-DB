@@ -340,10 +340,20 @@ selected policy forward. After an uncertain selection, reopen resolves
 which generation and policy apply. Readers that lack the new header
 version reject a quota-bearing selection.
 
+Use the creation, copy, preparation, cutover and restore variants ending
+in `_with_storage_limits` to publish the first generation with a quota.
+They reserve catalog metadata before writing the base. Detached imports
+reserve the bound suffix length. Original-path cutover also charges the
+existing tree, archive hard links, the new catalog and fence staging at
+their peak before the original log is replaced. Separate catalogs count
+their contents. The ownership marker and directory entry in the parent
+are outside a separate catalog's tree. Supply a policy explicitly when
+restoring a backup into a new catalog.
+
 Leave room for reclamation and future rotation when setting a ceiling.
 These limits account for logical bytes and entries in trusted, stable
-directories. Initial publication, independent restores, filesystem
-allocation, external authority files and backups have separate policies.
+directories. Physical filesystem allocation, external authority files,
+backups and other catalog roots have separate policies.
 
 Catalogs use trusted local directories and the ordinary rollback model.
 The original ordinary store remains independently addressable after

@@ -123,25 +123,29 @@ fn discard(
             }
             Ok(_) => {}
         }
-        let catalog = ManagedRetainedStore::open_role(
-            &path,
-            ceiling,
-            CUTOVER_MAGIC,
-            None,
-            |root, id| {
-                let active = Active::load(root, id)?;
-                check_layout(root, &active)?;
-                Ok(active)
-            },
-            |observed| {
-                if observed.suffix_end != 0 {
+        let lock = lock_directory(&path)?;
+        let catalog = read_catalog(&path, CUTOVER_MAGIC)?;
+        let active = Active::load(&path, catalog)?;
+        check_layout(&path, &active)?;
+        // The preparation was never selected. Its proposed quota may now
+        // be smaller than the enclosing root and must not block removal.
+        let generation = RetainedStore::open_role(
+            &active.slot.path(&path),
+            RecoveryLimits::Ceiling(ceiling),
+            &active.expected,
+            generation_role(CUTOVER_MAGIC, catalog),
+            Some(active.generation),
+            |_| Ok(()),
+            |_, _, end, _| {
+                if end != 0 {
                     return Err(record::invalid_data("cutover preparation has been written"));
                 }
                 Ok(())
             },
         )?;
         verify_archives(&root, &path)?;
-        verify_root(&root, Some(catalog.active.catalog))?;
+        lock.verify_identity(&path)?;
+        verify_root(&root, Some(catalog))?;
         // Make the observed original-path state durable before removing
         // the preparation, including on retry after uncertain publication.
         sync_existing(&root)?;
@@ -155,7 +159,8 @@ fn discard(
         fs::remove_dir_all(&moved)?;
         sync_existing(stage.path())?;
         stage.finish_retained_cleanup();
-        drop(catalog);
+        drop(generation);
+        drop(lock);
         Ok(true)
     })
 }

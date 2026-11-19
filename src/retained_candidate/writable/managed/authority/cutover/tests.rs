@@ -37,6 +37,151 @@ fn seed(path: &Path) -> Store {
 }
 
 #[test]
+fn initial_catalog_quota_is_bound_to_the_separate_authority() {
+    use crate::retained_candidate::writable::managed::tests::catalog_usage;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    let destination = tmp.path().join("authorized");
+    let policy = CatalogStorageLimits {
+        bytes: 4096,
+        entries: 8,
+    };
+    let prepare = |storage| {
+        Catalog::prepare_from_store_with_storage_limits(
+            Store::open(&root).unwrap(),
+            &root,
+            &destination,
+            EXPORT,
+            LIMITS,
+            storage,
+        )
+    };
+    drop(seed(&root));
+    assert!(
+        matches!(prepare(CatalogStorageLimits { entries: policy.entries - 1, ..policy }),
+        Err(PublicationFailure::NotPublished(error)) if error.to_string() == "catalog entry limit exceeded")
+    );
+    assert!(!destination.exists());
+    let initial = prepare(policy).unwrap();
+    let mut provider = FileRetainedAuthority::create(tmp.path().join("authority")).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let mut store = Catalog::open(&destination, LIMITS, provider).unwrap();
+    assert_eq!(store.inner.store.header.storage_limits(), Some(policy));
+    assert_eq!(catalog_usage(&destination).entries, policy.entries);
+    assert_eq!(
+        store.get(b"legacy", 12).unwrap().as_deref(),
+        Some(b"acknowledged".as_slice())
+    );
+    assert!(
+        matches!(store.compact(), Err(PublicationFailure::NotPublished(error)) if error.to_string() == "catalog entry limit exceeded")
+    );
+    assert_eq!(store.current, initial);
+}
+
+#[test]
+fn initial_catalog_quota_counts_cutover_staging_before_fencing() {
+    use crate::retained_candidate::writable::managed::tests::catalog_usage;
+    use crate::staging::Stage;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    drop(seed(&root));
+    let original = catalog_usage(&root);
+    let log = fs::read(root.join("records.log")).unwrap();
+    let witness = fs::read(root.join("commit.state")).unwrap();
+    let base_bytes = (144 + 8 + b"legacy".len() + b"acknowledged".len()) as u64;
+    let fixed = (CATALOG_BYTES
+        + ACTIVE_BYTES
+        + super::super::super::super::QUOTA_HEADER_BYTES
+        + super::super::super::super::WITNESS_BYTES) as u64;
+    let exact = CatalogStorageLimits {
+        bytes: original.bytes
+            + log.len() as u64
+            + witness.len() as u64
+            + fixed
+            + base_bytes
+            + MARKER_LEN as u64
+            + Stage::FILE_MARKER_BYTES,
+        entries: original.entries + 10 + 3,
+    };
+    let cutover = |storage| {
+        Catalog::cutover_from_store_with_storage_limits(
+            Store::open(&root).unwrap(),
+            &root,
+            EXPORT,
+            LIMITS,
+            storage,
+        )
+    };
+    for below in [
+        CatalogStorageLimits {
+            bytes: exact.bytes - 1,
+            ..exact
+        },
+        CatalogStorageLimits {
+            entries: exact.entries - 1,
+            ..exact
+        },
+    ] {
+        assert!(
+            matches!(cutover(below), Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidInput)
+        );
+        assert_eq!(fs::read(root.join("records.log")).unwrap(), log);
+        assert_eq!(fs::read(root.join("commit.state")).unwrap(), witness);
+        assert_eq!(catalog_usage(&root), original);
+    }
+
+    let initial = cutover(exact).unwrap();
+    assert_eq!(Catalog::recover_cutover(&root, LIMITS).unwrap(), initial);
+    let mut provider = FileRetainedAuthority::create(tmp.path().join("authority")).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let mut store = Catalog::open(&root, LIMITS, provider).unwrap();
+    assert_eq!(store.inner.store.header.storage_limits(), Some(exact));
+    assert_eq!(
+        store.get(b"legacy", 12).unwrap().as_deref(),
+        Some(b"acknowledged".as_slice())
+    );
+    let nested = store.fence.as_ref().unwrap().catalog_path();
+    assert_eq!(fs::read(nested.join(ARCHIVE_LOG)).unwrap(), log);
+    assert_eq!(fs::read(nested.join(ARCHIVE_WITNESS)).unwrap(), witness);
+}
+
+#[test]
+fn abandoned_initial_catalog_quota_does_not_block_unfenced_cleanup() {
+    use crate::retained_candidate::writable::managed::tests::catalog_usage;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    let policy = CatalogStorageLimits {
+        bytes: 4096,
+        entries: 64,
+    };
+    let result = Catalog::cutover_using(
+        seed(&root),
+        &root,
+        EXPORT,
+        InitialLimits::with_storage(LIMITS, policy),
+        || Err(io::Error::other("injected pre-fence failure")),
+        sync_existing,
+    );
+    assert!(
+        matches!(result, Err(PublicationFailure::NotPublished(error)) if error.to_string() == "injected pre-fence failure")
+    );
+    let preparation = only_preparation(&root);
+    let source = Store::open(&root).unwrap();
+    source.put(b"later", &[7; 4096]).unwrap();
+    assert!(catalog_usage(&root).bytes > policy.bytes);
+    let mut authority = FileRetainedAuthority::create(tmp.path().join("authority")).unwrap();
+    assert!(
+        Catalog::discard_unfenced_preparation(source, &root, preparation, LIMITS, &mut authority)
+            .unwrap()
+    );
+    assert_eq!(
+        Store::open(&root).unwrap().get(b"later").unwrap(),
+        Some(vec![7; 4096])
+    );
+    assert!(authority.read().unwrap().is_none());
+}
+
+#[test]
 fn persisted_catalog_quota_follows_authority_and_covers_original_root() {
     use crate::retained_candidate::writable::managed::tests::catalog_usage;
     let tmp = tempfile::tempdir().unwrap();
@@ -355,7 +500,7 @@ fn failure_before_fencing_leaves_a_writable_ordinary_source_for_retry() {
         store,
         &root,
         EXPORT,
-        LIMITS,
+        LIMITS.into(),
         || Err(io::Error::other("before fence")),
         sync_existing,
     );
@@ -450,7 +595,7 @@ fn selected_catalog_is_protected_and_preparation_can_be_removed_after_archive_re
             store,
             &root,
             EXPORT,
-            LIMITS,
+            LIMITS.into(),
             || Err(io::Error::other("stop before fence")),
             sync_existing
         ),
@@ -520,7 +665,7 @@ fn uncertain_fence_recovers_the_registration_record_without_reopening_the_legacy
         store,
         &root,
         EXPORT,
-        LIMITS,
+        LIMITS.into(),
         || Ok(()),
         |path| {
             assert_eq!(
@@ -573,7 +718,7 @@ fn cutover_child_at_fence() {
         store,
         &root,
         EXPORT,
-        LIMITS,
+        LIMITS.into(),
         || pause("before"),
         |_| pause("after"),
     )

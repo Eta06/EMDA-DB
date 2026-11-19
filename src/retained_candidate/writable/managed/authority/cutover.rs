@@ -129,7 +129,27 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             source,
             root.as_ref(),
             export,
-            limits,
+            limits.into(),
+            || Ok(()),
+            sync_existing,
+        )
+    }
+
+    /// Convert at the original path under a persistent logical storage quota.
+    /// Admission includes the legacy files, archive links, temporary staging
+    /// and fence. Place the independent authority outside the original root.
+    pub fn cutover_from_store_with_storage_limits(
+        source: Store,
+        root: impl AsRef<Path>,
+        export: RetainedExportLimits,
+        limits: RetainedStoreLimits,
+        storage: CatalogStorageLimits,
+    ) -> Result<AuthorityRecord, PublicationFailure> {
+        Self::cutover_using(
+            source,
+            root.as_ref(),
+            export,
+            InitialLimits::with_storage(limits, storage),
             || Ok(()),
             sync_existing,
         )
@@ -139,7 +159,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         source: Store,
         root: &Path,
         export: RetainedExportLimits,
-        limits: RetainedStoreLimits,
+        mut limits: InitialLimits,
         before_replace: impl FnOnce() -> io::Result<()>,
         sync_root: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<AuthorityRecord, PublicationFailure> {
@@ -152,6 +172,27 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 Err(error) => return Err(error),
                 Ok(_) => return Err(invalid_input("source already has catalog metadata")),
             }
+            use crate::staging::Stage;
+            let fence_stage_bytes = Stage::FILE_MARKER_BYTES + MARKER_LEN as u64;
+            if let Some(storage) = &mut limits.storage {
+                let quota = CatalogStorage {
+                    root: root.clone(),
+                    limits: storage.policy,
+                };
+                // The nested directory-stage marker is gone before fencing.
+                // The published directory remains beside the fence stage's
+                // file and marker, for three entries outside the catalog.
+                storage.available =
+                    quota.remaining(fence_stage_bytes.max(Stage::DIRECTORY_MARKER_BYTES), 3)?;
+                storage.archives = CatalogStorageLimits {
+                    bytes: open_regular(&root.join("records.log"))?
+                        .metadata()?
+                        .len()
+                        .checked_add(open_regular(&root.join("commit.state"))?.metadata()?.len())
+                        .ok_or_else(storage::byte_limit)?,
+                    entries: 2,
+                };
+            }
             let directory = random_id()?;
             let nested = catalog_path(&root, directory);
             let committed = ManagedRetainedStore::publish_initial(
@@ -160,8 +201,15 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 limits,
                 CUTOVER_MAGIC,
                 sync_existing,
-                |stage, path| {
-                    let expected = export_into_generation(&source, stage, path, export, limits)?;
+                |stage, path, max_base_bytes| {
+                    let expected = export_into_generation(
+                        &source,
+                        stage,
+                        path,
+                        export,
+                        limits.generation,
+                        max_base_bytes,
+                    )?;
                     for (original, archive) in [
                         ("records.log", ARCHIVE_LOG),
                         ("commit.state", ARCHIVE_WITNESS),
@@ -180,7 +228,14 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 pending: None,
             };
             let marker = Marker { directory, initial };
-            let (mut stage, mut file) = crate::staging::Stage::file(&root)?;
+            if let Some(storage) = limits.storage {
+                CatalogStorage {
+                    root: root.clone(),
+                    limits: storage.policy,
+                }
+                .room(fence_stage_bytes, 2)?;
+            }
+            let (mut stage, mut file) = Stage::file(&root)?;
             file.write_all(&marker.encode())?;
             file.sync_all()?;
             drop(file);

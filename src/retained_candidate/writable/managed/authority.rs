@@ -124,10 +124,45 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         export: RetainedExportLimits,
         limits: RetainedStoreLimits,
     ) -> Result<AuthorityRecord, PublicationFailure> {
-        let committed = ManagedRetainedStore::copy_from_store_role(
+        Self::prepare_from_store_using(
             source,
             source_path.as_ref(),
             destination.as_ref(),
+            export,
+            limits.into(),
+        )
+    }
+
+    /// Prepare a separately authorized catalog under a persistent quota.
+    /// Keep the authority provider outside the catalog directory.
+    pub fn prepare_from_store_with_storage_limits(
+        source: Store,
+        source_path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        export: RetainedExportLimits,
+        limits: RetainedStoreLimits,
+        storage: CatalogStorageLimits,
+    ) -> Result<AuthorityRecord, PublicationFailure> {
+        Self::prepare_from_store_using(
+            source,
+            source_path.as_ref(),
+            destination.as_ref(),
+            export,
+            InitialLimits::with_storage(limits, storage),
+        )
+    }
+
+    fn prepare_from_store_using(
+        source: Store,
+        source_path: &Path,
+        destination: &Path,
+        export: RetainedExportLimits,
+        limits: InitialLimits,
+    ) -> Result<AuthorityRecord, PublicationFailure> {
+        let committed = ManagedRetainedStore::copy_from_store_role(
+            source,
+            source_path,
+            destination,
             export,
             limits,
             AUTHORIZED_MAGIC,

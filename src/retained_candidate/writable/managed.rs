@@ -27,6 +27,63 @@ const CUTOVER_MAGIC: &[u8; 8] = b"EMDACT03";
 const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 const ACTIVE_BYTES: usize = 256;
+const CATALOG_BYTES: usize = 56;
+
+#[derive(Clone, Copy)]
+struct InitialLimits {
+    generation: RetainedStoreLimits,
+    storage: Option<InitialStorage>,
+}
+
+#[derive(Clone, Copy)]
+struct InitialStorage {
+    policy: CatalogStorageLimits,
+    available: CatalogStorageLimits,
+    archives: CatalogStorageLimits,
+}
+
+impl From<RetainedStoreLimits> for InitialLimits {
+    fn from(generation: RetainedStoreLimits) -> Self {
+        Self {
+            generation,
+            storage: None,
+        }
+    }
+}
+
+impl InitialLimits {
+    fn with_storage(generation: RetainedStoreLimits, policy: CatalogStorageLimits) -> Self {
+        Self {
+            generation,
+            storage: Some(InitialStorage {
+                policy,
+                available: policy,
+                archives: CatalogStorageLimits {
+                    bytes: 0,
+                    entries: 0,
+                },
+            }),
+        }
+    }
+
+    fn max_base_bytes(self) -> io::Result<u64> {
+        let Some(storage) = self.storage else {
+            return Ok(u64::MAX);
+        };
+        // Catalog lock, ID and selection, plus the generation directory
+        // containing its lock, base, log and witness.
+        if storage.available.entries < 8 + storage.archives.entries {
+            return Err(storage::entry_limit());
+        }
+        let fixed = CATALOG_BYTES + ACTIVE_BYTES + super::QUOTA_HEADER_BYTES + super::WITNESS_BYTES;
+        storage
+            .available
+            .bytes
+            .checked_sub(fixed as u64)
+            .and_then(|bytes| bytes.checked_sub(storage.archives.bytes))
+            .ok_or_else(storage::byte_limit)
+    }
+}
 
 mod authority;
 mod backup;
@@ -75,7 +132,25 @@ impl ManagedRetainedStore {
         Self::create_using(
             candidate.as_ref(),
             destination.as_ref(),
-            limits,
+            limits.into(),
+            expected,
+            None,
+        )
+    }
+
+    /// Publish a candidate as a catalog with a persistent logical storage quota.
+    /// The quota applies to the catalog contents during staging and after open.
+    pub fn create_with_storage_limits(
+        candidate: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        storage: CatalogStorageLimits,
+        expected: &Expected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::create_using(
+            candidate.as_ref(),
+            destination.as_ref(),
+            InitialLimits::with_storage(limits, storage),
             expected,
             None,
         )
@@ -94,7 +169,26 @@ impl ManagedRetainedStore {
         Self::create_using(
             candidate.as_ref(),
             destination.as_ref(),
-            limits,
+            limits.into(),
+            &expected.candidate,
+            Some((suffix.as_ref(), expected)),
+        )
+    }
+
+    /// Publish a bound candidate and detached suffix under a persistent quota.
+    /// Admission accounts for the entire bound suffix before copying the base.
+    pub fn create_from_suffix_with_storage_limits(
+        candidate: impl AsRef<Path>,
+        suffix: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        storage: CatalogStorageLimits,
+        expected: &SuffixExpected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::create_using(
+            candidate.as_ref(),
+            destination.as_ref(),
+            InitialLimits::with_storage(limits, storage),
             &expected.candidate,
             Some((suffix.as_ref(), expected)),
         )
@@ -103,7 +197,7 @@ impl ManagedRetainedStore {
     fn create_using(
         candidate: &Path,
         destination: &Path,
-        limits: RetainedStoreLimits,
+        limits: InitialLimits,
         expected: &Expected,
         suffix: Option<(&Path, &SuffixExpected)>,
     ) -> Result<[u8; 16], PublicationFailure> {
@@ -111,8 +205,9 @@ impl ManagedRetainedStore {
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(candidate, parent).map_err(PublicationFailure::NotPublished)?;
         check_files(candidate, expected).map_err(PublicationFailure::NotPublished)?;
+        let suffix_bytes = suffix.map_or(0, |(_, expected)| expected.end);
         let suffix = suffix
-            .map(|(path, binding)| SuffixImport::open(path, limits.suffix, binding))
+            .map(|(path, binding)| SuffixImport::open(path, limits.generation.suffix, binding))
             .transpose()
             .map_err(PublicationFailure::NotPublished)?;
         Self::publish_initial(
@@ -121,8 +216,11 @@ impl ManagedRetainedStore {
             limits,
             CATALOG_MAGIC,
             sync_existing,
-            |_, path| {
-                copy_base(candidate, path, limits, expected)?;
+            |_, path, max_base_bytes| {
+                let max_base_bytes = max_base_bytes
+                    .checked_sub(suffix_bytes)
+                    .ok_or_else(storage::byte_limit)?;
+                copy_base(candidate, path, limits.generation, expected, max_base_bytes)?;
                 Ok((expected.clone(), suffix))
             },
         )
@@ -155,6 +253,28 @@ impl ManagedRetainedStore {
         )
     }
 
+    /// Copy a witnessed store into a catalog with a persistent storage quota.
+    /// Source verification and staging complete before destination publication.
+    pub fn copy_from_store_with_storage_limits(
+        source: Store,
+        source_path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        export: RetainedExportLimits,
+        limits: RetainedStoreLimits,
+        storage: CatalogStorageLimits,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::copy_from_store_role(
+            source,
+            source_path.as_ref(),
+            destination.as_ref(),
+            export,
+            InitialLimits::with_storage(limits, storage),
+            CATALOG_MAGIC,
+            sync_existing,
+        )
+        .map(|point| point.generation)
+    }
+
     fn copy_from_store_using(
         source: Store,
         source_path: &Path,
@@ -168,7 +288,7 @@ impl ManagedRetainedStore {
             source_path,
             destination,
             export,
-            limits,
+            limits.into(),
             CATALOG_MAGIC,
             sync_parent,
         )
@@ -180,7 +300,7 @@ impl ManagedRetainedStore {
         source_path: &Path,
         destination: &Path,
         export: RetainedExportLimits,
-        limits: RetainedStoreLimits,
+        limits: InitialLimits,
         catalog_magic: &'static [u8; 8],
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<AuthorityPoint, PublicationFailure> {
@@ -197,8 +317,15 @@ impl ManagedRetainedStore {
             limits,
             catalog_magic,
             sync_parent,
-            |stage, path| {
-                let expected = export_into_generation(&source, stage, path, export, limits)?;
+            |stage, path, max_base_bytes| {
+                let expected = export_into_generation(
+                    &source,
+                    stage,
+                    path,
+                    export,
+                    limits.generation,
+                    max_base_bytes,
+                )?;
                 Ok((expected, None))
             },
         )
@@ -207,15 +334,17 @@ impl ManagedRetainedStore {
     fn publish_initial(
         destination: &Path,
         parent: &Path,
-        limits: RetainedStoreLimits,
+        limits: InitialLimits,
         catalog_magic: &'static [u8; 8],
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         prepare: impl FnOnce(
             &crate::staging::Stage,
             &Path,
+            u64,
         ) -> io::Result<(Expected, Option<SuffixImport>)>,
     ) -> Result<AuthorityPoint, PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
+            let max_base_bytes = limits.max_base_bytes()?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let root = stage.path();
             create_file(&root.join("store.lock"))?.sync_all()?;
@@ -227,14 +356,14 @@ impl ManagedRetainedStore {
             let slot = Slot::A;
             let path = slot.path(root);
             fs::DirBuilder::new().mode(0o700).create(&path)?;
-            let (expected, suffix) = prepare(&stage, &path)?;
+            let (expected, suffix) = prepare(&stage, &path, max_base_bytes)?;
             let store = RetainedStore::initialize(
                 &path,
-                limits,
+                limits.generation,
                 &expected,
                 suffix,
                 generation_role(catalog_magic, catalog),
-                None,
+                limits.storage.map(|storage| storage.policy),
             )?;
             let point = AuthorityPoint::from_store(catalog, &store);
             drop(store);
@@ -245,6 +374,13 @@ impl ManagedRetainedStore {
                 expected,
             };
             write_new(&root.join(ACTIVE_FILE), &active.encode())?;
+            if let Some(storage) = limits.storage {
+                CatalogStorage {
+                    root: root.to_path_buf(),
+                    limits: storage.available,
+                }
+                .room(0, 0)?;
+            }
             sync_existing(root)?;
             tracker.begin_publication();
             stage.publish(destination)?;
@@ -790,15 +926,15 @@ fn export_into_generation(
     path: &Path,
     mut export: RetainedExportLimits,
     limits: RetainedStoreLimits,
+    max_base_bytes: u64,
 ) -> io::Result<Expected> {
     export.max_output_bytes = export
         .max_output_bytes
         .min(limits.base.file_bytes)
+        .min(max_base_bytes)
         .min(limits.base.work_bytes.saturating_sub(1));
     let name = std::ffi::OsStr::new("base");
-    let base = source
-        .export_retained_base_in_stage(stage, name, random_id()?, export)
-        .map_err(unpack_publication)?;
+    let base = source.write_retained_base_in_stage(stage, name, random_id()?, export)?;
     let expected = crate::retained_candidate::binding(&base, random_id()?)?;
     fs::rename(stage.child_path(name)?, path.join(name))?;
     Ok(expected)
@@ -838,8 +974,8 @@ fn catalog_storage(
     })
 }
 
-fn catalog_bytes(id: [u8; 16], magic: &[u8; 8]) -> [u8; 56] {
-    let mut bytes = [0; 56];
+fn catalog_bytes(id: [u8; 16], magic: &[u8; 8]) -> [u8; CATALOG_BYTES] {
+    let mut bytes = [0; CATALOG_BYTES];
     bytes[..8].copy_from_slice(magic);
     bytes[8..24].copy_from_slice(&id);
     let digest = Sha256::digest(&bytes[..24]);
@@ -848,7 +984,7 @@ fn catalog_bytes(id: [u8; 16], magic: &[u8; 8]) -> [u8; 56] {
 }
 
 fn read_catalog(root: &Path, magic: &[u8; 8]) -> io::Result<[u8; 16]> {
-    let bytes = exact(&root.join(CATALOG_FILE), 56)?;
+    let bytes = exact(&root.join(CATALOG_FILE), CATALOG_BYTES)?;
     let id = bytes[8..24].try_into().unwrap();
     if id == [0; 16] || bytes != catalog_bytes(id, magic) {
         return Err(record::invalid_data("invalid retained catalog identity"));

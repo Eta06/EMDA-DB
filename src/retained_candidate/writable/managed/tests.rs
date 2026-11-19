@@ -25,6 +25,118 @@ pub(super) fn catalog_usage(root: &Path) -> CatalogStorageLimits {
 }
 
 #[test]
+fn initial_catalog_quota_covers_candidate_and_bound_backup() {
+    let f = Fixture::new(LIMITS);
+    let candidate = f.tmp.path().join("candidate");
+    let destination = f.tmp.path().join("quota");
+    let mut exact = catalog_usage(&f.root);
+    exact.bytes += (super::super::QUOTA_HEADER_BYTES - super::super::MANAGED_HEADER_BYTES) as u64;
+    let create = |storage| {
+        ManagedRetainedStore::create_with_storage_limits(
+            &candidate,
+            &destination,
+            LIMITS,
+            storage,
+            &f.expected,
+        )
+    };
+    for (limit, message) in [
+        (
+            CatalogStorageLimits {
+                bytes: exact.bytes - 1,
+                ..exact
+            },
+            "catalog byte limit exceeded",
+        ),
+        (
+            CatalogStorageLimits {
+                entries: exact.entries - 1,
+                ..exact
+            },
+            "catalog entry limit exceeded",
+        ),
+    ] {
+        assert!(
+            matches!(create(limit), Err(PublicationFailure::NotPublished(error)) if error.to_string() == message)
+        );
+        assert!(!destination.exists());
+    }
+    create(exact).unwrap();
+    assert_eq!(catalog_usage(&destination), exact);
+    let mut store = ManagedRetainedStore::open(&destination, LIMITS).unwrap();
+    assert_eq!(store.store.header.storage_limits(), Some(exact));
+    assert!(matches!(
+        store.put(b"b", b"new"),
+        Err(MutationFailure::Rejected(_))
+    ));
+    assert_eq!(
+        store.get(b"a", 8).unwrap().as_deref(),
+        Some(b"old".as_slice())
+    );
+
+    let backup = f.tmp.path().join("backup");
+    let mut source = f.open();
+    source.put(b"a", b"new").unwrap();
+    let binding = source.backup_to(&backup).unwrap();
+    assert!(binding.end > 0);
+    let backup_before = catalog_usage(&backup);
+    let restored = f.tmp.path().join("restored");
+    exact.bytes += binding.end;
+    let restore = |storage| {
+        ManagedRetainedStore::restore_backup_with_storage_limits(
+            &backup, &restored, LIMITS, storage, &binding,
+        )
+    };
+    assert!(
+        matches!(restore(CatalogStorageLimits { bytes: exact.bytes - 1, ..exact }),
+        Err(PublicationFailure::NotPublished(error)) if error.to_string() == "catalog byte limit exceeded")
+    );
+    assert!(!restored.exists());
+    restore(exact).unwrap();
+    assert_eq!(catalog_usage(&restored), exact);
+    let store = ManagedRetainedStore::open(&restored, LIMITS).unwrap();
+    assert_eq!(store.store.header.storage_limits(), Some(exact));
+    assert_eq!(
+        store.get(b"a", 8).unwrap().as_deref(),
+        Some(b"new".as_slice())
+    );
+    assert_eq!(catalog_usage(&backup), backup_before);
+}
+
+#[test]
+fn initial_catalog_quota_copy_is_effective_after_uncertain_publication() {
+    let f = Fixture::new(LIMITS);
+    let source = f.tmp.path().join("source");
+    let destination = f.tmp.path().join("copy");
+    let policy = CatalogStorageLimits {
+        bytes: 1024,
+        entries: 8,
+    };
+    let before = fs::read(source.join("records.log")).unwrap();
+    let witness = fs::read(source.join("commit.state")).unwrap();
+    let result = ManagedRetainedStore::copy_from_store_role(
+        Store::open(&source).unwrap(),
+        &source,
+        &destination,
+        EXPORT_LIMITS,
+        InitialLimits::with_storage(LIMITS, policy),
+        CATALOG_MAGIC,
+        |_| Err(io::Error::other("injected parent sync failure")),
+    );
+    assert!(
+        matches!(result, Err(PublicationFailure::OutcomeUnknown(error)) if error.to_string() == "injected parent sync failure")
+    );
+    let store = ManagedRetainedStore::open(&destination, LIMITS).unwrap();
+    assert_eq!(store.store.header.storage_limits(), Some(policy));
+    assert_eq!(
+        store.get(b"z", 8).unwrap().as_deref(),
+        Some(b"kept".as_slice())
+    );
+    assert_eq!(fs::read(source.join("records.log")).unwrap(), before);
+    assert_eq!(fs::read(source.join("commit.state")).unwrap(), witness);
+}
+
+#[test]
 fn persisted_catalog_quota_survives_selection_uncertainty_and_later_rotation() {
     let f = Fixture::new(LIMITS);
     let old = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
