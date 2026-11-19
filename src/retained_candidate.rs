@@ -353,6 +353,18 @@ pub fn open_exported_suffix(
 }
 
 fn read_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<Vec<u8>> {
+    let (mut file, len) = open_suffix(path, limits, end)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(len)
+        .map_err(|_| io::Error::other("suffix allocation failed"))?;
+    bytes.resize(len, 0);
+    file.read_exact(&mut bytes)?;
+    require_suffix_eof(&mut file)?;
+    Ok(bytes)
+}
+
+fn open_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<(fs::File, usize)> {
     if end > limits.bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -360,21 +372,23 @@ fn read_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<Vec<u8
         ));
     }
     let len = usize::try_from(end).map_err(|_| invalid())?;
-    let mut file = open_regular(path)?;
+    let file = open_regular(path)?;
     if file.metadata()?.len() != end {
         return Err(invalid());
     }
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(len)
-        .map_err(|_| io::Error::other("suffix allocation failed"))?;
-    bytes.resize(len, 0);
-    file.read_exact(&mut bytes)?;
+    Ok((file, len))
+}
+
+fn require_suffix_eof(reader: &mut impl Read) -> io::Result<()> {
     let mut extra = [0];
-    if file.read(&mut extra)? != 0 {
-        return Err(invalid());
+    loop {
+        match reader.read(&mut extra) {
+            Ok(0) => return Ok(()),
+            Ok(_) => return Err(invalid()),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
     }
-    Ok(bytes)
 }
 
 /// Validate and privately replay a detached suffix against an independently

@@ -150,7 +150,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                         open_regular(&original)?;
                         fs::hard_link(original, stage.path().join(archive))?;
                     }
-                    Ok((expected, Vec::new()))
+                    Ok((expected, None))
                 },
             )
             .map_err(unpack_publication)?;

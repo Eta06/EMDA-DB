@@ -1,13 +1,12 @@
 use super::{
     Expected, GenerationRole, Header, OverlaySource, RecoveryLimits, RetainedStore,
-    RetainedStoreLimits, StoreLock, copy_base, create_file, decode_marker, encode_batch,
-    invalid_input, open_regular, open_regular_with, random_id, read_marker, suffix_end,
+    RetainedStoreLimits, StoreLock, SuffixImport, copy_base, create_file, decode_marker,
+    encode_batch, invalid_input, open_regular, open_regular_with, random_id, read_marker,
+    suffix_end,
 };
 use crate::directory::sync_existing;
 use crate::record::{self, Operation};
-use crate::retained_candidate::{
-    SuffixCapacity, SuffixExpected, check_files, check_suffix_binding, exact, read_suffix,
-};
+use crate::retained_candidate::{SuffixCapacity, SuffixExpected, check_files, exact};
 use crate::{
     BatchOperation, Entry, MutationFailure, PublicationFailure, RetainedExportLimits, Store,
 };
@@ -72,12 +71,13 @@ impl ManagedRetainedStore {
             destination.as_ref(),
             limits,
             expected,
-            || Ok(Vec::new()),
+            None,
         )
     }
 
     /// Publish a catalog with the independently bound detached suffix
     /// imported into its first generation.
+    /// The suffix is copied in fixed-size chunks and replayed from staging.
     pub fn create_from_suffix(
         candidate: impl AsRef<Path>,
         suffix: impl AsRef<Path>,
@@ -90,11 +90,7 @@ impl ManagedRetainedStore {
             destination.as_ref(),
             limits,
             &expected.candidate,
-            || {
-                let bytes = read_suffix(suffix.as_ref(), limits.suffix, expected.end)?;
-                check_suffix_binding(&bytes, limits.suffix, expected)?;
-                Ok(bytes)
-            },
+            Some((suffix.as_ref(), expected)),
         )
     }
 
@@ -103,12 +99,16 @@ impl ManagedRetainedStore {
         destination: &Path,
         limits: RetainedStoreLimits,
         expected: &Expected,
-        suffix: impl FnOnce() -> io::Result<Vec<u8>>,
+        suffix: Option<(&Path, &SuffixExpected)>,
     ) -> Result<[u8; 16], PublicationFailure> {
         let parent = crate::backup::parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(candidate, parent).map_err(PublicationFailure::NotPublished)?;
         check_files(candidate, expected).map_err(PublicationFailure::NotPublished)?;
+        let suffix = suffix
+            .map(|(path, binding)| SuffixImport::open(path, limits.suffix, binding))
+            .transpose()
+            .map_err(PublicationFailure::NotPublished)?;
         Self::publish_initial(
             destination,
             parent,
@@ -117,7 +117,7 @@ impl ManagedRetainedStore {
             sync_existing,
             |_, path| {
                 copy_base(candidate, path, limits, expected)?;
-                Ok((expected.clone(), suffix()?))
+                Ok((expected.clone(), suffix))
             },
         )
         .map(|point| point.generation)
@@ -193,7 +193,7 @@ impl ManagedRetainedStore {
             sync_parent,
             |stage, path| {
                 let expected = export_into_generation(&source, stage, path, export, limits)?;
-                Ok((expected, Vec::new()))
+                Ok((expected, None))
             },
         )
     }
@@ -204,7 +204,10 @@ impl ManagedRetainedStore {
         limits: RetainedStoreLimits,
         catalog_magic: &'static [u8; 8],
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
-        prepare: impl FnOnce(&crate::staging::Stage, &Path) -> io::Result<(Expected, Vec<u8>)>,
+        prepare: impl FnOnce(
+            &crate::staging::Stage,
+            &Path,
+        ) -> io::Result<(Expected, Option<SuffixImport>)>,
     ) -> Result<AuthorityPoint, PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             let mut stage = crate::staging::Stage::directory(parent)?;
@@ -524,7 +527,7 @@ impl ManagedRetainedStore {
             stage.path(),
             limits,
             &expected,
-            Vec::new(),
+            None,
             generation_role(self.catalog_magic, self.active.catalog),
         )?;
         let generation = next.generation_id();

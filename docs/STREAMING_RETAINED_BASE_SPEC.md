@@ -209,7 +209,11 @@ Point and page reads authenticate selected suffix values against
 those digests. Tombstones and staged transaction edits participate in
 the same ordered merge. Backup copies the suffix in bounded chunks
 and checks the staged digest. Rebase authenticates the actual suffix
-bytes used to calculate historical peaks.
+bytes used to calculate historical peaks. Writable import and managed
+backup restore copy the admitted detached suffix from one opened file
+in chunks of at most 1 MiB. The private copy must match the exact endpoint
+and independent digest, then pass ordinary writable replay before
+publication. Recovery cannot adopt an added tail during initialization.
 
 Mutations require exclusive use of the handle.
 Ordered DB02 children are admitted as one atomic append. Preparation
@@ -219,8 +223,9 @@ complete record, synchronizes the log, updates and synchronizes the
 witness, then publishes changes in memory. An uncertain write poisons
 the handle until reopening. The caps govern the file input and logical
 retained state, while returned pages, encoded appends, staging,
-detached-suffix imports, allocator overhead and filesystem blocks
-have separate costs. No on-disk fields change.
+allocator overhead and filesystem blocks have separate costs.
+The detached inspection APIs that return materialized state have
+their own staging limits. No on-disk fields change.
 
 This is a separately created generation under the same trusted local
 filesystem model. The local witness can detect mismatches and loss below

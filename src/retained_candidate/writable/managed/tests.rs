@@ -161,6 +161,85 @@ fn managed_backup_rollback_binding_and_limits_reject_before_restore_publication(
 }
 
 #[test]
+fn managed_restore_streams_large_suffix_and_replays_before_publication() {
+    let limits = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            bytes: 2 * 1024 * 1024,
+            ..LIMITS.suffix
+        },
+        ..LIMITS
+    };
+    let f = Fixture::new(limits);
+    let mut store = ManagedRetainedStore::open(&f.root, limits).unwrap();
+    let old = vec![0x41; 640 * 1024];
+    let live = vec![0x42; 640 * 1024 + 3];
+    store.put(b"b", &old).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"b",
+                value: &live,
+            },
+            BatchOperation::Delete { key: b"a" },
+            BatchOperation::Put {
+                key: b"d",
+                value: b"",
+            },
+        ])
+        .unwrap();
+    let backup = f.tmp.path().join("large-backup");
+    let expected = store.backup_to(&backup).unwrap();
+    let suffix = backup.join("suffix");
+    let original = fs::read(&suffix).unwrap();
+    let destination = f.tmp.path().join("exact-restore");
+    let exact = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            bytes: expected.end,
+            operations: 4,
+            ..limits.suffix
+        },
+        ..limits
+    };
+    let too_few_operations = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            operations: 3,
+            ..exact.suffix
+        },
+        ..exact
+    };
+    assert!(matches!(
+        ManagedRetainedStore::restore_backup(&backup, &destination, too_few_operations, &expected),
+        Err(PublicationFailure::NotPublished(ref cause))
+            if cause.kind() == io::ErrorKind::InvalidInput && cause.to_string().contains("suffix operation limit")
+    ));
+    let mut malformed = original.clone();
+    *malformed.last_mut().unwrap() ^= 1;
+    let malformed_binding = SuffixExpected {
+        digest: Sha256::digest(&malformed).into(),
+        ..expected.clone()
+    };
+    fs::write(&suffix, &malformed).unwrap();
+    assert!(matches!(
+        ManagedRetainedStore::restore_backup(&backup, &destination, exact, &malformed_binding),
+        Err(PublicationFailure::NotPublished(ref cause))
+            if cause.kind() == io::ErrorKind::InvalidData && cause.to_string() == "record checksum mismatch"
+    ));
+    assert_eq!(fs::read(&suffix).unwrap(), malformed);
+    assert!(!destination.exists());
+    fs::write(&suffix, &original).unwrap();
+    let id = ManagedRetainedStore::restore_backup(&backup, &destination, exact, &expected).unwrap();
+    let installed = ManagedRetainedStore::open(&destination, exact).unwrap();
+    assert_eq!(installed.generation_id().unwrap(), id);
+    assert_ne!(id, store.generation_id().unwrap());
+    assert_eq!(
+        installed.scan(None, None, 4).unwrap(),
+        store.scan(None, None, 4).unwrap()
+    );
+    assert_eq!(installed.get(b"b", live.len()).unwrap(), Some(live));
+    assert_eq!(fs::read(&suffix).unwrap(), original);
+}
+
+#[test]
 fn managed_backup_uncertainty_returns_the_verified_binding() {
     let f = Fixture::new(LIMITS);
     let backup = f.tmp.path().join("backup");

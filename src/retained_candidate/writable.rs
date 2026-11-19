@@ -1,12 +1,9 @@
 use super::indexed_suffix::{Overlay, OverlaySource};
-use super::suffix_file::SuffixFile;
+use super::suffix_file::{SuffixFile, SuffixImport};
 use super::{
     Expected, IndexLimits, Limits, OverlayLimits, SuffixLimits, check_binding, check_files,
 };
-use super::{
-    SuffixExpected, check_suffix_binding, open_regular, open_regular_with, read_suffix,
-    suffix_capacity,
-};
+use super::{SuffixExpected, open_regular, open_regular_with, suffix_capacity};
 use crate::record::{self, Operation};
 use crate::retained_base_v2::index::IndexedBase;
 use crate::store_lock::StoreLock;
@@ -120,7 +117,7 @@ impl RetainedStore {
             destination.as_ref(),
             limits,
             expected,
-            || Ok(Vec::new()),
+            None,
             crate::directory::sync_existing,
         )
     }
@@ -128,6 +125,7 @@ impl RetainedStore {
     /// Publish a new writable generation from an independently verified base
     /// and detached suffix. The imported suffix is charged against the
     /// generation's persisted limits and witnessed before publication.
+    /// The suffix is copied in fixed-size chunks and replayed from staging.
     pub fn create_from_suffix(
         candidate: impl AsRef<Path>,
         suffix: impl AsRef<Path>,
@@ -140,11 +138,7 @@ impl RetainedStore {
             destination.as_ref(),
             limits,
             &expected.candidate,
-            || {
-                let bytes = read_suffix(suffix.as_ref(), limits.suffix, expected.end)?;
-                check_suffix_binding(&bytes, limits.suffix, expected)?;
-                Ok(bytes)
-            },
+            Some((suffix.as_ref(), expected)),
             crate::directory::sync_existing,
         )
     }
@@ -154,7 +148,7 @@ impl RetainedStore {
         destination: &Path,
         limits: RetainedStoreLimits,
         expected: &Expected,
-        open_suffix: impl FnOnce() -> io::Result<Vec<u8>>,
+        suffix: Option<(&Path, &SuffixExpected)>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
@@ -174,7 +168,9 @@ impl RetainedStore {
             {
                 return Err(invalid_input("retained base byte limit exceeded"));
             }
-            let suffix = open_suffix()?;
+            let suffix = suffix
+                .map(|(path, binding)| SuffixImport::open(path, limits.suffix, binding))
+                .transpose()?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let dir = stage.path();
             copy_base(candidate, dir, limits, expected)?;
@@ -194,30 +190,34 @@ impl RetainedStore {
         dir: &Path,
         limits: RetainedStoreLimits,
         expected: &Expected,
-        suffix: Vec<u8>,
+        suffix: Option<SuffixImport>,
         role: GenerationRole,
     ) -> io::Result<Self> {
         create_file(&dir.join("store.lock"))?.sync_all()?;
         let header = Header::new(expected, limits, role)?;
         let mut log = create_file(&dir.join("records.log"))?;
         log.write_all(header.bytes())?;
-        log.write_all(&suffix)?;
+        let (end, digest) = match suffix {
+            Some(suffix) => suffix.write(&mut log)?,
+            None => (0, Sha256::digest([]).into()),
+        };
         log.sync_all()?;
         let mut witness = create_file(&dir.join("commit.state"))?;
-        witness.write_all(&marker(
-            header.bytes(),
-            suffix.len() as u64,
-            &Sha256::digest(&suffix).into(),
-        ))?;
+        witness.write_all(&marker(header.bytes(), end, &digest))?;
         witness.sync_all()?;
-        drop((log, witness, suffix));
+        drop((log, witness));
         Self::open_role(
             dir,
             RecoveryLimits::Exact(limits),
             expected,
             role,
             None,
-            |directory, _, _, _| crate::directory::sync_existing(directory),
+            |directory, _, actual_end, actual_digest| {
+                if (actual_end, actual_digest) != (end, digest) {
+                    return Err(record::invalid_data("staged retained suffix changed"));
+                }
+                crate::directory::sync_existing(directory)
+            },
         )
     }
 

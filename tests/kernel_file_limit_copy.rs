@@ -4,8 +4,8 @@
 
 use database_engine::retained_base_v2::Limits;
 use database_engine::retained_candidate::{
-    AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits, OverlayLimits, RetainedAuthority,
-    RetainedStoreLimits, SuffixLimits,
+    AuthorizedRetainedStore, Expected, FileRetainedAuthority, IndexLimits, ManagedRetainedStore,
+    OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixExpected, SuffixLimits,
 };
 use database_engine::{PublicationFailure, RetainedExportLimits, Store, cleanup_abandoned_staging};
 use rustix::fs::getxattr;
@@ -119,6 +119,134 @@ fn verify(store: &Store) {
         Some(&b"acknowledged"[..])
     );
     assert_eq!(store.get(b"large").unwrap().as_deref(), Some(LARGE_VALUE));
+}
+
+#[test]
+fn kernel_retained_restore_child() {
+    let Some(root) = std::env::var_os("EMDA_RETAINED_RESTORE_LIMIT_ROOT") else {
+        return;
+    };
+    let root = Path::new(&root);
+    let binding = fs::read(root.join("expected")).unwrap();
+    let expected = SuffixExpected {
+        candidate: Expected {
+            header: binding[..112].try_into().unwrap(),
+            witness: binding[112..144].try_into().unwrap(),
+            base_digest: binding[144..176].try_into().unwrap(),
+        },
+        end: u64::from_le_bytes(binding[176..184].try_into().unwrap()),
+        digest: binding[184..].try_into().unwrap(),
+    };
+    set_limit(
+        std::env::var("EMDA_COPY_LIMIT_BYTES")
+            .unwrap()
+            .parse()
+            .unwrap(),
+    );
+    println!("{READY}");
+    io::stdout().flush().unwrap();
+    let result = ManagedRetainedStore::restore_backup(
+        root.join("retained-backup"),
+        root.join("restored"),
+        RETAINED,
+        &expected,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(PublicationFailure::NotPublished(ref cause)) if cause.raw_os_error() == Some(27)
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn retained_restore_file_size_failures_preserve_backup_and_allow_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let original = root.path().join("source");
+    let source = Store::open(&original).unwrap();
+    source.put(b"safe", b"acknowledged").unwrap();
+    let catalog = root.path().join("catalog");
+    ManagedRetainedStore::copy_from_store(source, &original, &catalog, EXPORT, RETAINED).unwrap();
+    let mut store = ManagedRetainedStore::open(&catalog, RETAINED).unwrap();
+    store.put(b"large", LARGE_VALUE).unwrap();
+    let backup = root.path().join("retained-backup");
+    let expected = store.backup_to(&backup).unwrap();
+    let binding = [
+        expected.candidate.header.as_slice(),
+        &expected.candidate.witness,
+        &expected.candidate.base_digest,
+        &expected.end.to_le_bytes(),
+        &expected.digest,
+    ]
+    .concat();
+    fs::write(root.path().join("expected"), &binding).unwrap();
+    let suffix = fs::read(backup.join("suffix")).unwrap();
+    let base = fs::read(backup.join("candidate/base")).unwrap();
+    let old_log = fs::read(catalog.join("generation-a/records.log")).unwrap();
+    let old_witness = fs::read(catalog.join("generation-a/commit.state")).unwrap();
+    let old_selection = fs::read(catalog.join("active.retained")).unwrap();
+    let destination = root.path().join("restored");
+    let normal_entries = fs::read_dir(root.path()).unwrap().count();
+    for limit in [1024, 2048, 3072] {
+        assert!(base.len() < limit && limit < suffix.len());
+        for ignore_signal in [false, true] {
+            let mut command = kernel_file_limit_common::child_command(
+                "kernel_retained_restore_child",
+                ignore_signal,
+            )
+            .unwrap();
+            command
+                .env("EMDA_RETAINED_RESTORE_LIMIT_ROOT", root.path())
+                .env("EMDA_COPY_LIMIT_BYTES", limit.to_string());
+            let output = kernel_file_limit_common::output_with_timeout(&mut command).unwrap();
+            let details = format!("limit={limit} ignore_signal={ignore_signal} {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains(READY),
+                "{details}"
+            );
+            if ignore_signal {
+                assert!(output.status.success(), "{details}");
+            } else {
+                assert_eq!(
+                    output.status.signal(),
+                    Some(Signal::XFSZ.as_raw()),
+                    "{details}"
+                );
+            }
+            assert!(!destination.exists(), "{details}");
+            cleanup_abandoned_staging(root.path()).unwrap();
+            assert_eq!(
+                fs::read_dir(root.path()).unwrap().count(),
+                normal_entries,
+                "{details}"
+            );
+            assert_eq!(fs::read(backup.join("suffix")).unwrap(), suffix);
+            assert_eq!(fs::read(backup.join("candidate/base")).unwrap(), base);
+            assert_eq!(fs::read(root.path().join("expected")).unwrap(), binding);
+            assert_eq!(
+                fs::read(catalog.join("generation-a/records.log")).unwrap(),
+                old_log
+            );
+            assert_eq!(
+                fs::read(catalog.join("generation-a/commit.state")).unwrap(),
+                old_witness
+            );
+            assert_eq!(
+                fs::read(catalog.join("active.retained")).unwrap(),
+                old_selection
+            );
+        }
+    }
+
+    let generation =
+        ManagedRetainedStore::restore_backup(&backup, &destination, RETAINED, &expected).unwrap();
+    let restored = ManagedRetainedStore::open(&destination, RETAINED).unwrap();
+    assert_eq!(restored.generation_id().unwrap(), generation);
+    assert_eq!(
+        restored.scan(None, None, 8).unwrap(),
+        store.scan(None, None, 8).unwrap()
+    );
 }
 
 #[test]

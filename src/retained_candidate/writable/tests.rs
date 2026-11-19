@@ -611,14 +611,10 @@ fn uncertain_creation_leaves_a_complete_candidate_for_inspection() {
     let f = Fixture::new(LIMITS);
     let candidate = f.root.path().join("candidate");
     let destination = f.root.path().join("uncertain");
-    let result = RetainedStore::create_using(
-        &candidate,
-        &destination,
-        LIMITS,
-        &f.expected,
-        || Ok(Vec::new()),
-        |_| Err(io::Error::other("injected parent sync failure")),
-    );
+    let result =
+        RetainedStore::create_using(&candidate, &destination, LIMITS, &f.expected, None, |_| {
+            Err(io::Error::other("injected parent sync failure"))
+        });
     assert!(matches!(result, Err(PublicationFailure::OutcomeUnknown(_))));
     let log = destination.join("records.log");
     let mut file = OpenOptions::new().append(true).open(log).unwrap();
