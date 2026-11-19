@@ -475,3 +475,13 @@ witness-bound limits. The same ceiling can cover either side of an
 uncertain resize. The [resize validation](../benchmarks/results/2026-11-19-retained-resize/README.md)
 also refreshes document serial histories and kill-race evidence on both
 writable backends and both local platforms.
+
+Managed retained catalogs support opt-in automatic compaction and
+reclamation. A handle opened with this policy clears abandoned catalog
+stages and retires verified inactive generations. Before append it
+rotates on suffix pressure when the triggering mutation fits an empty
+suffix. Recovery tests kill the process at the selector and retirement
+boundaries. The [automatic reclamation report](../benchmarks/results/2026-11-19-retained-auto-reclaim/README.md)
+records the cross-platform results, reduced logical file lengths in one
+fixture, and substantial write-path latency when rotation coincides with
+other I/O.
