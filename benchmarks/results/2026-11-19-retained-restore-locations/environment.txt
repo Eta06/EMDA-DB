@@ -1,0 +1,10 @@
+03f64dba3fdf3df2dea960ac167a402324b5e8a4
+5e9517e939c45e99fd4cb81cb843d6998a8f2b8f
+Darwin 27.0.0 arm64
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+Apple M6
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)

@@ -1,0 +1,30 @@
+{
+  "before": {
+    "restore_ns": [
+      400467167,
+      443430875,
+      389673125
+    ],
+    "median_restore_ns": 400467167,
+    "peak_rss_bytes": [
+      203620352,
+      203620352,
+      203620352
+    ],
+    "median_peak_rss_bytes": 203620352
+  },
+  "after-verified": {
+    "restore_ns": [
+      1129574042,
+      1114459625,
+      1107806792
+    ],
+    "median_restore_ns": 1114459625,
+    "peak_rss_bytes": [
+      35848192,
+      35831808,
+      35831808
+    ],
+    "median_peak_rss_bytes": 35831808
+  }
+}

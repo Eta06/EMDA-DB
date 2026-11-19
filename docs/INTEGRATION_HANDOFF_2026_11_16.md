@@ -726,5 +726,11 @@ Detached indexed inspection now offers file-backed suffix replay with a
 fixed I/O buffer. It retains a verified descriptor and authenticates
 returned values. The [validation and measurement](../benchmarks/results/2026-11-19-file-backed-indexed-suffix/README.md)
 covers both modes on macOS and Linux and a 127.98 MiB sampled reduction in
-peak process RSS for a 128 MiB suffix. Materialized restore and total
-memory accounting remain separate work.
+peak process RSS for a 128 MiB suffix.
+
+New-history restore retains authenticated file locations and writes one
+value at a time. Ordered replay preserves the intermediate staging limits,
+and a private reopen checks the complete output before publication. The
+[restore measurement](../benchmarks/results/2026-11-19-retained-restore-locations/README.md)
+records lower peak process RSS and longer restore time on a 128 MiB
+fixture. Total memory accounting and recovery latency remain open.

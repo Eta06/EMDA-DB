@@ -1,0 +1,9 @@
+433f3d8bac42d9ad22e2f669f4cac3b29d81e9398b72d89e8cc2410befbc56fb  ../fixture/binding
+c15bc4df63ff664308bade089fe5be44a6e98a32ba81f7326cb380244c51c915  ../fixture/candidate/base
+7cb0a922353665d10894d9baea41c6e8f20340b5949bfac466bf09a58ec9f561  ../fixture/candidate/records.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ../fixture/candidate/store.lock
+e69619f93471ba43a5aa52b39e32a26f0651237d80d01febfd52a6df41620764  ../fixture/candidate/witness
+4e557adc54c753787245701c0afc482209a916999474c38d235d9279b1c1ea72  ../fixture/source/commit.state
+d204b414e18c93112fbc6b62c2455697afa5f79dd70117afb2b2612c0a9a25ef  ../fixture/source/records.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ../fixture/source/store.lock
+d42d95ca6429b06cb4cb950d0fbbe7e436adeb6d47ebdf4654dba2a07cc7da71  ../fixture/suffix
