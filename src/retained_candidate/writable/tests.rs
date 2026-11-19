@@ -23,7 +23,7 @@ fn persisted_limit_fields_round_trip_and_each_requires_its_own_ceiling() {
             key_bytes: 31,
         },
     };
-    let mut header = Header::for_role(Some([1; 16]));
+    let mut header = Header::for_role(GenerationRole::Managed([1; 16]));
     header.fill_limits(distinct);
     let opened = header
         .recovery_limits(RecoveryLimits::Ceiling(distinct))

@@ -21,6 +21,7 @@ use std::{
 
 const VERSION: [u8; 8] = *b"EMDARW01";
 const MANAGED_VERSION: [u8; 8] = *b"EMDARW02";
+const AUTHORIZED_VERSION: [u8; 8] = *b"EMDARW03";
 const WITNESS_MAGIC: [u8; 8] = *b"EMDAWIT4";
 const LIMITS_OFFSET: usize = 136;
 const HEADER_BYTES: usize = LIMITS_OFFSET + 11 * 8;
@@ -28,7 +29,10 @@ const MANAGED_HEADER_BYTES: usize = HEADER_BYTES + 16;
 const WITNESS_BYTES: usize = 84;
 
 mod managed;
-pub use managed::ManagedRetainedStore;
+pub use managed::{
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, ManagedRetainedStore,
+    RetainedAuthority,
+};
 mod rebase;
 
 #[cfg(test)]
@@ -63,6 +67,13 @@ impl RetainedStoreLimits {
             self.overlay.key_bytes as u64,
         ]
     }
+}
+
+#[derive(Clone, Copy)]
+enum GenerationRole {
+    Standalone,
+    Managed([u8; 16]),
+    Authorized([u8; 16]),
 }
 
 enum RecoveryLimits {
@@ -166,7 +177,8 @@ impl RetainedStore {
             let mut stage = crate::staging::Stage::directory(parent)?;
             let dir = stage.path();
             copy_base(candidate, dir, limits, expected)?;
-            let verified = Self::initialize(dir, limits, expected, suffix, None)?;
+            let verified =
+                Self::initialize(dir, limits, expected, suffix, GenerationRole::Standalone)?;
             let id = verified.generation_id();
             drop(verified);
             tracker.begin_publication();
@@ -182,10 +194,10 @@ impl RetainedStore {
         limits: RetainedStoreLimits,
         expected: &Expected,
         suffix: Vec<u8>,
-        catalog: Option<[u8; 16]>,
+        role: GenerationRole,
     ) -> io::Result<Self> {
         create_file(&dir.join("store.lock"))?.sync_all()?;
-        let header = Header::new(expected, limits, catalog)?;
+        let header = Header::new(expected, limits, role)?;
         let mut log = create_file(&dir.join("records.log"))?;
         log.write_all(header.bytes())?;
         log.write_all(&suffix)?;
@@ -202,9 +214,9 @@ impl RetainedStore {
             dir,
             RecoveryLimits::Exact(limits),
             expected,
-            catalog,
+            role,
             None,
-            crate::directory::sync_existing,
+            |directory, _, _, _| crate::directory::sync_existing(directory),
         )
     }
 
@@ -237,9 +249,9 @@ impl RetainedStore {
             dir,
             RecoveryLimits::Exact(limits),
             expected,
+            GenerationRole::Standalone,
             None,
-            None,
-            sync_directory,
+            |directory, _, _, _| sync_directory(directory),
         )
     }
 
@@ -247,9 +259,9 @@ impl RetainedStore {
         dir: &Path,
         limits: RecoveryLimits,
         expected: &Expected,
-        catalog: Option<[u8; 16]>,
+        role: GenerationRole,
         generation: Option<[u8; 16]>,
-        sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+        authorize: impl FnOnce(&Path, &Header, u64, [u8; 32]) -> io::Result<()>,
     ) -> io::Result<Self> {
         if !dir.symlink_metadata()?.file_type().is_dir() {
             return Err(record::invalid_data("invalid retained store directory"));
@@ -260,7 +272,7 @@ impl RetainedStore {
         lock.verify_identity(dir)?;
         let log = open_regular_with(&dir.join("records.log"), OFlags::RDWR | OFlags::APPEND)?;
         let witness = open_regular_with(&dir.join("commit.state"), OFlags::RDWR)?;
-        let header = Header::read(&log, catalog)?;
+        let header = Header::read(&log, role)?;
         header.verify_identity(expected, generation)?;
         let saved = read_marker(&witness)?;
         let (committed, committed_hash) = decode_marker(&saved, header.bytes())?;
@@ -293,7 +305,12 @@ impl RetainedStore {
         let overlay = Overlay::build(&suffix, limits.suffix, limits.overlay, Some(committed))?;
         let base = IndexedBase::open(open_regular(&dir.join("base"))?, limits.base, limits.index)?;
         check_binding(base.metadata(), expected)?;
-        sync_directory(dir)?;
+        authorize(
+            dir,
+            &header,
+            suffix_len as u64,
+            hash.clone().finalize().into(),
+        )?;
         lock.verify_identity(dir)?;
         verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
         if committed < suffix_len {
@@ -490,14 +507,21 @@ struct Header {
 }
 
 impl Header {
-    fn for_role(catalog: Option<[u8; 16]>) -> Self {
+    fn for_role(role: GenerationRole) -> Self {
         let mut bytes = [0; MANAGED_HEADER_BYTES];
-        let (version, len) = match catalog {
-            Some(id) => {
+        let (version, len) = match role {
+            GenerationRole::Managed(id) | GenerationRole::Authorized(id) => {
                 bytes[HEADER_BYTES..].copy_from_slice(&id);
-                (MANAGED_VERSION, MANAGED_HEADER_BYTES)
+                (
+                    if matches!(role, GenerationRole::Authorized(_)) {
+                        AUTHORIZED_VERSION
+                    } else {
+                        MANAGED_VERSION
+                    },
+                    MANAGED_HEADER_BYTES,
+                )
             }
-            None => (VERSION, HEADER_BYTES),
+            GenerationRole::Standalone => (VERSION, HEADER_BYTES),
         };
         bytes[112..120].copy_from_slice(&version);
         Self { bytes, len }
@@ -506,9 +530,9 @@ impl Header {
     fn new(
         expected: &Expected,
         limits: RetainedStoreLimits,
-        catalog: Option<[u8; 16]>,
+        role: GenerationRole,
     ) -> io::Result<Self> {
-        let mut header = Self::for_role(catalog);
+        let mut header = Self::for_role(role);
         header.bytes[..112].copy_from_slice(&expected.header);
         header.bytes[120..LIMITS_OFFSET].copy_from_slice(&random_id()?);
         header.fill_limits(limits);
@@ -516,9 +540,9 @@ impl Header {
         Ok(header)
     }
 
-    fn read(log: &File, catalog: Option<[u8; 16]>) -> io::Result<Self> {
-        let expected = Self::for_role(catalog);
-        let mut observed = Self::for_role(catalog);
+    fn read(log: &File, role: GenerationRole) -> io::Result<Self> {
+        let expected = Self::for_role(role);
+        let mut observed = Self::for_role(role);
         log.read_exact_at(&mut observed.bytes[..observed.len], 0)?;
         if observed.bytes[112..120] != expected.bytes[112..120]
             || observed.bytes[HEADER_BYTES..] != expected.bytes[HEADER_BYTES..]

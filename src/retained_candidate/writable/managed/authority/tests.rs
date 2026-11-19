@@ -1,0 +1,270 @@
+use super::*;
+use crate::retained_base_v2::Limits;
+use crate::retained_candidate::{IndexLimits, OverlayLimits, SuffixLimits};
+use std::{
+    fs::OpenOptions,
+    sync::{Arc, Barrier, Mutex},
+};
+
+const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
+    base: Limits {
+        file_bytes: 8192,
+        entries: 32,
+        key_bytes: 256,
+        work_bytes: 8193,
+    },
+    index: IndexLimits {
+        blocks: 4,
+        anchor_bytes: 64,
+    },
+    suffix: SuffixLimits {
+        bytes: 8192,
+        operations: 64,
+        work: 4096,
+    },
+    overlay: OverlayLimits {
+        entries: 32,
+        key_bytes: 256,
+    },
+};
+
+#[derive(Clone, Default)]
+struct Provider {
+    record: Arc<Mutex<Option<AuthorityRecord>>>,
+    fault: Option<(u64, bool)>,
+    competing_append: Option<Arc<Barrier>>,
+}
+
+impl RetainedAuthority for Provider {
+    fn read(&mut self) -> io::Result<Option<AuthorityRecord>> {
+        Ok(*self.record.lock().unwrap())
+    }
+
+    fn compare_and_swap(
+        &mut self,
+        previous: Option<AuthorityRecord>,
+        next: AuthorityRecord,
+    ) -> io::Result<bool> {
+        if next.revision == 1 {
+            if let Some(barrier) = &self.competing_append {
+                barrier.wait();
+            }
+        }
+        let mut current = self.record.lock().unwrap();
+        if self.fault == Some((next.revision, false)) {
+            return Err(io::Error::other(
+                "injected authority failure before replacement",
+            ));
+        }
+        if *current != previous {
+            return Ok(false);
+        }
+        *current = Some(next);
+        if self.fault == Some((next.revision, true)) {
+            return Err(io::Error::other(
+                "injected authority failure after replacement",
+            ));
+        }
+        Ok(true)
+    }
+}
+
+struct Fixture {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+    provider: Provider,
+    initial: AuthorityRecord,
+}
+
+impl Fixture {
+    fn prepare() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let root = tmp.path().join("authorized");
+        let store = Store::open(&source).unwrap();
+        store.put(b"base", b"imported").unwrap();
+        let initial = AuthorizedRetainedStore::<Provider>::prepare_from_store(
+            store,
+            &source,
+            &root,
+            RetainedExportLimits {
+                max_log_bytes: 8192,
+                max_live_keys: 32,
+                max_live_key_bytes: 256,
+                max_output_bytes: 8192,
+            },
+            LIMITS,
+        )
+        .unwrap();
+        Self {
+            _tmp: tmp,
+            root,
+            provider: Provider::default(),
+            initial,
+        }
+    }
+
+    fn register(&mut self) {
+        assert!(self.provider.compare_and_swap(None, self.initial).unwrap());
+    }
+
+    fn open(&self) -> AuthorizedRetainedStore<Provider> {
+        AuthorizedRetainedStore::open(&self.root, LIMITS, self.provider.clone()).unwrap()
+    }
+}
+
+#[test]
+fn prepared_catalog_requires_authority_and_a_witnessed_role() {
+    let mut f = Fixture::prepare();
+    assert!(Store::open(&f.root).is_err());
+    assert!(ManagedRetainedStore::open(&f.root, LIMITS).is_err());
+    assert!(AuthorizedRetainedStore::open(&f.root, LIMITS, f.provider.clone()).is_err());
+    fs::write(
+        f.root.join(CATALOG_FILE),
+        catalog_bytes(f.initial.committed.catalog, CATALOG_MAGIC),
+    )
+    .unwrap();
+    assert!(ManagedRetainedStore::open(&f.root, LIMITS).is_err());
+    fs::write(
+        f.root.join(CATALOG_FILE),
+        catalog_bytes(f.initial.committed.catalog, AUTHORIZED_MAGIC),
+    )
+    .unwrap();
+    f.register();
+    let mut store = f.open();
+    assert_eq!(store.get(b"base", 8).unwrap().unwrap(), b"imported");
+    store
+        .write_batch(&[
+            BatchOperation::Delete { key: b"base" },
+            BatchOperation::Put {
+                key: b"new",
+                value: b"acknowledged",
+            },
+        ])
+        .unwrap();
+    assert_eq!(f.provider.read().unwrap().unwrap().revision, 2);
+    assert_eq!(f.provider.read().unwrap().unwrap().pending, None);
+    drop(store);
+    let mut store = f.open();
+    assert_eq!(store.get(b"base", 8).unwrap(), None);
+    assert_eq!(store.get(b"new", 12).unwrap().unwrap(), b"acknowledged");
+}
+
+#[test]
+fn reopening_resolves_either_side_of_uncertain_authority_updates() {
+    for (revision, after, present) in [
+        (1, false, false),
+        (1, true, false),
+        (2, false, true),
+        (2, true, true),
+    ] {
+        let mut f = Fixture::prepare();
+        f.register();
+        let mut store = f.open();
+        store.authority.fault = Some((revision, after));
+        let failure = store.put(b"new", b"candidate").unwrap_err();
+        if revision == 1 {
+            assert!(matches!(failure, MutationFailure::Rejected(_)));
+        } else {
+            assert!(matches!(failure, MutationFailure::OutcomeUnknown(_)));
+        }
+        assert!(store.get(b"new", 9).is_err());
+        drop(store);
+        let mut recovered = f.open();
+        assert_eq!(recovered.get(b"new", 9).unwrap().is_some(), present);
+        assert!(f.provider.read().unwrap().unwrap().pending.is_none());
+        recovered.delete(b"base").unwrap();
+    }
+}
+
+#[test]
+fn authority_rejects_rolled_back_and_unregistered_tails_without_adopting_them() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let slot = Slot::A.path(&f.root);
+    let log_path = slot.join("records.log");
+    let witness_path = slot.join("commit.state");
+    let base_log = fs::read(&log_path).unwrap();
+    let witness = fs::read(&witness_path).unwrap();
+    let mut log = OpenOptions::new().append(true).open(&log_path).unwrap();
+    log.write_all(&record::encode(Operation::Put, b"new", b"unregistered").unwrap())
+        .unwrap();
+    assert!(AuthorizedRetainedStore::open(&f.root, LIMITS, f.provider.clone()).is_err());
+    assert_eq!(fs::read(&witness_path).unwrap(), witness);
+    fs::write(&log_path, &base_log).unwrap();
+    let mut store = f.open();
+    store.put(b"new", b"acknowledged").unwrap();
+    drop(store);
+    fs::write(&log_path, base_log).unwrap();
+    fs::write(&witness_path, &witness).unwrap();
+    assert!(AuthorizedRetainedStore::open(&f.root, LIMITS, f.provider.clone()).is_err());
+    assert_eq!(fs::read(&witness_path).unwrap(), witness);
+}
+
+#[test]
+fn recovery_adopts_an_exact_proposed_tail_before_finalizing_a_pending_intent() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.authority.fault = Some((1, true));
+    assert!(matches!(
+        store.put(b"pending", b"proposed"),
+        Err(MutationFailure::Rejected(_))
+    ));
+    drop(store);
+    let log_path = Slot::A.path(&f.root).join("records.log");
+    let encoded = record::encode(Operation::Put, b"pending", b"proposed").unwrap();
+    let mut log = OpenOptions::new().append(true).open(&log_path).unwrap();
+    log.write_all(&encoded).unwrap();
+    let mut recovered = f.open();
+    assert_eq!(recovered.get(b"pending", 8).unwrap().unwrap(), b"proposed");
+    let current = f.provider.read().unwrap().unwrap();
+    assert_eq!(current.committed.suffix_end, encoded.len() as u64);
+    assert!(current.pending.is_none());
+    drop(recovered);
+    assert_eq!(f.open().get(b"pending", 8).unwrap().unwrap(), b"proposed");
+}
+
+#[test]
+fn competing_copies_can_acknowledge_only_one_append() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let copy = f._tmp.path().join("copy");
+    fs::create_dir(&copy).unwrap();
+    for file in ["store.lock", CATALOG_FILE, ACTIVE_FILE] {
+        fs::copy(f.root.join(file), copy.join(file)).unwrap();
+    }
+    fs::create_dir(Slot::A.path(&copy)).unwrap();
+    for file in ["store.lock", "records.log", "commit.state", "base"] {
+        fs::copy(
+            Slot::A.path(&f.root).join(file),
+            Slot::A.path(&copy).join(file),
+        )
+        .unwrap();
+    }
+    let mut first = f.open();
+    let mut second = AuthorizedRetainedStore::open(&copy, LIMITS, f.provider.clone()).unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    first.authority.competing_append = Some(barrier.clone());
+    second.authority.competing_append = Some(barrier);
+    let (left, right) = std::thread::scope(|scope| {
+        let left = scope.spawn(|| first.put(b"answer", b"first"));
+        let right = scope.spawn(|| second.put(b"answer", b"second"));
+        (left.join().unwrap(), right.join().unwrap())
+    });
+    let (winner, loser, expected) = match (left, right) {
+        (Ok(()), Err(MutationFailure::Rejected(_))) => (&f.root, &copy, &b"first"[..]),
+        (Err(MutationFailure::Rejected(_)), Ok(())) => (&copy, &f.root, &b"second"[..]),
+        other => panic!("expected a single winner, got {other:?}"),
+    };
+    drop((first, second));
+    assert!(AuthorizedRetainedStore::open(loser, LIMITS, f.provider.clone()).is_err());
+    assert_eq!(
+        AuthorizedRetainedStore::open(winner, LIMITS, f.provider.clone())
+            .unwrap()
+            .get(b"answer", 8)
+            .unwrap()
+            .unwrap(),
+        expected
+    );
+}

@@ -14,7 +14,10 @@ use std::{
 mod indexed_suffix;
 pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
 mod writable;
-pub use writable::{ManagedRetainedStore, RetainedStore, RetainedStoreLimits};
+pub use writable::{
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, ManagedRetainedStore,
+    RetainedAuthority, RetainedStore, RetainedStoreLimits,
+};
 
 /// An independently retained copy of the exact candidate header and witness.
 #[derive(Clone, Debug, PartialEq, Eq)]

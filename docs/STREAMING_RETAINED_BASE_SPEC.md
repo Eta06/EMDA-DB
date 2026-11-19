@@ -306,6 +306,26 @@ after later source writes requires an independent freshness policy.
 
 ## Future migration of existing stores and external authority
 
+`AuthorizedRetainedStore` exercises independent authority on a newly
+prepared catalog at a separate path. Its catalog and generation roles
+require the authorized opener. The caller registers the verified initial
+record with a trusted provider using CAS from an absent record. A provider
+must supply durable linearizable compare-and-swap and independently protect
+the lineage from rollback or reuse. The prototype tests use an in-memory
+provider for protocol fault injection.
+
+An append first reserves a fresh authority revision naming the exact prior
+and proposed suffix fingerprints. The local log and witness synchronize
+before a second CAS finalizes the proposal and allows acknowledgement.
+When an intent remains pending, reopen checks whether the verified local
+bytes match one of its two exact endpoints. It synchronizes or adopts
+the matching state before finalizing the recovery choice. An unrelated or
+partial suffix fails closed. A stale copy can lose the CAS and must reopen
+against the current record. Revisions advance even when recovery selects
+the prior suffix. Authority-selected compaction and reclamation remain
+future work, so the persisted suffix limits govern the lifetime of this
+single-generation prototype.
+
 Cutover at an existing ordinary store entry point remains prohibited until the old-reader gate and backup
 policy cover empty or legacy-looking suffixes and independently opened stale
 copies. A sidecar alone cannot make those readers fail closed.

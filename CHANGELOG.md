@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Prepare externally fenced retained catalogs with durable authority
+  intents for bounded appends and exact recovery of uncertain outcomes.
+
 - Preserve the typed controlled-cancellation outcome when a retained
   document callback returns an engine cancellation from a staged operation.
 

@@ -1,7 +1,7 @@
 use super::{
-    Expected, Header, RecoveryLimits, RetainedStore, RetainedStoreLimits, StoreLock, copy_base,
-    create_file, decode_marker, encode_batch, invalid_input, open_regular, open_regular_with,
-    random_id, read_marker, suffix_end,
+    Expected, GenerationRole, Header, RecoveryLimits, RetainedStore, RetainedStoreLimits,
+    StoreLock, copy_base, create_file, decode_marker, encode_batch, invalid_input, open_regular,
+    open_regular_with, random_id, read_marker, suffix_end,
 };
 use crate::directory::sync_existing;
 use crate::record::{self, Operation};
@@ -23,10 +23,14 @@ use std::{
 
 const CATALOG_FILE: &str = "catalog.id";
 const CATALOG_MAGIC: &[u8; 8] = b"EMDACT01";
+const AUTHORIZED_MAGIC: &[u8; 8] = b"EMDACT02";
 const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 
+mod authority;
 mod backup;
+
+pub use authority::{AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, RetainedAuthority};
 
 #[cfg(test)]
 mod tests;
@@ -43,6 +47,7 @@ pub struct ManagedRetainedStore {
     store: RetainedStore,
     root: PathBuf,
     active: Active,
+    catalog_magic: &'static [u8; 8],
     uncertain: bool,
     auto_reclaim: Option<NonZeroU64>,
     cleanup_pending: bool,
@@ -100,10 +105,18 @@ impl ManagedRetainedStore {
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(candidate, parent).map_err(PublicationFailure::NotPublished)?;
         check_files(candidate, expected).map_err(PublicationFailure::NotPublished)?;
-        Self::publish_initial(destination, parent, limits, sync_existing, |_, path| {
-            copy_base(candidate, path, limits, expected)?;
-            Ok((expected.clone(), suffix()?))
-        })
+        Self::publish_initial(
+            destination,
+            parent,
+            limits,
+            CATALOG_MAGIC,
+            sync_existing,
+            |_, path| {
+                copy_base(candidate, path, limits, expected)?;
+                Ok((expected.clone(), suffix()?))
+            },
+        )
+        .map(|point| point.generation)
     }
 
     /// Copy an exclusively owned witnessed store into a new managed catalog.
@@ -136,10 +149,31 @@ impl ManagedRetainedStore {
         source: Store,
         source_path: &Path,
         destination: &Path,
-        mut export: RetainedExportLimits,
+        export: RetainedExportLimits,
         limits: RetainedStoreLimits,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], PublicationFailure> {
+        Self::copy_from_store_role(
+            source,
+            source_path,
+            destination,
+            export,
+            limits,
+            CATALOG_MAGIC,
+            sync_parent,
+        )
+        .map(|point| point.generation)
+    }
+
+    fn copy_from_store_role(
+        source: Store,
+        source_path: &Path,
+        destination: &Path,
+        mut export: RetainedExportLimits,
+        limits: RetainedStoreLimits,
+        catalog_magic: &'static [u8; 8],
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<AuthorityPoint, PublicationFailure> {
         let parent = crate::backup::parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(source_path, parent).map_err(PublicationFailure::NotPublished)?;
@@ -151,44 +185,61 @@ impl ManagedRetainedStore {
             .max_output_bytes
             .min(limits.base.file_bytes)
             .min(limits.base.work_bytes.saturating_sub(1));
-        Self::publish_initial(destination, parent, limits, sync_parent, |stage, path| {
-            let name = std::ffi::OsStr::new("base");
-            let base = source
-                .export_retained_base_in_stage(stage, name, random_id()?, export)
-                .map_err(|failure| match failure {
-                    PublicationFailure::NotPublished(error)
-                    | PublicationFailure::OutcomeUnknown(error) => error,
-                })?;
-            let expected = crate::retained_candidate::binding(&base, random_id()?)?;
-            fs::rename(stage.child_path(name)?, path.join(name))?;
-            Ok((expected, Vec::new()))
-        })
+        Self::publish_initial(
+            destination,
+            parent,
+            limits,
+            catalog_magic,
+            sync_parent,
+            |stage, path| {
+                let name = std::ffi::OsStr::new("base");
+                let base = source
+                    .export_retained_base_in_stage(stage, name, random_id()?, export)
+                    .map_err(|failure| match failure {
+                        PublicationFailure::NotPublished(error)
+                        | PublicationFailure::OutcomeUnknown(error) => error,
+                    })?;
+                let expected = crate::retained_candidate::binding(&base, random_id()?)?;
+                fs::rename(stage.child_path(name)?, path.join(name))?;
+                Ok((expected, Vec::new()))
+            },
+        )
     }
 
     fn publish_initial(
         destination: &Path,
         parent: &Path,
         limits: RetainedStoreLimits,
+        catalog_magic: &'static [u8; 8],
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         prepare: impl FnOnce(&crate::staging::Stage, &Path) -> io::Result<(Expected, Vec<u8>)>,
-    ) -> Result<[u8; 16], PublicationFailure> {
+    ) -> Result<AuthorityPoint, PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             let mut stage = crate::staging::Stage::directory(parent)?;
             let root = stage.path();
             create_file(&root.join("store.lock"))?.sync_all()?;
             let catalog = random_id()?;
-            write_new(&root.join(CATALOG_FILE), &catalog_bytes(catalog))?;
+            write_new(
+                &root.join(CATALOG_FILE),
+                &catalog_bytes(catalog, catalog_magic),
+            )?;
             let slot = Slot::A;
             let path = slot.path(root);
             fs::DirBuilder::new().mode(0o700).create(&path)?;
             let (expected, suffix) = prepare(&stage, &path)?;
-            let store = RetainedStore::initialize(&path, limits, &expected, suffix, Some(catalog))?;
-            let generation = store.generation_id();
+            let store = RetainedStore::initialize(
+                &path,
+                limits,
+                &expected,
+                suffix,
+                generation_role(catalog_magic, catalog),
+            )?;
+            let point = AuthorityPoint::from_store(catalog, &store);
             drop(store);
             let active = Active {
                 catalog,
                 slot,
-                generation,
+                generation: point.generation,
                 expected,
             };
             write_new(&root.join(ACTIVE_FILE), &active.encode())?;
@@ -197,7 +248,7 @@ impl ManagedRetainedStore {
             stage.publish(destination)?;
             sync_parent(parent)?;
             stage.publication_synchronized();
-            Ok(generation)
+            Ok(point)
         })
     }
 
@@ -206,29 +257,39 @@ impl ManagedRetainedStore {
     /// The selected generation's persisted limits must fit within the
     /// recovery ceiling. Writes use the persisted limits.
     pub fn open(root: impl AsRef<Path>, ceiling: RetainedStoreLimits) -> io::Result<Self> {
-        let root = root.as_ref();
+        Self::open_role(root.as_ref(), ceiling, CATALOG_MAGIC, |_| Ok(()))
+    }
+
+    fn open_role(
+        root: &Path,
+        ceiling: RetainedStoreLimits,
+        catalog_magic: &'static [u8; 8],
+        authorize: impl FnOnce(AuthorityPoint) -> io::Result<()>,
+    ) -> io::Result<Self> {
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
         lock.verify_identity(&root)?;
-        let catalog = read_catalog(&root)?;
+        let catalog = read_catalog(&root, catalog_magic)?;
         let active = Active::load(&root, catalog)?;
         let path = active.slot.path(&root);
         let store = RetainedStore::open_role(
             &path,
             RecoveryLimits::Ceiling(ceiling),
             &active.expected,
-            Some(catalog),
+            generation_role(catalog_magic, catalog),
             Some(active.generation),
-            |directory| {
+            |directory, header, end, digest| {
+                authorize(AuthorityPoint::new(catalog, header, end, digest))?;
                 sync_existing(directory)?;
                 lock.verify_identity(&root)?;
-                verify_active(&root, &active)
+                verify_active(&root, &active, catalog_magic)
             },
         )?;
         Ok(Self {
             store,
             root,
             active,
+            catalog_magic,
             uncertain: false,
             auto_reclaim: None,
             cleanup_pending: false,
@@ -448,7 +509,7 @@ impl ManagedRetainedStore {
                 limits,
                 &expected,
                 Vec::new(),
-                Some(self.active.catalog),
+                GenerationRole::Managed(self.active.catalog),
             )?;
             let generation = next.generation_id();
             if generation == self.active.generation {
@@ -537,7 +598,7 @@ impl ManagedRetainedStore {
         self.store
             ._lock
             .verify_identity(&self.active.slot.path(&self.root))?;
-        verify_active(&self.root, &self.active)
+        verify_active(&self.root, &self.active, self.catalog_magic)
     }
 
     fn prepare_write(&mut self) -> Result<(), MutationFailure> {
@@ -557,8 +618,10 @@ fn check_separation(source: &Path, parent: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn verify_active(root: &Path, active: &Active) -> io::Result<()> {
-    if read_catalog(root)? != active.catalog || Active::load(root, active.catalog)? != *active {
+fn verify_active(root: &Path, active: &Active, magic: &[u8; 8]) -> io::Result<()> {
+    if read_catalog(root, magic)? != active.catalog
+        || Active::load(root, active.catalog)? != *active
+    {
         return Err(record::invalid_data("active retained selection changed"));
     }
     Ok(())
@@ -581,19 +644,27 @@ fn lock_directory(path: &Path) -> io::Result<StoreLock> {
     Ok(lock)
 }
 
-fn catalog_bytes(id: [u8; 16]) -> [u8; 56] {
+fn generation_role(magic: &[u8; 8], catalog: [u8; 16]) -> GenerationRole {
+    if magic == AUTHORIZED_MAGIC {
+        GenerationRole::Authorized(catalog)
+    } else {
+        GenerationRole::Managed(catalog)
+    }
+}
+
+fn catalog_bytes(id: [u8; 16], magic: &[u8; 8]) -> [u8; 56] {
     let mut bytes = [0; 56];
-    bytes[..8].copy_from_slice(CATALOG_MAGIC);
+    bytes[..8].copy_from_slice(magic);
     bytes[8..24].copy_from_slice(&id);
     let digest = Sha256::digest(&bytes[..24]);
     bytes[24..].copy_from_slice(&digest);
     bytes
 }
 
-fn read_catalog(root: &Path) -> io::Result<[u8; 16]> {
+fn read_catalog(root: &Path, magic: &[u8; 8]) -> io::Result<[u8; 16]> {
     let bytes = exact(&root.join(CATALOG_FILE), 56)?;
     let id = bytes[8..24].try_into().unwrap();
-    if id == [0; 16] || bytes != catalog_bytes(id) {
+    if id == [0; 16] || bytes != catalog_bytes(id, magic) {
         return Err(record::invalid_data("invalid retained catalog identity"));
     }
     Ok(id)
@@ -690,7 +761,7 @@ fn check_retired(path: &Path, active: &Active) -> io::Result<()> {
         ));
     }
     let log = open_regular(&path.join("records.log"))?;
-    let retired = Header::read(&log, Some(active.catalog))?;
+    let retired = Header::read(&log, GenerationRole::Managed(active.catalog))?;
     let id = retired.id();
     if !retired.bytes().starts_with(b"EMDALOG4") || id == [0; 16] || id == active.generation {
         return Err(record::invalid_data(
