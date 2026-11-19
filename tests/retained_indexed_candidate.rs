@@ -1,9 +1,11 @@
 //! Disk-backed access to a fully verified, non-authoritative retained base.
 use database_engine::retained_base_v2::{Limits, StagingLimits};
 use database_engine::retained_candidate::{
-    Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits, SuffixLimits,
+    Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits, SuffixExpected,
+    SuffixLimits,
 };
 use database_engine::{BatchOperation, RetainedExportLimits, Store};
+use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::os::unix::fs::FileExt;
@@ -188,6 +190,40 @@ fn empty_candidate_needs_no_anchors() {
     assert_eq!(reader.metadata().entries, 0);
     assert_eq!(reader.get(b"absent", 0).unwrap(), None);
     assert!(reader.scan(None, None, 1).unwrap().is_empty());
+
+    let suffix = root.path().join("empty-suffix");
+    fs::write(&suffix, []).unwrap();
+    let open = |digest| {
+        IndexedSuffix::open_file_backed(
+            root.path().join("candidate"),
+            &suffix,
+            BASE_LIMITS,
+            IndexLimits {
+                blocks: 0,
+                anchor_bytes: 0,
+            },
+            SuffixLimits {
+                bytes: 0,
+                operations: 0,
+                work: 0,
+            },
+            OverlayLimits {
+                entries: 0,
+                key_bytes: 0,
+            },
+            &SuffixExpected {
+                candidate: expected.clone(),
+                end: 0,
+                digest,
+            },
+        )
+    };
+    let view = open(Sha256::digest([]).into()).unwrap();
+    assert!(view.scan(None, None, 1).unwrap().is_empty());
+    assert_eq!(
+        open([0; 32]).err().unwrap().kind(),
+        io::ErrorKind::InvalidData
+    );
 }
 
 #[test]
@@ -267,6 +303,17 @@ fn indexed_suffix_matches_full_replay_across_batch_edits_and_page_boundaries() {
             &binding,
         )
     };
+    let open_file_backed = |suffix_limits, overlay| {
+        IndexedSuffix::open_file_backed(
+            &path,
+            &suffix,
+            BASE_LIMITS,
+            index,
+            suffix_limits,
+            overlay,
+            &binding,
+        )
+    };
     for (reduced_suffix, reduced_overlay, message) in [
         (
             suffix_limits,
@@ -309,11 +356,24 @@ fn indexed_suffix_matches_full_replay_across_batch_edits_and_page_boundaries() {
             "suffix work limit",
         ),
     ] {
-        let error = open(reduced_suffix, reduced_overlay).err().unwrap();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains(message), "{error}");
+        for result in [
+            open(reduced_suffix, reduced_overlay),
+            open_file_backed(reduced_suffix, reduced_overlay),
+        ] {
+            let error = result.err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
     let view = open(
+        SuffixLimits {
+            bytes: binding.end,
+            ..suffix_limits
+        },
+        overlay,
+    )
+    .unwrap();
+    let disk = open_file_backed(
         SuffixLimits {
             bytes: binding.end,
             ..suffix_limits
@@ -324,6 +384,7 @@ fn indexed_suffix_matches_full_replay_across_batch_edits_and_page_boundaries() {
     let expected_state = store.scan(None, None, 10).unwrap();
     assert_eq!(view.candidate_metadata().entries, 4);
     assert_eq!(view.scan(None, None, 10).unwrap(), expected_state);
+    assert_eq!(disk.scan(None, None, 10).unwrap(), expected_state);
     assert_eq!(view.scan(None, Some(b"b"), 1).unwrap(), expected_state[..1]);
     assert_eq!(
         view.scan(Some(b"a"), Some(b"f"), 10).unwrap(),
@@ -333,11 +394,13 @@ fn indexed_suffix_matches_full_replay_across_batch_edits_and_page_boundaries() {
     let mut after = None;
     for entry in expected_state {
         let page = view.scan(after.as_deref(), None, 1).unwrap();
+        assert_eq!(disk.scan(after.as_deref(), None, 1).unwrap(), page);
         assert_eq!(page, [entry]);
         after = Some(page.into_iter().next().unwrap().0);
     }
     assert!(view.scan(after.as_deref(), None, 1).unwrap().is_empty());
     assert_eq!(view.get(b"b", 0).unwrap(), Some(vec![]));
+    assert_eq!(disk.get(b"b", 0).unwrap(), Some(vec![]));
     assert_eq!(view.get(b"f", 9).unwrap(), Some(b"untouched".to_vec()));
     assert_eq!(
         view.get(b"a", 4).unwrap_err().kind(),
@@ -345,13 +408,53 @@ fn indexed_suffix_matches_full_replay_across_batch_edits_and_page_boundaries() {
     );
     for absent in [b"d", b"h", b"x"] {
         assert_eq!(view.get(absent, 0).unwrap(), None);
+        assert_eq!(disk.get(absent, 0).unwrap(), None);
     }
+    let mut wrong_binding = binding.clone();
+    wrong_binding.digest[0] ^= 1;
+    assert_eq!(
+        IndexedSuffix::open_file_backed(
+            &path,
+            &suffix,
+            BASE_LIMITS,
+            index,
+            suffix_limits,
+            overlay,
+            &wrong_binding,
+        )
+        .err()
+        .unwrap()
+        .to_string(),
+        "committed suffix digest mismatch"
+    );
 
-    // The parsed overlay keeps only offsets into the same owned bytes that
-    // were verified. Replacing the source suffix cannot change existing reads.
+    // Both views retain the verified source across replacement of its name.
+    let original = root.path().join("original-suffix");
+    fs::rename(&suffix, &original).unwrap();
     fs::write(&suffix, vec![0; binding.end as usize]).unwrap();
     assert!(open(suffix_limits, overlay).is_err());
+    assert!(open_file_backed(suffix_limits, overlay).is_err());
     assert_eq!(view.get(b"z", 4).unwrap(), Some(b"last".to_vec()));
+    assert_eq!(disk.get(b"z", 4).unwrap(), Some(b"last".to_vec()));
+
+    let file = OpenOptions::new().write(true).open(&original).unwrap();
+    // The last record ends with the value followed by a four-byte CRC.
+    file.write_all_at(b"X", binding.end - 4 - b"last".len() as u64)
+        .unwrap();
+    assert_eq!(
+        disk.get(b"z", 4).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        disk.scan(Some(b"y"), None, 1).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(view.get(b"z", 4).unwrap(), Some(b"last".to_vec()));
+    file.set_len(binding.end + 1).unwrap();
+    assert_eq!(
+        disk.get(b"f", 9).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
 }
 
 #[test]
@@ -383,7 +486,7 @@ fn suffix_values_share_the_page_byte_budget_with_base_values() {
             EXPORT_LIMITS,
         )
         .unwrap();
-    let view = IndexedSuffix::open(
+    let view = IndexedSuffix::open_file_backed(
         &path,
         &suffix,
         BASE_LIMITS,

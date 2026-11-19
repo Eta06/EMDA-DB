@@ -1,12 +1,13 @@
 use super::{
     IndexLimits, IndexedCandidate, Limits, SuffixExpected, SuffixLimits, allocation_point,
-    charge_suffix_work, check_suffix_binding, read_suffix, suffix_capacity, visit_suffix,
+    charge_suffix_work, check_suffix_binding, open_suffix, read_suffix, suffix_capacity,
+    visit_suffix,
 };
 use crate::record::{self, Operation};
 use crate::retained_base_v2::index::{EntryPart, IndexedBase, OverlayValue};
 use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
-use std::{io, ops::Range, path::Path};
+use std::{fs::File, io, ops::Range, path::Path};
 
 use super::suffix_file::SuffixFile;
 
@@ -19,13 +20,36 @@ pub struct OverlayLimits {
 }
 
 /// Read-only, non-authoritative view of a retained base and its independently
-/// bound detached suffix. The suffix buffer is kept privately under
-/// `SuffixLimits::bytes`.
-/// The overlay stores only distinct touched keys and live value offsets.
+/// bound detached suffix. The overlay stores only distinct touched keys and
+/// live value locations. Use `open` to capture the suffix bytes in memory or
+/// `open_file_backed` to retain the verified file descriptor.
 pub struct IndexedSuffix {
     candidate: IndexedCandidate,
-    suffix: Vec<u8>,
+    suffix: DetachedSuffix,
     overlay: Overlay,
+}
+
+enum DetachedSuffix {
+    Buffered(Vec<u8>),
+    File { file: File, len: usize },
+}
+
+impl DetachedSuffix {
+    fn source(&self) -> io::Result<OverlaySource<'_>> {
+        match self {
+            Self::Buffered(bytes) => Ok(OverlaySource::Inline(bytes)),
+            Self::File { file, len } => {
+                if file.metadata()?.len() != *len as u64 {
+                    return Err(record::invalid_data("detached suffix file length changed"));
+                }
+                Ok(OverlaySource::Disk(SuffixFile {
+                    file,
+                    start: 0,
+                    len: *len,
+                }))
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -76,6 +100,49 @@ impl IndexedSuffix {
             IndexedCandidate::open(directory, limits, index_limits, &expected.candidate)?;
         Ok(Self {
             candidate,
+            suffix: DetachedSuffix::Buffered(suffix),
+            overlay,
+        })
+    }
+
+    /// Verify the complete detached suffix and base without keeping a suffix
+    /// byte buffer. Replay uses fixed-size I/O buffers and retains the
+    /// admitted overlay and bounded metadata for one batch. Later reads verify
+    /// the bytes of returned suffix values against their captured digests.
+    ///
+    /// Supply an independently retained binding. The opened base and suffix
+    /// files must remain immutable for the view's lifetime. Replacing the
+    /// suffix path does not redirect this view. The lengths of the files,
+    /// overlay entries, and replay work have separate limits. Result buffers
+    /// and allocator overhead have separate memory costs.
+    pub fn open_file_backed(
+        directory: impl AsRef<Path>,
+        suffix_path: impl AsRef<Path>,
+        limits: Limits,
+        index_limits: IndexLimits,
+        suffix_limits: SuffixLimits,
+        overlay_limits: OverlayLimits,
+        expected: &SuffixExpected,
+    ) -> io::Result<Self> {
+        let (file, len) = open_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
+        let source = SuffixFile {
+            file: &file,
+            start: 0,
+            len,
+        };
+        let mut overlay = Overlay::default();
+        overlay.replay_disk(
+            source,
+            (len, expected.digest),
+            suffix_limits,
+            overlay_limits,
+        )?;
+        let candidate =
+            IndexedCandidate::open(directory, limits, index_limits, &expected.candidate)?;
+        let suffix = DetachedSuffix::File { file, len };
+        suffix.source()?;
+        Ok(Self {
+            candidate,
             suffix,
             overlay,
         })
@@ -86,7 +153,7 @@ impl IndexedSuffix {
     pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         self.overlay.get(
             &self.candidate.base,
-            OverlaySource::Inline(&self.suffix),
+            self.suffix.source()?,
             key,
             max_value_bytes,
         )
@@ -103,7 +170,7 @@ impl IndexedSuffix {
     ) -> io::Result<Vec<crate::Entry>> {
         self.overlay.scan(
             &self.candidate.base,
-            OverlaySource::Inline(&self.suffix),
+            self.suffix.source()?,
             after,
             before,
             limit,

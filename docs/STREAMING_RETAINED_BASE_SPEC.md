@@ -162,15 +162,21 @@ that output. All three paths still validate the complete required bytes.
 
 `retained_candidate::IndexedSuffix` adds
 a read-only view of an independently bound detached suffix over that base.
-The suffix is verified in a private byte buffer subject to the suffix-byte
-limit. Ordered DB01 and DB02 operations update a sorted overlay of keys and
-offsets into the verified buffer. Tombstones remain in the overlay and count
+The default open captures and verifies the suffix in a private byte buffer
+subject to the suffix-byte limit. File-backed open instead retains the opened
+suffix descriptor and streams the same bound suffix through the fixed-size
+recovery buffer. Ordered DB01 and DB02 operations update a sorted overlay of
+keys and verified value locations. Tombstones remain in the overlay and count
 toward its explicit key and entry limits. Overlay work is charged separately
 from the base verification. A merged page applies one result budget across
 both sources, with suffix replacements and deletions taking precedence.
-Overlay points read only the captured suffix. New-history restore still uses
-its materialized replay path. Writable recovery still needs a committed
-witness and durable generation selection.
+The file-backed view checks the retained descriptor's length and authenticates
+returned suffix values against their captured digests. The base and suffix
+files must stay immutable for that view's lifetime. These checks cover the
+values returned by each read. They do not revalidate unrelated suffix history
+after open. New-history restore still uses its materialized replay path.
+Writable recovery still needs a committed witness and durable generation
+selection.
 
 ## Independent writable generations
 
