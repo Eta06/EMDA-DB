@@ -36,6 +36,17 @@ fn seed(path: &Path) -> Store {
     store
 }
 
+fn only_preparation(root: &Path) -> [u8; 16] {
+    let mut paths = fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter_map(|name| name.strip_prefix("retained-cutover-").map(str::to_owned));
+    let name = paths.next().unwrap();
+    assert!(paths.next().is_none());
+    assert_eq!(name.len(), 32);
+    std::array::from_fn(|index| u8::from_str_radix(&name[index * 2..index * 2 + 2], 16).unwrap())
+}
+
 #[test]
 fn original_path_requires_fence_and_independent_registration() {
     let tmp = tempfile::tempdir().unwrap();
@@ -228,11 +239,150 @@ fn failure_before_fencing_leaves_a_writable_ordinary_source_for_retry() {
     assert!(Catalog::recover_cutover(&root, LIMITS).is_err());
     let store = Store::open(&root).unwrap();
     store.put(b"written-after", b"kept").unwrap();
-    let initial = Catalog::cutover_from_store(store, &root, EXPORT, LIMITS).unwrap();
+    let prep = only_preparation(&root);
+    let path = catalog_path(&root, prep);
+    let log = fs::read(root.join("records.log")).unwrap();
+    let witness = fs::read(root.join("commit.state")).unwrap();
     let mut authority = FileRetainedAuthority::create(tmp.path().join("authority")).unwrap();
+    let catalog = read_catalog(&path, CUTOVER_MAGIC).unwrap();
+    let prepared = open_regular(&Slot::A.path(&path).join("records.log")).unwrap();
+    let header = Header::read(&prepared, GenerationRole::Authorized(catalog)).unwrap();
+    let mut occupied = FileRetainedAuthority::create(tmp.path().join("occupied")).unwrap();
+    assert!(
+        occupied
+            .compare_and_swap(
+                None,
+                AuthorityRecord {
+                    revision: 0,
+                    committed: AuthorityPoint::new(catalog, &header, 0, Sha256::digest([]).into()),
+                    pending: None,
+                },
+            )
+            .unwrap()
+    );
+    assert!(matches!(
+        Catalog::discard_unfenced_preparation(store, &root, prep, LIMITS, &mut occupied),
+        Err(PublicationFailure::NotPublished(ref cause))
+            if cause.to_string() == "cutover is no longer unregistered"
+    ));
+    assert!(path.is_dir());
+    let linked = path.join(ARCHIVE_LOG);
+    // A byte-for-byte copy is insufficient evidence of archive ownership.
+    fs::remove_file(&linked).unwrap();
+    fs::write(&linked, &log).unwrap();
+    assert!(matches!(
+        Catalog::discard_unfenced_preparation(Store::open(&root).unwrap(), &root, prep, LIMITS, &mut authority),
+        Err(PublicationFailure::NotPublished(ref cause))
+            if cause.to_string() == "cutover archive is not linked to the source"
+    ));
+    fs::remove_file(&linked).unwrap();
+    fs::hard_link(root.join("records.log"), &linked).unwrap();
+    assert!(
+        Catalog::discard_unfenced_preparation(
+            Store::open(&root).unwrap(),
+            &root,
+            prep,
+            LIMITS,
+            &mut authority,
+        )
+        .unwrap()
+    );
+    assert!(
+        !Catalog::discard_unfenced_preparation(
+            Store::open(&root).unwrap(),
+            &root,
+            prep,
+            LIMITS,
+            &mut authority,
+        )
+        .unwrap()
+    );
+    assert!(!path.exists());
+    assert_eq!(fs::read(root.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(root.join("commit.state")).unwrap(), witness);
+    let store = Store::open(&root).unwrap();
+    let initial = Catalog::cutover_from_store(store, &root, EXPORT, LIMITS).unwrap();
     assert!(authority.compare_and_swap(None, initial).unwrap());
     let mut current = Catalog::open(&root, LIMITS, authority).unwrap();
     assert_eq!(current.get(b"written-after", 4).unwrap().unwrap(), b"kept");
+}
+
+#[test]
+fn selected_catalog_is_protected_and_preparation_can_be_removed_after_archive_retirement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    let store = seed(&root);
+    let old_log = fs::read(root.join("records.log")).unwrap();
+    let old_witness = fs::read(root.join("commit.state")).unwrap();
+    let archive = CutoverArchiveBinding {
+        log_bytes: old_log.len() as u64,
+        log_digest: Sha256::digest(&old_log).into(),
+        witness_digest: Sha256::digest(&old_witness).into(),
+    };
+    assert!(matches!(
+        Catalog::cutover_using(
+            store,
+            &root,
+            EXPORT,
+            LIMITS,
+            || Err(io::Error::other("stop before fence")),
+            sync_existing
+        ),
+        Err(PublicationFailure::NotPublished(_))
+    ));
+    let prep = only_preparation(&root);
+    let path = catalog_path(&root, prep);
+    let initial =
+        Catalog::cutover_from_store(Store::open(&root).unwrap(), &root, EXPORT, LIMITS).unwrap();
+    let fence = Marker::load(&root).unwrap();
+    let location = tmp.path().join("authority");
+    let mut authority = FileRetainedAuthority::create(&location).unwrap();
+    assert!(authority.compare_and_swap(None, initial).unwrap());
+    let mut store = Catalog::open(&root, LIMITS, authority).unwrap();
+    assert!(matches!(
+        store.discard_other_cutover_preparation(fence.directory, LIMITS, &archive),
+        Err(PublicationFailure::NotPublished(ref cause))
+            if cause.to_string() == "cannot discard the fenced cutover catalog"
+    ));
+    store.put(b"new", b"ack").unwrap();
+    let backup = tmp.path().join("backup");
+    let binding = store.backup_to(&backup).unwrap();
+    assert!(
+        store
+            .retire_cutover_archive(&archive, &backup, &binding)
+            .unwrap()
+    );
+    fs::write(path.join("unowned"), b"keep").unwrap();
+    assert!(matches!(
+        store.discard_other_cutover_preparation(prep, LIMITS, &archive),
+        Err(PublicationFailure::NotPublished(ref cause))
+            if cause.to_string() == "unknown entry in cutover preparation"
+    ));
+    assert_eq!(fs::read(path.join("unowned")).unwrap(), b"keep");
+    fs::remove_file(path.join("unowned")).unwrap();
+    assert!(
+        store
+            .discard_other_cutover_preparation(prep, LIMITS, &archive)
+            .unwrap()
+    );
+    assert!(!path.exists());
+    assert!(
+        !store
+            .discard_other_cutover_preparation(prep, LIMITS, &archive)
+            .unwrap()
+    );
+    drop(store);
+    let mut reopened = Catalog::open(
+        &root,
+        LIMITS,
+        FileRetainedAuthority::open(location).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.get(b"legacy", 12).unwrap().unwrap(),
+        b"acknowledged"
+    );
+    assert_eq!(reopened.get(b"new", 3).unwrap().unwrap(), b"ack");
 }
 
 #[test]
@@ -342,6 +492,14 @@ fn process_kills_leave_either_ordinary_source_or_recoverable_fence() {
         killed.unwrap();
         assert!(!status.success());
         if boundary == "before" {
+            let store = Store::open(&root).unwrap();
+            let prep = only_preparation(&root);
+            let mut provider = FileRetainedAuthority::create(tmp.path().join("authority")).unwrap();
+            assert!(
+                Catalog::discard_unfenced_preparation(store, &root, prep, LIMITS, &mut provider)
+                    .unwrap()
+            );
+            assert!(!catalog_path(&root, prep).exists());
             assert_eq!(
                 Store::open(&root).unwrap().get(b"legacy").unwrap().unwrap(),
                 b"acknowledged"

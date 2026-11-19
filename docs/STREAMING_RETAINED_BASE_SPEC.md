@@ -412,7 +412,7 @@ If the publication outcome is uncertain, `recover_cutover` verifies the
 visible fence and initial generation before supplying that record.
 If the ordinary store still opens, its data can be migrated again with a
 fresh preparation. A failure before fencing can leave an inert nested
-preparation that requires separate inspection and cleanup. Authorized
+preparation. Authorized
 open holds the original path's lock, checks the fence and authority
 together, and opens the nested catalog. The nested catalog refuses direct
 open. The ordinary entry point rejects the marker.
@@ -440,6 +440,29 @@ An unlink or parent sync error reports `OutcomeUnknown` once removal
 begins. A retry verifies each remaining archive file against the
 original binding and synchronizes the catalog directory. The backup
 must still match the current selected generation at retry time.
+
+An operator can discard a complete abandoned preparation by passing
+the 16-byte identifier encoded in its `retained-cutover-*` name.
+`discard_unfenced_preparation` consumes an open ordinary source and
+checks its exclusive lock, both source hard links, and an absent
+record in the independent authority intended for this cutover.
+Coordinate discard with any process that could still register an
+earlier cutover record.
+An authorized original-path handle can use
+`discard_other_cutover_preparation` after a successful retry. It checks
+the current fence and authority, the old witness hard link, and the
+archive fingerprints recorded for the successful cutover. This works
+after the active catalog's ordinary archive is retired.
+
+Cleanup checks the exact catalog layout and verifies the unwritten
+initial generation within the supplied recovery ceiling. Unknown
+entries and catalogs referenced by the current fence or authority
+are protected. The original-path state is synchronized before moving
+the preparation into a private stage. Both parents are synchronized
+before its contents are removed. On uncertain removal, inspect the
+original name and retry as needed. Abandoned private stages use the
+regular staging cleanup procedure. The directories and the authority
+must remain trusted and stable throughout the operation.
 
 Deployment still requires an inventory and fencing of older backups and
 independent writable copies. Restoring an entire ordinary snapshot can

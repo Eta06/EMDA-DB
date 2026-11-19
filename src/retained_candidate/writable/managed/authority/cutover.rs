@@ -2,6 +2,8 @@ use super::*;
 use std::fmt::Write as _;
 use std::io::Read;
 
+mod cleanup;
+
 #[cfg(test)]
 mod tests;
 
