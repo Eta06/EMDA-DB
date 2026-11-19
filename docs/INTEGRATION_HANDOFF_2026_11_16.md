@@ -525,3 +525,11 @@ records the provider fault matrix, competing copies, rollback rejection
 and the preceding engine's format rejection. A deployed independent
 provider, authority-selected rotation and existing-path cutover remain
 open.
+
+Authorized rotation now synchronizes the successor before selecting it
+with the external authority. Reopen finds only the matching generation
+and suffix. Explicit reclamation advances the authority revision before
+deleting the inactive slot. The [rotation validation report](../benchmarks/results/2026-11-19-retained-authority-rotation/README.md)
+records both uncertainty outcomes and the local Linux process-kill probe.
+Original-path cutover, authority deployment and the deferred durability
+drills remain open.
