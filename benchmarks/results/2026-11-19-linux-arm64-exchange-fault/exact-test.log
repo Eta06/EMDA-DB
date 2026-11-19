@@ -1,0 +1,15 @@
+    Finished `test` profile [unoptimized] target(s) in 0.02s
+     Running unittests src/lib.rs (/tmp/emda-exchange-val.k5F9cF/target/debug/deps/database_engine-5bed12658d3326b9)
+
+running 1 test
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpKamsjM/live/store.lock" descriptor_dev_ino=Ok((38, 17168157)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpKamsjM/previous/store.lock" descriptor_dev_ino=Ok((38, 17168162)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpKamsjM/live/store.lock" descriptor_dev_ino=Ok((38, 17168162)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpKamsjM/previous/store.lock" descriptor_dev_ino=Ok((38, 17168157)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpKamsjM/live/store.lock" descriptor_dev_ino=Ok((38, 17168162)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpKamsjM/previous/store.lock" descriptor_dev_ino=Ok((38, 17168157)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+test store::compact_exchange::tests::exchange_holds_both_mapping_locks_through_failed_parent_sync ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.00s
+
+EXACT_EXIT=0

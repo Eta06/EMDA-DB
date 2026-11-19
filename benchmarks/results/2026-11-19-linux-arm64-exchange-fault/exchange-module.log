@@ -1,0 +1,39 @@
+    Finished `test` profile [unoptimized] target(s) in 0.01s
+     Running unittests src/lib.rs (/tmp/emda-exchange-val.k5F9cF/target/debug/deps/database_engine-5bed12658d3326b9)
+
+running 17 tests
+test checkpoint_store::compact_exchange::tests::checkpoint_exchange_kill_child ... ok
+test checkpoint_store::compact_exchange::tests::checkpoint_exchange_rejects_unknown_source_files ... ok
+test checkpoint_store::compact_exchange::tests::disabled_automatic_configuration_stays_disabled ... ok
+test checkpoint_store::compact_exchange::tests::changed_selection_configuration_and_stale_lock_fail_before_copy ... ok
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpA6LEQ7/live/store.lock" descriptor_dev_ino=Ok((38, 17168305)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+test checkpoint_store::compact_exchange::tests::managed_auto_setting_survives_handoff_reopen_and_new_rollover ... ok
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmp1k2g3v/live/store.lock" descriptor_dev_ino=Ok((38, 17168429)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+test checkpoint_store::compact_exchange::tests::unmanaged_compaction_preserves_live_data_and_clears_overlay ... ok
+test store::compact_exchange::tests::a_contender_with_a_stale_lock_descriptor_cannot_open_the_new_log ... ok
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpSbnaR3/live/store.lock" descriptor_dev_ino=Ok((38, 17168511)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+test checkpoint_store::compact_exchange::tests::checkpoint_handoff_faults_leave_two_recoverable_logs_and_valid_source_selection ... ok
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpgc1q17/live/store.lock" descriptor_dev_ino=Ok((38, 17168659)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpgc1q17/previous/store.lock" descriptor_dev_ino=Ok((38, 17168683)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpgc1q17/live/store.lock" descriptor_dev_ino=Ok((38, 17168683)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpgc1q17/previous/store.lock" descriptor_dev_ino=Ok((38, 17168659)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpgc1q17/live/store.lock" descriptor_dev_ino=Ok((38, 17168683)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpgc1q17/previous/store.lock" descriptor_dev_ino=Ok((38, 17168659)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+test store::compact_exchange::tests::exchange_holds_both_mapping_locks_through_failed_parent_sync ... ok
+test store::compact_exchange::tests::exchange_kill_child ... ok
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpcEe9QK/live/store.lock"test store::compact_exchange::tests::detailed_handoff_classifies_copy_and_exchange_boundaries ... ok
+ descriptor_dev_ino=Ok((38, 17168733)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+test store::compact_exchange::tests::exchange_preserves_live_data_old_store_and_open_limits ... ok
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-exchange-val.k5F9cF/tmp/.tmpOFufBO/live/store.lock"test checkpoint_store::compact_exchange::tests::detailed_checkpoint_handoff_classifies_candidate_and_exchange_failures ... ok
+ descriptor_dev_ino=Ok((38, 17168872)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+test store::compact_exchange::tests::unknown_files_and_non_sibling_or_existing_destinations_are_rejected ... ok
+test store::compact_exchange::tests::injected_exchange_failures_preserve_both_complete_copies ... ok
+test checkpoint_store::compact_exchange::tests::process_kills_preserve_managed_source_and_both_logs ... ok
+test store::compact_exchange::tests::process_kill_before_and_after_exchange_preserves_live_data ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 613 filtered out; finished in 0.04s
+
+MODULE_EXIT=0
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        19G   19G  226M  99% /
+tmpfs           2.9G  2.4G  577M  81% /tmp

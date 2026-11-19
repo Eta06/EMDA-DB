@@ -1,0 +1,58 @@
+diff --git a/src/store/compact_exchange/tests.rs b/src/store/compact_exchange/tests.rs
+index 399babb..9b25156 100644
+--- a/src/store/compact_exchange/tests.rs
++++ b/src/store/compact_exchange/tests.rs
+@@ -228,0 +229,53 @@ fn detailed_handoff_classifies_copy_and_exchange_boundaries() {
++#[test]
++fn exchange_holds_both_mapping_locks_through_failed_parent_sync() {
++    let root = tempfile::tempdir().unwrap();
++    let (store, source, previous) = populated(root.path());
++    let original = fs::read(source.join("records.log")).unwrap();
++    let result = store.compact_and_replace_detailed_with_hooks(
++        &source,
++        &previous,
++        |point| {
++            if matches!(
++                point,
++                ExchangePoint::BeforeExchange | ExchangePoint::AfterExchange
++            ) {
++                for path in [&source, &previous] {
++                    assert_eq!(
++                        Store::open(path).err().unwrap().kind(),
++                        io::ErrorKind::WouldBlock
++                    );
++                }
++                assert_eq!(
++                    fs::read(source.join("records.log")).unwrap() == original,
++                    point == ExchangePoint::BeforeExchange
++                );
++            }
++            Ok(())
++        },
++        |parent| {
++            assert_eq!(parent, root.path());
++            for path in [&source, &previous] {
++                assert_eq!(
++                    Store::open(path).err().unwrap().kind(),
++                    io::ErrorKind::WouldBlock
++                );
++            }
++            assert_eq!(fs::read(previous.join("records.log")).unwrap(), original);
++            Err(io::Error::other("injected parent sync failure"))
++        },
++    );
++    assert!(matches!(
++        result,
++        Err(crate::HandoffFailure::ExchangeOutcomeUnknown(_))
++    ));
++
++    // The current protocol releases both locks after an unknown result. Once
++    // writes resume, equal pre-exchange contents cannot identify the current
++    // mapping: the retained copy is a stale but otherwise valid store.
++    let live = Store::open(&source).unwrap();
++    let retained = Store::open(&previous).unwrap();
++    live.put(b"key", b"after").unwrap();
++    assert_eq!(live.get(b"key").unwrap(), Some(b"after".to_vec()));
++    assert_eq!(retained.get(b"key").unwrap(), Some(b"latest".to_vec()));
++}
++

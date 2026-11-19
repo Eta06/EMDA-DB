@@ -352,8 +352,13 @@ their focused tests. A V2 fault test now covers schema publication alongside a
 document replacement, raw key and partial indexes after zero-byte append and
 post-sync failures. Linux exchange reconciliation remains unimplemented; after
 an uncertain exchange, both paths may be writable and a sidecar alone cannot
-fence older binaries. A related Linux-only fault test remains in the isolated
-`t3-9418d546-3db0cf8affcde41f` worktree, unrun and unintegrated.
+fence older binaries. The Linux-only exchange regression now verifies that
+both locks stay held through a failed parent sync. It also verifies that the
+two paths can reopen directly afterward and the retained copy becomes stale
+once writes resume. The exact test and the 17-test exchange selection passed
+on Linux ARM64 with Rust 1.85.0 against `a6b5eef` plus the recorded test patch.
+See the [raw test log](../benchmarks/results/2026-11-19-linux-arm64-exchange-fault/exact-test.log)
+and [source patch](../benchmarks/results/2026-11-19-linux-arm64-exchange-fault/source.patch).
 
 The Nov 19 capacity check found 69 GiB free on the Mac and 226 MiB on the
 validation VM root, with 717 MiB free on the VM's separate tmpfs. Use an isolated,
