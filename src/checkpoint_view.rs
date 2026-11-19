@@ -113,6 +113,7 @@ pub struct CheckpointView {
     checkpoint: File,
     blocks: Vec<Block>,
     prefix: u64,
+    log_digest: [u8; 32],
     keys: u64,
     peak: usize,
     trusted_digest: [u8; 32],
@@ -226,7 +227,7 @@ impl CheckpointView {
         let mut blocks = Vec::new();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;
-        let (prefix, peak) = checkpoint::visit_file(
+        let verified = checkpoint::visit_file(
             &checkpoint,
             &log,
             boundary,
@@ -281,15 +282,16 @@ impl CheckpointView {
         if let Some(block) = current {
             blocks.push(block.finish());
         }
-        let has_tail = Self::check_log_limit(&log, max_log_bytes)? > prefix;
+        let has_tail = Self::check_log_limit(&log, max_log_bytes)? > verified.prefix;
         log.release_view_witness()?;
         Ok(Self {
             log: Arc::new(log),
             checkpoint,
             blocks,
-            prefix,
+            prefix: verified.prefix,
+            log_digest: verified.log_digest,
             keys,
-            peak,
+            peak: verified.peak,
             trusted_digest: *trusted_digest,
             limits,
             has_tail,
@@ -345,6 +347,7 @@ impl CheckpointView {
             checkpoint: self.checkpoint.try_clone()?,
             blocks: self.blocks.clone(),
             prefix: self.prefix,
+            log_digest: self.log_digest,
             keys: self.keys,
             peak: self.peak,
             trusted_digest: self.trusted_digest,
@@ -359,7 +362,7 @@ impl CheckpointView {
     // before deriving another checkpoint from this long-lived view.
     pub(crate) fn verify_for_rollover(&self) -> io::Result<()> {
         let mut count = 0_u64;
-        let (prefix, peak) = checkpoint::visit_file(
+        let verified = checkpoint::visit_file(
             &self.checkpoint,
             &self.log,
             self.witnessed_boundary,
@@ -371,10 +374,14 @@ impl CheckpointView {
                 Ok(())
             },
         )?;
-        if prefix != self.prefix || peak != self.peak || count != self.keys {
+        if verified.prefix != self.prefix || verified.peak != self.peak || count != self.keys {
             return Err(record::invalid_data("checkpoint changed since opening"));
         }
         Ok(())
+    }
+
+    pub(crate) fn covered_log_digest(&self) -> &[u8; 32] {
+        &self.log_digest
     }
     /// Whether the log contained bytes beyond the checkpoint at open time.
     /// Those bytes may include committed or unacknowledged records and are not read by this view.

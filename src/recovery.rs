@@ -7,6 +7,7 @@
 //! retained. This buffer is not a bound on the live key index, returned
 //! values, other allocations, or recovery time.
 use crate::log_io::LogIo;
+use sha2::{Digest, Sha256};
 use std::{fs::File, io, os::unix::fs::FileExt};
 
 /// A private read cursor over a retained descriptor shared by several readers.
@@ -50,6 +51,7 @@ pub(crate) struct RecoveryReader<'a> {
     buffer: Vec<u8>,
     used: usize,
     filled: usize,
+    digest: Option<&'a mut Sha256>,
 }
 
 impl<'a> RecoveryReader<'a> {
@@ -61,6 +63,7 @@ impl<'a> RecoveryReader<'a> {
             buffer: Vec::new(),
             used: 0,
             filled: 0,
+            digest: None,
         }
     }
 
@@ -80,6 +83,13 @@ impl<'a> RecoveryReader<'a> {
         self.offset
     }
 
+    /// Hash every byte read into this sequential reader, including headers
+    /// and checksums. Use the digest only after validating the entire range.
+    pub(crate) fn with_digest(mut self, digest: &'a mut Sha256) -> Self {
+        self.digest = Some(digest);
+        self
+    }
+
     pub(crate) fn read_exact(&mut self, mut output: &mut [u8]) -> io::Result<()> {
         self.ensure_available(output.len())?;
         while !output.is_empty() {
@@ -89,6 +99,9 @@ impl<'a> RecoveryReader<'a> {
             // caller-supplied output.
             if self.used == self.filled && output.len() >= RECOVERY_READ_BUFFER_BYTES {
                 self.file.read_exact_at(output, self.offset)?;
+                if let Some(digest) = self.digest.as_mut() {
+                    digest.update(&*output);
+                }
                 self.offset += output.len() as u64;
                 return Ok(());
             }
@@ -151,6 +164,9 @@ impl<'a> RecoveryReader<'a> {
         let count = (self.total - self.offset).min(RECOVERY_READ_BUFFER_BYTES as u64) as usize;
         self.file
             .read_exact_at(&mut self.buffer[..count], self.offset)?;
+        if let Some(digest) = self.digest.as_mut() {
+            digest.update(&self.buffer[..count]);
+        }
         self.used = 0;
         self.filled = count;
         Ok(())

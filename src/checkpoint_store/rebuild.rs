@@ -260,6 +260,8 @@ impl CheckpointStore {
     /// matches `trusted_digest`. Its covered log prefix is hashed before any
     /// suffix state is trusted, again before an unacknowledged tail can be
     /// adopted, and again immediately before the new checkpoint is published.
+    /// Adoption and publication also check the exact suffix bytes seen during
+    /// validation, including records that no longer contribute live values.
     /// A missing, unreadable, or digest-mismatched base fails before
     /// publication. This does not fall back to an in-memory full-log rebuild.
     ///
@@ -508,20 +510,29 @@ impl CheckpointStore {
         // valid, and it yields them in order. Each child is applied before
         // the next one; their value offsets are not collapsed to the outer
         // record offset.
-        writer.visit_records(prefix, Some(witness), |key, location| {
-            spill.push(&key, location, |key| view.location(key))?;
-            Ok(())
-        })?;
+        let suffix_digest =
+            writer.visit_observed_suffix(prefix, length, witness, |key, location| {
+                spill.push(&key, location, |key| view.location(key))?;
+                Ok(())
+            })?;
         if writer.len()? != length {
             return Err(crate::record::invalid_data(
                 "log length changed during suffix replay",
             ));
         }
-        view.verify_for_rollover()?;
         spill.prepare_for_emit()?;
         view.verify_for_rollover()?;
         if length > witness {
             (hooks.before_adopt)()?;
+        }
+        let verified_log = crate::checkpoint::bind_replayed_log(
+            &writer,
+            prefix,
+            length,
+            view.covered_log_digest(),
+            &suffix_digest,
+        )?;
+        if length > witness {
             writer.sync_validated_boundary(length).map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -561,7 +572,11 @@ impl CheckpointStore {
                 Ok(())
             },
             |parent| (hooks.sync_checkpoint_ancestors)(parent),
-            (None, tracker.map(|tracker| &tracker.checkpoint)),
+            crate::checkpoint::StreamingOptions {
+                tracker: tracker.map(|tracker| &tracker.checkpoint),
+                verified_log: Some(verified_log),
+                ..crate::checkpoint::StreamingOptions::default()
+            },
         )?;
         drop(spill);
         let published_lock = lock_file.clone();
@@ -1814,6 +1829,82 @@ mod tests {
             log,
             base_bytes,
         }
+    }
+
+    #[test]
+    fn same_length_tail_change_after_replay_does_not_advance_witness_or_publish() {
+        let case = unacknowledged_suffix_for_spill();
+        let destination = case._directory.path().join("rebuilt");
+        let replacement =
+            crate::record::encode(crate::record::Operation::Put, b"d", b"two").unwrap();
+        let offset = (case.log.len() - replacement.len()) as u64;
+        let log_path = case.path.join("records.log");
+        let mut reached_adoption = false;
+        let mut change_tail = || {
+            reached_adoption = true;
+            OpenOptions::new()
+                .write(true)
+                .open(&log_path)?
+                .write_all_at(&replacement, offset)
+        };
+        let failure = track_managed_rebuild(|tracker| {
+            with_standard_hooks(|standard| {
+                let mut hooks = BoundedHooks {
+                    before_adopt: &mut change_tail,
+                    sync_checkpoint_ancestors: standard.sync_checkpoint_ancestors,
+                    before_selection_rename: standard.before_selection_rename,
+                    sync_selection_parent: standard.sync_selection_parent,
+                };
+                CheckpointStore::rebuild_bounded_using(
+                    &case.path,
+                    &destination,
+                    &case.base,
+                    &case.digest,
+                    small_limits(),
+                    Some(tracker),
+                    &mut hooks,
+                )
+            })
+        });
+        assert!(reached_adoption);
+        let Err(ManagedRebuildFailure::NotPublished(error)) = failure else {
+            panic!("rebuild accepted a changed suffix: {failure:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+        assert_eq!(
+            error.to_string(),
+            "checkpoint log suffix changed during replay"
+        );
+        assert_eq!(witness_bytes(&case.path), case.witness);
+        assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+        assert_eq!(
+            &fs::read(&log_path).unwrap()[offset as usize..],
+            &replacement
+        );
+        assert!(!destination.exists());
+        assert!(!selection::path(&case.path).exists());
+        assert_no_staged_markers(&case.path);
+        assert_no_staged_markers(case._directory.path());
+
+        fs::write(&log_path, &case.log).unwrap();
+        CheckpointStore::rebuild_managed_selection_bounded(
+            &case.path,
+            &destination,
+            &case.base,
+            &case.digest,
+            1,
+            4096,
+            32 << 20,
+            2,
+            10_000,
+        )
+        .unwrap();
+        let rebuilt = CheckpointStore::open_managed(&case.path).unwrap();
+        assert_eq!(
+            rebuilt.get(b"c").unwrap().as_deref(),
+            Some(b"two".as_slice())
+        );
+        assert_eq!(rebuilt.get(b"d").unwrap(), None);
     }
 
     #[cfg(target_os = "linux")]

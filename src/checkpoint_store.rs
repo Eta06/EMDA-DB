@@ -936,7 +936,11 @@ impl CheckpointStore {
                 })
             },
             sync_parent,
-            (for_rollover.then_some(self.checkpoint_view_limits), tracker),
+            crate::checkpoint::StreamingOptions {
+                limits: for_rollover.then_some(self.checkpoint_view_limits),
+                tracker,
+                ..crate::checkpoint::StreamingOptions::default()
+            },
         )
     }
 

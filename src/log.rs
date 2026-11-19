@@ -959,9 +959,36 @@ impl Log {
         offset: u64,
         total: u64,
         boundary: Option<u64>,
+        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
+        self.visit_locations(reader, total, boundary, visit)
+    }
+
+    /// Return the SHA-256 of the exact bytes parsed and validated by replay.
+    /// The caller pins the range and checks that the log still ends there.
+    pub(crate) fn visit_observed_suffix(
+        &self,
+        start: u64,
+        end: u64,
+        boundary: u64,
+        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<[u8; 32]> {
+        use sha2::{Digest, Sha256};
+        let mut digest = Sha256::new();
+        let reader = RecoveryReader::at(self.file.as_ref(), end, start)?.with_digest(&mut digest);
+        self.visit_locations(reader, end, Some(boundary), visit)?;
+        Ok(digest.finalize().into())
+    }
+
+    fn visit_locations(
+        &self,
+        reader: RecoveryReader<'_>,
+        total: u64,
+        boundary: Option<u64>,
         mut visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.visit_hashed_records_to::<crc32fast::Hasher>(offset, total, boundary, |key, value| {
+        self.visit_hashed_records_to::<crc32fast::Hasher>(reader, total, boundary, |key, value| {
             visit(
                 key,
                 value.map(|value| ValueLocation {
@@ -987,7 +1014,8 @@ impl Log {
             self.verify_witness()
         };
         verify_end()?;
-        self.visit_hashed_records_to::<sha2::Sha256>(0, end, Some(end), |key, value| {
+        let reader = RecoveryReader::at(self.file.as_ref(), end, 0)?;
+        self.visit_hashed_records_to::<sha2::Sha256>(reader, end, Some(end), |key, value| {
             let value =
                 value.ok_or_else(|| record::invalid_data("unexpected restored deletion"))?;
             visit(&key, value.length, value.digest)
@@ -997,12 +1025,12 @@ impl Log {
 
     fn visit_hashed_records_to<D: ValueHash>(
         &self,
-        mut offset: u64,
+        mut reader: RecoveryReader<'_>,
         total: u64,
         boundary: Option<u64>,
         mut visit: impl FnMut(Vec<u8>, Option<StreamValue<D::Output>>) -> io::Result<()>,
     ) -> io::Result<()> {
-        let mut reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
+        let mut offset = reader.position();
         if offset == 0 && self.log_id.is_some() {
             let mut header = [0_u8; LOG_HEADER_SIZE];
             reader.read_exact(&mut header)?;

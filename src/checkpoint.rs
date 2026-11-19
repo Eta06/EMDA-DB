@@ -24,20 +24,82 @@ pub(crate) struct Loaded {
     pub(crate) peak: usize,
 }
 
+pub(crate) struct VerifiedCheckpoint {
+    pub(crate) prefix: u64,
+    pub(crate) peak: usize,
+    pub(crate) log_digest: [u8; 32],
+}
+
+pub(crate) struct VerifiedLog {
+    length: u64,
+    digest: [u8; 32],
+}
+
+#[derive(Default)]
+pub(crate) struct StreamingOptions<'a> {
+    pub(crate) limits: Option<CheckpointViewLimits>,
+    pub(crate) tracker: Option<&'a crate::publication_outcome::Tracker>,
+    pub(crate) verified_log: Option<VerifiedLog>,
+}
+
 fn hash_log(log: &Log, length: u64) -> io::Result<[u8; 32]> {
     if length > log.len()? {
         return Err(record::invalid_data("checkpoint prefix exceeds log"));
     }
     let mut hasher = Sha256::new();
+    read_log_range(log, 0, length, |bytes| hasher.update(bytes))?;
+    Ok(hasher.finalize().into())
+}
+
+// Hash the new checkpoint's complete log from the same reads that check the
+// trusted base prefix and the exact suffix bytes consumed by replay.
+pub(crate) fn bind_replayed_log(
+    log: &Log,
+    prefix: u64,
+    end: u64,
+    prefix_digest: &[u8; 32],
+    suffix_digest: &[u8; 32],
+) -> io::Result<VerifiedLog> {
+    if prefix > end || log.len()? != end {
+        return Err(record::invalid_data(
+            "checkpoint log length changed during replay",
+        ));
+    }
+    let mut log_hash = Sha256::new();
+    read_log_range(log, 0, prefix, |bytes| log_hash.update(bytes))?;
+    if log_hash.clone().finalize().as_slice() != prefix_digest {
+        return Err(record::invalid_data("checkpoint does not match log prefix"));
+    }
+    let mut suffix_hash = Sha256::new();
+    read_log_range(log, prefix, end, |bytes| {
+        log_hash.update(bytes);
+        suffix_hash.update(bytes);
+    })?;
+    if suffix_hash.finalize().as_slice() != suffix_digest {
+        return Err(record::invalid_data(
+            "checkpoint log suffix changed during replay",
+        ));
+    }
+    Ok(VerifiedLog {
+        length: end,
+        digest: log_hash.finalize().into(),
+    })
+}
+
+fn read_log_range(
+    log: &Log,
+    mut offset: u64,
+    end: u64,
+    mut consume: impl FnMut(&[u8]),
+) -> io::Result<()> {
     let mut bytes = [0_u8; CHUNK];
-    let mut offset = 0_u64;
-    while offset < length {
-        let count = (length - offset).min(CHUNK as u64) as usize;
+    while offset < end {
+        let count = (end - offset).min(CHUNK as u64) as usize;
         log.read_bytes(&mut bytes[..count], offset)?;
-        hasher.update(&bytes[..count]);
+        consume(&bytes[..count]);
         offset += count as u64;
     }
-    Ok(hasher.finalize().into())
+    Ok(())
 }
 
 fn write_checked(writer: &mut impl Write, digest: &mut Sha256, bytes: &[u8]) -> io::Result<()> {
@@ -81,7 +143,10 @@ pub(crate) fn create_streaming_with_sync(
         destination,
         entries,
         sync_parent,
-        (limits, None),
+        StreamingOptions {
+            limits,
+            ..StreamingOptions::default()
+        },
     )
 }
 
@@ -92,18 +157,15 @@ pub(crate) fn create_streaming_tracked(
     destination: &Path,
     entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
-    options: (
-        Option<CheckpointViewLimits>,
-        Option<&crate::publication_outcome::Tracker>,
-    ),
+    options: StreamingOptions<'_>,
 ) -> io::Result<[u8; 32]> {
-    let (limits, tracker) = options;
+    let tracker = options.tracker;
     let parent = backup::parent_directory(destination)?;
     create_streaming_in_directory(
         log,
         count,
         peak,
-        (destination, parent, limits),
+        (destination, parent, options),
         entries,
         sync_parent,
         || {
@@ -130,7 +192,7 @@ pub(crate) fn create_streaming_with_hooks(
         log,
         count,
         peak,
-        (destination, parent, None),
+        (destination, parent, StreamingOptions::default()),
         entries,
         sync_parent,
         before_publish,
@@ -152,7 +214,14 @@ pub(crate) fn create_streaming_in_private_stage(
         log,
         count,
         peak,
-        (&destination, directory, limits),
+        (
+            &destination,
+            directory,
+            StreamingOptions {
+                limits,
+                ..StreamingOptions::default()
+            },
+        ),
         entries,
         |parent| File::open(parent)?.sync_all(),
         || Ok(()),
@@ -163,12 +232,12 @@ fn create_streaming_in_directory(
     log: &Log,
     count: u64,
     peak: usize,
-    paths: (&Path, &Path, Option<CheckpointViewLimits>),
+    paths: (&Path, &Path, StreamingOptions<'_>),
     mut entries: impl FnMut(&mut dyn FnMut(&[u8], ValueLocation) -> io::Result<()>) -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
-    let (destination, parent, limits) = paths;
+    let (destination, parent, options) = paths;
     if log.is_legacy() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -181,7 +250,7 @@ fn create_streaming_in_directory(
             "checkpoint peak is below its key count",
         ));
     }
-    let limits = limits.unwrap_or_default();
+    let limits = options.limits.unwrap_or_default();
     limits.validate()?;
     log.verify_witness()?;
     let mut checkpoint_bytes = HEADER_BYTES + DIGEST_BYTES;
@@ -192,7 +261,15 @@ fn create_streaming_in_directory(
         ));
     }
     let prefix = log.len()?;
-    let log_digest = hash_log(log, prefix)?;
+    let log_digest = match options.verified_log {
+        Some(verified) if verified.length == prefix => verified.digest,
+        Some(_) => {
+            return Err(record::invalid_data(
+                "verified checkpoint log length changed",
+            ));
+        }
+        None => hash_log(log, prefix)?,
+    };
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     let checkpoint_digest: [u8; 32];
     let entries_digest: [u8; 32];
@@ -274,7 +351,7 @@ fn create_streaming_in_directory(
     temp.sync_all()?;
     let mut verified_entries = Sha256::new();
     let mut verified_count = 0_u64;
-    let (verified_prefix, verified_peak) = visit_file(
+    let verified = visit_file(
         &temp,
         log,
         prefix,
@@ -290,8 +367,8 @@ fn create_streaming_in_directory(
         },
     )?;
     let verified_digest: [u8; 32] = verified_entries.finalize().into();
-    if verified_prefix != prefix
-        || verified_peak as u64 != peak
+    if verified.prefix != prefix
+        || verified.peak as u64 != peak
         || verified_count != count
         || verified_digest != entries_digest
     {
@@ -397,7 +474,7 @@ fn load_file(
     trusted_digest: &[u8; 32],
 ) -> io::Result<Loaded> {
     let mut index = BTreeMap::new();
-    let (prefix, peak) = visit_file(
+    let verified = visit_file(
         file,
         log,
         witness_boundary,
@@ -410,9 +487,9 @@ fn load_file(
         },
     )?;
     Ok(Loaded {
-        prefix,
+        prefix: verified.prefix,
         index,
-        peak,
+        peak: verified.peak,
     })
 }
 
@@ -426,7 +503,7 @@ pub(crate) fn visit_file(
     trusted_digest: &[u8; 32],
     max_file_bytes: Option<u64>,
     mut visit: impl FnMut(u64, &[u8; 2], &[u8], &[u8; 16], ValueLocation) -> io::Result<()>,
-) -> io::Result<(u64, usize)> {
+) -> io::Result<VerifiedCheckpoint> {
     let length = file.metadata()?.len();
     if max_file_bytes.is_some_and(|max| length > max) {
         return Err(io::Error::new(
@@ -545,7 +622,11 @@ pub(crate) fn visit_file(
     if hash_log(log, prefix)? != expected_log_digest {
         return Err(record::invalid_data("checkpoint does not match log prefix"));
     }
-    Ok((prefix, peak))
+    Ok(VerifiedCheckpoint {
+        prefix,
+        peak,
+        log_digest: expected_log_digest,
+    })
 }
 
 #[cfg(test)]
@@ -627,6 +708,62 @@ mod tests {
             assert!(result.is_err(), "{mode} stream was accepted");
             assert!(!destination.exists());
         }
+    }
+
+    #[test]
+    fn streamed_writer_rechecks_replayed_log_before_publication() {
+        use std::os::unix::fs::FileExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source");
+        let base = directory.path().join("base");
+        let destination = directory.path().join("checkpoint");
+        let store = Store::open(&path).unwrap();
+        let prefix = std::fs::metadata(path.join("records.log")).unwrap().len();
+        let base_digest = store.checkpoint_to(&base).unwrap();
+        store.put(b"a", b"one").unwrap();
+        drop(store);
+        let (log, index) = Log::open(&path, false).unwrap();
+        let end = log.len().unwrap();
+        let verified = visit_file(
+            &File::open(base).unwrap(),
+            &log,
+            end,
+            None,
+            &base_digest,
+            None,
+            |_, _, _, _, _| Ok(()),
+        )
+        .unwrap();
+        let suffix_digest = log
+            .visit_observed_suffix(prefix, end, end, |_, _| Ok(()))
+            .unwrap();
+        let verified_log =
+            bind_replayed_log(&log, prefix, end, &verified.log_digest, &suffix_digest).unwrap();
+        let replacement = record::encode(record::Operation::Put, b"b", b"one").unwrap();
+        assert_eq!(end - prefix, replacement.len() as u64);
+        let error = create_streaming_tracked(
+            &log,
+            1,
+            1,
+            &destination,
+            |emit| {
+                emit(b"a", index[b"a".as_slice()])?;
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(path.join("records.log"))?
+                    .write_all_at(&replacement, prefix)
+            },
+            |_| panic!("checkpoint publication was reached"),
+            StreamingOptions {
+                verified_log: Some(verified_log),
+                ..StreamingOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "checkpoint does not match log prefix");
+        assert!(!destination.exists());
     }
 
     #[test]
