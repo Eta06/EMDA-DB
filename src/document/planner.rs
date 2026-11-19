@@ -199,11 +199,51 @@ fn required_presence(required: &[&DocumentFilter], path: &[String], exists: bool
     false
 }
 
+// A typed equality follows when the filter requires both sides of the same
+// scalar bound. Comparisons use the same type-sensitive order as index keys.
+fn requires_guard_bound(
+    filter: &DocumentFilter,
+    path: &[String],
+    expected: &IndexValue,
+    lower: bool,
+) -> bool {
+    let equal = |value| expected.compare_json(value) == Some(Ordering::Equal);
+    match filter {
+        DocumentFilter::Equal { path: field, value } if field == path => equal(value),
+        DocumentFilter::In {
+            path: field,
+            values,
+        } if field == path => !values.is_empty() && values.iter().all(equal),
+        DocumentFilter::Compare {
+            path: field,
+            comparison,
+            value,
+        } if field == path && value == expected => {
+            matches!(comparison, Comparison::Greater | Comparison::GreaterOrEqual) == lower
+        }
+        DocumentFilter::And(filters) => filters
+            .iter()
+            .any(|child| requires_guard_bound(child, path, expected, lower)),
+        DocumentFilter::Or(filters) => {
+            !filters.is_empty()
+                && filters
+                    .iter()
+                    .all(|child| requires_guard_bound(child, path, expected, lower))
+        }
+        _ => false,
+    }
+}
+
 fn partial_is_implied(required: &[&DocumentFilter], partial: &PartialFilter) -> bool {
     match partial {
         PartialFilter::Exists { path, exists } => required_presence(required, path, *exists),
         PartialFilter::Equals { path, value } => {
-            required_equality(required, path).as_ref() == Some(value)
+            let requires = |lower| {
+                required
+                    .iter()
+                    .any(|filter| requires_guard_bound(filter, path, value, lower))
+            };
+            requires(true) && requires(false)
         }
     }
 }

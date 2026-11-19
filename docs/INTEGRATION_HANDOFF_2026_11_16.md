@@ -788,3 +788,9 @@ counts identical index probes once across disjunction branches, preserving
 the first scan order and read-set validation. The branch-overlap tests
 cover the exact probe cap, shared budgets and residual filtering. All 33
 document integration targets passed on macOS and Linux.
+
+[Typed guard proof evidence](../benchmarks/results/2026-11-19-typed-partial-guard-proofs/README.md)
+checks partial indexes selected through required lower and upper bounds,
+including bounds supplied by every branch of a disjunction. The
+regressions compare both writable backends with collection scans and
+check the empty-range transaction conflict.

@@ -415,7 +415,18 @@ fn phantom(db: &DocumentDatabase<'_>, inside: bool) {
         });
         let result = db.transaction_with_read_set(|tx| {
             let request = query(
-                and(vec![eq("group", json!("g")), eq("active", json!(true))]),
+                and(vec![
+                    eq("group", json!("g")),
+                    cmp("active", Comparison::LessOrEqual, IndexValue::Boolean(true)),
+                    DocumentFilter::Or(vec![
+                        cmp(
+                            "active",
+                            Comparison::GreaterOrEqual,
+                            IndexValue::Boolean(true),
+                        ),
+                        eq("active", json!(true)),
+                    ]),
+                ]),
                 10,
             );
             let result = tx.query_planned("c", &request)?;
@@ -844,6 +855,53 @@ fn partial_value_proof_distinguishes_integer_float_null_and_missing() {
         }
         let integer = query(and(vec![eq("group", json!("g")), eq("flag", json!(1))]), 10);
         compare(db, &integer, partial_eq("group_one", 1));
+        let typed_bounds = |branches| {
+            and(vec![
+                eq("group", json!("g")),
+                cmp("flag", Comparison::LessOrEqual, IndexValue::Integer(1)),
+                DocumentFilter::Or(branches),
+            ])
+        };
+        let lower = cmp("flag", Comparison::GreaterOrEqual, IndexValue::Integer(1));
+        let membership = |values| DocumentFilter::In {
+            path: path("flag"),
+            values,
+        };
+        let proved = typed_bounds(vec![
+            and(vec![lower.clone(), exists("group", true)]),
+            membership(vec![json!(1), json!(1)]),
+        ]);
+        compare(db, &query(proved.clone(), 4), partial_eq("group_one", 1));
+        let bounded = db.query_planned("c", &query(proved, 1)).unwrap();
+        assert_eq!(bounded.access, partial_eq("group_one", 1));
+        assert_eq!(bounded.result.plan.scanned, 1);
+        assert_eq!(bounded.result.documents[0].id, "a");
+
+        let mixed = typed_bounds(vec![lower, membership(vec![json!(1), Value::Null])]);
+        compare(
+            db,
+            &query(mixed.clone(), 4),
+            DocumentQueryAccess::CollectionScan,
+        );
+        assert_eq!(
+            db.query_planned("c", &query(mixed, 4))
+                .unwrap()
+                .result
+                .documents
+                .len(),
+            2
+        );
+        compare(
+            db,
+            &query(
+                and(vec![
+                    eq("group", json!("g")),
+                    membership(vec![json!(1), json!(1.0)]),
+                ]),
+                4,
+            ),
+            DocumentQueryAccess::CollectionScan,
+        );
         let float = query(
             and(vec![eq("group", json!("g")), eq("flag", json!(1.0))]),
             10,

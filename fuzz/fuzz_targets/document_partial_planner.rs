@@ -59,12 +59,15 @@ fn document(id: u8, byte: u8) -> Value {
             Value::Null
         };
     }
-    match byte % 5 {
+    match byte % 8 {
         0 => {}
         1 => doc["active"] = Value::Null,
         2 => doc["active"] = json!(true),
         3 => doc["active"] = json!(false),
-        _ => doc["active"] = json!([1, 2]),
+        4 => doc["active"] = json!([1, 2]),
+        5 => doc["active"] = json!(1),
+        6 => doc["active"] = json!(1.0),
+        _ => doc["active"] = json!(2),
     }
     doc
 }
@@ -80,7 +83,7 @@ fuzz_target!(|data: &[u8]| {
     drop(initial);
     let checkpoint_mode = data[0] & 1 != 0;
     let compound = data[0] & 2 != 0;
-    let kind = (data[0] >> 2) % 5;
+    let kind = (data[0] >> 2) % 6;
     let (partial, guard, opposite) = match kind {
         0 => (
             PartialFilter::Exists {
@@ -114,7 +117,7 @@ fuzz_target!(|data: &[u8]| {
             equal("active", Value::Null),
             equal("active", json!(false)),
         ),
-        _ => (
+        4 => (
             PartialFilter::Exists {
                 path: vec!["tags".into()],
                 exists: true,
@@ -125,6 +128,18 @@ fuzz_target!(|data: &[u8]| {
             },
             exists("tags", false),
         ),
+        _ => (
+            PartialFilter::Equals {
+                path: vec!["active".into()],
+                value: IndexValue::Integer(1),
+            },
+            equal("active", json!(1)),
+            equal("active", json!(1.0)),
+        ),
+    };
+    let guard_value = match &partial {
+        PartialFilter::Equals { value, .. } => Some(value.clone()),
+        _ => None,
     };
     let mut store = open(&path, &checkpoint, &digest, checkpoint_mode);
     store
@@ -187,7 +202,7 @@ fuzz_target!(|data: &[u8]| {
         if compound {
             tuple.push(equal("tenant", json!("t")));
         }
-        let mode = bytes[0] % 8;
+        let mode = bytes[0] % 11;
         let expected_access = match mode {
             0 | 5 | 7 => {
                 tuple.push(if mode == 5 && kind == 0 {
@@ -218,6 +233,39 @@ fuzz_target!(|data: &[u8]| {
             4 => {
                 tuple.push(DocumentFilter::Not(Box::new(opposite.clone())));
                 DocumentQueryAccess::CollectionScan
+            }
+            8 | 9 | 10 if guard_value.is_some() => {
+                let bound = |comparison| DocumentFilter::Compare {
+                    path: vec!["active".into()],
+                    comparison,
+                    value: guard_value.clone().unwrap(),
+                };
+                tuple.push(bound(Comparison::LessOrEqual));
+                let alternate = match mode {
+                    8 => and(vec![guard.clone(), exists("group", true)]),
+                    9 => DocumentFilter::All,
+                    _ => {
+                        let DocumentFilter::Equal { value, .. } = &guard else {
+                            unreachable!("typed guard");
+                        };
+                        DocumentFilter::In {
+                            path: vec!["active".into()],
+                            values: vec![value.clone(), value.clone()],
+                        }
+                    }
+                };
+                tuple.push(DocumentFilter::Or(vec![
+                    bound(Comparison::GreaterOrEqual),
+                    alternate,
+                ]));
+                if mode == 9 {
+                    DocumentQueryAccess::CollectionScan
+                } else {
+                    DocumentQueryAccess::PartialEqualityIndex {
+                        index: "i".into(),
+                        fields: if compound { 2 } else { 1 },
+                    }
+                }
             }
             _ => {
                 tuple = vec![
