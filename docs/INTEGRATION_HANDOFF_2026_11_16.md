@@ -428,3 +428,15 @@ The compatibility probe also passed on binaries built from the historical
 byte-zero retained log marker in selected opens, backup and restore. It
 does not establish compatibility of an actual retained format or cutover.
 See the [historical marker probe](../benchmarks/results/2026-11-19-main-log-marker-probe/README.md).
+
+The retained candidate can now be read through a sparse, authenticated base
+directory. The indexed detached suffix view merges ordered DB01 and DB02
+operations, including tombstones, with point and page reads. It holds its
+bounded suffix bytes privately and keeps only the touched keys and value
+offsets in the overlay. A verified page reads from the captured base
+descriptor without materializing the base live set. Both local platforms
+passed all five new integration tests. The
+[validation and paired measurement](../benchmarks/results/2026-11-19-retained-index-overlay/README.md)
+record lower process RSS with slower complete scans in one small synthetic
+workload. An authoritative witness, writable suffix recovery, durable cutover
+and reclamation still require implementation.
