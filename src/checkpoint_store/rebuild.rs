@@ -1765,6 +1765,7 @@ mod tests {
         Truncate,
         EntryTag,
         Key,
+        SubstituteRun,
     }
 
     struct UnacknowledgedSuffix {
@@ -1919,6 +1920,32 @@ mod tests {
         file.write_all_at(&[0x7f], tag_at).unwrap();
     }
 
+    fn substitute_spill_run(case: &UnacknowledgedSuffix, destination: &Path) {
+        let foreign = tempfile::tempdir().unwrap();
+        let (log, witness) = Log::open_checkpoint_view(&case.path).unwrap();
+        let mut suffix = Vec::new();
+        log.visit_records(witness, Some(witness), |key, location| {
+            suffix.push((key, location));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(suffix.len(), 2);
+        assert!(suffix.iter().all(|(_, location)| location.is_some()));
+        let mut spill = SpillSession::create(foreign.path(), small_limits(), 1, 1).unwrap();
+        for ((key, _), (_, location)) in suffix.iter().zip(suffix.iter().rev()) {
+            spill.push(key, *location, |_| Ok(None)).unwrap();
+        }
+        spill.prepare_for_emit().unwrap();
+        let files = finished_spill_runs(foreign.path());
+        assert_eq!(files.len(), 1);
+        let alternate = fs::read(&files[0]).unwrap();
+        assert_eq!(
+            alternate.len() as u64,
+            fs::metadata(destination).unwrap().len()
+        );
+        fs::write(destination, alternate).unwrap();
+    }
+
     fn assert_no_staged_markers(parent: &Path) {
         let cleaned = retry(|| crate::cleanup_abandoned_staging(parent)).unwrap();
         assert_eq!(cleaned.removed_markers, 0, "{}", parent.display());
@@ -1935,6 +1962,7 @@ mod tests {
             SpillDamage::Truncate,
             SpillDamage::EntryTag,
             SpillDamage::Key,
+            SpillDamage::SubstituteRun,
         ] {
             let case = unacknowledged_suffix_for_spill();
             let destination = case._directory.path().join(format!("rebuilt-{damage:?}"));
@@ -1971,6 +1999,7 @@ mod tests {
                             let file = OpenOptions::new().write(true).open(&runs[0]).unwrap();
                             file.write_all_at(b"B", 30).unwrap();
                         }
+                        SpillDamage::SubstituteRun => substitute_spill_run(&case, &runs[0]),
                     }
                     Ok(())
                 };
@@ -2018,8 +2047,12 @@ mod tests {
                         "{error}"
                     );
                 }
-                (SpillDamage::Key, ManagedRebuildFailure::NotPublished(error)) => {
+                (
+                    SpillDamage::Key | SpillDamage::SubstituteRun,
+                    ManagedRebuildFailure::NotPublished(error),
+                ) => {
                     assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+                    assert_eq!(error.to_string(), "spill entry checksum mismatch");
                 }
                 (_, other) => panic!("{damage:?}: {other}"),
             }
@@ -2034,6 +2067,33 @@ mod tests {
             );
             assert_no_staged_markers(&case.path);
             assert_no_staged_markers(case._directory.path());
+            if matches!(damage, SpillDamage::SubstituteRun) {
+                CheckpointStore::rebuild_managed_selection_bounded(
+                    &case.path,
+                    &destination,
+                    &case.base,
+                    &case.digest,
+                    1,
+                    4096,
+                    32 << 20,
+                    2,
+                    10_000,
+                )
+                .unwrap();
+                let recovered = CheckpointStore::open_managed(&case.path).unwrap();
+                assert_eq!(
+                    recovered.get(b"a").unwrap().as_deref(),
+                    Some(b"base".as_slice())
+                );
+                assert_eq!(
+                    recovered.get(b"b").unwrap().as_deref(),
+                    Some(b"one".as_slice())
+                );
+                assert_eq!(
+                    recovered.get(b"c").unwrap().as_deref(),
+                    Some(b"two".as_slice())
+                );
+            }
         }
     }
 }

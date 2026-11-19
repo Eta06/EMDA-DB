@@ -839,3 +839,10 @@ exact-budget value location and preservation of the committed prefix.
 reproduces shared-cursor failures on the prior revision. Concurrent backups
 now read pinned source files with independent positions and verify the
 synced output against the captured binding before publishing.
+
+[Private spill identity validation](../benchmarks/results/2026-11-19-rebuild-spill-identity/README.md)
+reproduces a same-sized run substitution that published swapped values on
+the prior revision. The writer digest protects new cursor opens, and
+stage-qualified entry checks catch the substitution at emission after
+a cursor has opened. The rebuild rejects publication and a clean retry
+recovers the original log values.

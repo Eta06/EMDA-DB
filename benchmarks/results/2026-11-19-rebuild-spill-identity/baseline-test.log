@@ -1,0 +1,70 @@
+   Compiling libc v0.2.191
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling version_check v0.9.5
+   Compiling cfg-if v1.0.5
+   Compiling typenum v1.20.1
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling serde_core v1.0.229
+   Compiling vcpkg v0.2.15
+   Compiling pkg-config v0.3.34
+   Compiling foldhash v0.1.5
+   Compiling bitflags v2.13.2
+   Compiling zmij v1.0.23
+   Compiling cc v1.11.0
+   Compiling getrandom v0.4.3
+   Compiling generic-array v0.14.7
+   Compiling smallvec v1.16.4
+   Compiling parking_lot_core v0.9.12
+   Compiling subtle v2.6.1
+   Compiling rustix v1.1.6
+   Compiling hashbrown v0.15.5
+   Compiling crc32fast v1.5.4
+   Compiling serde_json v1.0.154
+   Compiling scopeguard v1.2.0
+   Compiling serde v1.0.229
+   Compiling lock_api v0.4.14
+   Compiling hashlink v0.10.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling fallible-iterator v0.3.0
+   Compiling once_cell v1.21.4
+   Compiling fastrand v2.5.0
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling errno v0.3.14
+   Compiling cpufeatures v0.2.17
+   Compiling sha2-asm v0.6.4
+   Compiling libsqlite3-sys v0.33.0
+   Compiling digest v0.10.7
+   Compiling fs2 v0.4.3
+   Compiling syn v3.0.9
+   Compiling parking_lot v0.12.5
+   Compiling hmac v0.12.1
+   Compiling tempfile v3.27.0
+   Compiling sha2 v0.10.9
+   Compiling serde_derive v1.0.229
+   Compiling rusqlite v0.35.0
+   Compiling database-engine v0.1.0 (/private/tmp/emda-spill-identity-baseline.27OZLb/src-copy)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.34s
+     Running unittests src/lib.rs (target/debug/build/database-engine/192e494630015762/out/database_engine-192e494630015762)
+
+running 1 test
+published b=Some([116, 119, 111]), c=Some([111, 110, 101])
+
+thread 'checkpoint_store::rebuild::tests::damaged_finished_spill_does_not_publish_checkpoint_or_selection' (9722073) panicked at src/checkpoint_store/rebuild.rs:2039:34:
+called `Result::unwrap_err()` on an `Ok` value: [152, 20, 0, 246, 99, 46, 249, 250, 165, 248, 113, 11, 33, 247, 207, 158, 177, 35, 170, 255, 162, 124, 239, 154, 118, 46, 19, 7, 244, 211, 255, 159]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test checkpoint_store::rebuild::tests::damaged_finished_spill_does_not_publish_checkpoint_or_selection ... FAILED
+
+failures:
+
+failures:
+    checkpoint_store::rebuild::tests::damaged_finished_spill_does_not_publish_checkpoint_or_selection
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 572 filtered out; finished in 0.87s
+
+error: test failed, to rerun pass `--lib`

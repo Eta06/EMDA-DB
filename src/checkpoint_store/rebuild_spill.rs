@@ -7,11 +7,11 @@
 //! live-key count, not a historical key-byte peak, and this format does not
 //! invent one.
 //!
-//! Each entry carries a CRC-32 over its run id, index, absolute offset, header
+//! Each entry carries a CRC-32 over its staging identity, index, absolute offset, header
 //! locators, and body. Merge, emission, and random lookup verify that checksum
-//! on the bytes of a single read before using the key or value. The whole-run
-//! SHA-256 rejects a damaged file when a cursor opens for merge or emission; it
-//! does not authorize a later read.
+//! on the bytes of a single read before using the key or value. All opens
+//! compare the trailer with the digest retained by the writer. Merge and
+//! emission also hash the whole run before opening a cursor.
 
 use crate::log::ValueLocation;
 use crate::record;
@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const MAGIC: &[u8; 8] = b"EMDASP01";
-/// Version 2 appends a per-entry CRC-32. The magic stays `EMDASP01`.
-const VERSION: u32 = 2;
+/// Version 3 binds the per-entry CRC-32 to the private run path.
+const VERSION: u32 = 3;
 const HEADER_LEN: u64 = 28;
 const TAIL_LEN: usize = 17;
 const ENTRY_CRC_LEN: usize = 4;
@@ -98,6 +98,8 @@ impl SpillLimits {
 #[derive(Clone)]
 struct RunMeta {
     id: u64,
+    identity: [u8; 32],
+    digest: [u8; 32],
     path: PathBuf,
     bytes: u64,
     entries: u64,
@@ -146,7 +148,7 @@ enum Find {
 struct RunCursor {
     file: File,
     _permit: FdPermit,
-    run_id: u64,
+    identity: [u8; 32],
     count: u64,
     index: u64,
     table_at: u64,
@@ -172,13 +174,17 @@ impl RunCursor {
                 "spill run header does not match its record",
             ));
         }
-        if verify_hash {
-            verify_checksum(&file, len)?;
+        let mut trailer = [0_u8; 32];
+        file.read_exact_at(&mut trailer, len - CHECKSUM_LEN)?;
+        if trailer != run.digest
+            || verify_hash && hash_prefix(&file, len - CHECKSUM_LEN)? != run.digest
+        {
+            return Err(record::invalid_data("spill run checksum mismatch"));
         }
         Ok(Self {
             file,
             _permit: permit,
-            run_id: run.id,
+            identity: run.identity,
             count,
             index: 0,
             table_at,
@@ -193,8 +199,14 @@ impl RunCursor {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let pos = self.entry_pos(mid)?;
-            let (_end, key, state) =
-                read_entry(&self.file, pos, self.table_at, self.run_id, mid, self.count)?;
+            let (_end, key, state) = read_entry(
+                &self.file,
+                pos,
+                self.table_at,
+                &self.identity,
+                mid,
+                self.count,
+            )?;
             match key.as_slice().cmp(needle) {
                 Ordering::Equal => return Ok(Find::Found(state)),
                 Ordering::Less => lo = mid + 1,
@@ -221,7 +233,7 @@ impl RunCursor {
             &self.file,
             pos,
             self.table_at,
-            self.run_id,
+            &self.identity,
             self.index,
             self.count,
         )?;
@@ -261,6 +273,7 @@ struct RunWriter {
     path: PathBuf,
     offset_path: PathBuf,
     id: u64,
+    identity: [u8; 32],
     committed: bool,
     offset_removed: bool,
 }
@@ -277,6 +290,9 @@ impl RunWriter {
             return Err(record::invalid_data("refusing to write an empty spill run"));
         }
         let path = directory.join(format!("run-{id:06}"));
+        // The stage name is independently generated for each rebuild. The
+        // path includes that name and this run's sequence number.
+        let identity = Sha256::digest(path.as_os_str().as_encoded_bytes()).into();
         let offset_path = directory.join(format!("run-{id:06}.off"));
         let permit = FdPermit::acquire(fd)?;
         let offset_permit = FdPermit::acquire(fd)?;
@@ -315,6 +331,7 @@ impl RunWriter {
             path,
             offset_path,
             id,
+            identity,
             committed: false,
             offset_removed: false,
         };
@@ -351,7 +368,7 @@ impl RunWriter {
         body.extend_from_slice(key);
         body.extend_from_slice(&tail);
         let crc = entry_checksum(
-            self.id,
+            &self.identity,
             index,
             offset,
             self.expected_count,
@@ -415,6 +432,8 @@ impl RunWriter {
         self.committed = true;
         Ok(RunMeta {
             id: self.id,
+            identity: self.identity,
+            digest,
             path: self.path.clone(),
             bytes,
             entries: self.count,
@@ -635,9 +654,9 @@ impl SpillSession {
 
     fn lookup_persisted(&self, key: &[u8]) -> io::Result<Find> {
         for run in self.runs.iter().rev() {
-            // The whole-run digest is not rechecked on this path. `open` pins
-            // the header to the in-memory run record; `find` checks every
-            // probed entry before that entry's key is compared or returned.
+            // The whole run is not rehashed on this path. The header and
+            // trailer match the run metadata, and `find` checks every
+            // probed entry before using its key or value.
             let mut cursor = RunCursor::open(&self.fd, run, false)?;
             if let Find::Found(state) = cursor.find(key)? {
                 return Ok(Find::Found(state));
@@ -959,11 +978,11 @@ fn read_header(file: &File) -> io::Result<(u64, u64, u64)> {
 /// Checksum of the entry identity and body.
 ///
 /// `body` is `key_len || key || tag || location` and excludes the stored CRC.
-/// The run id, index, and absolute offset bind the offset-table slot that
+/// The run identity, index, and absolute offset bind the offset-table slot that
 /// located this read. `count` and `table_at` are the header values the cursor
 /// is using. A caller must hash the same buffer it parses.
 fn entry_checksum(
-    run_id: u64,
+    identity: &[u8; 32],
     index: u64,
     offset: u64,
     count: u64,
@@ -971,7 +990,7 @@ fn entry_checksum(
     body: &[u8],
 ) -> u32 {
     let mut hasher = crc32fast::Hasher::new();
-    hasher.update(&run_id.to_le_bytes());
+    hasher.update(identity);
     hasher.update(&index.to_le_bytes());
     hasher.update(&offset.to_le_bytes());
     hasher.update(&count.to_le_bytes());
@@ -984,7 +1003,7 @@ fn read_entry(
     file: &File,
     pos: u64,
     table_at: u64,
-    run_id: u64,
+    identity: &[u8; 32],
     index: u64,
     count: u64,
 ) -> io::Result<(u64, Vec<u8>, Option<ValueLocation>)> {
@@ -1023,7 +1042,7 @@ fn read_entry(
             .try_into()
             .expect("four checksum bytes"),
     );
-    let actual = entry_checksum(run_id, index, pos, count, table_at, &buffer[..body_end]);
+    let actual = entry_checksum(identity, index, pos, count, table_at, &buffer[..body_end]);
     if actual != stored {
         return Err(record::invalid_data("spill entry checksum mismatch"));
     }
@@ -1055,17 +1074,6 @@ fn read_entry(
         _ => return Err(record::invalid_data("unknown spill entry tag")),
     };
     Ok((pos + total as u64, key, state))
-}
-
-fn verify_checksum(file: &File, len: u64) -> io::Result<()> {
-    let actual = hash_prefix(file, len - CHECKSUM_LEN)?;
-    let mut stored = [0_u8; 32];
-    file.read_exact_at(&mut stored, len - CHECKSUM_LEN)?;
-    if actual != stored {
-        Err(record::invalid_data("spill run checksum mismatch"))
-    } else {
-        Ok(())
-    }
 }
 
 fn hash_prefix(file: &File, len: u64) -> io::Result<[u8; 32]> {
@@ -1490,6 +1498,48 @@ mod tests {
         assert!(session.dirty.is_empty());
         assert_eq!(session.runs.len(), 2);
         (session, directory)
+    }
+
+    #[test]
+    fn old_valid_run_cannot_replace_another_rebuilds_run() {
+        let (mut current, directory, path) = finished_single_run();
+        let other_directory = tempfile::tempdir().unwrap();
+        let mut old =
+            SpillSession::create(other_directory.path(), limits(2, 1 << 20, 100), 0, 0).unwrap();
+        old.push(b"a", Some(loc(300)), |_| Ok(None)).unwrap();
+        old.push(b"b", Some(loc(400)), |_| Ok(None)).unwrap();
+        old.write_dirty().unwrap();
+        let stale = fs::read(&old.runs[0].path).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert_eq!(current.runs[0].id, old.runs[0].id);
+        assert_eq!(current.runs[0].entries, old.runs[0].entries);
+        assert_eq!(original.len(), stale.len());
+        assert_eq!(
+            original[..HEADER_LEN as usize],
+            stale[..HEADER_LEN as usize]
+        );
+        old.prepare_for_emit().unwrap();
+        assert_eq!(
+            old.next_latest().unwrap(),
+            Some((b"a".to_vec(), Some(loc(300))))
+        );
+
+        fs::write(&path, &stale).unwrap();
+        let lookup = must_err(current.lookup_persisted(b"a"));
+        assert_eq!(lookup.to_string(), "spill run checksum mismatch");
+        let prepare = current.prepare_for_emit().unwrap_err();
+        assert_eq!(prepare.to_string(), "spill run checksum mismatch");
+        assert_eq!(current.live_count(), 2);
+        assert!(current.dirty.is_empty());
+
+        fs::write(&path, original).unwrap();
+        current.prepare_for_emit().unwrap();
+        // Overwrite the same inode after the complete check, while the
+        // cursor still has the original run open.
+        fs::write(&path, stale).unwrap();
+        assert_entry_checksum(&must_err(current.next_latest()));
+        drop(current);
+        assert_stage_removed(directory.path());
     }
 
     fn flip_byte(path: &Path, offset: u64) {
@@ -1967,7 +2017,7 @@ mod tests {
         assert_eq!(run_table_end(1, u64::MAX - OFFSET_LEN), None);
         let (session, directory, path) = finished_single_run();
         let file = File::open(&path).unwrap();
-        let error = match read_entry(&file, HEADER_LEN - 1, HEADER_LEN + 32, 0, 0, 1) {
+        let error = match read_entry(&file, HEADER_LEN - 1, HEADER_LEN + 32, &[0; 32], 0, 1) {
             Ok(_) => panic!("header bytes accepted as a spill entry"),
             Err(error) => error,
         };
