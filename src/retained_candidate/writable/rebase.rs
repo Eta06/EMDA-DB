@@ -3,6 +3,7 @@ use super::{
     verify_files,
 };
 use crate::record;
+use crate::retained_base_v2::index::EntryPart;
 use crate::retained_base_v2::{self, Limits, encode_header};
 use sha2::{Digest, Sha256};
 use std::{
@@ -62,19 +63,22 @@ impl RetainedStore {
                 "compacted base exceeds entry or key byte limit",
             ));
         }
-        let mut encoded = 0_u64;
-        self.visit_live(|key, value| {
-            encoded = encoded
-                .checked_add(8 + key.len() as u64 + value.len() as u64)
-                .ok_or_else(|| invalid_input("compacted base size overflow"))?;
-            Ok(())
-        })?;
-        let size = encoded
-            .checked_add(144)
-            .ok_or_else(|| invalid_input("compacted base size overflow"))?;
-        if size > limits.file_bytes || size.checked_add(1).is_none_or(|n| n > limits.work_bytes) {
-            return Err(invalid_input("compacted base byte limit exceeded"));
-        }
+        let mut space = limits
+            .file_bytes
+            .min(limits.work_bytes.saturating_sub(1))
+            .checked_sub(144)
+            .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
+        let available = space;
+        self.overlay
+            .visit_merged(&self.base, &self.suffix, |part| {
+                if let EntryPart::Header { key, value_len } = part {
+                    space = space
+                        .checked_sub(entry_bytes(key, value_len))
+                        .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
+                }
+                Ok(())
+            })?;
+        let encoded = available - space;
         let source = self.generation_id();
         let base = random_id()?;
         let header = encode_header(
@@ -94,18 +98,31 @@ impl RetainedStore {
         digest.update(b"EMDA retained base v2\0");
         file.write_all(&header)?;
         digest.update(header);
-        self.visit_live(|key, value| {
-            for bytes in [
-                &(key.len() as u32).to_le_bytes()[..],
-                &(value.len() as u32).to_le_bytes()[..],
-                key,
-                value,
-            ] {
+        let mut remaining = encoded;
+        {
+            let mut write = |bytes: &[u8]| -> io::Result<()> {
                 file.write_all(bytes)?;
                 digest.update(bytes);
-            }
-            Ok(())
-        })?;
+                Ok(())
+            };
+            self.overlay
+                .visit_merged(&self.base, &self.suffix, |part| match part {
+                    EntryPart::Header { key, value_len } => {
+                        remaining = remaining
+                            .checked_sub(entry_bytes(key, value_len))
+                            .ok_or_else(|| {
+                                record::invalid_data("compacted base grew during export")
+                            })?;
+                        write(&(key.len() as u32).to_le_bytes())?;
+                        write(&(value_len as u32).to_le_bytes())?;
+                        write(key)
+                    }
+                    EntryPart::Value(bytes) => write(bytes),
+                })?;
+        }
+        if remaining != 0 {
+            return Err(record::invalid_data("compacted base shrank during export"));
+        }
         let digest: [u8; 32] = digest.finalize().into();
         file.write_all(&digest)?;
         file.flush()?;
@@ -118,18 +135,9 @@ impl RetainedStore {
         self.verify_complete()?;
         crate::retained_candidate::binding(&validated, random_id()?)
     }
+}
 
-    fn visit_live(&self, mut visit: impl FnMut(&[u8], &[u8]) -> io::Result<()>) -> io::Result<()> {
-        let mut after = None;
-        loop {
-            let page = self.scan(after.as_deref(), None, crate::MAX_SCAN_ENTRIES)?;
-            if page.is_empty() {
-                return Ok(());
-            }
-            for (key, value) in page {
-                visit(&key, &value)?;
-                after = Some(key);
-            }
-        }
-    }
+// Both parts are bounded by the record format.
+fn entry_bytes(key: &[u8], value_len: usize) -> u64 {
+    8 + key.len() as u64 + value_len as u64
 }

@@ -479,6 +479,150 @@ fn rebase_limit_rejection_retains_the_active_generation_and_writes() {
 }
 
 #[test]
+fn rebase_streams_large_values_and_overlay_at_exact_byte_limits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let large = vec![0x3c; 512 * 1024 + 3];
+    let updated = vec![0x75; 256 * 1024 + 1];
+    let source = Store::open(tmp.path().join("source")).unwrap();
+    source.put(b"b", &large).unwrap();
+    source.put(b"d", &large).unwrap();
+    source.put(b"f", b"old").unwrap();
+    let candidate = tmp.path().join("candidate");
+    let expected = source
+        .build_retained_candidate(
+            &candidate,
+            [3; 16],
+            [4; 16],
+            RetainedExportLimits {
+                max_log_bytes: 2 * 1024 * 1024,
+                max_output_bytes: 2 * 1024 * 1024,
+                ..EXPORT_LIMITS
+            },
+        )
+        .unwrap();
+    let limits = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: 2 * 1024 * 1024,
+            work_bytes: 2 * 1024 * 1024 + 1,
+            ..LIMITS.base
+        },
+        index: IndexLimits {
+            blocks: 8,
+            ..LIMITS.index
+        },
+        suffix: SuffixLimits {
+            bytes: 512 * 1024,
+            ..LIMITS.suffix
+        },
+        ..LIMITS
+    };
+    let root = tmp.path().join("catalog");
+    let old = ManagedRetainedStore::create(&candidate, &root, limits, &expected).unwrap();
+    let mut store = ManagedRetainedStore::open(&root, limits).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"a",
+                value: b"first",
+            },
+            BatchOperation::Delete { key: b"d" },
+            BatchOperation::Put {
+                key: b"e",
+                value: b"",
+            },
+            BatchOperation::Put {
+                key: b"f",
+                value: &updated,
+            },
+            BatchOperation::Put {
+                key: b"z",
+                value: b"last",
+            },
+        ])
+        .unwrap();
+    let model = vec![
+        (b"a".to_vec(), b"first".to_vec()),
+        (b"b".to_vec(), large),
+        (b"e".to_vec(), vec![]),
+        (b"f".to_vec(), updated),
+        (b"z".to_vec(), b"last".to_vec()),
+    ];
+    let bytes = 144
+        + model
+            .iter()
+            .map(|(k, v)| (8 + k.len() + v.len()) as u64)
+            .sum::<u64>();
+    let exact = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: bytes,
+            work_bytes: bytes + 1,
+            ..limits.base
+        },
+        ..limits
+    };
+    for base in [
+        Limits {
+            file_bytes: bytes - 1,
+            ..exact.base
+        },
+        Limits {
+            work_bytes: bytes,
+            ..exact.base
+        },
+    ] {
+        let err = store
+            .compact_with_limits(RetainedStoreLimits { base, ..exact })
+            .unwrap_err();
+        assert!(matches!(err, PublicationFailure::NotPublished(ref cause)
+            if cause.kind() == io::ErrorKind::InvalidInput
+                && cause.to_string() == "compacted base byte limit exceeded"));
+        assert_eq!(store.generation_id().unwrap(), old);
+        assert!(!Slot::B.path(&root).exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 4);
+        assert_eq!(store.scan(None, None, 8).unwrap(), model);
+    }
+    let next = store.compact_with_limits(exact).unwrap();
+    assert_ne!(next, old);
+    assert_eq!(
+        fs::metadata(Slot::B.path(&root).join("base"))
+            .unwrap()
+            .len(),
+        bytes
+    );
+    assert!(store.reclaim_inactive().unwrap());
+    drop(store);
+    let reopened = ManagedRetainedStore::open(&root, exact).unwrap();
+    assert_eq!(reopened.generation_id().unwrap(), next);
+    assert_eq!(reopened.scan(None, None, 8).unwrap(), model);
+}
+
+#[test]
+fn rebase_stream_authenticates_base_values_hidden_by_tombstones() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.delete(b"a").unwrap();
+    let base = OpenOptions::new()
+        .write(true)
+        .open(Slot::A.path(&f.root).join("base"))
+        .unwrap();
+    // Change the first value byte of the deleted key without changing length.
+    base.write_all_at(b"X", 112 + 8 + 1).unwrap();
+    let stream = store
+        .store
+        .overlay
+        .visit_merged(&store.store.base, &store.store.suffix, |_| Ok(()));
+    let error = stream.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "retained base block digest mismatch");
+    assert!(matches!(
+        store.compact(),
+        Err(PublicationFailure::NotPublished(ref error))
+            if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(!Slot::B.path(&f.root).exists());
+}
+
+#[test]
 fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();

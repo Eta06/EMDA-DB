@@ -3,7 +3,7 @@ use super::{
     charge_suffix_work, check_suffix_binding, read_suffix, suffix_capacity, visit_suffix,
 };
 use crate::record::{self, Operation};
-use crate::retained_base_v2::index::IndexedBase;
+use crate::retained_base_v2::index::{EntryPart, IndexedBase};
 use std::{io, ops::Range, path::Path};
 
 /// Separate overlay bounds for a detached suffix. Distinct touched keys and
@@ -91,6 +91,19 @@ impl IndexedSuffix {
 }
 
 impl Overlay {
+    pub(super) fn visit_merged(
+        &self,
+        base: &IndexedBase,
+        suffix: &[u8],
+        visit: impl FnMut(EntryPart<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let changes = self
+            .entries
+            .iter()
+            .map(|entry| (entry.key.as_slice(), value_at(suffix, entry)));
+        base.visit_merged(changes, visit)
+    }
+
     pub(super) fn live_peaks(
         &self,
         base: &IndexedBase,

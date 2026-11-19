@@ -100,6 +100,11 @@ pub(crate) struct IndexedBase {
     metadata: Validated,
 }
 
+pub(crate) enum EntryPart<'a> {
+    Header { key: &'a [u8], value_len: usize },
+    Value(&'a [u8]),
+}
+
 enum Selection {
     Skip,
     Take,
@@ -138,15 +143,46 @@ impl IndexedBase {
 
     pub(crate) fn visit_keys(&self, mut visit: impl FnMut(&[u8])) -> io::Result<()> {
         self.check_length()?;
-        let mut unused = Vec::new();
         for block in &self.blocks {
-            self.read_block(block, &mut unused, |key, _, _| {
+            self.visit_block(block, |key, _| {
                 visit(key);
-                Ok(Selection::Skip)
+                Ok(())
             })?;
         }
         Ok(())
     }
+
+    // Visits complete blocks in order. Callers must keep side effects private
+    // until every block has authenticated, including those hidden by tombstones.
+    pub(crate) fn visit_merged<'a>(
+        &self,
+        overlay: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+        mut visit: impl FnMut(EntryPart<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.check_length()?;
+        let mut overlay = overlay.peekable();
+        for block in &self.blocks {
+            self.visit_block(block, |key, value| {
+                while overlay.peek().is_some_and(|&(other, _)| other <= key) {
+                    let (other, replacement) = overlay.next().unwrap();
+                    emit_value(other, replacement, &mut visit)?;
+                    if other == key {
+                        return Ok(());
+                    }
+                }
+                visit(EntryPart::Header {
+                    key,
+                    value_len: value.remaining,
+                })?;
+                value.read_chunks(|bytes| visit(EntryPart::Value(bytes)))
+            })?;
+        }
+        for (key, value) in overlay {
+            emit_value(key, value, &mut visit)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         crate::record::validate_key(key)?;
         validate_value_budget(max_value_bytes)?;
@@ -274,6 +310,35 @@ impl IndexedBase {
         result: &mut Vec<Entry>,
         mut select: impl FnMut(&[u8], usize, &mut Vec<Entry>) -> io::Result<Selection>,
     ) -> io::Result<bool> {
+        let mut stopped = false;
+        self.visit_block(block, |key, value| {
+            if !stopped {
+                match select(key, value.remaining, result)? {
+                    Selection::Skip => {}
+                    Selection::Stop => stopped = true,
+                    Selection::Take => {
+                        let mut owned = Vec::new();
+                        owned
+                            .try_reserve_exact(value.remaining)
+                            .map_err(allocation)?;
+                        value.read_chunks(|bytes| {
+                            owned.extend_from_slice(bytes);
+                            Ok(())
+                        })?;
+                        push_entry(result, key, owned)?;
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        Ok(stopped)
+    }
+
+    fn visit_block(
+        &self,
+        block: &Block,
+        mut visit: impl FnMut(&[u8], &mut BlockValue<'_, '_>) -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut read_buffer = [0; CHUNK_BYTES];
         let mut reader = BlockReader {
             file: &self.file,
@@ -286,7 +351,6 @@ impl IndexedBase {
         };
         let mut key = [0u8; MAX_KEY_BYTES];
         let mut buffer = [0u8; CHUNK_BYTES];
-        let mut stopped = false;
         while reader.offset < reader.end {
             let mut lengths = [0u8; 8];
             reader.read(&mut lengths)?;
@@ -296,40 +360,56 @@ impl IndexedBase {
             }
             let key = &mut key[..kl];
             reader.read(key)?;
-            let selected = if stopped {
-                false
-            } else {
-                match select(key, vl, result)? {
-                    Selection::Skip => false,
-                    Selection::Take => true,
-                    Selection::Stop => {
-                        stopped = true;
-                        false
-                    }
-                }
+            let mut value = BlockValue {
+                reader: &mut reader,
+                buffer: &mut buffer,
+                remaining: vl,
             };
-            let mut value = Vec::new();
-            if selected {
-                value.try_reserve_exact(vl).map_err(allocation)?;
-            }
-            let mut remaining = vl;
-            while remaining != 0 {
-                let bytes = remaining.min(buffer.len());
-                reader.read(&mut buffer[..bytes])?;
-                if selected {
-                    value.extend_from_slice(&buffer[..bytes]);
-                }
-                remaining -= bytes;
-            }
-            if selected {
-                push_entry(result, key, value)?;
-            }
+            visit(key, &mut value)?;
+            value.read_chunks(|_| Ok(()))?;
         }
         let digest: [u8; 32] = reader.hash.finalize().into();
         if digest != block.digest {
             return Err(invalid("retained base block digest mismatch"));
         }
-        Ok(stopped)
+        Ok(())
+    }
+}
+
+fn emit_value(
+    key: &[u8],
+    value: Option<&[u8]>,
+    visit: &mut impl FnMut(EntryPart<'_>) -> io::Result<()>,
+) -> io::Result<()> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    visit(EntryPart::Header {
+        key,
+        value_len: value.len(),
+    })?;
+    for chunk in value.chunks(CHUNK_BYTES) {
+        visit(EntryPart::Value(chunk))?;
+    }
+    Ok(())
+}
+
+struct BlockValue<'a, 'b> {
+    reader: &'a mut BlockReader<'b>,
+    buffer: &'a mut [u8; CHUNK_BYTES],
+    remaining: usize,
+}
+
+impl BlockValue<'_, '_> {
+    fn read_chunks(&mut self, mut visit: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {
+        while self.remaining != 0 {
+            let bytes = self.remaining.min(self.buffer.len());
+            let chunk = &mut self.buffer[..bytes];
+            self.reader.read(chunk)?;
+            self.remaining -= bytes;
+            visit(chunk)?;
+        }
+        Ok(())
     }
 }
 
