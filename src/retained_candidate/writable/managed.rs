@@ -787,6 +787,7 @@ impl ManagedRetainedStore {
             generation_role(self.catalog_magic, self.active.catalog),
             persisted_storage,
         )?;
+        self.store.verify_complete()?;
         let generation = next.generation_id();
         if generation == self.active.generation {
             return Err(record::invalid_data(

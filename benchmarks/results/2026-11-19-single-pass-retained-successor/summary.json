@@ -1,0 +1,39 @@
+{
+  "baseline_revision": "19b0615",
+  "builds": {
+    "baseline": {
+      "source_base": {
+        "bytes": 100663944,
+        "calls": 1554
+      },
+      "source_log": {
+        "bytes": 16778658,
+        "calls": 713
+      },
+      "staged_base": {
+        "bytes": 50332084,
+        "calls": 774
+      },
+      "successor_bytes": 25166042,
+      "source_files_verified": 4
+    },
+    "single-pass": {
+      "source_base": {
+        "bytes": 100663944,
+        "calls": 1554
+      },
+      "source_log": {
+        "bytes": 16778658,
+        "calls": 713
+      },
+      "staged_base": {
+        "bytes": 25166042,
+        "calls": 387
+      },
+      "successor_bytes": 25166042,
+      "source_files_verified": 4
+    }
+  },
+  "normalized_successor_sha256": "1ba2c0da6afd68e7512e5a4beb93db7548d1e828bcd84ae06e90db2d4dc90980",
+  "staged_base_bytes_saved": 25166042
+}

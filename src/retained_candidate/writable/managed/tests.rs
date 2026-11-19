@@ -1250,6 +1250,53 @@ fn rebase_rejects_a_changed_base_header_or_trailer_before_selection() {
 }
 
 #[test]
+fn successor_open_rejects_a_rechecksummed_staged_base() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.put(b"b", b"pending").unwrap();
+    let source_state = store.scan(None, None, 32).unwrap();
+    let selected = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let stage = crate::staging::Stage::directory(&f.root).unwrap();
+    let path = stage.path().join("base");
+    let expected = store
+        .store
+        .write_rebased_base(&path, LIMITS.base, u64::MAX)
+        .unwrap();
+    let mut bytes = fs::read(&path).unwrap();
+    let trailer = bytes.len() - 32;
+    bytes[trailer - 1] ^= 1;
+    let mut hash = Sha256::new();
+    hash.update(b"EMDA retained base v2\0");
+    hash.update(&bytes[..trailer]);
+    bytes[trailer..].copy_from_slice(&hash.finalize());
+    fs::write(&path, &bytes).unwrap();
+    let valid = crate::retained_base_v2::validate(bytes.as_slice(), LIMITS.base).unwrap();
+    assert_ne!(valid.digest, expected.base_digest);
+
+    let error = RetainedStore::initialize(
+        stage.path(),
+        LIMITS,
+        &expected,
+        None,
+        generation_role(store.catalog_magic, store.active.catalog),
+        None,
+    )
+    .err()
+    .expect("the staged base must match the writer's digest");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    drop(stage);
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selected);
+    assert!(!Slot::B.path(&f.root).exists());
+    assert_eq!(store.scan(None, None, 32).unwrap(), source_state);
+
+    let next = store.compact().unwrap();
+    drop(store);
+    let reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), next);
+    assert_eq!(reopened.scan(None, None, 32).unwrap(), source_state);
+}
+
+#[test]
 fn rebase_sizes_an_empty_successor_at_the_frame_limit() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();

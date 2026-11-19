@@ -63,7 +63,25 @@ impl std::error::Error for Failure {
 }
 
 pub(crate) fn binding(base: &Validated, log_id: [u8; 16]) -> io::Result<Expected> {
-    if log_id == [0; 16] || log_id == base.source_id || log_id == base.base_id {
+    binding_from_parts(
+        base.source_id,
+        base.base_id,
+        base.boundary,
+        base.file_bytes,
+        base.digest,
+        log_id,
+    )
+}
+
+fn binding_from_parts(
+    source_id: [u8; 16],
+    base_id: [u8; 16],
+    boundary: u64,
+    file_bytes: u64,
+    digest: [u8; 32],
+    log_id: [u8; 16],
+) -> io::Result<Expected> {
+    if log_id == [0; 16] || log_id == source_id || log_id == base_id {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid new log identity",
@@ -71,11 +89,11 @@ pub(crate) fn binding(base: &Validated, log_id: [u8; 16]) -> io::Result<Expected
     }
     let mut header = [0; 112];
     header[..8].copy_from_slice(b"EMDALOG4");
-    header[8..24].copy_from_slice(&base.source_id);
-    header[24..40].copy_from_slice(&base.base_id);
-    header[40..48].copy_from_slice(&base.boundary.to_le_bytes());
-    header[48..56].copy_from_slice(&base.file_bytes.to_le_bytes());
-    header[56..88].copy_from_slice(&base.digest);
+    header[8..24].copy_from_slice(&source_id);
+    header[24..40].copy_from_slice(&base_id);
+    header[40..48].copy_from_slice(&boundary.to_le_bytes());
+    header[48..56].copy_from_slice(&file_bytes.to_le_bytes());
+    header[56..88].copy_from_slice(&digest);
     header[88..104].copy_from_slice(&log_id);
     // Bytes 104..112 encode the empty suffix boundary, zero.
     Ok(binding_from_header(header))

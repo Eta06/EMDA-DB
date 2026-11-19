@@ -813,3 +813,8 @@ cover the durable intent, append, log sync, witness sync and final authority
 record on both platforms. The recovered documents, both indexes and a raw
 receipt agree with the resolved suffix. One simulated incomplete tail fails
 closed, preserving the witness and authority.
+
+[Single-pass successor verification](../benchmarks/results/2026-11-19-single-pass-retained-successor/README.md)
+authenticates the synced base against the writer's binding while building its
+sparse index. A rechecksummed substitution is rejected. Rotation rechecks
+the complete source before publication.

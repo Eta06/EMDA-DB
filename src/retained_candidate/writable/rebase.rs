@@ -1,10 +1,10 @@
 use super::{
-    Expected, OverlaySource, RetainedStore, create_file, invalid_input, marker, open_regular,
-    random_id, verify_files,
+    Expected, OverlaySource, RetainedStore, create_file, invalid_input, marker, random_id,
+    verify_files,
 };
 use crate::record;
 use crate::retained_base_v2::index::EntryPart;
-use crate::retained_base_v2::{self, FRAME_BYTES, Limits, encode_header, encoded_entry_bytes};
+use crate::retained_base_v2::{FRAME_BYTES, Limits, encode_header, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufWriter, Write},
@@ -37,6 +37,9 @@ impl RetainedStore {
         )
     }
 
+    // The returned binding records what was written. The caller must
+    // validate it against the synced file and recheck the source before
+    // publishing the successor.
     pub(super) fn write_rebased_base(
         &self,
         destination: &Path,
@@ -72,11 +75,12 @@ impl RetainedStore {
         }
         let source = self.generation_id();
         let base = random_id()?;
+        let boundary = self.header.len as u64 + self.suffix_len as u64;
         let header = encode_header(
             source,
             base,
             [
-                self.header.len as u64 + self.suffix_len as u64,
+                boundary,
                 peaks.entries,
                 peaks.key_bytes,
                 peaks.peak_entries,
@@ -121,12 +125,13 @@ impl RetainedStore {
         file.write_all(&digest)?;
         file.flush()?;
         file.get_ref().sync_all()?;
-        drop(file);
-        let validated = retained_base_v2::validate_buffered(open_regular(destination)?, limits)?;
-        if validated.digest != digest || validated.source_id != source {
-            return Err(record::invalid_data("compacted base verification mismatch"));
-        }
-        self.verify_complete()?;
-        crate::retained_candidate::binding(&validated, random_id()?)
+        crate::retained_candidate::binding_from_parts(
+            source,
+            base,
+            boundary,
+            encoded + FRAME_BYTES,
+            digest,
+            random_id()?,
+        )
     }
 }
