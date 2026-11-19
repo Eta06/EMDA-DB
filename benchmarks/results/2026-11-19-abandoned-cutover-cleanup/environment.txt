@@ -1,0 +1,10 @@
+f09ca86fc8abc9ae932ad6b583f7730ca4fb0140
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+Darwin 27.0.0 arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+TARGET FSTYPE
+/      ext4

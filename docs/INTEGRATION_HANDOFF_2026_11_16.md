@@ -645,3 +645,12 @@ covers archive substitution, stale backup rejection and reopening
 after an injected partial unlink. The original-path fence and witness
 remain in place. Separate old copies and interrupted preparations
 still require their own retention policy.
+
+Complete abandoned original-path cutover preparations now have
+an explicit cleanup path. Before fencing, cleanup checks source
+hard links under the ordinary lock and requires an absent authority
+record. A fenced catalog checks current authority and accepts the
+original archive fingerprints even after its own archive is retired.
+The [cleanup regression](../benchmarks/results/2026-11-19-abandoned-cutover-cleanup/README.md)
+covers process interruption, protected source and selected catalogs,
+and repeat cleanup. Whole-catalog disk admission remains open.
