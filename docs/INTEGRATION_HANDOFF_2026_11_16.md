@@ -596,3 +596,12 @@ records both document suites, empty-branch conflict checks, staged retained
 queries and a paired local comparison against EMDA's scan and SQLite.
 Broader planner choices, document fault campaigns and deployment-scale
 comparisons remain open.
+
+Guarded document maintenance now authenticates incremental index and
+schema job definitions and cursors before a bounded step can publish.
+Callers retain a separate key per job. The
+[guarded maintenance report](../benchmarks/results/2026-11-19-guarded-maintenance/README.md)
+records substituted-cursor rejection, recovery with a deleted cursor
+document, retained rotation, and rejection by the previous engine while
+a guarded job is pending. Same-job replay and deployment key management
+remain separate verification gates.
