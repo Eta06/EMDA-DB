@@ -8,7 +8,9 @@ use crate::record::{self, Operation};
 use crate::retained_candidate::{
     SuffixCapacity, SuffixExpected, check_files, check_suffix_binding, exact, read_suffix,
 };
-use crate::{BatchOperation, Entry, MutationFailure, PublicationFailure};
+use crate::{
+    BatchOperation, Entry, MutationFailure, PublicationFailure, RetainedExportLimits, Store,
+};
 use rustix::fs::OFlags;
 use sha2::{Digest, Sha256};
 use std::{
@@ -92,15 +94,83 @@ impl ManagedRetainedStore {
         expected: &Expected,
         suffix: impl FnOnce() -> io::Result<Vec<u8>>,
     ) -> Result<[u8; 16], PublicationFailure> {
+        let parent = crate::backup::parent_directory(destination)
+            .map_err(PublicationFailure::NotPublished)?;
+        check_separation(candidate, parent).map_err(PublicationFailure::NotPublished)?;
+        check_files(candidate, expected).map_err(PublicationFailure::NotPublished)?;
+        Self::publish_initial(destination, parent, limits, sync_existing, |_, path| {
+            copy_base(candidate, path, limits, expected)?;
+            Ok((expected.clone(), suffix()?))
+        })
+    }
+
+    /// Copy an exclusively owned witnessed store into a new managed catalog.
+    /// The source lock stays held through publication. The source path must
+    /// name that store and the destination must be absent and outside it.
+    /// Source and destination paths must remain trusted and stable.
+    ///
+    /// Replay and output must fit the supplied export and generation limits.
+    /// This publishes an independent writable copy. The source files stay
+    /// available at their original path. After an uncertain publication,
+    /// inspect the destination with `ManagedRetainedStore::open`.
+    pub fn copy_from_store(
+        source: Store,
+        source_path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        export: RetainedExportLimits,
+        limits: RetainedStoreLimits,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::copy_from_store_using(
+            source,
+            source_path.as_ref(),
+            destination.as_ref(),
+            export,
+            limits,
+            sync_existing,
+        )
+    }
+
+    fn copy_from_store_using(
+        source: Store,
+        source_path: &Path,
+        destination: &Path,
+        mut export: RetainedExportLimits,
+        limits: RetainedStoreLimits,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        let parent = crate::backup::parent_directory(destination)
+            .map_err(PublicationFailure::NotPublished)?;
+        check_separation(source_path, parent).map_err(PublicationFailure::NotPublished)?;
+        let source_lock = source.share_store_lock();
+        source_lock
+            .verify_identity(source_path)
+            .map_err(PublicationFailure::NotPublished)?;
+        export.max_output_bytes = export
+            .max_output_bytes
+            .min(limits.base.file_bytes)
+            .min(limits.base.work_bytes.saturating_sub(1));
+        Self::publish_initial(destination, parent, limits, sync_parent, |stage, path| {
+            let name = std::ffi::OsStr::new("base");
+            let base = source
+                .export_retained_base_in_stage(stage, name, random_id()?, export)
+                .map_err(|failure| match failure {
+                    PublicationFailure::NotPublished(error)
+                    | PublicationFailure::OutcomeUnknown(error) => error,
+                })?;
+            let expected = crate::retained_candidate::binding(&base, random_id()?)?;
+            fs::rename(stage.child_path(name)?, path.join(name))?;
+            Ok((expected, Vec::new()))
+        })
+    }
+
+    fn publish_initial(
+        destination: &Path,
+        parent: &Path,
+        limits: RetainedStoreLimits,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        prepare: impl FnOnce(&crate::staging::Stage, &Path) -> io::Result<(Expected, Vec<u8>)>,
+    ) -> Result<[u8; 16], PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            let parent = crate::backup::parent_directory(destination)?;
-            if parent
-                .canonicalize()?
-                .starts_with(candidate.canonicalize()?)
-            {
-                return Err(invalid_input("destination parent is inside candidate"));
-            }
-            check_files(candidate, expected)?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let root = stage.path();
             create_file(&root.join("store.lock"))?.sync_all()?;
@@ -109,22 +179,21 @@ impl ManagedRetainedStore {
             let slot = Slot::A;
             let path = slot.path(root);
             fs::DirBuilder::new().mode(0o700).create(&path)?;
-            copy_base(candidate, &path, limits, expected)?;
-            let store =
-                RetainedStore::initialize(&path, limits, expected, suffix()?, Some(catalog))?;
+            let (expected, suffix) = prepare(&stage, &path)?;
+            let store = RetainedStore::initialize(&path, limits, &expected, suffix, Some(catalog))?;
             let generation = store.generation_id();
             drop(store);
             let active = Active {
                 catalog,
                 slot,
                 generation,
-                expected: expected.clone(),
+                expected,
             };
             write_new(&root.join(ACTIVE_FILE), &active.encode())?;
             sync_existing(root)?;
             tracker.begin_publication();
             stage.publish(destination)?;
-            sync_existing(parent)?;
+            sync_parent(parent)?;
             stage.publication_synchronized();
             Ok(generation)
         })
@@ -440,6 +509,15 @@ impl ManagedRetainedStore {
             MutationFailure::Rejected(error)
         })
     }
+}
+
+fn check_separation(source: &Path, parent: &Path) -> io::Result<()> {
+    if parent.canonicalize()?.starts_with(source.canonicalize()?) {
+        return Err(invalid_input(
+            "destination parent is inside source directory",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_active(root: &Path, active: &Active) -> io::Result<()> {

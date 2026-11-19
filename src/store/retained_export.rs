@@ -407,7 +407,6 @@ impl Store {
 
     /// Export into a directory stage held by the caller. The caller must keep
     /// the source and stage trusted and stable, as for the public export.
-    #[allow(dead_code)]
     pub(crate) fn export_retained_base_in_stage(
         &self,
         stage: &crate::staging::Stage,

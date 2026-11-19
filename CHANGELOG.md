@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Copy a witnessed ordinary store directly into a verified managed retained
+  catalog under explicit replay and generation limits.
+
 - Add opt-in automatic managed retained compaction and reclamation on
   suffix pressure, with recovery of abandoned catalog stages on open.
 

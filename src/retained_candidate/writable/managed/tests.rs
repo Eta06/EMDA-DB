@@ -27,6 +27,13 @@ const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
     },
 };
 
+const EXPORT_LIMITS: RetainedExportLimits = RetainedExportLimits {
+    max_log_bytes: 8192,
+    max_live_keys: 32,
+    max_live_key_bytes: 256,
+    max_output_bytes: 8192,
+};
+
 struct Fixture {
     tmp: tempfile::TempDir,
     root: PathBuf,
@@ -41,17 +48,7 @@ impl Fixture {
         source.put(b"z", b"kept").unwrap();
         let candidate = tmp.path().join("candidate");
         let expected = source
-            .build_retained_candidate(
-                &candidate,
-                [3; 16],
-                [4; 16],
-                RetainedExportLimits {
-                    max_log_bytes: 8192,
-                    max_live_keys: 32,
-                    max_live_key_bytes: 256,
-                    max_output_bytes: 8192,
-                },
-            )
+            .build_retained_candidate(&candidate, [3; 16], [4; 16], EXPORT_LIMITS)
             .unwrap();
         let root = tmp.path().join("catalog");
         ManagedRetainedStore::create(&candidate, &root, limits, &expected).unwrap();
@@ -65,6 +62,149 @@ impl Fixture {
     fn open(&self) -> ManagedRetainedStore {
         ManagedRetainedStore::open(&self.root, LIMITS).unwrap()
     }
+}
+
+#[test]
+fn ordinary_import_preserves_source_and_carries_ordered_batch_peaks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let destination = tmp.path().join("managed");
+    let store = Store::open(&source).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"temp",
+                value: b"first",
+            },
+            BatchOperation::Put {
+                key: b"a",
+                value: b"live",
+            },
+            BatchOperation::Delete { key: b"temp" },
+        ])
+        .unwrap();
+    let original_log = fs::read(source.join("records.log")).unwrap();
+    let original_witness = fs::read(source.join("commit.state")).unwrap();
+    let id =
+        ManagedRetainedStore::copy_from_store(store, &source, &destination, EXPORT_LIMITS, LIMITS)
+            .unwrap();
+    let mut copy = ManagedRetainedStore::open(&destination, LIMITS).unwrap();
+    assert_eq!(copy.generation_id().unwrap(), id);
+    let base = copy.store.base.metadata();
+    assert_eq!(
+        (
+            base.entries,
+            base.key_bytes,
+            base.peak_entries,
+            base.peak_key_bytes
+        ),
+        (1, 1, 2, 5)
+    );
+    assert_eq!(base.boundary, original_log.len() as u64);
+    assert_eq!(copy.get(b"a", 4).unwrap().unwrap(), b"live");
+    assert_eq!(copy.get(b"temp", 8).unwrap(), None);
+    assert_eq!(fs::read(source.join("records.log")).unwrap(), original_log);
+    assert_eq!(
+        fs::read(source.join("commit.state")).unwrap(),
+        original_witness
+    );
+    copy.put(b"a", b"replacement").unwrap();
+    drop(copy);
+    let copy = ManagedRetainedStore::open(&destination, LIMITS).unwrap();
+    assert_eq!(copy.get(b"a", 16).unwrap().unwrap(), b"replacement");
+    assert_eq!(
+        Store::open(&source).unwrap().get(b"a").unwrap().unwrap(),
+        b"live"
+    );
+}
+
+#[test]
+fn ordinary_import_holds_source_lock_even_when_final_publication_is_uncertain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let destination = tmp.path().join("managed");
+    let store = Store::open(&source).unwrap();
+    store.put(b"a", b"safe").unwrap();
+    let original = fs::read(source.join("records.log")).unwrap();
+    let result = ManagedRetainedStore::copy_from_store_using(
+        store,
+        &source,
+        &destination,
+        EXPORT_LIMITS,
+        LIMITS,
+        |_| {
+            assert_eq!(
+                Store::open(&source).err().unwrap().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(destination.join(ACTIVE_FILE).is_file());
+            Err(io::Error::other("parent sync interrupted"))
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(PublicationFailure::OutcomeUnknown(error)) if error.to_string() == "parent sync interrupted"
+    ));
+    assert_eq!(fs::read(source.join("records.log")).unwrap(), original);
+    let recovered = ManagedRetainedStore::open(&destination, LIMITS).unwrap();
+    assert_eq!(recovered.get(b"a", 4).unwrap().unwrap(), b"safe");
+    assert!(Store::open(&source).is_ok());
+}
+
+#[test]
+fn ordinary_import_rejects_unsafe_paths_budget_exhaustion_and_corrupt_history() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let different = tmp.path().join("different");
+    let destination = tmp.path().join("managed");
+    let store = Store::open(&source).unwrap();
+    store.put(b"a", b"superseded-value").unwrap();
+    store.put(b"a", b"new").unwrap();
+    drop(store);
+    drop(Store::open(&different).unwrap());
+    let original = fs::read(source.join("records.log")).unwrap();
+    for (name, target, limits) in [
+        (&different, destination.clone(), EXPORT_LIMITS),
+        (&source, source.join("inside"), EXPORT_LIMITS),
+        (
+            &source,
+            destination.clone(),
+            RetainedExportLimits {
+                max_log_bytes: 1,
+                ..EXPORT_LIMITS
+            },
+        ),
+    ] {
+        let result = ManagedRetainedStore::copy_from_store(
+            Store::open(&source).unwrap(),
+            name,
+            &target,
+            limits,
+            LIMITS,
+        );
+        assert!(matches!(result, Err(PublicationFailure::NotPublished(_))));
+        assert!(!target.exists());
+    }
+    assert_eq!(fs::read(source.join("records.log")).unwrap(), original);
+    let store = Store::open(&source).unwrap();
+    let value = b"superseded-value";
+    let offset = original
+        .windows(value.len())
+        .position(|bytes| bytes == value)
+        .unwrap();
+    let file = OpenOptions::new()
+        .write(true)
+        .open(source.join("records.log"))
+        .unwrap();
+    file.write_all_at(b"!", offset as u64).unwrap();
+    let result =
+        ManagedRetainedStore::copy_from_store(store, &source, &destination, EXPORT_LIMITS, LIMITS);
+    assert!(matches!(
+        result,
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(!destination.exists());
+    assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 2);
 }
 
 #[test]
@@ -528,6 +668,19 @@ fn managed_cutover_crash_child() {
             std::thread::park();
         }
     };
+    if point == "import" {
+        let root = Path::new(&root);
+        let source = root.join("source");
+        let result = ManagedRetainedStore::copy_from_store_using(
+            Store::open(&source).unwrap(),
+            &source,
+            &root.join("managed"),
+            EXPORT_LIMITS,
+            LIMITS,
+            |_| pause(),
+        );
+        panic!("managed import did not stop at the boundary: {result:?}");
+    }
     let mut store = ManagedRetainedStore::open(root, LIMITS).unwrap();
     if point == "retire" {
         store.compact().unwrap();
@@ -542,48 +695,32 @@ fn managed_cutover_crash_child() {
 }
 
 #[test]
-fn killed_catalog_owner_recovers_the_visible_selection() {
-    use std::{
-        io::{BufRead, BufReader},
-        process::{Command, Stdio},
-        sync::mpsc,
-        time::Duration,
-    };
+fn killed_import_recovers_the_published_copy_and_preserves_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = tmp.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"a", b"acknowledged").unwrap();
+    drop(store);
+    let original = fs::read(source.join("records.log")).unwrap();
+    kill_at_boundary(tmp.path(), "import");
+    let copy = ManagedRetainedStore::open(tmp.path().join("managed"), LIMITS).unwrap();
+    assert_eq!(copy.get(b"a", 12).unwrap().unwrap(), b"acknowledged");
+    assert_eq!(fs::read(source.join("records.log")).unwrap(), original);
+    assert_eq!(
+        Store::open(&source).unwrap().get(b"a").unwrap().unwrap(),
+        b"acknowledged"
+    );
+}
 
+#[test]
+fn killed_catalog_owner_recovers_the_visible_selection() {
     for point in ["before", "after", "retire"] {
         let f = Fixture::new(LIMITS);
         let mut store = f.open();
         store.put(b"safe", b"acknowledged").unwrap();
         let old = store.generation_id().unwrap();
         drop(store);
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "retained_candidate::writable::managed::tests::managed_cutover_crash_child",
-                "--nocapture",
-            ])
-            .env("EMDA_MANAGED_RETAINED_CRASH_ROOT", &f.root)
-            .env("EMDA_MANAGED_RETAINED_CRASH_POINT", point)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let input = BufReader::new(child.stdout.take().unwrap());
-        let (notify, wait) = mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            for line in input.lines().map_while(Result::ok) {
-                if line == "managed selection boundary" {
-                    let _ = notify.send(());
-                    break;
-                }
-            }
-        });
-        let reached = wait.recv_timeout(Duration::from_secs(15));
-        let kill = child.kill();
-        let status = child.wait().unwrap();
-        reader.join().unwrap();
-        reached.expect("child did not reach managed selection boundary");
-        kill.unwrap();
-        assert!(!status.success());
+        kill_at_boundary(&f.root, point);
 
         let mut recovered =
             ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MAX).unwrap();
@@ -601,6 +738,44 @@ fn killed_catalog_owner_recovers_the_visible_selection() {
             Some(point.as_bytes().to_vec())
         );
     }
+}
+
+fn kill_at_boundary(root: &Path, point: &str) {
+    use std::{
+        io::{BufRead, BufReader},
+        process::{Command, Stdio},
+        sync::mpsc,
+        time::Duration,
+    };
+
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "retained_candidate::writable::managed::tests::managed_cutover_crash_child",
+            "--nocapture",
+        ])
+        .env("EMDA_MANAGED_RETAINED_CRASH_ROOT", root)
+        .env("EMDA_MANAGED_RETAINED_CRASH_POINT", point)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = BufReader::new(child.stdout.take().unwrap());
+    let (notify, wait) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in input.lines().map_while(Result::ok) {
+            if line == "managed selection boundary" {
+                let _ = notify.send(());
+                break;
+            }
+        }
+    });
+    let reached = wait.recv_timeout(Duration::from_secs(15));
+    let kill = child.kill();
+    let status = child.wait().unwrap();
+    reader.join().unwrap();
+    reached.expect("child did not reach managed selection boundary");
+    kill.unwrap();
+    assert!(!status.success());
 }
 
 #[test]
