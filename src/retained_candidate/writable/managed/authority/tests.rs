@@ -361,3 +361,38 @@ fn reclamation_fence_failure_keeps_the_inactive_generation() {
     assert!(f.open().reclaim_inactive().unwrap());
     assert!(!Slot::A.path(&f.root).exists());
 }
+
+#[test]
+fn file_provider_fences_catalog_rollback_after_rotation() {
+    let f = Fixture::prepare();
+    let directory = f._tmp.path().join("independent-authority");
+    let mut provider = FileRetainedAuthority::create(&directory).unwrap();
+    assert!(provider.compare_and_swap(None, f.initial).unwrap());
+    let before = Slot::A.path(&f.root);
+    let log = fs::read(before.join("records.log")).unwrap();
+    let witness = fs::read(before.join("commit.state")).unwrap();
+    let mut store = AuthorizedRetainedStore::open(&f.root, LIMITS, provider).unwrap();
+    store.put(b"accepted", b"new").unwrap();
+    store.compact().unwrap();
+    drop(store);
+    let mut store = AuthorizedRetainedStore::open(
+        &f.root,
+        LIMITS,
+        FileRetainedAuthority::open(&directory).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(store.get(b"accepted", 3).unwrap().unwrap(), b"new");
+    drop(store);
+    let selected = Slot::B.path(&f.root);
+    fs::rename(&selected, f.root.join("saved-generation")).unwrap();
+    fs::write(before.join("records.log"), log).unwrap();
+    fs::write(before.join("commit.state"), witness).unwrap();
+    assert!(
+        AuthorizedRetainedStore::open(
+            &f.root,
+            LIMITS,
+            FileRetainedAuthority::open(&directory).unwrap()
+        )
+        .is_err()
+    );
+}

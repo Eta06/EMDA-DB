@@ -1,6 +1,9 @@
 use super::*;
 use std::cell::Cell;
 
+mod file;
+pub use file::FileRetainedAuthority;
+
 #[cfg(test)]
 mod tests;
 
@@ -56,7 +59,7 @@ impl AuthorityRecord {
         })
     }
 
-    fn check(&self, observed: AuthorityPoint) -> io::Result<()> {
+    fn validate(&self) -> io::Result<()> {
         if let Some(next) = self.pending {
             if next.catalog != self.committed.catalog
                 || next.generation != self.committed.generation
@@ -66,6 +69,11 @@ impl AuthorityRecord {
                 return Err(record::invalid_data("invalid retained authority intent"));
             }
         }
+        Ok(())
+    }
+
+    fn check(&self, observed: AuthorityPoint) -> io::Result<()> {
+        self.validate()?;
         if self.committed != observed && self.pending != Some(observed) {
             return Err(record::invalid_data(
                 "retained state does not match independent authority",

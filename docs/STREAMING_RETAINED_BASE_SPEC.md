@@ -311,8 +311,22 @@ prepared catalog at a separate path. Its catalog and generation roles
 require the authorized opener. The caller registers the verified initial
 record with a trusted provider using CAS from an absent record. A provider
 must supply durable linearizable compare-and-swap and independently protect
-the lineage from rollback or reuse. The prototype tests use an in-memory
-provider for protocol fault injection.
+the lineage from rollback or reuse.
+
+`FileRetainedAuthority` provides durable compare-and-swap for cooperating
+processes on one host. Its provisioned directory holds a permanent lock
+and a checksummed, fixed-size record. Creation writes an explicit empty
+record. Missing or damaged records on open fail closed. Under an exclusive
+file lock, updates check the full prior record and next revision, sync a
+complete replacement, rename it atomically, and sync the authority
+directory before returning success. Reads synchronize the visible record's
+directory before returning after uncertain replacement.
+
+The deployment must put the authority directory on independently protected
+storage and keep its contents and ancestors trusted and stable. A local
+authority can protect against rollback of catalog files alone. Restoring
+both the catalog and its authority together can defeat that protection.
+The provider uses a blocking file lock and synchronous I/O.
 
 An append first reserves a fresh authority revision naming the exact prior
 and proposed suffix fingerprints. The local log and witness synchronize

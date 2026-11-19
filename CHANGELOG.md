@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a file-backed retained authority with durable compare-and-swap and
+  cross-process locking.
+
 - Rotate externally authorized retained generations and fence inactive
   reclamation using the independent authority revision.
 

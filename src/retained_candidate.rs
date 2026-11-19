@@ -15,8 +15,8 @@ mod indexed_suffix;
 pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
 mod writable;
 pub use writable::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, ManagedRetainedStore,
-    RetainedAuthority, RetainedStore, RetainedStoreLimits,
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority,
+    ManagedRetainedStore, RetainedAuthority, RetainedStore, RetainedStoreLimits,
 };
 
 /// An independently retained copy of the exact candidate header and witness.

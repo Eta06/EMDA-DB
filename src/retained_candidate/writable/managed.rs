@@ -30,7 +30,10 @@ const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 mod authority;
 mod backup;
 
-pub use authority::{AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, RetainedAuthority};
+pub use authority::{
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority,
+    RetainedAuthority,
+};
 
 #[cfg(test)]
 mod tests;
