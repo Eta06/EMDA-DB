@@ -628,3 +628,11 @@ records rehashed-batch rejection, Linux and macOS regressions, and a
 48 MiB reduction in sampled peak RSS. Open latency increased on that
 fixture. Detached imports still buffer their input, and the catalog
 still retains the old ordinary log at an original-path cutover.
+
+Writable retained import and managed backup restore now stream the
+detached suffix into a private generation and replay it at the exact
+trusted boundary. The [streamed restore report](../benchmarks/results/2026-11-19-streamed-retained-restore/README.md)
+records the byte and operation limits, six new Linux kernel write
+failure cases, and lower sampled peak RSS for a 48 MiB suffix.
+Detached materialized inspection and legacy archive retention remain
+separate resource concerns.

@@ -1,0 +1,17 @@
+7d41226d245b0ad7f790ced69b7c7f400fe8eabc
+33cc0323a2aa3514e9ca51836572b23d1847c4ab
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+Darwin 27.0.0 arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+   File System Personality:   APFS
+81a6c3fb3ecec2806f77a69fba311564c2bae3d928355eb8e8ee3f82b75b2a57  /tmp/emda-stream-import-bench.hSFome/baseline-exec
+aa9812ed4af41546720b6be8cfe9ef9ada1922b90e13c23368180e68a869cdb1  /tmp/emda-stream-import-bench.hSFome/streamed-exec
+5bcc2f0fb69edcf6f4c29820a3a71c855c15175ba4cb377e787ee709c4d66985  /tmp/emda-stream-import-bench.hSFome/megabyte-exec
+fe911ec7e5b987b8ad7d37a0e3aead4c2aed40d6c85922ed656695ab7eccb718  /tmp/emda-stream-import-bench.hSFome/final-exec
+1b94d7ca24e11666954cdfd31a52eb648ab1dd514234ccaaeb3776a7396f8e24  /tmp/emda-stream-import-bench.hSFome/restore_rss.rs
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+TARGET FSTYPE
+/      ext4

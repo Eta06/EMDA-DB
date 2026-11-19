@@ -1,0 +1,6 @@
+1086c375c3a81ccd835d0b2babb7afe8aa70635baa64c2238ee8a696313cf706  ./backup/candidate/witness
+a68e535142f48bea4e92079c90cf1ade868fd993db8de73bf58ea8b4d86a9a1e  ./binding
+d78215256640f2462dab67bd19a5458b4647c8e17593ee720cabfacc8401c49d  ./backup/candidate/base
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./backup/candidate/store.lock
+ee47d552ba0602980f18e02442f595548e45fa8e8d467b1a85a7f6c41fdee823  ./backup/candidate/records.log
+fc3b70d31a735d5cf3c8566313e96d0c2347fa610bdd4d1d9255b9dd29bf61de  ./backup/suffix
