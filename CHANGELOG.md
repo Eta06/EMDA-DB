@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Release the offline restore's private store lock before verification reopen
+  and publication, including when a pre-exec child inherited the descriptor.
+
 - Allow partial-index presence proofs when every branch of a nonempty required
   `Or` establishes the guard.
 

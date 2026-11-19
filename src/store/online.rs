@@ -589,7 +589,7 @@ impl OnlineStore {
         let original_log_limit = current.log_quota.as_ref().map(LogQuota::limit);
         let original_key_limit = current.max_live_keys;
         let original_key_bytes = current.max_live_key_bytes;
-        super::compact::close_private_store(target)?;
+        target.close_private_store()?;
         let mut candidate = Store::open_with_resource_limits(
             stage.path(),
             original_log_limit,

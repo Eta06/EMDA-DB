@@ -928,7 +928,54 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn private_restore_store_reopens_while_forked_child_holds_descriptor() {
+        use crate::test_support::fork_lock::{Child, check, isolated};
+
+        if isolated(
+            concat!(
+                module_path!(),
+                "::private_restore_store_reopens_while_forked_child_holds_descriptor"
+            ),
+            "EMDA_PRIVATE_RESTORE_LOCK_ISOLATED",
+        ) {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let mut stage = crate::staging::Stage::directory(root.path()).unwrap();
+        let store = Store::open(stage.path()).unwrap();
+        store.put(b"key", b"value").unwrap();
+        let child = Child::spawn();
+        child.assert_inode(stage.path());
+        let blocked = Store::open(stage.path()).err().unwrap();
+        assert_eq!(blocked.kind(), io::ErrorKind::WouldBlock);
+
+        store.close_private_store().unwrap();
+        let reopened = Store::open(stage.path()).unwrap();
+        reopened.log.verify_witness().unwrap();
+        assert_eq!(
+            reopened.get(b"key").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+        reopened.close_private_store().unwrap();
+
+        let destination = root.path().join("restored");
+        stage.publish(&destination).unwrap();
+        check(&destination, child, true);
+    }
+
+    #[test]
     fn source_suffix_export_replays_and_preserves_source() {
+        #[cfg(target_os = "linux")]
+        if crate::test_support::fork_lock::isolated(
+            concat!(
+                module_path!(),
+                "::source_suffix_export_replays_and_preserves_source"
+            ),
+            "EMDA_SOURCE_SUFFIX_RESTORE_ISOLATED",
+        ) {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         std::fs::create_dir(&source).unwrap();

@@ -1225,6 +1225,7 @@ mod tests {
         store.put(b"kept", b"base").unwrap();
         store.put(b"safe", b"acked").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
+        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
 
         let rolled_back = witness_bytes(&path);
@@ -1244,6 +1245,7 @@ mod tests {
             ])
             .unwrap();
         store.put(b"r", b"after").unwrap();
+        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         restore_witness(&path, &rolled_back);
 

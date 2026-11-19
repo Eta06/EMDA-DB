@@ -1,7 +1,5 @@
 //! Verified separate-copy compaction from a checkpoint-backed index.
-use super::compact::{
-    CopyRecord, MAX_COPY_BYTES, MAX_COPY_RECORDS, close_private_store, flush_copy,
-};
+use super::compact::{CopyRecord, MAX_COPY_BYTES, MAX_COPY_RECORDS, flush_copy};
 use super::{Log, Operation, Store, backup, record};
 use crate::recovered_view::RecoveredCheckpointView;
 use sha2::{Digest, Sha256};
@@ -120,7 +118,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
     let mut staging = crate::staging::Stage::directory(parent)?;
     let target = Store::open(staging.path())?;
     let copied = copy_live(source, view, &target.log);
-    let closed = close_private_store(target);
+    let closed = target.close_private_store();
     let (copied_count, source_digest) = copied?;
     closed?;
     if copied_count != expected_count {
@@ -200,20 +198,23 @@ mod tests {
     #[test]
     fn private_verification_lock_releases_even_with_duplicate_descriptors() {
         let directory = tempfile::tempdir().unwrap();
-        close_private_store(Store::open(directory.path()).unwrap()).unwrap();
+        Store::open(directory.path())
+            .unwrap()
+            .close_private_store()
+            .unwrap();
         let mut lock = PrivateLock::acquire(directory.path()).unwrap();
         let duplicate = lock.file.try_clone().unwrap();
         assert!(Store::open(directory.path()).is_err());
         lock.release().unwrap();
         let reopened = Store::open(directory.path()).unwrap();
         drop(duplicate);
-        close_private_store(reopened).unwrap();
+        reopened.close_private_store().unwrap();
 
         let lock = PrivateLock::acquire(directory.path()).unwrap();
         let duplicate = lock.file.try_clone().unwrap();
         drop(lock);
         let reopened = Store::open(directory.path()).unwrap();
         drop(duplicate);
-        close_private_store(reopened).unwrap();
+        reopened.close_private_store().unwrap();
     }
 }

@@ -12,15 +12,6 @@ pub(super) struct CopyRecord {
     pub(super) checksum: u32,
 }
 
-// These stores are owned solely by the private staging operation. Explicitly
-// unlock before dropping them so a child forked by another thread cannot keep
-// the staging lock alive through an inherited descriptor until exec.
-pub(super) fn close_private_store(store: Store) -> io::Result<()> {
-    fs2::FileExt::unlock(&store._lock_file)?;
-    drop(store);
-    Ok(())
-}
-
 pub(super) fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
     if records.is_empty() {
         return Ok(());
@@ -176,7 +167,7 @@ impl Store {
         // DB01 records in bounded groups and synchronize each group; the target
         // index is rebuilt and checked by reopening before publication.
         copy(&self.log, &inner.index, &target.log)?;
-        close_private_store(target)?;
+        target.close_private_store()?;
         // Reopen to exercise durable recovery, validate every record, and
         // compare actual values and key count before publishing the directory.
         let verified = Store::open(staging.path())?;
@@ -194,7 +185,7 @@ impl Store {
                 ));
             }
         }
-        close_private_store(verified)?;
+        verified.close_private_store()?;
         File::open(staging.path())?.sync_all()?;
         if let Some(tracker) = tracker {
             tracker.begin_publication();
@@ -244,11 +235,11 @@ mod tests {
         let store = Store::open(directory.path()).unwrap();
         let inherited = store._lock_file.try_clone().unwrap();
         assert!(Store::open(directory.path()).is_err());
-        close_private_store(store).unwrap();
+        store.close_private_store().unwrap();
         let reopened = Store::open(directory.path()).unwrap();
         drop(inherited);
         assert!(Store::open(directory.path()).is_err());
-        close_private_store(reopened).unwrap();
+        reopened.close_private_store().unwrap();
         assert!(Store::open(directory.path()).is_ok());
     }
 

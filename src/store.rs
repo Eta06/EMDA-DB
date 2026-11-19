@@ -103,6 +103,17 @@ impl Store {
         self._lock_file.try_clone()
     }
 
+    // The staging operation owns this unpublished store and has completed all
+    // writes and reads. Close the store before releasing its lock explicitly
+    // so a pre-exec child cannot strand the lock on the private stage.
+    pub(crate) fn close_private_store(self) -> io::Result<()> {
+        let lock = {
+            let store = self;
+            store._lock_file
+        };
+        fs2::FileExt::unlock(&lock)
+    }
+
     // Instrument only before any snapshots or other owners exist. Restore the
     // published reference during unwinding as well as on normal return.
     #[cfg(all(test, target_os = "linux"))]

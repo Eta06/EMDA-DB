@@ -781,6 +781,7 @@ pub(crate) fn restore_with_hooks(
                 hook("write")?;
                 store.put(key, value)?;
             }
+            store.close_private_store()?;
         }
         {
             hook("reopen")?;
@@ -817,6 +818,7 @@ pub(crate) fn restore_with_hooks(
                     "restored state mismatch",
                 ));
             }
+            store.close_private_store()?;
         }
         hook("stage_sync")?;
         crate::directory::sync_existing(stage.path())?;

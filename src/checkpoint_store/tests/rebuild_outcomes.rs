@@ -264,6 +264,18 @@ fn detailed_rebuild_classifies_publication_boundaries_and_preserves_recovery() {
 
 #[test]
 fn detailed_rebuild_public_api_preserves_limits_locks_and_existing_files() {
+    // The public rebuild operations open and release their own locks.
+    // Exercise consecutive calls without unrelated test children inheriting them.
+    #[cfg(target_os = "linux")]
+    if crate::test_support::fork_lock::isolated(
+        concat!(
+            module_path!(),
+            "::detailed_rebuild_public_api_preserves_limits_locks_and_existing_files"
+        ),
+        "EMDA_DETAILED_REBUILD_PUBLIC_API_ISOLATED",
+    ) {
+        return;
+    }
     for v2 in [true, false] {
         let (dir, path, _, _, _) = rebuild_fixture(v2, true);
         let previous = fs::read(super::super::selection::path(&path)).unwrap();
@@ -274,20 +286,21 @@ fn detailed_rebuild_public_api_preserves_limits_locks_and_existing_files() {
             crate::test_support::report_lock_error(&path, "public rebuild rejection", error);
         }
         assert!(
-            matches!(&result, Err(ManagedRebuildFailure::NotPublished(_))),
+            matches!(&result, Err(ManagedRebuildFailure::NotPublished(error)) if error.kind() == io::ErrorKind::WouldBlock),
             "{result:?}"
         );
         drop(active);
-        assert!(matches!(
-            CheckpointStore::rebuild_managed_selection_with_limits_detailed(
-                &path,
-                &destination,
-                Some(1),
-                None,
-                None
-            ),
-            Err(ManagedRebuildFailure::NotPublished(_))
-        ));
+        let result = CheckpointStore::rebuild_managed_selection_with_limits_detailed(
+            &path,
+            &destination,
+            Some(1),
+            None,
+            None,
+        );
+        assert!(
+            matches!(&result, Err(ManagedRebuildFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidInput),
+            "{result:?}"
+        );
         assert!(!destination.exists());
         assert_eq!(
             fs::read(super::super::selection::path(&path)).unwrap(),

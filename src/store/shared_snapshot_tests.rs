@@ -79,6 +79,7 @@ fn exercise_snapshot_model(limited: bool) {
         }
         assert_model(&store, &model);
     }
+    fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
     drop(store);
     let reopened = open();
     assert_model(&reopened, &model);
