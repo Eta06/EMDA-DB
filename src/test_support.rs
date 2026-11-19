@@ -132,7 +132,7 @@ mod tests {
 
 #[cfg(target_os = "linux")]
 pub(crate) mod fork_lock {
-    use std::io::Write;
+    use std::io::{Read, Seek, Write};
     use std::os::fd::AsRawFd;
     use std::os::unix::{fs::MetadataExt, net::UnixStream};
     use std::path::Path;
@@ -214,9 +214,14 @@ pub(crate) mod fork_lock {
         if std::env::var_os(env).is_some() {
             return false;
         }
+        let name = name
+            .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+            .unwrap_or(name);
+        let mut output = tempfile::tempfile().unwrap();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", name, "--nocapture"])
             .env(env, "1")
+            .stdout(output.try_clone().unwrap())
             .spawn()
             .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -231,7 +236,13 @@ pub(crate) mod fork_lock {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
-        assert!(status.success(), "isolated test failed: {status}");
+        output.rewind().unwrap();
+        let mut report = String::new();
+        output.read_to_string(&mut report).unwrap();
+        assert!(
+            status.success() && report.contains("test result: ok. 1 passed;"),
+            "isolated test did not pass: {name}: {status}\n{report}"
+        );
         true
     }
     pub fn check(path: &Path, child: Child, released: bool) {
