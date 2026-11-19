@@ -17,10 +17,16 @@ use std::{
 };
 
 const VERSION: [u8; 8] = *b"EMDARW01";
+const MANAGED_VERSION: [u8; 8] = *b"EMDARW02";
 const WITNESS_MAGIC: [u8; 8] = *b"EMDAWIT4";
 const LIMITS_OFFSET: usize = 136;
 const HEADER_BYTES: usize = LIMITS_OFFSET + 11 * 8;
+const MANAGED_HEADER_BYTES: usize = HEADER_BYTES + 16;
 const WITNESS_BYTES: usize = 84;
+
+mod managed;
+pub use managed::ManagedRetainedStore;
+mod rebase;
 
 #[cfg(test)]
 mod tests;
@@ -69,7 +75,7 @@ pub struct RetainedStore {
     base: IndexedBase,
     log: File,
     witness: File,
-    header: [u8; HEADER_BYTES],
+    header: Header,
     suffix: Vec<u8>,
     hash: Sha256,
     overlay: Overlay,
@@ -151,29 +157,8 @@ impl RetainedStore {
             let suffix = open_suffix()?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let dir = stage.path();
-            create_file(&dir.join("store.lock"))?.sync_all()?;
-            let base = open_regular(&candidate.join("base"))?;
-            let mut target = create_file(&dir.join("base"))?;
-            if io::copy(&mut base.take(base_size + 1), &mut target)? != base_size {
-                return Err(record::invalid_data(
-                    "retained base length changed during copy",
-                ));
-            }
-            target.sync_all()?;
-            let header = new_header(expected, limits)?;
-            let mut log = create_file(&dir.join("records.log"))?;
-            log.write_all(&header)?;
-            log.write_all(&suffix)?;
-            log.sync_all()?;
-            let mut witness = create_file(&dir.join("commit.state"))?;
-            witness.write_all(&marker(
-                &header,
-                suffix.len() as u64,
-                &Sha256::digest(&suffix).into(),
-            ))?;
-            witness.sync_all()?;
-            drop((target, log, witness, suffix));
-            let verified = Self::open(dir, limits, expected)?;
+            copy_base(candidate, dir, limits, expected)?;
+            let verified = Self::initialize(dir, limits, expected, suffix, None)?;
             let id = verified.generation_id();
             drop(verified);
             tracker.begin_publication();
@@ -182,6 +167,37 @@ impl RetainedStore {
             stage.publication_synchronized();
             Ok(id)
         })
+    }
+
+    fn initialize(
+        dir: &Path,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        suffix: Vec<u8>,
+        catalog: Option<[u8; 16]>,
+    ) -> io::Result<Self> {
+        create_file(&dir.join("store.lock"))?.sync_all()?;
+        let header = Header::new(expected, limits, catalog)?;
+        let mut log = create_file(&dir.join("records.log"))?;
+        log.write_all(header.bytes())?;
+        log.write_all(&suffix)?;
+        log.sync_all()?;
+        let mut witness = create_file(&dir.join("commit.state"))?;
+        witness.write_all(&marker(
+            header.bytes(),
+            suffix.len() as u64,
+            &Sha256::digest(&suffix).into(),
+        ))?;
+        witness.sync_all()?;
+        drop((log, witness, suffix));
+        Self::open_role(
+            dir,
+            limits,
+            expected,
+            catalog,
+            None,
+            crate::directory::sync_existing,
+        )
     }
 
     /// Verify the base, witness and complete bounded suffix under an
@@ -209,6 +225,17 @@ impl RetainedStore {
         expected: &Expected,
         sync_directory: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<Self> {
+        Self::open_role(dir, limits, expected, None, None, sync_directory)
+    }
+
+    fn open_role(
+        dir: &Path,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        catalog: Option<[u8; 16]>,
+        generation: Option<[u8; 16]>,
+        sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<Self> {
         if !dir.symlink_metadata()?.file_type().is_dir() {
             return Err(record::invalid_data("invalid retained store directory"));
         }
@@ -218,14 +245,13 @@ impl RetainedStore {
         lock.verify_identity(dir)?;
         let log = open_regular_with(&dir.join("records.log"), OFlags::RDWR | OFlags::APPEND)?;
         let witness = open_regular_with(&dir.join("commit.state"), OFlags::RDWR)?;
-        let mut header = [0; HEADER_BYTES];
-        log.read_exact_at(&mut header, 0)?;
-        verify_header(&header, expected, limits)?;
+        let header = Header::read(&log, catalog)?;
+        header.verify(expected, limits, generation)?;
         let saved = read_marker(&witness)?;
-        let (committed, committed_hash) = decode_marker(&saved, &header)?;
+        let (committed, committed_hash) = decode_marker(&saved, header.bytes())?;
         let log_size = log.metadata()?.len();
         let suffix_len = log_size
-            .checked_sub(HEADER_BYTES as u64)
+            .checked_sub(header.len as u64)
             .ok_or_else(|| record::invalid_data("missing retained log header"))?;
         if committed > suffix_len {
             return Err(record::invalid_data(
@@ -241,7 +267,7 @@ impl RetainedStore {
         let mut suffix = Vec::new();
         reserve_suffix(&mut suffix, suffix_len)?;
         suffix.resize(suffix_len, 0);
-        log.read_exact_at(&mut suffix, HEADER_BYTES as u64)?;
+        log.read_exact_at(&mut suffix, header.len as u64)?;
         let mut hash = Sha256::new();
         hash.update(&suffix[..committed]);
         if <[u8; 32]>::from(hash.clone().finalize()) != committed_hash {
@@ -253,10 +279,10 @@ impl RetainedStore {
         check_binding(base.metadata(), expected)?;
         sync_directory(dir)?;
         lock.verify_identity(dir)?;
-        verify_files(&log, &witness, &header, log_size, &saved)?;
+        verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
         if committed < suffix_len {
             log.sync_data()?;
-            update_witness(&witness, &header, suffix_len, &hash)?;
+            update_witness(&witness, header.bytes(), suffix_len, &hash)?;
         }
         Ok(Self {
             base,
@@ -274,7 +300,7 @@ impl RetainedStore {
 
     /// The unique identity generated when this writable generation was created.
     pub fn generation_id(&self) -> [u8; 16] {
-        self.header[120..LIMITS_OFFSET].try_into().unwrap()
+        self.header.id()
     }
 
     pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
@@ -349,15 +375,15 @@ impl RetainedStore {
             )?;
             reserve_suffix(&mut self.suffix, encoded.len())?;
             let expected = marker(
-                &self.header,
+                self.header.bytes(),
                 self.suffix.len() as u64,
                 &self.hash.clone().finalize().into(),
             );
             if let Err(error) = verify_files(
                 &self.log,
                 &self.witness,
-                &self.header,
-                HEADER_BYTES as u64 + self.suffix.len() as u64,
+                self.header.bytes(),
+                self.header.len as u64 + self.suffix.len() as u64,
                 &expected,
             ) {
                 self.failed = true;
@@ -371,7 +397,7 @@ impl RetainedStore {
             hook(CommitPoint::Appended)?;
             self.log.sync_data()?;
             hook(CommitPoint::LogSynced)?;
-            update_witness(&self.witness, &self.header, end, &hash)?;
+            update_witness(&self.witness, self.header.bytes(), end, &hash)?;
             hook(CommitPoint::WitnessSynced)?;
             self.suffix.extend_from_slice(&encoded);
             self.overlay.commit_append(overlay);
@@ -397,49 +423,136 @@ fn create_file(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-fn new_header(expected: &Expected, limits: RetainedStoreLimits) -> io::Result<[u8; HEADER_BYTES]> {
-    let mut header = [0; HEADER_BYTES];
-    header[..112].copy_from_slice(&expected.header);
-    header[112..120].copy_from_slice(&VERSION);
-    File::open("/dev/urandom")?.read_exact(&mut header[120..LIMITS_OFFSET])?;
-    fill_limits(&mut header, limits);
-    verify_header(&header, expected, limits)?;
-    Ok(header)
-}
-
-fn fill_limits(header: &mut [u8; HEADER_BYTES], limits: RetainedStoreLimits) {
-    for (slot, value) in header[LIMITS_OFFSET..]
-        .chunks_exact_mut(8)
-        .zip(limits.fields())
-    {
-        slot.copy_from_slice(&value.to_le_bytes());
-    }
-}
-
-fn verify_header(
-    header: &[u8; HEADER_BYTES],
-    expected: &Expected,
+fn copy_base(
+    candidate: &Path,
+    dir: &Path,
     limits: RetainedStoreLimits,
+    expected: &Expected,
 ) -> io::Result<()> {
-    let generation = &header[120..LIMITS_OFFSET];
-    if header[..112] != expected.header
-        || header[112..120] != VERSION
-        || generation == [0; 16]
-        || [&header[8..24], &header[24..40], &header[88..104]].contains(&generation)
+    let size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+    if size > limits.base.file_bytes
+        || size
+            .checked_add(1)
+            .is_none_or(|n| n > limits.base.work_bytes)
     {
-        return Err(record::invalid_data("retained generation header mismatch"));
+        return Err(invalid_input("retained base byte limit exceeded"));
     }
-    let mut configured = *header;
-    fill_limits(&mut configured, limits);
-    if configured != *header {
-        return Err(invalid_input(
-            "retained recovery limits differ from persisted limits",
+    let base = open_regular(&candidate.join("base"))?;
+    let mut target = create_file(&dir.join("base"))?;
+    if io::copy(&mut base.take(size + 1), &mut target)? != size {
+        return Err(record::invalid_data(
+            "retained base length changed during copy",
         ));
     }
-    Ok(())
+    target.sync_all()
 }
 
-fn marker(header: &[u8; HEADER_BYTES], end: u64, digest: &[u8; 32]) -> [u8; WITNESS_BYTES] {
+fn random_id() -> io::Result<[u8; 16]> {
+    let mut id = [0; 16];
+    File::open("/dev/urandom")?.read_exact(&mut id)?;
+    if id == [0; 16] {
+        return Err(io::Error::other("random identifier is zero"));
+    }
+    Ok(id)
+}
+
+struct Header {
+    bytes: [u8; MANAGED_HEADER_BYTES],
+    len: usize,
+}
+
+impl Header {
+    fn for_role(catalog: Option<[u8; 16]>) -> Self {
+        let mut bytes = [0; MANAGED_HEADER_BYTES];
+        let (version, len) = match catalog {
+            Some(id) => {
+                bytes[HEADER_BYTES..].copy_from_slice(&id);
+                (MANAGED_VERSION, MANAGED_HEADER_BYTES)
+            }
+            None => (VERSION, HEADER_BYTES),
+        };
+        bytes[112..120].copy_from_slice(&version);
+        Self { bytes, len }
+    }
+
+    fn new(
+        expected: &Expected,
+        limits: RetainedStoreLimits,
+        catalog: Option<[u8; 16]>,
+    ) -> io::Result<Self> {
+        let mut header = Self::for_role(catalog);
+        header.bytes[..112].copy_from_slice(&expected.header);
+        header.bytes[120..LIMITS_OFFSET].copy_from_slice(&random_id()?);
+        header.fill_limits(limits);
+        header.verify(expected, limits, None)?;
+        Ok(header)
+    }
+
+    fn read(log: &File, catalog: Option<[u8; 16]>) -> io::Result<Self> {
+        let expected = Self::for_role(catalog);
+        let mut observed = Self::for_role(catalog);
+        log.read_exact_at(&mut observed.bytes[..observed.len], 0)?;
+        if observed.bytes[112..120] != expected.bytes[112..120]
+            || observed.bytes[HEADER_BYTES..] != expected.bytes[HEADER_BYTES..]
+        {
+            return Err(record::invalid_data(
+                "retained generation ownership mismatch",
+            ));
+        }
+        Ok(observed)
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+
+    fn id(&self) -> [u8; 16] {
+        self.bytes[120..LIMITS_OFFSET].try_into().unwrap()
+    }
+
+    fn fill_limits(&mut self, limits: RetainedStoreLimits) {
+        for (slot, value) in self.bytes[LIMITS_OFFSET..HEADER_BYTES]
+            .chunks_exact_mut(8)
+            .zip(limits.fields())
+        {
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn verify(
+        &self,
+        expected: &Expected,
+        limits: RetainedStoreLimits,
+        generation: Option<[u8; 16]>,
+    ) -> io::Result<()> {
+        let id = self.id();
+        if self.bytes[..112] != expected.header
+            || id == [0; 16]
+            || generation.is_some_and(|expected| id != expected)
+            || [
+                &self.bytes[8..24],
+                &self.bytes[24..40],
+                &self.bytes[88..104],
+            ]
+            .contains(&id.as_slice())
+        {
+            return Err(record::invalid_data("retained generation header mismatch"));
+        }
+        let mut configured = Self {
+            bytes: self.bytes,
+            len: self.len,
+        };
+        configured.fill_limits(limits);
+        if configured.bytes != self.bytes {
+            return Err(invalid_input(
+                "retained recovery limits differ from persisted limits",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn marker(header: &[u8], end: u64, digest: &[u8; 32]) -> [u8; WITNESS_BYTES] {
     let mut result = [0; WITNESS_BYTES];
     result[..8].copy_from_slice(&WITNESS_MAGIC);
     result[8..40].copy_from_slice(&Sha256::digest(header));
@@ -450,10 +563,7 @@ fn marker(header: &[u8; HEADER_BYTES], end: u64, digest: &[u8; 32]) -> [u8; WITN
     result
 }
 
-fn decode_marker(
-    bytes: &[u8; WITNESS_BYTES],
-    header: &[u8; HEADER_BYTES],
-) -> io::Result<(u64, [u8; 32])> {
+fn decode_marker(bytes: &[u8; WITNESS_BYTES], header: &[u8]) -> io::Result<(u64, [u8; 32])> {
     let end = u64::from_le_bytes(bytes[40..48].try_into().unwrap());
     let digest = bytes[48..80].try_into().unwrap();
     if *bytes != marker(header, end, &digest) {
@@ -464,12 +574,7 @@ fn decode_marker(
     Ok((end, digest))
 }
 
-fn update_witness(
-    file: &File,
-    header: &[u8; HEADER_BYTES],
-    end: usize,
-    hash: &Sha256,
-) -> io::Result<()> {
+fn update_witness(file: &File, header: &[u8], end: usize, hash: &Sha256) -> io::Result<()> {
     file.write_all_at(
         &marker(header, end as u64, &hash.clone().finalize().into()),
         0,
@@ -491,13 +596,16 @@ fn read_marker(witness: &File) -> io::Result<[u8; WITNESS_BYTES]> {
 fn verify_files(
     log: &File,
     witness: &File,
-    header: &[u8; HEADER_BYTES],
+    header: &[u8],
     log_size: u64,
     saved: &[u8; WITNESS_BYTES],
 ) -> io::Result<()> {
-    let mut observed = [0; HEADER_BYTES];
-    log.read_exact_at(&mut observed, 0)?;
-    if observed != *header || log.metadata()?.len() != log_size || read_marker(witness)? != *saved {
+    let mut observed = [0; MANAGED_HEADER_BYTES];
+    log.read_exact_at(&mut observed[..header.len()], 0)?;
+    if observed[..header.len()] != *header
+        || log.metadata()?.len() != log_size
+        || read_marker(witness)? != *saved
+    {
         return Err(record::invalid_data("retained log or witness changed"));
     }
     Ok(())

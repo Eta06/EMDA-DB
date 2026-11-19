@@ -330,10 +330,10 @@ fn tampered_or_incomplete_suffix_leaves_witness_unchanged() {
             "split" => {
                 f.append_unacknowledged(&next);
                 let bytes = fs::read(f.log()).unwrap();
-                let header = bytes[..HEADER_BYTES].try_into().unwrap();
+                let header = &bytes[..HEADER_BYTES];
                 let suffix = &bytes[HEADER_BYTES..];
                 let end = suffix.len() - 1;
-                let witness = marker(&header, end as u64, &Sha256::digest(&suffix[..end]).into());
+                let witness = marker(header, end as u64, &Sha256::digest(&suffix[..end]).into());
                 fs::write(f.witness(), witness).unwrap();
             }
             "missing" => {

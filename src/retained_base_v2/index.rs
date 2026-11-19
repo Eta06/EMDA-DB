@@ -5,7 +5,11 @@ use super::{
 };
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
 use sha2::{Digest, Sha256};
-use std::{fs::File, io, os::unix::fs::FileExt};
+use std::{
+    fs::File,
+    io::{self, Seek},
+    os::unix::fs::FileExt,
+};
 
 // Whole entries are kept in one block, so an entry larger than this occupies
 // its own block. It is still read through the fixed chunk buffer.
@@ -123,6 +127,26 @@ impl IndexedBase {
         &self.metadata
     }
 
+    pub(crate) fn verify(&self, limits: Limits) -> io::Result<()> {
+        let mut file = &self.file;
+        file.rewind()?;
+        if super::validate(file, limits)? != self.metadata {
+            return Err(invalid("retained base changed"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn visit_keys(&self, mut visit: impl FnMut(&[u8])) -> io::Result<()> {
+        self.check_length()?;
+        let mut unused = Vec::new();
+        for block in &self.blocks {
+            self.read_block(block, &mut unused, |key, _, _| {
+                visit(key);
+                Ok(Selection::Skip)
+            })?;
+        }
+        Ok(())
+    }
     pub(crate) fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         crate::record::validate_key(key)?;
         validate_value_budget(max_value_bytes)?;

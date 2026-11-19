@@ -213,9 +213,55 @@ witness remains possible. Durable online generation selection, lifecycle
 integration and retirement of prior history are covered by the remaining
 design below.
 
-## Future authoritative cutover and reclamation (not implemented)
+## Managed retained catalogs
 
-Authoritative cutover remains prohibited until the old-reader gate and backup
+`retained_candidate::ManagedRetainedStore` creates a separate store root
+from a verified base and optional detached suffix. It holds the catalog's
+exclusive `store.lock` for the lifetime of the handle. One of two fixed
+generation directories, `generation-a` or `generation-b`, is active.
+Managed generation logs use `EMDARW02` at bytes 112–119 and append the
+16-byte catalog identifier to the independent format's header. Their
+240-byte header, including the catalog identifier, is bound by
+`commit.state`. Independent retained open requires the `EMDARW01` role.
+
+`catalog.id` is 56 bytes containing `EMDACT01`, the nonzero catalog ID,
+and SHA-256 of those first 24 bytes. `active.retained` is a 256-byte
+record containing `EMDAAC01`, the catalog ID, a one-byte slot selector
+`0` or `1`, seven zero bytes, the generation ID, the 176-byte candidate
+binding, and SHA-256 of the preceding 224 bytes. Open checks the marker
+and exact generation and synchronizes the directory ancestry before
+adopting a tail or accepting writes. Write admission rechecks the catalog
+and active selection. Invalid or missing selection stops recovery.
+
+Compaction verifies the actual current base and suffix, replays ordered
+suffix updates for the historical peaks, and streams verified pages to a
+fresh base with the same live state. The inactive slot must be empty.
+The prepared generation has an empty suffix and is synchronized and
+verified before an atomic replacement of `active.retained`. Writes are
+admitted on the replacement only after directory synchronization.
+Failure before selection can leave an inactive prepared generation.
+A failure during selection disables the handle until reopening, which
+recovers only the checked selection actually present. Recovery never
+guesses a replacement selection from directory contents.
+
+`reclaim_inactive` verifies the active bytes and synchronized selection,
+checks the inactive slot's ownership and file types, and moves it under
+an engine-owned stage before removing it. A cleanup error can leave an
+owned stage for explicit staging cleanup. Compaction and reclaim require
+exclusive use of the handle. No public reader or writer can pin the
+inactive slot outside that catalog. The configured new-base limits can
+reject a rebase even while a larger merged state remains readable; use
+appropriate admission budgets for deployment. The two slots, temporary
+stages, directory entries, returned pages and allocator overhead have
+separate storage and memory costs.
+
+Catalogs use trusted local directories and the ordinary rollback model.
+The original ordinary store remains independently addressable after
+import. The catalog's safe retirement applies to its own inactive slots.
+
+## Future migration of existing stores and external authority
+
+Cutover at an existing ordinary store entry point remains prohibited until the old-reader gate and backup
 policy cover empty or legacy-looking suffixes and independently opened stale
 copies. A sidecar alone cannot make those readers fail closed.
 

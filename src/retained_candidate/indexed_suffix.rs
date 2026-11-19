@@ -91,6 +91,54 @@ impl IndexedSuffix {
 }
 
 impl Overlay {
+    pub(super) fn live_peaks(
+        &self,
+        base: &IndexedBase,
+        suffix: &[u8],
+        limits: SuffixLimits,
+    ) -> io::Result<LivePeaks> {
+        let mut present = Vec::new();
+        present
+            .try_reserve_exact(self.entries.len())
+            .map_err(allocation)?;
+        present.resize(self.entries.len(), false);
+        base.visit_keys(|key| {
+            if let Ok(position) = find(&self.entries, key) {
+                present[position] = true;
+            }
+        })?;
+        let initial = base.metadata();
+        let mut peaks = LivePeaks {
+            entries: initial.entries,
+            key_bytes: initial.key_bytes,
+            peak_entries: initial.peak_entries,
+            peak_key_bytes: initial.peak_key_bytes,
+        };
+        visit_suffix(suffix, limits, None, |operation, key, _| {
+            let position = find(&self.entries, key)
+                .map_err(|_| record::invalid_data("overlay lost a suffix key"))?;
+            let exists = operation == Operation::Put;
+            if exists != present[position] {
+                let size = key.len() as u64;
+                let delta = |number: u64, amount| {
+                    if exists {
+                        number.checked_add(amount)
+                    } else {
+                        number.checked_sub(amount)
+                    }
+                    .ok_or_else(|| record::invalid_data("retained live total overflow"))
+                };
+                peaks.entries = delta(peaks.entries, 1)?;
+                peaks.key_bytes = delta(peaks.key_bytes, size)?;
+                peaks.peak_entries = peaks.peak_entries.max(peaks.entries);
+                peaks.peak_key_bytes = peaks.peak_key_bytes.max(peaks.key_bytes);
+                present[position] = exists;
+            }
+            Ok(())
+        })?;
+        Ok(peaks)
+    }
+
     pub(super) fn build(
         suffix: &[u8],
         suffix_limits: SuffixLimits,
@@ -218,6 +266,13 @@ impl Overlay {
             .map(|entry| (entry.key.as_slice(), value_at(suffix, entry)));
         base.scan_merged(after, before, limit, overlay)
     }
+}
+
+pub(super) struct LivePeaks {
+    pub entries: u64,
+    pub key_bytes: u64,
+    pub peak_entries: u64,
+    pub peak_key_bytes: u64,
 }
 
 pub(super) struct OverlayAppend {

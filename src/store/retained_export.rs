@@ -517,22 +517,18 @@ impl Store {
                     "output budget exceeded",
                 ));
             }
-            let mut header = [0u8; 112];
-            header[..8].copy_from_slice(b"EMDARB02");
-            header[8..12].copy_from_slice(&2u32.to_le_bytes());
-            header[12..16].copy_from_slice(&112u32.to_le_bytes());
-            header[16..32].copy_from_slice(&source);
-            header[32..48].copy_from_slice(&base_id);
-            for (offset, value) in [
-                (48, boundary),
-                (56, inner.index.len() as u64),
-                (64, key_bytes),
-                (72, peak as u64),
-                (80, peak_bytes as u64),
-                (88, encoded),
-            ] {
-                header[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-            }
+            let header = crate::retained_base_v2::encode_header(
+                source,
+                base_id,
+                [
+                    boundary,
+                    inner.index.len() as u64,
+                    key_bytes,
+                    peak as u64,
+                    peak_bytes as u64,
+                    encoded,
+                ],
+            );
             let parent = match owned_parent {
                 Some(parent) => parent,
                 None => backup::parent_directory(destination)?,

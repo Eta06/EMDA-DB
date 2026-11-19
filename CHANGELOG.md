@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add managed retained catalogs with durable generation selection,
+  bounded rebase, and explicit reclamation of the verified inactive slot.
+
 - Create an independent writable retained generation from a verified base and
   optional detached suffix, under persisted recovery limits and a witness
   binding the exact committed suffix.

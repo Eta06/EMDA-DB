@@ -1,0 +1,477 @@
+use super::{
+    Expected, Header, RetainedStore, RetainedStoreLimits, StoreLock, copy_base, create_file,
+    decode_marker, invalid_input, open_regular, open_regular_with, random_id, read_marker,
+};
+use crate::directory::sync_existing;
+use crate::record;
+use crate::retained_candidate::{
+    SuffixExpected, check_files, check_suffix_binding, exact, read_suffix,
+};
+use crate::{BatchOperation, Entry, MutationFailure, PublicationFailure};
+use rustix::fs::OFlags;
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    io::{self, Write},
+    os::unix::fs::DirBuilderExt,
+    path::{Path, PathBuf},
+};
+
+const CATALOG_FILE: &str = "catalog.id";
+const CATALOG_MAGIC: &[u8; 8] = b"EMDACT01";
+const ACTIVE_FILE: &str = "active.retained";
+const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
+
+#[cfg(test)]
+mod tests;
+
+/// A retained store with one durable active generation. One exclusive
+/// catalog lock spans the lifetime of the handle and every cutover. Managed
+/// generation directories can only be opened through their catalog.
+///
+/// The catalog is trusted local metadata, as is the generation witness.
+/// Cooperating callers must keep the directories stable. This mechanism
+/// detects damage and mismatches, with coordinated disk rollback outside
+/// its guarantees.
+pub struct ManagedRetainedStore {
+    store: RetainedStore,
+    root: PathBuf,
+    active: Active,
+    limits: RetainedStoreLimits,
+    uncertain: bool,
+    lock: StoreLock,
+}
+
+impl ManagedRetainedStore {
+    /// Publish a catalog with the verified candidate as its initial state.
+    /// The destination must be absent and outside the candidate directory.
+    pub fn create(
+        candidate: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::create_using(
+            candidate.as_ref(),
+            destination.as_ref(),
+            limits,
+            expected,
+            || Ok(Vec::new()),
+        )
+    }
+
+    /// Publish a catalog with the independently bound detached suffix
+    /// imported into its first generation.
+    pub fn create_from_suffix(
+        candidate: impl AsRef<Path>,
+        suffix: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &SuffixExpected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::create_using(
+            candidate.as_ref(),
+            destination.as_ref(),
+            limits,
+            &expected.candidate,
+            || {
+                let bytes = read_suffix(suffix.as_ref(), limits.suffix, expected.end)?;
+                check_suffix_binding(&bytes, limits.suffix, expected)?;
+                Ok(bytes)
+            },
+        )
+    }
+
+    fn create_using(
+        candidate: &Path,
+        destination: &Path,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        suffix: impl FnOnce() -> io::Result<Vec<u8>>,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            let parent = crate::backup::parent_directory(destination)?;
+            if parent
+                .canonicalize()?
+                .starts_with(candidate.canonicalize()?)
+            {
+                return Err(invalid_input("destination parent is inside candidate"));
+            }
+            check_files(candidate, expected)?;
+            let mut stage = crate::staging::Stage::directory(parent)?;
+            let root = stage.path();
+            create_file(&root.join("store.lock"))?.sync_all()?;
+            let catalog = random_id()?;
+            write_new(&root.join(CATALOG_FILE), &catalog_bytes(catalog))?;
+            let slot = Slot::A;
+            let path = slot.path(root);
+            fs::DirBuilder::new().mode(0o700).create(&path)?;
+            copy_base(candidate, &path, limits, expected)?;
+            let store =
+                RetainedStore::initialize(&path, limits, expected, suffix()?, Some(catalog))?;
+            let generation = store.generation_id();
+            drop(store);
+            let active = Active {
+                catalog,
+                slot,
+                generation,
+                expected: expected.clone(),
+            };
+            write_new(&root.join(ACTIVE_FILE), &active.encode())?;
+            sync_existing(root)?;
+            tracker.begin_publication();
+            stage.publish(destination)?;
+            sync_existing(parent)?;
+            stage.publication_synchronized();
+            Ok(generation)
+        })
+    }
+
+    /// Recover the exact selected generation and synchronize its namespace
+    /// before admitting writes. Invalid or missing selections fail closed.
+    pub fn open(root: impl AsRef<Path>, limits: RetainedStoreLimits) -> io::Result<Self> {
+        let root = root.as_ref();
+        let lock = lock_directory(root)?;
+        let root = root.canonicalize()?;
+        lock.verify_identity(&root)?;
+        let catalog = read_catalog(&root)?;
+        let active = Active::load(&root, catalog)?;
+        let path = active.slot.path(&root);
+        let store = RetainedStore::open_role(
+            &path,
+            limits,
+            &active.expected,
+            Some(catalog),
+            Some(active.generation),
+            |directory| {
+                sync_existing(directory)?;
+                lock.verify_identity(&root)?;
+                verify_active(&root, &active)
+            },
+        )?;
+        Ok(Self {
+            store,
+            root,
+            active,
+            limits,
+            uncertain: false,
+            lock,
+        })
+    }
+
+    pub fn generation_id(&self) -> io::Result<[u8; 16]> {
+        self.ensure_selected()?;
+        Ok(self.active.generation)
+    }
+
+    pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
+        self.ensure_selected()?;
+        self.store.get(key, max_value_bytes)
+    }
+
+    pub fn scan(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+    ) -> io::Result<Vec<Entry>> {
+        self.ensure_selected()?;
+        self.store.scan(after, before, limit)
+    }
+
+    pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
+        self.prepare_write()?;
+        self.store.put(key, value)
+    }
+
+    pub fn delete(&mut self, key: &[u8]) -> Result<(), MutationFailure> {
+        self.prepare_write()?;
+        self.store.delete(key)
+    }
+
+    pub fn write_batch(
+        &mut self,
+        operations: &[BatchOperation<'_>],
+    ) -> Result<(), MutationFailure> {
+        self.prepare_write()?;
+        self.store.write_batch(operations)
+    }
+
+    /// Compact the complete live state to a verified base and empty suffix in
+    /// the inactive slot, then select it durably. An occupied inactive slot
+    /// requires explicit reclamation first. Errors before selection can leave
+    /// an inactive candidate. Selection uncertainty requires reopening.
+    pub fn compact(&mut self) -> Result<[u8; 16], PublicationFailure> {
+        self.compact_using(|| Ok(()), sync_existing)
+    }
+
+    fn compact_using(
+        &mut self,
+        before_select: impl FnOnce() -> io::Result<()>,
+        sync_selection: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.verify_selection()?;
+            let slot = self.active.slot.other();
+            let destination = slot.path(&self.root);
+            match fs::symlink_metadata(&destination) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "inactive generation slot is occupied",
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            let mut stage = crate::staging::Stage::directory(&self.root)?;
+            let expected = self.store.write_rebased_base(&stage.path().join("base"))?;
+            let next = RetainedStore::initialize(
+                stage.path(),
+                self.limits,
+                &expected,
+                Vec::new(),
+                Some(self.active.catalog),
+            )?;
+            let generation = next.generation_id();
+            if generation == self.active.generation {
+                return Err(record::invalid_data(
+                    "retained generation identifier collision",
+                ));
+            }
+            stage.publish(&destination)?;
+            sync_existing(&self.root)?;
+            stage.publication_synchronized();
+            next._lock.verify_identity(&destination)?;
+            let active = Active {
+                catalog: self.active.catalog,
+                slot,
+                generation,
+                expected,
+            };
+            let (mut selection, mut file) = crate::staging::Stage::file(&self.root)?;
+            file.write_all(&active.encode())?;
+            file.sync_all()?;
+            drop(file);
+            before_select()?;
+
+            tracker.begin_publication();
+            self.uncertain = true;
+            selection.replace_file(&self.root.join(ACTIVE_FILE))?;
+            sync_selection(&self.root)?;
+            selection.publication_synchronized();
+            self.store = next;
+            self.active = active;
+            self.uncertain = false;
+            Ok(generation)
+        })
+    }
+
+    /// Retire only the catalog-owned inactive slot after verifying and
+    /// synchronizing the active selection. A failed removal can leave an
+    /// owned stage for explicit staging cleanup.
+    pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
+        self.reclaim_using(sync_existing)
+    }
+
+    fn reclaim_using(
+        &mut self,
+        sync_after_move: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<bool> {
+        self.verify_selection()?;
+        let inactive = self.active.slot.other().path(&self.root);
+        match fs::symlink_metadata(&inactive) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            Ok(_) => {
+                return Err(record::invalid_data(
+                    "invalid inactive generation directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        }
+        self.store.verify_complete()?;
+        sync_existing(&self.root)?;
+        let _retired_lock = lock_directory(&inactive)?;
+        check_retired(&inactive, &self.active)?;
+        let mut stage = crate::staging::Stage::directory(&self.root)?;
+        let moved = stage.child_path("retired".as_ref())?;
+        crate::backup::publish_directory(&inactive, &moved)?;
+        stage.preserve_payload_on_drop();
+        sync_after_move(stage.path())?;
+        fs::remove_dir_all(&moved)?;
+        sync_existing(stage.path())?;
+        stage.finish_retained_cleanup();
+        Ok(true)
+    }
+
+    fn ensure_selected(&self) -> io::Result<()> {
+        if self.uncertain {
+            return Err(io::Error::other(
+                "retained selection outcome uncertain; reopen required",
+            ));
+        }
+        self.store.ensure_healthy()
+    }
+
+    fn verify_selection(&self) -> io::Result<()> {
+        self.ensure_selected()?;
+        self.lock.verify_identity(&self.root)?;
+        self.store
+            ._lock
+            .verify_identity(&self.active.slot.path(&self.root))?;
+        verify_active(&self.root, &self.active)
+    }
+
+    fn prepare_write(&mut self) -> Result<(), MutationFailure> {
+        self.verify_selection().map_err(|error| {
+            self.uncertain = true;
+            MutationFailure::Rejected(error)
+        })
+    }
+}
+
+fn verify_active(root: &Path, active: &Active) -> io::Result<()> {
+    if read_catalog(root)? != active.catalog || Active::load(root, active.catalog)? != *active {
+        return Err(record::invalid_data("active retained selection changed"));
+    }
+    Ok(())
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = create_file(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+fn lock_directory(path: &Path) -> io::Result<StoreLock> {
+    if !path.symlink_metadata()?.file_type().is_dir() {
+        return Err(record::invalid_data("invalid retained directory"));
+    }
+    let file = open_regular_with(&path.join("store.lock"), OFlags::RDWR)?;
+    fs2::FileExt::try_lock_exclusive(&file)?;
+    let lock = StoreLock::acquired(file);
+    lock.verify_identity(path)?;
+    Ok(lock)
+}
+
+fn catalog_bytes(id: [u8; 16]) -> [u8; 56] {
+    let mut bytes = [0; 56];
+    bytes[..8].copy_from_slice(CATALOG_MAGIC);
+    bytes[8..24].copy_from_slice(&id);
+    let digest = Sha256::digest(&bytes[..24]);
+    bytes[24..].copy_from_slice(&digest);
+    bytes
+}
+
+fn read_catalog(root: &Path) -> io::Result<[u8; 16]> {
+    let bytes = exact(&root.join(CATALOG_FILE), 56)?;
+    let id = bytes[8..24].try_into().unwrap();
+    if id == [0; 16] || bytes != catalog_bytes(id) {
+        return Err(record::invalid_data("invalid retained catalog identity"));
+    }
+    Ok(id)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Slot {
+    A,
+    B,
+}
+
+impl Slot {
+    fn other(self) -> Self {
+        match self {
+            Self::A => Self::B,
+            Self::B => Self::A,
+        }
+    }
+
+    fn path(self, root: &Path) -> PathBuf {
+        root.join(match self {
+            Self::A => "generation-a",
+            Self::B => "generation-b",
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Active {
+    catalog: [u8; 16],
+    slot: Slot,
+    generation: [u8; 16],
+    expected: Expected,
+}
+
+impl Active {
+    fn encode(&self) -> [u8; 256] {
+        let mut bytes = [0; 256];
+        bytes[..8].copy_from_slice(ACTIVE_MAGIC);
+        bytes[8..24].copy_from_slice(&self.catalog);
+        bytes[24] = match self.slot {
+            Slot::A => 0,
+            Slot::B => 1,
+        };
+        bytes[32..48].copy_from_slice(&self.generation);
+        bytes[48..160].copy_from_slice(&self.expected.header);
+        bytes[160..192].copy_from_slice(&self.expected.witness);
+        bytes[192..224].copy_from_slice(&self.expected.base_digest);
+        let digest = Sha256::digest(&bytes[..224]);
+        bytes[224..].copy_from_slice(&digest);
+        bytes
+    }
+
+    fn load(root: &Path, catalog: [u8; 16]) -> io::Result<Self> {
+        let bytes = exact(&root.join(ACTIVE_FILE), 256)?;
+        let invalid = || record::invalid_data("invalid active retained selection");
+        let slot = match bytes[24] {
+            0 => Slot::A,
+            1 => Slot::B,
+            _ => return Err(invalid()),
+        };
+        let active = Self {
+            catalog,
+            slot,
+            generation: bytes[32..48].try_into().unwrap(),
+            expected: Expected {
+                header: bytes[48..160].try_into().unwrap(),
+                witness: bytes[160..192].try_into().unwrap(),
+                base_digest: bytes[192..224].try_into().unwrap(),
+            },
+        };
+        if active.generation == [0; 16] || bytes != active.encode() {
+            return Err(invalid());
+        }
+        Ok(active)
+    }
+}
+
+fn check_retired(path: &Path, active: &Active) -> io::Result<()> {
+    let mut count = 0;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let known = ["base", "records.log", "commit.state", "store.lock"];
+        if !known.iter().any(|&name| entry.file_name() == name) || !entry.file_type()?.is_file() {
+            return Err(record::invalid_data(
+                "unknown file in inactive retained generation",
+            ));
+        }
+        count += 1;
+    }
+    if count != 4 {
+        return Err(record::invalid_data(
+            "incomplete inactive retained generation",
+        ));
+    }
+    let log = open_regular(&path.join("records.log"))?;
+    let retired = Header::read(&log, Some(active.catalog))?;
+    let id = retired.id();
+    if !retired.bytes().starts_with(b"EMDALOG4") || id == [0; 16] || id == active.generation {
+        return Err(record::invalid_data(
+            "invalid inactive retained generation identity",
+        ));
+    }
+    let witness = open_regular(&path.join("commit.state"))?;
+    decode_marker(&read_marker(&witness)?, retired.bytes())?;
+    Ok(())
+}

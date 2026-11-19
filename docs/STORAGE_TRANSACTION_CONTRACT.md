@@ -267,6 +267,15 @@ Creating or opening this generation leaves the previous store separate.
 The [retained format specification](STREAMING_RETAINED_BASE_SPEC.md) records
 the wire format, byte budgets and remaining generation-selection work.
 
+A managed retained catalog takes an exclusive root lock and opens only its
+durably chosen generation. Its generations have a distinct role bound by
+their witnesses. Compaction preserves live state and verified historical
+peaks and publishes a synchronized replacement before it becomes writable.
+An uncertain selection disables the handle until reopening. Explicit
+reclamation verifies the active bytes and catalog ownership before retiring
+the inactive slot. The trusted-directory and coordinated-rollback
+assumptions still apply. Import leaves the original ordinary store separate.
+
 ## Proposed contract for future design
 
 The following are acceptance targets, not existing guarantees. Exact algorithms and API behavior must be specified, reviewed, and tested before release.

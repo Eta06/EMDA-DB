@@ -15,6 +15,23 @@ const HEADER_BYTES: u64 = 112;
 const MAX_KEY_BYTES: usize = 1024;
 const CHUNK_BYTES: usize = 64 * 1024;
 
+pub(crate) fn encode_header(
+    source_id: [u8; 16],
+    base_id: [u8; 16],
+    fields: [u64; 6],
+) -> [u8; HEADER_BYTES as usize] {
+    let mut header = [0; HEADER_BYTES as usize];
+    header[..8].copy_from_slice(b"EMDARB02");
+    header[8..12].copy_from_slice(&2_u32.to_le_bytes());
+    header[12..16].copy_from_slice(&(HEADER_BYTES as u32).to_le_bytes());
+    header[16..32].copy_from_slice(&source_id);
+    header[32..48].copy_from_slice(&base_id);
+    for (slot, value) in header[48..96].chunks_exact_mut(8).zip(fields) {
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
+    header
+}
+
 /// Explicit finite resource ceilings. `work_bytes` includes one EOF probe byte.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
