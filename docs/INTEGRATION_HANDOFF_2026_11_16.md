@@ -485,3 +485,12 @@ boundaries. The [automatic reclamation report](../benchmarks/results/2026-11-19-
 records the cross-platform results, reduced logical file lengths in one
 fixture, and substantial write-path latency when rotation coincides with
 other I/O.
+
+The ordinary-store import at `6c7aa50` consumes a witnessed source handle
+and keeps the source locked while publishing a verified managed catalog
+at a separate path. The source retains its data and can reopen normally.
+The [ordinary import report](../benchmarks/results/2026-11-19-retained-ordinary-import/README.md)
+records the process-kill and uncertain publication tests on both platforms,
+plus matching scans and source checksums in the paired probe. Moving
+writers to the new path still requires coordination. Existing-path
+cutover and its independent authority and old-reader policy remain open.
