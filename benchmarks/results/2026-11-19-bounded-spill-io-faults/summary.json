@@ -1,0 +1,332 @@
+{
+  "spill-io-eintr-before": {
+    "v2-acked-injections": {
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 34
+      }
+    },
+    "v2-tail-injections": {
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 34
+      }
+    },
+    "v3-acked-injections": {
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 34
+      }
+    },
+    "v3-tail-injections": {
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 34
+      }
+    }
+  },
+  "spill-io-eintr-fixed": {
+    "v2-acked-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 82,
+        "rejected": 0
+      },
+      "pread64": {
+        "adopted_on_failure": 0,
+        "published": 335,
+        "rejected": 0
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 17,
+        "rejected": 0
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 77,
+        "rejected": 0
+      }
+    },
+    "v2-tail-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 82,
+        "rejected": 0
+      },
+      "pread64": {
+        "adopted_on_failure": 0,
+        "published": 335,
+        "rejected": 0
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 17,
+        "rejected": 0
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 77,
+        "rejected": 0
+      }
+    },
+    "v3-acked-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 82,
+        "rejected": 0
+      },
+      "pread64": {
+        "adopted_on_failure": 0,
+        "published": 335,
+        "rejected": 0
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 17,
+        "rejected": 0
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 77,
+        "rejected": 0
+      }
+    },
+    "v3-tail-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 82,
+        "rejected": 0
+      },
+      "pread64": {
+        "adopted_on_failure": 0,
+        "published": 335,
+        "rejected": 0
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 17,
+        "rejected": 0
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 77,
+        "rejected": 0
+      }
+    }
+  },
+  "spill-io-eio-fixed": {
+    "v2-acked-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "pread64": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 335
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 77
+      }
+    },
+    "v2-tail-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "pread64": {
+        "adopted_on_failure": 12,
+        "published": 0,
+        "rejected": 335
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 77
+      }
+    },
+    "v3-acked-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "pread64": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 335
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 77
+      }
+    },
+    "v3-tail-injections": {
+      "lseek": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "openat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "pread64": {
+        "adopted_on_failure": 12,
+        "published": 0,
+        "rejected": 335
+      },
+      "read": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 17
+      },
+      "statx": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 82
+      },
+      "unlinkat": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 33
+      },
+      "write": {
+        "adopted_on_failure": 0,
+        "published": 0,
+        "rejected": 77
+      }
+    }
+  }
+}

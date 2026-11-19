@@ -741,3 +741,11 @@ Both platforms passed their full library suites, including 722 tests on
 Linux after resetting the verified build cache. Portable and accelerated
 builds exchanged retained files and matched independent digests. The
 measurements cover a warm 128 MiB fixture for each operation.
+
+The bounded rebuild copies only the reserved offset table and retries an
+interrupted read. The [spill fault campaign](../benchmarks/results/2026-11-19-bounded-spill-io-faults/README.md)
+covered 5,144 Linux EIO and EINTR cases with V2 and V3 witnesses. Rejected
+cases preserved the earlier selection and recovered to an identical
+full-log checkpoint on retry. The recorded witness may advance to a
+complete tail before a spill emission failure. Both platforms passed the
+sidecar growth regression and bounded rebuild controls.
