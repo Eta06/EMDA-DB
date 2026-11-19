@@ -3,7 +3,7 @@ use super::{
     verify_files,
 };
 use crate::record;
-use crate::retained_base_v2::{self, encode_header};
+use crate::retained_base_v2::{self, Limits, encode_header};
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, Write},
@@ -48,13 +48,16 @@ impl RetainedStore {
         )
     }
 
-    pub(super) fn write_rebased_base(&self, destination: &Path) -> io::Result<Expected> {
+    pub(super) fn write_rebased_base(
+        &self,
+        destination: &Path,
+        limits: Limits,
+    ) -> io::Result<Expected> {
         self.verify_complete()?;
         let peaks = self
             .overlay
             .live_peaks(&self.base, &self.suffix, self.limits.suffix)?;
-        if peaks.entries > self.limits.base.entries || peaks.key_bytes > self.limits.base.key_bytes
-        {
+        if peaks.entries > limits.entries || peaks.key_bytes > limits.key_bytes {
             return Err(invalid_input(
                 "compacted base exceeds entry or key byte limit",
             ));
@@ -69,7 +72,6 @@ impl RetainedStore {
         let size = encoded
             .checked_add(144)
             .ok_or_else(|| invalid_input("compacted base size overflow"))?;
-        let limits = self.limits.base;
         if size > limits.file_bytes || size.checked_add(1).is_none_or(|n| n > limits.work_bytes) {
             return Err(invalid_input("compacted base byte limit exceeded"));
         }

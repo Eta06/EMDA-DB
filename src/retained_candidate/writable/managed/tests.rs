@@ -153,11 +153,19 @@ fn rebase_limit_rejection_retains_the_active_generation_and_writes() {
             entries: 2,
             ..LIMITS.base
         },
+        suffix: SuffixLimits {
+            operations: 1,
+            ..LIMITS.suffix
+        },
         ..LIMITS
     };
     let f = Fixture::new(limits);
     let mut store = ManagedRetainedStore::open(&f.root, limits).unwrap();
     store.put(b"b", b"outside base quota").unwrap();
+    assert!(matches!(
+        store.delete(b"b"),
+        Err(MutationFailure::Rejected(ref error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
     let active = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
     assert!(
         matches!(store.compact(), Err(PublicationFailure::NotPublished(ref e)) if e.kind() == io::ErrorKind::InvalidInput)
@@ -165,11 +173,73 @@ fn rebase_limit_rejection_retains_the_active_generation_and_writes() {
     assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), active);
     assert!(!Slot::B.path(&f.root).exists());
     drop(store);
-    let reopened = ManagedRetainedStore::open(&f.root, limits).unwrap();
+    let mut reopened = ManagedRetainedStore::open(&f.root, LIMITS).unwrap();
     assert_eq!(
         reopened.get(b"b", 32).unwrap(),
         Some(b"outside base quota".to_vec())
     );
+    assert_eq!(reopened.limits().unwrap().fields(), limits.fields());
+    assert!(matches!(
+        reopened.delete(b"b"),
+        Err(MutationFailure::Rejected(ref error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    let generation = reopened.compact_with_limits(LIMITS).unwrap();
+    assert!(reopened.reclaim_inactive().unwrap());
+    reopened.delete(b"z").unwrap();
+    drop(reopened);
+    let error = ManagedRetainedStore::open(&f.root, limits).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("recovery ceiling"));
+    let reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), generation);
+    assert_eq!(reopened.limits().unwrap().fields(), LIMITS.fields());
+    assert_eq!(
+        reopened.get(b"b", 32).unwrap().unwrap(),
+        b"outside base quota"
+    );
+    assert_eq!(reopened.get(b"z", 32).unwrap(), None);
+}
+
+#[test]
+fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    let original = store.generation_id().unwrap();
+    let prior_selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let smaller = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            operations: 1,
+            ..LIMITS.suffix
+        },
+        ..LIMITS
+    };
+    assert!(matches!(
+        store.compact_using_limits(
+            smaller,
+            || Ok(()),
+            |_| Err(io::Error::other("selection sync"))
+        ),
+        Err(PublicationFailure::OutcomeUnknown(_))
+    ));
+    assert!(store.limits().is_err());
+    drop(store);
+    let next_selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+
+    // Model either complete selector being visible on restart.
+    fs::write(f.root.join(ACTIVE_FILE), &prior_selection).unwrap();
+    let old = f.open();
+    assert_eq!(old.generation_id().unwrap(), original);
+    assert_eq!(old.limits().unwrap().fields(), LIMITS.fields());
+    drop(old);
+    fs::write(f.root.join(ACTIVE_FILE), &next_selection).unwrap();
+    let mut next = f.open();
+    assert_ne!(next.generation_id().unwrap(), original);
+    assert_eq!(next.limits().unwrap().fields(), smaller.fields());
+    next.put(b"b", b"first").unwrap();
+    assert!(matches!(
+        next.put(b"c", b"second"),
+        Err(MutationFailure::Rejected(ref error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
 }
 
 #[test]

@@ -32,7 +32,7 @@ mod rebase;
 mod tests;
 
 /// Admission ceilings for one writable retained generation. These are
-/// persisted at creation, and reopening requires the same configuration.
+/// persisted at creation. Standalone reopen requires the same configuration.
 /// Suffix limits include physical bytes, ordered operations and replay work.
 /// Overlay limits include tombstones. Result buffers, transient allocations,
 /// allocator overhead and filesystem blocks are outside these logical caps.
@@ -60,6 +60,11 @@ impl RetainedStoreLimits {
             self.overlay.key_bytes as u64,
         ]
     }
+}
+
+enum RecoveryLimits {
+    Exact(RetainedStoreLimits),
+    Ceiling(RetainedStoreLimits),
 }
 
 /// An independently created writable retained generation. It keeps one
@@ -192,7 +197,7 @@ impl RetainedStore {
         drop((log, witness, suffix));
         Self::open_role(
             dir,
-            limits,
+            RecoveryLimits::Exact(limits),
             expected,
             catalog,
             None,
@@ -225,12 +230,19 @@ impl RetainedStore {
         expected: &Expected,
         sync_directory: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<Self> {
-        Self::open_role(dir, limits, expected, None, None, sync_directory)
+        Self::open_role(
+            dir,
+            RecoveryLimits::Exact(limits),
+            expected,
+            None,
+            None,
+            sync_directory,
+        )
     }
 
     fn open_role(
         dir: &Path,
-        limits: RetainedStoreLimits,
+        limits: RecoveryLimits,
         expected: &Expected,
         catalog: Option<[u8; 16]>,
         generation: Option<[u8; 16]>,
@@ -246,9 +258,10 @@ impl RetainedStore {
         let log = open_regular_with(&dir.join("records.log"), OFlags::RDWR | OFlags::APPEND)?;
         let witness = open_regular_with(&dir.join("commit.state"), OFlags::RDWR)?;
         let header = Header::read(&log, catalog)?;
-        header.verify(expected, limits, generation)?;
+        header.verify_identity(expected, generation)?;
         let saved = read_marker(&witness)?;
         let (committed, committed_hash) = decode_marker(&saved, header.bytes())?;
+        let limits = header.recovery_limits(limits)?;
         let log_size = log.metadata()?.len();
         let suffix_len = log_size
             .checked_sub(header.len as u64)
@@ -484,7 +497,7 @@ impl Header {
         header.bytes[..112].copy_from_slice(&expected.header);
         header.bytes[120..LIMITS_OFFSET].copy_from_slice(&random_id()?);
         header.fill_limits(limits);
-        header.verify(expected, limits, None)?;
+        header.verify_identity(expected, None)?;
         Ok(header)
     }
 
@@ -519,12 +532,7 @@ impl Header {
         }
     }
 
-    fn verify(
-        &self,
-        expected: &Expected,
-        limits: RetainedStoreLimits,
-        generation: Option<[u8; 16]>,
-    ) -> io::Result<()> {
+    fn verify_identity(&self, expected: &Expected, generation: Option<[u8; 16]>) -> io::Result<()> {
         let id = self.id();
         if self.bytes[..112] != expected.header
             || id == [0; 16]
@@ -538,17 +546,67 @@ impl Header {
         {
             return Err(record::invalid_data("retained generation header mismatch"));
         }
-        let mut configured = Self {
-            bytes: self.bytes,
-            len: self.len,
-        };
-        configured.fill_limits(limits);
-        if configured.bytes != self.bytes {
-            return Err(invalid_input(
-                "retained recovery limits differ from persisted limits",
-            ));
-        }
         Ok(())
+    }
+
+    fn recovery_limits(&self, requested: RecoveryLimits) -> io::Result<RetainedStoreLimits> {
+        let mut fields = self.bytes[LIMITS_OFFSET..HEADER_BYTES]
+            .chunks_exact(8)
+            .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()));
+        match requested {
+            RecoveryLimits::Exact(limits) => {
+                if fields.eq(limits.fields()) {
+                    Ok(limits)
+                } else {
+                    Err(invalid_input(
+                        "retained recovery limits differ from persisted limits",
+                    ))
+                }
+            }
+            RecoveryLimits::Ceiling(ceiling) => {
+                let limits: [u64; 11] = std::array::from_fn(|_| fields.next().unwrap());
+                if limits.iter().zip(ceiling.fields()).any(|(&n, max)| n > max) {
+                    return Err(invalid_input(
+                        "persisted retained limits exceed recovery ceiling",
+                    ));
+                }
+                let [
+                    file_bytes,
+                    entries,
+                    key_bytes,
+                    work_bytes,
+                    blocks,
+                    anchor_bytes,
+                    suffix_bytes,
+                    operations,
+                    work,
+                    overlay_entries,
+                    overlay_bytes,
+                ] = limits;
+                // The comparison with the caller's usize limits makes these casts lossless.
+                Ok(RetainedStoreLimits {
+                    base: Limits {
+                        file_bytes,
+                        entries,
+                        key_bytes,
+                        work_bytes,
+                    },
+                    index: IndexLimits {
+                        blocks: blocks as usize,
+                        anchor_bytes: anchor_bytes as usize,
+                    },
+                    suffix: SuffixLimits {
+                        bytes: suffix_bytes,
+                        operations,
+                        work,
+                    },
+                    overlay: OverlayLimits {
+                        entries: overlay_entries as usize,
+                        key_bytes: overlay_bytes as usize,
+                    },
+                })
+            }
+        }
     }
 }
 

@@ -244,14 +244,22 @@ A failure during selection disables the handle until reopening, which
 recovers only the checked selection actually present. Recovery never
 guesses a replacement selection from directory contents.
 
+Managed open accepts a recovery ceiling for each resource and checks the
+witness-bound persisted limits before loading the generation. The persisted
+values, available through `limits`, govern writes and ordinary compaction.
+`compact_with_limits` verifies the active generation under its existing
+limits and publishes a successor with the explicitly requested values. This
+allows compaction when a readable live set has outgrown the current base
+budget, even if the suffix is full. After an uncertain resize, one recovery
+ceiling must cover every limit in both the previous and successor generations.
+
 `reclaim_inactive` verifies the active bytes and synchronized selection,
 checks the inactive slot's ownership and file types, and moves it under
 an engine-owned stage before removing it. A cleanup error can leave an
 owned stage for explicit staging cleanup. Compaction and reclaim require
 exclusive use of the handle. No public reader or writer can pin the
-inactive slot outside that catalog. The configured new-base limits can
-reject a rebase even while a larger merged state remains readable; use
-appropriate admission budgets for deployment. The two slots, temporary
+inactive slot outside that catalog. The requested successor limits can
+reject a rebase before changing the selection. The two slots, temporary
 stages, directory entries, returned pages and allocator overhead have
 separate storage and memory costs.
 

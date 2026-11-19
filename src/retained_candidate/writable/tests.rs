@@ -1,4 +1,51 @@
 use super::*;
+
+#[test]
+fn persisted_limit_fields_round_trip_and_each_requires_its_own_ceiling() {
+    let distinct = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: 21,
+            entries: 22,
+            key_bytes: 23,
+            work_bytes: 24,
+        },
+        index: IndexLimits {
+            blocks: 25,
+            anchor_bytes: 26,
+        },
+        suffix: SuffixLimits {
+            bytes: 27,
+            operations: 28,
+            work: 29,
+        },
+        overlay: OverlayLimits {
+            entries: 30,
+            key_bytes: 31,
+        },
+    };
+    let mut header = Header::for_role(Some([1; 16]));
+    header.fill_limits(distinct);
+    let opened = header
+        .recovery_limits(RecoveryLimits::Ceiling(distinct))
+        .unwrap();
+    assert_eq!(opened.fields(), distinct.fields());
+
+    for (index, value) in distinct.fields().into_iter().enumerate() {
+        let mut changed = Header {
+            bytes: header.bytes,
+            len: header.len,
+        };
+        let offset = LIMITS_OFFSET + index * 8;
+        changed.bytes[offset..offset + 8].copy_from_slice(&(value + 1).to_le_bytes());
+        assert_eq!(
+            changed
+                .recovery_limits(RecoveryLimits::Ceiling(distinct))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput,
+        );
+    }
+}
 use crate::{RetainedExportLimits, Store};
 use std::{fs, path::PathBuf};
 

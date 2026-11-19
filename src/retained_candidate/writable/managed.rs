@@ -1,6 +1,7 @@
 use super::{
-    Expected, Header, RetainedStore, RetainedStoreLimits, StoreLock, copy_base, create_file,
-    decode_marker, invalid_input, open_regular, open_regular_with, random_id, read_marker,
+    Expected, Header, RecoveryLimits, RetainedStore, RetainedStoreLimits, StoreLock, copy_base,
+    create_file, decode_marker, invalid_input, open_regular, open_regular_with, random_id,
+    read_marker,
 };
 use crate::directory::sync_existing;
 use crate::record;
@@ -37,7 +38,6 @@ pub struct ManagedRetainedStore {
     store: RetainedStore,
     root: PathBuf,
     active: Active,
-    limits: RetainedStoreLimits,
     uncertain: bool,
     lock: StoreLock,
 }
@@ -129,7 +129,9 @@ impl ManagedRetainedStore {
 
     /// Recover the exact selected generation and synchronize its namespace
     /// before admitting writes. Invalid or missing selections fail closed.
-    pub fn open(root: impl AsRef<Path>, limits: RetainedStoreLimits) -> io::Result<Self> {
+    /// The selected generation's persisted limits must fit within the
+    /// recovery ceiling. Writes use the persisted limits.
+    pub fn open(root: impl AsRef<Path>, ceiling: RetainedStoreLimits) -> io::Result<Self> {
         let root = root.as_ref();
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
@@ -139,7 +141,7 @@ impl ManagedRetainedStore {
         let path = active.slot.path(&root);
         let store = RetainedStore::open_role(
             &path,
-            limits,
+            RecoveryLimits::Ceiling(ceiling),
             &active.expected,
             Some(catalog),
             Some(active.generation),
@@ -153,7 +155,6 @@ impl ManagedRetainedStore {
             store,
             root,
             active,
-            limits,
             uncertain: false,
             lock,
         })
@@ -162,6 +163,12 @@ impl ManagedRetainedStore {
     pub fn generation_id(&self) -> io::Result<[u8; 16]> {
         self.ensure_selected()?;
         Ok(self.active.generation)
+    }
+
+    /// Return the selected generation's persisted limits.
+    pub fn limits(&self) -> io::Result<RetainedStoreLimits> {
+        self.ensure_selected()?;
+        Ok(self.store.limits)
     }
 
     pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
@@ -202,11 +209,32 @@ impl ManagedRetainedStore {
     /// requires explicit reclamation first. Errors before selection can leave
     /// an inactive candidate. Selection uncertainty requires reopening.
     pub fn compact(&mut self) -> Result<[u8; 16], PublicationFailure> {
-        self.compact_using(|| Ok(()), sync_existing)
+        self.compact_with_limits(self.store.limits)
     }
 
+    /// Compact into a successor with new persisted limits. The existing
+    /// limits still bound reading and verifying the active generation.
+    /// If selection is uncertain, reopen using a recovery ceiling that
+    /// covers both the prior and requested limits.
+    pub fn compact_with_limits(
+        &mut self,
+        limits: RetainedStoreLimits,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        self.compact_using_limits(limits, || Ok(()), sync_existing)
+    }
+
+    #[cfg(test)]
     fn compact_using(
         &mut self,
+        before_select: impl FnOnce() -> io::Result<()>,
+        sync_selection: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        self.compact_using_limits(self.store.limits, before_select, sync_selection)
+    }
+
+    fn compact_using_limits(
+        &mut self,
+        limits: RetainedStoreLimits,
         before_select: impl FnOnce() -> io::Result<()>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], PublicationFailure> {
@@ -225,10 +253,12 @@ impl ManagedRetainedStore {
                 Err(error) => return Err(error),
             }
             let mut stage = crate::staging::Stage::directory(&self.root)?;
-            let expected = self.store.write_rebased_base(&stage.path().join("base"))?;
+            let expected = self
+                .store
+                .write_rebased_base(&stage.path().join("base"), limits.base)?;
             let next = RetainedStore::initialize(
                 stage.path(),
-                self.limits,
+                limits,
                 &expected,
                 Vec::new(),
                 Some(self.active.catalog),

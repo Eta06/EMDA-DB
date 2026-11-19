@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Resize managed retained recovery limits during a verified generation
+  switch. A single caller-supplied recovery ceiling can cover either
+  generation after an uncertain selection.
+
 - Add managed retained catalogs with durable generation selection,
   bounded rebase, and explicit reclamation of the verified inactive slot.
 
