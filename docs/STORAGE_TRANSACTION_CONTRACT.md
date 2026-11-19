@@ -252,6 +252,21 @@ maintenance operations remain separate.
 - Both writable stores can adjust and inspect their process-local aggregate transaction reservation limit. Admission and reconfiguration share one mutex; a limit above 64 MiB is invalid, while a reduction below current reservations returns `WouldBlock` with no change. A zero limit rejects nonempty staging; checkpoint read-set observations also consume this budget. Reservations are released after commit, failure, cancellation or unwind. Supported blocking and guarded online compaction preserve the setting across handoff, including changes made during the initial online copy; reopening resets it. Direct writes, snapshots, allocation overhead, other stores and total process/project resource use are excluded. The setting is not persistent isolation, an OS resource limit, or a connection quota.
 - Both writable stores also admit at most 64 active transactions per open instance, including FIFO waiters, callbacks and commits. A configurable lower limit and the active count share the transaction-budget mutex. At the limit, admission returns `WouldBlock` before running the callback or submitting a write; lowering the limit below the active count likewise fails without changing it. Zero rejects all new transactions. Admission is released after completion, cancellation, callback error or unwind; it is retained until any started commit has finished. Supported compaction handoffs preserve the configured limit, while reopen resets it. Direct writes, independent snapshots, waiting caller threads and other store instances are excluded. This is not a total-memory, CPU, connection, project or fairness guarantee.
 
+## Independently created writable retained generations
+
+`retained_candidate::RetainedStore` publishes a separate generation from an
+independently bound retained base and optional detached suffix. It uses an
+exclusive store lock, persists its recovery limits, and synchronizes the
+opened directory ancestry before accepting mutations. Records and atomic
+batches are admitted under those same limits before append. A write is
+acknowledged after log and witness synchronization. After an uncertain write,
+reopen validates the base, the witness-bound committed suffix prefix and
+every subsequent whole record before adopting a complete tail. The local
+witness shares the ordinary trusted-filesystem and rollback assumptions.
+Creating or opening this generation leaves the previous store separate.
+The [retained format specification](STREAMING_RETAINED_BASE_SPEC.md) records
+the wire format, byte budgets and remaining generation-selection work.
+
 ## Proposed contract for future design
 
 The following are acceptance targets, not existing guarantees. Exact algorithms and API behavior must be specified, reviewed, and tested before release.

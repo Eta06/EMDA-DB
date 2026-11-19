@@ -440,3 +440,14 @@ passed all five new integration tests. The
 record lower process RSS with slower complete scans in one small synthetic
 workload. An authoritative witness, writable suffix recovery, durable cutover
 and reclamation still require implementation.
+
+A writable retained generation now persists its recovery budgets and
+independently witnesses the exact committed suffix prefix. The staged
+creation path initializes from an authenticated candidate and can import a
+detached suffix. Both local platforms passed the full library suite and the
+indexed and format integration tests. The process-kill tests cover stops
+after log sync and after witness sync. A historical binary from `324a082`
+rejected an actual new generation with a committed suffix on both
+platforms. See the [validation report](../benchmarks/results/2026-11-19-writable-retained/README.md).
+Step 2 still requires durable active-generation selection, coordinated
+retirement and resource evidence for the complete workflow.
