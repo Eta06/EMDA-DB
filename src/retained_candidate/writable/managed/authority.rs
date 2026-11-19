@@ -1,6 +1,7 @@
 use super::*;
 use std::cell::Cell;
 
+mod cutover;
 mod file;
 pub use file::FileRetainedAuthority;
 
@@ -105,6 +106,7 @@ pub struct AuthorizedRetainedStore<A> {
     inner: ManagedRetainedStore,
     authority: A,
     current: AuthorityRecord,
+    fence: Option<cutover::Fence>,
 }
 
 impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
@@ -146,10 +148,26 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         let current = authority
             .read()?
             .ok_or_else(|| record::invalid_data("retained authority record is absent"))?;
+        let root = root.as_ref();
+        let fence = match fs::symlink_metadata(root.join(CATALOG_FILE)) {
+            Ok(_) => None,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Some(cutover::Fence::load(root)?)
+            }
+            Err(error) => return Err(error),
+        };
+        let (catalog_path, role) = if let Some(fence) = &fence {
+            if fence.initial().committed.catalog != current.committed.catalog {
+                return Err(record::invalid_data("cutover authority catalog mismatch"));
+            }
+            (fence.catalog_path(), CUTOVER_MAGIC)
+        } else {
+            (root.to_path_buf(), AUTHORIZED_MAGIC)
+        };
         let inner = ManagedRetainedStore::open_role(
-            root.as_ref(),
+            &catalog_path,
             limits,
-            AUTHORIZED_MAGIC,
+            role,
             |root, catalog| select_authorized(root, catalog, current.committed),
             |observed| current.check(observed),
         )?;
@@ -157,6 +175,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             inner,
             authority,
             current,
+            fence,
         };
         if current.pending.is_some() {
             let actual = AuthorityPoint::from_store(this.inner.active.catalog, &this.inner.store);
@@ -292,6 +311,9 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     }
 
     fn verify_current(&mut self) -> io::Result<()> {
+        if let Some(fence) = &self.fence {
+            fence.verify()?;
+        }
         self.inner.verify_selection()?;
         if self.authority.read()? != Some(self.current) {
             self.inner.uncertain = true;

@@ -349,9 +349,28 @@ point before removing the inactive slot. Earlier in-flight selection
 attempts lose their CAS, and a fresh rotation must build a fresh successor.
 Explicit reclamation is required before reusing the other slot.
 
-Cutover at an existing ordinary store entry point remains prohibited until the old-reader gate and backup
-policy cover empty or legacy-looking suffixes and independently opened stale
-copies. A sidecar alone cannot make those readers fail closed.
+An opt-in blocking cutover can consume an exclusively owned witnessed
+ordinary store at its original path. It exports into a private nested
+catalog and preserves the previous records and witness under non-store
+names. After synchronizing the verified candidate it replaces the
+original `records.log` atomically with a checksummed `EMDALOG4` fence.
+The fence names the nested catalog and contains its initial authority
+record. The original store lock remains held through synchronization.
+
+Register the returned initial record on absent independent authority.
+If the publication outcome is uncertain, `recover_cutover` verifies the
+visible fence and initial generation before supplying that record.
+If the ordinary store still opens, its data can be migrated again with a
+fresh preparation. A failure before fencing can leave an inert nested
+preparation that requires separate inspection and cleanup. Authorized
+open holds the original path's lock, checks the fence and authority
+together, and opens the nested catalog. The nested catalog refuses direct
+open. The ordinary entry point rejects the marker.
+
+Deployment still requires an inventory and fencing of older backups and
+independent writable copies. Restoring an entire ordinary snapshot can
+remove the local marker from the view of an old executable. Authorized
+open verifies the independent authority and fails closed in that case.
 
 A fresh durable generation ID is allocated before staging, never reused for a
 relocation even when bytes match. Require a durable globally unique allocation
@@ -428,8 +447,8 @@ Decide trusted authority and witness API, suffix commit ordering and uncertain
 commit resolution; identity allocation/clone rules; supported old-reader marker
 and migration mechanism; finite count, bytes, disk and I/O budgets and their
 backpressure behavior; legacy key-byte-peak reconstruction; filesystem and
-backup guarantees; and process/fork lock ownership. Existing-path cutover
-remains disabled until these decisions have been verified.
+backup guarantees; and process/fork lock ownership. Production cutover
+requires verification of the deployment's supported readers and backup policy.
 
 1. Implement isolated v2 streaming writer/validator with a transactional test
    sink and explicit budgets, no store wiring. Test empty state/value, a 16 MiB

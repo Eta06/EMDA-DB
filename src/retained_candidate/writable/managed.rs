@@ -24,6 +24,7 @@ use std::{
 const CATALOG_FILE: &str = "catalog.id";
 const CATALOG_MAGIC: &[u8; 8] = b"EMDACT01";
 const AUTHORIZED_MAGIC: &[u8; 8] = b"EMDACT02";
+const CUTOVER_MAGIC: &[u8; 8] = b"EMDACT03";
 const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 
@@ -172,7 +173,7 @@ impl ManagedRetainedStore {
         source: Store,
         source_path: &Path,
         destination: &Path,
-        mut export: RetainedExportLimits,
+        export: RetainedExportLimits,
         limits: RetainedStoreLimits,
         catalog_magic: &'static [u8; 8],
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
@@ -184,10 +185,6 @@ impl ManagedRetainedStore {
         source_lock
             .verify_identity(source_path)
             .map_err(PublicationFailure::NotPublished)?;
-        export.max_output_bytes = export
-            .max_output_bytes
-            .min(limits.base.file_bytes)
-            .min(limits.base.work_bytes.saturating_sub(1));
         Self::publish_initial(
             destination,
             parent,
@@ -195,15 +192,7 @@ impl ManagedRetainedStore {
             catalog_magic,
             sync_parent,
             |stage, path| {
-                let name = std::ffi::OsStr::new("base");
-                let base = source
-                    .export_retained_base_in_stage(stage, name, random_id()?, export)
-                    .map_err(|failure| match failure {
-                        PublicationFailure::NotPublished(error)
-                        | PublicationFailure::OutcomeUnknown(error) => error,
-                    })?;
-                let expected = crate::retained_candidate::binding(&base, random_id()?)?;
-                fs::rename(stage.child_path(name)?, path.join(name))?;
+                let expected = export_into_generation(&source, stage, path, export, limits)?;
                 Ok((expected, Vec::new()))
             },
         )
@@ -659,8 +648,36 @@ fn lock_directory(path: &Path) -> io::Result<StoreLock> {
     Ok(lock)
 }
 
+fn export_into_generation(
+    source: &Store,
+    stage: &crate::staging::Stage,
+    path: &Path,
+    mut export: RetainedExportLimits,
+    limits: RetainedStoreLimits,
+) -> io::Result<Expected> {
+    export.max_output_bytes = export
+        .max_output_bytes
+        .min(limits.base.file_bytes)
+        .min(limits.base.work_bytes.saturating_sub(1));
+    let name = std::ffi::OsStr::new("base");
+    let base = source
+        .export_retained_base_in_stage(stage, name, random_id()?, export)
+        .map_err(unpack_publication)?;
+    let expected = crate::retained_candidate::binding(&base, random_id()?)?;
+    fs::rename(stage.child_path(name)?, path.join(name))?;
+    Ok(expected)
+}
+
+fn unpack_publication(failure: PublicationFailure) -> io::Error {
+    match failure {
+        PublicationFailure::NotPublished(error) | PublicationFailure::OutcomeUnknown(error) => {
+            error
+        }
+    }
+}
+
 fn generation_role(magic: &[u8; 8], catalog: [u8; 16]) -> GenerationRole {
-    if magic == AUTHORIZED_MAGIC {
+    if magic == AUTHORIZED_MAGIC || magic == CUTOVER_MAGIC {
         GenerationRole::Authorized(catalog)
     } else {
         GenerationRole::Managed(catalog)

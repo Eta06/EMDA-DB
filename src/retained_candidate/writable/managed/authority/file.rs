@@ -6,7 +6,7 @@ mod tests;
 const NAME: &str = "authority.record";
 const MAGIC: &[u8; 8] = b"EMDAAU01";
 const CHECKSUM: usize = 232;
-const LENGTH: usize = CHECKSUM + 32;
+pub(super) const LENGTH: usize = CHECKSUM + 32;
 
 /// A compare-and-swap provider for cooperating processes on one host.
 /// Provision its directory on trusted, independently protected storage. The
@@ -121,7 +121,7 @@ fn sync_directory(root: &Path) -> io::Result<()> {
     fs::File::open(root)?.sync_all()
 }
 
-fn encode(record: Option<AuthorityRecord>) -> [u8; LENGTH] {
+pub(super) fn encode(record: Option<AuthorityRecord>) -> [u8; LENGTH] {
     let mut bytes = [0; LENGTH];
     bytes[..8].copy_from_slice(MAGIC);
     if let Some(record) = record {
@@ -145,7 +145,7 @@ fn encode_point(bytes: &mut [u8], point: AuthorityPoint) {
     bytes[72..].copy_from_slice(&point.suffix_digest);
 }
 
-fn decode(bytes: &[u8]) -> io::Result<Option<AuthorityRecord>> {
+pub(super) fn decode(bytes: &[u8]) -> io::Result<Option<AuthorityRecord>> {
     let invalid = || record::invalid_data("invalid retained authority record");
     let record = match bytes[8] {
         0 => None,

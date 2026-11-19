@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in original-path cutover for witnessed ordinary stores with a
+  durable old-reader fence and independent authority registration.
+
 - Add a file-backed retained authority with durable compare-and-swap and
   cross-process locking.
 
