@@ -390,3 +390,24 @@ integration branch), and `features` (created from the development baseline).
 Keep delegated worktrees short-lived and preserve unique changes and evidence
 before removing them. A local archive outside the checkout records the original
 branch and worktree inventory, complete Git bundle and checkout snapshots.
+
+The local cleanup retired 170 temporary checkouts and their obsolete branch
+refs. The primary checkout is on `development`. The archive contains a Git
+bundle independently restored and checked against all 830 original refs, plus
+98 verified snapshots of checkouts with local or ignored files. Remote refs
+were outside this cleanup.
+
+A traced Linux ARM64 library run using Rust 1.85.0 and 16 test threads at
+`2efbbc8` finished with 626 passes and four failures. For each failure, the
+trace links the contended lock to an unrelated child that inherited the
+descriptor at fork and released it at exec. The affected paths were the
+witness-substitution fixture, the detailed rebuild outcome fixture, the
+detailed rebuild crash child, and the private staged-store reopen during
+retained restore. The exchange tests passed in the same run. This establishes
+the holder for these four failures. The lock failures remain open.
+
+The binary SHA-256 was
+`37a96613708df402c6350c06895d3f719ce04eff131ca94c9b157f4ac459a7a`.
+The VM had 226 MiB free on its root filesystem and 568 MiB free on its tmpfs
+after the run. See the [test log](../benchmarks/results/2026-11-19-linux-arm64-strict-lock/test.log)
+and [compressed kernel trace](../benchmarks/results/2026-11-19-linux-arm64-strict-lock/bpf.log.gz).

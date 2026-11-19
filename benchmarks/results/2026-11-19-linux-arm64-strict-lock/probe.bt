@@ -1,0 +1,4 @@
+tracepoint:filelock:flock_lock_inode { printf("lock t=%llu pid=%d tid=%d dev=%u ino=%llu ret=%d type=%u flags=%u owner=%p blocker=%p comm=%s\n", nsecs, pid, tid, args.s_dev, args.i_ino, args.ret, args.type, args.flags, args.owner, args.blocker, comm); }
+tracepoint:sched:sched_process_fork { printf("fork t=%llu parent=%d child=%d\n", nsecs, args.parent_pid, args.child_pid); }
+tracepoint:sched:sched_process_exec { printf("exec t=%llu pid=%d\n", nsecs, args.pid); }
+tracepoint:sched:sched_process_exit { printf("exit t=%llu pid=%d tid=%d\n", nsecs, pid, tid); }

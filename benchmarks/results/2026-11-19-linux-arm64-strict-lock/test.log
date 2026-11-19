@@ -1,0 +1,726 @@
+
+running 630 tests
+test backup::backup_stage_tests::interruption_child ... ok
+test backup::publication_tests::staging_lock_release_is_not_delayed_by_a_duplicate_descriptor ... ok
+test backup::publication_tests::publication_crash_child ... ok
+test backup::publication_tests::detailed_upgrade_reports_unknown_after_parent_sync_failure ... ok
+test backup::publication_tests::empty_legacy_restore_header_handles_unsupported_and_failed_metadata ... ok
+test backup::rebuild_stage_tests::interruption_child ... ok
+test backup::publication_tests::backup_parent_sync_failure_reports_uncertain_publication ... ok
+test backup::publication_tests::restore_parent_sync_failure_reports_uncertain_publication ... ok
+test backup::publication_tests::upgrade_parent_sync_failure_reports_uncertain_publication ... ok
+test backup::witness_interruption_tests::interruption_child ... ok
+test backup::publication_tests::structured_restore_failures_distinguish_before_and_after_publication ... ok
+test backup::publication_tests::structured_backup_failures_distinguish_before_and_after_publication ... ok
+test cancellation::tests::poisoned_locks_remain_operation_errors ... ok
+test checkpoint::tests::checkpoint_crash_child ... ok
+test backup::publication_tests::empty_legacy_restore_fails_before_publication_at_each_new_boundary ... ok
+test backup::publication_tests::process_kill_during_empty_legacy_restore_preserves_backup_and_recovers ... ok
+test checkpoint::tests::streamed_writer_rejects_bad_counts_order_and_locations_before_publication ... ok
+test checkpoint_store::compact_exchange::tests::checkpoint_exchange_kill_child ... ok
+test backup::publication_tests::process_kill_at_backup_publication_boundaries_preserves_source ... ok
+test checkpoint_store::compact_exchange::tests::changed_selection_configuration_and_stale_lock_fail_before_copy ... ok
+test backup::publication_tests::process_kill_at_restore_publication_boundaries_preserves_backup ... ok
+test checkpoint_store::compact_exchange::tests::checkpoint_exchange_rejects_unknown_source_files ... ok
+test checkpoint::tests::interrupted_checkpoint_staging_and_publication_are_reclaimable ... ok
+test backup::publication_tests::process_kill_at_upgrade_publication_boundaries_preserves_v2_and_v3_sources ... ok
+
+running 1 test
+test checkpoint_store::compact_exchange::tests::disabled_automatic_configuration_stays_disabled ... ok
+test backup::publication_tests::process_kill_at_each_empty_legacy_restore_boundary_preserves_the_backup ... ok
+test checkpoint_store::compact_exchange::tests::managed_auto_setting_survives_handoff_reopen_and_new_rollover ... ok
+test checkpoint_store::rebuild::tests::bounded_rebuild_crash_child ... ok
+
+running 1 test
+test checkpoint_store::compact_exchange::tests::unmanaged_compaction_preserves_live_data_and_clears_overlay ... ok
+test checkpoint_store::rebuild::tests::bounded_rebuild_classifies_publication_and_keeps_the_lock_through_selection ... ok
+test checkpoint_store::rebuild::tests::bounded_rebuild_log_limit_rejects_before_publication_and_accepts_exact_size ... ok
+test checkpoint_store::rebuild::tests::bounded_store_lock_failure_diagnostic ... ok
+test checkpoint_store::rebuild::tests::log_limit_rejection_does_not_adopt_unacknowledged_tail ... ok
+test checkpoint_store::rebuild::tests::log_limited_rebuild_still_rejects_corrupt_superseded_history ... ok
+
+running 1 test
+test checkpoint_store::rebuild::tests::damaged_finished_spill_does_not_publish_checkpoint_or_selection ... ok
+test checkpoint_store::rebuild::tests::substituted_witness_during_adoption_is_not_repaired_or_published ... FAILED
+test checkpoint_store::rebuild_spill::tests::an_in_memory_chunk_records_a_peak_above_its_final_state_without_spill ... ok
+test checkpoint_store::rebuild_spill::tests::corrupted_finished_run_emits_nothing_and_cleans_up ... ok
+test checkpoint_store::rebuild_spill::tests::fan_in_and_chunk_limits_fail_closed ... ok
+test checkpoint_store::rebuild_spill::tests::header_and_offset_corruption_cannot_retarget_a_lookup ... ok
+test checkpoint_store::rebuild_spill::tests::memory_emission_moves_entries_and_consumes_them_in_order ... ok
+test checkpoint_store::rebuild_spill::tests::merge_refuses_when_temporary_bytes_exceed_the_real_spill_limit ... ok
+test checkpoint_store::rebuild_spill::tests::operation_limit_does_not_apply_the_rejected_mutation ... ok
+test checkpoint_store::rebuild::tests::rebuild_fixture_drop_reopen_inherits_forked_lock ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.04s
+
+test checkpoint_store::rebuild::tests::crash_boundaries_leave_a_recoverable_store ... ok
+test checkpoint_store::rebuild_spill::tests::peak_follows_every_intermediate_state_for_tiny_and_wide_chunks ... ok
+test checkpoint_store::rebuild::tests::rebuild_fixture_drop_reopen_inherits_forked_lock ... ok
+test checkpoint_store::rebuild_spill::tests::used_entry_bytes_fail_closed_for_lookup_and_emission ... ok
+test checkpoint_store::rebuild_spill::tests::truncation_before_emission_emits_nothing_and_cleans_up ... ok
+test checkpoint_store::selection::tests::codec_rejects_invalid_paths_even_with_valid_checksums ... ok
+test checkpoint_store::selection::tests::every_ancestor_is_synced_bottom_up_and_errors_stop_publication ... ok
+test checkpoint_store::selection::tests::codec_roundtrips_non_utf8_and_rejects_every_single_byte_mutation_and_truncation ... ok
+test checkpoint_store::snapshot::tests::aggregate_block_key_and_byte_limits_reject_without_leaking_capacity ... ok
+test backup::publication_tests::every_backup_restore_and_upgrade_ancestor_sync_failure_is_uncertain ... ok
+test checkpoint_store::compact_exchange::tests::checkpoint_handoff_faults_leave_two_recoverable_logs_and_valid_source_selection ... ok
+test checkpoint_store::rebuild::tests::bounded_rebuild_fixture_fork_lock_lifetime ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.07s
+
+test checkpoint_store::compact_exchange::tests::process_kills_preserve_managed_source_and_both_logs ... ok
+test checkpoint_store::snapshot::tests::snapshot_creation_error_and_panic_release_all_reservations ... ok
+test checkpoint_store::snapshot::tests::background_reaper_skips_busy_expired_views_until_the_next_check ... ok
+test checkpoint_store::rebuild_spill::tests::single_byte_corruption_after_cursor_open_returns_no_changed_entry ... ok
+test checkpoint_store::tests::automatic::basic::automatic_checkpoint_configuration_can_be_disabled_and_reenabled_across_reopens ... ok
+test checkpoint_store::rebuild::tests::bounded_rebuild_fixture_fork_lock_lifetime ... ok
+test checkpoint_store::tests::automatic::basic::automatic_checkpoints_require_managed_selection_and_protect_reserved_paths ... ok
+test checkpoint_store::rebuild::tests::bounded_acquisition_fork_outcomes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.09s
+
+test checkpoint_store::tests::automatic::basic::automatic_rollover_preserves_conditional_and_transaction_semantics ... ok
+test checkpoint_store::tests::automatic::basic::automatic_rollover_reuses_two_slots_and_preserves_live_snapshots_and_recovery ... ok
+test checkpoint_store::tests::automatic::basic::automatic_rollover_handles_suffix_byte_and_key_byte_limits ... ok
+test checkpoint_store::rebuild::tests::bounded_acquisition_fork_outcomes ... ok
+test checkpoint_store::compact_exchange::tests::detailed_checkpoint_handoff_classifies_candidate_and_exchange_failures ... ok
+test checkpoint_store::tests::automatic::crash::automatic_configuration_crash_child ... ok
+test checkpoint_store::tests::automatic::crash::automatic_rollover_crash_child ... ok
+test checkpoint_store::tests::automatic::basic::impossible_batch_and_whole_log_limit_do_not_create_a_checkpoint ... ok
+test checkpoint_store::tests::automatic::crash::automatic_slot_removal_crash_child ... ok
+test checkpoint_store::snapshot::tests::expiry_during_snapshot_creation_releases_its_reservation ... ok
+test checkpoint_store::tests::automatic::basic::automatic_rollover_serializes_concurrent_writes ... ok
+test checkpoint_store::tests::automatic::crash::process_kill_at_automatic_rollover_boundaries_recovers_acknowledged_data ... ok
+test checkpoint_store::tests::automatic::deadline::transaction_cancellation_during_automatic_rollover_prevents_append ... ok
+test checkpoint_store::tests::automatic::deadline::detailed_cancellation_during_automatic_rollover_is_a_confirmed_abort ... ok
+test checkpoint_store::tests::automatic::faults::automatic_configuration_changes_reject_a_changed_managed_selection ... ok
+test checkpoint_store::tests::automatic::crash::process_kill_at_automatic_configuration_boundaries_recovers_and_cleans_stages ... ok
+test checkpoint_store::tests::automatic::faults::automatic_configuration_publication_errors_poison_until_reopen ... ok
+test checkpoint_store::tests::automatic::faults::automatic_enable_publication_errors_leave_recoverable_configuration ... ok
+test checkpoint_store::tests::automatic::crash::process_kill_during_inactive_slot_removal_is_recoverable ... ok
+test checkpoint_store::snapshot::tests::reaping_skips_busy_views_and_releases_them_after_reads_finish ... ok
+test checkpoint_store::tests::automatic::faults::automatic_rollover_refuses_symlink_slots_without_touching_target ... ok
+test checkpoint_store::tests::automatic::faults::corrupted_automatic_configuration_disables_the_open_store_and_fails_closed_on_reopen ... ok
+test checkpoint_store::tests::automatic::faults::automatic_rollover_refuses_unrecognized_inactive_slot_contents ... ok
+test checkpoint_store::tests::automatic::faults::automatic_inactive_slot_removal_errors_allow_safe_retry ... ok
+test checkpoint_store::tests::automatic::faults::automatic_rollover_failures_preserve_or_fail_closed_before_user_writes ... ok
+test checkpoint_store::tests::automatic::faults::detailed_automatic_configuration_reports_preconditions_and_idempotence ... ok
+test checkpoint_store::tests::commit_faults::conditional_batch_commit_failure_poisoning_preserves_atomic_recovery ... ok
+test checkpoint_store::tests::automatic::concurrency::failed_configuration_blocks_a_concurrent_waiting_mutation ... ok
+test checkpoint_store::tests::automatic::faults::detailed_automatic_configuration_classifies_publication_boundaries ... ok
+test checkpoint_store::tests::commit_faults::detailed_transactions_preserve_unknown_outcomes_after_append_or_sync_failure ... ok
+test checkpoint_store::tests::commit_faults::transaction_commit_failures_leave_all_or_no_recoverable_changes ... ok
+test checkpoint_store::tests::commit_faults::would_block_during_commit_is_not_a_confirmed_transaction_conflict ... ok
+test checkpoint_store::tests::compaction::checkpoint_compaction_crash_child ... ok
+test checkpoint_store::tests::automatic::concurrency::configuration_races_with_required_rollovers_preserve_acknowledged_batches ... ok
+test checkpoint_store::tests::compaction::checkpoint_compaction_process_kill_preserves_source_and_cleanup ... ok
+test checkpoint_store::tests::compaction::detailed_checkpoint_compaction_reports_unknown_after_parent_sync_failure ... ok
+test checkpoint_store::tests::commit_faults::every_partial_append_and_sync_failure_poison_until_reopen ... ok
+test checkpoint_store::tests::commit_faults::detailed_direct_mutations_keep_uncertain_outcomes_after_append_or_sync_failure ... ok
+test checkpoint_store::tests::compaction::streamed_compaction_rejects_corrupt_staged_data_before_publication ... ok
+test checkpoint_store::tests::compaction::streamed_compaction_reports_pre_and_post_publication_failures ... ok
+test checkpoint_store::tests::compaction::every_streamed_compaction_ancestor_sync_failure_reports_uncertain_copy ... ok
+test checkpoint_store::tests::commit_faults::every_partial_witness_write_and_sync_failure_poison_until_reopen ... ok
+test checkpoint_store::tests::direct_admission::direct_limit_covers_state_lock_wait_and_releases_after_recovery ... ok
+test checkpoint_store::tests::direct_read_reservation_rejects_competing_calls_without_blocking_writes ... ok
+test checkpoint_store::tests::direct_read_admission_counts_checkpoint_state_lock_waiters ... ok
+test checkpoint_store::tests::compaction::streamed_compaction_blocks_mutations_while_allowing_reads ... ok
+test checkpoint_store::tests::automatic::concurrency::automatic_configuration_races_preserve_atomic_writes_and_recovery ... ok
+test checkpoint_store::tests::commit_faults::interrupted_batch_is_never_partially_recovered ... ok
+test checkpoint_store::tests::detailed_document_fault_tests::detailed_document_mutations_report_unknown_and_recover_atomic_indexes ... ok
+test checkpoint_store::snapshot::tests::background_reaper_races_with_cancellation_and_drop_without_leaking_budget ... ok
+test backup::backup_stage_tests::backup_construction_errors_preserve_source_and_allow_retry ... ok
+
+running 1 test
+test checkpoint_store::tests::document_faults::partial_and_failed_document_commits_recover_atomically_or_fail_closed ... ok
+test checkpoint_store::tests::fixture_lock_is_inherited_by_a_fork_in_another_thread ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.01s
+
+test checkpoint_store::tests::fixture_lock_is_inherited_by_a_fork_in_another_thread ... ok
+test checkpoint_store::tests::log_retention::rollover_preserves_log_bytes_snapshots_and_read_set_locations ... ok
+test checkpoint_store::tests::log_retention::automatic_rollover_appends_without_reclaiming_a_live_snapshot ... ok
+test checkpoint_store::tests::metadata_faults::checkpoint_drop_cursor_and_raw_receipt_survive_v3_metadata_faults_together ... ok
+test checkpoint_store::tests::metadata_faults::detailed_direct_mutations_treat_v3_witness_failures_as_unknown ... ok
+test checkpoint_store::tests::metadata_faults::detailed_document_mutations_report_unknown_for_v3_witness_errors ... ok
+test checkpoint_store::tests::metadata_faults::detailed_transactions_treat_v3_witness_failures_as_unknown_outcomes ... ok
+test backup::backup_stage_tests::killed_backup_construction_never_publishes_a_partial_file ... ok
+test checkpoint_store::tests::metadata_faults::unacknowledged_tail_metadata_failures_do_not_return_a_store ... ok
+test checkpoint_store::tests::online_index_faults::failed_index_build_step_recovers_atomically_or_fails_closed ... ok
+test checkpoint_store::tests::metadata_faults::metadata_write_sync_failures_and_panics_fail_closed_for_mutations ... ok
+test checkpoint_store::tests::read_set_identity_conflict_at_observation_is_sticky ... ok
+test checkpoint_store::tests::read_set_qualifies_checkpoint_and_overlay_observations ... ok
+test checkpoint_store::tests::rebuild::managed_rebuild_crash_child ... ok
+test checkpoint_store::tests::read_set_absence_and_empty_range_keep_membership_semantics_across_identity_change ... ok
+test checkpoint_store::tests::rebuild::rebuild_bootstraps_and_recovers_a_missing_checkpoint_or_oversized_suffix ... ok
+test backup::witness_interruption_tests::errors_during_witness_creation_leave_source_and_backup_reusable ... ok
+test checkpoint_store::tests::rebuild::managed_rebuild_process_kill_preserves_a_recoverable_selection ... ok
+
+running 1 test
+test checkpoint_store::tests::rebuild::rebuild_logical_limits_cover_the_entire_log_and_each_historical_state ... ok
+test checkpoint_store::tests::rebuild::rebuild_holds_the_store_lock_through_selection_synchronization ... ok
+test checkpoint_store::tests::rebuild::rebuild_lock_survives_fork_from_another_thread ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.02s
+
+test checkpoint_store::tests::rebuild::rebuild_lock_survives_fork_from_another_thread ... ok
+test checkpoint_store::tests::rebuild::rebuild_rejects_corrupt_log_without_replacing_the_selection ... ok
+test checkpoint_store::tests::rebuild::rebuild_preserves_selection_if_any_checkpoint_ancestor_sync_fails ... ok
+test checkpoint_store::tests::rebuild::rebuild_rejects_untrusted_selection_existing_destinations_and_active_store ... ok
+test checkpoint_store::tests::rebuild::rebuild_publication_errors_and_panics_leave_a_recoverable_visible_selection ... ok
+test checkpoint_store::tests::rebuild_crash_detailed::detailed_rebuild_crash_child ... ok
+test checkpoint_store::tests::rebuild_outcomes::backup_fixture_unlocks_even_if_a_duplicate_remains_open ... ok
+test checkpoint_store::tests::rebuild_outcomes::detailed_rebuild_holds_the_lock_through_success_or_uncertain_selection_sync ... ok
+test checkpoint_store::tests::rebuild_outcomes::detailed_rebuild_public_api_preserves_limits_locks_and_existing_files ... FAILED
+test checkpoint_store::tests::rebuild_crash_detailed::detailed_rebuild_process_kills_preserve_tail_selection_and_backup ... FAILED
+test checkpoint_store::tests::rebuild_outcomes::fixture_rebuild_errors_and_panics_do_not_unlock ... ok
+test checkpoint_store::tests::rebuild_outcomes::fixture_rebuild_success_unlocks_its_retained_duplicate ... ok
+test checkpoint_store::tests::rebuild_outcomes::not_published_does_not_claim_full_log_recovery_left_the_source_unchanged ... ok
+test checkpoint_store::tests::recovery::checkpoint_view_limit_rejects_before_adopting_a_complete_tail ... ok
+test checkpoint_store::tests::recovery::complete_unacknowledged_batch_replays_after_witnessed_suffix ... ok
+test checkpoint_store::tests::recovery::complete_unacknowledged_tail_is_validated_synchronized_and_adopted ... ok
+test checkpoint_store::tests::recovery::unacknowledged_tail_limits_and_non_boundary_witness_fail_without_adoption ... ok
+test checkpoint_store::tests::recovery::unacknowledged_tail_log_sync_failures_return_error_and_retry_safely ... ok
+test checkpoint_store::tests::metadata_faults::every_partial_v3_tail_preserves_log_and_metadata_witness ... ok
+test checkpoint_store::tests::recovery::whole_log_limit_rejects_unacknowledged_tail_before_adoption ... ok
+test backup::witness_interruption_tests::killed_witness_creation_never_publishes_partial_restore_or_upgrade ... ok
+test checkpoint_store::tests::rollover::detailed_rollover_keeps_old_view_after_sync_or_switch_failure ... ok
+test checkpoint_store::tests::rollover::detailed_streamed_checkpoint_sync_failure_is_unknown_and_source_remains_usable ... ok
+test checkpoint_store::tests::rollover::checkpoint_backup_blocks_writes_but_allows_readers ... ok
+test checkpoint_store::tests::rollover::live_rollover_sync_and_switch_failures_leave_the_old_view_usable ... ok
+test checkpoint_store::tests::rebuild_outcomes::detailed_rebuild_classifies_publication_boundaries_and_preserves_recovery ... ok
+test checkpoint_store::tests::rollover::streamed_checkpoint_parent_sync_failure_reports_uncertain_publication ... ok
+test checkpoint_store::tests::document_faults::final_checkpoint_drop_cursor_removal_and_receipt_are_atomic_at_every_append_cut ... ok
+test checkpoint_store::tests::rollover::every_streamed_checkpoint_ancestor_sync_failure_keeps_the_old_view ... ok
+test checkpoint_store::tests::rollover::streamed_checkpoint_prepublication_failure_leaves_source_usable ... ok
+test checkpoint_store::tests::schema_migration_faults::failed_schema_migration_step_recovers_atomically_or_fails_closed ... ok
+test checkpoint_store::tests::selection::managed_open_applies_tail_and_log_limits_before_recovery ... ok
+test checkpoint_store::tests::selection::failed_checkpoint_before_selection_publication_keeps_previous_view_usable ... ok
+test checkpoint_store::tests::selection::managed_open_refuses_each_failed_selection_ancestor_sync ... ok
+test checkpoint_store::tests::selection::managed_rollover_detects_changed_selection_and_never_overwrites_reserved_path ... ok
+test checkpoint_store::tests::selection::managed_open_rejects_selection_and_directory_sync_failures_before_return ... ok
+test checkpoint_store::tests::rollover::streamed_checkpoint_blocks_writes_until_verified_publication ... ok
+test checkpoint_store::tests::selection::detailed_managed_rollover_classifies_each_publication_boundary ... ok
+test checkpoint_store::tests::selection::managed_selection_crash_child ... ok
+test checkpoint_store::tests::recovery::unacknowledged_tail_witness_failures_never_return_a_store ... ok
+test checkpoint_store::tests::selection::managed_rollover_poisoned_if_any_selection_ancestor_sync_fails ... ok
+test checkpoint_store::tests::selection::managed_selection_missing_corrupt_symlink_and_wrong_store_fail_closed ... ok
+test checkpoint_store::tests::selection::managed_rollovers_reopen_the_recorded_checkpoint_and_preserve_snapshots ... ok
+test checkpoint_store::tests::selection::managed_rollover_stops_if_any_checkpoint_ancestor_sync_fails ... ok
+test checkpoint_store::tests::selection::tail_adoption_rejects_log_growth_after_validation ... ok
+test checkpoint_store::tests::selection::panic_during_selection_publication_rejects_further_writes_and_recovers ... ok
+test checkpoint_store::tests::selection::v3_tail_adoption_rejects_log_growth_after_validation ... ok
+test checkpoint_store::tests::shared_view_file::v2_keeps_the_independent_view_and_recovers_writes ... ok
+test checkpoint_store::tests::selection::managed_selection_publication_failures_poison_the_writer_and_recover_visible_selection ... ok
+test checkpoint_store::tests::shared_view_file::v3::shared_view_stays_read_only_and_outlives_rollover_and_writer ... ok
+test checkpoint_store::tests::shared_view_file::v3::unavailable_or_failed_identity_keeps_the_validated_view ... ok
+test checkpoint_store::tests::shared_view_file::v3::writer_identity_failure_or_unrelated_shared_file_keeps_the_original_view ... ok
+test checkpoint_store::tests::shared_view_file::v3::same_log_identity_on_a_different_inode_is_not_shared ... ok
+test checkpoint_store::tests::selection::managed_selection_process_kill_recovers_the_visible_selection ... ok
+test checkpoint_store::tests::transaction::cancellation_removes_a_checkpoint_fifo_waiter_before_callback ... ok
+test checkpoint_store::tests::transaction::cancellation_during_checkpoint_sync_preserves_success_or_unknown_io_outcome ... ok
+test checkpoint_store::tests::transaction::checkpoint_callback_read_can_cancel_while_state_lock_is_held ... ok
+test checkpoint_store::tests::transaction::cancelled_checkpoint_fifo_turn_releases_follower_before_state_unlocks ... ok
+test checkpoint_store::tests::transaction::checkpoint_snapshot_rejects_reads_after_an_uncertain_commit ... ok
+test checkpoint_store::tests::transaction::checkpoint_state_poison_fails_closed_and_preserves_recovery ... ok
+test checkpoint_store::tests::transaction::conservative_identity_change_rejects_reads_and_commit ... ok
+test checkpoint_store::tests::transaction::cancellation_after_callback_with_checkpoint_state_lock_held_aborts_before_append ... ok
+test checkpoint_store::tests::selection::managed_selection_publication_blocks_writers_until_directory_sync ... ok
+test checkpoint_store::tests::recovery::incomplete_single_and_batch_tails_fail_without_modifying_log_or_witness ... ok
+test checkpoint_store::tests::transaction::failed_range_capture_releases_partially_used_reservation_quanta ... ok
+test checkpoint_store::tests::transaction::detailed_cancellation_during_sync_keeps_success_or_unknown_outcome ... ok
+test checkpoint_store::tests::transaction::fifo_other_writes_still_conflict_and_callback_panic_releases_turn ... ok
+test checkpoint_store::tests::transaction::fifo_runs_callbacks_and_commits_in_admission_order ... ok
+test checkpoint_store::tests::transaction::checkpoint_initial_state_admission_can_cancel_without_running_the_callback ... ok
+test checkpoint_store::tests::transaction::fifo_waiters_wake_after_failed_or_panicking_commit ... ok
+test checkpoint_store::tests::transaction::point_read_reservations_share_the_staged_budget_and_release_on_abort_and_panic ... ok
+test checkpoint_store::tests::transaction::poisoned_transaction_budget_rejects_new_admissions ... ok
+test checkpoint_store::tests::transaction::generation_exhaustion_rejects_a_write_before_append ... ok
+test checkpoint_store::tests::transaction::range_reservations_are_deduplicated_and_released_after_failed_capture ... ok
+test checkpoint_store::tests::transaction::staged_budget_is_shared_and_released_on_abort_and_panic ... ok
+test checkpoint_store::tests::transaction::sync_timeout_is_an_unknown_operation_error_not_confirmed_expiry ... ok
+test backup::rebuild_stage_tests::rebuild_errors_leave_source_and_backup_reusable ... ok
+test checkpoint_store::worker::tests::invalid_configuration_and_disabled_automatic_checkpoints_are_rejected ... ok
+test checkpoint_store::worker::tests::disabled_automatic_mode_suspends_checks_until_reenabled ... ok
+test checkpoint_store::worker::tests::concurrent_starts_admit_exactly_one_worker ... ok
+test checkpoint_store::worker::tests::requested_checks_respect_threshold_and_keep_snapshots_and_recovery_valid ... ok
+test checkpoint_store::worker::tests::worker_error_is_reported_and_does_not_submit_a_user_write ... ok
+test checkpoint_store::worker::tests::worker_panic_is_reported_and_recovery_preserves_acknowledged_data ... ok
+test checkpoint_store::worker::tests::worker_rollover_does_not_conflict_with_a_transaction_by_itself ... ok
+test checkpoint_store::worker::tests::periodic_checks_run_and_stopping_releases_the_worker_lease ... ok
+test checkpoint_view::tests::prefix_order_is_exact_or_requires_full_key_comparison ... ok
+test controlled_lock::tests::reader_panic_does_not_poison ... ok
+test controlled_lock::tests::caught_panics_and_write_guards_acquired_during_unwind_match_std_poisoning ... ok
+test controlled_lock::tests::writer_panic_poisoning_is_preserved_for_all_paths ... ok
+test controlled_lock::tests::timed_waiters_wake_when_the_lock_is_released ... ok
+test direct_read::tests::limits_and_raii_release_are_atomic_on_failure_and_unwind ... ok
+test direct_read::tests::packed_counter_does_not_carry_into_limit_at_the_hard_boundary ... ok
+test checkpoint_store::worker::tests::stopping_waits_for_a_check_already_blocked_on_the_store ... ok
+test direct_read::tests::simultaneous_acquisitions_never_exceed_the_limit ... ok
+test direct_write::tests::limits_and_raii_release_are_atomic_on_failure_and_unwind ... ok
+test direct_write::tests::packed_counter_does_not_carry_into_limit_at_the_hard_boundary ... ok
+test checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v3_append_cut ... ok
+test directory::tests::directory_sync_failure_at_each_ancestor_is_propagated_in_order ... ok
+test directory::tests::existing_directory_sync_resolves_symlinks_before_visiting_ancestors ... ok
+test document::array_fault_model::committed_truncate_keeps_push_and_publishes_partial_index ... ok
+test document::filter::streaming_tests::unsorted_result_window_does_not_retain_other_matching_documents ... ok
+test direct_write::tests::simultaneous_acquisitions_never_exceed_the_limit ... ok
+test document::index::scalar_order_tests::borrowed_comparisons_match_complete_scalar_encoding_order ... ok
+test document::point_read_tests::checkpoint_drop_does_not_publish_completion_for_a_skipped_range ... ok
+test direct_write::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state ... ok
+test document::point_read_tests::collection_creation_rejects_a_stray_drop_cursor ... ok
+test document::point_read_tests::drop_cursor_rejects_forged_or_skipped_ranges_without_deleting_metadata ... ok
+test document::point_read_tests::dropping_metadata_is_rejected_for_normal_reads_and_invalid_versions_fail_closed ... ok
+test document::point_read_tests::checkpoint_cursor_starts_on_a_full_page_but_not_a_short_page ... ok
+test document::point_read_tests::previous_drop_marker_without_a_cursor_resumes_after_reopening ... ok
+test checkpoint_store::tests::document_faults::checkpoint_drop_cursor_and_raw_receipt_remain_atomic_at_every_v2_append_cut ... ok
+test document::update::input::tests::nested_values_match_serde_json_at_the_exact_boundary ... ok
+test checkpoint_store::tests::document_faults::compound_partial_indexes_and_raw_key_recover_together_for_every_v2_append_cut ... ok
+test log::tests::an_incomplete_large_record_is_rejected_without_reading_its_value ... ok
+test log::tests::batch_children_are_published_in_order_only_after_validation ... ok
+test log::tests::batch_replay_reports_outer_checksum_before_key_and_nested_errors ... ok
+test log::tests::batch_replay_streams_a_split_child_header_and_the_next_record ... ok
+test log::tests::batch_short_read_reports_io_before_key_or_nested_validation ... ok
+test checkpoint_store::tests::document_faults::later_checkpoint_drop_cursor_update_and_receipt_are_atomic_at_every_append_cut ... ok
+test log::tests::batch_suffix_boundary_rejects_a_partial_record_without_publishing_children ... ok
+test log::tests::corruption_past_the_recovery_buffer_fails_before_the_record_is_published ... ok
+test log::tests::legacy_replay_also_chunks_a_value_past_the_read_buffer ... ok
+test log::tests::log_sync_precedes_witness_and_all_boundary_failures_propagate ... ok
+test log::tests::metadata_path_requires_witness_update_and_inode_sync_without_a_second_log_sync ... ok
+test log::tests::prefix_reconstruction_requires_attached_witness ... ok
+test log::tests::put_and_delete_replay_checks_a_value_larger_than_the_read_buffer ... ok
+test log::tests::replayed_tail_adoption_rejects_growth_after_validation ... ok
+test log::tests::replayed_v3_tail_adoption_rejects_growth_after_validation ... ok
+test log::tests::detached_checkpoint_view_cannot_acknowledge_writes_or_verify_a_missing_witness ... ok
+test log::tests::streamed_record_rejects_truncated_value_and_checksum_and_bad_trailer ... ok
+test log::tests::streamed_record_requires_a_complete_witness_boundary ... ok
+test log::tests::streamed_value_short_read_does_not_publish_the_record ... ok
+test document::update::input::tests::every_ascii_byte_is_counted_at_each_word_offset ... ok
+test log::tests::v2_exact_tail_adoption_sync_failures_do_not_report_open_success ... ok
+test log::tests::verification_key_byte_overflow_distinguishes_admission_from_corruption ... ok
+test log_io::tests::vectored_append_propagates_zero_and_errors_after_a_partial_write ... ok
+test metadata_witness::platform::tests::interrupted_read_retries_and_replaces_partial_buffer_contents ... ok
+test log_io::tests::vectored_append_retries_interruptions_and_short_writes_across_records ... ok
+test metadata_witness::platform::tests::shared_witness_keeps_the_log_descriptor_alive_until_its_own_drop ... ok
+test metadata_witness::platform::tests::interrupted_replacement_retries_the_same_boundary_but_other_errors_stop ... ok
+test recovery::tests::a_large_direct_read_leaves_the_following_chunked_read_aligned ... ok
+test recovery::tests::chunked_reads_match_the_source_and_stay_within_the_buffer ... ok
+test recovery::tests::large_read_drains_buffer_then_reads_remaining_bytes_directly ... ok
+test recovery::tests::reads_past_the_declared_end_fail_before_consuming_input ... ok
+test retained_base_v2::tests::each_limit_is_enforced ... ok
+test retained_base_v2::tests::exact_budgets ... ok
+test retained_base_v2::tests::independent_known_answer ... ok
+test retained_base_v2::tests::io_errors_and_interruptions ... ok
+test retained_base_v2::tests::ordering_and_key_edges ... ok
+test retained_base_v2::tests::rehashed_invalid_headers_and_totals ... ok
+test retained_base_v2::tests::reused_source_identity_is_rejected_even_with_matching_digest_and_binding ... ok
+test retained_base_v2::tests::staged_load_rejects_rehashed_bad_order_and_totals ... ok
+test retained_base_v2::tests::staging_reads_once_and_unwinds_on_reader_panic ... ok
+test retained_base_v2::tests::truncation_corruption_and_extra_bytes_fail ... ok
+test retained_candidate::open_regular_rejects_fifo_and_symlink ... ok
+test retained_candidate::suffix_budget_tests::seeded_totals_match_rescan_and_fail_atomically ... ok
+test retained_candidate::suffix_budget_tests::shifted_insert_and_delete_obey_work_limit ... ok
+test retained_candidate::suffix_budget_tests::work_overflow_does_not_mutate_state ... ok
+test direct_read::tests::concurrent_reconfiguration_never_publishes_an_oversubscribed_state ... ok
+test document::update::input::tests::unicode_and_dense_escapes_match_json_encoding ... ok
+test snapshot_reaper::tests::failures_and_panics_stop_and_release_the_worker_lease ... ok
+test staging::cleanup_outcome_tests::detailed_cleanup_keeps_retired_and_symlink_payloads_untouched ... ok
+test staging::cleanup_outcome_tests::detailed_cleanup_reports_no_removal_on_lock_or_pre_removal_failure ... ok
+test staging::cleanup_outcome_tests::failed_final_sync_reports_unknown_after_completed_removals ... ok
+test staging::cleanup_outcome_tests::failed_payload_sync_distinguishes_prior_removal_and_keeps_the_marker ... ok
+test staging::cleanup_outcome_tests::failure_after_one_stage_reports_unknown_and_remaining_stage_is_retryable ... ok
+test staging::ordering_tests::cleanup_syncs_absent_payload_before_removing_marker_and_then_syncs_again ... ok
+test staging::ordering_tests::drop_retains_marker_when_payload_absence_cannot_be_synchronized ... ok
+test staging::ordering_tests::failed_payload_sync_keeps_marker_for_generic_and_retired_cleanup ... ok
+test staging::ordering_tests::failed_replacement_sync_retains_the_marker_for_retry ... ok
+test staging::ordering_tests::file_replacement_rejects_a_different_parent_or_non_file_stage ... ok
+test staging::ordering_tests::generic_cleanup_does_not_sync_an_unchanged_directory ... ok
+test staging::ordering_tests::interruption_child ... ok
+test staging::ordering_tests::lingering_published_hard_link_is_synced_after_its_later_removal ... ok
+test staging::ordering_tests::process_kill_after_payload_sync_leaves_a_recoverable_marker ... ok
+test staging::ordering_tests::synchronized_file_replacement_avoids_a_duplicate_parent_sync ... ok
+test staging::ordering_tests::synchronized_publication_avoids_an_unnecessary_second_parent_sync ... ok
+test staging::tests::active_operations_block_cleanup_and_orphans_can_be_removed ... ok
+test staging::tests::busy_retired_fixture_is_preserved_until_its_lock_is_released ... ok
+test staging::tests::cleanup_never_follows_links_inside_a_staging_directory ... ok
+test staging::tests::cleanup_only_removes_the_staging_name_of_a_published_hard_link ... ok
+test staging::tests::cleanup_preserves_unknown_legacy_and_symlink_entries ... ok
+test document::point_read_tests::standalone_get_never_mixes_schema_and_document_from_atomic_writes ... ok
+test staging::tests::ownership_sync_failures_stop_before_any_payload_is_created ... ok
+test staging::tests::parent_lock_failure_diagnostics_identify_descriptor_and_mode ... ok
+test staging::tests::parent_lock_release_is_not_delayed_by_a_duplicate_descriptor ... ok
+test staging::tests::retired_cleanup_kill_child ... ok
+test staging::tests::retired_lock_failure_diagnostic_preserves_busy_result ... ok
+test staging::tests::retired_stage_removal_resumes_after_every_injected_interruption ... ok
+test staging::tests::cleanup_removes_orphan_marker_and_reports_sync_failure ... ok
+test staging::tests::selective_cleanup_avoids_sync_when_nothing_is_removed_and_classifies_only_its_lock_conflict ... ok
+test staging::tests::selective_retired_cleanup_matches_identity_and_ignores_other_stages ... ok
+test staging::tests::selective_retired_cleanup_never_deletes_if_verification_fails ... ok
+test snapshot_reaper::tests::stop_waits_for_an_in_flight_check_then_releases_its_lease ... ok
+test staging::tests::selective_retired_cleanup_respects_parent_lock_and_reports_sync_failure ... ok
+test backup::rebuild_stage_tests::killed_rebuilds_never_publish_partial_restore_or_upgrade ... ok
+test staging::tests::selective_retired_cleanup_preserves_corrupt_markers_busy_locks_and_unknown_files ... ok
+test store::commit_process_tests::interrupted_commit_child ... ok
+test staging::tests::retired_stage_removal_resumes_after_process_kill_at_every_boundary ... ok
+test store::compact::retained_peak_tests::bounded_verification_rejects_before_publication ... ok
+test store::compact::retained_peak_tests::verified_peaks_include_intermediate_batch_states ... ok
+test checkpoint_store::tests::document_faults::array_index_and_raw_write_recover_together_for_every_v2_append_cut ... ok
+test snapshot_reaper::tests::concurrent_start_admits_one_worker_per_target ... ok
+test store::compact::retained_peak_tests::verified_peaks_reject_corrupt_superseded_record ... ok
+test store::compact::tests::compaction_crash_child ... ok
+test store::compact::tests::copy_propagates_partial_append_and_sync_failure_without_touching_source ... ok
+test store::compact::tests::detailed_compaction_reports_unknown_after_parent_sync_failure ... ok
+test store::compact::tests::copy_propagates_each_metadata_witness_failure_without_touching_source ... ok
+test store::compact::tests::failed_parent_sync_reports_uncertain_publication_and_preserves_source ... ok
+test store::compact::tests::grouped_copy_syncs_bounded_db01_records_and_reopens ... ok
+test store::compact::tests::interrupted_staged_copy_never_publishes_a_destination ... ok
+test store::compact::tests::private_store_lock_release_is_not_delayed_by_a_duplicate_descriptor ... ok
+test log::tests::streamed_batch_matches_prepare_batch_for_valid_and_malformed_payloads ... ok
+test store::compact::tests::every_compaction_ancestor_sync_failure_reports_uncertain_copy ... ok
+test store::compact::tests::process_killed_after_publication_sees_complete_copy_on_running_os ... ok
+test store::compact::tests::process_killed_during_compaction_keeps_source_and_does_not_publish_copy ... ok
+test store::compact_exchange::tests::a_contender_with_a_stale_lock_descriptor_cannot_open_the_new_log ... ok
+test store::compact_exchange::tests::exchange_kill_child ... ok
+test store::compact_exchange::tests::exchange_holds_both_mapping_locks_through_failed_parent_sync ... ok
+test store::compact_exchange::tests::exchange_preserves_live_data_old_store_and_open_limits ... ok
+test store::compact_exchange::tests::injected_exchange_failures_preserve_both_complete_copies ... ok
+test store::compact_exchange::tests::process_kill_before_and_after_exchange_preserves_live_data ... ok
+test store::compact::tests::copy_flushes_before_combined_values_exceed_byte_limit ... ok
+test store::compact_exchange::tests::unknown_files_and_non_sibling_or_existing_destinations_are_rejected ... ok
+test store::compact_exchange::tests::detailed_handoff_classifies_copy_and_exchange_boundaries ... ok
+test store::compact_stream::tests::private_verification_lock_releases_even_with_duplicate_descriptors ... ok
+test store::detailed_checkpoint_tests::published_checkpoint_sync_failure_is_reported_as_unknown ... ok
+test store::coordinator_boundary_tests::group_failure_rejects_unsubmitted_waiters_but_keeps_queued_outcomes_unknown ... ok
+test store::detailed_document_fault_tests::schema_publication_and_partial_indexes_recover_together_after_append_failure ... ok
+test store::direct_admission_tests::direct_limit_covers_writer_barrier_wait_and_releases_after_recovery ... ok
+test store::fault_tests::a_write_failure_clears_in_progress_preparation_reservations ... ok
+test store::fault_tests::backup_source_short_read_does_not_publish_a_partial_backup ... ok
+test store::fault_tests::bulk_read_returns_no_partial_results_after_a_later_short_read ... ok
+test store::fault_tests::checkpoint_parent_sync_failure_reports_uncertain_publication ... ok
+test store::fault_tests::checkpoint_reports_uncertain_publication_for_each_ancestor_sync_failure ... ok
+test store::fault_tests::concurrent_writers_cannot_continue_after_an_uncertain_write ... ok
+test store::fault_tests::conditional_mismatch_does_not_write_and_failed_match_is_uncertain ... ok
+test store::fault_tests::detailed_direct_mutations_never_classify_append_or_sync_failures_as_rejected ... ok
+test store::fault_tests::detailed_transactions_report_uncertain_commit_failures_even_for_documents ... ok
+test store::collection_drop_fault_tests::partial_drop_step_append_recovers_all_or_none_with_its_raw_receipt ... ok
+test store::fault_tests::duplicated_store_lock_retains_ownership_until_the_duplicate_closes ... ok
+test store::fault_tests::failed_preparation_releases_log_capacity_for_a_later_write ... ok
+test store::fault_tests::failed_sync_has_unknown_outcome_and_blocks_further_operations ... ok
+test store::fault_tests::generation_exhaustion_fails_closed_instead_of_wrapping ... ok
+test store::fault_tests::increment_sync_failure_is_uncertain_and_requires_reopen ... ok
+test store::fault_tests::limited_store_preserves_unknown_outcome_after_sync_error ... ok
+test store::fault_tests::disk_full_at_every_record_offset_fails_closed_and_preserves_bytes ... ok
+test store::fault_tests::reads_observe_previous_value_while_a_write_is_syncing ... ok
+test store::fault_tests::short_read_during_recovery_preserves_the_log ... ok
+test checkpoint_store::tests::detailed_document_fault_tests::detailed_unique_document_insert_and_replace_recover_at_every_v2_append_cut ... ok
+test store::fault_tests::short_read_in_large_direct_payload_preserves_log ... ok
+test store::fault_tests::short_read_is_reported_without_returning_partial_data ... ok
+test store::fault_tests::snapshot_refuses_reads_after_uncertain_write_and_propagates_read_errors ... ok
+test store::fault_tests::witness_write_and_sync_failures_never_acknowledge_and_poison_the_store ... ok
+test store::fault_tests::writer_panic_blocks_subsequent_reads_and_preserves_the_log ... ok
+test store::group_commit_process_tests::interrupted_group_child ... ok
+test store::fault_tests::would_block_during_commit_is_not_a_confirmed_transaction_conflict ... ok
+test store::detailed_document_fault_tests::detailed_document_mutations_report_unknown_and_recover_atomic_indexes ... ok
+test store::group_tests::buffered_group_writes_respect_byte_and_record_limits ... ok
+test store::group_tests::concurrent_writes_share_a_sync_before_success ... ok
+test store::fault_tests::short_read_after_buffer_refill_fails_recovery_without_changing_log ... ok
+test store::group_tests::error_after_group_sync_keeps_outcomes_uncertain ... ok
+test store::group_tests::failed_group_sync_fails_all_waiters ... ok
+test store::group_tests::limits_cannot_undercut_a_write_during_synchronization ... ok
+test store::group_tests::panic_in_group_sync_wakes_waiters_and_blocks_new_work ... ok
+test store::commit_process_tests::killed_commits_preserve_acknowledged_data_or_fail_closed ... ok
+test store::initialization_tests::initialization_crash_child ... ok
+test store::initialization_tests::initialization_errors_at_every_boundary_preserve_or_reopen_witnessed_state ... ok
+test checkpoint_store::tests::automatic::deadline::transaction_deadline_expiring_during_automatic_rollover_prevents_append ... ok
+test store::log_quota::tests::overflow_poison_and_inconsistent_accounting_fail_closed ... ok
+test store::log_quota::tests::reservations_count_pending_and_committed_bytes_and_release_on_unwind ... ok
+test store::log_quota::tests::simultaneous_reservations_cannot_exceed_capacity ... ok
+test store::metadata_tests::atomic_batch_is_not_published_until_metadata_fsync_completes ... ok
+test store::initialization_tests::killed_initialization_never_silently_reopens_as_legacy ... ok
+test store::group_tests::backup_waits_for_synchronized_writes_before_taking_snapshot ... ok
+test store::metadata_tests::atomic_batch_metadata_failures_never_publish_a_partial_batch ... ok
+test store::metadata_tests::cancellation_during_fsync_preserves_success_or_unknown_io_outcome ... ok
+test store::metadata_tests::detailed_cancellation_during_fsync_keeps_success_or_unknown_outcome ... ok
+test store::metadata_tests::compound_partial_index_faults::compound_partial_indexes_and_raw_key_recover_together_after_v3_metadata_faults ... ok
+test store::metadata_tests::capped_existing_key_updates_share_a_witness_sync_and_block_deletion ... ok
+test store::metadata_tests::detailed_direct_mutations_treat_v3_witness_failures_as_unknown ... ok
+test store::metadata_tests::detailed_transactions_treat_v3_witness_failures_as_unknown_outcomes ... ok
+test store::metadata_tests::document_faults::array_index_and_raw_write_recover_together_after_v3_metadata_errors ... ok
+test store::metadata_tests::document_faults::collection_drop_marker_and_final_removal_remain_atomic_across_v3_metadata_faults ... ok
+test store::metadata_tests::document_faults::document_and_unique_index_remain_atomic_across_metadata_faults ... ok
+test store::group_commit_process_tests::killed_groups_preserve_prior_acknowledgements_or_fail_closed ... ok
+test store::metadata_tests::document_faults::incremental_collection_drop_remains_atomic_across_v3_metadata_faults ... ok
+test store::metadata_tests::failed_capped_group_leader_wakes_existing_key_waiters_and_requires_recovery ... ok
+test store::group_tests::partial_append_in_a_group_fails_all_and_preserves_the_log ... ok
+test store::metadata_tests::limited_key_byte_accounting_is_rebuilt_after_uncertain_single_and_batch_writes ... ok
+test store::metadata_tests::failed_fifo_transaction_wakes_waiter_and_preserves_atomic_recovery ... ok
+test store::metadata_tests::metadata_fsync_must_complete_before_publication_or_acknowledgement ... ok
+test store::metadata_tests::log_length_cap_reserves_inflight_bytes_before_other_updates ... ok
+test store::metadata_tests::metadata_failures_and_panics_never_acknowledge_and_poison_the_store ... ok
+test store::metadata_tests::failed_capped_group_sync_never_acknowledges_waiters_or_oversubscribes ... ok
+test store::metadata_tests::transaction_conflicts_with_writer_that_was_syncing_during_snapshot ... ok
+test store::metadata_tests::online_index_faults::index_build_progress_and_entries_recover_together_after_metadata_failures ... ok
+test store::metadata_tests::schema_migration_faults::schema_progress_recovers_atomically_after_metadata_failures ... ok
+test store::metadata_tests::transaction_fsync_timeout_remains_an_unknown_operation_error ... ok
+test store::online::copy::tests::initial_reads_use_captured_log_and_reject_cancelled_snapshot ... ok
+test store::online::tests::basic::configured_limits_and_unsafe_paths_fail_before_exchange ... ok
+test store::metadata_tests::transaction_commit_metadata_failures_never_recover_partial_writes ... ok
+test store::online::tests::basic::historical_peak_and_lock_ownership_are_enforced ... ok
+test store::online::tests::basic::fixed_log_ranges_exclude_later_appends_and_reject_torn_boundaries ... ok
+test store::online::tests::basic::pending_document_jobs_continue_through_compaction ... ok
+test store::metadata_tests::detailed_document_faults::detailed_document_mutations_report_unknown_for_v3_witness_errors ... ok
+test store::online::tests::concurrency::catches_up_acknowledged_writes_and_retains_previous_store ... ok
+test store::online::tests::concurrency::handoff_keeps_a_transaction_limit_changed_during_copy ... ok
+test store::online::tests::concurrency::nested_access_and_overlapping_compactions_are_rejected ... ok
+test store::online::tests::concurrency::online_handoff_keeps_disabled_direct_read_admission_disabled ... ok
+test store::online::tests::concurrency::concurrent_acknowledged_increments_survive_repeated_handoffs ... ok
+test store::online::tests::concurrency::active_snapshot_finishes_before_handoff ... ok
+test store::online::tests::failure::detailed_prepublication_failure_does_not_exclude_concurrent_writes ... ok
+test store::online::tests::failure::detailed_online_handoff_classifies_publication_and_exchange_boundaries ... ok
+test store::online::tests::failure::failure_injection_preserves_source_and_poisoning_after_exchange ... ok
+test store::online::tests::concurrency::transaction_finishes_before_handoff_and_its_commit_is_replayed ... ok
+test store::online::tests::failure::source_prefix_corruption_does_not_publish_a_copy_or_repair_data ... ok
+test store::online::tests::failure::staged_corruption_is_detected_before_exchange ... ok
+test store::online::tests::failure::suffix_limit_aborts_before_publication_and_keeps_source_usable ... ok
+test store::online::tests::failure::target_quota_failure_during_catchup_keeps_later_source_write ... ok
+test store::online::tests::failure::uncertain_source_commit_during_copy_never_publishes_a_compacted_store ... ok
+test store::compound_partial_index_fault_tests::compound_partial_indexes_and_raw_key_recover_together_at_every_append_cut ... ok
+test store::online::tests::failure::partial_source_append_at_every_offset_aborts_handoff_without_truncation ... ok
+test store::online::tests::reclaim_tests::basic::reclamation_keeps_per_open_limits_enforced_after_handoff ... ok
+test store::online::tests::reclaim_tests::basic::reclamation_preserves_document_indexes_and_raw_transaction_data ... ok
+test store::online::tests::reclaim_tests::basic::reclamation_removes_old_history_and_recovers_live_state ... ok
+test store::online::tests::reclaim_tests::basic::reclamation_supports_legacy_v2_and_v3_store_fixtures ... ok
+test store::online::tests::reclaim_tests::concurrency::acknowledged_concurrent_increments_survive_repeated_reclamation_and_reopen ... ok
+test store::online::tests::failure::partial_v2_and_v3_source_appends_abort_handoff_without_truncation ... ok
+test store::online::tests::reclaim_tests::detailed::detailed_reclaim_public_api_rejects_invalid_options_and_succeeds ... ok
+test store::online::tests::reclaim_tests::detailed::detailed_reclaim_classifies_handoff_and_never_reclaims_on_failure ... ok
+test store::online::tests::reclaim_tests::detailed::rejected_detailed_reclaim_preserves_a_concurrent_acknowledged_write ... ok
+test store::array_document_fault_tests::array_index_and_raw_write_recover_together_for_every_v3_append_cut ... ok
+test store::online::tests::reclaim_tests::failure::handoff_failure_never_starts_reclamation ... ok
+test store::online::tests::reclaim_tests::concurrency::reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe ... ok
+test store::online::tests::reclaim_tests::failure::every_reclamation_failure_keeps_the_synchronized_live_store_usable ... ok
+test store::online::tests::reclaim_tests::failure::replacement_of_the_previous_path_does_not_delete_unrelated_data ... ok
+test store::online::tests::reclaim_tests::failure::panic_during_reclamation_does_not_disable_the_live_store ... ok
+test store::online::tests::reclaim_tests::recovery::online_reclaim_kill_child ... ok
+test store::online::tests::reclaim_tests::failure::unexpected_files_are_preserved_when_reclamation_unwinds ... ok
+test store::online::tests::reclaim_tests::failure::unexpected_files_in_retired_stage_are_retained_for_inspection ... ok
+test store::online::tests::reclaim_tests::concurrency::waiting_writer_resumes_after_a_reported_cleanup_failure ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_keeps_retired_copy_when_verification_limits_are_too_small ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_preserves_a_named_previous_store ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_does_not_remove_a_different_stores_retired_copy ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_preserves_retired_copy_if_current_log_is_corrupt ... ok
+test store::online::tests::reclaim_tests::detailed::detailed_reclaim_reports_successful_handoff_before_cleanup_failures ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_skips_a_lock_only_retired_stage_until_release ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_skips_a_locked_retired_store_until_it_is_released ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::worker_cleans_matching_retired_stages_and_reports_counts ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::worker_defers_cleanup_while_parent_or_maintenance_lock_is_busy ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::worker_stops_and_preserves_retired_copy_when_current_verification_fails ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::worker_does_not_compact_while_matching_retired_data_is_locked ... ok
+test store::online::tests::recovery::online_compaction_kill_child ... ok
+test store::online::worker::tests::cleanup_error_is_reported_as_a_completed_handoff_and_old_data_is_preserved ... ok
+test store::online::tests::recovery::legacy_v2_and_v3_fixtures_compact_without_changing_live_data ... ok
+test store::online::tests::reclaim_tests::scoped_cleanup::scoped_cleanup_recovers_each_retired_stage_without_touching_live_data ... ok
+test store::online::worker::tests::concurrent_acknowledged_writes_survive_scheduled_reclamation ... ok
+test store::online::worker::tests::invalid_configuration_and_occupied_paths_are_rejected ... ok
+test store::online::worker::tests::deferred_worker_reobserves_store_after_a_concurrent_manual_handoff ... ok
+test store::online::tests::recovery::process_kill_at_copy_publication_and_exchange_recovers_complete_data ... ok
+test store::online::worker::tests::newly_occupied_path_stops_without_retry_or_deletion ... ok
+test store::online::worker::tests::external_handoff_changes_the_growth_baseline_identity ... ok
+test store::online::worker::tests::maintenance_contention_defers_then_reclaims_without_losing_writes ... ok
+test store::online::worker::tests::requested_checks_respect_thresholds_and_recover_all_writes ... ok
+test store::online::worker::tests::stopping_a_deferred_worker_does_not_wait_for_the_maintenance_lock ... ok
+test store::online::worker::tests::successful_cleanup_followed_by_observation_error_preserves_the_report ... ok
+test store::online::worker::tests::unrelated_would_block_error_is_not_safely_retryable ... ok
+test store::online::worker::tests::worker_status_distinguishes_incomplete_cleanup_and_panics ... ok
+test store::online::worker::tests::would_block_during_handoff_stops_with_both_copies_preserved ... ok
+test store::point_read::tests::a_failed_action_wins_over_later_validation ... ok
+test store::point_read::tests::an_uncertain_write_during_the_read_prevents_a_successful_result ... ok
+test store::point_read::tests::identity_change_conflicts_without_a_mutation ... ok
+test store::point_read::tests::point_reads_share_snapshot_admission_and_release_on_unwind ... ok
+test store::point_read::tests::returns_two_captured_values_and_conflicts_on_any_intervening_write ... ok
+test store::point_read::tests::v3_witness_failures_during_a_read_never_return_success ... ok
+test retained_base_v2::tests::maximum_value_and_short_reads ... ok
+test store::prefix_reconstruction_tests::rejects_corrupt_obsolete_suffix ... ok
+test store::prefix_reconstruction_tests::reconstructs_verified_prefix_and_enforces_limits ... ok
+test store::prefix_reconstruction_tests::rejects_modified_attached_v2_witness ... ok
+test store::prefix_reconstruction_tests::suffix_alone_exceeds_logical_limit ... ok
+test store::online::worker::tests::stop_waits_for_an_in_flight_check ... ok
+test store::read_set::tests::missing_observations_and_legacy_locations_keep_their_semantics ... ok
+test store::read_set::tests::witnessed_identity_qualifies_point_and_range_observations ... ok
+test store::read_tests::blocked_read_does_not_block_a_write_and_observes_its_original_value ... ok
+test store::read_tests::direct_read_admission_counts_blocked_io_and_does_not_block_writes ... ok
+test store::read_tests::direct_reads_use_log_published_with_index ... ok
+test store::online::worker::tests::periodic_worker_retries_after_contention_clears ... ok
+test store::read_tests::failed_read_releases_direct_read_admission ... ok
+test store::read_tests::saturated_direct_reads_do_not_clear_an_uncertain_write ... ok
+test store::read_tests::scan_captures_locations_before_concurrent_updates_without_blocking_writes ... ok
+test store::read_tests::two_point_read_retains_captured_log_across_replacement ... ok
+test store::reservation_tests::a_delayed_preparation_does_not_block_other_writers ... ok
+test store::reservation_tests::panicking_preparation_releases_capacity_and_wakes_waiters ... ok
+test store::reservation_tests::raising_record_limit_wakes_waiters_before_existing_reservations_finish ... ok
+test store::reservation_tests::reconfiguration_is_atomic_and_rechecks_waiting_record_size ... ok
+test store::group_tests::partial_vectored_batch_at_every_byte_fails_closed_and_preserves_the_log ... ok
+test store::retained_export::tests::appended_log_during_staging_is_not_published ... ok
+test store::retained_export::tests::candidate_kill_child ... ok
+test store::retained_export::tests::candidate_load_is_bounded_and_transactional ... ok
+test store::retained_export::tests::candidate_injected_io_and_publication_outcomes ... ok
+test store::online::worker::tests::periodic_checks_run_once_for_unchanged_data_and_lease_is_released ... ok
+test store::retained_export::tests::candidate_point_in_time_limits_and_publication_faults ... ok
+test store::retained_export::tests::candidate_partial_output_and_sync_failures_are_not_published ... ok
+test store::retained_export::tests::candidate_verification_and_failure_paths ... ok
+test store::retained_export::tests::changed_source_and_live_corruption_fail_without_publication ... ok
+test store::retained_export::tests::candidate_lookup_validates_full_bound_snapshot ... ok
+test store::retained_export::tests::empty_restore_has_fresh_identity_and_witness ... ok
+test store::retained_export::tests::detached_suffix_replay_checks_binding_records_and_intermediate_limits ... ok
+test store::retained_export::tests::exports_batch_peak_and_chunked_value ... ok
+test store::retained_export::tests::candidate_process_kill_boundaries ... ok
+test store::retained_export::tests::failed_store_rejects_export ... ok
+test store::retained_export::tests::injected_read_and_staging_sync_failures_preserve_source ... ok
+test store::retained_export::tests::full_index_verification_requires_an_exact_historical_boundary ... ok
+test store::read_tests::checkpoint_keeps_readers_available_and_blocks_writes_until_publication_sync ... ok
+test store::online::tests::reclaim_tests::recovery::process_kill_at_each_reclamation_boundary_preserves_acknowledged_data ... ok
+test store::read_tests::compaction_keeps_readers_available_and_blocks_writes_until_copy_finishes ... ok
+test store::retained_export::tests::rejects_corrupt_obsolete_history ... ok
+test store::retained_export::tests::rejects_budgets_conflicts_and_reports_uncertainty ... ok
+test store::retained_export::tests::restore_kill_child ... ok
+test store::retained_export::tests::lookup_export_verifies_binding_and_complete_stream ... ok
+test store::retained_export::tests::suffix_entry_rejects_boundaries_inside_batch ... ok
+test store::retained_export::tests::seeded_suffix_matches_full_log_store_and_preserves_inputs ... ok
+test store::retained_export::tests::suffix_entry_rejects_wrong_source_and_superseded_corruption ... ok
+test store::retained_export::tests::source_suffix_export_replays_and_preserves_source ... FAILED
+test store::retained_export::tests::symlink_destination_is_not_replaced ... ok
+test store::retained_export::tests::owned_directory_export_matches_public_and_cleans_up ... ok
+test store::retained_export::tests::suffix_rejects_forged_prefix_even_if_later_removed ... ok
+test store::retained_export::tests::v2_witness_or_v3_anchor_changes_after_replay_and_staging_fail_closed ... ok
+test store::retained_export::tests::v3_xattr_witness_changes_fail_closed_at_export_hooks ... ok
+test store::shared_snapshot_tests::accounting_failure_after_sync_poison_reads_before_partial_index_is_visible ... ok
+
+running 1 test
+test store::shared_snapshot_tests::copying_allows_readers_and_keeps_new_snapshots_on_the_old_root ... ok
+test store::shared_snapshot_tests::instrumentation_restores_published_log_after_panics_and_other_references ... ok
+test store::retained_export::tests::restore_process_kill_boundaries ... ok
+test store::shared_snapshot_tests::panic_after_snapshot_copy_poison_store_and_does_not_acknowledge ... ok
+test store::shared_snapshot_tests::snapshot_reads_and_releases_the_log_captured_with_its_index ... ok
+test store::online::tests::basic::large_unbatchable_values_are_copied_and_reopened ... ok
+test store::shared_snapshot_tests::old_and_new_snapshots_remain_stable_during_concurrent_writes ... ok
+test store::shared_snapshot_tests::unexpected_index_change_during_preparation_fails_closed_and_recovers ... ok
+test store::snapshot::tests::admission_reaps_expired_snapshots_without_double_releasing_capacity ... ok
+test store::snapshot::tests::aggregate_key_and_byte_budgets_are_released_after_reservation ... ok
+test store::snapshot::tests::background_reaper_skips_busy_expired_views_until_the_next_check ... ok
+test store::snapshot::tests::busy_stale_registry_entries_cannot_grow_registry_or_leak_reservations ... ok
+test store::shared_snapshot_tests::accounting_failure_fixture_fork_lock_lifetime ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 629 filtered out; finished in 0.06s
+
+test store::shared_snapshot_tests::snapshots_and_key_byte_limits_match_a_mutation_model_across_reopen ... ok
+test store::snapshot::tests::expired_snapshot_fails_reads_until_cancelled_and_keeps_its_reservation ... ok
+test store::snapshot::tests::reaping_skips_a_snapshot_while_its_index_is_in_use ... ok
+test store::snapshot::tests::background_reaper_races_with_cancellation_and_drop_without_leaking_budget ... ok
+test store::transaction::tests::callback_panic_releases_transaction_and_snapshot_reservations ... ok
+test store::snapshot::tests::concurrent_expiry_reaping_and_drop_release_each_reservation_once ... ok
+test store::shared_snapshot_tests::accounting_failure_fixture_fork_lock_lifetime ... ok
+test store::transaction::tests::cancellation_after_staging_with_writer_lock_held_aborts_before_append ... ok
+test store::transaction::tests::cancelled_transaction_reads_reject_staged_and_captured_values ... ok
+test store::transaction::tests::conservative_transaction_rejects_identity_change_without_mutation ... ok
+test store::transaction::tests::cancelled_fifo_turn_releases_waiting_follower_before_writer_unlocks ... ok
+test store::transaction::tests::pending_reservation_is_released_during_unwind ... ok
+test store::transaction::tests::poisoned_transaction_budget_rejects_new_admissions ... ok
+test store::transaction::tests::replaced_entries_release_budget_and_rejected_staging_preserves_old_changes ... ok
+test store::transaction::tests::simultaneous_staging_cannot_oversubscribe_the_shared_budget ... ok
+test store::transaction::tests::cancellation_removes_a_fifo_waiter_before_the_preceding_turn_ends ... ok
+test store::transaction::tests::transaction_reads_use_captured_log_with_staging_and_validation ... ok
+test store::transaction::tests::writer_barrier_poison_fails_closed_and_preserves_recovery ... ok
+test store::transaction_queue::tests::fifo_is_opt_in_and_does_not_block_other_transaction_modes ... ok
+test store::transaction_queue::tests::nested_admission_on_the_same_thread_returns_an_error ... ok
+test store::transaction_queue::tests::panicking_turn_releases_the_next_waiter ... ok
+test store::transaction_queue::tests::poisoned_queue_wakes_waiters_and_fails_closed ... ok
+test store::retained_export::tests::suffix_export_holds_writer_through_sync ... ok
+test store::transaction_queue::tests::queue_rejects_excess_waiters_without_disturbing_existing_turns ... ok
+test store::transaction_queue::tests::waiting_transactions_enter_in_fifo_order ... ok
+test store::transaction_snapshot_release_tests::snapshot_created_during_sync_remains_stable_and_transaction_stays_admitted ... ok
+test store::transaction_snapshot_release_tests::validated_transaction_avoids_own_index_copy_but_preserves_external_snapshot ... ok
+test store::wake_tests::group_failure_wakes_capacity_waiters_and_queued_writers ... ok
+test store::wake_tests::group_sync_error_wakes_active_and_future_batches ... ok
+test store::wake_tests::poisoned_coordinator_wakes_queued_and_capacity_waiters ... ok
+test store::retained_export::tests::writer_waits_until_publication_sync_finishes ... ok
+test store::wake_tests::group_sync_panic_wakes_active_and_future_batches ... ok
+test store::wake_tests::writers_beyond_a_single_batch_all_complete ... ok
+test test_support::tests::diagnostic_returns_the_original_lock_error_without_retrying ... ok
+test test_support::tests::open_lock_failure_sites_report_descriptor_and_preserve_error ... ok
+test test_support::tests::retries_transient_busy_without_masking_the_next_recovery_error ... ok
+test test_support::tests::diagnostic_preserves_actual_store_lock_exclusion ... ok
+test witness::tests::every_partial_witness_update_returns_error_and_never_forges_a_boundary ... ok
+test witness::tests::failed_witness_sync_returns_error_even_if_the_new_bytes_are_visible ... ok
+test transaction_conflict::tests::marker_is_distinct_from_other_would_block_errors_and_same_text ... ok
+test store::wake_tests::unavailable_head_does_not_strand_queued_writers ... ok
+test store::detailed_document_fault_tests::indexed_document_mutations_recover_at_every_v2_append_cut ... ok
+test checkpoint_store::tests::transaction::checkpoint_initial_state_deadlines_expire_while_the_lock_remains_held ... ok
+test checkpoint_store::tests::transaction::deadline_passed_during_sync_does_not_report_a_successful_commit_as_aborted ... ok
+test checkpoint_store::tests::transaction::fifo_deadline_expires_in_queue_without_running_callback_or_stranding_followers ... ok
+test store::retained_export::tests::exact_limits_ids_empty_and_max_value ... ok
+test store::read_tests::expired_snapshot_reaping_does_not_interrupt_a_blocked_read ... ok
+test cancellation::tests::cancelled_and_expired_waits_finish_while_read_or_write_lock_is_busy ... ok
+test store::metadata_tests::transaction_deadline_during_fsync_does_not_report_an_aborted_commit ... ok
+test document::point_read_tests::checkpoint_drop_keeps_going_after_a_byte_limited_short_page ... ok
+test store::transaction::tests::a_deadline_passed_while_waiting_for_the_writer_aborts_before_commit ... ok
+test store::transaction_queue::tests::fifo_deadline_removes_a_waiter_without_blocking_followers ... ok
+test checkpoint_store::tests::transaction::expiry_waiting_for_state_lock_aborts_before_commit ... ok
+test store::transaction::tests::deadline_expiring_during_read_set_validation_rejects_staged_writes ... ok
+
+failures:
+
+---- checkpoint_store::rebuild::tests::substituted_witness_during_adoption_is_not_repaired_or_published stdout ----
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpO3AZ44/store/store.lock" descriptor_dev_ino=Ok((38, 17170853)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+
+thread 'checkpoint_store::rebuild::tests::substituted_witness_during_adoption_is_not_repaired_or_published' panicked at src/checkpoint_store/rebuild.rs:1231:40:
+called `Result::unwrap()` on an `Err` value: Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+
+---- checkpoint_store::tests::rebuild_outcomes::detailed_rebuild_public_api_preserves_limits_locks_and_existing_files stdout ----
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpnpa2ik/store/store.lock" descriptor_dev_ino=Ok((38, 17185467)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock diagnostic phase=public rebuild rejection pid=563591 thread=ThreadId(317) path=/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpnpa2ik/store error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock diagnostic device=38 inode=17185467
+lock diagnostic proc-lock=26: FLOCK  ADVISORY  WRITE 563591 00:26:17185467 0 EOF
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpgPDvFL/store/store.lock" descriptor_dev_ino=Ok((38, 17185778)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock diagnostic phase=public rebuild rejection pid=563591 thread=ThreadId(317) path=/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpgPDvFL/store error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock diagnostic device=38 inode=17185778
+lock diagnostic proc-lock=21: FLOCK  ADVISORY  WRITE 563591 00:26:17185778 0 EOF
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpgPDvFL/store/store.lock" descriptor_dev_ino=Ok((38, 17185778)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpgPDvFL/store/store.lock" descriptor_dev_ino=Ok((38, 17185778)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+
+thread 'checkpoint_store::tests::rebuild_outcomes::detailed_rebuild_public_api_preserves_limits_locks_and_existing_files' panicked at src/checkpoint_store/tests/rebuild_outcomes.rs:298:9:
+assertion failed: matches!(CheckpointStore::rebuild_managed_selection_detailed(&path,
+    &existing), Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(_)))
+
+---- checkpoint_store::tests::rebuild_crash_detailed::detailed_rebuild_process_kills_preserve_tail_selection_and_backup stdout ----
+lock acquisition failed: operation=staging parent exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmplGxRN2" descriptor_dev_ino=Ok((38, 17184561)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+format=v2 managed=false stage=checkpoint-published recovered
+lock acquisition failed: operation=staging parent exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmp9MMVB2/store" descriptor_dev_ino=Ok((38, 17184911)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+format=v2 managed=false stage=selection-staged recovered
+lock acquisition failed: operation=staging parent exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmp9IOc66/store" descriptor_dev_ino=Ok((38, 17185084)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+format=v2 managed=false stage=selection-published recovered
+lock acquisition failed: operation=staging parent exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpu7HMBf" descriptor_dev_ino=Ok((38, 17185337)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+format=v2 managed=true stage=checkpoint-published recovered
+
+thread 'checkpoint_store::tests::rebuild_crash_detailed::detailed_rebuild_process_kills_preserve_tail_selection_and_backup' panicked at src/checkpoint_store/tests/rebuild_crash_detailed.rs:158:25:
+child did not reach the requested rebuild boundary: Disconnected
+
+---- store::retained_export::tests::source_suffix_export_replays_and_preserves_source stdout ----
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpFxOosO/.emda-stage-v1-d-NXFmWWh3txgRzzof.owner.data/store.lock" descriptor_dev_ino=Ok((38, 17213960)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+
+thread 'store::retained_export::tests::source_suffix_export_replays_and_preserves_source' panicked at src/store/retained_export.rs:1214:9:
+assertion failed: matches!(crate::retained_candidate::restore_with_hooks(&candidate, &out,
+    &published, base_limits, staging, suffix, &binding, output_limits,
+    crate::directory::sync_existing, |at| if at == "published"
+    { Err(std::io::Error::other("injected")) } else { Ok(()) },),
+    Err(crate::PublicationFailure::OutcomeUnknown(_)))
+
+
+failures:
+    checkpoint_store::rebuild::tests::substituted_witness_during_adoption_is_not_repaired_or_published
+    checkpoint_store::tests::rebuild_crash_detailed::detailed_rebuild_process_kills_preserve_tail_selection_and_backup
+    checkpoint_store::tests::rebuild_outcomes::detailed_rebuild_public_api_preserves_limits_locks_and_existing_files
+    store::retained_export::tests::source_suffix_export_replays_and_preserves_source
+
+test result: FAILED. 626 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.06s
+
+TEST_EXIT=101

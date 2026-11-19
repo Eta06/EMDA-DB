@@ -1,0 +1,38 @@
+RUN_DIR=/tmp/emda-2efbbc8-run.p5KahX
+exit t=298118351481546 pid=563296 tid=563296
+fork t=298118354222185 parent=563257 child=563297
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpyORZpF/store/store.lock" descriptor_dev_ino=Ok((38, 17170329)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpUQbsvk/store/store.lock" descriptor_dev_ino=Ok((38, 17170417)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpVNkTGm/store/store.lock" descriptor_dev_ino=Ok((38, 17170527)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpkHDOiC/store/store.lock" descriptor_dev_ino=Ok((38, 17170648)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpA3jzlF/store/store.lock" descriptor_dev_ino=Ok((38, 17170714)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpUQbsvk/store/store.lock" descriptor_dev_ino=Ok((38, 17170417)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpftOT38/store/store.lock" descriptor_dev_ino=Ok((38, 17170757)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpi41yNl/store/store.lock" descriptor_dev_ino=Ok((38, 17170844)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpUQbsvk/store/store.lock" descriptor_dev_ino=Ok((38, 17170417)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpMGF6Sb/store/store.lock" descriptor_dev_ino=Ok((38, 17170941)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+
+thread 'checkpoint_store::rebuild::tests::bounded_acquisition_fork_outcomes' panicked at src/checkpoint_store/rebuild.rs:1101:29:
+injected panic
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpJBn18P/store/store.lock" descriptor_dev_ino=Ok((38, 17171277)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpNumo9F/store/store.lock" descriptor_dev_ino=Ok((38, 17170964)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpwNbgXF/store/store.lock" descriptor_dev_ino=Ok((38, 17178893)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpLas2LG/store/store.lock" descriptor_dev_ino=Ok((38, 17183960)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpLas2LG/store/store.lock" descriptor_dev_ino=Ok((38, 17183960)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmp11Xoti/store/store.lock" descriptor_dev_ino=Ok((38, 17185895)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+
+thread 'checkpoint_store::tests::rebuild_crash_detailed::detailed_rebuild_crash_child' panicked at src/checkpoint_store/tests/rebuild_crash_detailed.rs:73:6:
+called `Result::unwrap()` on an `Err` value: NotPublished(Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+lock acquisition failed: operation=checkpoint source store exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmp9ncTtx/store/store.lock" descriptor_dev_ino=Ok((38, 17204077)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmpjBZB8k/store.lock" descriptor_dev_ino=Ok((38, 17214192)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+lock acquisition failed: operation=store open exclusive path="/tmp/emda-2efbbc8-run.p5KahX/tmp/.tmp2oE5R6/store.lock" descriptor_dev_ino=Ok((38, 17214282)) error=Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }
+total 8.9M
+-rw-rw-r-- 1 emir emir   18 Nov 19 10:46 bpf.err
+-rw-rw-r-- 1 emir emir 8.9M Nov 19 10:46 bpf.log
+-rw-rw-r-- 1 emir emir  563 Nov 19 10:46 probe.bt
+drwxrwxr-x 2 emir emir   40 Nov 19 10:46 tmp
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        19G   19G  226M  99% /
+tmpfs           2.9G  2.4G  568M  81% /tmp
