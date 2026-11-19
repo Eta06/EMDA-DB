@@ -636,3 +636,12 @@ records the byte and operation limits, six new Linux kernel write
 failure cases, and lower sampled peak RSS for a 48 MiB suffix.
 Detached materialized inspection and legacy archive retention remain
 separate resource concerns.
+
+Original-path catalogs can explicitly retire their ordinary archive
+after verifying and synchronizing a retained backup of the current
+authority-selected state. A caller must retain the pre-cutover archive
+fingerprints independently. The [retirement regression](../benchmarks/results/2026-11-19-cutover-archive-retirement/README.md)
+covers archive substitution, stale backup rejection and reopening
+after an injected partial unlink. The original-path fence and witness
+remain in place. Separate old copies and interrupted preparations
+still require their own retention policy.
