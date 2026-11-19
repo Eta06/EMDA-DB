@@ -12,8 +12,14 @@ use std::io::{self, BufReader, Read};
 pub(crate) mod index;
 
 const HEADER_BYTES: u64 = 112;
+pub(crate) const FRAME_BYTES: u64 = HEADER_BYTES + 32;
 const MAX_KEY_BYTES: usize = 1024;
 const CHUNK_BYTES: usize = 64 * 1024;
+
+// The key and value lengths are bounded by the format.
+pub(crate) fn encoded_entry_bytes(key: &[u8], value_len: usize) -> u64 {
+    8 + key.len() as u64 + value_len as u64
+}
 
 pub(crate) fn encode_header(
     source_id: [u8; 16],

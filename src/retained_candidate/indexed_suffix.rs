@@ -4,6 +4,7 @@ use super::{
 };
 use crate::record::{self, Operation};
 use crate::retained_base_v2::index::{EntryPart, IndexedBase, OverlayValue};
+use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
 use std::{io, ops::Range, path::Path};
 
@@ -140,13 +141,26 @@ impl Overlay {
             .try_reserve_exact(self.entries.len())
             .map_err(allocation)?;
         present.resize(self.entries.len(), false);
-        base.visit_keys(|key| {
+        let initial = base.metadata();
+        let mut encoded_bytes = initial.file_bytes - FRAME_BYTES;
+        base.visit_entry_lengths(|key, value_len| {
             if let Ok(position) = find(&self.entries, key) {
                 present[position] = true;
+                encoded_bytes = encoded_bytes
+                    .checked_sub(encoded_entry_bytes(key, value_len))
+                    .ok_or_else(|| record::invalid_data("retained encoded size underflow"))?;
             }
+            Ok(())
         })?;
-        let initial = base.metadata();
+        for entry in &self.entries {
+            if let Some(value) = &entry.value {
+                encoded_bytes = encoded_bytes
+                    .checked_add(encoded_entry_bytes(&entry.key, value.range.len()))
+                    .ok_or_else(|| record::invalid_data("retained encoded size overflow"))?;
+            }
+        }
         let mut peaks = LivePeaks {
+            encoded_bytes,
             entries: initial.entries,
             key_bytes: initial.key_bytes,
             peak_entries: initial.peak_entries,
@@ -363,6 +377,7 @@ impl Overlay {
 }
 
 pub(super) struct LivePeaks {
+    pub encoded_bytes: u64,
     pub entries: u64,
     pub key_bytes: u64,
     pub peak_entries: u64,

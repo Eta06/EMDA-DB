@@ -1,7 +1,7 @@
 //! Sparse in-memory directory over the validated, immutable base file.
 use super::{
-    CHUNK_BYTES, Limits, MAX_KEY_BYTES, Validated, add, entry_lengths, invalid, scan_buffered,
-    validate_value_budget,
+    CHUNK_BYTES, FRAME_BYTES, HEADER_BYTES, Limits, MAX_KEY_BYTES, Validated, add, encode_header,
+    entry_lengths, invalid, scan_buffered, validate_value_budget,
 };
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
 use sha2::{Digest, Sha256};
@@ -219,13 +219,39 @@ impl IndexedBase {
         Ok(())
     }
 
-    pub(crate) fn visit_keys(&self, mut visit: impl FnMut(&[u8])) -> io::Result<()> {
+    /// Authenticate the whole base against the open view while reporting entry
+    /// sizes. The frame and all entry blocks together cover every file byte.
+    pub(crate) fn visit_entry_lengths(
+        &self,
+        mut visit: impl FnMut(&[u8], usize) -> io::Result<()>,
+    ) -> io::Result<()> {
         self.check_length()?;
+        let base = &self.metadata;
+        let expected = encode_header(
+            base.source_id,
+            base.base_id,
+            [
+                base.boundary,
+                base.entries,
+                base.key_bytes,
+                base.peak_entries,
+                base.peak_key_bytes,
+                base.file_bytes - FRAME_BYTES,
+            ],
+        );
+        let mut header = [0; HEADER_BYTES as usize];
+        self.file.read_exact_at(&mut header, 0)?;
+        if header != expected {
+            return Err(invalid("retained base header changed"));
+        }
+        let mut trailer = [0; 32];
+        self.file
+            .read_exact_at(&mut trailer, base.file_bytes - 32)?;
+        if trailer != base.digest {
+            return Err(invalid("retained base trailer changed"));
+        }
         for block in &self.blocks {
-            self.visit_block(block, |key, _| {
-                visit(key);
-                Ok(())
-            })?;
+            self.visit_block(block, |key, value| visit(key, value.remaining))?;
         }
         Ok(())
     }

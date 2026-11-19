@@ -4,7 +4,7 @@ use super::{
 };
 use crate::record;
 use crate::retained_base_v2::index::EntryPart;
-use crate::retained_base_v2::{self, Limits, encode_header};
+use crate::retained_base_v2::{self, FRAME_BYTES, Limits, encode_header, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufWriter, Write},
@@ -17,27 +17,23 @@ impl RetainedStore {
     pub(super) fn verify_complete(&self) -> io::Result<()> {
         self.ensure_healthy()?;
         let digest: [u8; 32] = self.hash.clone().finalize().into();
-        let expected = marker(self.header.bytes(), self.suffix_len as u64, &digest);
-        let total = self.header.len as u64 + self.suffix_len as u64;
-        verify_files(
-            &self.log,
-            &self.witness,
-            self.header.bytes(),
-            total,
-            &expected,
-        )?;
+        self.verify_boundary(&digest)?;
         let mut observed = Sha256::new();
         self.suffix_file().copy_to(&mut observed)?;
         if <[u8; 32]>::from(observed.finalize()) != digest {
             return Err(record::invalid_data("retained suffix changed"));
         }
         self.base.verify(self.limits.base)?;
+        self.verify_boundary(&digest)
+    }
+
+    fn verify_boundary(&self, digest: &[u8; 32]) -> io::Result<()> {
         verify_files(
             &self.log,
             &self.witness,
             self.header.bytes(),
-            total,
-            &expected,
+            self.header.len as u64 + self.suffix_len as u64,
+            &marker(self.header.bytes(), self.suffix_len as u64, digest),
         )
     }
 
@@ -47,38 +43,32 @@ impl RetainedStore {
         limits: Limits,
         max_base_bytes: u64,
     ) -> io::Result<Expected> {
-        self.verify_complete()?;
+        self.ensure_healthy()?;
+        let suffix_digest = self.hash.clone().finalize().into();
+        self.verify_boundary(&suffix_digest)?;
+        // The history sweep authenticates the frame, all base blocks and the
+        // entire suffix. It also computes the final encoded size from lengths.
         let peaks = self.overlay.live_peaks(
             &self.base,
             self.suffix_file(),
             self.limits.suffix,
-            self.hash.clone().finalize().into(),
+            suffix_digest,
         )?;
         if peaks.entries > limits.entries || peaks.key_bytes > limits.key_bytes {
             return Err(invalid_input(
                 "compacted base exceeds entry or key byte limit",
             ));
         }
-        let mut space = limits
+        let space = limits
             .file_bytes
             .min(max_base_bytes)
             .min(limits.work_bytes.saturating_sub(1))
-            .checked_sub(144)
+            .checked_sub(FRAME_BYTES)
             .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
-        let available = space;
-        self.overlay.visit_merged(
-            &self.base,
-            OverlaySource::Disk(self.suffix_file()),
-            |part| {
-                if let EntryPart::Header { key, value_len } = part {
-                    space = space
-                        .checked_sub(entry_bytes(key, value_len))
-                        .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
-                }
-                Ok(())
-            },
-        )?;
-        let encoded = available - space;
+        let encoded = peaks.encoded_bytes;
+        if encoded > space {
+            return Err(invalid_input("compacted base byte limit exceeded"));
+        }
         let source = self.generation_id();
         let base = random_id()?;
         let header = encode_header(
@@ -111,7 +101,7 @@ impl RetainedStore {
                 |part| match part {
                     EntryPart::Header { key, value_len } => {
                         remaining = remaining
-                            .checked_sub(entry_bytes(key, value_len))
+                            .checked_sub(encoded_entry_bytes(key, value_len))
                             .ok_or_else(|| {
                                 record::invalid_data("compacted base grew during export")
                             })?;
@@ -138,9 +128,4 @@ impl RetainedStore {
         self.verify_complete()?;
         crate::retained_candidate::binding(&validated, random_id()?)
     }
-}
-
-// Both parts are bounded by the record format.
-fn entry_bytes(key: &[u8], value_len: usize) -> u64 {
-    8 + key.len() as u64 + value_len as u64
 }

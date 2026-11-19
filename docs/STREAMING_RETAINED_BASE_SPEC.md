@@ -278,14 +278,16 @@ allows compaction when a readable live set has outgrown the current base
 budget, even if the suffix is full. After an uncertain resize, one recovery
 ceiling must cover every limit in both the previous and successor generations.
 
-Rebase first sizes the merged base and suffix overlay against the successor
-file and verification byte limits. It then streams the same ordered merge
-to a private file through fixed-size buffers, authenticating every base
-block, including values shadowed by replacements or deletes. It allocates
-no scan pages or full value copies for sizing and writing. The existing
-verification, file sync and selection sync apply before publication. The
-active suffix, overlay, sparse indexes and staged files have their own
-resource costs.
+Rebase checks the source frame, every base block, and the entire witnessed
+suffix while reconstructing the historical peaks. That pass sizes the
+successor from authenticated base entry lengths and live suffix locations.
+It checks the successor file and verification byte limits before writing the
+merge to a private file through fixed-size buffers. The writer authenticates
+all base blocks, including values shadowed by replacements or deletes. After
+syncing and verifying the staged base, rotation rechecks the complete source
+before selection. The sizing and writing paths allocate no scan pages or full
+value copies. The suffix, overlay, sparse indexes and staged files have their
+own resource costs.
 
 `reclaim_inactive` verifies the active bytes and synchronized selection,
 checks the inactive slot's ownership and file types, and moves it under

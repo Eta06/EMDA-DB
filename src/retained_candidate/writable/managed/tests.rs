@@ -1088,6 +1088,78 @@ fn rebase_stream_authenticates_base_values_hidden_by_tombstones() {
 }
 
 #[test]
+fn rebase_rejects_a_changed_base_header_or_trailer_before_selection() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.put(b"b", b"suffix").unwrap();
+    let generation = Slot::A.path(&f.root);
+    let path = generation.join("base");
+    let bytes = fs::read(&path).unwrap();
+    let saved = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let witness = fs::read(generation.join("commit.state")).unwrap();
+    let file = OpenOptions::new().write(true).open(path).unwrap();
+    for (offset, message) in [
+        (48, "retained base header changed"),
+        (bytes.len() - 1, "retained base trailer changed"),
+    ] {
+        file.write_all_at(&[bytes[offset] ^ 1], offset as u64)
+            .unwrap();
+        assert!(
+            matches!(store.compact(), Err(PublicationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData && error.to_string() == message)
+        );
+        assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), saved);
+        assert_eq!(fs::read(generation.join("commit.state")).unwrap(), witness);
+        assert!(!Slot::B.path(&f.root).exists());
+        assert_eq!(fs::read_dir(&f.root).unwrap().count(), 4);
+        file.write_all_at(&[bytes[offset]], offset as u64).unwrap();
+    }
+    let successor = store.compact().unwrap();
+    drop(store);
+    let reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), successor);
+    assert_eq!(
+        reopened.get(b"b", 6).unwrap().as_deref(),
+        Some(b"suffix".as_slice())
+    );
+}
+
+#[test]
+fn rebase_sizes_an_empty_successor_at_the_frame_limit() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.delete(b"a").unwrap();
+    store.delete(b"z").unwrap();
+    let frame_bytes = crate::retained_base_v2::FRAME_BYTES;
+    let limits = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: frame_bytes,
+            work_bytes: frame_bytes + 1,
+            ..LIMITS.base
+        },
+        ..LIMITS
+    };
+    let successor = store.compact_with_limits(limits).unwrap();
+    let path = Slot::B.path(&f.root).join("base");
+    assert_eq!(fs::metadata(&path).unwrap().len(), frame_bytes);
+    let base =
+        crate::retained_base_v2::validate(fs::File::open(path).unwrap(), limits.base).unwrap();
+    assert_eq!(
+        (
+            base.entries,
+            base.key_bytes,
+            base.peak_entries,
+            base.peak_key_bytes
+        ),
+        (0, 0, 2, 2)
+    );
+    drop(store);
+    let reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), successor);
+    assert!(reopened.scan(None, None, 8).unwrap().is_empty());
+}
+
+#[test]
 fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();
