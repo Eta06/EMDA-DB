@@ -3,6 +3,7 @@
 use crate::checkpoint;
 use crate::log_io::LogIo;
 use crate::metadata_witness;
+use crate::record::batch::stream::{StreamValue, ValueHash};
 use crate::record::{self, HEADER_SIZE, Header, Operation};
 use crate::recovery::RecoveryReader;
 use crate::witness::{self, LOG_HEADER_SIZE, LogId, Witness};
@@ -912,10 +913,51 @@ impl Log {
 
     fn visit_records_to(
         &self,
-        mut offset: u64,
+        offset: u64,
         total: u64,
         boundary: Option<u64>,
         mut visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.visit_hashed_records_to::<crc32fast::Hasher>(offset, total, boundary, |key, value| {
+            visit(
+                key,
+                value.map(|value| ValueLocation {
+                    offset: value.offset,
+                    length: value.length,
+                    checksum: value.digest,
+                }),
+            )
+        })
+    }
+
+    /// Verify a private restored log and compare the SHA-256 of each value
+    /// as part of the same scan that validates its enclosing record.
+    pub(crate) fn verify_restored_records(
+        &self,
+        end: u64,
+        mut visit: impl FnMut(&[u8], usize, [u8; 32]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let verify_end = || {
+            if self.len()? != end {
+                return Err(record::invalid_data("restored log length mismatch"));
+            }
+            self.verify_witness()
+        };
+        verify_end()?;
+        self.visit_hashed_records_to::<sha2::Sha256>(0, end, Some(end), |key, value| {
+            let value =
+                value.ok_or_else(|| record::invalid_data("unexpected restored deletion"))?;
+            visit(&key, value.length, value.digest)
+        })?;
+        verify_end()
+    }
+
+    fn visit_hashed_records_to<D: ValueHash>(
+        &self,
+        mut offset: u64,
+        total: u64,
+        boundary: Option<u64>,
+        mut visit: impl FnMut(Vec<u8>, Option<StreamValue<D::Output>>) -> io::Result<()>,
     ) -> io::Result<()> {
         let mut reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
         if offset == 0 && self.log_id.is_some() {
@@ -942,7 +984,7 @@ impl Log {
                 return Err(incomplete_record(offset));
             }
             if header.operation == Operation::Batch {
-                let updates = record::batch::stream::read::<crc32fast::Hasher>(
+                let updates = record::batch::stream::read::<D>(
                     &mut reader,
                     &header_bytes,
                     &header,
@@ -951,12 +993,7 @@ impl Log {
                     |_| Ok(()),
                 )?;
                 for update in updates {
-                    let location = update.location.map(|value| ValueLocation {
-                        offset: value.offset,
-                        length: value.length,
-                        checksum: value.digest,
-                    });
-                    visit(update.key, location)?;
+                    visit(update.key, update.location)?;
                 }
             } else {
                 let mut key = vec![0_u8; header.key_len];
@@ -964,10 +1001,10 @@ impl Log {
                 let mut record_hasher = crc32fast::Hasher::new();
                 record_hasher.update(&header_bytes);
                 record_hasher.update(&key);
-                let mut value_hasher = crc32fast::Hasher::new();
+                let mut value_hasher = D::default();
                 reader.read_with(header.value_len, |chunk| {
                     record_hasher.update(chunk);
-                    value_hasher.update(chunk);
+                    value_hasher.update_value(chunk);
                 })?;
                 let mut checksum = [0_u8; 4];
                 reader.read_exact(&mut checksum)?;
@@ -975,10 +1012,10 @@ impl Log {
                     return Err(record::invalid_data("record checksum mismatch"));
                 }
                 let location = if header.operation == Operation::Put {
-                    Some(ValueLocation {
+                    Some(StreamValue {
                         offset: offset + HEADER_SIZE as u64 + header.key_len as u64,
                         length: header.value_len,
-                        checksum: value_hasher.finalize(),
+                        digest: value_hasher.finish(),
                     })
                 } else {
                     None

@@ -763,3 +763,10 @@ synchronized group, and complete verified publication. On the sampled
 1,901-key restore, the copy uses 30 synchronization groups. The full
 library suite passed on macOS and on Linux with both ext4 and tmpfs
 test fixtures.
+
+Staged restore verification now checks witnessed output in one streaming
+scan against the authenticated replay, using the shared recovery parser.
+The [many-key restore comparison](../benchmarks/results/2026-11-19-streamed-restore-verification/README.md)
+records lower peak RSS on a 399,853-key live set and checks rejection of
+altered keys and values with valid record checksums. Replay still retains
+one live key and value-location index.

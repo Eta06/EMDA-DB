@@ -133,16 +133,27 @@ impl RestoreReplay {
         }
         .to_owned_bytes()
     }
+
+    pub(super) fn verify_output(&self, log: &crate::log::Log, end: u64) -> io::Result<()> {
+        let mismatch = || crate::record::invalid_data("restored state mismatch");
+        let mut expected = self.entries.iter();
+        log.verify_restored_records(end, |key, length, digest| {
+            let (expected_key, value) = expected.next().ok_or_else(mismatch)?;
+            if key != expected_key || length != value.len() || digest != value.location.digest {
+                return Err(mismatch());
+            }
+            Ok(())
+        })?;
+        if expected.next().is_some() {
+            return Err(mismatch());
+        }
+        Ok(())
+    }
 }
 
 impl RestoreValue {
     pub(super) fn len(&self) -> usize {
         self.location.length
-    }
-
-    pub(super) fn matches(&self, bytes: &[u8]) -> bool {
-        bytes.len() == self.location.length
-            && <[u8; 32]>::from(Sha256::digest(bytes)) == self.location.digest
     }
 }
 
@@ -153,7 +164,7 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn restore_rejects_changed_value_bytes_between_replay_and_write() {
+    fn restore_rejects_changed_input_and_staged_output() {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path().join("source")).unwrap();
         let candidate = root.path().join("candidate");
@@ -196,25 +207,15 @@ mod tests {
                 export,
             )
             .unwrap();
-        for (file, value) in [
-            (candidate.join("base"), b"base-data".as_slice()),
-            (suffix.clone(), b"suffix-data".as_slice()),
-        ] {
-            let original = fs::read(&file).unwrap();
-            let mut changed = original.clone();
-            let offset = changed
-                .windows(value.len())
-                .position(|bytes| bytes == value)
-                .unwrap();
-            changed[offset] ^= 1;
-            let names = || {
-                fs::read_dir(root.path())
-                    .unwrap()
-                    .map(|e| e.unwrap().file_name())
-                    .collect::<std::collections::BTreeSet<_>>()
-            };
-            let before = names();
-            let result = super::super::restore_with_hooks(
+        let names = || {
+            fs::read_dir(root.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let before = names();
+        let restore = |hook: &dyn Fn(&str) -> io::Result<()>| {
+            super::super::restore_with_hooks(
                 &candidate,
                 &suffix,
                 &output,
@@ -228,13 +229,26 @@ mod tests {
                     live_key_bytes: 64,
                 },
                 crate::directory::sync_existing,
-                |point| {
-                    if point == "init" {
-                        fs::write(&file, &changed)?;
-                    }
-                    Ok(())
-                },
-            );
+                hook,
+            )
+        };
+        for (file, value) in [
+            (candidate.join("base"), b"base-data".as_slice()),
+            (suffix.clone(), b"suffix-data".as_slice()),
+        ] {
+            let original = fs::read(&file).unwrap();
+            let mut changed = original.clone();
+            let offset = changed
+                .windows(value.len())
+                .position(|bytes| bytes == value)
+                .unwrap();
+            changed[offset] ^= 1;
+            let result = restore(&|point| {
+                if point == "init" {
+                    fs::write(&file, &changed)?;
+                }
+                Ok(())
+            });
             let Err(PublicationFailure::NotPublished(error)) = result else {
                 panic!("restore published from changed input: {result:?}");
             };
@@ -247,5 +261,63 @@ mod tests {
             assert_eq!(fs::read(&file).unwrap(), changed);
             fs::write(&file, original).unwrap();
         }
+        for (fault, message) in [
+            ("checksum", "record checksum mismatch"),
+            ("value", "restored state mismatch"),
+            ("key", "restored state mismatch"),
+            ("length", "restored log length mismatch"),
+        ] {
+            let result = restore(&|point| {
+                if point != "check" {
+                    return Ok(());
+                }
+                let stage = fs::read_dir(root.path())?
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.is_dir()
+                            && path
+                                .file_name()
+                                .unwrap()
+                                .as_encoded_bytes()
+                                .starts_with(b".emda-stage-")
+                    })
+                    .expect("private restore stage");
+                let file = stage.join("records.log");
+                let mut bytes = fs::read(&file)?;
+                let offset = crate::witness::LOG_HEADER_SIZE;
+                match fault {
+                    "checksum" => bytes[offset + crate::record::HEADER_SIZE + 1] ^= 1,
+                    "value" | "key" => {
+                        let (key, value): (&[u8], &[u8]) = if fault == "value" {
+                            (b"a", b"BASE-data")
+                        } else {
+                            (b"b", b"base-data")
+                        };
+                        let record =
+                            crate::record::encode(crate::record::Operation::Put, key, value)?;
+                        bytes[offset..offset + record.len()].copy_from_slice(&record);
+                    }
+                    "length" => bytes.push(0),
+                    _ => unreachable!(),
+                }
+                fs::write(file, bytes)
+            });
+            let Err(PublicationFailure::NotPublished(error)) = result else {
+                panic!("restore published changed output: {result:?}");
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains(message), "{fault}: {error}");
+            assert_eq!(names(), before);
+        }
+        restore(&|_| Ok(())).unwrap();
+        let restored = Store::open(output).unwrap();
+        assert_eq!(
+            restored.get(b"a").unwrap().as_deref(),
+            Some(&b"base-data"[..])
+        );
+        assert_eq!(
+            restored.get(b"z").unwrap().as_deref(),
+            Some(&b"suffix-data"[..])
+        );
     }
 }

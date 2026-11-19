@@ -76,13 +76,13 @@ fn copy_records<'a, T>(
 impl Store {
     // The retained restore owns this unpublished, newly initialized store.
     // Only append after admitting the full sorted, distinct live set. The
-    // in-memory index is rebuilt by the mandatory verification reopen.
+    // stage is reopened and verified before publication.
     pub(crate) fn write_private_restore<T>(
         self,
         entries: &[(Vec<u8>, T)],
         value_len: impl Fn(&T) -> usize,
         mut read: impl FnMut(&T) -> io::Result<Vec<u8>>,
-    ) -> io::Result<()> {
+    ) -> io::Result<u64> {
         if self.max_live_keys.is_some_and(|max| entries.len() > max) {
             return Err(io::Error::other(
                 "configured live key limit would be exceeded",
@@ -105,6 +105,11 @@ impl Store {
                 "configured live key byte limit would be exceeded",
             ));
         }
+        let end = self
+            .log
+            .len()?
+            .checked_add(bytes)
+            .ok_or_else(|| io::Error::other("restored log size overflow"))?;
         {
             let _reservation = self
                 .log_quota
@@ -119,7 +124,8 @@ impl Store {
                 &mut read,
             )?;
         }
-        self.close_private_store()
+        self.close_private_store()?;
+        Ok(end)
     }
 
     /// Copies current live keys into a verified new store with no old records.

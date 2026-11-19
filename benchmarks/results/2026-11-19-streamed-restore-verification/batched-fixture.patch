@@ -1,0 +1,17 @@
+--- a/examples/retained_phase_bench.rs
++++ b/examples/retained_phase_bench.rs
+@@ -3 +3 @@
+-    RetainedExportLimits, Store,
++    BatchOperation, RetainedExportLimits, Store,
+@@ -107,2 +107,9 @@
+-        for i in 0..n {
+-            db.put(&key(i), &value(i, seed, 0))?;
++        for start in (0..n).step_by(512) {
++            let entries: Vec<_> = (start..(start + 512).min(n))
++                .map(|i| (key(i), value(i, seed, 0)))
++                .collect();
++            let operations: Vec<_> = entries.iter().map(|(key, value)| BatchOperation::Put {
++                key,
++                value,
++            }).collect();
++            db.write_batch(&operations)?;

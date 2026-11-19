@@ -804,6 +804,8 @@ pub struct RestoreLimits {
 /// live keys and authenticated value locations in memory. Each write reads
 /// one value, and the private output synchronizes in groups of up to 64
 /// records and 4 MiB of encoded data. A larger record is synchronized alone.
+/// Verification checks the witnessed output in a streaming pass, using the
+/// authenticated replay entries as the expected sequence.
 /// Input staging limits still count the logical live payload,
 /// including intermediate states of a batch. The caller must keep the source
 /// and suffix separate from the destination; only candidate descendants are
@@ -893,7 +895,7 @@ pub(crate) fn restore_with_hooks(
             expected,
         )?;
         let mut stage = crate::staging::Stage::directory(parent)?;
-        {
+        let end = {
             hook("init")?;
             let store = crate::Store::open_with_resource_limits(
                 stage.path(),
@@ -908,32 +910,22 @@ pub(crate) fn restore_with_hooks(
                     hook("write")?;
                     replay.read(value)
                 },
-            )?;
-        }
+            )?
+        };
         {
             hook("reopen")?;
-            let store = crate::Store::open_with_resource_limits(
-                stage.path(),
-                Some(output.log_bytes),
-                Some(output.live_keys),
-                Some(output.live_key_bytes),
-            )?;
+            let lock = fs::File::open(stage.path().join("store.lock"))?;
+            fs2::FileExt::try_lock_shared(&lock)?;
+            let lock = crate::store_lock::StoreLock::acquired(lock);
+            lock.verify_identity(stage.path())?;
+            let (log, boundary) = crate::log::Log::open_checkpoint_view(stage.path())?;
+            if boundary != end {
+                return Err(crate::record::invalid_data(
+                    "restored witness boundary mismatch",
+                ));
+            }
             hook("check")?;
-            let mismatch = || crate::record::invalid_data("restored state mismatch");
-            let mut after = None;
-            for (key, value) in &replay.entries {
-                let page = store.scan(after, None, 1)?;
-                if !page.first().is_some_and(|(actual_key, actual_value)| {
-                    actual_key == key && value.matches(actual_value)
-                }) {
-                    return Err(mismatch());
-                }
-                after = Some(key.as_slice());
-            }
-            if !store.scan(after, None, 1)?.is_empty() {
-                return Err(mismatch());
-            }
-            store.close_private_store()?;
+            replay.verify_output(&log, end)?;
         }
         replay.check_lengths()?;
         hook("stage_sync")?;
