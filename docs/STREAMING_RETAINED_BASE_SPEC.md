@@ -405,8 +405,8 @@ Decide trusted authority and witness API, suffix commit ordering and uncertain
 commit resolution; identity allocation/clone rules; supported old-reader marker
 and migration mechanism; finite count, bytes, disk and I/O budgets and their
 backpressure behavior; legacy key-byte-peak reconstruction; filesystem and
-backup guarantees; and process/fork lock ownership. Until resolved, only the
-non-destructive export experiment is eligible for implementation.
+backup guarantees; and process/fork lock ownership. Existing-path cutover
+remains disabled until these decisions have been verified.
 
 1. Implement isolated v2 streaming writer/validator with a transactional test
    sink and explicit budgets, no store wiring. Test empty state/value, a 16 MiB

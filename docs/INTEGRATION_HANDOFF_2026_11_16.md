@@ -516,3 +516,12 @@ automatic rotation. In the [cross-platform campaign](../benchmarks/results/2026-
 768 histories and 224 retained process-kill races passed on macOS, Linux
 tmpfs and Linux ext4. The process-kill cases recovered all acknowledged
 transactions and agreed across documents, indexes and raw-key receipts.
+
+The authority prototype prepares a separately fenced catalog and checks a
+caller-supplied linearisable CAS provider before acknowledging a bounded
+append. Reopen resolves a pending intent from exact local fingerprints.
+The [authority report](../benchmarks/results/2026-11-19-retained-authority/README.md)
+records the provider fault matrix, competing copies, rollback rejection
+and the preceding engine's format rejection. A deployed independent
+provider, authority-selected rotation and existing-path cutover remain
+open.
