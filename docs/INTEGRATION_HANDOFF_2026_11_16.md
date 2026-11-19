@@ -586,3 +586,13 @@ records median reopen times of 71 ms on macOS and 61 ms on Linux, down
 from 195 ms and 150 ms. The Linux trace counted the same synchronization
 calls. Full-base verification and the separately documented resource and
 deployment gates still apply.
+
+Required document disjunctions now use a bounded index union when every
+branch independently qualifies. Branches share candidate, byte and probe
+limits. The executor charges duplicate visits, returns each ID once and
+applies the full filter. The
+[disjunction validation report](../benchmarks/results/2026-11-19-document-disjunction/README.md)
+records both document suites, empty-branch conflict checks, staged retained
+queries and a paired local comparison against EMDA's scan and SQLite.
+Broader planner choices, document fault campaigns and deployment-scale
+comparisons remain open.

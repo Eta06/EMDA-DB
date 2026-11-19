@@ -1,0 +1,12 @@
+d52c80930718236e5c8c66c729cbcfa8e665b039
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+92f588f3b29e472d039f6c57e89c4304d88c3288159ef15c9741bf0ab08054e5  target/release/examples/document_disjunction_bench
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+411ce0b274562762acb4ba84d267add5a6790450c3c22e823e7eb7821c2f1e07  /home/emir.guest/emda-disjunction-final.mG3m0j/target/release/examples/document_disjunction_bench
+TARGET FSTYPE OPTIONS
+/      ext4   rw,relatime,discard,errors=remount-ro,commit=30
