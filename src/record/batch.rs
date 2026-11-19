@@ -5,6 +5,8 @@ use super::{
 };
 use std::io;
 
+pub(crate) mod stream;
+
 /// Maximum number of ordered operations in one atomic batch.
 pub const MAX_ATOMIC_BATCH_OPERATIONS: usize = 1024;
 /// Maximum encoded payload bytes in one atomic batch, including nested records.

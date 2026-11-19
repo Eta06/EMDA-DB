@@ -624,6 +624,49 @@ fn managed_backup_refuses_changed_witnessed_suffix() {
 }
 
 #[test]
+fn streamed_rebase_peak_scan_rejects_rechecksummed_superseded_values() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    let batch = |value| {
+        [
+            BatchOperation::Put { key: b"b", value },
+            BatchOperation::Delete { key: b"a" },
+        ]
+    };
+    store.write_batch(&batch(b"initial")).unwrap();
+    store.put(b"b", b"current").unwrap();
+    let inner = &store.store;
+    let expected = inner.hash.clone().finalize().into();
+    let peaks = || {
+        inner.overlay.live_peaks(
+            &inner.base,
+            inner.suffix_file(),
+            inner.limits.suffix,
+            expected,
+        )
+    };
+    assert_eq!(peaks().unwrap().entries, 2);
+    let generation = Slot::A.path(&f.root);
+    let file = OpenOptions::new()
+        .write(true)
+        .open(generation.join("records.log"))
+        .unwrap();
+    let witness = fs::read(generation.join("commit.state")).unwrap();
+    let altered = encode_batch(&batch(b"changed")).unwrap();
+    file.write_all_at(&altered, inner.header.len as u64)
+        .unwrap();
+    assert_eq!(
+        store.get(b"b", 7).unwrap().as_deref(),
+        Some(b"current".as_slice())
+    );
+    assert_eq!(
+        peaks().err().unwrap().to_string(),
+        "retained suffix changed during rebase"
+    );
+    assert_eq!(fs::read(generation.join("commit.state")).unwrap(), witness);
+}
+
+#[test]
 fn ordinary_import_preserves_source_and_carries_ordered_batch_peaks() {
     let tmp = tempfile::tempdir().unwrap();
     let source = tmp.path().join("source");

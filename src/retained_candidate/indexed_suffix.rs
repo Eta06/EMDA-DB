@@ -152,36 +152,26 @@ impl Overlay {
             peak_entries: initial.peak_entries,
             peak_key_bytes: initial.peak_key_bytes,
         };
-        let mut operations = 0;
-        let mut hash = Sha256::new();
-        suffix.visit_records(None, |_, bytes| {
-            hash.update(bytes);
-            operations += visit_suffix(
-                bytes,
-                remaining_operations(limits, operations)?,
-                |operation, key, _| {
-                    let position = find(&self.entries, key)
-                        .map_err(|_| record::invalid_data("overlay lost a suffix key"))?;
-                    let exists = operation == Operation::Put;
-                    if exists != present[position] {
-                        let size = key.len() as u64;
-                        let delta = |number: u64, amount| {
-                            if exists {
-                                number.checked_add(amount)
-                            } else {
-                                number.checked_sub(amount)
-                            }
-                            .ok_or_else(|| record::invalid_data("retained live total overflow"))
-                        };
-                        peaks.entries = delta(peaks.entries, 1)?;
-                        peaks.key_bytes = delta(peaks.key_bytes, size)?;
-                        peaks.peak_entries = peaks.peak_entries.max(peaks.entries);
-                        peaks.peak_key_bytes = peaks.peak_key_bytes.max(peaks.key_bytes);
-                        present[position] = exists;
+        let hash = suffix.replay::<()>(None, limits.operations, |key, location| {
+            let position = find(&self.entries, key)
+                .map_err(|_| record::invalid_data("overlay lost a suffix key"))?;
+            let exists = location.is_some();
+            if exists != present[position] {
+                let size = key.len() as u64;
+                let delta = |number: u64, amount| {
+                    if exists {
+                        number.checked_add(amount)
+                    } else {
+                        number.checked_sub(amount)
                     }
-                    Ok(())
-                },
-            )?;
+                    .ok_or_else(|| record::invalid_data("retained live total overflow"))
+                };
+                peaks.entries = delta(peaks.entries, 1)?;
+                peaks.key_bytes = delta(peaks.key_bytes, size)?;
+                peaks.peak_entries = peaks.peak_entries.max(peaks.entries);
+                peaks.peak_key_bytes = peaks.peak_key_bytes.max(peaks.key_bytes);
+                present[position] = exists;
+            }
             Ok(())
         })?;
         if <[u8; 32]>::from(hash.finalize()) != expected {
@@ -241,7 +231,31 @@ impl Overlay {
         self.work = prepared.work;
     }
 
-    pub(super) fn apply(
+    pub(super) fn replay_disk(
+        &mut self,
+        suffix: SuffixFile<'_>,
+        committed: (usize, [u8; 32]),
+        suffix_limits: SuffixLimits,
+        overlay_limits: OverlayLimits,
+    ) -> io::Result<Sha256> {
+        let remaining = remaining_operations(suffix_limits, self.operations)?;
+        suffix.replay::<Sha256>(Some(committed), remaining.operations, |key, location| {
+            let value = location.map(|location| {
+                // The parser admits the suffix within usize and checks the
+                // entire enclosing record before reporting its value slices.
+                let start = location.offset as usize;
+                ValueLocation {
+                    range: start..start + location.length,
+                    digest: location.digest,
+                }
+            });
+            self.apply_update(key, || value, suffix_limits.work, overlay_limits)?;
+            self.operations += 1;
+            Ok(())
+        })
+    }
+
+    fn apply(
         &mut self,
         suffix: &[u8],
         offset: usize,
@@ -250,19 +264,34 @@ impl Overlay {
     ) -> io::Result<()> {
         let remaining = remaining_operations(suffix_limits, self.operations)?;
         let operations = visit_suffix(suffix, remaining, |operation, key, value| {
-            charge_suffix_work(&mut self.work, suffix_limits.work, self.entries.len())?;
-            let value = value_location(operation, suffix, offset, value);
-            match find(&self.entries, key) {
-                Ok(position) => self.entries[position].value = value,
-                Err(position) => {
-                    self.key_bytes =
-                        admit_key(overlay_limits, self.entries.len(), self.key_bytes, key)?;
-                    insert(&mut self.entries, position, key, value)?;
-                }
-            }
-            Ok(())
+            self.apply_update(
+                key,
+                || value_location(operation, suffix, offset, value),
+                suffix_limits.work,
+                overlay_limits,
+            )
         })?;
         self.operations += operations;
+        Ok(())
+    }
+
+    fn apply_update(
+        &mut self,
+        key: &[u8],
+        value: impl FnOnce() -> Option<ValueLocation>,
+        work_limit: u64,
+        overlay_limits: OverlayLimits,
+    ) -> io::Result<()> {
+        charge_suffix_work(&mut self.work, work_limit, self.entries.len())?;
+        let value = value();
+        match find(&self.entries, key) {
+            Ok(position) => self.entries[position].value = value,
+            Err(position) => {
+                self.key_bytes =
+                    admit_key(overlay_limits, self.entries.len(), self.key_bytes, key)?;
+                insert(&mut self.entries, position, key, value)?;
+            }
+        }
         Ok(())
     }
 

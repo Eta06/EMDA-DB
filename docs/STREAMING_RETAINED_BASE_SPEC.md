@@ -201,15 +201,19 @@ is adopted by synchronizing the log and then updating and synchronizing
 the witness. A missing or malformed witness, changed acknowledged bytes,
 torn suffix, split boundary or recovery limit failure prevents adoption.
 
-Writable recovery reuses a buffer for one physical record, bounded by
-the format maximum, plus fixed-size read buffering. It drops that
+Writable recovery streams physical records through a 64 KiB read
+buffer. For a batch it retains at most 1,024 child keys and value
+locations until the checksums and witness boundary pass. A batch over
+the remaining operation budget avoids child allocation and decoding.
+The decoder still checks the outer checksum and the acknowledged
+digest before reporting admission failure. Recovery drops the read
 buffer before opening the base. The overlay keeps the last value's
 file offset, length and SHA-256 digest for each touched live key.
 Point and page reads authenticate selected suffix values against
 those digests. Tombstones and staged transaction edits participate in
 the same ordered merge. Backup copies the suffix in bounded chunks
-and checks the staged digest. Rebase authenticates the actual suffix
-bytes used to calculate historical peaks. Writable import and managed
+and checks the staged digest. Rebase streams the suffix to calculate
+historical peaks and verifies the actual bytes it used. Writable import and managed
 backup restore copy the admitted detached suffix from one opened file
 in chunks of at most 1 MiB. The private copy must match the exact endpoint
 and independent digest, then pass ordinary writable replay before

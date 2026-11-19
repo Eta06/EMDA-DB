@@ -310,25 +310,17 @@ impl RetainedStore {
         let suffix_len = usize::try_from(suffix_len)
             .map_err(|_| invalid_input("suffix length exceeds platform range"))?;
         let committed = usize::try_from(committed).unwrap();
-        let mut hash = Sha256::new();
-        if committed == 0 && <[u8; 32]>::from(hash.clone().finalize()) != committed_hash {
-            return Err(record::invalid_data("committed suffix digest mismatch"));
-        }
         let mut overlay = Overlay::default();
-        SuffixFile {
-            file: &log,
-            start: header.len as u64,
-            len: suffix_len,
-        }
-        .visit_records(Some(committed), |offset, bytes| {
-            hash.update(bytes);
-            if offset + bytes.len() == committed
-                && <[u8; 32]>::from(hash.clone().finalize()) != committed_hash
-            {
-                return Err(record::invalid_data("committed suffix digest mismatch"));
-            }
-            overlay.apply(bytes, offset, limits.suffix, limits.overlay)
-        })?;
+        let hash = overlay.replay_disk(
+            SuffixFile {
+                file: &log,
+                start: header.len as u64,
+                len: suffix_len,
+            },
+            (committed, committed_hash),
+            limits.suffix,
+            limits.overlay,
+        )?;
         let base = IndexedBase::open(open_regular(&dir.join("base"))?, limits.base, limits.index)?;
         check_binding(base.metadata(), expected)?;
         authorize(

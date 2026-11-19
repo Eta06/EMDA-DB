@@ -1087,13 +1087,29 @@ fn projected_batch(payload: &[u8], base: u64) -> io::Result<Vec<Projected>> {
 fn assert_scanner_matches_prepare_batch(payload: &[u8]) {
     let expected = projected_batch(payload, (record::HEADER_SIZE + 1) as u64);
     for chunk in [1_usize, 2, 3, 7, 16, 17, 31, 64, 1024, 65_536] {
-        let mut scan = BatchScan::new((record::HEADER_SIZE + 1) as u64);
+        let mut scan = record::batch::stream::BatchScan::<crc32fast::Hasher, _>::new(
+            (record::HEADER_SIZE + 1) as u64,
+            |_| Ok(()),
+        );
         if !payload.is_empty() {
             for piece in payload.chunks(chunk) {
                 scan.push(piece);
             }
         }
-        assert_same_projection(&expected, scan.finish().map(project), chunk);
+        let actual = scan.finish().map(|updates| {
+            updates
+                .into_iter()
+                .map(|update| {
+                    (
+                        update.key,
+                        update
+                            .location
+                            .map(|value| (value.offset, value.length, value.digest)),
+                    )
+                })
+                .collect()
+        });
+        assert_same_projection(&expected, actual, chunk);
     }
 }
 

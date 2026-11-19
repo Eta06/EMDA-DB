@@ -121,6 +121,9 @@ impl<'a> RecoveryReader<'a> {
             ));
         }
         if self.buffer.is_empty() {
+            self.buffer
+                .try_reserve_exact(RECOVERY_READ_BUFFER_BYTES)
+                .map_err(|_| io::Error::other("log recovery buffer allocation failed"))?;
             self.buffer.resize(RECOVERY_READ_BUFFER_BYTES, 0);
         }
         let count = (self.total - self.offset).min(RECOVERY_READ_BUFFER_BYTES as u64) as usize;

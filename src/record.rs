@@ -6,7 +6,7 @@ const MAGIC: &[u8; 4] = b"DB01";
 const BATCH_MAGIC: &[u8; 4] = b"DB02";
 pub(crate) const HEADER_SIZE: usize = 17;
 pub(crate) const CHECKSUM_SIZE: usize = 4;
-const MAX_KEY: usize = 1024;
+pub(crate) const MAX_KEY: usize = 1024;
 pub(crate) const MAX_VALUE: usize = 16 * 1024 * 1024;
 
 pub(crate) mod batch;

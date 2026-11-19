@@ -1,10 +1,14 @@
 //! Positional reads within the admitted physical suffix.
-use super::{SuffixExpected, SuffixLimits, invalid, open_suffix, require_suffix_eof};
-use crate::record::{self, HEADER_SIZE, Header};
+use super::{
+    SuffixExpected, SuffixLimits, invalid, open_suffix, require_suffix_eof, suffix_capacity,
+};
+use crate::record::batch::stream::{self, StreamValue, Update, ValueHash};
+use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Header, Operation};
+use crate::recovery::RecoveryReader;
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, BufReader, Read, Write},
+    io::{self, Read, Write},
     os::unix::fs::FileExt,
     path::Path,
 };
@@ -66,43 +70,79 @@ pub(super) struct SuffixFile<'a> {
 }
 
 impl<'a> SuffixFile<'a> {
-    pub(super) fn visit_records(
+    /// Verify one physical record before visiting any of its operations.
+    /// The value hash is optional for callers that only need key history.
+    /// Offsets passed to the visitor are relative to the suffix start.
+    pub(super) fn replay<D: ValueHash>(
         self,
-        committed: Option<usize>,
-        mut visit: impl FnMut(usize, &[u8]) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let mut reader = BufReader::with_capacity(64 * 1024, self.reader());
+        committed: Option<(usize, [u8; 32])>,
+        mut remaining_operations: u64,
+        mut visit: impl FnMut(&[u8], Option<StreamValue<D::Output>>) -> io::Result<()>,
+    ) -> io::Result<Sha256> {
+        let end = self
+            .start
+            .checked_add(self.len as u64)
+            .ok_or_else(invalid)?;
+        let mut reader = RecoveryReader::at(self.file, end, self.start)?;
+        let mut hash = Sha256::new();
+        verify_boundary(&hash, 0, committed)?;
         let mut offset = 0;
-        let mut header = [0; HEADER_SIZE];
-        let mut bytes = Vec::new();
+        let mut header_bytes = [0; HEADER_SIZE];
+        let mut key = [0; record::MAX_KEY];
         while offset < self.len {
             let remaining = self.len - offset;
             if remaining < HEADER_SIZE {
                 return Err(record::invalid_data("incomplete retained suffix header"));
             }
-            reader.read_exact(&mut header)?;
-            let len = Header::parse(&header)?.record_len() as usize;
+            reader.read_exact(&mut header_bytes)?;
+            let header = Header::parse(&header_bytes)?;
+            let len = header.record_len() as usize;
             if len > remaining {
                 return Err(record::invalid_data("incomplete retained suffix record"));
             }
-            let end = offset + len;
-            if committed.is_some_and(|boundary| offset < boundary && boundary < end) {
+            let next = offset + len;
+            if committed.is_some_and(|(boundary, _)| offset < boundary && boundary < next) {
                 return Err(record::invalid_data(
                     "commit witness splits a suffix record",
                 ));
             }
-            if bytes.len() < len {
-                bytes
-                    .try_reserve_exact(len - bytes.len())
-                    .map_err(|_| io::Error::other("retained suffix record allocation failed"))?;
-                bytes.resize(len, 0);
+            hash.update(header_bytes);
+            let key = &mut key[..header.key_len];
+            let updates = if header.operation == Operation::Batch {
+                stream::read::<D>(
+                    &mut reader,
+                    &header_bytes,
+                    &header,
+                    offset as u64,
+                    |bytes| hash.update(bytes),
+                    |count| admit_operations(remaining_operations, count as u64),
+                )
+                .map(Changes::Batch)
+            } else {
+                read_single::<D>(&mut reader, &mut hash, &header_bytes, &header, key, offset)
+                    .map(Changes::Single)
+            };
+            // At a complete acknowledged boundary, retain the established
+            // digest error precedence over parsing or admission errors.
+            if reader.position() == self.start + next as u64 {
+                verify_boundary(&hash, next, committed)?;
             }
-            bytes[..HEADER_SIZE].copy_from_slice(&header);
-            reader.read_exact(&mut bytes[HEADER_SIZE..len])?;
-            visit(offset, &bytes[..len])?;
-            offset = end;
+            match updates? {
+                Changes::Batch(updates) => {
+                    remaining_operations -= updates.len() as u64;
+                    for update in updates {
+                        visit(&update.key, update.location)?;
+                    }
+                }
+                Changes::Single(location) => {
+                    admit_operations(remaining_operations, 1)?;
+                    remaining_operations -= 1;
+                    visit(key, location)?;
+                }
+            }
+            offset = next;
         }
-        Ok(())
+        Ok(hash)
     }
 
     pub(super) fn copy_to(self, output: &mut impl Write) -> io::Result<()> {
@@ -121,6 +161,63 @@ impl<'a> SuffixFile<'a> {
             remaining: self.len,
         }
     }
+}
+
+enum Changes<D> {
+    Single(Option<StreamValue<D>>),
+    Batch(Vec<Update<D>>),
+}
+
+fn read_single<D: ValueHash>(
+    reader: &mut RecoveryReader<'_>,
+    hash: &mut Sha256,
+    header_bytes: &[u8; HEADER_SIZE],
+    header: &Header,
+    key: &mut [u8],
+    offset: usize,
+) -> io::Result<Option<StreamValue<D::Output>>> {
+    reader.read_exact(key)?;
+    hash.update(&*key);
+    let mut checksum = crc32fast::Hasher::new();
+    checksum.update(header_bytes);
+    checksum.update(key);
+    let mut value_hash = D::default();
+    reader.read_with(header.value_len, |bytes| {
+        hash.update(bytes);
+        checksum.update(bytes);
+        value_hash.update_value(bytes);
+    })?;
+    let mut stored = [0; CHECKSUM_SIZE];
+    reader.read_exact(&mut stored)?;
+    hash.update(stored);
+    if checksum.finalize() != u32::from_le_bytes(stored) {
+        return Err(record::invalid_data("record checksum mismatch"));
+    }
+    Ok((header.operation == Operation::Put).then(|| StreamValue {
+        offset: (offset + HEADER_SIZE + header.key_len) as u64,
+        length: header.value_len,
+        digest: value_hash.finish(),
+    }))
+}
+
+fn admit_operations(remaining: u64, needed: u64) -> io::Result<()> {
+    if needed > remaining {
+        return Err(suffix_capacity("suffix operation limit exceeded"));
+    }
+    Ok(())
+}
+
+fn verify_boundary(
+    hash: &Sha256,
+    offset: usize,
+    committed: Option<(usize, [u8; 32])>,
+) -> io::Result<()> {
+    if let Some((boundary, expected)) = committed {
+        if offset == boundary && <[u8; 32]>::from(hash.clone().finalize()) != expected {
+            return Err(record::invalid_data("committed suffix digest mismatch"));
+        }
+    }
+    Ok(())
 }
 
 struct SuffixReader<'a> {
@@ -146,6 +243,104 @@ impl Read for SuffixReader<'_> {
 mod tests {
     use super::*;
     use crate::retained_candidate::Expected;
+
+    #[test]
+    fn streamed_batch_checks_crc_and_budget_before_visiting_any_child() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("suffix");
+        let prefix = b"outside suffix";
+        let child = record::encode(Operation::Put, b"first", &[0x4a; 70 * 1024]).unwrap();
+        let mut payload = 2_u32.to_le_bytes().to_vec();
+        payload.extend_from_slice(&child);
+        payload.extend_from_slice(&[0; HEADER_SIZE]);
+        let malformed = record::encode(Operation::Batch, &[0], &payload).unwrap();
+        let mut bad_crc = malformed.clone();
+        *bad_crc.last_mut().unwrap() ^= 1;
+        for (bytes, operations, commitment, kind, message) in [
+            (
+                &malformed,
+                1,
+                None,
+                io::ErrorKind::InvalidInput,
+                "suffix operation limit exceeded",
+            ),
+            (
+                &malformed,
+                2,
+                None,
+                io::ErrorKind::InvalidData,
+                "invalid record header",
+            ),
+            (
+                &bad_crc,
+                1,
+                None,
+                io::ErrorKind::InvalidData,
+                "record checksum mismatch",
+            ),
+            (
+                &bad_crc,
+                1,
+                Some((bad_crc.len(), Sha256::digest(&malformed).into())),
+                io::ErrorKind::InvalidData,
+                "committed suffix digest mismatch",
+            ),
+        ] {
+            let mut file = File::create(&path).unwrap();
+            file.write_all(prefix).unwrap();
+            file.write_all(bytes).unwrap();
+            drop(file);
+            let file = File::open(&path).unwrap();
+            let suffix = SuffixFile {
+                file: &file,
+                start: prefix.len() as u64,
+                len: bytes.len(),
+            };
+            let error = suffix
+                .replay::<Sha256>(commitment, operations, |_, _| {
+                    panic!("the malformed or over-budget batch exposed a child");
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(error.to_string(), message);
+        }
+
+        let mut payload = 2_u32.to_le_bytes().to_vec();
+        payload.extend_from_slice(&child);
+        payload.extend_from_slice(&record::encode(Operation::Delete, b"first", &[]).unwrap());
+        let bytes = record::encode(Operation::Batch, &[0], &payload).unwrap();
+        let mut file = File::create(&path).unwrap();
+        file.write_all(prefix).unwrap();
+        file.write_all(&bytes).unwrap();
+        drop(file);
+        let file = File::open(&path).unwrap();
+        let suffix = SuffixFile {
+            file: &file,
+            start: prefix.len() as u64,
+            len: bytes.len(),
+        };
+        let expected = Sha256::digest(&bytes);
+        let mut updates = Vec::new();
+        let observed = suffix
+            .replay::<Sha256>(Some((bytes.len(), expected.into())), 2, |key, loc| {
+                assert_eq!(key, b"first");
+                updates.push(loc.map(|loc| (loc.offset, loc.length, loc.digest)));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(observed.finalize(), expected);
+        assert_eq!(
+            updates,
+            [
+                Some((
+                    (2 * HEADER_SIZE + 1 + 4 + 5) as u64,
+                    70 * 1024,
+                    Sha256::digest([0x4a; 70 * 1024]).into()
+                )),
+                None
+            ]
+        );
+    }
 
     #[test]
     fn checked_import_caps_writes_and_rejects_late_input_changes() {
