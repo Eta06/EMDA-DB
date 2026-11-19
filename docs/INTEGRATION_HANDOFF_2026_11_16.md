@@ -671,7 +671,7 @@ eight steps equal weight puts overall progress at roughly 34%.
 | Step | Estimate | Verified scope and remaining work |
 | --- | ---: | --- |
 | 1. Correctness and foundations | 95% | Shared store locks resolve the traced fork/exec failure mode. Strict macOS and Linux suites and focused fault tests provide the current baseline. Wider fault models and the deferred durability drills remain. |
-| 2. Durable storage and core | 82% | Authority-backed retained recovery, automatic rotation, archive retirement, and persistent catalog admission at creation and rotation are exercised. Total memory accounting, full-base verification cost, and broader recovery workloads remain. |
+| 2. Durable storage and core | 84% | Authority-backed retained recovery, automatic rotation, archive retirement, persistent catalog admission, and fixed-buffer suffix replay are exercised. Total memory accounting, full-base verification cost, and broader recovery workloads remain. |
 | 3. Document data and queries | 69% | Document transactions work on the retained backend. Guarded maintenance and bounded index unions now cover shared disjunction predicates and compound ranges over membership prefixes. Broader workloads, concurrency and fault campaigns, and richer diagnostics and queries remain. |
 
 Policy changes take effect through generation selection. The
@@ -695,3 +695,8 @@ the planned path, the collection scan, and SQLite for the sampled query.
 checks required `In` prefixes, trailing-field and partial-index guards,
 staged changes, shared probe limits, and empty-range phantom protection.
 The matched benchmark uses real compound-index searches in both engines.
+
+[Streamed retained replay evidence](../benchmarks/results/2026-11-19-streamed-retained-record-recovery/README.md)
+covers admitted batch counts, checksum and witness ordering, digest checks
+on superseded history, and fresh-process memory measurements on a log with
+near-maximum-sized records.

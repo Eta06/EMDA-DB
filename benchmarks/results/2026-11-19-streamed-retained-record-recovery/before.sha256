@@ -1,0 +1,10 @@
+31847c627103ccc9b2d3ebc338f8e92949d887422287de47e1fed89f7c2f0a84  ./managed/active.retained
+48cd0e6bb60d0b5b5fc853d605ab7c613799ed9f8cc929c34a3e0a53f7e16194  ./managed/generation-a/records.log
+aa8ee3749dddd380367a351a272f2c3be9c33a02f50ecaef1670e59e8e667b56  ./source/commit.state
+b242cb9574658fcd74d1d70d262470d2481c4f606787c8bcfa041eade2e4a588  ./managed/catalog.id
+bb64b66873fa21f4637aca48996aa225d79807f40a1f0497fb9c70e1635facf5  ./source/records.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./managed/generation-a/store.lock
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./managed/store.lock
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./source/store.lock
+ea97087d53d23ce933bcd5be25a66cfc93bab5c04641704dc661f05108b5ec98  ./managed/generation-a/base
+ed05f687a944f571ee06b12b956b5b1a77bf0404abc763f16d55ddf75309accf  ./managed/generation-a/commit.state
