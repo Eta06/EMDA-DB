@@ -157,7 +157,10 @@ fn incomplete_unindexable_and_boolean_alternatives_safely_fall_back() {
                 eq("b", json!("x")),
             ]),
             and(vec![
-                DocumentFilter::Or(vec![inside("a", vec![json!(1), json!(2)])]),
+                DocumentFilter::Or(vec![
+                    inside("a", vec![json!(1), json!(2)]),
+                    inside("a", vec![json!([1]), json!([2])]),
+                ]),
                 eq("b", json!("x")),
             ]),
             and(vec![
@@ -167,6 +170,17 @@ fn incomplete_unindexable_and_boolean_alternatives_safely_fall_back() {
         ] {
             compare(db, &query(filter), DocumentQueryAccess::CollectionScan);
         }
+        compare(
+            db,
+            &query(and(vec![
+                DocumentFilter::Or(vec![inside("a", vec![json!(1), json!(2)])]),
+                eq("b", json!("x")),
+            ])),
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["pair".into()],
+                probes: 2,
+            },
+        );
     });
 }
 
