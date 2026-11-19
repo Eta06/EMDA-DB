@@ -1,0 +1,9 @@
+b64c74b258110d96568cd191f6e24c78a1bdf373
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+Linux 7.3.0-9-generic aarch64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+Previous engine revision 0ac2f8d885fa02416f9ae95879cd9236590667c1

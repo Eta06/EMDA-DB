@@ -541,3 +541,12 @@ records two-process races, process stops around replacement, and a Linux
 cross-filesystem exercise using the bundled provider. The deployment
 must protect authority storage independently of catalog rollback.
 Original-path cutover and the deferred durability drills remain open.
+
+Original-path cutover now consumes an exclusive witnessed store and
+installs a durable fence before the retained catalog can admit writes.
+The old log and witness remain archived in the prepared catalog. The
+[cutover report](../benchmarks/results/2026-11-19-original-path-retained-cutover/README.md)
+records process kills around fence replacement, the macOS and Linux ARM64
+library runs, and five rejected open paths in one older engine revision.
+Deployment still needs a supported-reader inventory, fencing for old
+backups and independent copies, and protected authority storage.
