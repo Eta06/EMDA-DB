@@ -671,7 +671,7 @@ eight steps equal weight puts overall progress at roughly 34%.
 | Step | Estimate | Verified scope and remaining work |
 | --- | ---: | --- |
 | 1. Correctness and foundations | 95% | Shared store locks resolve the traced fork/exec failure mode. Strict macOS and Linux suites and focused fault tests provide the current baseline. Wider fault models and the deferred durability drills remain. |
-| 2. Durable storage and core | 80% | Authority-backed retained recovery, automatic rotation, archive retirement, and persistent catalog admission are exercised. Initial publication limits, total memory accounting, full-base verification cost, and broader recovery workloads remain. |
+| 2. Durable storage and core | 82% | Authority-backed retained recovery, automatic rotation, archive retirement, and persistent catalog admission at creation and rotation are exercised. Total memory accounting, full-base verification cost, and broader recovery workloads remain. |
 | 3. Document data and queries | 65% | Document transactions work on the retained backend. Guarded schema and index maintenance and bounded index unions are implemented. Representative benchmarks, longer concurrency and fault campaigns, and richer diagnostics and queries remain. |
 
 Policy changes take effect through generation selection. The
@@ -679,3 +679,8 @@ Policy changes take effect through generation selection. The
 cover selection uncertainty, historical reader rejection, normal reopen
 and original-path accounting. Project-wide resource enforcement remains
 part of the service and isolation work.
+
+[Initial admission tests](../benchmarks/results/2026-11-19-initial-retained-catalog-quota/README.md)
+cover candidate and backup creation, authority registration, exact staging
+headroom on original-path cutover, and unfenced cleanup after an ordinary
+source grows beyond the abandoned policy.
