@@ -705,3 +705,19 @@ near-maximum-sized records.
 checks frame corruption, the exact empty-output limit, and verified successor
 parity. The Linux read trace measures logical bytes returned while opening
 and rotating the same seeded catalog with each build.
+
+[Buffered retained-base evidence](../benchmarks/results/2026-11-19-retained-buffered-values/README.md)
+checks direct authentication from admitted input buffers during eager base
+verification and indexed reads. It covers interrupted reads and value
+truncation. Five paired warm-cache samples on a 128 MiB live set showed
+overlapping reopen times. Open continues to authenticate the full base.
+
+Cross-platform default-suite validation reached every integration target
+and exposed two document test assumptions. The compound-membership suite
+now checks the disjunction plan alongside an actual fallback case. The
+retained history model forces a rotation through a distinct acknowledged
+epoch before each race and verifies the epoch after recovery. The corrected
+model passed 512 rounds on each platform. The final matrix covers 1,078
+passing tests on macOS ARM64 and 1,308 on Linux ARM64 across the full runs and
+the separately rerun history target. The Linux ENOSPC test remains ignored
+by default.

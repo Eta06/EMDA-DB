@@ -1,0 +1,10 @@
+11513157250f9109eb5a0ae326696c7b7f952024827f5cd10c7fc85d068e1b30  ./catalog/generation-a/base
+22b54c3a3ac2d92a753466867fbd21440570a77de376de157a63d6d617149f48  ./catalog/catalog.id
+2a75106eb4d762e5d56d4a77b8c8ff31c10e2bc8d3753e71756f8b57ca105019  ./catalog/generation-a/records.log
+58ff14c1233beb2b90d0a20b3cda0a9617b51e0b7bd3524ec42444d578ea5f03  ./catalog/generation-a/commit.state
+6b2bd37cbbd575a92f347cff1990740bdb5ed673c6363004d2e6f470054cfc51  ./source/records.log
+defa215a2db202880d50d1a1a05d74c54df338af1d411ccf84cf04783d9f06b1  ./catalog/active.retained
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./catalog/generation-a/store.lock
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./catalog/store.lock
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./source/store.lock
+ed3b4090b19fc24631391d722daacde2e061f67b46813ded5674f8f4a0c9a350  ./source/commit.state

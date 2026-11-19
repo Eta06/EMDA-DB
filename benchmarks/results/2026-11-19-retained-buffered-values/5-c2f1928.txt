@@ -1,0 +1,2 @@
+open_ns=419461667
+verified_bytes=134217728
