@@ -494,3 +494,11 @@ records the process-kill and uncertain publication tests on both platforms,
 plus matching scans and source checksums in the paired probe. Moving
 writers to the new path still requires coordination. Existing-path
 cutover and its independent authority and old-reader policy remain open.
+
+Managed retained catalogs can now back up the selected generation and
+restore into an independent managed catalog under a separately retained
+binding. The [backup and restore report](../benchmarks/results/2026-11-19-managed-retained-backup/README.md)
+records source reclamation, corruption and interrupted-publication tests.
+It also records a local tmpfs-to-ext4 backup and tmpfs restore with
+matching ordered state across 14,044 entries. Independent off-host restore
+and physical power-loss testing remain deferred.
