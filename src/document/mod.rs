@@ -11,6 +11,7 @@ mod lifecycle;
 mod online_index;
 mod planner;
 mod query;
+mod retained;
 mod schema;
 mod schema_migration;
 mod transaction;
@@ -44,12 +45,14 @@ pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use transaction::DocumentTransaction;
 pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES};
 
+use crate::retained_candidate::ManagedRetainedStore;
 use crate::{
     CancellationToken, CheckpointStore, CheckpointTransactionMode, ControlledTransactionError,
     Store, TimedTransactionError, TransactionFailure, TransactionMode,
 };
 use serde_json::Value;
 use std::io;
+use std::sync::Mutex;
 use std::time::Instant;
 
 /// Transaction validation and admission mode for controlled document work.
@@ -72,6 +75,7 @@ pub struct DocumentDatabase<'a> {
 enum Backend<'a> {
     Store(&'a Store),
     Checkpoint(&'a CheckpointStore),
+    Retained(Mutex<&'a mut ManagedRetainedStore>),
 }
 
 impl<'a> DocumentDatabase<'a> {
@@ -86,6 +90,16 @@ impl<'a> DocumentDatabase<'a> {
     pub fn with_checkpoint_store(store: &'a CheckpointStore) -> Self {
         Self {
             backend: Backend::Checkpoint(store),
+        }
+    }
+
+    /// Exclusively borrows a managed retained catalog for document work.
+    /// All modes serialize transactions. A concurrent or reentrant call
+    /// returns `WouldBlock` immediately. Separate views cannot borrow the
+    /// same catalog at once.
+    pub fn with_managed_retained_store(store: &'a mut ManagedRetainedStore) -> Self {
+        Self {
+            backend: Backend::Retained(Mutex::new(store)),
         }
     }
 
@@ -107,6 +121,8 @@ impl<'a> DocumentDatabase<'a> {
                 let result = action(&mut transaction);
                 transaction.finish(result)
             }),
+            Backend::Retained(ref store) => retained::run(store, None, None, action)
+                .map_err(|error| retained::into_timed(error).into_io()),
         }
     }
 
@@ -128,6 +144,8 @@ impl<'a> DocumentDatabase<'a> {
                 let result = action(&mut transaction);
                 transaction.finish(result)
             }),
+            Backend::Retained(ref store) => retained::run(store, None, None, action)
+                .map_err(|error| retained::into_timed(error).into_io()),
         }
     }
 
@@ -166,6 +184,9 @@ impl<'a> DocumentDatabase<'a> {
                     let result = action(&mut transaction);
                     transaction.finish(result)
                 })
+            }
+            Backend::Retained(ref store) => {
+                retained::run(store, Some(deadline), None, action).map_err(retained::into_timed)
             }
         }
     }
@@ -208,6 +229,10 @@ impl<'a> DocumentDatabase<'a> {
                     let result = action(&mut transaction);
                     transaction.finish(result)
                 })
+            }
+            Backend::Retained(ref store) => {
+                retained::run(store, deadline, Some(cancellation), action)
+                    .map_err(retained::into_controlled)
             }
         }
     }
@@ -254,6 +279,7 @@ impl<'a> DocumentDatabase<'a> {
                     transaction.finish(result)
                 })
             }
+            Backend::Retained(ref store) => retained::run(store, deadline, cancellation, action),
         }
     }
 

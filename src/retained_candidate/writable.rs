@@ -367,12 +367,13 @@ impl RetainedStore {
     ) -> Result<(), MutationFailure> {
         self.ensure_healthy().map_err(MutationFailure::Rejected)?;
         let encoded = encode().map_err(MutationFailure::Rejected)?;
-        self.write_encoded(&encoded, hook)
+        self.write_encoded(&encoded, || Ok(()), hook)
     }
 
     fn write_encoded(
         &mut self,
         encoded: &[u8],
+        admit: impl FnOnce() -> io::Result<()>,
         mut hook: impl FnMut(CommitPoint) -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         crate::transaction_outcome::mutation(|tracker| {
@@ -402,6 +403,7 @@ impl RetainedStore {
             }
             let mut hash = self.hash.clone();
             hash.update(encoded);
+            admit()?;
             tracker.commit();
             self.failed = true;
             self.log.write_all(encoded)?;

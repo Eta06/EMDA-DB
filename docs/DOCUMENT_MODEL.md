@@ -1,6 +1,6 @@
 # Experimental document model
 
-This is an embedded prototype over the same witnessed storage and transactions as the byte-key API. It is not MongoDB compatible or production-ready. It runs on `Store` or `CheckpointStore` through `DocumentDatabase`. It has no network API, access control, project isolation, distributed transactions, automatic retries, or SQL interface. Read the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md) before using it.
+This is an embedded prototype over the same witnessed storage and transactions as the byte-key API. It is not MongoDB compatible or production-ready. It runs on `Store`, `CheckpointStore`, or `ManagedRetainedStore` through `DocumentDatabase`. It has no network API, access control, project isolation, distributed transactions, automatic retries, or SQL interface. Read the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md) before using it.
 
 ## A small example
 
@@ -34,6 +34,21 @@ fn example(store: &Store) -> std::io::Result<()> {
 The caller supplies `serde_json` to construct `Value`s. Collection names and IDs are case-sensitive UTF-8 strings; IDs are supplied separately from the object and are not MongoDB `_id` values. Names and field path components contain 1–128 UTF-8 bytes; IDs contain 1–256 bytes. Paths are vectors of object member names; dots have no special meaning and array elements are not traversed. Documents must be JSON objects. Serialized documents are limited to 1 MiB, depth 64 and 131,072 nodes. These are logical limits, not total process-memory quotas.
 
 ## Collections, writes and transactions
+
+`DocumentDatabase::with_managed_retained_store` opens a document view over
+an exclusive mutable borrow of a managed retained catalog. All document
+transaction modes serialize on this backend. Concurrent or reentrant
+attempts return `WouldBlock`. Reads merge the verified base, the committed
+suffix, and the transaction's own staged changes. Documents, indexes and
+unreserved raw keys commit in one bounded atomic record. Imported and
+restored catalogs use the same document keys and metadata.
+
+Deadlines and cancellation apply at operation boundaries and before
+append, including after automatic reclamation. A failed transaction can
+leave completed generation maintenance visible. The staged document and
+raw-key changes share the ordinary atomic-batch count and byte limits.
+Release the document view before using catalog operations such as backup
+or explicit compaction.
 
 Create collections explicitly with a `CollectionSchema`; an empty schema accepts arbitrary object fields within limits. Each of at most 64 distinct field rules declares a path, type, required flag and nullable flag. Missing and explicit null differ; nullable does not make a field optional. An intermediate non-object makes a nested path missing. Integer rules accept signed 64-bit integers. Unlisted fields are allowed. Replacing a schema validates all existing documents atomically, subject to a 256-document/32 MiB scan limit.
 

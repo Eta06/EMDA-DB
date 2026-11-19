@@ -297,14 +297,48 @@ impl ManagedRetainedStore {
         self.write(|| encode_batch(operations))
     }
 
+    pub(crate) fn write_batch_checking(
+        &mut self,
+        operations: &[BatchOperation<'_>],
+        admit: impl Fn() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        self.write_checking(|| encode_batch(operations), admit)
+    }
+
+    pub(crate) fn scan_with_staged<'a>(
+        &'a self,
+        after: &[u8],
+        before: &[u8],
+        limit: usize,
+        staged: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+    ) -> io::Result<Vec<Entry>> {
+        self.ensure_selected()?;
+        self.store.overlay.scan_with(
+            &self.store.base,
+            &self.store.suffix,
+            (Some(after), Some(before)),
+            limit,
+            staged,
+        )
+    }
+
     fn write(
         &mut self,
         encode: impl FnOnce() -> io::Result<Vec<u8>>,
     ) -> Result<(), MutationFailure> {
+        self.write_checking(encode, || Ok(()))
+    }
+
+    fn write_checking(
+        &mut self,
+        encode: impl FnOnce() -> io::Result<Vec<u8>>,
+        admit: impl Fn() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
+        admit().map_err(MutationFailure::Rejected)?;
         self.prepare_write()?;
         let bytes = encode().map_err(MutationFailure::Rejected)?;
         let Some(threshold) = self.auto_reclaim else {
-            return self.store.write_encoded(&bytes, |_| Ok(()));
+            return self.store.write_encoded(&bytes, admit, |_| Ok(()));
         };
         if self.cleanup_pending {
             self.finish_maintenance()
@@ -312,10 +346,10 @@ impl ManagedRetainedStore {
         }
         let suffix_len = self.store.suffix.len() as u64;
         if suffix_len == 0 {
-            return self.store.write_encoded(&bytes, |_| Ok(()));
+            return self.store.write_encoded(&bytes, admit, |_| Ok(()));
         }
         if suffix_len.saturating_add(bytes.len() as u64) <= threshold.get() {
-            match self.store.write_encoded(&bytes, |_| Ok(())) {
+            match self.store.write_encoded(&bytes, &admit, |_| Ok(())) {
                 Err(MutationFailure::Rejected(ref error))
                     if error
                         .get_ref()
@@ -323,9 +357,10 @@ impl ManagedRetainedStore {
                 result => return result,
             }
         }
+        admit().map_err(MutationFailure::Rejected)?;
         self.compact_for_write(&bytes)?;
         self.prepare_write()?;
-        self.store.write_encoded(&bytes, |_| Ok(()))
+        self.store.write_encoded(&bytes, admit, |_| Ok(()))
     }
 
     fn compact_for_write(&mut self, bytes: &[u8]) -> Result<(), MutationFailure> {

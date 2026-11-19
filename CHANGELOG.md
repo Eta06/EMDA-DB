@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Run bounded document transactions over imported and restored managed
+  retained catalogs, including atomic indexes and raw-key writes.
+
 - Back up a managed retained generation and restore it under an
   independently retained binding and explicit recovery limits.
 

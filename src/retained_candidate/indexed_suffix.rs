@@ -257,6 +257,17 @@ impl Overlay {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<crate::Entry>> {
+        self.scan_with(base, suffix, (after, before), limit, std::iter::empty())
+    }
+
+    pub(super) fn scan_with<'a>(
+        &'a self,
+        base: &'a IndexedBase,
+        suffix: &'a [u8],
+        (after, before): (Option<&[u8]>, Option<&[u8]>),
+        limit: usize,
+        staged: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+    ) -> io::Result<Vec<crate::Entry>> {
         let start = self
             .entries
             .partition_point(|entry| after.is_some_and(|key| entry.key.as_slice() <= key));
@@ -264,7 +275,18 @@ impl Overlay {
             .iter()
             .take_while(|entry| before.is_none_or(|key| entry.key.as_slice() < key))
             .map(|entry| (entry.key.as_slice(), value_at(suffix, entry)));
-        base.scan_merged(after, before, limit, overlay)
+        let mut overlay = overlay.peekable();
+        let mut staged = staged.peekable();
+        let changes = std::iter::from_fn(|| match (overlay.peek(), staged.peek()) {
+            (Some((old, _)), Some((new, _))) if old < new => overlay.next(),
+            (Some((old, _)), Some((new, _))) if old == new => {
+                overlay.next();
+                staged.next()
+            }
+            (_, Some(_)) => staged.next(),
+            _ => overlay.next(),
+        });
+        base.scan_merged(after, before, limit, changes)
     }
 }
 

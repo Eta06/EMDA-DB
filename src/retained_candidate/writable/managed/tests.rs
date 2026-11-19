@@ -639,6 +639,40 @@ fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
 }
 
 #[test]
+fn admission_is_rechecked_after_automatic_reclamation_before_appending() {
+    let f = Fixture::new(LIMITS);
+    let mut store =
+        ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN).unwrap();
+    store.put(b"a", b"acknowledged").unwrap();
+    let original = store.generation_id().unwrap();
+    let checks = std::cell::Cell::new(0);
+    let result = store.write_batch_checking(
+        &[BatchOperation::Put {
+            key: b"b",
+            value: b"rejected",
+        }],
+        || {
+            checks.set(checks.get() + 1);
+            if checks.get() < 3 {
+                Ok(())
+            } else {
+                Err(io::Error::other("admission closed after reclamation"))
+            }
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(MutationFailure::Rejected(error)) if error.to_string() == "admission closed after reclamation"
+    ));
+    assert_ne!(store.generation_id().unwrap(), original);
+    assert_eq!(store.get(b"b", 8).unwrap(), None);
+    drop(store);
+    let reopened = f.open();
+    assert_eq!(reopened.get(b"a", 12).unwrap().unwrap(), b"acknowledged");
+    assert_eq!(reopened.get(b"b", 8).unwrap(), None);
+}
+
+#[test]
 fn automatic_reclaim_recycles_both_slots_and_preserves_acknowledged_mutations() {
     let f = Fixture::new(LIMITS);
     let mut store =

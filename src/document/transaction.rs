@@ -35,6 +35,7 @@ pub(super) struct Metadata {
 enum BackendTransaction<'a, 'store> {
     Ordinary(&'a mut Transaction<'store>),
     Checkpoint(&'a mut CheckpointTransaction<'store>),
+    Retained(&'a mut super::retained::RetainedTransaction<'store>),
 }
 
 /// A document transaction backed by the same atomic commit as raw key/value
@@ -60,6 +61,13 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     pub(super) fn checkpoint(tx: &'a mut CheckpointTransaction<'store>) -> Self {
         Self {
             backend: BackendTransaction::Checkpoint(tx),
+            failed: false,
+        }
+    }
+
+    pub(super) fn retained(tx: &'a mut super::retained::RetainedTransaction<'store>) -> Self {
+        Self {
+            backend: BackendTransaction::Retained(tx),
             failed: false,
         }
     }
@@ -94,6 +102,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         match &self.backend {
             BackendTransaction::Ordinary(tx) => tx.get(key),
             BackendTransaction::Checkpoint(tx) => tx.get(key),
+            BackendTransaction::Retained(tx) => tx.get(key),
         }
     }
 
@@ -101,6 +110,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         match &mut self.backend {
             BackendTransaction::Ordinary(tx) => tx.put(key, value),
             BackendTransaction::Checkpoint(tx) => tx.put(key, value),
+            BackendTransaction::Retained(tx) => tx.stage(crate::BatchOperation::Put { key, value }),
         }
     }
 
@@ -108,6 +118,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         match &mut self.backend {
             BackendTransaction::Ordinary(tx) => tx.delete(key),
             BackendTransaction::Checkpoint(tx) => tx.delete(key),
+            BackendTransaction::Retained(tx) => tx.stage(crate::BatchOperation::Delete { key }),
         }
     }
 
@@ -115,6 +126,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         match &self.backend {
             BackendTransaction::Ordinary(tx) => tx.scan(Some(after), Some(before), limit),
             BackendTransaction::Checkpoint(tx) => tx.scan(Some(after), Some(before), limit),
+            BackendTransaction::Retained(tx) => tx.scan(after, before, limit),
         }
     }
 
