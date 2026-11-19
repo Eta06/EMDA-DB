@@ -94,6 +94,122 @@ fn original_path_requires_fence_and_independent_registration() {
 }
 
 #[test]
+fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    let authority_path = tmp.path().join("authority");
+    let store = seed(&root);
+    let old_log = fs::read(root.join("records.log")).unwrap();
+    let old_witness = fs::read(root.join("commit.state")).unwrap();
+    let binding = CutoverArchiveBinding {
+        log_bytes: old_log.len() as u64,
+        log_digest: Sha256::digest(&old_log).into(),
+        witness_digest: Sha256::digest(&old_witness).into(),
+    };
+    let initial = Catalog::cutover_from_store(store, &root, EXPORT, LIMITS).unwrap();
+    let fence = fs::read(root.join("records.log")).unwrap();
+    let catalog = Marker::load(&root).unwrap().catalog_path(&root);
+    let log = catalog.join(ARCHIVE_LOG);
+    let witness = catalog.join(ARCHIVE_WITNESS);
+    let mut provider = FileRetainedAuthority::create(&authority_path).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let mut store = Catalog::open(&root, LIMITS, provider).unwrap();
+    let earlier = tmp.path().join("earlier");
+    let stale = store.backup_to(&earlier).unwrap();
+    store.put(b"new", b"durable").unwrap();
+    store.compact().unwrap();
+    assert!(store.reclaim_inactive().unwrap());
+    assert!(!Slot::A.path(&catalog).exists());
+    store.put(b"tail", b"checked").unwrap();
+    let backup = tmp.path().join("backup");
+    let expected = store.backup_to(&backup).unwrap();
+
+    let suffix = backup.join("suffix");
+    let saved = fs::read(&suffix).unwrap();
+    assert!(matches!(
+        store.retire_cutover_archive(&binding, &earlier, &stale),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    fs::write(&suffix, vec![0; saved.len()]).unwrap();
+    assert!(matches!(
+        store.retire_cutover_archive(&binding, &backup, &expected),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    fs::write(&suffix, &saved).unwrap();
+    let bad = CutoverArchiveBinding {
+        log_digest: [0; 32],
+        ..binding
+    };
+    assert!(matches!(
+        store.retire_cutover_archive(&bad, &backup, &expected),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert_eq!(fs::read(&log).unwrap(), old_log);
+    assert_eq!(fs::read(&witness).unwrap(), old_witness);
+
+    let parked = tmp.path().join("parked-legacy-log");
+    fs::rename(&log, &parked).unwrap();
+    std::os::unix::fs::symlink(&parked, &log).unwrap();
+    assert!(matches!(
+        store.retire_cutover_archive(&binding, &backup, &expected),
+        Err(PublicationFailure::NotPublished(_))
+    ));
+    assert!(log.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(fs::read(&parked).unwrap(), old_log);
+    fs::remove_file(&log).unwrap();
+    fs::rename(&parked, &log).unwrap();
+
+    let revision = store.current;
+    assert!(matches!(
+        store.retire_archive_using(&binding, &backup, &expected, |path| {
+            if path.file_name() == Some(ARCHIVE_LOG.as_ref()) {
+                fs::remove_file(path)
+            } else {
+                Err(io::Error::other("injected unlink failure"))
+            }
+        }),
+        Err(PublicationFailure::OutcomeUnknown(error)) if error.to_string() == "injected unlink failure"
+    ));
+    assert!(!log.exists());
+    assert_eq!(fs::read(&witness).unwrap(), old_witness);
+    drop(store);
+    let mut store = Catalog::open(
+        &root,
+        LIMITS,
+        FileRetainedAuthority::open(&authority_path).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(store.current, revision);
+    assert!(
+        store
+            .retire_cutover_archive(&binding, &backup, &expected)
+            .unwrap()
+    );
+    assert!(
+        !store
+            .retire_cutover_archive(&binding, &backup, &expected)
+            .unwrap()
+    );
+    assert!(!log.exists() && !witness.exists());
+    let page = store.scan(None, None, 8).unwrap();
+    store.put(b"later", b"accepted").unwrap();
+    drop(store);
+    assert!(Store::open(&root).is_err());
+    assert_eq!(fs::read(root.join("records.log")).unwrap(), fence);
+    assert_eq!(fs::read(root.join("commit.state")).unwrap(), old_witness);
+    assert_eq!(fs::read(&suffix).unwrap(), saved);
+    let restored = tmp.path().join("restored");
+    ManagedRetainedStore::restore_backup(&backup, &restored, LIMITS, &expected).unwrap();
+    assert_eq!(
+        ManagedRetainedStore::open(&restored, LIMITS)
+            .unwrap()
+            .scan(None, None, 8)
+            .unwrap(),
+        page
+    );
+}
+
+#[test]
 fn failure_before_fencing_leaves_a_writable_ordinary_source_for_retry() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("source");

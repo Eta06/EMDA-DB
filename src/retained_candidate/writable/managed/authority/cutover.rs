@@ -1,5 +1,6 @@
 use super::*;
 use std::fmt::Write as _;
+use std::io::Read;
 
 #[cfg(test)]
 mod tests;
@@ -7,6 +8,19 @@ mod tests;
 const MARKER_MAGIC: &[u8; 8] = b"EMDALOG4";
 const RECORD_END: usize = 24 + file::LENGTH;
 const MARKER_LEN: usize = RECORD_END + 32;
+const ARCHIVE_LOG: &str = "legacy.records";
+const ARCHIVE_WITNESS: &str = "legacy.witness";
+
+/// Fingerprints of the ordinary log and witness file captured under the
+/// source lock before cutover, or obtained from an independently trusted
+/// copy. The witness digest covers the file, including the V3 identity
+/// anchor. The archive filenames alone are insufficient to identify it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CutoverArchiveBinding {
+    pub log_bytes: u64,
+    pub log_digest: [u8; 32],
+    pub witness_digest: [u8; 32],
+}
 
 pub(super) struct Fence {
     root: PathBuf,
@@ -38,6 +52,10 @@ impl Fence {
 
     pub(super) fn initial(&self) -> AuthorityRecord {
         self.marker.initial
+    }
+
+    pub(super) fn check_backup_parent(&self, path: &Path) -> io::Result<()> {
+        check_separation(&self.root, crate::backup::parent_directory(path)?)
     }
 }
 
@@ -143,8 +161,8 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 |stage, path| {
                     let expected = export_into_generation(&source, stage, path, export, limits)?;
                     for (original, archive) in [
-                        ("records.log", "legacy.records"),
-                        ("commit.state", "legacy.witness"),
+                        ("records.log", ARCHIVE_LOG),
+                        ("commit.state", ARCHIVE_WITNESS),
                     ] {
                         let original = root.join(original);
                         open_regular(&original)?;
@@ -193,4 +211,99 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         fence.verify()?;
         Ok(initial)
     }
+
+    /// Retire the legacy archive of an original-path cutover. The caller
+    /// supplies independently retained fingerprints of the archived bytes
+    /// and a bound backup of the current retained generation. Keep the
+    /// backup and its directories trusted and stable through retirement.
+    ///
+    /// Success reports whether any archive file was removed. On
+    /// `OutcomeUnknown`, either file may already be absent. Retry with the
+    /// original archive binding and a backup of the then-current generation.
+    /// The cutover fence and the original root's witness are preserved.
+    pub fn retire_cutover_archive(
+        &mut self,
+        archive: &CutoverArchiveBinding,
+        backup: impl AsRef<Path>,
+        expected: &SuffixExpected,
+    ) -> Result<bool, PublicationFailure> {
+        self.retire_archive_using(archive, backup.as_ref(), expected, |path| {
+            fs::remove_file(path)
+        })
+    }
+
+    fn retire_archive_using(
+        &mut self,
+        archive: &CutoverArchiveBinding,
+        backup: &Path,
+        expected: &SuffixExpected,
+        mut remove: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<bool, PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.verify_current()?;
+            let fence = self
+                .fence
+                .as_ref()
+                .ok_or_else(|| invalid_input("missing original-path cutover"))?;
+            let root = fence.catalog_path();
+            if root != self.inner.root
+                || self.current.pending.is_some()
+                || self.current.committed
+                    != AuthorityPoint::from_store(self.inner.active.catalog, &self.inner.store)
+                || expected.candidate != self.inner.active.expected
+                || expected.end != self.current.committed.suffix_end
+                || expected.digest != self.current.committed.suffix_digest
+            {
+                return Err(record::invalid_data(
+                    "backup does not match the selected generation",
+                ));
+            }
+            if !fs::symlink_metadata(backup)?.file_type().is_dir() {
+                return Err(record::invalid_data("invalid retained backup directory"));
+            }
+            check_separation(&fence.root, backup)?;
+            let witness_bytes = crate::witness::WITNESS_SIZE as u64;
+            if !check_archive_file(
+                &fence.root.join("commit.state"),
+                witness_bytes,
+                &archive.witness_digest,
+            )? {
+                return Err(record::invalid_data("cutover source witness is missing"));
+            }
+            let log = root.join(ARCHIVE_LOG);
+            let witness = root.join(ARCHIVE_WITNESS);
+            let have_log = check_archive_file(&log, archive.log_bytes, &archive.log_digest)?;
+            let have_witness =
+                check_archive_file(&witness, witness_bytes, &archive.witness_digest)?;
+            self.inner.store.verify_complete()?;
+            super::backup::verify_backup(backup, self.inner.store.limits, expected)?;
+            super::backup::sync_backup(backup)?;
+            self.verify_current()?;
+            tracker.begin_publication();
+            if have_log {
+                remove(&log)?;
+            }
+            if have_witness {
+                remove(&witness)?;
+            }
+            sync_existing(&root)?;
+            Ok(have_log || have_witness)
+        })
+    }
+}
+
+fn check_archive_file(path: &Path, bytes: u64, digest: &[u8; 32]) -> io::Result<bool> {
+    let file = match open_regular(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let mut hash = Sha256::new();
+    if file.metadata()?.len() != bytes
+        || io::copy(&mut file.take(bytes.saturating_add(1)), &mut hash)? != bytes
+        || <[u8; 32]>::from(hash.finalize()) != *digest
+    {
+        return Err(record::invalid_data("cutover archive fingerprint mismatch"));
+    }
+    Ok(true)
 }

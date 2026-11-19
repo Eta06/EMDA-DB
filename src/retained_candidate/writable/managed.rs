@@ -31,8 +31,8 @@ mod authority;
 mod backup;
 
 pub use authority::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority,
-    RetainedAuthority,
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CutoverArchiveBinding,
+    FileRetainedAuthority, RetainedAuthority,
 };
 
 #[cfg(test)]

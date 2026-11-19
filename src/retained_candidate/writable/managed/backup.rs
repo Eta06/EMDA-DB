@@ -55,19 +55,7 @@ impl ManagedRetainedStore {
             self.store.suffix_file().copy_to(&mut output)?;
             output.sync_all()?;
             drop(output);
-            check_files(&candidate, &expected.candidate)?;
-            let base = crate::retained_base_v2::validate_buffered(
-                open_regular(&candidate.join("base"))?,
-                limits.base,
-            )?;
-            check_binding(&base, &expected.candidate)?;
-            let mut hash = Sha256::new();
-            let file = open_regular(&suffix)?;
-            if io::copy(&mut file.take(expected.end + 1), &mut hash)? != expected.end
-                || <[u8; 32]>::from(hash.finalize()) != expected.digest
-            {
-                return Err(record::invalid_data("staged backup suffix mismatch"));
-            }
+            verify_backup(stage.path(), limits, &expected)?;
             sync_existing(&candidate)?;
             self.verify_selection()?;
             verified = Some(expected);
@@ -114,4 +102,36 @@ impl ManagedRetainedStore {
             expected,
         )
     }
+}
+
+pub(super) fn verify_backup(
+    root: &Path,
+    limits: RetainedStoreLimits,
+    expected: &SuffixExpected,
+) -> io::Result<()> {
+    let candidate = root.join(CANDIDATE);
+    check_files(&candidate, &expected.candidate)?;
+    let base = crate::retained_base_v2::validate_buffered(
+        open_regular(&candidate.join("base"))?,
+        limits.base,
+    )?;
+    check_binding(&base, &expected.candidate)?;
+    let mut hash = Sha256::new();
+    let file = open_regular(&root.join(SUFFIX))?;
+    if expected.end > limits.suffix.bytes
+        || io::copy(&mut file.take(expected.end.saturating_add(1)), &mut hash)? != expected.end
+        || <[u8; 32]>::from(hash.finalize()) != expected.digest
+    {
+        return Err(record::invalid_data("backup suffix mismatch"));
+    }
+    Ok(())
+}
+
+pub(super) fn sync_backup(root: &Path) -> io::Result<()> {
+    let candidate = root.join(CANDIDATE);
+    for name in ["base", "records.log", "witness", "store.lock"] {
+        open_regular(&candidate.join(name))?.sync_all()?;
+    }
+    open_regular(&root.join(SUFFIX))?.sync_all()?;
+    sync_existing(&candidate)
 }

@@ -3,6 +3,7 @@ use std::cell::Cell;
 
 mod cutover;
 mod file;
+pub use cutover::CutoverArchiveBinding;
 pub use file::FileRetainedAuthority;
 
 #[cfg(test)]
@@ -207,6 +208,22 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         store.finish_maintenance()?;
         store.auto_reclaim = Some(suffix_threshold);
         Ok(store)
+    }
+
+    /// Back up the exact generation checked against the independent authority.
+    /// Keep the returned binding separately from the backup.
+    pub fn backup_to(
+        &mut self,
+        destination: impl AsRef<Path>,
+    ) -> Result<SuffixExpected, crate::SuffixExportFailure> {
+        self.verify_current()
+            .map_err(crate::SuffixExportFailure::NotPublished)?;
+        if let Some(fence) = &self.fence {
+            fence
+                .check_backup_parent(destination.as_ref())
+                .map_err(crate::SuffixExportFailure::NotPublished)?;
+        }
+        self.inner.backup_to(destination)
     }
 
     pub fn get(&mut self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {

@@ -28,8 +28,8 @@ const WITNESS_BYTES: usize = 84;
 
 mod managed;
 pub use managed::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority,
-    ManagedRetainedStore, RetainedAuthority,
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CutoverArchiveBinding,
+    FileRetainedAuthority, ManagedRetainedStore, RetainedAuthority,
 };
 mod rebase;
 

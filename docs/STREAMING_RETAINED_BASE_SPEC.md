@@ -417,6 +417,30 @@ open holds the original path's lock, checks the fence and authority
 together, and opens the nested catalog. The nested catalog refuses direct
 open. The ordinary entry point rejects the marker.
 
+Before cutover, a caller can record the ordinary log length and SHA-256
+of the log and witness file while it has exclusive use of the source.
+Preserve those values independently as a `CutoverArchiveBinding`.
+On V3 the witness-file digest covers the identity anchor. Archive
+retirement works with the old catalog layout and does not require the
+initial retained generation to still exist.
+
+The authorized handle can publish a bound backup of the selected
+generation at an outside path. `retire_cutover_archive` requires a
+backup of its exact current base and suffix, verifies their bytes,
+and synchronizes the backup files and directories before removing
+matching archive names. It also verifies the permanent fence, the
+source root's witness file and the independent selection. The backup
+must remain in trusted, stable directories throughout the operation.
+Retirement preserves the original-path fence, root witness, active
+generation and authority record. It does not remove independently
+retained ordinary copies or guarantee saved blocks if other links
+to the archive exist.
+
+An unlink or parent sync error reports `OutcomeUnknown` once removal
+begins. A retry verifies each remaining archive file against the
+original binding and synchronizes the catalog directory. The backup
+must still match the current selected generation at retry time.
+
 Deployment still requires an inventory and fencing of older backups and
 independent writable copies. Restoring an entire ordinary snapshot can
 remove the local marker from the view of an old executable. Authorized
