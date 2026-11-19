@@ -550,3 +550,12 @@ records process kills around fence replacement, the macOS and Linux ARM64
 library runs, and five rejected open paths in one older engine revision.
 Deployment still needs a supported-reader inventory, fencing for old
 backups and independent copies, and protected authority storage.
+
+Authority-checked catalogs now expose the document transaction API, including
+at the fenced original path. Each write submits the document, index and raw
+key changes through one authority intent and one atomic append. Read-only
+transactions revalidate authority before returning. The
+[document validation report](../benchmarks/results/2026-11-19-authorized-retained-documents/README.md)
+records the cross-platform cutover and recovery tests. Automatic rotation
+under independent authority, broader recovery and resource evidence, and
+the remaining query and planner work are still open.
