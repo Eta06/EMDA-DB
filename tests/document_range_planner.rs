@@ -206,7 +206,14 @@ fn scalar_ranges_match_scans_with_mixed_types_bounds_sort_and_projection() {
             ]),
             20,
         );
-        compare(db, &or_query, DocumentQueryAccess::CollectionScan);
+        compare(
+            db,
+            &or_query,
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["score".into()],
+                probes: 2,
+            },
+        );
         let not_query = query(
             DocumentFilter::Not(Box::new(range(
                 "score",

@@ -4,8 +4,9 @@ use database_engine::retained_candidate::{
     OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
-    CancellationToken, CollectionSchema, DocumentDatabase, DocumentTransactionMode,
-    IndexDefinition, IndexQuery, RetainedExportLimits, Store, TransactionFailure,
+    CancellationToken, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
+    DocumentQueryAccess, DocumentTransactionMode, IndexDefinition, IndexQuery,
+    RetainedExportLimits, Store, TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -121,6 +122,30 @@ fn authorized_cutover_preserves_document_transactions_through_reclamation() {
                 ["m", "z"]
             );
             assert_eq!(rows[1].document, json!({"n": 7}));
+            let planned = tx.query_planned(
+                "items",
+                &DocumentQuery {
+                    filter: DocumentFilter::Or(vec![
+                        DocumentFilter::Equal {
+                            path: vec!["n".into()],
+                            value: json!(3),
+                        },
+                        DocumentFilter::Equal {
+                            path: vec!["n".into()],
+                            value: json!(7),
+                        },
+                    ]),
+                    ..Default::default()
+                },
+            )?;
+            assert_eq!(
+                planned.access,
+                DocumentQueryAccess::DisjunctionIndex {
+                    indexes: vec!["score".into()],
+                    probes: 2,
+                }
+            );
+            assert_eq!(planned.result.documents, rows);
             Ok(())
         })
         .unwrap();

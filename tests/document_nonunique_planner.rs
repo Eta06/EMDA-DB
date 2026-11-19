@@ -191,7 +191,14 @@ fn exercise(db: &DocumentDatabase<'_>) {
         ]),
         ..base
     };
-    compare(db, &disjunction, DocumentQueryAccess::CollectionScan);
+    compare(
+        db,
+        &disjunction,
+        DocumentQueryAccess::DisjunctionIndex {
+            indexes: vec!["group".into()],
+            probes: 2,
+        },
+    );
 }
 
 #[test]

@@ -1,17 +1,17 @@
-//! Conservative equality and scalar range selection for bounded queries.
+//! Conservative index selection for bounded queries.
 use super::{
     filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
     index::{IndexDefinition, IndexValue, PartialFilter},
     key,
     query::{IndexBound, IndexQuery},
-    transaction::DocumentTransaction,
+    transaction::{DocumentTransaction, Metadata},
 };
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 // Bound the Cartesian product before allocating tuple probes.
-const MAX_COMPOUND_MEMBERSHIP_PROBES: usize = 256;
+const MAX_INDEX_PROBES: usize = 256;
 
 /// The access path selected for a planned document query.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +59,13 @@ pub enum DocumentQueryAccess {
     PartialCompoundMembershipIndex {
         index: String,
         fields: usize,
+        probes: usize,
+    },
+    /// Union the indexed candidates of every branch of a required disjunction.
+    DisjunctionIndex {
+        /// Distinct index names in ascending order.
+        indexes: Vec<String>,
+        /// Total equality or range probes across all branches.
         probes: usize,
     },
 }
@@ -189,7 +196,6 @@ fn eligible(index: &IndexDefinition, filter: &DocumentFilter) -> bool {
         .is_none_or(|partial| partial_is_implied(filter, partial))
 }
 
-#[derive(Clone)]
 enum Selection {
     Equality(Vec<IndexValue>),
     Membership(Vec<IndexValue>),
@@ -199,6 +205,16 @@ enum Selection {
         lower: Option<IndexBound>,
         upper: Option<IndexBound>,
     },
+}
+
+impl Selection {
+    fn probe_count(&self) -> usize {
+        match self {
+            Self::Membership(values) => values.len(),
+            Self::CompoundMembership(tuples) => tuples.len(),
+            _ => 1,
+        }
+    }
 }
 
 // A compound entry omits any document missing one of its fields. Require an
@@ -220,7 +236,7 @@ fn compound_membership(
             required_membership(filter, field)?
         };
         probe_count = probe_count.checked_mul(values.len())?;
-        if probe_count > MAX_COMPOUND_MEMBERSHIP_PROBES {
+        if probe_count > MAX_INDEX_PROBES {
             return None;
         }
         choices.push(values);
@@ -411,10 +427,61 @@ fn choose_index<'a>(
     Ok(None)
 }
 
+type Branch<'a> = (&'a IndexDefinition, Selection);
+
+// Find a required OR under zero or more ANDs. Every branch must provide
+// complete candidates for that branch independently. Roll back partial
+// plans when a branch has no index or would exceed the shared probe cap.
+fn choose_disjunction<'a>(
+    filter: &DocumentFilter,
+    indexes: &'a [IndexDefinition],
+    branches: &mut Vec<Branch<'a>>,
+    remaining: &mut usize,
+) -> io::Result<bool> {
+    let mut required = vec![filter];
+    while let Some(filter) = required.pop() {
+        match filter {
+            DocumentFilter::And(filters) => required.extend(filters.iter().rev()),
+            DocumentFilter::Or(filters) if !filters.is_empty() => {
+                let start = branches.len();
+                let available = *remaining;
+                let mut complete = true;
+                for branch in filters {
+                    if let Some((index, selection)) = choose_index(branch, indexes)? {
+                        if let Some(next) = remaining.checked_sub(selection.probe_count()) {
+                            branches.push((index, selection));
+                            *remaining = next;
+                            continue;
+                        }
+                    }
+                    if !choose_disjunction(branch, indexes, branches, remaining)? {
+                        complete = false;
+                        break;
+                    }
+                }
+                if complete {
+                    return Ok(true);
+                }
+                branches.truncate(start);
+                *remaining = available;
+            }
+            _ => {}
+        }
+    }
+    Ok(false)
+}
+
+#[derive(Default)]
+struct Candidates {
+    rows: BTreeMap<String, serde_json::Value>,
+    visits: usize,
+    bytes: usize,
+}
+
 impl DocumentTransaction<'_, '_> {
     /// Executes a bounded filtered query using a qualifying exact equality
-    /// tuple, scalar range or bounded membership union, or falls back to
-    /// the collection scan.
+    /// tuple, scalar range, bounded membership union or a union of indexed
+    /// disjuncts. Falls back to the collection scan when none qualifies.
     /// A partial index is eligible only when the filter proves its condition.
     /// This opt-in path assumes declared indexes are maintained; corruption
     /// that removes index entries can cause omissions. It is not cost-based.
@@ -425,33 +492,78 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<PlannedDocumentQueryResult> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let Some((index, selection)) = choose_index(&query.filter, &metadata.indexes)? else {
-            return Ok(PlannedDocumentQueryResult {
-                result: self.query(collection, query)?,
-                access: DocumentQueryAccess::CollectionScan,
-            });
-        };
+        let mut branches = Vec::new();
+        let access =
+            if let Some((index, selection)) = choose_index(&query.filter, &metadata.indexes)? {
+                let access = describe_selection(index, &selection);
+                branches.push((index, selection));
+                access
+            } else {
+                let mut remaining = MAX_INDEX_PROBES;
+                if !choose_disjunction(
+                    &query.filter,
+                    &metadata.indexes,
+                    &mut branches,
+                    &mut remaining,
+                )? {
+                    return Ok(PlannedDocumentQueryResult {
+                        result: self.query(collection, query)?,
+                        access: DocumentQueryAccess::CollectionScan,
+                    });
+                }
+                DocumentQueryAccess::DisjunctionIndex {
+                    indexes: branches
+                        .iter()
+                        .map(|(index, _)| index.name.clone())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                    probes: MAX_INDEX_PROBES - remaining,
+                }
+            };
+
+        let mut candidates = Candidates::default();
+        for (index, selection) in branches {
+            self.collect_index_candidates(
+                collection,
+                &metadata,
+                index,
+                selection,
+                query.max_scanned,
+                &mut candidates,
+            )?;
+        }
+        let mut result = filter::finish_query(candidates.rows, query)?;
+        result.plan.scanned = candidates.visits;
+        Ok(PlannedDocumentQueryResult { result, access })
+    }
+
+    fn collect_index_candidates(
+        &self,
+        collection: &str,
+        metadata: &Metadata,
+        index: &IndexDefinition,
+        selection: Selection,
+        max_scanned: usize,
+        candidates: &mut Candidates,
+    ) -> io::Result<()> {
         let unique_equality = index.unique && !matches!(selection, Selection::Range { .. });
-        let probes = match &selection {
-            Selection::Equality(values) => vec![(values.clone(), None, None)],
+        let probes = match selection {
+            Selection::Equality(values) => vec![(values, None, None)],
             Selection::Membership(values) => values
-                .iter()
-                .cloned()
+                .into_iter()
                 .map(|value| (vec![value], None, None))
                 .collect(),
             Selection::CompoundMembership(tuples) => tuples
-                .iter()
-                .cloned()
+                .into_iter()
                 .map(|tuple| (tuple, None, None))
                 .collect(),
             Selection::Range {
                 equal,
                 lower,
                 upper,
-            } => vec![(equal.clone(), lower.clone(), upper.clone())],
+            } => vec![(equal, lower, upper)],
         };
-        let mut rows = Vec::new();
-        let mut bytes = 0_usize;
         for (equal, lower, upper) in probes {
             let mut after = None;
             loop {
@@ -461,7 +573,7 @@ impl DocumentTransaction<'_, '_> {
                 let limit = if unique_equality {
                     2
                 } else {
-                    (query.max_scanned - rows.len() + 1).min(256)
+                    (max_scanned - candidates.visits + 1).min(256)
                 };
                 let indexed = self.query_index_with_metadata(
                     collection,
@@ -473,7 +585,7 @@ impl DocumentTransaction<'_, '_> {
                         after,
                         limit,
                     },
-                    &metadata,
+                    metadata,
                 )?;
                 let page = indexed.page;
                 if unique_equality && page.documents.len() > 1 {
@@ -482,22 +594,24 @@ impl DocumentTransaction<'_, '_> {
                         "unique index contains multiple matches",
                     ));
                 }
-                bytes = bytes
+                candidates.bytes = candidates
+                    .bytes
                     .checked_add(indexed.document_key_value_bytes)
                     .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-                if bytes > filter::MAX_SCAN_BYTES
-                    || page.documents.len() > query.max_scanned - rows.len()
+                if candidates.bytes > filter::MAX_SCAN_BYTES
+                    || page.documents.len() > max_scanned - candidates.visits
                 {
                     return Err(key::invalid("document scan exceeds the operation limit"));
                 }
                 if page.documents.is_empty() {
                     break;
                 }
-                rows.extend(
-                    page.documents
-                        .into_iter()
-                        .map(|entry| (entry.id, entry.document)),
-                );
+                // Count every visit, but retain one document per ID in
+                // collection order for filtering and pagination.
+                candidates.visits += page.documents.len();
+                for entry in page.documents {
+                    candidates.rows.entry(entry.id).or_insert(entry.document);
+                }
                 if unique_equality {
                     break;
                 }
@@ -509,94 +623,89 @@ impl DocumentTransaction<'_, '_> {
                 })?);
             }
         }
-        let partial = index.partial.is_some();
-        let access = match selection {
-            Selection::Equality(values) if partial && index.unique => {
-                DocumentQueryAccess::PartialUniqueEqualityIndex {
-                    index: index.name.clone(),
-                    fields: values.len(),
-                }
-            }
-            Selection::Equality(values) if partial => DocumentQueryAccess::PartialEqualityIndex {
+        Ok(())
+    }
+}
+
+fn describe_selection(index: &IndexDefinition, selection: &Selection) -> DocumentQueryAccess {
+    let partial = index.partial.is_some();
+    match selection {
+        Selection::Equality(values) if partial && index.unique => {
+            DocumentQueryAccess::PartialUniqueEqualityIndex {
                 index: index.name.clone(),
                 fields: values.len(),
-            },
-            Selection::Equality(values) if index.unique && values.len() > 1 => {
-                DocumentQueryAccess::UniqueCompoundEqualityIndex {
-                    index: index.name.clone(),
-                    fields: values.len(),
-                }
             }
-            Selection::Equality(values) if values.len() > 1 => {
-                DocumentQueryAccess::CompoundEqualityIndex {
-                    index: index.name.clone(),
-                    fields: values.len(),
-                }
-            }
-            Selection::Equality(_) if index.unique => DocumentQueryAccess::UniqueEqualityIndex {
+        }
+        Selection::Equality(values) if partial => DocumentQueryAccess::PartialEqualityIndex {
+            index: index.name.clone(),
+            fields: values.len(),
+        },
+        Selection::Equality(values) if index.unique && values.len() > 1 => {
+            DocumentQueryAccess::UniqueCompoundEqualityIndex {
                 index: index.name.clone(),
-            },
-            Selection::Equality(_) => DocumentQueryAccess::EqualityIndex {
+                fields: values.len(),
+            }
+        }
+        Selection::Equality(values) if values.len() > 1 => {
+            DocumentQueryAccess::CompoundEqualityIndex {
                 index: index.name.clone(),
-            },
-            Selection::Membership(values) => {
-                rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                if partial {
-                    DocumentQueryAccess::PartialMembershipIndex {
-                        index: index.name.clone(),
-                        probes: values.len(),
-                    }
-                } else {
-                    DocumentQueryAccess::MembershipIndex {
-                        index: index.name.clone(),
-                        probes: values.len(),
-                    }
+                fields: values.len(),
+            }
+        }
+        Selection::Equality(_) if index.unique => DocumentQueryAccess::UniqueEqualityIndex {
+            index: index.name.clone(),
+        },
+        Selection::Equality(_) => DocumentQueryAccess::EqualityIndex {
+            index: index.name.clone(),
+        },
+        Selection::Membership(values) => {
+            if partial {
+                DocumentQueryAccess::PartialMembershipIndex {
+                    index: index.name.clone(),
+                    probes: values.len(),
+                }
+            } else {
+                DocumentQueryAccess::MembershipIndex {
+                    index: index.name.clone(),
+                    probes: values.len(),
                 }
             }
-            Selection::CompoundMembership(tuples) => {
-                rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                if partial {
-                    DocumentQueryAccess::PartialCompoundMembershipIndex {
-                        index: index.name.clone(),
-                        fields: index.fields.len(),
-                        probes: tuples.len(),
-                    }
-                } else {
-                    DocumentQueryAccess::CompoundMembershipIndex {
-                        index: index.name.clone(),
-                        fields: index.fields.len(),
-                        probes: tuples.len(),
-                    }
+        }
+        Selection::CompoundMembership(tuples) => {
+            if partial {
+                DocumentQueryAccess::PartialCompoundMembershipIndex {
+                    index: index.name.clone(),
+                    fields: index.fields.len(),
+                    probes: tuples.len(),
+                }
+            } else {
+                DocumentQueryAccess::CompoundMembershipIndex {
+                    index: index.name.clone(),
+                    fields: index.fields.len(),
+                    probes: tuples.len(),
                 }
             }
-            Selection::Range { equal, .. } => {
-                // Index ranges are ordered by value then ID; collection scans
-                // use ID order. Restore ID order before filtering and paging.
-                rows.sort_unstable_by(|left, right| left.0.as_bytes().cmp(right.0.as_bytes()));
-                if partial && index.fields.len() > 1 {
-                    DocumentQueryAccess::PartialCompoundRangeIndex {
-                        index: index.name.clone(),
-                        equality_fields: equal.len(),
-                    }
-                } else if partial {
-                    DocumentQueryAccess::PartialRangeIndex {
-                        index: index.name.clone(),
-                    }
-                } else if index.fields.len() > 1 {
-                    DocumentQueryAccess::CompoundRangeIndex {
-                        index: index.name.clone(),
-                        equality_fields: equal.len(),
-                    }
-                } else {
-                    DocumentQueryAccess::RangeIndex {
-                        index: index.name.clone(),
-                    }
+        }
+        Selection::Range { equal, .. } => {
+            if partial && index.fields.len() > 1 {
+                DocumentQueryAccess::PartialCompoundRangeIndex {
+                    index: index.name.clone(),
+                    equality_fields: equal.len(),
+                }
+            } else if partial {
+                DocumentQueryAccess::PartialRangeIndex {
+                    index: index.name.clone(),
+                }
+            } else if index.fields.len() > 1 {
+                DocumentQueryAccess::CompoundRangeIndex {
+                    index: index.name.clone(),
+                    equality_fields: equal.len(),
+                }
+            } else {
+                DocumentQueryAccess::RangeIndex {
+                    index: index.name.clone(),
                 }
             }
-        };
-        Ok(PlannedDocumentQueryResult {
-            result: filter::finish_query(rows, query)?,
-            access,
-        })
+        }
     }
 }

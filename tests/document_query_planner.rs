@@ -111,12 +111,23 @@ fn exercise(db: &DocumentDatabase<'_>) {
             compare(db, &query, indexed.clone());
         }
     }
+    compare(
+        db,
+        &DocumentQuery {
+            filter: DocumentFilter::Or(vec![
+                equal("email", json!("a@example")),
+                equal("email", json!("b@example")),
+            ]),
+            max_scanned: 10,
+            ..Default::default()
+        },
+        DocumentQueryAccess::DisjunctionIndex {
+            indexes: vec!["email".into()],
+            probes: 2,
+        },
+    );
     for filter in [
         DocumentFilter::All,
-        DocumentFilter::Or(vec![
-            equal("email", json!("a@example")),
-            equal("email", json!("b@example")),
-        ]),
         DocumentFilter::Not(Box::new(equal("email", json!("a@example")))),
         DocumentFilter::And(vec![
             DocumentFilter::Or(vec![

@@ -524,9 +524,9 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.query(collection, query))
     }
 
-    /// Executes a bounded query using a qualifying equality tuple or scalar
-    /// range index, falling back to a collection scan. Partial indexes require
-    /// a provably implied filter. Index integrity is required.
+    /// Executes a bounded query using qualifying index probes, including
+    /// unions of independently indexable disjuncts. Falls back to a collection
+    /// scan. Partial indexes require a provably implied guard.
     pub fn query_planned(
         &self,
         collection: &str,

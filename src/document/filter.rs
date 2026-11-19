@@ -94,7 +94,7 @@ pub struct DocumentSort {
 }
 
 /// A bounded filtered query. `query` scans the complete collection;
-/// `query_planned` can instead use a qualifying equality tuple or scalar range index.
+/// `query_planned` can instead use qualifying index probes or a bounded union.
 /// Both fail rather than silently truncating when their work limits are exceeded.
 #[derive(Clone, Debug)]
 pub struct DocumentQuery {
@@ -108,7 +108,8 @@ pub struct DocumentQuery {
     pub offset: usize,
     /// Maximum rows returned, between 1 and 256.
     pub limit: usize,
-    /// Maximum documents examined by the access path, between 1 and 1,024.
+    /// Maximum document visits by the access path, between 1 and 1,024.
+    /// A visit through each branch of an indexed disjunction counts separately.
     pub max_scanned: usize,
 }
 
@@ -128,7 +129,7 @@ impl Default for DocumentQuery {
 /// Actual work performed by a bounded document query.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryPlan {
-    /// Documents examined by the selected access path.
+    /// Documents examined by the selected access path, including repeat visits.
     pub scanned: usize,
     /// Documents matching before offset and limit.
     pub matched: usize,
@@ -544,7 +545,7 @@ impl<'a> QueryCollector<'a> {
 }
 
 pub(super) fn finish_query(
-    rows: Vec<(String, Value)>,
+    rows: impl IntoIterator<Item = (String, Value)>,
     query: &DocumentQuery,
 ) -> io::Result<DocumentQueryResult> {
     let mut collector = QueryCollector::new(query);

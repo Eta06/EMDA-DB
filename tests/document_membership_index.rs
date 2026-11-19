@@ -104,9 +104,19 @@ fn unique_union_deduplicates_values_and_restores_id_order() {
                 probes: 1,
             },
         );
+        equal_scan(
+            db,
+            &query(DocumentFilter::Or(vec![in_values(vec![
+                json!(1),
+                json!(2),
+            ])])),
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["v".into()],
+                probes: 2,
+            },
+        );
         for filter in [
             in_values(vec![json!(1), json!([1])]),
-            DocumentFilter::Or(vec![in_values(vec![json!(1), json!(2)])]),
             DocumentFilter::Not(Box::new(in_values(vec![json!(1), json!(2)]))),
         ] {
             equal_scan(db, &query(filter), DocumentQueryAccess::CollectionScan);
