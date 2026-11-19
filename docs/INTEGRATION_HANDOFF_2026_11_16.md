@@ -721,3 +721,10 @@ model passed 512 rounds on each platform. The final matrix covers 1,078
 passing tests on macOS ARM64 and 1,308 on Linux ARM64 across the full runs and
 the separately rerun history target. The Linux ENOSPC test remains ignored
 by default.
+
+Detached indexed inspection now offers file-backed suffix replay with a
+fixed I/O buffer. It retains a verified descriptor and authenticates
+returned values. The [validation and measurement](../benchmarks/results/2026-11-19-file-backed-indexed-suffix/README.md)
+covers both modes on macOS and Linux and a 127.98 MiB sampled reduction in
+peak process RSS for a 128 MiB suffix. Materialized restore and total
+memory accounting remain separate work.
