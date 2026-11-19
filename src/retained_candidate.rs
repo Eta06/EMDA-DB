@@ -13,6 +13,7 @@ use std::{
 
 mod indexed_suffix;
 pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
+mod restore_replay;
 mod suffix_file;
 mod writable;
 pub use writable::{
@@ -601,85 +602,79 @@ fn apply_suffix(
     value: &[u8],
     budget: &mut ReplayBudget,
 ) -> io::Result<()> {
+    let replacement = (operation == crate::record::Operation::Put)
+        .then_some((value.len(), || copy_replay_bytes(value)));
+    apply_suffix_entry(state, key, replacement, Vec::len, budget)
+}
+
+fn copy_replay_bytes(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    allocation_point()?;
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| io::Error::other("suffix allocation failed"))?;
+    result.extend_from_slice(bytes);
+    Ok(result)
+}
+
+fn apply_suffix_entry<V>(
+    state: &mut Vec<(Vec<u8>, V)>,
+    key: &[u8],
+    replacement: Option<(usize, impl FnOnce() -> io::Result<V>)>,
+    length: impl FnOnce(&V) -> usize,
+    budget: &mut ReplayBudget,
+) -> io::Result<()> {
     charge_suffix_work(&mut budget.work, budget.work_limit, state.len())?;
     let position = state.binary_search_by(|entry| entry.0.as_slice().cmp(key));
-    if operation == crate::record::Operation::Delete {
-        if let Ok(index) = position {
-            let (k, v) = &state[index];
-            let kl = u64::try_from(k.len()).map_err(|_| invalid())?;
-            let vl = u64::try_from(v.len()).map_err(|_| invalid())?;
-            let entries = budget.entries.checked_sub(1).ok_or_else(invalid)?;
-            let keys = budget.keys.checked_sub(kl).ok_or_else(invalid)?;
-            let payload = budget
-                .payload
-                .checked_sub(kl)
-                .and_then(|n| n.checked_sub(vl))
-                .ok_or_else(invalid)?;
-            state.remove(index);
-            (budget.entries, budget.keys, budget.payload) = (entries, keys, payload);
-        }
-        return Ok(());
-    }
-    if value.len() > budget.staging.value_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "value limit exceeded",
-        ));
-    }
-    let old = position.ok().map(|i| &state[i]);
-    let entries = budget
-        .entries
-        .checked_add(u64::from(old.is_none()))
-        .ok_or_else(invalid)?;
-    let (mut keys, mut payload) = (budget.keys, budget.payload);
     let key_len = u64::try_from(key.len()).map_err(|_| invalid())?;
-    let value_len = u64::try_from(value.len()).map_err(|_| invalid())?;
-    if old.is_none() {
-        keys = keys.checked_add(key_len).ok_or_else(invalid)?;
-    }
-    if let Some((k, v)) = old {
+    let old_len = position.ok().map(|i| length(&state[i].1) as u64);
+    let mut entries = budget.entries;
+    let mut keys = budget.keys;
+    let mut payload = budget.payload;
+    if let Some(old_len) = old_len {
+        entries = entries.checked_sub(1).ok_or_else(invalid)?;
+        keys = keys.checked_sub(key_len).ok_or_else(invalid)?;
         payload = payload
-            .checked_sub(u64::try_from(k.len()).map_err(|_| invalid())?)
-            .and_then(|n| {
-                u64::try_from(v.len())
-                    .ok()
-                    .and_then(|len| n.checked_sub(len))
-            })
+            .checked_sub(key_len)
+            .and_then(|n| n.checked_sub(old_len))
             .ok_or_else(invalid)?;
     }
-    payload = payload
-        .checked_add(key_len)
-        .and_then(|n| n.checked_add(value_len))
-        .ok_or_else(invalid)?;
-    if entries > budget.limits.entries
-        || keys > budget.limits.key_bytes
-        || payload > budget.staging.staging_bytes
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "live set limit exceeded",
-        ));
-    }
-    fn copy(bytes: &[u8]) -> io::Result<Vec<u8>> {
-        allocation_point()?;
-        let mut result = Vec::new();
-        result
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| io::Error::other("suffix allocation failed"))?;
-        result.extend_from_slice(bytes);
-        Ok(result)
-    }
-    let new_value = copy(value)?;
-    match position {
-        Ok(i) => state[i].1 = new_value,
-        Err(i) => {
-            let new_key = copy(key)?;
-            allocation_point()?;
-            state
-                .try_reserve(1)
-                .map_err(|_| io::Error::other("suffix allocation failed"))?;
-            state.insert(i, (new_key, new_value));
+    if let Some((value_len, make_value)) = replacement {
+        if value_len > budget.staging.value_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "value limit exceeded",
+            ));
         }
+        entries = entries.checked_add(1).ok_or_else(invalid)?;
+        keys = keys.checked_add(key_len).ok_or_else(invalid)?;
+        payload = payload
+            .checked_add(key_len)
+            .and_then(|n| n.checked_add(value_len as u64))
+            .ok_or_else(invalid)?;
+        if entries > budget.limits.entries
+            || keys > budget.limits.key_bytes
+            || payload > budget.staging.staging_bytes
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "live set limit exceeded",
+            ));
+        }
+        let new_value = make_value()?;
+        match position {
+            Ok(i) => state[i].1 = new_value,
+            Err(i) => {
+                let new_key = copy_replay_bytes(key)?;
+                allocation_point()?;
+                state
+                    .try_reserve(1)
+                    .map_err(|_| io::Error::other("suffix allocation failed"))?;
+                state.insert(i, (new_key, new_value));
+            }
+        }
+    } else if let Ok(i) = position {
+        state.remove(i);
     }
     (budget.entries, budget.keys, budget.payload) = (entries, keys, payload);
     Ok(())
@@ -804,9 +799,11 @@ pub struct RestoreLimits {
 /// This creates a new log identity and history. Historical key-count and
 /// key-byte peaks are neither preserved nor enforced. Input validation and
 /// output creation use distinct limits. The independently retained binding
-/// must be trusted by the caller; all external directories and their ancestors
-/// must remain trusted and stable throughout. The complete reconstructed state
-/// and the new store index coexist in memory. The caller must keep the source
+/// must be trusted by the caller; all external directories, their ancestors
+/// and input files must remain trusted and stable throughout. Replay keeps
+/// live keys and authenticated value locations in memory. Each write reads
+/// one value. Input staging limits still count the logical live payload,
+/// including intermediate states of a batch. The caller must keep the source
 /// and suffix separate from the destination; only candidate descendants are
 /// rejected here. This is not recovery of the old
 /// witness, a live switch or reclamation, or anti-rollback protection.
@@ -885,8 +882,14 @@ pub(crate) fn restore_with_hooks(
                 "destination parent is inside candidate",
             ));
         }
-        let state =
-            open_exported_suffix(candidate, suffix, limits, staging, suffix_limits, expected)?;
+        let replay = restore_replay::RestoreReplay::open(
+            candidate,
+            suffix,
+            limits,
+            staging,
+            suffix_limits,
+            expected,
+        )?;
         let mut stage = crate::staging::Stage::directory(parent)?;
         {
             hook("init")?;
@@ -896,9 +899,9 @@ pub(crate) fn restore_with_hooks(
                 Some(output.live_keys),
                 Some(output.live_key_bytes),
             )?;
-            for (key, value) in &state {
+            for (key, value) in &replay.entries {
                 hook("write")?;
-                store.put(key, value)?;
+                store.put(key, &replay.read(value)?)?;
             }
             store.close_private_store()?;
         }
@@ -911,34 +914,23 @@ pub(crate) fn restore_with_hooks(
                 Some(output.live_key_bytes),
             )?;
             hook("check")?;
-            let mut after: Option<Vec<u8>> = None;
-            let mut count = 0usize;
-            loop {
-                let page = store.scan(after.as_deref(), None, 1)?;
-                if page.is_empty() {
-                    break;
+            let mismatch = || crate::record::invalid_data("restored state mismatch");
+            let mut after = None;
+            for (key, value) in &replay.entries {
+                let page = store.scan(after, None, 1)?;
+                if !page.first().is_some_and(|(actual_key, actual_value)| {
+                    actual_key == key && value.matches(actual_value)
+                }) {
+                    return Err(mismatch());
                 }
-                let (key, value) = &page[0];
-                if !state
-                    .get(count)
-                    .is_some_and(|entry| &entry.0 == key && &entry.1 == value)
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "restored state mismatch",
-                    ));
-                }
-                count += 1;
-                after = Some(key.clone());
+                after = Some(key.as_slice());
             }
-            if count != state.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "restored state mismatch",
-                ));
+            if !store.scan(after, None, 1)?.is_empty() {
+                return Err(mismatch());
             }
             store.close_private_store()?;
         }
+        replay.check_lengths()?;
         hook("stage_sync")?;
         crate::directory::sync_existing(stage.path())?;
         tracker.begin_publication();

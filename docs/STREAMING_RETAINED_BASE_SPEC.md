@@ -174,9 +174,18 @@ The file-backed view checks the retained descriptor's length and authenticates
 returned suffix values against their captured digests. The base and suffix
 files must stay immutable for that view's lifetime. These checks cover the
 values returned by each read. They do not revalidate unrelated suffix history
-after open. New-history restore still uses its materialized replay path.
-Writable recovery still needs a committed witness and durable generation
-selection.
+after open. Writable recovery still needs a committed witness and durable
+generation selection.
+
+New-history restore verifies the full suffix before base admission and
+checks its digest again during ordered replay. The base validator and suffix
+replay retain live keys and per-value locations and digests. Staging limits
+count the logical payload at every intermediate state, including within a
+batch. Each value is authenticated again when read for the private store.
+Before publication an ordinary reopen verifies the new history, then a
+bounded scan checks each restored key, length and value digest. Restore
+memory includes the live-key metadata, ordinary store index, one decoded
+value and its encoded append, plus batch metadata and I/O buffers.
 
 ## Independent writable generations
 

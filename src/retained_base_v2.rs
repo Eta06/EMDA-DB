@@ -88,6 +88,53 @@ fn scan_buffered<R: Read>(
     limits: Limits,
     index: Option<&mut index::Builder>,
 ) -> io::Result<Validated> {
+    scan_buffered_using(
+        reader,
+        limits,
+        index.map_or(ScanIndex::None, ScanIndex::Blocks),
+    )
+}
+
+pub(crate) struct CapturedValue {
+    pub offset: u64,
+    pub length: usize,
+    pub digest: [u8; 32],
+}
+
+type ValueVisitor<'a> = dyn FnMut(&[u8], CapturedValue) -> io::Result<()> + 'a;
+
+enum ScanIndex<'a> {
+    None,
+    Blocks(&'a mut index::Builder),
+    Locations {
+        staging: StagingLimits,
+        visit: &'a mut ValueVisitor<'a>,
+    },
+}
+
+// Locations refer to the bytes hashed by this scan. Keep them private until
+// the whole file and its independent binding have been verified.
+pub(crate) fn scan_value_locations(
+    reader: impl Read,
+    limits: Limits,
+    staging: StagingLimits,
+    mut visit: impl FnMut(&[u8], CapturedValue) -> io::Result<()>,
+) -> io::Result<Validated> {
+    scan_buffered_using(
+        reader,
+        limits,
+        ScanIndex::Locations {
+            staging,
+            visit: &mut visit,
+        },
+    )
+}
+
+fn scan_buffered_using(
+    reader: impl Read,
+    limits: Limits,
+    index: ScanIndex<'_>,
+) -> io::Result<Validated> {
     scan_using(
         reader,
         limits,
@@ -217,7 +264,7 @@ fn scan<R: Read>(
         limits,
         selection,
         staging,
-        None,
+        ScanIndex::None,
         |reader, _| reader,
         |reader, mut remaining, visit| {
             while remaining != 0 {
@@ -237,7 +284,7 @@ fn scan_using<R: Read, B: Read>(
     limits: Limits,
     selection: Option<(&[u8], usize)>,
     mut staging: Option<(&mut StagedEntries, StagingLimits)>,
-    mut index: Option<&mut index::Builder>,
+    mut index: ScanIndex<'_>,
     prepare_body: impl FnOnce(R, u64) -> B,
     mut visit_value: impl FnMut(&mut B, usize, &mut dyn FnMut(&[u8])) -> io::Result<()>,
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
@@ -290,6 +337,10 @@ fn scan_using<R: Read, B: Read>(
     let mut observed = 0u64;
     let mut keys = 0u64;
     let mut staged_bytes = 0u64;
+    let staging_budget = match &index {
+        ScanIndex::Locations { staging, .. } => Some(*staging),
+        _ => staging.as_ref().map(|(_, limits)| *limits),
+    };
     for _ in 0..entries {
         let start = observed;
         if add(observed, 8)? > encoded {
@@ -311,7 +362,7 @@ fn scan_using<R: Read, B: Read>(
         }
         previous[..kl].copy_from_slice(&key[..kl]);
         previous_len = kl;
-        if let Some(builder) = index.as_deref_mut() {
+        if let ScanIndex::Blocks(builder) = &mut index {
             builder.entry(
                 add(HEADER_BYTES, start)?,
                 observed - start,
@@ -319,11 +370,13 @@ fn scan_using<R: Read, B: Read>(
                 &lengths,
             )?;
         }
-        let mut staged_entry = if let Some((_, budget)) = staging.as_ref() {
+        if let Some(budget) = staging_budget {
             staged_bytes = add(add(staged_bytes, kl as u64)?, vl as u64)?;
             if vl > budget.value_bytes || staged_bytes > budget.staging_bytes {
                 return Err(invalid("staging budget exceeded"));
             }
+        }
+        let mut staged_entry = if staging.is_some() {
             let mut staged_key = Vec::new();
             staged_key
                 .try_reserve_exact(kl)
@@ -351,10 +404,14 @@ fn scan_using<R: Read, B: Read>(
                 .map_err(|_| io::Error::other("value allocation failed"))?;
             captured = Some(value);
         }
+        let mut value_hash = matches!(index, ScanIndex::Locations { .. }).then(Sha256::new);
         visit_value(&mut reader, vl, &mut |bytes| {
             hash.update(bytes);
-            if let Some(builder) = index.as_deref_mut() {
+            if let ScanIndex::Blocks(builder) = &mut index {
                 builder.value_chunk(bytes);
+            }
+            if let Some(value_hash) = &mut value_hash {
+                value_hash.update(bytes);
             }
             if selected {
                 captured.as_mut().unwrap().extend_from_slice(bytes);
@@ -363,6 +420,16 @@ fn scan_using<R: Read, B: Read>(
                 value.extend_from_slice(bytes);
             }
         })?;
+        if let ScanIndex::Locations { visit, .. } = &mut index {
+            visit(
+                &key[..kl],
+                CapturedValue {
+                    offset: HEADER_BYTES + observed - vl as u64,
+                    length: vl,
+                    digest: value_hash.unwrap().finalize().into(),
+                },
+            )?;
+        }
         if let Some(entry) = staged_entry {
             let entries = &mut staging.as_mut().unwrap().0;
             entries

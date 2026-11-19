@@ -1,10 +1,10 @@
 //! Disk-backed access to a fully verified, non-authoritative retained base.
 use database_engine::retained_base_v2::{Limits, StagingLimits};
 use database_engine::retained_candidate::{
-    Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits, SuffixExpected,
-    SuffixLimits,
+    Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits, RestoreLimits,
+    SuffixExpected, SuffixLimits, restore_exported_suffix,
 };
-use database_engine::{BatchOperation, RetainedExportLimits, Store};
+use database_engine::{BatchOperation, PublicationFailure, RetainedExportLimits, Store};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -514,5 +514,165 @@ fn suffix_values_share_the_page_byte_budget_with_base_values() {
             (b"c".to_vec(), b"suffix tail".to_vec()),
             (b"z".to_vec(), b"base tail".to_vec()),
         ]
+    );
+    let destination = root.path().join("restored");
+    restore_exported_suffix(
+        &path,
+        &suffix,
+        &destination,
+        BASE_LIMITS,
+        StagingLimits {
+            value_bytes: MAX_VALUE,
+            staging_bytes: 2 * MAX_VALUE as u64 + 1024,
+        },
+        limits,
+        &binding,
+        RestoreLimits {
+            log_bytes: EXPORT_LIMITS.max_log_bytes,
+            live_keys: 4,
+            live_key_bytes: 4,
+        },
+    )
+    .unwrap();
+    let restored = Store::open(&destination).unwrap();
+    assert_eq!(restored.scan(None, None, 4).unwrap(), first);
+    assert_eq!(restored.scan(Some(b"a"), None, 4).unwrap(), next);
+}
+
+#[test]
+fn new_history_restore_enforces_intermediate_batch_budgets() {
+    let root = tempfile::tempdir().unwrap();
+    let expected = candidate(root.path(), &[(b"a", b"x"), (b"b", b"")]);
+    let source = Store::open(root.path().join("source")).unwrap();
+    source
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"z",
+                value: b"yy",
+            },
+            BatchOperation::Delete { key: b"a" },
+            BatchOperation::Put {
+                key: b"z",
+                value: b"",
+            },
+        ])
+        .unwrap();
+    let candidate_path = root.path().join("candidate");
+    let suffix_path = root.path().join("suffix");
+    let mut suffix = SuffixLimits {
+        bytes: 1024,
+        operations: 3,
+        work: 26,
+    };
+    let base = Limits {
+        entries: 3,
+        key_bytes: 3,
+        ..BASE_LIMITS
+    };
+    let staging = StagingLimits {
+        value_bytes: 2,
+        staging_bytes: 6,
+    };
+    let binding = source
+        .export_retained_suffix(
+            &candidate_path,
+            &expected,
+            &suffix_path,
+            base,
+            staging,
+            suffix,
+            EXPORT_LIMITS,
+        )
+        .unwrap();
+    suffix.bytes = binding.end;
+    let destination = root.path().join("restored");
+    let output = RestoreLimits {
+        log_bytes: 1024,
+        live_keys: 2,
+        live_key_bytes: 2,
+    };
+    let restore = |base, staging, suffix| {
+        restore_exported_suffix(
+            &candidate_path,
+            &suffix_path,
+            &destination,
+            base,
+            staging,
+            suffix,
+            &binding,
+            output,
+        )
+    };
+    for (base, staging, suffix, message) in [
+        (
+            Limits { entries: 2, ..base },
+            staging,
+            suffix,
+            "live set limit",
+        ),
+        (
+            Limits {
+                key_bytes: 2,
+                ..base
+            },
+            staging,
+            suffix,
+            "live set limit",
+        ),
+        (
+            base,
+            StagingLimits {
+                staging_bytes: 5,
+                ..staging
+            },
+            suffix,
+            "live set limit",
+        ),
+        (
+            base,
+            StagingLimits {
+                value_bytes: 1,
+                ..staging
+            },
+            suffix,
+            "value limit",
+        ),
+        (
+            base,
+            staging,
+            SuffixLimits { work: 25, ..suffix },
+            "suffix work limit",
+        ),
+        (
+            base,
+            staging,
+            SuffixLimits {
+                operations: 2,
+                ..suffix
+            },
+            "suffix operation limit",
+        ),
+        (
+            base,
+            staging,
+            SuffixLimits {
+                bytes: binding.end - 1,
+                ..suffix
+            },
+            "suffix byte limit",
+        ),
+    ] {
+        let Err(PublicationFailure::NotPublished(error)) = restore(base, staging, suffix) else {
+            panic!("restore exceeded {message}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(message), "{error}");
+        assert!(!destination.exists());
+    }
+    restore(base, staging, suffix).unwrap();
+    let restored = Store::open(&destination).unwrap();
+    assert_eq!(
+        restored.scan(None, None, 3).unwrap(),
+        source.scan(None, None, 3).unwrap()
     );
 }
