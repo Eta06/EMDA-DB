@@ -801,3 +801,9 @@ endpoints. The planner can use a later compound range within a
 one-candidate limit. The regression fails on the prior revision and
 passes on both writable backends, including the range's transaction
 dependencies.
+
+[Sparse retained rebase sizing](../benchmarks/results/2026-11-19-sparse-retained-rebase/README.md)
+uses the in-memory block directory to find lengths for suffix-touched keys.
+The merge still authenticates all base blocks, and rotation verifies the
+successor and rechecks the source before selection. A Linux trace records
+the logical reads for a sparse suffix and verifies the reopened successor.

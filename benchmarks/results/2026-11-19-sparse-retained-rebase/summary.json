@@ -1,0 +1,33 @@
+{
+  "baseline_revision": "449080c",
+  "source_base_bytes": 29360335,
+  "source_log_bytes": 4194621,
+  "builds": {
+    "baseline": {
+      "base": {
+        "bytes": 117441196,
+        "calls": 1814
+      },
+      "records.log": {
+        "bytes": 16778658,
+        "calls": 713
+      },
+      "successor_bytes": 25166042,
+      "original_source_hashes_verified": 4
+    },
+    "sparse": {
+      "base": {
+        "bytes": 100663944,
+        "calls": 1554
+      },
+      "records.log": {
+        "bytes": 16778658,
+        "calls": 713
+      },
+      "successor_bytes": 25166042,
+      "original_source_hashes_verified": 4
+    }
+  },
+  "normalized_successor_sha256": "1ba2c0da6afd68e7512e5a4beb93db7548d1e828bcd84ae06e90db2d4dc90980",
+  "base_read_bytes_saved": 16777252
+}

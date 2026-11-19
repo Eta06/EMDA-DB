@@ -624,6 +624,131 @@ fn managed_backup_refuses_changed_witnessed_suffix() {
 }
 
 #[test]
+fn sparse_rebase_sizes_touched_blocks_and_authenticates_skipped_blocks_before_publication() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = Store::open(tmp.path().join("source")).unwrap();
+    let keys = [b"m0".as_slice(), b"m1", b"n", b"p", b"z"];
+    let sizes = [32, 32, 96, 96, 160].map(|kib| kib * 1024);
+    let data: Vec<_> = sizes
+        .into_iter()
+        .enumerate()
+        .map(|(i, size)| vec![1 + i as u8; size])
+        .collect();
+    for (&key, value) in keys.iter().zip(&data) {
+        source.put(key, value).unwrap();
+    }
+    let candidate = tmp.path().join("candidate");
+    let exported = source
+        .build_retained_candidate(
+            &candidate,
+            [3; 16],
+            [4; 16],
+            RetainedExportLimits {
+                max_log_bytes: 1024 * 1024,
+                max_output_bytes: 1024 * 1024,
+                ..EXPORT_LIMITS
+            },
+        )
+        .unwrap();
+    let limits = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: 1024 * 1024,
+            work_bytes: 1024 * 1024 + 1,
+            ..LIMITS.base
+        },
+        ..LIMITS
+    };
+    let root = tmp.path().join("catalog");
+    ManagedRetainedStore::create(&candidate, &root, limits, &exported).unwrap();
+    let mut store = ManagedRetainedStore::open(&root, limits).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"a",
+                value: b"earlier",
+            },
+            BatchOperation::Put {
+                key: b"n0",
+                value: b"between",
+            },
+            BatchOperation::Put {
+                key: b"zz",
+                value: b"later",
+            },
+            BatchOperation::Put {
+                key: b"m0",
+                value: b"replaced",
+            },
+            BatchOperation::Delete { key: b"m1" },
+        ])
+        .unwrap();
+    let state = store.scan(None, None, 32).unwrap();
+    let expected = [
+        (b"a".as_slice(), b"earlier".as_slice()),
+        (b"m0", b"replaced"),
+        (b"n", &data[2]),
+        (b"n0", b"between"),
+        (b"p", &data[3]),
+        (b"z", &data[4]),
+        (b"zz", b"later"),
+    ];
+    assert!(
+        state
+            .iter()
+            .map(|(key, value)| (key.as_slice(), value.as_slice()))
+            .eq(expected)
+    );
+    let encoded: u64 = state
+        .iter()
+        .map(|(key, value)| crate::retained_base_v2::encoded_entry_bytes(key, value.len()))
+        .sum();
+    let original_id = store.generation_id().unwrap();
+    let base = Slot::A.path(&root).join("base");
+    let file = OpenOptions::new().write(true).open(&base).unwrap();
+    let header_bytes = crate::retained_base_v2::FRAME_BYTES - 32;
+    let offset = header_bytes
+        + keys[..3]
+            .iter()
+            .zip(sizes)
+            .map(|(key, size)| crate::retained_base_v2::encoded_entry_bytes(key, size))
+            .sum::<u64>()
+        + 8
+        + keys[3].len() as u64;
+    file.write_all_at(&[0], offset).unwrap();
+    let inner = &store.store;
+    let peaks = inner
+        .overlay
+        .live_peaks(
+            &inner.base,
+            inner.suffix_file(),
+            inner.limits.suffix,
+            inner.hash.clone().finalize().into(),
+        )
+        .unwrap();
+    assert_eq!(peaks.encoded_bytes, encoded);
+    assert_eq!((peaks.entries, peaks.key_bytes), (7, 10));
+    assert_eq!((peaks.peak_entries, peaks.peak_key_bytes), (8, 12));
+    assert!(
+        matches!(store.compact(), Err(PublicationFailure::NotPublished(error))
+            if error.to_string() == "retained base block digest mismatch")
+    );
+    assert!(!Slot::B.path(&root).exists());
+    assert_eq!(store.generation_id().unwrap(), original_id);
+    file.write_all_at(&data[3][..1], offset).unwrap();
+    let generation = store.compact().unwrap();
+    drop(store);
+    let reopened = ManagedRetainedStore::open(&root, limits).unwrap();
+    let metadata = reopened.store.base.metadata();
+    assert_eq!(
+        metadata.file_bytes,
+        encoded + crate::retained_base_v2::FRAME_BYTES
+    );
+    assert_eq!((metadata.peak_entries, metadata.peak_key_bytes), (8, 12));
+    assert_eq!(reopened.generation_id().unwrap(), generation);
+    assert_eq!(reopened.scan(None, None, 32).unwrap(), state);
+}
+
+#[test]
 fn streamed_rebase_peak_scan_rejects_rechecksummed_superseded_values() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();

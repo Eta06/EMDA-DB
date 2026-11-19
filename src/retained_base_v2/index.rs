@@ -227,10 +227,11 @@ impl IndexedBase {
         Ok(())
     }
 
-    /// Authenticate the whole base against the open view while reporting entry
-    /// sizes. The frame and all entry blocks together cover every file byte.
-    pub(crate) fn visit_entry_lengths(
+    /// Verify the frame and visit blocks that could contain the supplied
+    /// sorted keys. The caller verifies all other blocks before publication.
+    pub(crate) fn visit_selected_block_lengths<'a>(
         &self,
+        keys: impl Iterator<Item = &'a [u8]>,
         mut visit: impl FnMut(&[u8], usize) -> io::Result<()>,
     ) -> io::Result<()> {
         self.check_length()?;
@@ -258,8 +259,21 @@ impl IndexedBase {
         if trailer != base.digest {
             return Err(invalid("retained base trailer changed"));
         }
-        for block in &self.blocks {
-            self.visit_block(block, |key, value| visit(key, value.remaining))?;
+        let mut keys = keys.peekable();
+        while let Some(key) = keys.next() {
+            let Some(position) = self.preceding_block(key) else {
+                continue;
+            };
+            let next_anchor = self.blocks.get(position + 1).map(|block| &block.first_key);
+            while keys
+                .peek()
+                .is_some_and(|key| next_anchor.is_none_or(|anchor| *key < anchor.as_slice()))
+            {
+                keys.next();
+            }
+            self.visit_block(&self.blocks[position], |key, value| {
+                visit(key, value.remaining)
+            })?;
         }
         Ok(())
     }

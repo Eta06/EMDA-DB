@@ -46,8 +46,9 @@ impl RetainedStore {
         self.ensure_healthy()?;
         let suffix_digest = self.hash.clone().finalize().into();
         self.verify_boundary(&suffix_digest)?;
-        // The history sweep authenticates the frame, all base blocks and the
-        // entire suffix. It also computes the final encoded size from lengths.
+        // The history sweep authenticates the frame, the base blocks that
+        // could contain touched keys, and the entire suffix. The private
+        // merge below authenticates every base block before publication.
         let peaks = self.overlay.live_peaks(
             &self.base,
             self.suffix_file(),

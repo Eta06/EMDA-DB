@@ -210,7 +210,8 @@ impl Overlay {
         present.resize(self.entries.len(), false);
         let initial = base.metadata();
         let mut encoded_bytes = initial.file_bytes - FRAME_BYTES;
-        base.visit_entry_lengths(|key, value_len| {
+        let keys = self.entries.iter().map(|entry| entry.key.as_slice());
+        base.visit_selected_block_lengths(keys, |key, value_len| {
             if let Ok(position) = find(&self.entries, key) {
                 present[position] = true;
                 encoded_bytes = encoded_bytes

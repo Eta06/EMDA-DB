@@ -295,9 +295,11 @@ allows compaction when a readable live set has outgrown the current base
 budget, even if the suffix is full. After an uncertain resize, one recovery
 ceiling must cover every limit in both the previous and successor generations.
 
-Rebase checks the source frame, every base block, and the entire witnessed
-suffix while reconstructing the historical peaks. That pass sizes the
-successor from authenticated base entry lengths and live suffix locations.
+Rebase checks the source frame, the base blocks that may contain
+suffix-touched keys, and the entire witnessed suffix while reconstructing
+historical peaks. It sizes the successor from the original encoded size,
+authenticated lengths of replaced or deleted entries, and live suffix
+locations. The sparse index identifies which blocks the sizing pass needs.
 It checks the successor file and verification byte limits before writing the
 merge to a private file through fixed-size buffers. The writer authenticates
 all base blocks, including values shadowed by replacements or deletes. After
