@@ -133,6 +133,30 @@ distinct from the source ID. The caller is responsible for ID uniqueness; no
 allocation registry or independent trust is provided. A publication failure
 after the attempt begins is reported as outcome unknown.
 
+## Read-only indexed inspection
+
+`retained_candidate::IndexedCandidate` verifies the base and independently
+retained candidate binding before returning a handle. The verification pass
+also builds an in-memory directory containing one anchor key, file range and
+SHA-256 digest per block. A block spans at most 128 KiB of whole entries or
+one larger entry. Explicit block and anchor-byte limits bound the directory.
+Opening scans all base bytes with a fixed value buffer.
+
+The handle retains the validated base descriptor. A point read searches the
+anchor keys and reads at most one block. An ordered page uses the store's entry
+and response-byte limits, including exclusive key bounds. A read hashes each
+touched block while capturing requested result bytes. A failure discards the
+whole result. The base is expected to remain immutable. The header, trailer,
+companion files and untouched blocks are checked at open only, and changing
+the file length fails subsequent nonempty reads. A pathname replacement does
+not redirect the captured descriptor. Directory allocations, read scratch
+space, result buffers and allocator overhead have separate costs.
+
+The directory is rebuilt at open. It covers only the retained base, so the
+detached suffix replay and new-history restore still use their own materialized
+state. Writable recovery needs a bounded overlay over this base and an
+authoritative binding before it can publish a generation.
+
 ## Future authority, recovery and publication (not implemented)
 
 Authoritative cutover remains prohibited until the old-reader gate and backup

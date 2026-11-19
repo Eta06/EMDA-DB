@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add read-only indexed access to verified retained candidates. Point lookups
+  and ordered pages read through one captured base descriptor and verify
+  touched blocks under bounded directory and result limits.
+
 - Release the store lock when the last in-process store or checkpoint owner
   closes, even if a forked child still holds the descriptor before exec.
   Checkpoint handoffs share one descriptor for the same lock.

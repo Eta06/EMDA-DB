@@ -9,6 +9,12 @@
 use sha2::{Digest, Sha256};
 use std::io::{self, Read};
 
+pub(crate) mod index;
+
+const HEADER_BYTES: u64 = 112;
+const MAX_KEY_BYTES: usize = 1024;
+const CHUNK_BYTES: usize = 64 * 1024;
+
 /// Explicit finite resource ceilings. `work_bytes` includes one EOF probe byte.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -45,7 +51,7 @@ fn add(a: u64, b: u64) -> io::Result<u64> {
 /// Validate one complete stream. Ordinary short reads are retried; an error,
 /// truncation, trailing data or limit violation never yields metadata.
 pub fn validate<R: Read>(reader: R, limits: Limits) -> io::Result<Validated> {
-    scan(reader, limits, None, None).map(|(metadata, _)| metadata)
+    scan(reader, limits, None, None, None).map(|(metadata, _)| metadata)
 }
 
 /// Independently supplied binding for a lookup. The digest must come from a
@@ -82,13 +88,8 @@ pub(crate) fn lookup_with_metadata<R: Read>(
     expected: Expected,
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
     crate::record::validate_key(key)?;
-    if max_value_bytes > 16 * 1024 * 1024 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "value budget exceeds format maximum",
-        ));
-    }
-    let (metadata, value) = scan(reader, limits, Some((key, max_value_bytes)), None)?;
+    validate_value_budget(max_value_bytes)?;
+    let (metadata, value) = scan(reader, limits, Some((key, max_value_bytes)), None, None)?;
     if metadata.digest != expected.digest
         || metadata.source_id != expected.source_id
         || metadata.base_id != expected.base_id
@@ -97,6 +98,25 @@ pub(crate) fn lookup_with_metadata<R: Read>(
         return Err(invalid("expected binding mismatch"));
     }
     Ok((metadata, value))
+}
+
+fn validate_value_budget(max_value_bytes: usize) -> io::Result<()> {
+    if max_value_bytes > crate::record::MAX_VALUE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "value budget exceeds format maximum",
+        ));
+    }
+    Ok(())
+}
+
+fn entry_lengths(bytes: [u8; 8]) -> io::Result<(usize, usize)> {
+    let key = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+    let value = u32::from_le_bytes(bytes[4..].try_into().unwrap()) as usize;
+    if key == 0 || key > MAX_KEY_BYTES || value > crate::record::MAX_VALUE {
+        return Err(invalid("invalid entry length"));
+    }
+    Ok((key, value))
 }
 
 /// Additional ceilings for private in-memory staging. Payload counts key and value bytes;
@@ -115,7 +135,13 @@ pub(crate) fn load_with_metadata<R: Read>(
     staging_limits: StagingLimits,
 ) -> io::Result<(Validated, StagedEntries)> {
     let mut staged = Vec::new();
-    let (metadata, _) = scan(reader, limits, None, Some((&mut staged, staging_limits)))?;
+    let (metadata, _) = scan(
+        reader,
+        limits,
+        None,
+        Some((&mut staged, staging_limits)),
+        None,
+    )?;
     Ok((metadata, staged))
 }
 
@@ -124,8 +150,9 @@ fn scan<R: Read>(
     limits: Limits,
     selection: Option<(&[u8], usize)>,
     mut staging: Option<(&mut StagedEntries, StagingLimits)>,
+    mut index: Option<&mut index::Builder>,
 ) -> io::Result<(Validated, Option<Vec<u8>>)> {
-    let mut header = [0u8; 112];
+    let mut header = [0u8; HEADER_BYTES as usize];
     // Require a budget for the header before performing any reads.
     if limits.file_bytes < 144 || limits.work_bytes < 145 {
         return Err(invalid("budget exceeded"));
@@ -152,7 +179,7 @@ fn scan<R: Read>(
     let peak_entries = number(&header[72..80]);
     let peak_key_bytes = number(&header[80..88]);
     let encoded = number(&header[88..96]);
-    let file_bytes = add(add(112, encoded)?, 32)?;
+    let file_bytes = add(add(HEADER_BYTES, encoded)?, 32)?;
     if file_bytes > limits.file_bytes
         || add(file_bytes, 1)? > limits.work_bytes
         || entries > limits.entries
@@ -166,26 +193,23 @@ fn scan<R: Read>(
     let mut hash = Sha256::new();
     hash.update(b"EMDA retained base v2\0");
     hash.update(header);
-    let mut previous = [0u8; 1024];
+    let mut previous = [0u8; MAX_KEY_BYTES];
     let mut previous_len = 0usize;
-    let mut key = [0u8; 1024];
-    let mut buffer = [0u8; 65536];
+    let mut key = [0u8; MAX_KEY_BYTES];
+    let mut buffer = [0u8; CHUNK_BYTES];
     let mut captured = None;
     let mut observed = 0u64;
     let mut keys = 0u64;
     let mut staged_bytes = 0u64;
     for _ in 0..entries {
+        let start = observed;
         if add(observed, 8)? > encoded {
             return Err(invalid("entry exceeds declared bytes"));
         }
         let mut lengths = [0u8; 8];
         reader.read_exact(&mut lengths)?;
         hash.update(lengths);
-        let kl = u32::from_le_bytes(lengths[..4].try_into().unwrap()) as usize;
-        let vl = u32::from_le_bytes(lengths[4..].try_into().unwrap()) as usize;
-        if kl == 0 || kl > 1024 || vl > 16 * 1024 * 1024 {
-            return Err(invalid("invalid entry length"));
-        }
+        let (kl, vl) = entry_lengths(lengths)?;
         observed = add(add(add(observed, 8)?, kl as u64)?, vl as u64)?;
         keys = add(keys, kl as u64)?;
         if observed > encoded || keys > key_bytes {
@@ -198,6 +222,14 @@ fn scan<R: Read>(
         }
         previous[..kl].copy_from_slice(&key[..kl]);
         previous_len = kl;
+        if let Some(builder) = index.as_deref_mut() {
+            builder.entry(
+                add(HEADER_BYTES, start)?,
+                observed - start,
+                &key[..kl],
+                &lengths,
+            )?;
+        }
         let mut staged_entry = if let Some((_, budget)) = staging.as_ref() {
             staged_bytes = add(add(staged_bytes, kl as u64)?, vl as u64)?;
             if vl > budget.value_bytes || staged_bytes > budget.staging_bytes {
@@ -235,6 +267,9 @@ fn scan<R: Read>(
             let n = remaining.min(buffer.len());
             reader.read_exact(&mut buffer[..n])?;
             hash.update(&buffer[..n]);
+            if let Some(builder) = index.as_deref_mut() {
+                builder.value_chunk(&buffer[..n]);
+            }
             if selected {
                 captured.as_mut().unwrap().extend_from_slice(&buffer[..n]);
             }

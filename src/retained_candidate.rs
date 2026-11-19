@@ -1,6 +1,8 @@
 //! Experimental, non-authoritative retained candidate. This format is not a store.
 //! Callers must keep the directory and its parents trusted and stable throughout
 //! verification, and obtain the expected binding independently.
+pub use crate::retained_base_v2::index::IndexLimits;
+use crate::retained_base_v2::index::IndexedBase;
 use crate::retained_base_v2::{self, Limits, Validated};
 use sha2::{Digest, Sha256};
 use std::{
@@ -144,6 +146,55 @@ pub fn verify(
     let base = retained_base_v2::validate(open_regular(&dir.join("base"))?, limits)?;
     check_binding(&base, expected)?;
     Ok(base)
+}
+
+/// A read-only retained candidate with a sparse in-memory directory and one
+/// captured base file descriptor. The complete base and candidate binding are
+/// verified at open. Reads verify each touched block as they capture results.
+/// Untouched blocks and candidate companion files are checked at open only.
+pub struct IndexedCandidate {
+    base: IndexedBase,
+}
+
+impl IndexedCandidate {
+    /// Verify an immutable candidate against a binding retained independently.
+    /// The directory and its ancestors must be trusted and stable during open.
+    /// The base must remain immutable for this handle's lifetime. The index
+    /// limits bound the directory without storing per-key entries or values.
+    /// A limit or I/O error can precede full binding verification.
+    pub fn open(
+        directory: impl AsRef<Path>,
+        limits: Limits,
+        index_limits: IndexLimits,
+        expected: &Expected,
+    ) -> io::Result<Self> {
+        let dir = directory.as_ref();
+        check_files(dir, expected)?;
+        let base = IndexedBase::open(open_regular(&dir.join("base"))?, limits, index_limits)?;
+        check_binding(base.metadata(), expected)?;
+        Ok(Self { base })
+    }
+
+    pub fn metadata(&self) -> &Validated {
+        self.base.metadata()
+    }
+
+    /// Find one key and verify its candidate block before returning a value.
+    /// Limit and I/O errors do not establish that the key exists.
+    pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
+        self.base.get(key, max_value_bytes)
+    }
+
+    /// Return a byte-ordered page using exclusive bounds. Each page is capped
+    /// by the ordinary store's maximum scan entries and result bytes.
+    pub fn scan(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+    ) -> io::Result<Vec<crate::Entry>> {
+        self.base.scan(after, before, limit)
+    }
 }
 
 /// Read one value only after validating the entire candidate against an independently
