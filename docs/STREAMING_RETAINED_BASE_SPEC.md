@@ -292,8 +292,10 @@ ordinary store and holds its lock through publication at a separate path.
 It checks source identity and destination separation before staging.
 It replays the full witnessed history within the export limits, verifies
 the compacted base, and initializes an empty witnessed suffix under the
-managed generation limits. The base carries the original ordered batch
-peaks. The verified base stays inside private staging until the complete
+managed generation limits. Base export drains a fixed write buffer
+before syncing and re-reading the staged file. A drain, sync, validation
+or source-witness failure leaves the stage unpublished. The base carries
+the original ordered batch peaks and stays inside private staging until the complete
 catalog is published. The source remains an independently writable store
 after the copy. Applications must coordinate any move of their writers to
 the new path. An uncertain publication can be inspected by opening the

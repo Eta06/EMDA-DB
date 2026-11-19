@@ -2,7 +2,12 @@
 //! These disposable-process checks do not simulate physical ENOSPC or power loss.
 #![cfg(target_os = "linux")]
 
-use database_engine::{Store, cleanup_abandoned_staging};
+use database_engine::retained_base_v2::Limits;
+use database_engine::retained_candidate::{
+    AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits, OverlayLimits, RetainedAuthority,
+    RetainedStoreLimits, SuffixLimits,
+};
+use database_engine::{PublicationFailure, RetainedExportLimits, Store, cleanup_abandoned_staging};
 use rustix::fs::getxattr;
 use rustix::process::{Resource, Rlimit, Signal, getrlimit, setrlimit};
 use std::fs;
@@ -18,6 +23,34 @@ use support::retry_lock;
 const XATTR: &str = "user.db.commit.v3";
 const READY: &str = "EMDA_COPY_FILE_LIMIT_READY";
 const LARGE_VALUE: &[u8] = &[0x6b; 4096];
+const EXPORT: RetainedExportLimits = RetainedExportLimits {
+    max_log_bytes: 8192,
+    max_live_keys: 16,
+    max_live_key_bytes: 128,
+    max_output_bytes: 8192,
+};
+const RETAINED: RetainedStoreLimits = RetainedStoreLimits {
+    base: Limits {
+        file_bytes: 8192,
+        entries: 16,
+        key_bytes: 128,
+        work_bytes: 8193,
+    },
+    index: IndexLimits {
+        blocks: 4,
+        anchor_bytes: 32,
+    },
+    suffix: SuffixLimits {
+        bytes: 8192,
+        operations: 32,
+        work: 4096,
+    },
+    overlay: OverlayLimits {
+        entries: 16,
+        key_bytes: 128,
+    },
+};
+type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
 
 #[derive(Clone, Copy, Debug)]
 enum Format {
@@ -30,6 +63,7 @@ enum Operation {
     Backup,
     Restore,
     Upgrade,
+    RetainedCutover,
 }
 
 impl Operation {
@@ -38,6 +72,7 @@ impl Operation {
             Self::Backup => "backup",
             Self::Restore => "restore",
             Self::Upgrade => "upgrade",
+            Self::RetainedCutover => "retained-cutover",
         }
     }
 }
@@ -93,7 +128,7 @@ fn kernel_file_limit_copy_child() {
     };
     let root = Path::new(&root);
     let operation = std::env::var("EMDA_COPY_LIMIT_OPERATION").unwrap();
-    let source = if operation == "restore" {
+    let mut source = if operation == "restore" {
         None
     } else {
         Some(retry_lock(|| Store::open(root.join("source"))).unwrap())
@@ -112,6 +147,17 @@ fn kernel_file_limit_copy_child() {
             .as_ref()
             .unwrap()
             .upgrade_format(root.join("failed-store")),
+        "retained-cutover" => Catalog::cutover_from_store(
+            source.take().unwrap(),
+            root.join("source"),
+            EXPORT,
+            RETAINED,
+        )
+        .map(|_| ())
+        .map_err(|error| match error {
+            PublicationFailure::NotPublished(error) => error,
+            other => panic!("cutover published before its export drained: {other:?}"),
+        }),
         _ => panic!("unknown operation"),
     };
     // An inherited ignored SIGXFSZ lets the caller observe the kernel error.
@@ -123,6 +169,8 @@ fn kernel_file_limit_copy_child() {
     );
     if let Some(source) = source {
         verify(&source);
+    } else if operation == "retained-cutover" {
+        verify(&Store::open(root.join("source")).unwrap());
     }
 }
 
@@ -130,7 +178,12 @@ fn kernel_file_limit_copy_child() {
 fn file_size_failures_never_publish_partial_copies_and_allow_retry() {
     let mut outcomes = [0_usize; 2];
     for format in [Format::V2, Format::V3] {
-        for operation in [Operation::Backup, Operation::Restore, Operation::Upgrade] {
+        for operation in [
+            Operation::Backup,
+            Operation::Restore,
+            Operation::Upgrade,
+            Operation::RetainedCutover,
+        ] {
             for limit in [128_u64, 512, 2048] {
                 for ignore_signal in [false, true] {
                     let root = tempfile::tempdir().unwrap();
@@ -226,6 +279,34 @@ fn file_size_failures_never_publish_partial_copies_and_allow_retry() {
                             store.upgrade_format(&retry).unwrap();
                             drop(store);
                             verify(&retry_lock(|| Store::open(&retry)).unwrap());
+                        }
+                        Operation::RetainedCutover => {
+                            // This fixture's export fits in the output buffer
+                            // but exceeds the kernel file limit at the drain.
+                            cleanup_abandoned_staging(&source).unwrap();
+                            assert_eq!(fs::read_dir(&source).unwrap().count(), 3, "{context}");
+                            let store = Store::open(&source).unwrap();
+                            let initial =
+                                Catalog::cutover_from_store(store, &source, EXPORT, RETAINED)
+                                    .unwrap();
+                            let mut authority =
+                                FileRetainedAuthority::create(root.path().join("authority"))
+                                    .unwrap();
+                            assert!(authority.compare_and_swap(None, initial).unwrap());
+                            let mut reopened = Catalog::open(&source, RETAINED, authority).unwrap();
+                            assert_eq!(
+                                reopened.get(b"safe", 12).unwrap().as_deref(),
+                                Some(b"acknowledged".as_slice())
+                            );
+                            assert_eq!(
+                                reopened
+                                    .get(b"large", LARGE_VALUE.len())
+                                    .unwrap()
+                                    .as_deref(),
+                                Some(LARGE_VALUE)
+                            );
+                            assert_eq!(fs::read(&backup).unwrap(), backup_before, "{context}");
+                            continue;
                         }
                     }
                     assert_eq!(fs::read(&log_path).unwrap(), before, "{context}");

@@ -53,7 +53,7 @@ impl ManagedRetainedStore {
             write_new(&candidate.join("store.lock"), &[])?;
             write_new(&suffix, &self.store.suffix)?;
             check_files(&candidate, &expected.candidate)?;
-            let base = crate::retained_base_v2::validate(
+            let base = crate::retained_base_v2::validate_buffered(
                 open_regular(&candidate.join("base"))?,
                 limits.base,
             )?;

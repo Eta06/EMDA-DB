@@ -1,7 +1,7 @@
 //! Non-authoritative, non-destructive retained-base export.
 use super::*;
 use sha2::{Digest, Sha256};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 
 /// Explicit limits for full replay and the resulting file.
 #[derive(Clone, Copy, Debug)]
@@ -532,7 +532,8 @@ impl Store {
                 Some(parent) => parent,
                 None => backup::parent_directory(destination)?,
             };
-            let (mut stage, mut file) = crate::staging::Stage::file(parent)?;
+            let (mut stage, file) = crate::staging::Stage::file(parent)?;
+            let mut file = BufWriter::with_capacity(64 * 1024, file);
             let mut hash = Sha256::new();
             hash.update(b"EMDA retained base v2\0");
             file.write_all(&header)?;
@@ -570,10 +571,11 @@ impl Store {
             }
             let digest: [u8; 32] = hash.finalize().into();
             file.write_all(&digest)?;
+            let mut file = file.into_inner().map_err(|error| error.into_error())?;
             hook("output_sync")?;
             file.sync_all()?;
             file.seek(SeekFrom::Start(0))?;
-            let result = crate::retained_base_v2::validate(
+            let result = crate::retained_base_v2::validate_buffered(
                 &mut file,
                 crate::retained_base_v2::Limits {
                     file_bytes: limits.max_output_bytes,

@@ -159,7 +159,7 @@ pub fn verify(
 ) -> io::Result<Validated> {
     let dir = directory.as_ref();
     check_files(dir, expected)?;
-    let base = retained_base_v2::validate(open_regular(&dir.join("base"))?, limits)?;
+    let base = retained_base_v2::validate_buffered(open_regular(&dir.join("base"))?, limits)?;
     check_binding(&base, expected)?;
     Ok(base)
 }
