@@ -78,6 +78,10 @@ struct Fixture {
 
 impl Fixture {
     fn prepare() -> Self {
+        Self::prepare_with_limits(LIMITS)
+    }
+
+    fn prepare_with_limits(limits: RetainedStoreLimits) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let source = tmp.path().join("source");
         let root = tmp.path().join("authorized");
@@ -93,7 +97,7 @@ impl Fixture {
                 max_live_key_bytes: 256,
                 max_output_bytes: 8192,
             },
-            LIMITS,
+            limits,
         )
         .unwrap();
         Self {
@@ -110,6 +114,16 @@ impl Fixture {
 
     fn open(&self) -> AuthorizedRetainedStore<Provider> {
         AuthorizedRetainedStore::open(&self.root, LIMITS, self.provider.clone()).unwrap()
+    }
+
+    fn open_auto(&self, threshold: NonZeroU64) -> AuthorizedRetainedStore<Provider> {
+        AuthorizedRetainedStore::open_with_auto_reclaim(
+            &self.root,
+            LIMITS,
+            self.provider.clone(),
+            threshold,
+        )
+        .unwrap()
     }
 }
 
@@ -382,6 +396,126 @@ fn selected_rotation_resets_the_suffix_and_reuses_both_slots() {
     let mut reopened = f.open();
     assert_eq!(reopened.get(b"base", 8).unwrap(), None);
     assert_eq!(reopened.get(b"ack", 4).unwrap().unwrap(), b"kept");
+}
+
+#[test]
+fn automatic_rotation_recycles_slots_at_threshold_and_hard_admission_limits() {
+    for (limits, threshold) in [
+        (LIMITS, NonZeroU64::MIN),
+        (
+            RetainedStoreLimits {
+                suffix: SuffixLimits {
+                    operations: 1,
+                    ..LIMITS.suffix
+                },
+                ..LIMITS
+            },
+            NonZeroU64::MAX,
+        ),
+    ] {
+        let mut f = Fixture::prepare_with_limits(limits);
+        f.register();
+        let mut store = f.open_auto(threshold);
+        store.put(b"ack", b"kept").unwrap();
+        assert_eq!(
+            store.current.committed.generation,
+            f.initial.committed.generation
+        );
+        store.delete(b"base").unwrap();
+        assert_eq!(store.inner.active.slot, Slot::B);
+        assert!(!Slot::A.path(&f.root).exists());
+        store.put(b"next", b"latest").unwrap();
+        assert_eq!(store.inner.active.slot, Slot::A);
+        assert!(!Slot::B.path(&f.root).exists());
+        assert_eq!(f.provider.read().unwrap().unwrap().revision, 10);
+        drop(store);
+        assert_eq!(
+            f.open_auto(threshold).scan(None, None, 4).unwrap(),
+            [
+                (b"ack".to_vec(), b"kept".to_vec()),
+                (b"next".to_vec(), b"latest".to_vec()),
+            ]
+        );
+    }
+}
+
+#[test]
+fn automatic_rotation_rejects_impossible_writes_without_changing_authority() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open_auto(NonZeroU64::MIN);
+    store.put(b"ack", b"kept").unwrap();
+    let prior = store.current;
+    assert!(matches!(store.put(b"oversize", &[0; 8192]),
+        Err(MutationFailure::Rejected(error))
+            if error.get_ref().is_some_and(|cause| cause.is::<SuffixCapacity>())));
+    assert_eq!(f.provider.read().unwrap(), Some(prior));
+    assert!(!Slot::B.path(&f.root).exists());
+    assert_eq!(store.get(b"ack", 4).unwrap().unwrap(), b"kept");
+}
+
+#[test]
+fn automatic_rotation_rechecks_admission_after_maintenance_before_intent() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open_auto(NonZeroU64::MIN);
+    store.put(b"ack", b"kept").unwrap();
+    let ack = store.current;
+    let mut inspect = f.provider.clone();
+    let result = store.write_batch_checking(
+        &[BatchOperation::Put {
+            key: b"new",
+            value: b"cancelled",
+        }],
+        || {
+            if inspect.record.lock().unwrap().unwrap().revision > ack.revision {
+                Err(io::Error::other("admission closed during maintenance"))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(result, Err(MutationFailure::Rejected(error))
+        if error.to_string() == "admission closed during maintenance"));
+    let record = inspect.read().unwrap().unwrap();
+    assert_eq!(record.revision, ack.revision + 2);
+    assert_eq!(record.committed.suffix_end, 0);
+    assert_eq!(record.pending, None);
+    assert!(!Slot::A.path(&f.root).exists());
+    assert_eq!(store.get(b"new", 9).unwrap(), None);
+    drop(store);
+    assert_eq!(f.open().get(b"ack", 4).unwrap().unwrap(), b"kept");
+}
+
+#[test]
+fn automatic_rotation_recovers_after_uncertain_selection_or_reclamation_fence() {
+    for (revision, after) in [(3, false), (3, true), (4, false), (4, true)] {
+        let mut f = Fixture::prepare();
+        f.register();
+        let mut store = f.open_auto(NonZeroU64::MIN);
+        store.put(b"ack", b"kept").unwrap();
+        let prior = store.current.committed;
+        store.authority.fault = Some((revision, after));
+        assert!(
+            matches!(store.put(b"next", b"unsubmitted"), Err(MutationFailure::Rejected(error))
+            if error.to_string().contains("injected authority failure"))
+        );
+        assert!(store.get(b"ack", 4).is_err());
+        assert!(Slot::A.path(&f.root).is_dir());
+        assert!(Slot::B.path(&f.root).is_dir());
+        drop(store);
+        let mut store = f.open_auto(NonZeroU64::MIN);
+        let rotated = revision == 4 || after;
+        assert_eq!(store.current.committed != prior, rotated);
+        assert_eq!(Slot::A.path(&f.root).exists(), !rotated);
+        assert_eq!(Slot::B.path(&f.root).exists(), rotated);
+        assert!(store.current.pending.is_none());
+        assert_eq!(store.get(b"next", 12).unwrap(), None);
+        assert_eq!(store.get(b"ack", 4).unwrap().unwrap(), b"kept");
+        store.put(b"next", b"retried").unwrap();
+        drop(store);
+        assert_eq!(f.open().get(b"next", 7).unwrap().unwrap(), b"retried");
+    }
 }
 
 #[test]

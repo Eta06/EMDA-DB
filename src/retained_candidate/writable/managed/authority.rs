@@ -107,6 +107,8 @@ pub struct AuthorizedRetainedStore<A> {
     authority: A,
     current: AuthorityRecord,
     fence: Option<cutover::Fence>,
+    auto_reclaim: Option<NonZeroU64>,
+    cleanup_pending: bool,
 }
 
 impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
@@ -176,6 +178,8 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             authority,
             current,
             fence,
+            auto_reclaim: None,
+            cleanup_pending: false,
         };
         if current.pending.is_some() {
             let actual = AuthorityPoint::from_store(this.inner.active.catalog, &this.inner.store);
@@ -184,6 +188,25 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             this.verify_current()?;
         }
         Ok(this)
+    }
+
+    /// Open with synchronous, per-handle maintenance. Reclaim a verified
+    /// inactive slot on open and rotate before a write crosses the byte
+    /// threshold or exhausts suffix admission. A write must fit an empty
+    /// suffix. Rotation and reclamation each require an authority CAS.
+    ///
+    /// Maintenance can complete before a write is rejected. An uncertain
+    /// authority update requires reopen before using the handle again.
+    pub fn open_with_auto_reclaim(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        authority: A,
+        suffix_threshold: NonZeroU64,
+    ) -> io::Result<Self> {
+        let mut store = Self::open(root, limits, authority)?;
+        store.finish_maintenance()?;
+        store.auto_reclaim = Some(suffix_threshold);
+        Ok(store)
     }
 
     pub fn get(&mut self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
@@ -255,6 +278,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             self.inner.store = store;
             self.inner.active = active;
             self.inner.uncertain = false;
+            self.cleanup_pending = self.auto_reclaim.is_some();
             Ok(point.generation)
         })
     }
@@ -283,12 +307,68 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     fn write_checking(
         &mut self,
         encoded: io::Result<Vec<u8>>,
-        admit: impl FnOnce() -> io::Result<()>,
+        admit: impl Fn() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         let encoded = encoded.map_err(MutationFailure::Rejected)?;
         self.verify_current().map_err(MutationFailure::Rejected)?;
+        let Some(threshold) = self.auto_reclaim else {
+            return self.append(&encoded, admit);
+        };
+        if self.cleanup_pending {
+            admit().map_err(MutationFailure::Rejected)?;
+            self.finish_maintenance()
+                .map_err(MutationFailure::Rejected)?;
+        }
+        let suffix_len = self.inner.store.suffix.len() as u64;
+        if suffix_len == 0 {
+            return self.append(&encoded, admit);
+        }
+        if suffix_len.saturating_add(encoded.len() as u64) <= threshold.get() {
+            match self.append(&encoded, &admit) {
+                Err(MutationFailure::Rejected(ref error))
+                    if !self.inner.uncertain
+                        && error
+                            .get_ref()
+                            .is_some_and(|cause| cause.is::<SuffixCapacity>()) => {}
+                result => return result,
+            }
+        }
+        admit().map_err(MutationFailure::Rejected)?;
+        check_empty_suffix(&encoded, self.inner.store.limits).map_err(MutationFailure::Rejected)?;
+        self.finish_maintenance()
+            .map_err(MutationFailure::Rejected)?;
+        admit().map_err(MutationFailure::Rejected)?;
+        self.compact().map_err(|error| {
+            MutationFailure::Rejected(io::Error::new(
+                match &error {
+                    PublicationFailure::NotPublished(cause)
+                    | PublicationFailure::OutcomeUnknown(cause) => cause.kind(),
+                },
+                error,
+            ))
+        })?;
+        self.finish_maintenance()
+            .map_err(MutationFailure::Rejected)?;
+        self.append(&encoded, admit)
+    }
+
+    fn finish_maintenance(&mut self) -> io::Result<()> {
+        self.cleanup_pending = true;
+        self.verify_current()?;
+        sync_existing(&self.inner.root)?;
+        crate::cleanup_abandoned_staging(&self.inner.root)?;
+        self.reclaim_inactive()?;
+        self.cleanup_pending = false;
+        Ok(())
+    }
+
+    fn append(
+        &mut self,
+        encoded: &[u8],
+        admit: impl FnOnce() -> io::Result<()>,
+    ) -> Result<(), MutationFailure> {
         let mut hash = self.inner.store.hash.clone();
-        hash.update(&encoded);
+        hash.update(encoded);
         let end = suffix_end(
             self.inner.store.suffix.len(),
             encoded.len(),
@@ -314,7 +394,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         let attempted = Cell::new(false);
         let authority = &mut self.authority;
         let result = self.inner.store.write_encoded(
-            &encoded,
+            encoded,
             || {
                 admit()?;
                 attempted.set(true);

@@ -60,6 +60,10 @@ I/O is allowed to finish across a cancellation or deadline. Use
 `transaction_detailed` to distinguish a rejected transaction from one whose
 local append might have committed. Reopen after an authority error to resolve
 the outcome against the trusted authority.
+Opening the authorized catalog with automatic reclamation enables
+synchronous rotation for document writes as suffix capacity is approached.
+Cancellation or expiry during maintenance can leave the new generation in
+place while the document batch remains unsubmitted.
 
 Create collections explicitly with a `CollectionSchema`; an empty schema accepts arbitrary object fields within limits. Each of at most 64 distinct field rules declares a path, type, required flag and nullable flag. Missing and explicit null differ; nullable does not make a field optional. An intermediate non-object makes a nested path missing. Integer rules accept signed 64-bit integers. Unlisted fields are allowed. Replacing a schema validates all existing documents atomically, subject to a 256-document/32 MiB scan limit.
 

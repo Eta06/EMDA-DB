@@ -347,7 +347,25 @@ generation fails closed. An uncertain selection retains both slots.
 Reclamation advances the authority revision without changing its selected
 point before removing the inactive slot. Earlier in-flight selection
 attempts lose their CAS, and a fresh rotation must build a fresh successor.
-Explicit reclamation is required before reusing the other slot.
+The ordinary authorized open leaves reclamation explicit.
+
+`AuthorizedRetainedStore::open_with_auto_reclaim` opts into synchronous
+maintenance for that handle. Open verifies and recovers the authority
+selection, then removes owned abandoned stages and reclaims a verified
+inactive slot. Writes rotate when the nonempty suffix would cross the
+threshold or exceed a hard suffix or overlay limit. The proposed record
+must first pass admission against an empty suffix. Rotation and inactive
+reclamation use their own authority updates before the append submits its
+intent. The move to private staging synchronizes both parent directories
+before removing the retired files. Automatic cleanup on reopen
+synchronizes the catalog directory before removing abandoned stages.
+
+Successful maintenance may remain visible when the following append is
+rejected or cancelled. An uncertain maintenance update requires reopen
+and reports the user write as rejected because no append was attempted.
+After the append begins, its original outcome rules apply. The option
+adds synchronous work to writes and does not establish a latency,
+whole-database disk or process-memory bound.
 
 An opt-in blocking cutover can consume an exclusively owned witnessed
 ordinary store at its original path. It exports into a private nested

@@ -420,11 +420,7 @@ impl ManagedRetainedStore {
     }
 
     fn compact_for_write(&mut self, bytes: &[u8]) -> Result<(), MutationFailure> {
-        let limits = self.store.limits;
-        suffix_end(0, bytes.len(), limits).map_err(MutationFailure::Rejected)?;
-        super::Overlay::default()
-            .prepare_append(bytes, 0, limits.suffix, limits.overlay)
-            .map_err(MutationFailure::Rejected)?;
+        check_empty_suffix(bytes, self.store.limits).map_err(MutationFailure::Rejected)?;
         self.finish_maintenance()
             .map_err(MutationFailure::Rejected)?;
         self.compact().map_err(|error| {
@@ -441,6 +437,7 @@ impl ManagedRetainedStore {
     fn finish_maintenance(&mut self) -> io::Result<()> {
         self.cleanup_pending = true;
         self.verify_selection()?;
+        sync_existing(&self.root)?;
         crate::cleanup_abandoned_staging(&self.root)?;
         self.reclaim_inactive()?;
         self.cleanup_pending = false;
@@ -558,7 +555,7 @@ impl ManagedRetainedStore {
 
     fn reclaim_using(
         &mut self,
-        sync_after_move: impl FnOnce(&Path) -> io::Result<()>,
+        mut sync_after_move: impl FnMut(&Path) -> io::Result<()>,
     ) -> io::Result<bool> {
         self.verify_selection()?;
         let inactive = self.active.slot.other().path(&self.root);
@@ -581,6 +578,8 @@ impl ManagedRetainedStore {
         crate::backup::publish_directory(&inactive, &moved)?;
         stage.preserve_payload_on_drop();
         sync_after_move(stage.path())?;
+        // Retire the original slot name durably before deleting its contents.
+        sync_after_move(&self.root)?;
         fs::remove_dir_all(&moved)?;
         sync_existing(stage.path())?;
         stage.finish_retained_cleanup();
@@ -611,6 +610,12 @@ impl ManagedRetainedStore {
             MutationFailure::Rejected(error)
         })
     }
+}
+
+fn check_empty_suffix(bytes: &[u8], limits: RetainedStoreLimits) -> io::Result<()> {
+    suffix_end(0, bytes.len(), limits)?;
+    super::Overlay::default().prepare_append(bytes, 0, limits.suffix, limits.overlay)?;
+    Ok(())
 }
 
 fn check_separation(source: &Path, parent: &Path) -> io::Result<()> {

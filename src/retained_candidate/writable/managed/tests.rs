@@ -620,22 +620,38 @@ fn reclamation_refuses_unknown_files_and_an_invalid_active_base() {
 
 #[test]
 fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
-    let f = Fixture::new(LIMITS);
-    let mut store = f.open();
-    store.compact().unwrap();
-    let before = store.scan(None, None, 4).unwrap();
-    let error = store
-        .reclaim_using(|_| Err(io::Error::other("after move")))
-        .unwrap_err();
-    assert_eq!(error.to_string(), "after move");
-    assert_eq!(store.scan(None, None, 4).unwrap(), before);
-    assert!(!store.reclaim_inactive().unwrap());
-    assert!(fs::read_dir(&f.root).unwrap().count() > 4);
-    drop(store);
-    let recovered =
-        ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN).unwrap();
-    assert_eq!(fs::read_dir(&f.root).unwrap().count(), 4);
-    assert_eq!(recovered.scan(None, None, 4).unwrap(), before);
+    for fail_catalog_sync in [false, true] {
+        let f = Fixture::new(LIMITS);
+        let mut store = f.open();
+        store.compact().unwrap();
+        let before = store.scan(None, None, 4).unwrap();
+        let root = f.root.canonicalize().unwrap();
+        let mut retired = None;
+        let error = store
+            .reclaim_using(|path| {
+                if path != root {
+                    retired = Some(path.join("retired"));
+                }
+                let retired = retired.as_ref().unwrap();
+                assert!(retired.join("records.log").is_file());
+                assert!(retired.join("base").is_file());
+                if (path == root) == fail_catalog_sync {
+                    return Err(io::Error::other("after move"));
+                }
+                sync_existing(path)
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "after move");
+        assert!(retired.unwrap().join("commit.state").is_file());
+        assert_eq!(store.scan(None, None, 4).unwrap(), before);
+        assert!(!store.reclaim_inactive().unwrap());
+        assert!(fs::read_dir(&f.root).unwrap().count() > 4);
+        drop(store);
+        let recovered =
+            ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN).unwrap();
+        assert_eq!(fs::read_dir(&f.root).unwrap().count(), 4);
+        assert_eq!(recovered.scan(None, None, 4).unwrap(), before);
+    }
 }
 
 #[test]

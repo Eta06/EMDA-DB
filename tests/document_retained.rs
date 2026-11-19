@@ -80,10 +80,11 @@ fn authorized_cutover_preserves_document_transactions_through_reclamation() {
     let mut provider = FileRetainedAuthority::create(&authority).unwrap();
     assert!(provider.compare_and_swap(None, initial).unwrap());
     let open = || {
-        Catalog::open(
+        Catalog::open_with_auto_reclaim(
             &source,
             LIMITS,
             FileRetainedAuthority::open(&authority).unwrap(),
+            NonZeroU64::MIN,
         )
         .unwrap()
     };
@@ -128,16 +129,21 @@ fn authorized_cutover_preserves_document_transactions_through_reclamation() {
     assert_eq!(committed.revision, initial.revision + 2);
     assert!(committed.pending.is_none());
     assert_eq!(store.get(b"cancelled", 32).unwrap(), None);
-    assert_ne!(store.compact().unwrap(), committed.committed.generation);
-    assert!(store.reclaim_inactive().unwrap());
+    {
+        let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+        db.replace("items", "z", &json!({"n": 8}), false).unwrap();
+    }
+    let rotated = provider.read().unwrap().unwrap();
+    assert_ne!(rotated.committed.generation, committed.committed.generation);
+    assert_eq!(rotated.revision, committed.revision + 4);
     drop(store);
 
     let mut store = open();
     let db = DocumentDatabase::with_authorized_retained_store(&mut store);
     assert_eq!(db.get("items", "a").unwrap(), None);
     assert_eq!(db.get("items", "m").unwrap(), Some(json!({"n": 3})));
-    assert_eq!(db.get("items", "z").unwrap(), Some(json!({"n": 7})));
-    assert!(db.insert("items", "duplicate", &json!({"n": 7})).is_err());
+    assert_eq!(db.get("items", "z").unwrap(), Some(json!({"n": 8})));
+    assert!(db.insert("items", "duplicate", &json!({"n": 8})).is_err());
     assert_eq!(
         db.transaction(|tx| tx.get_raw(b"receipt"))
             .unwrap()

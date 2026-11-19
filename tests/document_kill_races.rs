@@ -2,7 +2,8 @@
 //! These tests do not simulate loss of OS/device caches or physical power.
 use database_engine::retained_base_v2::Limits;
 use database_engine::retained_candidate::{
-    IndexLimits, ManagedRetainedStore, OverlayLimits, RetainedStoreLimits, SuffixLimits,
+    AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits,
+    ManagedRetainedStore, OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, IndexDefinition, IndexQuery, IndexValue,
@@ -59,7 +60,7 @@ fn initialize(db: &DocumentDatabase<'_>) {
     .unwrap();
 }
 
-fn child_work(db: &DocumentDatabase<'_>, signal: &Path) -> ! {
+fn acknowledge_documents(db: &DocumentDatabase<'_>) {
     for number in 0..3 {
         let id = format!("acked-{number}");
         let receipt = format!("receipt-{number}");
@@ -69,16 +70,24 @@ fn child_work(db: &DocumentDatabase<'_>, signal: &Path) -> ! {
         })
         .unwrap();
     }
-    // All three transactions returned successfully before this signal. The
-    // parent captures their log prefix while this child is paused on stdin.
-    fs::write(signal, b"acknowledged").unwrap();
-    let mut go = [0_u8; 1];
-    io::stdin().read_exact(&mut go).unwrap();
+}
+
+fn insert_pending(db: &DocumentDatabase<'_>) {
     db.transaction(|tx| {
         tx.insert("c", "pending", &json!({"n":99}))?;
         tx.put_raw(b"pending-receipt", b"pending")
     })
     .unwrap();
+}
+
+fn child_work(db: &DocumentDatabase<'_>, signal: &Path) -> ! {
+    acknowledge_documents(db);
+    // All three transactions returned successfully before this signal. The
+    // parent captures their log prefix while this child is paused on stdin.
+    fs::write(signal, b"acknowledged").unwrap();
+    let mut go = [0_u8; 1];
+    io::stdin().read_exact(&mut go).unwrap();
+    insert_pending(db);
     loop {
         thread::park();
     }
@@ -103,6 +112,29 @@ fn document_kill_race_child() {
             &DocumentDatabase::with_managed_retained_store(&mut store),
             Path::new(&signal),
         );
+    } else if mode == "authorized" {
+        let root = Path::new(&path).parent().unwrap();
+        let (revision, when) = env::var("EMDA_DOCUMENT_KILL_AUTHORITY_BOUNDARY")
+            .unwrap()
+            .split_once('-')
+            .map(|(revision, when)| (revision.parse().unwrap(), when == "after"))
+            .unwrap();
+        let provider = PausedAuthority {
+            inner: FileRetainedAuthority::open(root.join("authority")).unwrap(),
+            boundary: (revision, when),
+            signal: signal.into(),
+        };
+        let mut store = AuthorizedRetainedStore::open_with_auto_reclaim(
+            &path,
+            RETAINED_LIMITS,
+            provider,
+            NonZeroU64::MIN,
+        )
+        .unwrap();
+        insert_pending(&DocumentDatabase::with_authorized_retained_store(
+            &mut store,
+        ));
+        panic!("child missed its authority boundary");
     } else {
         let checkpoint = env::var_os("EMDA_DOCUMENT_KILL_CHECKPOINT").unwrap();
         let digest: [u8; 32] = fs::read(env::var_os("EMDA_DOCUMENT_KILL_DIGEST").unwrap())
@@ -114,6 +146,122 @@ fn document_kill_race_child() {
             &DocumentDatabase::with_checkpoint_store(&store),
             Path::new(&signal),
         );
+    }
+}
+
+struct PausedAuthority {
+    inner: FileRetainedAuthority,
+    boundary: (u64, bool),
+    signal: std::path::PathBuf,
+}
+
+impl PausedAuthority {
+    fn pause(&self, revision: u64, after: bool) -> io::Result<()> {
+        if self.boundary == (revision, after) {
+            fs::write(&self.signal, b"authority boundary")?;
+            loop {
+                thread::park();
+            }
+        }
+        Ok(())
+    }
+}
+
+impl RetainedAuthority for PausedAuthority {
+    fn read(&mut self) -> io::Result<Option<AuthorityRecord>> {
+        self.inner.read()
+    }
+
+    fn compare_and_swap(
+        &mut self,
+        previous: Option<AuthorityRecord>,
+        next: AuthorityRecord,
+    ) -> io::Result<bool> {
+        self.pause(next.revision, false)?;
+        let replaced = self.inner.compare_and_swap(previous, next)?;
+        if replaced {
+            self.pause(next.revision, true)?;
+        }
+        Ok(replaced)
+    }
+}
+
+#[test]
+fn killed_authorized_document_writer_recovers_at_each_rotation_and_append_update() {
+    type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
+    for revision in 3..=6 {
+        for when in ["before", "after"] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let authority = root.path().join("authority");
+            let signal = root.path().join("signal");
+            let original = Store::open(&path).unwrap();
+            let db = DocumentDatabase::new(&original);
+            initialize(&db);
+            acknowledge_documents(&db);
+            let initial = Catalog::cutover_from_store(
+                original,
+                &path,
+                RetainedExportLimits {
+                    max_log_bytes: 65_536,
+                    max_live_keys: 256,
+                    max_live_key_bytes: 8_192,
+                    max_output_bytes: 65_536,
+                },
+                RETAINED_LIMITS,
+            )
+            .unwrap();
+            let mut provider = FileRetainedAuthority::create(&authority).unwrap();
+            assert!(provider.compare_and_swap(None, initial).unwrap());
+            let mut store = Catalog::open(&path, RETAINED_LIMITS, provider).unwrap();
+            store.put(b"rotation-trigger", b"acknowledged").unwrap();
+            drop(store);
+
+            let boundary = format!("{revision}-{when}");
+            let mut child = Command::new(env::current_exe().unwrap())
+                .args(["--exact", "document_kill_race_child"])
+                .env("EMDA_DOCUMENT_KILL_CHILD", "authorized")
+                .env("EMDA_DOCUMENT_KILL_PATH", &path)
+                .env("EMDA_DOCUMENT_KILL_SIGNAL", &signal)
+                .env("EMDA_DOCUMENT_KILL_AUTHORITY_BOUNDARY", &boundary)
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let reached = loop {
+                if signal.exists() {
+                    break true;
+                }
+                if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
+                    break false;
+                }
+                thread::sleep(Duration::from_millis(1));
+            };
+            let killed = child.kill();
+            let status = child.wait().unwrap();
+            assert!(reached, "child did not reach authority boundary {boundary}");
+            killed.unwrap();
+            assert!(!status.success());
+
+            let mut provider = FileRetainedAuthority::open(&authority).unwrap();
+            let interrupted = provider.read().unwrap().unwrap();
+            assert_eq!(
+                interrupted.revision,
+                if when == "before" {
+                    revision - 1
+                } else {
+                    revision
+                }
+            );
+            let mut recovered =
+                Catalog::open_with_auto_reclaim(&path, RETAINED_LIMITS, provider, NonZeroU64::MIN)
+                    .unwrap();
+            assert_eq!(
+                recovered.get(b"rotation-trigger", 12).unwrap().unwrap(),
+                b"acknowledged"
+            );
+            let db = DocumentDatabase::with_authorized_retained_store(&mut recovered);
+            assert_eq!(verify_recovered(&db), revision == 6, "boundary {boundary}");
+        }
     }
 }
 
