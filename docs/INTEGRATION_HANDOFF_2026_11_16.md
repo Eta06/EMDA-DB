@@ -502,3 +502,10 @@ records source reclamation, corruption and interrupted-publication tests.
 It also records a local tmpfs-to-ext4 backup and tmpfs restore with
 matching ordered state across 14,044 entries. Independent off-host restore
 and physical power-loss testing remain deferred.
+
+The document API now accepts an exclusively borrowed managed retained
+catalog. It stages document, index and raw-key changes in one bounded
+batch and merges staged mutations into indexed reads. The
+[document validation report](../benchmarks/results/2026-11-19-managed-retained-documents/README.md)
+records indexed queries, rollback and control checks, and a verified
+restore after automatic reclamation on both local platforms.
