@@ -591,6 +591,10 @@ fn retained_document_histories_serialize_and_recover_across_reclamation() {
         let mut backend =
             ManagedRetainedStore::open_with_auto_reclaim(&catalog, limits, NonZeroU64::MIN)
                 .unwrap();
+        // A round can otherwise consist entirely of no-op, read, or rejected
+        // transactions. Persist an epoch before the race to force rotation.
+        let epoch = (iteration as u64).to_le_bytes();
+        backend.put(b"model-epoch", &epoch).unwrap();
         let expected = {
             let db = DocumentDatabase::with_managed_retained_store(&mut backend);
             reset(&db);
@@ -615,6 +619,14 @@ fn retained_document_histories_serialize_and_recover_across_reclamation() {
         generation = next;
         drop(backend);
         let mut recovered = ManagedRetainedStore::open(&catalog, limits).unwrap();
+        assert_eq!(
+            recovered
+                .get(b"model-epoch", epoch.len())
+                .unwrap()
+                .as_deref(),
+            Some(epoch.as_slice()),
+            "retained iteration={iteration} recovered epoch"
+        );
         let db = DocumentDatabase::with_managed_retained_store(&mut recovered);
         assert_eq!(
             read_state(&db),
