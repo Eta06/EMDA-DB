@@ -654,3 +654,11 @@ original archive fingerprints even after its own archive is retired.
 The [cleanup regression](../benchmarks/results/2026-11-19-abandoned-cutover-cleanup/README.md)
 covers process interruption, protected source and selected catalogs,
 and repeat cleanup. Whole-catalog disk admission remains open.
+
+Retained managed and authorized catalogs can opt in to a per-open
+limit for all logical file bytes and directory entries under the
+catalog root. The original-path form includes archives, preparations
+and stages. [Storage admission evidence](../benchmarks/results/2026-11-19-retained-catalog-storage/README.md)
+covers rejection before tail adoption or authority update, exact
+rotation allowances, and reclamation headroom. Persisting the policy
+and charging deployment-wide storage remain open.
