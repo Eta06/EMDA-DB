@@ -98,6 +98,35 @@ For larger collections, `start_index_build` creates a persistent build job, and 
 
 `start_index_drop` makes an active index unavailable immediately and removes its uniqueness constraint; `advance_index_drop` removes at most 128 index keys per transaction and persists progress through the entry and unique-key namespaces. The cursor is the last key removed by a committed step. A later step fails with `InvalidData` before removing anything when a key in that namespace is still present at or before the cursor, and the unique phase likewise fails while any entry key remains. That failure is not submitted; earlier steps remain durable, and the job stays reserved until a consistent cursor can finish. This detects a skipped or stale cursor. It does not repair metadata or prove that every raw write into the reserved namespace will be noticed before the next advance. A name remains reserved until cleanup completes. `index_jobs` lists resumable builds and drops after reopen. Each step uses a normal bounded transaction; a confirmed pre-commit conflict can be retried using `is_transaction_conflict`. An unclassified `WouldBlock` may be an uncertain I/O outcome and requires recovery and inspection rather than an assumed abort. Steps run only when called—there is no autonomous maintenance service. The ordinary backend still requires a bounded full-index transaction snapshot; the checkpoint-backed backend has different limits. Neither provides total-memory quotas or a latency guarantee.
 
+### Guarded progress for index builds and schema migrations
+
+Generate a fresh `MaintenanceKey` for each job and persist its secret bytes
+in independently protected storage before calling
+`start_index_build_guarded` or `start_schema_migration_guarded`. After a
+restart, restore the same key using `MaintenanceKey::from_bytes` and use the
+matching guarded advance method for every step, including final publication.
+The database stores a tag for the job kind, collection, definition and cursor.
+The step verifies it before scanning. Invalid or missing tags fail with
+`InvalidData`, including when the cursor names a valid ID. The ordinary
+advance methods reject jobs carrying a tag with `PermissionDenied`.
+
+Each successful step commits its updated tag and cursor atomically with
+its work. A valid protected cursor remains usable after its document is
+deleted through the document API. Normal writes continue enforcing
+pending definitions. Cancellation still discards the job through the
+existing API. If the key is lost, cancel the job and start over with a
+new key. Existing unguarded jobs continue with their current methods.
+An older build that rejects unknown metadata fields cannot access a
+collection while a pending guarded job adds its tag.
+
+Keep writers within the document API and protect the key from the store
+and its backups. Guarded advancement authenticates the job parameters
+and cursor under that key. It does not prevent replay of an authenticated
+state from the same job or detect unrelated writes into the reserved
+namespace. The metadata status methods still display the stored state.
+Use the guarded methods consistently so that removing a tag cannot cause
+a switch to unguarded advancement.
+
 Document and index changes are maintained in one transaction. One-shot `create_index` scans and validates at most 256 existing documents and 32 MiB of encoded input; unique conflicts abort the build. One-shot `drop_index` is atomic and limited to 768 index keys and 32 MiB of scanned key/value bytes. These one-shot maintenance operations block or conflict according to the chosen underlying transaction mode. Incremental builds and drops are described above; schema changes can use the separate resumable validation path described above.
 
 `query_index` explicitly chooses an index. It supports equality on a tuple prefix and inclusive/exclusive lower and upper bounds on the next field. Ordering is null, false/true, signed integer, then UTF-8 string bytes, followed by ID bytes. Partial indexes only return matching indexed documents. Pages have at most 256 documents and 16 MiB of encoded document/ID bytes. A nonempty page returns a cursor; continue until a page is empty. Pages inside one transaction share its view; independently invoked pages can observe intervening writes and are not persistent snapshots. Each page reports the selected index, supplied bound shape, entries read and rows returned. Each encountered document is checked against its 1 MiB size bound before page-byte truncation, and each returned entry and unique mapping is checked against its document. This does not detect every missing index entry caused by raw corruption. `verify_collection` compares all expected entries of declared indexes against actual entries for at most 256 documents, 8,192 index keys and 32 MiB of logical key/value bytes. It does not inspect keys for undeclared index names. `rebuild_index` can atomically remove and reconstruct a named index from valid documents when its drop, build and transaction limits are met; invalid documents or unsatisfied uniqueness prevent repair.

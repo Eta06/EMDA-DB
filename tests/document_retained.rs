@@ -5,7 +5,7 @@ use database_engine::retained_candidate::{
 };
 use database_engine::{
     CancellationToken, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentTransactionMode, IndexDefinition, IndexQuery,
+    DocumentQueryAccess, DocumentTransactionMode, IndexDefinition, IndexQuery, MaintenanceKey,
     RetainedExportLimits, Store, TransactionFailure,
 };
 use serde_json::json;
@@ -175,6 +175,45 @@ fn authorized_cutover_preserves_document_transactions_through_reclamation() {
             .unwrap(),
         b"committed"
     );
+    db.verify_collection("items").unwrap();
+
+    let key = MaintenanceKey::generate().unwrap();
+    let saved_key = key.to_bytes();
+    db.start_index_build_guarded(
+        "items",
+        IndexDefinition {
+            name: "guarded-score".into(),
+            fields: vec![vec!["n".into()]],
+            unique: false,
+            partial: None,
+        },
+        &key,
+    )
+    .unwrap();
+    assert!(
+        !db.advance_index_build_guarded("items", "guarded-score", 1, &key)
+            .unwrap()
+            .complete
+    );
+    drop(store);
+
+    let mut store = open();
+    let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+    let key = MaintenanceKey::from_bytes(saved_key);
+    assert!(
+        !db.advance_index_build_guarded("items", "guarded-score", 1, &key)
+            .unwrap()
+            .complete
+    );
+    assert!(
+        db.advance_index_build_guarded("items", "guarded-score", 1, &key)
+            .unwrap()
+            .complete
+    );
+    let page = db
+        .query_index("items", "guarded-score", &IndexQuery::default())
+        .unwrap();
+    assert_eq!(page.documents.len(), 2);
     db.verify_collection("items").unwrap();
 }
 

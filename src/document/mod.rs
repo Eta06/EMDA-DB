@@ -8,6 +8,7 @@ mod index;
 mod integrity;
 mod key;
 mod lifecycle;
+mod maintenance_key;
 mod online_index;
 mod planner;
 mod query;
@@ -37,6 +38,7 @@ pub use filter::{
 pub use index::{IndexDefinition, IndexValue, PartialFilter};
 pub use integrity::CollectionIntegrity;
 pub use lifecycle::CollectionDropStep;
+pub use maintenance_key::MaintenanceKey;
 pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
 pub use planner::{DocumentQueryAccess, PlannedDocumentQueryResult};
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
@@ -308,6 +310,16 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.start_schema_migration(collection, schema))
     }
 
+    /// Starts an incremental schema migration with authenticated progress.
+    pub fn start_schema_migration_guarded(
+        &self,
+        collection: &str,
+        schema: CollectionSchema,
+        key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.transaction(|tx| tx.start_schema_migration_guarded(collection, schema, key))
+    }
+
     /// Advances a schema migration by a bounded number of documents.
     pub fn advance_schema_migration(
         &self,
@@ -315,6 +327,16 @@ impl<'a> DocumentDatabase<'a> {
         limit: usize,
     ) -> io::Result<SchemaStep> {
         self.transaction(|tx| tx.advance_schema_migration(collection, limit))
+    }
+
+    /// Advances a guarded migration using its independently saved key.
+    pub fn advance_schema_migration_guarded(
+        &self,
+        collection: &str,
+        limit: usize,
+        key: &MaintenanceKey,
+    ) -> io::Result<SchemaStep> {
+        self.transaction(|tx| tx.advance_schema_migration_guarded(collection, limit, key))
     }
 
     /// Cancels a pending schema migration without changing the active schema.
@@ -439,6 +461,16 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.start_index_build(collection, definition))
     }
 
+    /// Starts an incremental index build with authenticated progress.
+    pub fn start_index_build_guarded(
+        &self,
+        collection: &str,
+        definition: IndexDefinition,
+        key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.transaction(|tx| tx.start_index_build_guarded(collection, definition, key))
+    }
+
     /// Advances an incremental index build by a bounded number of documents.
     pub fn advance_index_build(
         &self,
@@ -447,6 +479,17 @@ impl<'a> DocumentDatabase<'a> {
         limit: usize,
     ) -> io::Result<IndexStep> {
         self.transaction(|tx| tx.advance_index_build(collection, name, limit))
+    }
+
+    /// Advances a guarded build using its independently saved key.
+    pub fn advance_index_build_guarded(
+        &self,
+        collection: &str,
+        name: &str,
+        limit: usize,
+        key: &MaintenanceKey,
+    ) -> io::Result<IndexStep> {
+        self.transaction(|tx| tx.advance_index_build_guarded(collection, name, limit, key))
     }
 
     /// Cancels an incremental index build and starts cleanup.

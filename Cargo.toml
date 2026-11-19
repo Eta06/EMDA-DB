@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 crc32fast = "1.5"
 fs2 = "0.4"
+hmac = "0.12.1"
 parking_lot = "0.12.5"
 rustix = { version = "1.1", features = ["fs"] }
 sha2 = "0.10"

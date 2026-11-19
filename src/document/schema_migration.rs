@@ -1,9 +1,15 @@
 //! Resumable, bounded schema validation with concurrent-write enforcement.
-use super::{key, schema::CollectionSchema, transaction::DocumentTransaction};
+use super::{
+    key,
+    maintenance_key::{self, MaintenanceKey, Seal},
+    schema::CollectionSchema,
+    transaction::DocumentTransaction,
+};
 use serde::{Deserialize, Serialize};
 use std::io;
 
 const MAX_STEP: usize = 128;
+const SCHEMA_PROGRESS_DOMAIN: &[u8] = b"EMDA guarded schema migration v1\0";
 
 /// A pending schema and the last document ID durably validated.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +34,8 @@ pub struct SchemaStep {
 pub(super) struct SchemaJob {
     pub schema: CollectionSchema,
     pub after: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seal: Option<Seal>,
 }
 
 impl SchemaJob {
@@ -52,6 +60,25 @@ impl DocumentTransaction<'_, '_> {
         collection: &str,
         schema: CollectionSchema,
     ) -> io::Result<()> {
+        self.start_schema_migration_using(collection, schema, None)
+    }
+
+    /// Starts a migration with progress authenticated by an independently kept key.
+    pub fn start_schema_migration_guarded(
+        &mut self,
+        collection: &str,
+        schema: CollectionSchema,
+        maintenance_key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.start_schema_migration_using(collection, schema, Some(maintenance_key))
+    }
+
+    fn start_schema_migration_using(
+        &mut self,
+        collection: &str,
+        schema: CollectionSchema,
+        maintenance_key: Option<&MaintenanceKey>,
+    ) -> io::Result<()> {
         self.mutate(|this| {
             schema.validate_definition()?;
             let mut metadata = this.metadata(collection)?;
@@ -62,9 +89,15 @@ impl DocumentTransaction<'_, '_> {
                 ));
             }
             metadata.version = 2;
+            let seal = maintenance_key::seal(
+                maintenance_key,
+                SCHEMA_PROGRESS_DOMAIN,
+                (collection, &schema, Option::<&str>::None),
+            )?;
             metadata.schema_job = Some(SchemaJob {
                 schema,
                 after: None,
+                seal,
             });
             this.save_metadata(collection, &metadata)
         })
@@ -78,6 +111,25 @@ impl DocumentTransaction<'_, '_> {
         collection: &str,
         limit: usize,
     ) -> io::Result<SchemaStep> {
+        self.advance_schema_migration_using(collection, limit, None)
+    }
+
+    /// Verifies the guarded schema and cursor before validating or publishing.
+    pub fn advance_schema_migration_guarded(
+        &mut self,
+        collection: &str,
+        limit: usize,
+        maintenance_key: &MaintenanceKey,
+    ) -> io::Result<SchemaStep> {
+        self.advance_schema_migration_using(collection, limit, Some(maintenance_key))
+    }
+
+    fn advance_schema_migration_using(
+        &mut self,
+        collection: &str,
+        limit: usize,
+        maintenance_key: Option<&MaintenanceKey>,
+    ) -> io::Result<SchemaStep> {
         self.mutate(|this| {
             if limit == 0 || limit > MAX_STEP {
                 return Err(key::invalid(
@@ -88,6 +140,12 @@ impl DocumentTransaction<'_, '_> {
             let job = metadata.schema_job.clone().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, "schema migration does not exist")
             })?;
+            maintenance_key::verify(
+                maintenance_key,
+                job.seal.as_ref(),
+                SCHEMA_PROGRESS_DOMAIN,
+                (collection, &job.schema, job.after.as_deref()),
+            )?;
             let prefix = key::collection(b'D', collection)?;
             let end = key::end(&prefix);
             let cursor = match &job.after {
@@ -117,9 +175,15 @@ impl DocumentTransaction<'_, '_> {
                 job.schema.validate_document(&document)?;
                 last = Some(id.to_owned());
             }
+            let seal = maintenance_key::seal(
+                maintenance_key,
+                SCHEMA_PROGRESS_DOMAIN,
+                (collection, &job.schema, last.as_deref()),
+            )?;
             metadata.schema_job = Some(SchemaJob {
                 schema: job.schema,
                 after: last,
+                seal,
             });
             this.save_metadata(collection, &metadata)?;
             Ok(SchemaStep {

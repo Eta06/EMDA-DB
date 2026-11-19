@@ -2,12 +2,14 @@
 use super::{
     index::{self, IndexDefinition},
     key,
+    maintenance_key::{self, MaintenanceKey, Seal},
     transaction::{DocumentTransaction, Metadata},
 };
 use serde::{Deserialize, Serialize};
 use std::io;
 
 const MAX_STEP: usize = 128;
+const BUILD_PROGRESS_DOMAIN: &[u8] = b"EMDA guarded index build v1\0";
 
 /// The key namespace currently being removed by an incremental drop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +48,8 @@ pub(super) enum IndexJob {
     Building {
         definition: IndexDefinition,
         after: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seal: Option<Seal>,
     },
     Dropping {
         name: String,
@@ -71,7 +75,9 @@ impl IndexJob {
 
     pub(super) fn validate(&self, collection: &str) -> io::Result<()> {
         match self {
-            Self::Building { definition, after } => {
+            Self::Building {
+                definition, after, ..
+            } => {
                 definition.validate()?;
                 if let Some(id) = after {
                     key::id(id)?;
@@ -100,7 +106,9 @@ impl IndexJob {
 
     fn status(&self) -> IndexJobStatus {
         match self {
-            Self::Building { definition, after } => IndexJobStatus::Building {
+            Self::Building {
+                definition, after, ..
+            } => IndexJobStatus::Building {
                 definition: definition.clone(),
                 after: after.clone(),
             },
@@ -178,6 +186,25 @@ impl DocumentTransaction<'_, '_> {
         collection: &str,
         definition: IndexDefinition,
     ) -> io::Result<()> {
+        self.start_index_build_using(collection, definition, None)
+    }
+
+    /// Starts a build with progress authenticated by an independently kept key.
+    pub fn start_index_build_guarded(
+        &mut self,
+        collection: &str,
+        definition: IndexDefinition,
+        maintenance_key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.start_index_build_using(collection, definition, Some(maintenance_key))
+    }
+
+    fn start_index_build_using(
+        &mut self,
+        collection: &str,
+        definition: IndexDefinition,
+        maintenance_key: Option<&MaintenanceKey>,
+    ) -> io::Result<()> {
         self.mutate(|this| {
             definition.validate()?;
             let mut metadata = this.metadata(collection)?;
@@ -205,9 +232,15 @@ impl DocumentTransaction<'_, '_> {
                 }
             }
             metadata.version = 2;
+            let seal = maintenance_key::seal(
+                maintenance_key,
+                BUILD_PROGRESS_DOMAIN,
+                (collection, &definition, Option::<&str>::None),
+            )?;
             metadata.jobs.push(IndexJob::Building {
                 definition,
                 after: None,
+                seal,
             });
             this.save_metadata(collection, &metadata)
         })
@@ -224,12 +257,46 @@ impl DocumentTransaction<'_, '_> {
         name: &str,
         limit: usize,
     ) -> io::Result<IndexStep> {
+        self.advance_index_build_using(collection, name, limit, None)
+    }
+
+    /// Verifies the guarded build definition and cursor before scanning or
+    /// publishing. Use the key saved before starting the build.
+    pub fn advance_index_build_guarded(
+        &mut self,
+        collection: &str,
+        name: &str,
+        limit: usize,
+        maintenance_key: &MaintenanceKey,
+    ) -> io::Result<IndexStep> {
+        self.advance_index_build_using(collection, name, limit, Some(maintenance_key))
+    }
+
+    fn advance_index_build_using(
+        &mut self,
+        collection: &str,
+        name: &str,
+        limit: usize,
+        maintenance_key: Option<&MaintenanceKey>,
+    ) -> io::Result<IndexStep> {
         self.mutate(|this| {
             validate_step(limit)?;
             let mut metadata = this.metadata(collection)?;
             let position = job_position(&metadata, name)?;
             let (definition, after) = match &metadata.jobs[position] {
-                IndexJob::Building { definition, after } => (definition.clone(), after.clone()),
+                IndexJob::Building {
+                    definition,
+                    after,
+                    seal,
+                } => {
+                    maintenance_key::verify(
+                        maintenance_key,
+                        seal.as_ref(),
+                        BUILD_PROGRESS_DOMAIN,
+                        (collection, definition, after.as_deref()),
+                    )?;
+                    (definition.clone(), after.clone())
+                }
                 _ => return Err(key::invalid("index job is not a build")),
             };
             let prefix = key::collection(b'D', collection)?;
@@ -291,9 +358,15 @@ impl DocumentTransaction<'_, '_> {
                 }
                 last = Some(id.to_owned());
             }
+            let seal = maintenance_key::seal(
+                maintenance_key,
+                BUILD_PROGRESS_DOMAIN,
+                (collection, &definition, last.as_deref()),
+            )?;
             metadata.jobs[position] = IndexJob::Building {
                 definition,
                 after: last,
+                seal,
             };
             this.save_metadata(collection, &metadata)?;
             Ok(IndexStep {

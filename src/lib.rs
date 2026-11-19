@@ -56,8 +56,8 @@ pub use document::{
     DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule, FieldType, IndexBound,
     IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus, IndexQuery, IndexQueryPlan,
     IndexStep, IndexValue, LookupEntry, LookupResult, MAX_DOCUMENT_UPDATE_INPUT_BYTES,
-    NumericFieldStats, PartialFilter, PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus,
-    SchemaStep,
+    MaintenanceKey, NumericFieldStats, PartialFilter, PlannedDocumentQueryResult, QueryPlan,
+    SchemaMigrationStatus, SchemaStep,
 };
 pub use log::PeakVerificationLimits;
 pub use publication_outcome::{
