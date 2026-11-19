@@ -612,3 +612,10 @@ records APFS and ext4 timings, identical Linux fsync counts, and V2/V3
 kernel file-size failures that preserve the ordinary store and permit
 retry. The original archive is retained, and reopen still verifies the
 full admitted base.
+
+Managed and authority-backed retained rotation now stream the rebase
+without allocating scan pages. The [rotation report](../benchmarks/results/2026-11-19-streamed-retained-rebase/README.md)
+records exact successor-budget checks, corruption detection for a
+shadowed value, and about 24 MiB less peak process RSS on the sampled
+24 MiB live set. The active and successor files still overlap on disk,
+and open still authenticates the complete admitted base.
