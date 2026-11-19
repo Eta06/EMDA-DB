@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Release the store lock when the last in-process store or checkpoint owner
+  closes, even if a forked child still holds the descriptor before exec.
+  Checkpoint handoffs share one descriptor for the same lock.
+
 - Release the offline restore's private store lock before verification reopen
   and publication, including when a pre-exec child inherited the descriptor.
 

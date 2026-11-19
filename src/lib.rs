@@ -27,6 +27,7 @@ pub mod retained_candidate;
 mod snapshot_reaper;
 mod staging;
 mod store;
+mod store_lock;
 #[cfg(test)]
 mod test_support;
 mod transaction_budget;

@@ -9,7 +9,6 @@ use std::path::Path;
 
 #[cfg(all(test, target_os = "linux"))]
 thread_local! {
-    static OBSERVE_BOUNDED_LOCK: std::cell::RefCell<Option<std::fs::File>> = const { std::cell::RefCell::new(None) };
     static BOUNDED_CHILD: std::cell::RefCell<Option<crate::test_support::fork_lock::Child>> = const { std::cell::RefCell::new(None) };
     static CAPTURE_BOUNDED_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -231,7 +230,7 @@ impl CheckpointStore {
         } else {
             store.checkpoint_to_with_sync(&destination, sync_checkpoint_ancestors)?
         };
-        let lock = store.duplicate_store_lock()?;
+        let lock = store.share_store_lock();
         let view =
             CheckpointView::open_locked(&path, &destination, &digest, lock).map_err(|error| {
                 io::Error::new(
@@ -463,12 +462,11 @@ impl CheckpointStore {
             "bounded rebuild store exclusive",
         );
         lock_result?;
-        crate::directory::verify_lock_identity(&path, &lock_file)?;
+        let lock_file = crate::store_lock::StoreLock::acquired(lock_file);
+        lock_file.verify_identity(&path)?;
         #[cfg(all(test, target_os = "linux"))]
         CAPTURE_BOUNDED_LOCK.with(|capture| {
             if capture.get() {
-                OBSERVE_BOUNDED_LOCK
-                    .with(|slot| *slot.borrow_mut() = Some(lock_file.try_clone().unwrap()));
                 BOUNDED_CHILD.with(|slot| {
                     *slot.borrow_mut() = Some(crate::test_support::fork_lock::Child::spawn())
                 });
@@ -486,7 +484,7 @@ impl CheckpointStore {
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
         selection::load(&path)?;
-        let view_lock = lock_file.try_clone()?;
+        let view_lock = lock_file.clone();
         let view = CheckpointView::open_locked(&path, &base_checkpoint, trusted_digest, view_lock)?;
         let witness = view.witnessed_boundary;
         let prefix = view.log_boundary();
@@ -566,7 +564,7 @@ impl CheckpointStore {
             (None, tracker.map(|tracker| &tracker.checkpoint)),
         )?;
         drop(spill);
-        let published_lock = lock_file.try_clone()?;
+        let published_lock = lock_file.clone();
         let published = CheckpointView::open_locked(&path, &destination, &digest, published_lock)
             .map_err(|error| {
             io::Error::new(
@@ -796,7 +794,6 @@ mod tests {
         store.put(b"base", b"value").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
         store.put(b"tail", b"value").unwrap();
-        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let log = fs::read(path.join("records.log")).unwrap();
         let witness = witness_bytes(&path);
@@ -838,7 +835,6 @@ mod tests {
         store.put(b"key", b"old-unique-value").unwrap();
         store.put(b"key", b"new").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
-        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let log_path = path.join("records.log");
         let mut log = fs::read(&log_path).unwrap();
@@ -870,10 +866,12 @@ mod tests {
 
     #[test]
     fn bounded_rebuild_classifies_publication_and_keeps_the_lock_through_selection() {
-        bounded_rebuild_fixture(None);
+        bounded_rebuild_fixture(false);
     }
 
-    fn bounded_rebuild_fixture(fork_release: Option<bool>) {
+    fn bounded_rebuild_fixture(
+        #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] fork: bool,
+    ) {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("store");
         let base = directory.path().join("base");
@@ -881,27 +879,21 @@ mod tests {
         store.put(b"safe", b"acked").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
         #[cfg(target_os = "linux")]
-        let child = fork_release.map(|_| crate::test_support::fork_lock::Child::spawn());
-        if fork_release != Some(false) {
-            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
-        }
+        let child = fork.then(crate::test_support::fork_lock::Child::spawn);
         drop(store);
         #[cfg(target_os = "linux")]
         if let Some(child) = child {
-            crate::test_support::fork_lock::check(&path, child, fork_release.unwrap());
+            crate::test_support::fork_lock::check_reopened(&path, child);
         }
         let store = Store::open(&path).unwrap();
         store.put(b"tail", b"one").unwrap();
         store.put(b"tail", b"two").unwrap();
         #[cfg(target_os = "linux")]
-        let child = fork_release.map(|_| crate::test_support::fork_lock::Child::spawn());
-        if fork_release != Some(false) {
-            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
-        }
+        let child = fork.then(crate::test_support::fork_lock::Child::spawn);
         drop(store);
         #[cfg(target_os = "linux")]
         if let Some(child) = child {
-            crate::test_support::fork_lock::check(&path, child, fork_release.unwrap());
+            crate::test_support::fork_lock::check_reopened(&path, child);
             drop(Store::open(&path).unwrap());
         }
         let destination = directory.path().join("published");
@@ -982,7 +974,6 @@ mod tests {
         let witness = witness_bytes(&path);
         let store = Store::open(&path).unwrap();
         store.put(b"pending", b"complete").unwrap();
-        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let complete_log = fs::read(path.join("records.log")).unwrap();
         restore_witness(&path, &witness);
@@ -1054,9 +1045,7 @@ mod tests {
         ) {
             return;
         }
-        for released in [false, true] {
-            bounded_rebuild_fixture(Some(released));
-        }
+        bounded_rebuild_fixture(true);
     }
 
     #[cfg(target_os = "linux")]
@@ -1068,14 +1057,7 @@ mod tests {
         ) {
             return;
         }
-        for mode in [
-            "success",
-            "cap",
-            "checkpoint",
-            "selection",
-            "panic",
-            "release",
-        ] {
+        for mode in ["success", "cap", "checkpoint", "selection", "panic"] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store");
             let base = dir.path().join("base");
@@ -1083,7 +1065,6 @@ mod tests {
             let store = Store::open(&path).unwrap();
             store.put(b"key", b"value").unwrap();
             let digest = store.checkpoint_to(&base).unwrap();
-            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
             drop(store);
             CAPTURE_BOUNDED_LOCK.with(|v| v.set(true));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1130,7 +1111,7 @@ mod tests {
             }));
             CAPTURE_BOUNDED_LOCK.with(|v| v.set(false));
             match mode {
-                "success" | "release" => {
+                "success" => {
                     assert!(result.unwrap().is_ok());
                     assert!(destination.is_file());
                     assert!(selection::path(&path).exists());
@@ -1161,14 +1142,8 @@ mod tests {
                 "panic" => assert!(result.is_err()),
                 _ => unreachable!(),
             }
-            let lock = OBSERVE_BOUNDED_LOCK.with(|v| v.borrow_mut().take().unwrap());
             let child = BOUNDED_CHILD.with(|v| v.borrow_mut().take().unwrap());
-            child.assert_inode(&path);
-            if mode == "release" {
-                fs2::FileExt::unlock(&lock).unwrap();
-            }
-            drop(lock);
-            crate::test_support::fork_lock::check(&path, child, mode == "release");
+            crate::test_support::fork_lock::check_reopened(&path, child);
             drop(Store::open(&path).unwrap());
         }
     }
@@ -1225,7 +1200,6 @@ mod tests {
         store.put(b"kept", b"base").unwrap();
         store.put(b"safe", b"acked").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
-        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
 
         let rolled_back = witness_bytes(&path);
@@ -1245,7 +1219,6 @@ mod tests {
             ])
             .unwrap();
         store.put(b"r", b"after").unwrap();
-        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         restore_witness(&path, &rolled_back);
 
@@ -1632,14 +1605,12 @@ mod tests {
         panic!("bounded rebuild child returned before {mode}: {result:?}");
     }
 
-    #[allow(clippy::too_many_arguments)] // Explicit knobs exercise distinct fork and publication paths.
     fn crash_fixture_initial(
         path: &Path,
         base: &Path,
         selected: &Path,
         managed: bool,
         retry_managed: bool,
-        release_fixture_lock: bool,
         before_drop: impl FnOnce(),
         after_drop: impl FnOnce(&Path),
     ) -> [u8; 32] {
@@ -1647,10 +1618,6 @@ mod tests {
         store.put(b"safe", b"acked").unwrap();
         let digest = store.checkpoint_to(base).unwrap();
         before_drop();
-        // Fixture work is complete; a forked child may retain this descriptor.
-        if release_fixture_lock {
-            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
-        }
         drop(store);
         after_drop(path);
         if managed {
@@ -1675,7 +1642,6 @@ mod tests {
                 &base,
                 &directory.path().join("selected"),
                 mode != "adopt",
-                true,
                 true,
                 || {},
                 |_| {},
@@ -1812,11 +1778,10 @@ mod tests {
     }
 
     fn unacknowledged_suffix_for_spill() -> UnacknowledgedSuffix {
-        unacknowledged_suffix_before_drop(true, || {}, |_| {})
+        unacknowledged_suffix_before_drop(|| {}, |_| {})
     }
 
     fn unacknowledged_suffix_before_drop(
-        release_fixture_lock: bool,
         before_drop: impl FnOnce(),
         after_drop: impl FnOnce(&Path),
     ) -> UnacknowledgedSuffix {
@@ -1827,9 +1792,6 @@ mod tests {
         store.put(b"a", b"base").unwrap();
         let digest = store.checkpoint_to(&base).unwrap();
         before_drop();
-        if release_fixture_lock {
-            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
-        }
         drop(store);
         after_drop(&path);
         let witness = witness_bytes(&path);
@@ -1838,7 +1800,6 @@ mod tests {
                 .unwrap();
         store.put(b"b", b"one").unwrap();
         store.put(b"c", b"two").unwrap();
-        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
         let log = fs::read(path.join("records.log")).unwrap();
         let base_bytes = fs::read(&base).unwrap();
@@ -1854,90 +1815,26 @@ mod tests {
         }
     }
 
-    // Run in a separate test process so unrelated parallel tests cannot inherit
-    // the fixture lock and affect the final, single reopen attempt.
     #[cfg(target_os = "linux")]
     #[test]
-    fn rebuild_fixture_drop_reopen_inherits_forked_lock() {
-        const ENV: &str = "EMDA_REBUILD_FIXTURE_FORK_CHILD";
-        if std::env::var_os(ENV).is_none() {
-            let status = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "checkpoint_store::rebuild::tests::rebuild_fixture_drop_reopen_inherits_forked_lock", "--nocapture"])
-                .env(ENV, "1").status().unwrap();
-            assert!(status.success(), "isolated test failed: {status}");
+    fn rebuild_fixtures_reopen_before_inheriting_child_exits() {
+        use crate::test_support::fork_lock::{Child, check_reopened, isolated};
+
+        if isolated(
+            concat!(
+                module_path!(),
+                "::rebuild_fixtures_reopen_before_inheriting_child_exits"
+            ),
+            "EMDA_REBUILD_FIXTURE_FORK_CHILD",
+        ) {
             return;
         }
-        use std::os::fd::AsRawFd;
-        use std::os::unix::fs::MetadataExt;
-        use std::os::unix::net::UnixStream;
-        unsafe extern "C" {
-            fn fork() -> i32;
-            fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
-            fn _exit(status: i32) -> !;
-            fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-        }
-        struct Child(i32, Option<UnixStream>);
-        impl Drop for Child {
-            fn drop(&mut self) {
-                if let Some(mut stream) = self.1.take() {
-                    let _ = stream.write_all(&[1]);
-                }
-                let mut status = 0;
-                assert_eq!(unsafe { waitpid(self.0, &mut status, 0) }, self.0);
-                assert_eq!(status, 0);
-            }
-        }
-        fn spawn() -> Child {
-            let (parent, child) = UnixStream::pair().unwrap();
-            let (pid, parent) = std::thread::spawn(move || {
-                let pid = unsafe { fork() };
-                if pid == 0 {
-                    drop(parent);
-                    let mut byte = 0u8;
-                    unsafe {
-                        read(child.as_raw_fd(), (&mut byte as *mut u8).cast(), 1);
-                        _exit(0)
-                    }
-                }
-                assert!(pid > 0);
-                drop(child);
-                (pid, parent)
-            })
-            .join()
-            .unwrap();
-            Child(pid, Some(parent))
-        }
-        fn check(path: &Path, child: Child, released: bool) {
-            let lock = fs::metadata(path.join("store.lock")).unwrap();
-            assert!(
-                fs::read_dir(format!("/proc/{}/fd", child.0))
-                    .unwrap()
-                    .filter_map(Result::ok)
-                    .filter_map(|e| fs::metadata(e.path()).ok())
-                    .any(|m| m.dev() == lock.dev() && m.ino() == lock.ino())
-            );
-            if released {
-                drop(Store::open(path).unwrap());
-            } else {
-                let error = match Store::open(path) {
-                    Ok(_) => panic!("reopen unexpectedly succeeded"),
-                    Err(e) => e,
-                };
-                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-            }
-            drop(child);
-            drop(Store::open(path).unwrap());
-        }
         let child = std::cell::RefCell::new(None);
-        for released in [false, true] {
-            let fixture = unacknowledged_suffix_before_drop(
-                released,
-                || *child.borrow_mut() = Some(spawn()),
-                |path| check(path, child.borrow_mut().take().unwrap(), released),
-            );
-            drop(fixture);
-        }
-        for (managed, released) in [(false, false), (true, false), (false, true), (true, true)] {
+        let spawn = || *child.borrow_mut() = Some(Child::spawn());
+        let check = |path: &Path| check_reopened(path, child.borrow_mut().take().unwrap());
+        let fixture = unacknowledged_suffix_before_drop(spawn, check);
+        drop(fixture);
+        for managed in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("store");
             crash_fixture_initial(
@@ -1946,9 +1843,8 @@ mod tests {
                 &dir.path().join("selected"),
                 managed,
                 false,
-                released,
-                || *child.borrow_mut() = Some(spawn()),
-                |path| check(path, child.borrow_mut().take().unwrap(), released),
+                spawn,
+                check,
             );
             drop(Store::open(&path).unwrap());
         }

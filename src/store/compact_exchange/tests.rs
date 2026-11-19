@@ -228,15 +228,6 @@ fn detailed_handoff_classifies_copy_and_exchange_boundaries() {
 
 #[test]
 fn exchange_holds_both_mapping_locks_through_failed_parent_sync() {
-    if crate::test_support::fork_lock::isolated(
-        concat!(
-            module_path!(),
-            "::exchange_holds_both_mapping_locks_through_failed_parent_sync"
-        ),
-        "EMDA_EXCHANGE_MAPPING_LOCK_ISOLATED",
-    ) {
-        return;
-    }
     let root = tempfile::tempdir().unwrap();
     let (store, source, previous) = populated(root.path());
     let original = fs::read(source.join("records.log")).unwrap();

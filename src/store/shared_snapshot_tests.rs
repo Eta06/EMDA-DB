@@ -79,7 +79,6 @@ fn exercise_snapshot_model(limited: bool) {
         }
         assert_model(&store, &model);
     }
-    fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
     drop(store);
     let reopened = open();
     assert_model(&reopened, &model);
@@ -127,10 +126,12 @@ fn old_and_new_snapshots_remain_stable_during_concurrent_writes() {
 
 #[test]
 fn accounting_failure_after_sync_poison_reads_before_partial_index_is_visible() {
-    accounting_failure_fixture(None);
+    accounting_failure_fixture(false);
 }
 
-fn accounting_failure_fixture(fork_release: Option<bool>) {
+fn accounting_failure_fixture(
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] fork: bool,
+) {
     for overflow in [true, false] {
         let root = tempfile::tempdir().unwrap();
         let store = Store::open(root.path()).unwrap();
@@ -160,14 +161,11 @@ fn accounting_failure_fixture(fork_release: Option<bool>) {
         assert!(store.get(b"base").is_err());
         assert!(store.snapshot(10, 100).is_err());
         #[cfg(target_os = "linux")]
-        let child = fork_release.map(|_| crate::test_support::fork_lock::Child::spawn());
-        if fork_release != Some(false) {
-            fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
-        }
+        let child = fork.then(crate::test_support::fork_lock::Child::spawn);
         drop(store);
         #[cfg(target_os = "linux")]
         if let Some(child) = child {
-            crate::test_support::fork_lock::check(root.path(), child, fork_release.unwrap());
+            crate::test_support::fork_lock::check_reopened(root.path(), child);
         }
         let reopened = Store::open(root.path()).unwrap();
         if overflow {
@@ -193,9 +191,7 @@ fn accounting_failure_fixture_fork_lock_lifetime() {
     ) {
         return;
     }
-    for released in [false, true] {
-        accounting_failure_fixture(Some(released));
-    }
+    accounting_failure_fixture(true);
 }
 
 #[test]

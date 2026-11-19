@@ -294,9 +294,6 @@ fn retired_stage_removal_resumes_after_every_injected_interruption() {
             .is_err(),
             "{selected:?}"
         );
-        if let Some(lock) = &lock {
-            fs2::FileExt::unlock(lock).unwrap();
-        }
         drop(lock);
         let report = retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap();
         assert_eq!(
@@ -306,6 +303,56 @@ fn retired_stage_removal_resumes_after_every_injected_interruption() {
         );
         assert!(!path.exists());
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_retired_cleanup_unlocks_before_the_inheriting_child_exits() {
+    use crate::test_support::fork_lock::{Child, isolated};
+
+    if isolated(
+        concat!(
+            module_path!(),
+            "::failed_retired_cleanup_unlocks_before_the_inheriting_child_exits"
+        ),
+        "EMDA_RETIRED_CLEANUP_LOCK_INHERITANCE",
+    ) {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let id = [9; 16];
+    let stage = Stage::retired_directory(directory.path(), &id).unwrap();
+    let retired = stage.path().join("retired");
+    fs::create_dir(&retired).unwrap();
+    fs::write(retired.join("store.lock"), []).unwrap();
+    let path = orphan(stage);
+    let mut child = None;
+    let error = cleanup_retired(directory.path(), &id, || {
+        let contender = File::open(retired.join("store.lock"))?;
+        assert_eq!(
+            fs2::FileExt::try_lock_exclusive(&contender)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        child = Some(Child::spawn());
+        Err(io::Error::other("injected cleanup failure"))
+    })
+    .unwrap_err();
+    assert_eq!(error.to_string(), "injected cleanup failure");
+    let child = child.unwrap();
+    child.assert_inode(&retired);
+    let report = cleanup_retired(directory.path(), &id, || Ok(())).unwrap();
+    assert_eq!(
+        (
+            report.removed_payloads,
+            report.removed_markers,
+            report.skipped
+        ),
+        (1, 1, 0)
+    );
+    assert!(!path.exists());
+    drop(child);
 }
 
 #[test]

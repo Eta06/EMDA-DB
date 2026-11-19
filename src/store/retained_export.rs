@@ -930,7 +930,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn private_restore_store_reopens_while_forked_child_holds_descriptor() {
-        use crate::test_support::fork_lock::{Child, check, isolated};
+        use crate::test_support::fork_lock::{Child, check_reopened, isolated};
 
         if isolated(
             concat!(
@@ -961,21 +961,11 @@ mod tests {
 
         let destination = root.path().join("restored");
         stage.publish(&destination).unwrap();
-        check(&destination, child, true);
+        check_reopened(&destination, child);
     }
 
     #[test]
     fn source_suffix_export_replays_and_preserves_source() {
-        #[cfg(target_os = "linux")]
-        if crate::test_support::fork_lock::isolated(
-            concat!(
-                module_path!(),
-                "::source_suffix_export_replays_and_preserves_source"
-            ),
-            "EMDA_SOURCE_SUFFIX_RESTORE_ISOLATED",
-        ) {
-            return;
-        }
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         std::fs::create_dir(&source).unwrap();

@@ -414,55 +414,19 @@ fn rebuild_logical_limits_cover_the_entire_log_and_each_historical_state() {
     assert_eq!(store.get(b"b").unwrap(), None);
 }
 
-// Evidence of fork inheritance during the rebuild itself, not identification of
-// any holder observed in another run.
 #[cfg(target_os = "linux")]
 #[test]
-fn rebuild_lock_survives_fork_from_another_thread() {
-    const ENV: &str = "EMDA_REBUILD_FORK_LOCK_CHILD";
-    if std::env::var_os(ENV).is_none() {
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "checkpoint_store::tests::rebuild::rebuild_lock_survives_fork_from_another_thread",
-                "--nocapture",
-            ])
-            .env(ENV, "1")
-            .status()
-            .unwrap();
-        assert!(status.success(), "isolated regression failed: {status}");
-        return;
-    }
+fn rebuild_lock_excludes_open_until_rebuild_finishes() {
+    use crate::test_support::fork_lock::{Child, isolated};
 
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::MetadataExt;
-    use std::os::unix::net::UnixStream;
-    unsafe extern "C" {
-        fn fork() -> i32;
-        fn close(fd: i32) -> i32;
-        fn read(fd: i32, buf: *mut std::ffi::c_void, count: usize) -> isize;
-        fn _exit(status: i32) -> !;
-        fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
-    }
-    struct Child {
-        pid: i32,
-        release: Option<UnixStream>,
-    }
-    impl Drop for Child {
-        fn drop(&mut self) {
-            drop(self.release.take()); // EOF releases the child even during unwinding.
-            let mut status = 0;
-            loop {
-                let result = unsafe { waitpid(self.pid, &mut status, 0) };
-                if result == self.pid {
-                    break;
-                }
-                if result < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                break;
-            }
-        }
+    if isolated(
+        concat!(
+            module_path!(),
+            "::rebuild_lock_excludes_open_until_rebuild_finishes"
+        ),
+        "EMDA_REBUILD_FORK_LOCK_CHILD",
+    ) {
+        return;
     }
 
     let (dir, path, _, _) = fixture();
@@ -473,34 +437,9 @@ fn rebuild_lock_survives_fork_from_another_thread() {
         &path,
         &destination,
         || {
-            let (parent, child_end) = UnixStream::pair()?;
-            let (pid, parent) = std::thread::spawn(move || {
-                let pid = unsafe { fork() };
-                if pid == 0 {
-                    unsafe {
-                        close(parent.as_raw_fd());
-                        let mut byte = 0u8;
-                        // EOF is sufficient; no allocator or Rust runtime in the child.
-                        while read(child_end.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) < 0 {}
-                        _exit(0);
-                    }
-                }
-                drop(child_end);
-                (pid, parent)
-            })
-            .join()
-            .unwrap();
-            assert!(pid > 0, "fork failed");
-            child = Some(Child {
-                pid,
-                release: Some(parent),
-            });
-            let lock = fs::metadata(path.join("store.lock"))?;
-            let inherited = fs::read_dir(format!("/proc/{pid}/fd"))?
-                .filter_map(Result::ok)
-                .filter_map(|entry| fs::metadata(entry.path()).ok())
-                .any(|metadata| metadata.dev() == lock.dev() && metadata.ino() == lock.ino());
-            assert!(inherited, "child must inherit the rebuild's lock inode");
+            let forked = Child::spawn();
+            forked.assert_inode(&path);
+            child = Some(forked);
             assert_eq!(
                 Store::open(&path).err().unwrap().kind(),
                 io::ErrorKind::WouldBlock
@@ -512,12 +451,8 @@ fn rebuild_lock_survives_fork_from_another_thread() {
     .unwrap();
     let selection = fs::read(super::super::selection::path(&path)).unwrap();
     assert_eq!(fs::read(path.join("records.log")).unwrap(), log_before);
-    assert_eq!(
-        Store::open(&path).err().unwrap().kind(),
-        io::ErrorKind::WouldBlock
-    );
-    drop(child.take());
     let reopened = CheckpointStore::open_managed(&path).unwrap();
+    drop(child.unwrap());
     assert_eq!(
         reopened.get(b"base").unwrap().as_deref(),
         Some(&b"acknowledged"[..])

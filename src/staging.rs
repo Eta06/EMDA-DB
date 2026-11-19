@@ -680,7 +680,9 @@ fn remove_retired_stage(
 
 // Outer Option: None means unexpected contents or a busy lock. Inner Option:
 // an empty stage or fully unlinked retired directory needs no lock descriptor.
-fn lock_safe_retired_payload(stage: &Path) -> io::Result<Option<Option<File>>> {
+fn lock_safe_retired_payload(
+    stage: &Path,
+) -> io::Result<Option<Option<crate::store_lock::StoreLock>>> {
     let mut retired = None;
     for entry in fs::read_dir(stage)? {
         let entry = entry?;
@@ -727,7 +729,8 @@ fn lock_safe_retired_payload(stage: &Path) -> io::Result<Option<Option<File>>> {
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(None),
         Err(error) => return Err(error),
     }
-    crate::directory::verify_lock_identity(&retired, &lock)?;
+    let lock = crate::store_lock::StoreLock::acquired(lock);
+    lock.verify_identity(&retired)?;
     Ok(Some(Some(lock)))
 }
 

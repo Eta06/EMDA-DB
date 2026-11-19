@@ -93,14 +93,14 @@ pub struct Store {
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: transaction_queue::TransactionQueue,
     // Held for the store lifetime. OS file locks are advisory.
-    _lock_file: File,
+    _lock_file: crate::store_lock::StoreLock,
 }
 
 impl Store {
     // A private, coordinated handoff can temporarily share this open file
     // description without releasing the store's exclusive advisory lock.
-    pub(crate) fn duplicate_store_lock(&self) -> io::Result<File> {
-        self._lock_file.try_clone()
+    pub(crate) fn share_store_lock(&self) -> crate::store_lock::StoreLock {
+        self._lock_file.clone()
     }
 
     // The staging operation owns this unpublished store and has completed all
@@ -111,7 +111,7 @@ impl Store {
             let store = self;
             store._lock_file
         };
-        fs2::FileExt::unlock(&lock)
+        lock.release()
     }
 
     // Instrument only before any snapshots or other owners exist. Restore the
@@ -319,7 +319,8 @@ impl Store {
             "store open exclusive",
         );
         lock_result?;
-        directory::verify_lock_identity(path, &lock_file)?;
+        let lock_file = crate::store_lock::StoreLock::acquired(lock_file);
+        lock_file.verify_identity(path)?;
         let (log, index) = open_log(path, may_initialize)?;
         let index_key_bytes = index.keys().try_fold(0_usize, |total, key| {
             total

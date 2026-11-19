@@ -48,8 +48,8 @@ pub(super) fn retire(
     retired: &Store,
     mut hook: impl FnMut(Point) -> io::Result<()>,
 ) -> io::Result<()> {
-    crate::directory::verify_lock_identity(source, &current._lock_file)?;
-    crate::directory::verify_lock_identity(previous, &retired._lock_file)?;
+    current._lock_file.verify_identity(source)?;
+    retired._lock_file.verify_identity(previous)?;
     compact_exchange::source_directory_is_owned(previous)?;
     let replacement_id = current.log.id().ok_or_else(|| {
         io::Error::new(
@@ -62,8 +62,8 @@ pub(super) fn retire(
     let mut moved = false;
     let result: io::Result<()> = (|| {
         hook(Point::BeforeMove)?;
-        crate::directory::verify_lock_identity(source, &current._lock_file)?;
-        crate::directory::verify_lock_identity(previous, &retired._lock_file)?;
+        current._lock_file.verify_identity(source)?;
+        retired._lock_file.verify_identity(previous)?;
         compact_exchange::source_directory_is_owned(previous)?;
         // Hide the old directory under an owned private name before unlinking
         // its lock. A newly created store at the old path cannot be touched.
@@ -71,7 +71,7 @@ pub(super) fn retire(
         moved = true;
         stage.preserve_payload_on_drop();
         hook(Point::AfterMove)?;
-        crate::directory::verify_lock_identity(&hidden, &retired._lock_file)?;
+        retired._lock_file.verify_identity(&hidden)?;
         compact_exchange::source_directory_is_owned(&hidden)?;
         fs::remove_file(hidden.join("records.log"))?;
         hook(Point::AfterRecords)?;

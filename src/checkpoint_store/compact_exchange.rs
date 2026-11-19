@@ -120,8 +120,8 @@ impl CheckpointStore {
         let state = self.read()?;
         let original_selection = state.selection.clone();
         let enabled = state.automatic;
-        let original_lock = state.view.base.duplicate_store_lock()?;
-        crate::directory::verify_lock_identity(&source, &original_lock)?;
+        let original_lock = state.view.base.share_store_lock()?;
+        original_lock.verify_identity(&source)?;
         if selection::load(&source)? != original_selection {
             return Err(io::Error::other("managed checkpoint selection changed"));
         }
@@ -178,9 +178,9 @@ impl CheckpointStore {
                 candidate.enable_automatic_checkpoints()?;
             }
         }
-        let candidate_lock = candidate.read()?.view.base.duplicate_store_lock()?;
-        crate::directory::verify_lock_identity(&source, &original_lock)?;
-        crate::directory::verify_lock_identity(&previous, &candidate_lock)?;
+        let candidate_lock = candidate.read()?.view.base.share_store_lock()?;
+        original_lock.verify_identity(&source)?;
+        candidate_lock.verify_identity(&previous)?;
         (hook.borrow_mut())(ExchangePoint::CandidateReady)?;
         if let Some(tracker) = tracker {
             tracker.begin_exchange();

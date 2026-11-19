@@ -157,7 +157,7 @@ impl Store {
             ));
         }
         let (source, previous, parent) = paths(source, previous)?;
-        crate::directory::verify_lock_identity(&source, &self._lock_file)?;
+        self._lock_file.verify_identity(&source)?;
         source_directory_is_owned(&source)?;
         if let Some(tracker) = tracker {
             tracker.begin_candidate();
@@ -184,8 +184,8 @@ impl Store {
         }
         let group_limits = self.group_commit_status()?;
         candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
-        crate::directory::verify_lock_identity(&source, &self._lock_file)?;
-        crate::directory::verify_lock_identity(&previous, &candidate._lock_file)?;
+        self._lock_file.verify_identity(&source)?;
+        candidate._lock_file.verify_identity(&previous)?;
         hook(ExchangePoint::BeforeExchange)?;
         if let Some(tracker) = tracker {
             tracker.begin_exchange();

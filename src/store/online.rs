@@ -242,7 +242,7 @@ impl OnlineStore {
             max_live_key_bytes,
         )?;
         let path = fs::canonicalize(path)?;
-        crate::directory::verify_lock_identity(&path, &store._lock_file)?;
+        store._lock_file.verify_identity(&path)?;
         Ok(Self {
             path,
             state: RwLock::new(State {
@@ -394,7 +394,7 @@ impl OnlineStore {
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
         let boundary = copy::boundary_locked(current)?;
-        crate::directory::verify_lock_identity(&self.path, &current._lock_file)?;
+        current._lock_file.verify_identity(&self.path)?;
         compact_exchange::source_directory_is_owned(&self.path)?;
         let id = current.log.id().ok_or_else(|| {
             io::Error::new(
@@ -540,7 +540,7 @@ impl OnlineStore {
             }
             Arc::clone(&state.store)
         };
-        crate::directory::verify_lock_identity(&source, &current._lock_file)?;
+        current._lock_file.verify_identity(&source)?;
         compact_exchange::source_directory_is_owned(&source)?;
         let (snapshot, initial) = copy::capture(&current, options)?;
         copy::verify_initial(&snapshot, initial, options)?;
@@ -612,14 +612,14 @@ impl OnlineStore {
         }
         let group_limits = current.group_commit_status()?;
         candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
-        crate::directory::verify_lock_identity(&source, &current._lock_file)?;
+        current._lock_file.verify_identity(&source)?;
         compact_exchange::source_directory_is_owned(&source)?;
         fs::File::open(stage.path())?.sync_all()?;
         if let Some(tracker) = tracker {
             tracker.begin_candidate();
         }
         stage.publish(&previous)?;
-        crate::directory::verify_lock_identity(&previous, &candidate._lock_file)?;
+        candidate._lock_file.verify_identity(&previous)?;
         crate::directory::sync_existing(&parent).map_err(|error| {
             io::Error::new(
                 error.kind(),

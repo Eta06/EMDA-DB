@@ -315,7 +315,8 @@ impl CheckpointStore {
             "checkpoint source store exclusive",
         );
         lock_result?;
-        crate::directory::verify_lock_identity(&path, &lock)?;
+        let lock = crate::store_lock::StoreLock::acquired(lock);
+        lock.verify_identity(&path)?;
         let selection = selection::load(&path)?;
         let (checkpoint, digest, selection) = match source {
             OpenSource::Explicit(checkpoint, digest) => {
@@ -872,7 +873,7 @@ impl CheckpointStore {
         digest: &[u8; 32],
     ) -> io::Result<RecoveredCheckpointView> {
         (|| {
-            let lock = state.view.base.duplicate_store_lock()?;
+            let lock = state.view.base.share_store_lock()?;
             let base = CheckpointView::open_locked_with_limits(
                 &self.path,
                 destination,

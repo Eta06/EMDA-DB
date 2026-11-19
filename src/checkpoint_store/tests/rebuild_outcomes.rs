@@ -1,46 +1,11 @@
 use super::*;
 use crate::ManagedRebuildFailure;
 
-// This fixture owns the store exclusively and has finished its backup. An
-// unrelated test's pre-exec child may hold a duplicate of its descriptor.
-fn close_backup_fixture(store: Store) -> io::Result<()> {
-    let lock = store.duplicate_store_lock()?;
-    fs2::FileExt::unlock(&lock)?;
-    drop(store);
-    Ok(())
-}
-
-fn close_checkpoint_fixture(store: CheckpointStore) -> io::Result<()> {
-    let lock = store.read()?.view.base.duplicate_store_lock()?;
-    fs2::FileExt::unlock(&lock)?;
-    drop(store);
-    Ok(())
-}
-
-#[test]
-fn backup_fixture_unlocks_even_if_a_duplicate_remains_open() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("store");
-    let store = Store::open(&path).unwrap();
-    store.put(b"key", b"value").unwrap();
-    store.backup(root.path().join("backup")).unwrap();
-    let inherited = store.duplicate_store_lock().unwrap();
-    close_backup_fixture(store).unwrap();
-    let reopened = Store::open(&path).unwrap();
-    assert_eq!(
-        reopened.get(b"key").unwrap().as_deref(),
-        Some(&b"value"[..])
-    );
-    drop(reopened);
-    drop(inherited);
-}
-
-// The duplicate belongs to the exact store opened for this rebuild. Only a
-// successful return guarantees publication and all internal views are finished.
+// Observe the exact lock held by the rebuild across success and unwinding.
 fn fixture_rebuild(
     path: &Path,
     destination: &Path,
-    lock: &mut Option<File>,
+    lock: &mut Option<crate::store_lock::StoreLock>,
     before_selection: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
     let digest = CheckpointStore::rebuild_managed_using(
@@ -48,7 +13,7 @@ fn fixture_rebuild(
         destination,
         |path| {
             let store = Store::open(path)?;
-            *lock = Some(store.duplicate_store_lock()?);
+            *lock = Some(store.share_store_lock());
             Ok(store)
         },
         super::super::selection::sync_ancestors,
@@ -56,16 +21,16 @@ fn fixture_rebuild(
         |parent| File::open(parent)?.sync_all(),
         None,
     )?;
-    fs2::FileExt::unlock(lock.as_ref().unwrap())?;
+    drop(lock.take());
     Ok(digest)
 }
 
 #[test]
-fn fixture_rebuild_errors_and_panics_do_not_unlock() {
+fn fixture_rebuild_errors_and_panics_preserve_other_lock_owners() {
     for panic in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        close_backup_fixture(Store::open(&path).unwrap()).unwrap();
+        drop(Store::open(&path).unwrap());
         let mut lock = None;
         let mut reached = false;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -89,29 +54,26 @@ fn fixture_rebuild_errors_and_panics_do_not_unlock() {
             Store::open(&path).err().unwrap().kind(),
             io::ErrorKind::WouldBlock
         );
-        fs2::FileExt::unlock(lock.as_ref().unwrap()).unwrap();
         drop(lock);
         drop(Store::open(&path).unwrap());
     }
 }
 
 #[test]
-fn fixture_rebuild_success_unlocks_its_retained_duplicate() {
+fn fixture_rebuild_success_releases_its_lock() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let store = Store::open(&path).unwrap();
     store.put(b"safe", b"value").unwrap();
-    close_backup_fixture(store).unwrap();
+    drop(store);
     let mut lock = None;
     fixture_rebuild(&path, &dir.path().join("checkpoint"), &mut lock, || Ok(())).unwrap();
-    assert!(lock.is_some());
+    assert!(lock.is_none());
     let reopened = CheckpointStore::open_managed(&path).unwrap();
     assert_eq!(
         reopened.get(b"safe").unwrap().as_deref(),
         Some(&b"value"[..])
     );
-    drop(reopened);
-    drop(lock);
 }
 
 fn rebuild_fixture(
@@ -137,22 +99,22 @@ fn rebuild_fixture(
     let store = Store::open(&path).unwrap();
     store.put(b"safe", b"acknowledged").unwrap();
     let digest = store.checkpoint_to(&base).unwrap();
-    close_backup_fixture(store).unwrap();
+    drop(store);
     if managed {
         let mut lock = None;
         fixture_rebuild(&path, &dir.path().join("old"), &mut lock, || Ok(())).unwrap();
         let store = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
         store.put(b"tail", b"acknowledged").unwrap();
-        close_checkpoint_fixture(store).unwrap();
+        drop(store);
     } else {
         let store = retry_lock(|| Store::open(&path)).unwrap();
         store.put(b"tail", b"acknowledged").unwrap();
-        close_backup_fixture(store).unwrap();
+        drop(store);
     }
     let backup = dir.path().join("backup");
     let store = retry_lock(|| Store::open(&path)).unwrap();
     store.backup(&backup).unwrap();
-    close_backup_fixture(store).unwrap();
+    drop(store);
     (dir, path, base, digest, backup)
 }
 
@@ -264,18 +226,6 @@ fn detailed_rebuild_classifies_publication_boundaries_and_preserves_recovery() {
 
 #[test]
 fn detailed_rebuild_public_api_preserves_limits_locks_and_existing_files() {
-    // The public rebuild operations open and release their own locks.
-    // Exercise consecutive calls without unrelated test children inheriting them.
-    #[cfg(target_os = "linux")]
-    if crate::test_support::fork_lock::isolated(
-        concat!(
-            module_path!(),
-            "::detailed_rebuild_public_api_preserves_limits_locks_and_existing_files"
-        ),
-        "EMDA_DETAILED_REBUILD_PUBLIC_API_ISOLATED",
-    ) {
-        return;
-    }
     for v2 in [true, false] {
         let (dir, path, _, _, _) = rebuild_fixture(v2, true);
         let previous = fs::read(super::super::selection::path(&path)).unwrap();

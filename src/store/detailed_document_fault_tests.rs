@@ -32,7 +32,6 @@ fn v2_fixture() -> (
     let checkpoint = root.path().join("checkpoint");
     let store = Store::open(&path).unwrap();
     let digest = store.checkpoint_to(&checkpoint).unwrap();
-    fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
     drop(store);
     (root, path, checkpoint, digest)
 }
@@ -198,7 +197,6 @@ fn schema_publication_and_partial_indexes_recover_together_after_append_failure(
             "{result:?}"
         );
         assert!(store.get(b"health-check").is_err());
-        fs2::FileExt::unlock(&store.duplicate_store_lock().unwrap()).unwrap();
         drop(store);
 
         let reopened = Store::open(&path).unwrap();

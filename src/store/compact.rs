@@ -233,7 +233,7 @@ mod tests {
     fn private_store_lock_release_is_not_delayed_by_a_duplicate_descriptor() {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open(directory.path()).unwrap();
-        let inherited = store._lock_file.try_clone().unwrap();
+        let inherited = store._lock_file.duplicate_descriptor().unwrap();
         assert!(Store::open(directory.path()).is_err());
         store.close_private_store().unwrap();
         let reopened = Store::open(directory.path()).unwrap();

@@ -13,17 +13,19 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 #[test]
-fn duplicated_store_lock_retains_ownership_until_the_duplicate_closes() {
+fn shared_store_lock_retains_ownership_until_the_last_owner_closes() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
-    let inherited = store._lock_file.try_clone().unwrap();
+    let inherited = store._lock_file.duplicate_descriptor().unwrap();
+    let owner = store.share_store_lock();
     drop(store);
     assert_eq!(
         Store::open(directory.path()).err().unwrap().kind(),
         io::ErrorKind::WouldBlock
     );
+    drop(owner);
+    assert!(Store::open(directory.path()).is_ok());
     drop(inherited);
-    assert!(retry_lock(|| Store::open(directory.path())).is_ok());
 }
 
 #[derive(Clone, Copy)]

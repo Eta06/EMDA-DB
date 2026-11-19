@@ -120,7 +120,7 @@ pub struct CheckpointView {
     has_tail: bool,
     pub(crate) witnessed_boundary: u64,
     // Borrowed snapshots rely on their still-live store's lock instead.
-    _lock_file: Option<File>,
+    _lock_file: Option<crate::store_lock::StoreLock>,
 }
 
 impl CheckpointView {
@@ -166,7 +166,8 @@ impl CheckpointView {
         let path = path.as_ref();
         let lock_file = File::open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_shared(&lock_file)?;
-        crate::directory::verify_lock_identity(path, &lock_file)?;
+        let lock_file = crate::store_lock::StoreLock::acquired(lock_file);
+        lock_file.verify_identity(path)?;
         Self::open_locked_with_recovery_limits(
             path,
             checkpoint.as_ref(),
@@ -182,7 +183,7 @@ impl CheckpointView {
         path: &Path,
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
-        lock_file: File,
+        lock_file: crate::store_lock::StoreLock,
     ) -> io::Result<Self> {
         Self::open_locked_with_limits(
             path,
@@ -197,7 +198,7 @@ impl CheckpointView {
         path: &Path,
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
-        lock_file: File,
+        lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
     ) -> io::Result<Self> {
         Self::open_locked_with_recovery_limits(
@@ -214,7 +215,7 @@ impl CheckpointView {
         path: &Path,
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
-        lock_file: File,
+        lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
     ) -> io::Result<Self> {
@@ -329,13 +330,11 @@ impl CheckpointView {
         self.peak
     }
 
-    // Duplicating the same open file description preserves the exclusive
-    // advisory lock across a checkpoint-store view handoff.
-    pub(crate) fn duplicate_store_lock(&self) -> io::Result<File> {
+    // Share ownership of the exclusive lock through a view handoff.
+    pub(crate) fn share_store_lock(&self) -> io::Result<crate::store_lock::StoreLock> {
         self._lock_file
-            .as_ref()
-            .ok_or_else(|| io::Error::other("snapshot view does not own the store lock"))?
-            .try_clone()
+            .clone()
+            .ok_or_else(|| io::Error::other("snapshot view does not own the store lock"))
     }
 
     // The caller's snapshot borrows the open store and thus relies on its

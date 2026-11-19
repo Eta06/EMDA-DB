@@ -118,7 +118,6 @@ fn detailed_rebuild_process_kills_preserve_tail_selection_and_backup() {
                     .unwrap();
                 let backup = root.path().join("backup");
                 reference.backup(&backup).unwrap();
-                fs2::FileExt::unlock(&reference.duplicate_store_lock().unwrap()).unwrap();
                 drop(reference);
                 let original_log = fs::read(path.join("records.log")).unwrap();
                 let original_witness = fs::read(path.join("commit.state")).unwrap();

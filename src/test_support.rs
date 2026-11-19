@@ -245,17 +245,9 @@ pub(crate) mod fork_lock {
         );
         true
     }
-    pub fn check(path: &Path, child: Child, released: bool) {
+    pub fn check_reopened(path: &Path, child: Child) {
         child.assert_inode(path);
-        if released {
-            drop(crate::Store::open(path).unwrap());
-        } else {
-            let error = match crate::Store::open(path) {
-                Ok(_) => panic!("reopen succeeded"),
-                Err(e) => e,
-            };
-            assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
-        }
+        drop(crate::Store::open(path).unwrap());
         drop(child);
     }
 }
