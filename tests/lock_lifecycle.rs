@@ -9,9 +9,7 @@ use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-// A fork inherits descriptors belonging to every thread in the process. Keep
-// these deliberately blocked pre-exec children from retaining each other's
-// store locks while the two lifecycle cases run under the parallel harness.
+// Keep the deliberate pre-exec pauses independent under the parallel harness.
 static PROCESS_TEST: Mutex<()> = Mutex::new(());
 
 #[test]
@@ -32,7 +30,7 @@ fn lock_child() {
     }
 }
 
-fn verify_lock_until_exec(path: &Path, release_owner: impl FnOnce()) {
+fn verify_lock_lifecycle(path: &Path, release_owner: impl FnOnce(), reopen_before_exec: bool) {
     let executable = std::env::current_exe().unwrap();
     let probe = Command::new(&executable)
         .args(["--exact", "lock_child", "--nocapture"])
@@ -77,16 +75,10 @@ fn verify_lock_until_exec(path: &Path, release_owner: impl FnOnce()) {
     });
     let mut ready = [0_u8; 1];
     let read_ready = parent.read_exact(&mut ready);
+    let active_error = Store::open(path).err().map(|error| error.kind());
     release_owner();
-    // The child still has the inherited descriptor until exec, even though the
-    // original owner was dropped. Never leave the blocked child behind on error.
-    let blocked_kind = match Store::open(path) {
-        Err(error) => Some(error.kind()),
-        Ok(store) => {
-            drop(store);
-            None
-        }
-    };
+    let before_exec = Store::open(path).and_then(|store| store.get(b"key"));
+    // Release the child before asserting either outcome.
     let released = parent.write_all(b"e");
     drop(parent);
     let spawned = receiver.recv_timeout(Duration::from_secs(10));
@@ -110,22 +102,27 @@ fn verify_lock_until_exec(path: &Path, release_owner: impl FnOnce()) {
     read_ready.expect("child did not reach the pre-exec boundary");
     released.expect("could not release child to exec");
     assert_eq!(ready, *b"r");
-    assert_eq!(blocked_kind, Some(io::ErrorKind::WouldBlock));
+    assert_eq!(active_error, Some(io::ErrorKind::WouldBlock));
+    if reopen_before_exec {
+        assert_eq!(before_exec.unwrap().as_deref(), Some(&b"value"[..]));
+    } else {
+        assert_eq!(before_exec.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+    }
     assert_eq!(reopened_value.as_deref(), Some(&b"value"[..]));
 }
 
 #[test]
-fn store_lock_survives_fork_until_exec_but_not_the_executed_child() {
+fn store_reopens_after_owner_closes_before_child_exec() {
     let _serial = PROCESS_TEST.lock().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("store");
     let store = Store::open(&path).unwrap();
     store.put(b"key", b"value").unwrap();
-    verify_lock_until_exec(&path, || drop(store));
+    verify_lock_lifecycle(&path, || drop(store), true);
 }
 
 #[test]
-fn checkpoint_view_lock_survives_fork_until_exec_but_not_the_executed_child() {
+fn checkpoint_view_releases_lock_before_child_exec() {
     let _serial = PROCESS_TEST.lock().unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("store");
@@ -135,5 +132,18 @@ fn checkpoint_view_lock_survives_fork_until_exec_but_not_the_executed_child() {
     let digest = store.checkpoint_to(&checkpoint).unwrap();
     drop(store);
     let view = CheckpointView::open(&path, &checkpoint, &digest).unwrap();
-    verify_lock_until_exec(&path, || drop(view));
+    verify_lock_lifecycle(&path, || drop(view), true);
+}
+
+#[test]
+fn bare_close_on_exec_descriptor_keeps_lock_until_exec() {
+    let _serial = PROCESS_TEST.lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("store");
+    let store = Store::open(&path).unwrap();
+    store.put(b"key", b"value").unwrap();
+    drop(store);
+    let lock = std::fs::File::open(path.join("store.lock")).unwrap();
+    fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+    verify_lock_lifecycle(&path, || drop(lock), false);
 }
