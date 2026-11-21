@@ -7,6 +7,7 @@ use crate::record::batch::stream::{StreamValue, ValueHash};
 use crate::record::{self, HEADER_SIZE, Header, Operation};
 use crate::recovery::RecoveryReader;
 use crate::witness::{self, LOG_HEADER_SIZE, LogId, Witness};
+use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, IoSlice, Write};
@@ -763,6 +764,17 @@ impl Log {
         Ok(self.verify_index_peaks(expected)?.0)
     }
 
+    pub(crate) fn verify_checkpoint_index(
+        &self,
+        expected: &BTreeMap<Vec<u8>, ValueLocation>,
+    ) -> io::Result<(usize, checkpoint::VerifiedLog)> {
+        use sha2::Digest;
+        let mut hasher = Sha256::new();
+        let (peak, _, length) =
+            self.verify_index_replay(expected, None, None, Some(&mut hasher))?;
+        Ok((peak, checkpoint::VerifiedLog::from_replay(length, hasher)))
+    }
+
     /// Reconstruct both high-water marks from a fully verified ordered replay.
     /// The caller must exclude writes for the entire verification. This is not
     /// a stable export view or a provenance record.
@@ -787,6 +799,17 @@ impl Log {
         limits: Option<PeakVerificationLimits>,
         boundary: Option<u64>,
     ) -> io::Result<(usize, usize)> {
+        let (count, bytes, _) = self.verify_index_replay(expected, limits, boundary, None)?;
+        Ok((count, bytes))
+    }
+
+    fn verify_index_replay(
+        &self,
+        expected: &BTreeMap<Vec<u8>, ValueLocation>,
+        limits: Option<PeakVerificationLimits>,
+        boundary: Option<u64>,
+        hasher: Option<&mut Sha256>,
+    ) -> io::Result<(usize, usize, u64)> {
         self.verify_witness()?;
         let total = self.file.len()?;
         if limits.is_some_and(|limit| total > limit.max_log_bytes) {
@@ -795,7 +818,12 @@ impl Log {
                 "verification log byte limit exceeded",
             ));
         }
-        let (index, peak_count, peak_bytes) = self.replay_index_peaks(total, boundary, limits)?;
+        let mut reader = RecoveryReader::at(self.file.as_ref(), total, 0)?;
+        if let Some(hasher) = hasher {
+            reader = reader.with_digest(hasher);
+        }
+        let (index, peak_count, peak_bytes) =
+            self.replay_index_peaks(reader, total, boundary, limits)?;
         if &index != expected {
             return Err(record::invalid_data(
                 "live index does not match verified log",
@@ -807,7 +835,7 @@ impl Log {
             ));
         }
         self.verify_witness()?;
-        Ok((peak_count, peak_bytes))
+        Ok((peak_count, peak_bytes, total))
     }
 
     /// Reconstruct a verified prefix while the caller holds the writer barrier.
@@ -825,20 +853,22 @@ impl Log {
             return Err(io::Error::other("log has no attached commit witness"));
         }
         self.verify_index_peaks_at_boundary(expected, Some(limits), Some(boundary))?;
-        let result = self.replay_index_peaks(boundary, None, Some(limits))?;
+        let reader = RecoveryReader::at(self.file.as_ref(), boundary, 0)?;
+        let result = self.replay_index_peaks(reader, boundary, None, Some(limits))?;
         self.verify_witness()?;
         Ok(result)
     }
 
     fn replay_index_peaks(
         &self,
+        reader: RecoveryReader<'_>,
         end: u64,
         boundary: Option<u64>,
         limits: Option<PeakVerificationLimits>,
     ) -> io::Result<(BTreeMap<Vec<u8>, ValueLocation>, usize, usize)> {
         let mut index = BTreeMap::new();
         let (mut bytes, mut peak_count, mut peak_bytes) = (0_usize, 0_usize, 0_usize);
-        self.visit_records_to(0, end, boundary, |key, location| {
+        self.visit_locations(reader, end, boundary, |key, location| {
             match location {
                 Some(location) => {
                     if !index.contains_key(&key) {
@@ -974,11 +1004,24 @@ impl Log {
         boundary: u64,
         visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
-        use sha2::{Digest, Sha256};
+        use sha2::Digest;
         let mut digest = Sha256::new();
-        let reader = RecoveryReader::at(self.file.as_ref(), end, start)?.with_digest(&mut digest);
-        self.visit_locations(reader, end, Some(boundary), visit)?;
+        self.visit_records_with_digest(start, end, boundary, &mut digest, visit)?;
         Ok(digest.finalize().into())
+    }
+
+    // Continue hashing a verified prefix with exactly the bytes validated
+    // during replay of the next range.
+    pub(crate) fn visit_records_with_digest(
+        &self,
+        start: u64,
+        end: u64,
+        boundary: u64,
+        digest: &mut Sha256,
+        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let reader = RecoveryReader::at(self.file.as_ref(), end, start)?.with_digest(digest);
+        self.visit_locations(reader, end, Some(boundary), visit)
     }
 
     fn visit_locations(

@@ -583,7 +583,7 @@ impl CheckpointStore {
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let state = self.read()?;
-        let (count, _) = self.verify_for_checkpoint(&state)?;
+        let (count, _, _) = self.verify_for_checkpoint(&state)?;
         create(&self.log, &state.view, count, destination)
     }
 
@@ -923,7 +923,7 @@ impl CheckpointStore {
         for_rollover: bool,
         tracker: Option<&crate::publication_outcome::Tracker>,
     ) -> io::Result<[u8; 32]> {
-        let (count, peak) = self.verify_for_checkpoint(state)?;
+        let (count, peak, verified_log) = self.verify_for_checkpoint(state)?;
         crate::checkpoint::create_streaming_tracked(
             &self.log,
             count,
@@ -939,17 +939,20 @@ impl CheckpointStore {
             crate::checkpoint::StreamingOptions {
                 limits: for_rollover.then_some(self.checkpoint_view_limits),
                 tracker,
-                ..crate::checkpoint::StreamingOptions::default()
+                verified_log,
             },
         )
     }
 
     // Revalidate the separately trusted base and replay the entire bounded
     // suffix, checking both the live overlay and the historical key peak.
-    fn verify_for_checkpoint(&self, state: &State) -> io::Result<(u64, usize)> {
+    fn verify_for_checkpoint(
+        &self,
+        state: &State,
+    ) -> io::Result<(u64, usize, crate::checkpoint::VerifiedLog)> {
         self.log.verify_witness()?;
         let view = &state.view;
-        view.base.verify_for_rollover()?;
+        let mut log_hasher = view.base.verify_for_rollover()?;
         let boundary = self.log.len()?;
         if boundary.checked_sub(view.base.log_boundary()) != Some(view.tail_bytes) {
             return Err(record::invalid_data("checkpoint suffix length changed"));
@@ -1007,8 +1010,12 @@ impl CheckpointStore {
                 })?;
             }
         }
-        self.log
-            .visit_records(view.base.log_boundary(), Some(boundary), |key, location| {
+        self.log.visit_records_with_digest(
+            view.base.log_boundary(),
+            boundary,
+            boundary,
+            &mut log_hasher,
+            |key, location| {
                 let probe = probes
                     .get_mut(&key)
                     .ok_or_else(|| record::invalid_data("verified suffix has an unexpected key"))?;
@@ -1029,7 +1036,8 @@ impl CheckpointStore {
                 probe.0 = location.is_some();
                 probe.1 = Some(location);
                 Ok(())
-            })?;
+            },
+        )?;
         if view
             .overlay
             .iter()
@@ -1040,7 +1048,8 @@ impl CheckpointStore {
             ));
         }
         self.log.verify_witness()?;
-        Ok((current as u64, peak))
+        let verified_log = crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher);
+        Ok((current as u64, peak, verified_log))
     }
 
     /// Replaces a key and synchronizes the mutation before returning.

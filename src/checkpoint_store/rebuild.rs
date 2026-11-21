@@ -574,8 +574,8 @@ impl CheckpointStore {
             |parent| (hooks.sync_checkpoint_ancestors)(parent),
             crate::checkpoint::StreamingOptions {
                 tracker: tracker.map(|tracker| &tracker.checkpoint),
-                verified_log: Some(verified_log),
-                ..crate::checkpoint::StreamingOptions::default()
+                verified_log,
+                limits: None,
             },
         )?;
         drop(spill);

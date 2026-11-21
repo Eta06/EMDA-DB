@@ -137,7 +137,8 @@ pub(crate) fn compact_checkpoint_with_hooks(
     let mut previous = Vec::new();
     let mut target_count = 0_u64;
     let mut target_hash = Sha256::new();
-    target.visit_records(0, Some(boundary), |key, location| {
+    let mut log_hasher = Sha256::new();
+    target.visit_records_with_digest(0, boundary, boundary, &mut log_hasher, |key, location| {
         let location =
             location.ok_or_else(|| record::invalid_data("compacted log contains a deletion"))?;
         if !previous.is_empty() && previous >= key {
@@ -165,7 +166,11 @@ pub(crate) fn compact_checkpoint_with_hooks(
         target_count,
         peak,
         staging.path(),
-        None,
+        crate::checkpoint::StreamingOptions {
+            verified_log: crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher),
+            limits: None,
+            tracker: None,
+        },
         |emit| {
             target.visit_records(0, Some(boundary), |key, location| {
                 let location = location

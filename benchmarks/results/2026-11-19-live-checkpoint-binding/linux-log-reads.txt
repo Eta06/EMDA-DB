@@ -1,0 +1,5 @@
+fixture completed_log_reads logical_log_bytes other_matches
+baseline-checkpoint 19 855 0
+baseline-checkpoint_rollover 2062 1765240 0
+candidate-checkpoint 20 769 0
+candidate-checkpoint_rollover 2058 1326760 0

@@ -360,7 +360,7 @@ impl CheckpointView {
 
     // Revalidate the original trusted checkpoint and its covered log bytes
     // before deriving another checkpoint from this long-lived view.
-    pub(crate) fn verify_for_rollover(&self) -> io::Result<()> {
+    pub(crate) fn verify_for_rollover(&self) -> io::Result<Sha256> {
         let mut count = 0_u64;
         let verified = checkpoint::visit_file(
             &self.checkpoint,
@@ -377,7 +377,7 @@ impl CheckpointView {
         if verified.prefix != self.prefix || verified.peak != self.peak || count != self.keys {
             return Err(record::invalid_data("checkpoint changed since opening"));
         }
-        Ok(())
+        Ok(verified.log_hasher)
     }
 
     pub(crate) fn covered_log_digest(&self) -> &[u8; 32] {

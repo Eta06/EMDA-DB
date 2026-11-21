@@ -107,6 +107,47 @@ fn write_all_vectored(mut writer: impl Write, mut buffers: &mut [IoSlice<'_>]) -
 }
 
 #[cfg(test)]
+pub(crate) mod replay_fault {
+    use super::*;
+    use std::ops::Range;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Replace a record as soon as the scanner has read the original bytes.
+    pub(crate) struct ReplaceAfterRead {
+        pub file: File,
+        pub observed: Range<u64>,
+        pub replace_at: u64,
+        pub replacement: Vec<u8>,
+        pub fired: Arc<AtomicBool>,
+    }
+
+    impl LogIo for ReplaceAfterRead {
+        fn len(&self) -> io::Result<u64> {
+            LogIo::len(&self.file)
+        }
+
+        fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+            FileExt::read_exact_at(&self.file, buffer, offset)?;
+            if offset == self.observed.start
+                && buffer.len() as u64 == self.observed.end - self.observed.start
+                && !self.fired.swap(true, Ordering::Relaxed)
+            {
+                self.file.write_all_at(&self.replacement, self.replace_at)?;
+            }
+            Ok(())
+        }
+
+        fn append_all(&self, _: &[u8]) -> io::Result<()> {
+            panic!("checkpoint tried to append after reading a changed log")
+        }
+
+        fn sync_data(&self) -> io::Result<()> {
+            self.file.sync_data()
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::VecDeque;

@@ -339,7 +339,7 @@ impl CheckpointStore {
         let destination = root.join(SLOTS[next_slot]);
         crate::cleanup_abandoned_staging(&root)?;
         remove_inactive_slot(&root, &destination)?;
-        let (count, peak) = self.verify_for_checkpoint(state)?;
+        let (count, peak, verified_log) = self.verify_for_checkpoint(state)?;
         let mut stage = crate::staging::Stage::directory(&root)?;
         write_marker(stage.path(), SLOT_OWNER)?;
         let digest = crate::checkpoint::create_streaming_in_private_stage(
@@ -347,7 +347,11 @@ impl CheckpointStore {
             count,
             peak,
             stage.path(),
-            Some(self.checkpoint_view_limits),
+            crate::checkpoint::StreamingOptions {
+                limits: Some(self.checkpoint_view_limits),
+                verified_log,
+                tracker: None,
+            },
             |emit| {
                 state.view.visit_entries(None, None, |key, location| {
                     emit(key, location)?;

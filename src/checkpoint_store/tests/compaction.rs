@@ -44,7 +44,7 @@ fn checkpoint_compaction_crash_child() {
     })
     .unwrap();
     let state = store.read().unwrap();
-    let (count, _) = store.verify_for_checkpoint(&state).unwrap();
+    let (count, _, _) = store.verify_for_checkpoint(&state).unwrap();
     crate::store::compact_checkpoint_with_hooks(
         &store.log,
         &state.view,
@@ -142,7 +142,7 @@ fn streamed_compaction_rejects_corrupt_staged_data_before_publication() {
     store.put(b"key", b"value").unwrap();
     let destination = dir.path().join("must-not-exist");
     let state = store.read().unwrap();
-    let (count, _) = store.verify_for_checkpoint(&state).unwrap();
+    let (count, _, _) = store.verify_for_checkpoint(&state).unwrap();
     let result = crate::store::compact_checkpoint_with_hooks(
         &store.log,
         &state.view,
@@ -175,7 +175,7 @@ fn streamed_compaction_reports_pre_and_post_publication_failures() {
         store.put(b"key", b"value").unwrap();
         let destination = dir.path().join("copy");
         let state = store.read().unwrap();
-        let (count, _) = store.verify_for_checkpoint(&state).unwrap();
+        let (count, _, _) = store.verify_for_checkpoint(&state).unwrap();
         let result = crate::store::compact_checkpoint_with_hooks(
             &store.log,
             &state.view,
@@ -236,7 +236,7 @@ fn streamed_compaction_blocks_mutations_while_allowing_reads() {
         let destination = &destination;
         let worker = scope.spawn(move || {
             let state = copying.read().unwrap();
-            let (count, _) = copying.verify_for_checkpoint(&state).unwrap();
+            let (count, _, _) = copying.verify_for_checkpoint(&state).unwrap();
             crate::store::compact_checkpoint_with_hooks(
                 &copying.log,
                 &state.view,
@@ -302,7 +302,7 @@ fn every_streamed_compaction_ancestor_sync_failure_reports_uncertain_copy() {
         store.put(b"key", b"value").unwrap();
         let destination = dir.path().join("copy");
         let state = store.read().unwrap();
-        let (count, _) = store.verify_for_checkpoint(&state).unwrap();
+        let (count, _, _) = store.verify_for_checkpoint(&state).unwrap();
         let mut seen = 0;
         let result = crate::store::compact_checkpoint_with_hooks(
             &store.log,

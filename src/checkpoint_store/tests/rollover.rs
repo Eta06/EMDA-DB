@@ -1,6 +1,78 @@
 use super::*;
 
 #[test]
+fn checkpoint_paths_reject_a_same_length_log_change_after_replay_reads_it() {
+    use crate::log_io::replay_fault::ReplaceAfterRead;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    for mode in ["copy", "rollover", "managed", "automatic"] {
+        let (dir, path, checkpoint, digest) = fixture();
+        let mut store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+        let destination = dir.path().join("next");
+        let selection_path = super::super::selection::path(&path);
+        if mode == "automatic" {
+            store.rollover_managed(dir.path().join("selected")).unwrap();
+            store.enable_automatic_checkpoints().unwrap();
+        }
+        let previous_selection = fs::read(&selection_path).ok();
+        let start = store.log.len().unwrap();
+        store.put(b"new", b"value").unwrap();
+        let end = store.log.len().unwrap();
+        let log_path = path.join("records.log");
+        let original = fs::read(&log_path).unwrap();
+        let replacement = record::encode(Operation::Put, b"bad", b"value").unwrap();
+        assert_eq!(replacement.len() as u64, end - start);
+        let fired = Arc::new(AtomicBool::new(false));
+        store.log.replace_io_for_test(Box::new(ReplaceAfterRead {
+            file: fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&log_path)
+                .unwrap(),
+            observed: start..end,
+            replace_at: start,
+            replacement,
+            fired: Arc::clone(&fired),
+        }));
+
+        let error = match mode {
+            "copy" => store.checkpoint_to(&destination).map(|_| ()),
+            "rollover" => store.rollover_to(&destination).map(|_| ()),
+            "managed" => store.rollover_managed(&destination).map(|_| ()),
+            _ => {
+                let mut state = store.write().unwrap();
+                store.automatic_rollover(&mut state)
+            }
+        }
+        .expect_err(mode);
+        assert!(fired.load(Ordering::Relaxed), "{mode}");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{mode}: {error}");
+        assert_eq!(error.to_string(), "checkpoint does not match log prefix");
+        assert_eq!(fs::read(&selection_path).ok(), previous_selection, "{mode}");
+        assert!(!destination.exists(), "{mode}");
+        assert_eq!(store.tail_bytes().unwrap(), end - start, "{mode}");
+        if mode == "automatic" {
+            let root = super::super::automatic::root(&path);
+            assert!(!root.join("slot-0").exists());
+            assert!(!root.join("slot-1").exists());
+        }
+        fs::write(log_path, original).unwrap();
+        drop(store);
+        let reopened = if mode == "automatic" {
+            CheckpointStore::open_managed(&path).unwrap()
+        } else {
+            CheckpointStore::open(&path, &checkpoint, &digest).unwrap()
+        };
+        assert_eq!(
+            reopened.get(b"new").unwrap().as_deref(),
+            Some(b"value".as_slice())
+        );
+        assert_eq!(reopened.get(b"bad").unwrap(), None);
+    }
+}
+
+#[test]
 fn detailed_rollover_keeps_old_view_after_sync_or_switch_failure() {
     for failure in ["sync", "switch"] {
         let (dir, path, checkpoint, digest) = fixture();
@@ -100,12 +172,12 @@ fn streamed_checkpoint_prepublication_failure_leaves_source_usable() {
     store.put(b"new", b"value").unwrap();
     let destination = dir.path().join("not-published");
     let state = store.write().unwrap();
-    let (count, peak) = store.verify_for_checkpoint(&state).unwrap();
+    let (count, peak, verified_log) = store.verify_for_checkpoint(&state).unwrap();
     let result = crate::checkpoint::create_streaming_with_hooks(
         &store.log,
         count,
         peak,
-        &destination,
+        (&destination, verified_log),
         |emit| {
             state.view.visit_entries(None, None, |key, location| {
                 emit(key, location)?;
@@ -146,12 +218,13 @@ fn streamed_checkpoint_blocks_writes_until_verified_publication() {
         let destination = &destination;
         let checkpoint_thread = scope.spawn(move || {
             let state = checkpoint_store.write().unwrap();
-            let (count, peak) = checkpoint_store.verify_for_checkpoint(&state).unwrap();
+            let (count, peak, verified_log) =
+                checkpoint_store.verify_for_checkpoint(&state).unwrap();
             crate::checkpoint::create_streaming_with_hooks(
                 &checkpoint_store.log,
                 count,
                 peak,
-                destination,
+                (destination, verified_log),
                 |emit| {
                     state.view.visit_entries(None, None, |key, location| {
                         emit(key, location)?;
