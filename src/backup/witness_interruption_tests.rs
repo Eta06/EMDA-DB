@@ -39,7 +39,7 @@ fn invoke(
 ) -> io::Result<()> {
     match operation {
         "restore" => restore_with_witness_hooks(
-            &root.join("backup"),
+            (&root.join("backup"), None),
             &root.join("result"),
             |_| Ok(()),
             || Ok(()),

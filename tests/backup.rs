@@ -1,10 +1,123 @@
-use database_engine::Store;
+use database_engine::{PublicationFailure, Store};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::tempdir;
+
+#[test]
+fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {
+    for format in ["legacy", "v2", "native"] {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("live");
+        match format {
+            "legacy" => {
+                fs::create_dir(&source).unwrap();
+                fs::write(
+                    source.join("records.log"),
+                    include_bytes!("fixtures/db01-legacy-record.bin"),
+                )
+                .unwrap();
+            }
+            "v2" => {
+                fs::create_dir(&source).unwrap();
+                fs::write(
+                    source.join("records.log"),
+                    include_bytes!("fixtures/v2-empty-records.log"),
+                )
+                .unwrap();
+                fs::write(
+                    source.join("commit.state"),
+                    include_bytes!("fixtures/v2-empty-commit.state"),
+                )
+                .unwrap();
+            }
+            _ => {}
+        }
+        let store = Store::open(&source).unwrap();
+        if format != "legacy" {
+            store.put(b"legacy", b"temporary").unwrap();
+            store.put(b"legacy", b"persisted").unwrap();
+        }
+        let backup = dir.path().join("backup");
+        store.backup(&backup).unwrap();
+        let bytes = fs::read(&backup).unwrap();
+        let log = fs::read(source.join("records.log")).unwrap();
+        let limit = log.len() as u64;
+        let destination = dir.path().join("restored");
+
+        // Holding the staging parent lock would block a publication stage.
+        // The smaller limit must take precedence without touching that lock.
+        let parent = fs::File::open(dir.path()).unwrap();
+        fs2::FileExt::try_lock_exclusive(&parent).unwrap();
+        let result = Store::restore_with_log_limit_detailed(&backup, &destination, limit - 1);
+        assert!(
+            matches!(
+                result,
+                Err(PublicationFailure::NotPublished(ref error))
+                    if error.kind() == std::io::ErrorKind::InvalidInput
+            ),
+            "{format}: {result:?}"
+        );
+        assert!(!destination.exists());
+        drop(parent);
+
+        Store::restore_with_log_limit_detailed(&backup, &destination, limit).unwrap();
+        assert_eq!(fs::read(destination.join("records.log")).unwrap(), log);
+        assert_eq!(
+            Store::open(&destination)
+                .unwrap()
+                .get(b"legacy")
+                .unwrap()
+                .as_deref(),
+            Some(b"persisted".as_slice())
+        );
+        let conflict = Store::restore_with_log_limit_detailed(&backup, &destination, limit);
+        assert!(
+            matches!(
+                conflict,
+                Err(PublicationFailure::OutcomeUnknown(ref error))
+                    if error.kind() == std::io::ErrorKind::AlreadyExists
+            ),
+            "{format}: {conflict:?}"
+        );
+        assert_eq!(fs::read(destination.join("records.log")).unwrap(), log);
+        assert_eq!(fs::read(source.join("records.log")).unwrap(), log);
+        assert_eq!(fs::read(&backup).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn restore_log_limit_includes_the_header_synthesized_for_empty_legacy_backups() {
+    let dir = tempdir().unwrap();
+    let backup = dir.path().join("backup");
+    let destination = dir.path().join("restored");
+    let mut empty = b"DBBKP001DBBEND01".to_vec();
+    empty.extend_from_slice(&0_u64.to_le_bytes());
+    empty.extend_from_slice(&Sha256::digest([]));
+    fs::write(&backup, &empty).unwrap();
+
+    for limit in [0, 27] {
+        let result = Store::restore_with_log_limit_detailed(&backup, &destination, limit);
+        assert!(
+            matches!(
+                result,
+                Err(PublicationFailure::NotPublished(ref error))
+                    if error.kind() == std::io::ErrorKind::InvalidInput
+            ),
+            "{limit}: {result:?}"
+        );
+        assert!(!destination.exists());
+    }
+    Store::restore_with_log_limit_detailed(&backup, &destination, 28).unwrap();
+    assert_eq!(
+        fs::metadata(destination.join("records.log")).unwrap().len(),
+        28
+    );
+    assert_eq!(fs::read(&backup).unwrap(), empty);
+    assert_eq!(Store::open(destination).unwrap().get(b"key").unwrap(), None);
+}
 
 #[test]
 fn backup_and_restore_preserve_a_point_in_time() {
@@ -158,6 +271,21 @@ fn backup_with_recomputed_outer_hash_still_checks_record_integrity() {
         std::io::ErrorKind::InvalidData
     );
     assert!(!target.exists());
+    let log_len = (footer - 8) as u64;
+    for (limit, expected) in [
+        (log_len - 1, std::io::ErrorKind::InvalidInput),
+        (log_len, std::io::ErrorKind::InvalidData),
+    ] {
+        let result = Store::restore_with_log_limit_detailed(&backup, &target, limit);
+        assert!(
+            matches!(
+                result,
+                Err(PublicationFailure::NotPublished(ref error)) if error.kind() == expected
+            ),
+            "{limit}: {result:?}"
+        );
+        assert!(!target.exists());
+    }
 }
 
 #[test]

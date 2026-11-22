@@ -100,12 +100,14 @@ fn publication_crash_child() {
             let (log, _) = Log::open(&source, false).unwrap();
             create_with_sync(&log, &backup, |_| pause_at_boundary())
         }
-        "restore-staged" => restore_with_hooks(&backup, &restored, |_| Ok(()), pause_at_boundary),
+        "restore-staged" => {
+            restore_with_hooks((&backup, None), &restored, |_| Ok(()), pause_at_boundary)
+        }
         "restore-published" => restore_with_sync(&backup, &restored, |_| pause_at_boundary()),
         mode if empty_restore_point(mode).is_some() => {
             let requested = empty_restore_point(mode).unwrap();
             restore_with_empty_hooks(
-                &backup,
+                (&backup, None),
                 &restored,
                 |_| Ok(()),
                 || Ok(()),
@@ -303,7 +305,7 @@ fn empty_legacy_restore_fails_before_publication_at_each_new_boundary() {
         let bytes = empty_legacy_backup();
         std::fs::write(&backup, &bytes).unwrap();
         let result = restore_with_empty_hooks(
-            &backup,
+            (&backup, None),
             &restored,
             |_| Ok(()),
             || Ok(()),
@@ -597,7 +599,7 @@ fn backup_rejects_a_self_consistent_substitution_after_stage_sync() {
                         HEADER_SIZE + alternate.len() as u64 + 16,
                     )?;
                     file.sync_all()?;
-                    assert!(validate(&file).is_ok());
+                    assert!(validate(&file, None).is_ok());
                 }
                 Ok(())
             },
@@ -629,9 +631,10 @@ fn structured_restore_failures_distinguish_before_and_after_publication() {
     let backup = dir.path().join("backup");
     store.backup(&backup).unwrap();
     let restored = dir.path().join("restored");
+    let log_bytes = std::fs::metadata(source.join("records.log")).unwrap().len();
     let before = crate::publication_outcome::track(|tracker| {
         restore_with_stage_hooks(
-            &backup,
+            (&backup, Some(log_bytes)),
             &restored,
             crate::directory::sync_existing,
             || {
@@ -656,7 +659,7 @@ fn structured_restore_failures_distinguish_before_and_after_publication() {
     assert!(!restored.exists());
     let after = crate::publication_outcome::track(|tracker| {
         restore_with_hooks(
-            &backup,
+            (&backup, Some(log_bytes)),
             &restored,
             |_| Err(io::Error::other("injected directory sync")),
             || {

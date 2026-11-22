@@ -68,6 +68,14 @@ independent off-host copy. A visible result after a directory-sync failure may
 not be durable. Inspect and reconcile unknown outcomes before retry. Existing
 backup/restore APIs retain their previous error types.
 
+`Store::restore_with_log_limit_detailed` adds a per-call ceiling on the
+resulting `records.log`, including the new header installed for an empty
+legacy backup. After checking the backup envelope and declared length, an
+over-limit restore returns `NotPublished(InvalidInput)` before verifying
+records or creating a stage. Admitted backups still undergo full source and
+staged verification. The limit excludes the backup envelope, witness, lock,
+filesystem overhead and other process resources.
+
 Both writable stores also provide `checkpoint_to_detailed` for an independent
 checkpoint copy. It returns the same publication classifications, and its
 successful result is a digest the caller must retain in separately trusted

@@ -724,7 +724,31 @@ impl Store {
         destination: impl AsRef<Path>,
     ) -> Result<(), crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            backup::restore_tracked(source.as_ref(), destination.as_ref(), tracker)
+            backup::restore_tracked(source.as_ref(), destination.as_ref(), None, tracker)
+        })
+    }
+
+    /// Restores into a new directory with a byte ceiling on the resulting
+    /// `records.log`. The ceiling includes the header installed for an
+    /// empty legacy backup and excludes the backup envelope, witness,
+    /// lock file, and filesystem overhead.
+    ///
+    /// A length-valid backup that exceeds the ceiling is rejected with
+    /// `NotPublished(InvalidInput)` before record verification or staging.
+    /// A limit error does not establish backup integrity. Admitted inputs
+    /// undergo the same verification and publication as `restore_detailed`.
+    pub fn restore_with_log_limit_detailed(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        max_log_bytes: u64,
+    ) -> Result<(), crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            backup::restore_tracked(
+                source.as_ref(),
+                destination.as_ref(),
+                Some(max_log_bytes),
+                tracker,
+            )
         })
     }
 

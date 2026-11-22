@@ -125,7 +125,7 @@ fn create_with_stage_hooks(
     hook(BackupCreationPoint::FooterWritten)?;
     temp.sync_all()?;
     hook(BackupCreationPoint::FileSynced)?;
-    let verified = validate(&temp)?;
+    let verified = validate(&temp, None)?;
     if verified.log_len != log_len || verified.digest != digest {
         return Err(record::invalid_data(
             "staged backup differs from the copied log",
@@ -153,12 +153,18 @@ pub(crate) fn restore(source: &Path, destination: &Path) -> io::Result<()> {
 pub(crate) fn restore_tracked(
     source: &Path,
     destination: &Path,
+    max_log_bytes: Option<u64>,
     tracker: &crate::publication_outcome::Tracker,
 ) -> io::Result<()> {
-    restore_with_hooks(source, destination, crate::directory::sync_existing, || {
-        tracker.begin_publication();
-        Ok(())
-    })
+    restore_with_hooks(
+        (source, max_log_bytes),
+        destination,
+        crate::directory::sync_existing,
+        || {
+            tracker.begin_publication();
+            Ok(())
+        },
+    )
 }
 
 fn restore_with_sync(
@@ -166,11 +172,11 @@ fn restore_with_sync(
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    restore_with_hooks(source, destination, sync_parent, || Ok(()))
+    restore_with_hooks((source, None), destination, sync_parent, || Ok(()))
 }
 
 fn restore_with_hooks(
-    source: &Path,
+    source: (&Path, Option<u64>),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -189,7 +195,7 @@ enum EmptyRestorePoint {
 }
 
 fn restore_with_empty_hooks(
-    source: &Path,
+    source: (&Path, Option<u64>),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -206,7 +212,7 @@ fn restore_with_empty_hooks(
 }
 
 fn restore_with_witness_hooks(
-    source: &Path,
+    source: (&Path, Option<u64>),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -240,7 +246,7 @@ enum RebuildPoint {
 }
 
 fn restore_with_stage_hooks(
-    source: &Path,
+    (source, max_log_bytes): (&Path, Option<u64>),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -249,7 +255,7 @@ fn restore_with_stage_hooks(
     mut stage_hook: impl FnMut(RebuildPoint) -> io::Result<()>,
 ) -> io::Result<()> {
     let backup = File::open(source)?;
-    let info = validate(&backup)?;
+    let info = validate(&backup, max_log_bytes)?;
     let parent = parent_directory(destination)?;
     // Build and verify a complete store in a private staging directory. Publish
     // it atomically without replacing a pre-existing destination.
@@ -511,7 +517,7 @@ fn initialize_empty_restored_log(
     hook(EmptyRestorePoint::AfterHeaderSync)
 }
 
-fn validate(file: &File) -> io::Result<BackupInfo> {
+fn validate(file: &File, max_log_bytes: Option<u64>) -> io::Result<BackupInfo> {
     let total = file.metadata()?.len();
     if total < HEADER_SIZE + FOOTER_SIZE {
         return Err(record::invalid_data("backup is incomplete"));
@@ -533,6 +539,17 @@ fn validate(file: &File) -> io::Result<BackupInfo> {
         != Some(total)
     {
         return Err(record::invalid_data("backup length mismatch"));
+    }
+    let restored_log_len = if log_len == 0 {
+        witness::LOG_HEADER_SIZE as u64
+    } else {
+        log_len
+    };
+    if max_log_bytes.is_some_and(|limit| restored_log_len > limit) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "restored log exceeds configured byte limit",
+        ));
     }
     let digest: [u8; 32] = footer[16..].try_into().expect("fixed digest field");
     let reader = BackupLog {
