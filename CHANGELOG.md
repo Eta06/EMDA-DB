@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Retain only the requested sorted window during bounded document scans
+  while still checking sort values for every match.
+
 - Stream bounded document count and sum into aggregate groups without
   retaining all decoded matches.
 

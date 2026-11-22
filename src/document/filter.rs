@@ -3,7 +3,8 @@ use super::{
     index::IndexValue, key, query::DocumentEntry, schema, transaction::DocumentTransaction,
 };
 use serde_json::{Map, Value};
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 
 const MAX_SCAN_DOCUMENTS: usize = 1024;
@@ -449,11 +450,20 @@ pub(super) fn validate_query(query: &DocumentQuery) -> io::Result<()> {
     Ok(())
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum SortKey {
+    Ascending(Vec<u8>),
+    Descending(Reverse<Vec<u8>>),
+}
+
 struct QueryCollector<'a> {
     query: &'a DocumentQuery,
     scanned: usize,
     matched_count: usize,
-    matched: Vec<(Option<Vec<u8>>, String, Value)>,
+    matched: Vec<DocumentEntry>,
+    // IDs are unique in both collection scans and deduplicated index queries.
+    sorted: BTreeMap<(SortKey, String), Value>,
+    sort_window: usize,
     value_budget: FilterValueBudget,
     error: Option<io::Error>,
 }
@@ -465,6 +475,15 @@ impl<'a> QueryCollector<'a> {
             scanned: 0,
             matched_count: 0,
             matched: Vec::new(),
+            sorted: BTreeMap::new(),
+            sort_window: if query.offset < query.max_scanned {
+                query
+                    .offset
+                    .saturating_add(query.limit)
+                    .min(query.max_scanned)
+            } else {
+                0
+            },
             value_budget: FilterValueBudget::default(),
             error: None,
         }
@@ -483,22 +502,36 @@ impl<'a> QueryCollector<'a> {
             }
             let position = self.matched_count;
             self.matched_count += 1;
-            if self.query.sort.is_none()
-                && (position < self.query.offset
-                    || position - self.query.offset >= self.query.limit)
-            {
-                // Continue checking every document and predicate, but keep
-                // only the requested window when ID order needs no sorting.
+            let Some(sort) = &self.query.sort else {
+                if position >= self.query.offset && position - self.query.offset < self.query.limit
+                {
+                    self.matched.push(DocumentEntry { id, document });
+                }
+                return Ok(());
+            };
+            let sort_key = match schema::field(&document, &sort.path) {
+                None => Vec::new(),
+                Some(value) => encoded(&IndexValue::from_json(value)?)?,
+            };
+            // Validate every match before deciding whether it belongs in the
+            // window. Reversing only the scalar key leaves ID ties ascending.
+            let rank = if sort.descending {
+                SortKey::Descending(Reverse(sort_key))
+            } else {
+                SortKey::Ascending(sort_key)
+            };
+            let key = (rank, id);
+            if self.sort_window == 0 {
                 return Ok(());
             }
-            let sort_key = match &self.query.sort {
-                None => None,
-                Some(sort) => match schema::field(&document, &sort.path) {
-                    None => Some(Vec::new()),
-                    Some(value) => Some(encoded(&IndexValue::from_json(value)?)?),
-                },
-            };
-            self.matched.push((sort_key, id, document));
+            if self.sorted.len() == self.sort_window {
+                let worst = self.sorted.last_entry().expect("nonempty sort window");
+                if &key >= worst.key() {
+                    return Ok(());
+                }
+                worst.remove();
+            }
+            self.sorted.insert(key, document);
             Ok(())
         })();
         if let Err(error) = result {
@@ -506,33 +539,24 @@ impl<'a> QueryCollector<'a> {
         }
     }
 
-    fn finish(mut self) -> io::Result<DocumentQueryResult> {
+    fn finish(self) -> io::Result<DocumentQueryResult> {
         if let Some(error) = self.error {
             return Err(error);
         }
-        if let Some(sort) = &self.query.sort {
-            self.matched.sort_by(|left, right| {
-                let order = left.0.cmp(&right.0);
-                (if sort.descending {
-                    order.reverse()
-                } else {
-                    order
-                })
-                .then_with(|| left.1.as_bytes().cmp(right.1.as_bytes()))
-            });
-        }
-        let mut documents = Vec::new();
-        let skip = if self.query.sort.is_some() {
-            self.query.offset
+        let mut documents = if self.query.sort.is_some() {
+            self.sorted
+                .into_iter()
+                .skip(self.query.offset)
+                .take(self.query.limit)
+                .map(|((_, id), document)| DocumentEntry { id, document })
+                .collect::<Vec<_>>()
         } else {
-            0
+            self.matched
         };
-        for (_, id, document) in self.matched.into_iter().skip(skip).take(self.query.limit) {
-            let document = match &self.query.projection {
-                Some(paths) => project(&document, paths)?,
-                None => document,
-            };
-            documents.push(DocumentEntry { id, document });
+        if let Some(paths) = &self.query.projection {
+            for entry in &mut documents {
+                entry.document = project(&entry.document, paths)?;
+            }
         }
         let plan = QueryPlan {
             scanned: self.scanned,
@@ -663,5 +687,70 @@ mod streaming_tests {
                 .collect::<Vec<_>>(),
             ["id080", "id081", "id082"]
         );
+    }
+
+    #[test]
+    fn sorted_window_matches_full_sort_and_checks_discarded_matches() {
+        let rows: Vec<_> = (0..100)
+            .rev()
+            .map(|n| {
+                (
+                    format!("id{n:03}"),
+                    match n % 7 {
+                        0 => None,
+                        1 => Some(None),
+                        score => Some(Some(score as i64 - 4)),
+                    },
+                )
+            })
+            .collect();
+        for descending in [false, true] {
+            let mut expected = rows.clone();
+            expected.sort_by(|left, right| {
+                let scalar = left.1.cmp(&right.1);
+                (if descending { scalar.reverse() } else { scalar })
+                    .then_with(|| left.0.cmp(&right.0))
+            });
+            for offset in [0, 3, 98, 100] {
+                let query = DocumentQuery {
+                    sort: Some(DocumentSort {
+                        path: vec!["score".into()],
+                        descending,
+                    }),
+                    offset,
+                    limit: 5,
+                    max_scanned: rows.len(),
+                    ..Default::default()
+                };
+                let mut collector = QueryCollector::new(&query);
+                for (id, score) in &rows {
+                    let document = match score {
+                        None => json!({}),
+                        Some(score) => json!({"score":score}),
+                    };
+                    collector.push(id.clone(), document);
+                    assert!(
+                        collector.sorted.len() <= if offset == rows.len() { 0 } else { offset + 5 }
+                    );
+                }
+                let result = collector.finish().unwrap();
+                assert_eq!(result.plan.matched, rows.len());
+                let actual = result.documents.iter().map(|row| row.id.as_str());
+                let expected = expected
+                    .iter()
+                    .skip(offset)
+                    .take(5)
+                    .map(|row| row.0.as_str());
+                assert!(actual.eq(expected));
+                // Even an offset that guarantees no output must validate sort values.
+                let mut invalid = QueryCollector::new(&query);
+                invalid.push("a".into(), json!({"score":0}));
+                invalid.push("z".into(), json!({"score":[]}));
+                assert_eq!(
+                    invalid.finish().unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput
+                );
+            }
+        }
     }
 }
