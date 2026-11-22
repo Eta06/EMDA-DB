@@ -214,9 +214,13 @@ of the suffix, SHA-256 of the committed suffix bytes, and CRC32 of the
 preceding witness bytes. The writable open holds an exclusive store lock
 and verifies the bound base, exact witnessed prefix, whole-record boundary,
 and complete suffix within the persisted budgets. A fully validated tail
-is adopted by synchronizing the log and then updating and synchronizing
-the witness. A missing or malformed witness, changed acknowledged bytes,
-torn suffix, split boundary or recovery limit failure prevents adoption.
+is adopted by synchronizing the log, streaming the whole admitted suffix
+again to compare its digest with the replay digest, and rechecking the
+header, log length and saved witness before updating and synchronizing the
+witness. A missing or malformed witness, changed suffix bytes, torn suffix,
+split boundary or recovery limit failure prevents adoption. The extra pass
+applies only when adoption is needed and reads at most the admitted suffix
+size. File stability under the cooperative locking contract still applies.
 
 Writable recovery streams physical records through a 64 KiB read
 buffer. For a batch it retains at most 1,024 child keys and value

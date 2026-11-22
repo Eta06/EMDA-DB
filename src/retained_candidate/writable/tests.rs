@@ -661,6 +661,47 @@ fn torn_witness_prevents_adopting_a_complete_tail() {
 }
 
 #[test]
+fn recovery_rechecks_suffix_bytes_before_advancing_witness() {
+    for replace_committed in [false, true] {
+        let f = Fixture::new(LIMITS);
+        let mut store = f.open(LIMITS).unwrap();
+        store.put(b"ack", b"old").unwrap();
+        drop(store);
+        let committed_end = fs::metadata(f.log()).unwrap().len();
+        let tail = record::encode(Operation::Put, b"tail", b"old").unwrap();
+        f.append_unacknowledged(&tail);
+        let verified = fs::read(f.log()).unwrap();
+        let witness = fs::read(f.witness()).unwrap();
+        let (offset, key) = if replace_committed {
+            (HEADER_BYTES as u64, b"ack".as_slice())
+        } else {
+            (committed_end, b"tail".as_slice())
+        };
+        let replacement = record::encode(Operation::Put, key, b"new").unwrap();
+
+        let result = RetainedStore::open_using(&f.path, LIMITS, &f.expected, |path| {
+            let file = OpenOptions::new().write(true).open(f.log())?;
+            file.write_all_at(&replacement, offset)?;
+            crate::directory::sync_existing(path)
+        });
+        let error = result.err().expect("changed suffix was adopted");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("suffix bytes changed"));
+        assert_eq!(fs::read(f.witness()).unwrap(), witness);
+        let mut changed = verified.clone();
+        let offset = offset as usize;
+        changed[offset..offset + replacement.len()].copy_from_slice(&replacement);
+        assert_eq!(fs::read(f.log()).unwrap(), changed);
+
+        fs::write(f.log(), verified).unwrap();
+        let reopened = f.open(LIMITS).unwrap();
+        assert_eq!(reopened.get(b"ack", 3).unwrap(), Some(b"old".to_vec()));
+        assert_eq!(reopened.get(b"tail", 3).unwrap(), Some(b"old".to_vec()));
+        assert_ne!(fs::read(f.witness()).unwrap(), witness);
+    }
+}
+
+#[test]
 fn uncertain_creation_leaves_a_complete_candidate_for_inspection() {
     let f = Fixture::new(LIMITS);
     let candidate = f.root.path().join("candidate");

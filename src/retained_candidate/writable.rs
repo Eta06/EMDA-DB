@@ -326,28 +326,34 @@ impl RetainedStore {
             .map_err(|_| invalid_input("suffix length exceeds platform range"))?;
         let committed = usize::try_from(committed).unwrap();
         let mut overlay = Overlay::default();
+        let suffix = SuffixFile {
+            file: &log,
+            start: header.len as u64,
+            len: suffix_len,
+        };
         let hash = overlay.replay_disk(
-            SuffixFile {
-                file: &log,
-                start: header.len as u64,
-                len: suffix_len,
-            },
+            suffix,
             (committed, committed_hash),
             limits.suffix,
             limits.overlay,
         )?;
         let base = IndexedBase::open(base, limits.base, limits.index)?;
         check_binding(base.metadata(), expected)?;
-        authorize(
-            dir,
-            &header,
-            suffix_len as u64,
-            hash.clone().finalize().into(),
-        )?;
+        let replayed_digest: [u8; 32] = hash.clone().finalize().into();
+        authorize(dir, &header, suffix_len as u64, replayed_digest)?;
         lock.verify_identity(dir)?;
         verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
         if committed < suffix_len {
             log.sync_data()?;
+            // Bind the witness update to the bytes used to build the overlay.
+            let mut observed = Sha256::new();
+            suffix.copy_to(&mut observed)?;
+            if <[u8; 32]>::from(observed.finalize()) != replayed_digest {
+                return Err(record::invalid_data(
+                    "retained suffix bytes changed after recovery replay",
+                ));
+            }
+            verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
             update_witness(&witness, header.bytes(), suffix_len, &hash)?;
         }
         Ok(Self {
