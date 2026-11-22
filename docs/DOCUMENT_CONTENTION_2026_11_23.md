@@ -1,0 +1,77 @@
+# Concurrent document updates and indexed reads
+
+All 36 Linux ARM64 runs completed and verified their data after clean
+reopening. Six macOS smoke runs also passed. The Linux workload preloaded
+500 JSON documents with a unique email index. Each of 1, 2, or 4 clients
+ran 100 cycles. A cycle acknowledged a replacement that changed one
+client's email and immediately looked up the new email through the
+index. Clients updated distinct documents and contended on the same
+database and index. Every queried ID and decoded JSON value matched the
+acknowledged replacement.
+
+Both EMDA-DB backends used read-set transactions and synchronized V3
+writes. SQLite 3.49.1 used one connection per client, an equivalent
+unique expression index, WAL mode, and `synchronous=FULL`. The SQLite
+adapter decoded JSON and checked the result inside its query timer.
+EMDA-DB's query timer includes construction and execution of the planned
+query and verification of the selected access path. The SQLite update
+timer includes JSON encoding. Both update timers include any bounded
+retry. The driver recorded zero confirmed EMDA-DB conflicts and eight
+returned SQLite busy retries, all at four clients. Time spent inside
+SQLite's 50 ms busy handler remains in the update latencies.
+
+## Linux ARM64 results
+
+Throughput covers both operations in each cycle. Each table cell gives
+the median across four runs. Latencies give the median of per-run
+nearest-rank p50 and p99, in microseconds.
+
+| Clients | Engine | Operations/s | Update p50 / p99 µs | Indexed read p50 / p99 µs | Peak RSS KiB |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | EMDA-DB Store | 7,622 | 255.92 / 415.08 | 5.67 / 20.35 | 5,832 |
+| 1 | EMDA-DB CheckpointStore | 4,682 | 318.58 / 650.19 | 87.10 / 142.92 | 5,980 |
+| 1 | SQLite | 5,799 | 320.69 / 530.69 | 2.71 / 10.31 | 6,602 |
+| 2 | EMDA-DB Store | 6,469 | 330.46 / 850.36 | 50.62 / 906.38 | 7,882 |
+| 2 | EMDA-DB CheckpointStore | 4,331 | 597.86 / 1,299.94 | 184.73 / 754.71 | 9,702 |
+| 2 | SQLite | 5,095 | 317.52 / 742.02 | 2.81 / 14.15 | 8,736 |
+| 4 | EMDA-DB Store | 8,602 | 398.63 / 2,113.80 | 305.31 / 1,926.65 | 12,894 |
+| 4 | EMDA-DB CheckpointStore | 5,395 | 801.46 / 2,666.99 | 473.73 / 1,512.69 | 12,172 |
+| 4 | SQLite | 7,426 | 208.50 / 591.40 | 2.71 / 20.23 | 13,008 |
+
+At four clients, EMDA-DB Store sustained 7,837–8,999 operations/s
+across runs. SQLite sustained 6,182–7,440 operations/s and recorded an
+indexed-read p99 of 20.23 µs, compared with 1,926.65 µs for Store and
+1,512.69 µs for CheckpointStore. The measurements identify read latency
+under writes as a place to profile. The benchmark does not attribute
+the delay to a particular lock or establish a general ranking.
+
+The driver used Rust 1.85.0 release binaries built against engine
+`42d3a98`, ext4 fixtures, and four available VM CPUs. Engine order
+rotated each round. VM-wide I/O wait reached 19.05% in a run.
+Preparation and clean reopen verification are outside operation timings.
+Peak RSS is the Linux process high-water mark across all phases and
+excludes kernel page cache. It does not establish a memory quota. In
+addition to their different transaction and durability mechanisms, the
+engines differ in storage representation and index maintenance. This
+small closed-loop workload leaves open-loop demand, same-document
+contention, MongoDB, cold-cache reads, and crash recovery unmeasured.
+
+## Verification and reproduction
+
+On reopen, EMDA-DB compares every primary document and traverses the
+complete email index. SQLite verifies the row count, every primary and
+indexed result, and `integrity_check`. The macOS smoke runs used one
+and four clients, 256 documents, and 20 cycles per client on each engine.
+
+[Raw Linux samples](../benchmarks/results/2026-11-23-linux-arm64-document-contention.json.gz)
+include all latencies, retry counts, per-run throughput, telemetry, and
+binary and source hashes.
+
+```sh
+cargo +1.85.0 build --release --locked --example document_contention_bench
+python3 scripts/document_contention_compare.py \
+  --binary target/release/examples/document_contention_bench \
+  --directory /path/on/test/filesystem --output /tmp/document-contention.json.gz \
+  --source-revision "$(git rev-parse HEAD)" --clients 1,2,4 \
+  --rounds 4 --cycles 100 --documents 500
+```

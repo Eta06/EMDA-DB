@@ -34,6 +34,12 @@ The initial document interface is bounded and experimental. This checklist recor
 - [x] Measure ordinary-store shared snapshots against the prior engine and SQLite at 0–3,000 indexed documents, and under concurrent reader/writer contention. The [report](SHARED_SNAPSHOT_COMPARISON_2026_11_04.md) records improvements, regressions, adapters and raw samples; broader workloads remain open.
 - [x] Repeat the single-client document comparison at up to 5,000 documents. All 44 Linux ARM64 runs passed, as did the three macOS functional checks at the largest size. After reopen, the harness independently checks primary documents, deleted workload IDs and index traversal. The [report](DOCUMENT_SCALE_2026_11_22.md) gives latency distributions, verification details and remaining coverage limits.
 - [x] Preserve compound index query results when a boundary made from valid scalar values encodes beyond the storage key limit. Run scan comparisons for lower and upper bounds, impossible equality, and mixed membership probes, plus explicit cursor pagination, on ordinary and checkpoint-backed stores on macOS and Linux ARM64.
+- [x] Compare concurrent acknowledged document updates and indexed reads on
+  ordinary and checkpoint-backed stores against SQLite WAL/FULL. The
+  [36-run Linux ARM64 comparison](DOCUMENT_CONTENTION_2026_11_23.md)
+  checks every recovered primary document and the index, and records per-client
+  latency, retries, process RSS, and VM noise. The large indexed-read tails under
+  concurrent writes remain to be profiled.
 - [ ] Measure and optimize document workloads with equivalent durability and comparable behavior against SQLite, MongoDB and other suitable alternatives. Publish workload definitions, distributions, concurrency, resource use, failures and noise; do not infer performance from the earlier byte-key baseline.
 - [x] Add resumable incremental index build and drop with atomic progress, bounded per-step work, writer coordination and recovery checks. Unique constraints take effect only after successful publication, and callers schedule and retry steps. The ordinary backend still has transaction snapshot limits; this is not a total-memory or latency guarantee.
 - [x] Reject index-drop cursors that skip surviving keys, including a unique phase with remaining entry keys. Both writable backends test skipped and live cursors and preserve the rejection after reopen. The guard detects inconsistent state and does not repair it or validate build cursors.
