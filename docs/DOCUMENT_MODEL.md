@@ -182,8 +182,12 @@ range bounds, including inclusivity, runs once in its first occurrence.
 All branches share one cap of 256 distinct probes and the original
 document and byte budgets. Hits from distinct probes consume budget on
 each visit, even when their ranges overlap.
-The planner keeps one document per ID, restores collection order and evaluates
-the full filter before sorting, pagination and projection. Every probe
+The planner keeps the distinct candidate IDs and streams documents into
+the requested window. Index and candidate budget errors take precedence
+over filter and sort errors. Array-walking filters evaluate once in ID
+order. They revisit the candidate IDs within the transaction when the
+index probes return a different order. Other filters can run during the
+probe and revisit IDs on failure to preserve error order. Every probe
 participates in transaction validation, including empty scans.
 
 Before falling back to prefix scans, the planner can combine independent

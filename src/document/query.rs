@@ -90,8 +90,9 @@ pub struct DocumentPage {
 
 // The planner needs the original encoded document and key lengths to enforce
 // the collection scan's byte budget without serializing parsed JSON again.
-pub(super) struct IndexedPage {
-    pub page: DocumentPage,
+pub(super) struct IndexScan {
+    pub next: Option<IndexCursor>,
+    pub plan: IndexQueryPlan,
     pub document_key_value_bytes: usize,
 }
 
@@ -165,18 +166,27 @@ impl DocumentTransaction<'_, '_> {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
         let metadata = self.metadata(collection)?;
-        Ok(self
-            .query_index_with_metadata(collection, name, query, &metadata)?
-            .page)
+        let mut documents = Vec::new();
+        let scan = self.visit_index_with_metadata(collection, name, query, &metadata, |entry| {
+            documents.push(entry);
+        })?;
+        Ok(DocumentPage {
+            documents,
+            next: scan.next,
+            plan: scan.plan,
+        })
     }
 
-    pub(super) fn query_index_with_metadata(
+    // The visitor's effects must remain private until the page passes all
+    // index checks and its caller admits the returned byte and row totals.
+    pub(super) fn visit_index_with_metadata(
         &self,
         collection: &str,
         name: &str,
         query: &IndexQuery,
         metadata: &Metadata,
-    ) -> io::Result<IndexedPage> {
+        mut visit: impl FnMut(DocumentEntry),
+    ) -> io::Result<IndexScan> {
         if query.limit == 0 || query.limit > MAX_QUERY_DOCUMENTS {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
@@ -239,18 +249,15 @@ impl DocumentTransaction<'_, '_> {
             returned,
         };
         if after >= before {
-            return Ok(IndexedPage {
-                page: DocumentPage {
-                    documents: Vec::new(),
-                    next: None,
-                    plan: plan(0, 0),
-                },
+            return Ok(IndexScan {
+                next: None,
+                plan: plan(0, 0),
                 document_key_value_bytes: 0,
             });
         }
         let rows = self.scan(&after, &before, query.limit)?;
         let entries_read = rows.len();
-        let mut documents = Vec::with_capacity(rows.len());
+        let mut returned = 0;
         let mut used = 0_usize;
         let mut document_key_value_bytes = 0_usize;
         let mut cursor = None;
@@ -295,19 +302,16 @@ impl DocumentTransaction<'_, '_> {
                 }
             }
             used = next_used;
-            documents.push(DocumentEntry {
+            visit(DocumentEntry {
                 id: id.to_owned(),
                 document,
             });
+            returned += 1;
             cursor = Some(IndexCursor(entry));
         }
-        let plan = plan(entries_read, documents.len());
-        Ok(IndexedPage {
-            page: DocumentPage {
-                documents,
-                next: cursor,
-                plan,
-            },
+        Ok(IndexScan {
+            next: cursor,
+            plan: plan(entries_read, returned),
             document_key_value_bytes,
         })
     }

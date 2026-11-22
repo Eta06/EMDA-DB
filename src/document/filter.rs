@@ -279,6 +279,31 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
     Ok(())
 }
 
+// Without an array walk, each candidate can compare at most the validated
+// number of predicate values. Even one retry in ID order stays inside the
+// query comparison budget and performs no element visits.
+pub(super) fn may_retry_in_id_order(filter: &DocumentFilter) -> bool {
+    // An over-limit page can validate two extra rows for a unique probe.
+    const { assert!(2 * (MAX_SCAN_DOCUMENTS + 2) * MAX_FILTER_VALUES < MAX_FILTER_COMPARISONS) };
+    match filter {
+        DocumentFilter::ArrayContains { .. }
+        | DocumentFilter::ArrayContainsAny { .. }
+        | DocumentFilter::ArrayContainsAll { .. }
+        | DocumentFilter::ArrayElementMatch { .. } => false,
+        DocumentFilter::And(children) | DocumentFilter::Or(children) => {
+            children.iter().all(may_retry_in_id_order)
+        }
+        DocumentFilter::Not(child) => may_retry_in_id_order(child),
+        DocumentFilter::All
+        | DocumentFilter::Exists { .. }
+        | DocumentFilter::Equal { .. }
+        | DocumentFilter::In { .. }
+        | DocumentFilter::NotIn { .. }
+        | DocumentFilter::ArrayLength { .. }
+        | DocumentFilter::Compare { .. } => true,
+    }
+}
+
 fn encoded(value: &IndexValue) -> io::Result<Vec<u8>> {
     let mut result = Vec::new();
     value.encode(&mut result)?;
@@ -456,27 +481,29 @@ enum SortKey {
     Descending(Reverse<Vec<u8>>),
 }
 
-struct QueryCollector<'a> {
+pub(super) struct QueryCollector<'a> {
     query: &'a DocumentQuery,
+    id_order: bool,
     scanned: usize,
     matched_count: usize,
     matched: Vec<DocumentEntry>,
     // IDs are unique in both collection scans and deduplicated index queries.
     sorted: BTreeMap<(SortKey, String), Value>,
-    sort_window: usize,
+    window_size: usize,
     value_budget: FilterValueBudget,
     error: Option<io::Error>,
 }
 
 impl<'a> QueryCollector<'a> {
-    fn new(query: &'a DocumentQuery) -> Self {
+    pub(super) fn new(query: &'a DocumentQuery, id_order: bool) -> Self {
         Self {
             query,
+            id_order,
             scanned: 0,
             matched_count: 0,
             matched: Vec::new(),
             sorted: BTreeMap::new(),
-            sort_window: if query.offset < query.max_scanned {
+            window_size: if query.offset < query.max_scanned {
                 query
                     .offset
                     .saturating_add(query.limit)
@@ -489,7 +516,7 @@ impl<'a> QueryCollector<'a> {
         }
     }
 
-    fn push(&mut self, id: String, document: Value) {
+    pub(super) fn push(&mut self, id: String, document: Value) {
         self.scanned += 1;
         if self.error.is_some() {
             return;
@@ -502,29 +529,33 @@ impl<'a> QueryCollector<'a> {
             }
             let position = self.matched_count;
             self.matched_count += 1;
-            let Some(sort) = &self.query.sort else {
+            if self.id_order && self.query.sort.is_none() {
                 if position >= self.query.offset && position - self.query.offset < self.query.limit
                 {
                     self.matched.push(DocumentEntry { id, document });
                 }
                 return Ok(());
-            };
-            let sort_key = match schema::field(&document, &sort.path) {
-                None => Vec::new(),
-                Some(value) => encoded(&IndexValue::from_json(value)?)?,
-            };
+            }
+            let sort_key = self
+                .query
+                .sort
+                .as_ref()
+                .and_then(|sort| schema::field(&document, &sort.path))
+                .map(|value| encoded(&IndexValue::from_json(value)?))
+                .transpose()?
+                .unwrap_or_default();
             // Validate every match before deciding whether it belongs in the
             // window. Reversing only the scalar key leaves ID ties ascending.
-            let rank = if sort.descending {
+            let rank = if self.query.sort.as_ref().is_some_and(|sort| sort.descending) {
                 SortKey::Descending(Reverse(sort_key))
             } else {
                 SortKey::Ascending(sort_key)
             };
             let key = (rank, id);
-            if self.sort_window == 0 {
+            if self.window_size == 0 {
                 return Ok(());
             }
-            if self.sorted.len() == self.sort_window {
+            if self.sorted.len() == self.window_size {
                 let worst = self.sorted.last_entry().expect("nonempty sort window");
                 if &key >= worst.key() {
                     return Ok(());
@@ -539,11 +570,15 @@ impl<'a> QueryCollector<'a> {
         }
     }
 
-    fn finish(self) -> io::Result<DocumentQueryResult> {
+    pub(super) fn has_failed(&self) -> bool {
+        self.error.is_some()
+    }
+
+    pub(super) fn finish(self) -> io::Result<DocumentQueryResult> {
         if let Some(error) = self.error {
             return Err(error);
         }
-        let mut documents = if self.query.sort.is_some() {
+        let mut documents = if !self.id_order || self.query.sort.is_some() {
             self.sorted
                 .into_iter()
                 .skip(self.query.offset)
@@ -566,17 +601,6 @@ impl<'a> QueryCollector<'a> {
         };
         Ok(DocumentQueryResult { documents, plan })
     }
-}
-
-pub(super) fn finish_query(
-    rows: impl IntoIterator<Item = (String, Value)>,
-    query: &DocumentQuery,
-) -> io::Result<DocumentQueryResult> {
-    let mut collector = QueryCollector::new(query);
-    for (id, document) in rows {
-        collector.push(id, document);
-    }
-    collector.finish()
 }
 
 impl DocumentTransaction<'_, '_> {
@@ -645,7 +669,7 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<DocumentQueryResult> {
         validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let mut collector = QueryCollector::new(query);
+        let mut collector = QueryCollector::new(query, true);
         self.visit_document_rows(
             collection,
             &metadata.schema,
@@ -669,7 +693,7 @@ mod streaming_tests {
             limit: 3,
             ..Default::default()
         };
-        let mut collector = QueryCollector::new(&query);
+        let mut collector = QueryCollector::new(&query, true);
         for index in 0..100 {
             collector.push(format!("id{index:03}"), json!({"value":index}));
         }
@@ -722,7 +746,7 @@ mod streaming_tests {
                     max_scanned: rows.len(),
                     ..Default::default()
                 };
-                let mut collector = QueryCollector::new(&query);
+                let mut collector = QueryCollector::new(&query, true);
                 for (id, score) in &rows {
                     let document = match score {
                         None => json!({}),
@@ -743,7 +767,7 @@ mod streaming_tests {
                     .map(|row| row.0.as_str());
                 assert!(actual.eq(expected));
                 // Even an offset that guarantees no output must validate sort values.
-                let mut invalid = QueryCollector::new(&query);
+                let mut invalid = QueryCollector::new(&query, true);
                 invalid.push("a".into(), json!({"score":0}));
                 invalid.push("z".into(), json!({"score":[]}));
                 assert_eq!(

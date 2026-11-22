@@ -41,6 +41,86 @@ fn compare(db: &DocumentDatabase<'_>, query: &DocumentQuery, access: DocumentQue
     assert_eq!(planned.result.plan.returned, scan.plan.returned);
     assert_eq!(planned.result.plan.sorted, scan.plan.sorted);
 }
+
+fn check_index_order_error_precedence(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index("c", index("score", &["score"], false, None))
+        .unwrap();
+    db.insert("c", "z", &json!({"score":1, "bad":[], "tags":[1]}))
+        .unwrap();
+    db.insert(
+        "c",
+        "a",
+        &json!({"score":2, "bad":"x".repeat(257), "tags":[1]}),
+    )
+    .unwrap();
+    let query = DocumentQuery {
+        filter: DocumentFilter::In {
+            path: path("score"),
+            values: vec![json!(1), json!(2)],
+        },
+        sort: Some(DocumentSort {
+            path: path("bad"),
+            descending: false,
+        }),
+        offset: 2,
+        limit: 1,
+        max_scanned: 2,
+        ..Default::default()
+    };
+    let scan_error = db.query("c", &query).unwrap_err();
+    assert_eq!(scan_error.to_string(), "indexed string exceeds 256 bytes");
+    let planned_error = db.query_planned("c", &query).unwrap_err();
+    assert_eq!(planned_error.kind(), scan_error.kind());
+    assert_eq!(planned_error.to_string(), scan_error.to_string());
+    let array_query = DocumentQuery {
+        filter: DocumentFilter::And(vec![
+            query.filter.clone(),
+            DocumentFilter::ArrayContains {
+                path: path("tags"),
+                value: json!(1),
+            },
+        ]),
+        ..query.clone()
+    };
+    assert_eq!(
+        db.query_planned("c", &array_query).unwrap_err().to_string(),
+        scan_error.to_string()
+    );
+    let limit_error = db
+        .query_planned(
+            "c",
+            &DocumentQuery {
+                max_scanned: 1,
+                ..query
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        limit_error.to_string(),
+        "document scan exceeds the operation limit"
+    );
+}
+
+#[test]
+fn planned_queries_report_errors_in_document_order_after_probe_admission() {
+    for checkpoint in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("store");
+        let store = Store::open(&path).unwrap();
+        if checkpoint {
+            let base = directory.path().join("checkpoint");
+            let digest = store.checkpoint_to(&base).unwrap();
+            drop(store);
+            let store = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+            check_index_order_error_precedence(&DocumentDatabase::with_checkpoint_store(&store));
+        } else {
+            check_index_order_error_precedence(&DocumentDatabase::new(&store));
+        }
+    }
+}
+
 fn exercise(db: &DocumentDatabase<'_>) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();

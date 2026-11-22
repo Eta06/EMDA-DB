@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream validated index candidates into the document query window while
+  retaining per-ID deduplication, probe budgets, and validation error order.
+
 - Retain only the requested sorted window during bounded document scans
   while still checking sort values for every match.
 

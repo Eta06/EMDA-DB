@@ -859,9 +859,9 @@ fn plan_query<'a>(
     Ok(None)
 }
 
-#[derive(Default)]
-struct Candidates {
-    rows: BTreeMap<String, serde_json::Value>,
+struct Candidates<'a> {
+    ids: BTreeSet<String>,
+    collector: Option<filter::QueryCollector<'a>>,
     visits: usize,
     bytes: usize,
 }
@@ -887,7 +887,19 @@ impl DocumentTransaction<'_, '_> {
             });
         };
 
-        let mut candidates = Candidates::default();
+        // A complete equality tuple visits its matching documents in ID
+        // order. An index range or a union does not generally do so.
+        let id_order = matches!(probes.as_slice(), [probe]
+        if metadata.indexes.iter().any(|index|
+            index.name == probe.index && index.fields.len() == probe.equal.len()
+        ));
+        let mut candidates = Candidates {
+            ids: BTreeSet::new(),
+            collector: (id_order || filter::may_retry_in_id_order(&query.filter))
+                .then(|| filter::QueryCollector::new(query, id_order)),
+            visits: 0,
+            bytes: 0,
+        };
         for probe in probes {
             self.collect_index_candidates(
                 collection,
@@ -897,7 +909,29 @@ impl DocumentTransaction<'_, '_> {
                 &mut candidates,
             )?;
         }
-        let mut result = filter::finish_query(candidates.rows, query)?;
+        let mut result =
+            if let Some(collector) = candidates.collector.filter(|c| id_order || !c.has_failed()) {
+                collector.finish()?
+            } else {
+                // Array walks consume their budget in collection order. Other
+                // filters retry only if needed to report the first error by ID.
+                let mut collector = filter::QueryCollector::new(query, true);
+                for id in candidates.ids {
+                    let encoded =
+                        self.read(&key::document(collection, &id)?)?
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "index references a missing document",
+                                )
+                            })?;
+                    collector.push(id, Self::decode_document(&encoded, &metadata.schema)?);
+                    if collector.has_failed() {
+                        break;
+                    }
+                }
+                collector.finish()?
+            };
         result.plan.scanned = candidates.visits;
         Ok(PlannedDocumentQueryResult { result, access })
     }
@@ -908,7 +942,7 @@ impl DocumentTransaction<'_, '_> {
         metadata: &Metadata,
         probe: IndexProbe<'_>,
         max_scanned: usize,
-        candidates: &mut Candidates,
+        candidates: &mut Candidates<'_>,
     ) -> io::Result<()> {
         let IndexProbe {
             index,
@@ -927,7 +961,7 @@ impl DocumentTransaction<'_, '_> {
             } else {
                 (max_scanned - candidates.visits + 1).min(256)
             };
-            let indexed = self.query_index_with_metadata(
+            let indexed = self.visit_index_with_metadata(
                 collection,
                 index,
                 &IndexQuery {
@@ -938,9 +972,16 @@ impl DocumentTransaction<'_, '_> {
                     limit,
                 },
                 metadata,
+                |entry| {
+                    if candidates.ids.insert(entry.id.clone()) {
+                        if let Some(collector) = &mut candidates.collector {
+                            collector.push(entry.id, entry.document);
+                        }
+                    }
+                },
             )?;
-            let page = indexed.page;
-            if unique_equality && page.documents.len() > 1 {
+            let returned = indexed.plan.returned;
+            if unique_equality && returned > 1 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "unique index contains multiple matches",
@@ -951,23 +992,18 @@ impl DocumentTransaction<'_, '_> {
                 .checked_add(indexed.document_key_value_bytes)
                 .ok_or_else(|| key::invalid("scan byte count overflow"))?;
             if candidates.bytes > filter::MAX_SCAN_BYTES
-                || page.documents.len() > max_scanned - candidates.visits
+                || returned > max_scanned - candidates.visits
             {
                 return Err(key::invalid("document scan exceeds the operation limit"));
             }
-            if page.documents.is_empty() {
+            if returned == 0 {
                 break;
             }
-            // Count every visit, but retain one document per ID in
-            // collection order for filtering and pagination.
-            candidates.visits += page.documents.len();
-            for entry in page.documents {
-                candidates.rows.entry(entry.id).or_insert(entry.document);
-            }
+            candidates.visits += returned;
             if unique_equality {
                 break;
             }
-            after = Some(page.next.ok_or_else(|| {
+            after = Some(indexed.next.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "index page lost its continuation cursor",
