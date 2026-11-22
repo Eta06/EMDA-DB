@@ -442,39 +442,44 @@ impl CheckpointView {
         self.has_tail
     }
 
-    fn read_block(&self, block: &Block) -> io::Result<Vec<u8>> {
-        let mut bytes = vec![0_u8; block.length];
-        self.index.file.read_exact_at(&mut bytes, block.offset)?;
-        if Sha256::digest(&bytes).as_slice() != block.digest {
+    fn read_block(&self, block: &Block, bytes: &mut Vec<u8>) -> io::Result<()> {
+        bytes.resize(block.length, 0);
+        self.index.file.read_exact_at(bytes, block.offset)?;
+        if Sha256::digest(bytes.as_slice()).as_slice() != block.digest {
             return Err(record::invalid_data(
                 "checkpoint view block checksum mismatch",
             ));
         }
-        Ok(bytes)
+        Ok(())
     }
 
     // Prefixes suffice for most comparisons. When both keys share a complete
     // prefix, verify and inspect the on-disk block before choosing a branch.
     // The directory is derived from the checkpoint only after its trusted
     // digest and covered log prefix have been checked.
-    fn compare_first_key(&self, block: &Block, key: &[u8]) -> io::Result<std::cmp::Ordering> {
+    fn compare_first_key(
+        &self,
+        block: &Block,
+        key: &[u8],
+        bytes: &mut Vec<u8>,
+    ) -> io::Result<std::cmp::Ordering> {
         if let Some(comparison) = block.compare_prefix(key) {
             return Ok(comparison);
         }
-        let bytes = self.read_block(block)?;
-        let mut cursor = BlockCursor::new(&bytes, self.prefix);
+        self.read_block(block, bytes)?;
+        let mut cursor = BlockCursor::new(bytes, self.prefix);
         let (first, _) = cursor
             .next()?
             .ok_or_else(|| record::invalid_data("empty checkpoint index block"))?;
         Ok(first.cmp(key))
     }
 
-    fn preceding_block(&self, key: &[u8]) -> io::Result<Option<usize>> {
+    fn preceding_block(&self, key: &[u8], bytes: &mut Vec<u8>) -> io::Result<Option<usize>> {
         let mut low = 0;
         let mut high = self.index.blocks.len();
         while low < high {
             let middle = low + (high - low) / 2;
-            if self.compare_first_key(&self.index.blocks[middle], key)?
+            if self.compare_first_key(&self.index.blocks[middle], key, bytes)?
                 != std::cmp::Ordering::Greater
             {
                 low = middle + 1;
@@ -494,31 +499,13 @@ impl CheckpointView {
     }
 
     pub(crate) fn location(&self, key: &[u8]) -> io::Result<Option<ValueLocation>> {
-        let Some(position) = self.preceding_block(key)? else {
+        let mut bytes = Vec::new();
+        let Some(position) = self.preceding_block(key, &mut bytes)? else {
             return Ok(None);
         };
         let block = &self.index.blocks[position];
-        let bytes = self.read_block(block)?;
-        let mut low = 0;
-        let mut high = block.landmarks.len();
-        while low < high {
-            let middle = low + (high - low) / 2;
-            let mut cursor =
-                BlockCursor::at(&bytes, self.prefix, usize::from(block.landmarks[middle]));
-            let (candidate, _) = cursor
-                .next()?
-                .ok_or_else(|| record::invalid_data("empty checkpoint landmark"))?;
-            if candidate <= key {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
-        }
-        let Some(landmark) = low.checked_sub(1) else {
-            return Ok(None);
-        };
-        let mut cursor =
-            BlockCursor::at(&bytes, self.prefix, usize::from(block.landmarks[landmark]));
+        self.read_block(block, &mut bytes)?;
+        let mut cursor = BlockCursor::at_key(&bytes, self.prefix, &block.landmarks, key)?;
         while let Some((candidate, location)) = cursor.next()? {
             match candidate.cmp(key) {
                 std::cmp::Ordering::Equal => return Ok(Some(location)),
@@ -570,15 +557,22 @@ impl CheckpointView {
         before: Option<&[u8]>,
         mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
     ) -> io::Result<()> {
+        let mut bytes = Vec::new();
+        let mut after = after;
         let start = match after {
-            Some(key) => self.preceding_block(key)?.unwrap_or(0),
+            Some(key) => self.preceding_block(key, &mut bytes)?.unwrap_or(0),
             None => 0,
         };
         for block in self.index.blocks.iter().skip(start) {
-            let bytes = self.read_block(block)?;
-            let mut cursor = BlockCursor::new(&bytes, self.prefix);
+            self.read_block(block, &mut bytes)?;
+            // Blocks after the first are strictly above the lower bound.
+            let lower = after.take();
+            let mut cursor = match lower {
+                Some(key) => BlockCursor::at_key(&bytes, self.prefix, &block.landmarks, key)?,
+                None => BlockCursor::new(&bytes, self.prefix),
+            };
             while let Some((key, location)) = cursor.next()? {
-                if after.is_some_and(|bound| key <= bound) {
+                if lower.is_some_and(|bound| key <= bound) {
                     continue;
                 }
                 if before.is_some_and(|bound| key >= bound) {
@@ -613,6 +607,27 @@ impl<'a> BlockCursor<'a> {
             prefix,
         }
     }
+    // The caller verifies the complete block before using landmark offsets.
+    fn at_key(bytes: &'a [u8], prefix: u64, landmarks: &[u16], key: &[u8]) -> io::Result<Self> {
+        let mut low = 0;
+        let mut high = landmarks.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let (candidate, _) = Self::at(bytes, prefix, usize::from(landmarks[middle]))
+                .next()?
+                .ok_or_else(|| record::invalid_data("empty checkpoint landmark"))?;
+            if candidate <= key {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        let offset = low
+            .checked_sub(1)
+            .map_or(0, |index| usize::from(landmarks[index]));
+        Ok(Self::at(bytes, prefix, offset))
+    }
+
     fn next(&mut self) -> io::Result<Option<(&'a [u8], ValueLocation)>> {
         if self.offset == self.bytes.len() {
             return Ok(None);

@@ -50,6 +50,63 @@ fn historical_view_is_stable_and_uses_shared_advisory_lock() {
 }
 
 #[test]
+fn range_scan_seeks_across_landmarks_and_verifies_skipped_bytes() {
+    const ENTRIES: u32 = 4096;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("store");
+    let checkpoint = dir.path().join("index");
+    let store = Store::open(&path).unwrap();
+    let keys: Vec<_> = (1..=ENTRIES).map(|id| (2 * id).to_be_bytes()).collect();
+    for chunk in keys.chunks(256) {
+        let batch: Vec<_> = chunk
+            .iter()
+            .map(|key| Op::Put { key, value: key })
+            .collect();
+        store.write_batch(&batch).unwrap();
+    }
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let view = CheckpointView::open(&path, &checkpoint, &digest).unwrap();
+    assert!(view.block_count() > 2);
+    let first_block_end = (database_engine::MAX_CHECKPOINT_VIEW_BLOCK_BYTES / (18 + 4)) as u32 * 2;
+    for lower in [
+        0,
+        2,
+        33,
+        34,
+        35,
+        first_block_end - 1,
+        first_block_end,
+        first_block_end + 1,
+        first_block_end + 2,
+        2 * ENTRIES,
+        2 * ENTRIES + 1,
+    ] {
+        let after = lower.to_be_bytes();
+        let before = (lower + 13).to_be_bytes();
+        let expected: Vec<_> = keys
+            .iter()
+            .filter(|key| **key > after && **key < before)
+            .map(|key| (key.to_vec(), key.to_vec()))
+            .collect();
+        assert_eq!(
+            view.scan(Some(&after), Some(&before), 17).unwrap(),
+            expected,
+            "{lower}"
+        );
+    }
+
+    let mut file = OpenOptions::new().write(true).open(&checkpoint).unwrap();
+    file.seek(SeekFrom::Start(68 + 2)).unwrap();
+    file.write_all(b"X").unwrap();
+    file.sync_all().unwrap();
+    let after = (first_block_end - 8).to_be_bytes();
+    let error = view.scan(Some(&after), None, 1).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("checkpoint view block checksum"));
+}
+
+#[test]
 fn view_detects_checkpoint_block_corruption_after_open() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("store");

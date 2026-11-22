@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Seek to verified checkpoint entry offsets for bounded range scans and
+  reuse the read buffer across index blocks.
+
 - Add caller-selected log byte limits to full-log backup restore, checked
   before replay or destination staging.
 
