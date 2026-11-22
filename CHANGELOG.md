@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Let checkpoint-backed reads use the published view during append and
+  synchronization. Writers and full-log operations stay serialized, and a
+  complete batch becomes visible only after successful sync.
+
 - Validate read-only transactions against the published index on Store and
   use a shared state lock on CheckpointStore. Write transactions retain
   exclusive commit locking.

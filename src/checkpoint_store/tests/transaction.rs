@@ -572,6 +572,82 @@ impl LogIo for BlockingSyncLog {
 }
 
 #[test]
+fn readers_and_snapshots_see_only_published_values_during_checkpoint_sync() {
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+
+    let (_dir, path, checkpoint, digest) = fixture();
+    let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.put(b"left", b"old").unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(path.join("records.log"))
+        .unwrap();
+    let (entered_send, entered_receive) = mpsc::channel();
+    let (resume_send, resume_receive) = mpsc::channel();
+    store.log.replace_io_for_test(Box::new(BlockingSyncLog {
+        file,
+        entered: entered_send,
+        resume: Mutex::new(resume_receive),
+        failure: None,
+    }));
+
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            store.transaction(|tx| {
+                tx.put(b"left", b"one")?;
+                tx.put(b"right", b"two")
+            })
+        });
+        let entered = entered_receive.recv_timeout(Duration::from_secs(10));
+        if entered.is_err() {
+            drop(resume_send);
+            writer.join().unwrap().unwrap();
+            panic!("transaction never reached synchronization");
+        }
+        let (read_send, read_receive) = mpsc::channel();
+        let (finished_send, finished_receive) = mpsc::channel();
+        let store = &store;
+        let reader = scope.spawn(move || {
+            let direct = store.get_many(&[b"left", b"right"]).unwrap();
+            let transaction = store
+                .transaction_with_read_set(|tx| Ok([tx.get(b"left")?, tx.get(b"right")?]))
+                .unwrap();
+            let snapshot = store.snapshot().unwrap();
+            read_send.send((direct, transaction)).unwrap();
+            finished_receive.recv().unwrap();
+            snapshot.get_many(&[b"left", b"right"]).unwrap()
+        });
+        let observed = read_receive.recv_timeout(Duration::from_secs(3));
+        // The shared side of the writer gate is used by backups and compaction.
+        let maintenance_excluded = store.writers.try_read().is_err();
+        resume_send.send(()).unwrap();
+        let committed = writer.join().unwrap();
+        finished_send.send(()).unwrap();
+        let captured = reader.join().unwrap();
+
+        assert!(maintenance_excluded);
+        committed.unwrap();
+        let (direct, transaction) = observed.expect("reads waited for synchronization");
+        let old = [Some(b"old".to_vec()), None];
+        assert_eq!(direct, old);
+        assert_eq!(transaction, old);
+        assert_eq!(captured, old);
+        assert_eq!(
+            store.get_many(&[b"left", b"right"]).unwrap(),
+            [Some(b"one".to_vec()), Some(b"two".to_vec())]
+        );
+    });
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(
+        reopened.get_many(&[b"left", b"right"]).unwrap(),
+        [Some(b"one".to_vec()), Some(b"two".to_vec())]
+    );
+}
+
+#[test]
 fn deadline_passed_during_sync_does_not_report_a_successful_commit_as_aborted() {
     use crate::CheckpointTransactionMode;
     use std::sync::{Arc, Mutex, mpsc};

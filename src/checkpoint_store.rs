@@ -16,7 +16,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 mod automatic;
@@ -46,6 +46,27 @@ struct State {
     failed: bool,
     selection: Option<selection::Selection>,
     automatic: bool,
+}
+
+// Dropping the state guard can let readers use the published view. The
+// writer gate continues to exclude every append and checkpoint maintenance.
+struct StateWrite<'a> {
+    state: ControlledWriteGuard<'a, State>,
+    _writer: ControlledWriteGuard<'a, ()>,
+}
+
+impl std::ops::Deref for StateWrite<'_> {
+    type Target = State;
+
+    fn deref(&self) -> &State {
+        &self.state
+    }
+}
+
+impl std::ops::DerefMut for StateWrite<'_> {
+    fn deref_mut(&mut self) -> &mut State {
+        &mut self.state
+    }
 }
 
 enum OpenSource<'a> {
@@ -99,6 +120,8 @@ pub struct CheckpointStore {
     // Drop the writable log before the view, which owns the exclusive lock.
     log: Log,
     state: ControlledRwLock<State>,
+    writers: ControlledRwLock<()>,
+    append_failed: AtomicBool,
     pub(crate) direct_writes: crate::direct_write::DirectWrites,
     pub(crate) direct_reads: crate::direct_read::DirectReads,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
@@ -436,6 +459,8 @@ impl CheckpointStore {
                 selection,
                 automatic,
             }),
+            writers: ControlledRwLock::new(()),
+            append_failed: AtomicBool::new(false),
             direct_writes: crate::direct_write::DirectWrites::default(),
             direct_reads: crate::direct_read::DirectReads::default(),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
@@ -453,20 +478,38 @@ impl CheckpointStore {
         })
     }
 
-    fn read(&self) -> io::Result<ControlledReadGuard<'_, State>> {
-        let state = self.state.read().map_err(|_| uncertain())?;
-        if state.failed {
+    fn ensure_healthy(&self, state: &State) -> io::Result<()> {
+        if state.failed || self.append_failed.load(Ordering::Acquire) {
             return Err(uncertain());
         }
+        Ok(())
+    }
+
+    fn read(&self) -> io::Result<ControlledReadGuard<'_, State>> {
+        let state = self.state.read().map_err(|_| uncertain())?;
+        self.ensure_healthy(&state)?;
         Ok(state)
     }
 
-    fn write(&self) -> io::Result<ControlledWriteGuard<'_, State>> {
-        let state = self.state.write().map_err(|_| uncertain())?;
-        if state.failed {
-            return Err(uncertain());
-        }
-        Ok(state)
+    fn write(&self) -> io::Result<StateWrite<'_>> {
+        self.write_until(None, None)
+            .map_err(crate::TimedTransactionError::into_io)
+    }
+
+    fn write_until(
+        &self,
+        deadline: Option<std::time::Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+    ) -> Result<StateWrite<'_>, crate::TimedTransactionError> {
+        let writer =
+            crate::cancellation::write_lock(&self.writers, deadline, cancellation, uncertain)?;
+        let state =
+            crate::cancellation::write_lock(&self.state, deadline, cancellation, uncertain)?;
+        self.ensure_healthy(&state)?;
+        Ok(StateWrite {
+            state,
+            _writer: writer,
+        })
     }
 
     /// Reads a key from the verified checkpoint and committed overlay.
@@ -621,6 +664,7 @@ impl CheckpointStore {
         create: impl FnOnce(&Log, &RecoveredCheckpointView, u64, &Path) -> io::Result<[u8; 32]>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
+        let _writer = self.writers.read().map_err(|_| uncertain())?;
         let state = self.read()?;
         let (count, _, _) = self.verify_for_checkpoint(&state)?;
         create(&self.log, &state.view, count, destination)
@@ -632,6 +676,7 @@ impl CheckpointStore {
         create: impl FnOnce(&Log, &Path) -> io::Result<()>,
     ) -> io::Result<()> {
         self.check_selection_destination(destination)?;
+        let _writer = self.writers.read().map_err(|_| uncertain())?;
         let _state = self.read()?;
         create(&self.log, destination)
     }
@@ -1125,8 +1170,8 @@ impl CheckpointStore {
     ) -> io::Result<()> {
         record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
-        let mut state = self.write()?;
-        self.commit(&mut state, operation, key, value, &[key], tracker)
+        let state = self.write()?;
+        self.commit(state, operation, key, value, &[key], tracker)
     }
 
     /// Conditionally replaces or deletes one key atomically against all writes.
@@ -1166,11 +1211,11 @@ impl CheckpointStore {
         };
         record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
-        let mut state = self.write()?;
+        let state = self.write()?;
         if state.view.get(key)?.as_deref() != expected {
             return Ok(false);
         }
-        self.commit(&mut state, operation, key, value, &[key], tracker)?;
+        self.commit(state, operation, key, value, &[key], tracker)?;
         Ok(true)
     }
 
@@ -1200,7 +1245,7 @@ impl CheckpointStore {
     ) -> io::Result<i64> {
         record::validate_key(key)?;
         let _admission = self.direct_writes.acquire()?;
-        let mut state = self.write()?;
+        let state = self.write()?;
         let current = match state.view.get(key)? {
             None => 0,
             Some(bytes) => i64::from_le_bytes(bytes.try_into().map_err(|_| {
@@ -1214,7 +1259,7 @@ impl CheckpointStore {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
         self.commit(
-            &mut state,
+            state,
             Operation::Put,
             key,
             &next.to_le_bytes(),
@@ -1246,13 +1291,13 @@ impl CheckpointStore {
         tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
         let _admission = self.direct_writes.acquire()?;
-        let mut state = self.write()?;
+        let state = self.write()?;
         let payload = encode_payload(operations)?;
         let keys = operations
             .iter()
             .map(|operation| operation.fields().1)
             .collect::<Vec<_>>();
-        self.commit(&mut state, Operation::Batch, &[0], &payload, &keys, tracker)
+        self.commit(state, Operation::Batch, &[0], &payload, &keys, tracker)
     }
 
     /// Atomically applies a blind batch if all point-value conditions match.
@@ -1308,7 +1353,7 @@ impl CheckpointStore {
                 })?;
         }
         let _admission = self.direct_writes.acquire()?;
-        let mut state = self.write()?;
+        let state = self.write()?;
         let payload = encode_payload(operations)?;
         for (key, expected) in conditions {
             if state.view.get(key)?.as_deref() != *expected {
@@ -1319,7 +1364,7 @@ impl CheckpointStore {
             .iter()
             .map(|operation| operation.fields().1)
             .collect::<Vec<_>>();
-        self.commit(&mut state, Operation::Batch, &[0], &payload, &keys, tracker)?;
+        self.commit(state, Operation::Batch, &[0], &payload, &keys, tracker)?;
         Ok(true)
     }
 }

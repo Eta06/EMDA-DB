@@ -77,9 +77,7 @@ impl CheckpointTransaction<'_> {
             uncertain,
         )
         .map_err(TimedTransactionError::into_io)?;
-        if state.failed {
-            return Err(uncertain());
-        }
+        self.store.ensure_healthy(&state)?;
         crate::cancellation::check(self.cancellation.as_ref())?;
         if self
             .deadline
@@ -518,9 +516,7 @@ impl CheckpointStore {
         let (generation, log_generation) = {
             let state =
                 crate::cancellation::read_lock(&self.state, deadline, cancellation, uncertain)?;
-            if state.failed {
-                return Err(uncertain().into());
-            }
+            self.ensure_healthy(&state)?;
             (state.generation, state.log_generation)
         };
         check_deadline(deadline)?;
@@ -546,9 +542,7 @@ impl CheckpointStore {
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         let validate = |state: &State| -> Result<(), TimedTransactionError> {
-            if state.failed {
-                return Err(uncertain().into());
-            }
+            self.ensure_healthy(state)?;
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
             let valid = if let Some(read_set) = &transaction.read_set {
@@ -583,8 +577,7 @@ impl CheckpointStore {
             })
             .collect::<Vec<_>>();
         let payload = encode_payload(&operations)?;
-        let mut state =
-            crate::cancellation::write_lock(&self.state, deadline, cancellation, uncertain)?;
+        let state = self.write_until(deadline, cancellation)?;
         validate(&state)?;
         let keys = operations
             .iter()
@@ -593,7 +586,7 @@ impl CheckpointStore {
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         self.commit_until(
-            &mut state,
+            state,
             Operation::Batch,
             &[0],
             &payload,

@@ -3,12 +3,27 @@ use super::*;
 use crate::log::{AppendRecord, BatchUpdate, prepare_batch};
 use std::collections::BTreeSet;
 
+// Readers may hold the old published view during an append. Publish a
+// failure even on unwind before another writer can take the gate.
+struct PendingAppend<'a> {
+    failed: &'a AtomicBool,
+    published: bool,
+}
+
+impl Drop for PendingAppend<'_> {
+    fn drop(&mut self) {
+        if !self.published {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+}
+
 impl CheckpointStore {
-    // The state write lock serializes admission, append, synchronization and
-    // publication. It also prevents readers seeing a partially applied batch.
+    // The writer gate serializes append and maintenance. Only admission and
+    // publishing the synchronized batch need exclusive access to the view.
     pub(super) fn commit(
         &self,
-        state: &mut State,
+        state: StateWrite<'_>,
         operation: Operation,
         key: &[u8],
         value: &[u8],
@@ -36,7 +51,7 @@ impl CheckpointStore {
 
     pub(super) fn commit_until(
         &self,
-        state: &mut State,
+        mut state: StateWrite<'_>,
         operation: Operation,
         key: &[u8],
         value: &[u8],
@@ -65,7 +80,7 @@ impl CheckpointStore {
         if self.max_log_bytes.is_some_and(|max| next_log > max) {
             return Err(io::Error::other("configured log byte limit would be exceeded").into());
         }
-        let admission = self.admit_suffix(state, length, touched);
+        let admission = self.admit_suffix(&state, length, touched);
         let (next_tail, new_key_bytes) = match admission {
             Ok(admitted) => admitted,
             Err(_)
@@ -73,8 +88,8 @@ impl CheckpointStore {
                     && state.view.tail_bytes > 0
                     && self.fits_empty_suffix(length, touched) =>
             {
-                self.automatic_rollover(state)?;
-                self.admit_suffix(state, length, touched)?
+                self.automatic_rollover(&mut state)?;
+                self.admit_suffix(&state, length, touched)?
             }
             Err(error) => return Err(error.into()),
         };
@@ -84,7 +99,8 @@ impl CheckpointStore {
         let owned_key = (operation != Operation::Batch).then(|| key.to_vec());
         // A snapshot can pin this overlay. Detach before submission, keeping
         // the same entries until the append and its witness are synchronized.
-        let overlay = Arc::make_mut(&mut state.view.overlay);
+        let next_overlay = (Arc::strong_count(&state.view.overlay) > 1)
+            .then(|| Arc::new(state.view.overlay.as_ref().clone()));
         // Maintenance and detaching a shared overlay can take time.
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err(crate::TimedTransactionError::DeadlineExceeded);
@@ -95,7 +111,12 @@ impl CheckpointStore {
         if let Some(tracker) = tracker {
             tracker.commit();
         }
-        state.failed = true;
+        let StateWrite { state, _writer } = state;
+        let mut pending = PendingAppend {
+            failed: &self.append_failed,
+            published: false,
+        };
+        drop(state);
         let location = self
             .log
             .append_batch_unsynced(std::iter::once(AppendRecord {
@@ -116,13 +137,20 @@ impl CheckpointStore {
             }]
         };
         self.log.sync_data()?;
+        let mut state = self.state.write().map_err(|_| uncertain())?;
+        if let Some(overlay) = next_overlay {
+            state.view.overlay = overlay;
+        }
+        // A snapshot may have pinned the formerly exclusive overlay during
+        // the sync. It must keep the old entries through this publication.
+        let overlay = Arc::make_mut(&mut state.view.overlay);
         for update in updates {
             overlay.insert(update.key, update.location);
         }
         state.view.tail_bytes = next_tail;
         state.overlay_key_bytes = new_key_bytes;
         state.generation = next_generation;
-        state.failed = false;
+        pending.published = true;
         Ok(())
     }
 
