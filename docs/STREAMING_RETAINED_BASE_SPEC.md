@@ -144,7 +144,9 @@ Opening scans all base bytes through a fixed input buffer. The file and
 block digests use the admitted value slices directly from that buffer.
 
 The handle retains the validated base descriptor. A point read searches the
-anchor keys and reads at most one block. An ordered page uses the store's entry
+anchor keys and reads at most one block. An oversized block holds exactly one
+entry. Its verified anchor can prove that a different key is absent without
+reading the value. An ordered page uses the store's entry
 and response-byte limits, including exclusive key bounds. A read hashes each
 touched block while capturing requested result bytes. A failure discards the
 whole result. The base is expected to remain immutable. The header, trailer,

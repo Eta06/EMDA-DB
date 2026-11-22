@@ -161,6 +161,8 @@ fn indexed_reads_authenticate_touched_blocks_from_the_captured_file() {
         io::ErrorKind::InvalidData
     );
     assert_eq!(reader.get(b"a", 5).unwrap(), Some(b"first".to_vec()));
+    // The verified directory proves that this oversized block holds only b.
+    assert_eq!(reader.get(b"bb", 0).unwrap(), None);
     assert_eq!(
         reader.scan(Some(b"b"), Some(b"c"), 1).unwrap_err().kind(),
         io::ErrorKind::InvalidData

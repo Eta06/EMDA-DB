@@ -369,9 +369,15 @@ impl IndexedBase {
         let Some(position) = self.preceding_block(key) else {
             return Ok(None);
         };
+        let block = &self.blocks[position];
+        // Only a single whole entry can exceed the block target size. Its
+        // authenticated anchor names that entry, so a gap needs no read.
+        if block.end - block.start > BLOCK_BYTES && block.first_key.as_slice() != key {
+            return Ok(None);
+        }
         let mut result = Vec::new();
         let mut found = false;
-        self.read_block(&self.blocks[position], &mut result, |candidate, len, _| {
+        self.read_block(block, &mut result, |candidate, len, _| {
             if found {
                 return Ok(Selection::Stop);
             }
