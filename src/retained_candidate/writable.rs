@@ -494,7 +494,10 @@ impl RetainedStore {
             hook(CommitPoint::Appended)?;
             self.log.sync_data()?;
             hook(CommitPoint::LogSynced)?;
-            update_witness(&self.witness, self.header.bytes(), end, &hash)?;
+            write_witness(&self.witness, self.header.bytes(), end, &hash)?;
+            #[cfg(test)]
+            hook(CommitPoint::WitnessWritten)?;
+            self.witness.sync_data()?;
             hook(CommitPoint::WitnessSynced)?;
             self.suffix_len = end;
             self.overlay.commit_append(overlay);
@@ -524,6 +527,8 @@ fn encode_batch(operations: &[BatchOperation<'_>]) -> io::Result<Vec<u8>> {
 enum CommitPoint {
     Appended,
     LogSynced,
+    #[cfg(test)]
+    WitnessWritten,
     WitnessSynced,
 }
 
@@ -791,11 +796,15 @@ fn decode_marker(bytes: &[u8; WITNESS_BYTES], header: &[u8]) -> io::Result<(u64,
 }
 
 fn update_witness(file: &File, header: &[u8], end: usize, hash: &Sha256) -> io::Result<()> {
+    write_witness(file, header, end, hash)?;
+    file.sync_data()
+}
+
+fn write_witness(file: &File, header: &[u8], end: usize, hash: &Sha256) -> io::Result<()> {
     file.write_all_at(
         &marker(header, end as u64, &hash.clone().finalize().into()),
         0,
-    )?;
-    file.sync_data()
+    )
 }
 
 fn read_marker(witness: &File) -> io::Result<[u8; WITNESS_BYTES]> {

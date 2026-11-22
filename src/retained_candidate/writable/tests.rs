@@ -495,6 +495,7 @@ fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
     for point in [
         CommitPoint::Appended,
         CommitPoint::LogSynced,
+        CommitPoint::WitnessWritten,
         CommitPoint::WitnessSynced,
     ] {
         let f = Fixture::new(LIMITS);
@@ -532,7 +533,7 @@ fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
         ));
         assert_eq!(
             fs::read(f.witness()).unwrap() == before,
-            point != CommitPoint::WitnessSynced
+            matches!(point, CommitPoint::Appended | CommitPoint::LogSynced)
         );
         drop(store);
         let reopened = f.open(LIMITS).unwrap();
@@ -924,6 +925,7 @@ fn retained_store_crash_child() {
         .as_str()
     {
         "log" => CommitPoint::LogSynced,
+        "witness-written" => CommitPoint::WitnessWritten,
         "witness" => CommitPoint::WitnessSynced,
         _ => panic!("unexpected commit boundary"),
     };
@@ -965,7 +967,7 @@ fn killed_retained_writer_recovers_the_synced_batch() {
         sync::mpsc,
         time::Duration,
     };
-    for point in ["log", "witness"] {
+    for point in ["log", "witness-written", "witness"] {
         let f = Fixture::new(LIMITS);
         f.open(LIMITS)
             .unwrap()

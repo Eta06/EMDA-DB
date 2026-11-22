@@ -80,6 +80,7 @@ fn document_commit_crash_child() {
     COMMIT_POINT.set(match boundary.as_str() {
         "after-append" | "torn-tail" => Some(CommitPoint::Appended),
         "after-log-sync" => Some(CommitPoint::LogSynced),
+        "after-witness-write" => Some(CommitPoint::WitnessWritten),
         "after-witness" => Some(CommitPoint::WitnessSynced),
         _ => None,
     });
@@ -140,6 +141,7 @@ fn process_kills_recover_document_indexes_and_raw_receipt_together() {
         "after-intent",
         "after-append",
         "after-log-sync",
+        "after-witness-write",
         "after-witness",
         "after-final",
         "torn-tail",
@@ -189,7 +191,10 @@ fn process_kills_recover_document_indexes_and_raw_receipt_together() {
         );
         assert_eq!(
             witness != witness_before,
-            matches!(boundary, "after-witness" | "after-final"),
+            matches!(
+                boundary,
+                "after-witness-write" | "after-witness" | "after-final"
+            ),
             "{boundary}"
         );
         match boundary {
@@ -216,6 +221,37 @@ fn process_kills_recover_document_indexes_and_raw_receipt_together() {
                 FileRetainedAuthority::open(&authority_path).unwrap(),
             )
         };
+        if boundary == "after-witness-write" {
+            let proposed = visible.pending.unwrap();
+            assert_eq!(
+                u64::from_le_bytes(witness[40..48].try_into().unwrap()),
+                proposed.suffix_end
+            );
+            let result = AuthorizedRetainedStore::open_using(
+                &f.root,
+                CRASH_LIMITS,
+                FileRetainedAuthority::open(&authority_path).unwrap(),
+                None,
+                |store| {
+                    assert_eq!(
+                        AuthorityPoint::from_store(proposed.catalog, store),
+                        proposed
+                    );
+                    store.log.sync_data()?;
+                    Err(io::Error::other("injected recovery witness sync failure"))
+                },
+            );
+            assert_eq!(
+                result
+                    .err()
+                    .expect("sync failure before recovery CAS")
+                    .to_string(),
+                "injected recovery witness sync failure"
+            );
+            assert_eq!(authority.read().unwrap(), Some(visible));
+            assert_eq!(fs::read(&log_path).unwrap(), complete_log);
+            assert_eq!(fs::read(&witness_path).unwrap(), witness);
+        }
         if boundary == "torn-tail" {
             let torn = &complete_log[..complete_log.len() - 1];
             fs::write(&log_path, torn).unwrap();
