@@ -60,3 +60,5 @@ power-loss validation or an independent off-host restore.
 See the [cross-platform results](../benchmarks/results/2026-11-19-authorized-recovery-resources/README.md).
 The [three-engine matrix](../benchmarks/results/2026-11-22-recovery-sqlite-matrix/README.md)
 covers three dataset sizes on macOS APFS and Linux ext4.
+The [authority read comparison](../benchmarks/results/2026-11-22-authority-read-sync/README.md)
+isolates record synchronization using the same fixture on each platform.
