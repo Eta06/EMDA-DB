@@ -426,12 +426,12 @@ pub struct SuffixLimits {
 /// captured boundary and the exact suffix endpoint and digest; it is not proof
 /// of freshness or authority. Directory ancestors and contents must remain
 /// trusted and stable during the operation. Final-component symlinks are rejected.
-/// The base frame can reject impossible work or staging budgets before the
-/// suffix is buffered. The suffix file is read once, with exact EOF, into a
-/// buffer bounded by `suffix_limits.bytes`;
-/// the same bytes are hashed and replayed. Peak memory includes that buffer plus
-/// the staged live set, transient replacement values, batch decoding and allocator
-/// overhead. Entry and payload limits do not constitute a total process memory cap.
+/// The base frame can reject impossible work or staging budgets before reading
+/// the suffix. Replay streams the inputs and keeps locations for suffix-touched
+/// keys. It allocates values for the returned live rows and checks their digests
+/// against the verified replay. Entry and payload limits count intermediate
+/// logical states as well as the final result. Touched keys, decoded batch
+/// metadata, buffers and allocator overhead have separate memory costs.
 /// Errors return no state and may precede full verification. This does not open,
 /// modify, select, or recover an ordinary store.
 pub fn open_exported_suffix(
@@ -441,21 +441,20 @@ pub fn open_exported_suffix(
     staging: retained_base_v2::StagingLimits,
     suffix_limits: SuffixLimits,
     expected: &SuffixExpected,
-) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let (suffix, len) = open_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
-    let (base, _) =
-        preflight_replay_base(directory.as_ref(), limits, staging, suffix_limits, expected)?;
-    let bytes = read_open_suffix(suffix, len)?;
-    check_suffix_binding(&bytes, suffix_limits, expected)?;
-    replay_preflighted_suffix(base, limits, staging, &bytes, suffix_limits, expected)
+) -> io::Result<Vec<crate::Entry>> {
+    RestoreReplay::open(
+        directory.as_ref(),
+        suffix_path.as_ref(),
+        limits,
+        staging,
+        suffix_limits,
+        expected,
+    )?
+    .into_entries()
 }
 
 fn read_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<Vec<u8>> {
-    let (file, len) = open_suffix(path, limits, end)?;
-    read_open_suffix(file, len)
-}
-
-fn read_open_suffix(mut file: fs::File, len: usize) -> io::Result<Vec<u8>> {
+    let (mut file, len) = open_suffix(path, limits, end)?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(len)
@@ -508,9 +507,22 @@ pub fn replay_suffix(
     expected: &SuffixExpected,
 ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     check_suffix_binding(suffix, suffix_limits, expected)?;
-    let (base, _) =
+    let (file, _) =
         preflight_replay_base(directory.as_ref(), limits, staging, suffix_limits, expected)?;
-    replay_preflighted_suffix(base, limits, staging, suffix, suffix_limits, expected)
+    let (base, mut state) = load_base(file, limits, staging, &expected.candidate)?;
+    let mut replay = ReplayBudget {
+        limits,
+        staging,
+        work: base.entries,
+        work_limit: suffix_limits.work,
+        entries: base.entries,
+        keys: base.key_bytes,
+        payload: base.file_bytes - retained_base_v2::FRAME_BYTES - 8 * base.entries,
+    };
+    visit_suffix(suffix, suffix_limits, |operation, key, value| {
+        apply_suffix(&mut state, operation, key, &suffix[value], &mut replay)
+    })?;
+    Ok(state)
 }
 
 fn preflight_replay_base(
@@ -533,30 +545,6 @@ fn preflight_replay_base(
     }
     frame.admit_staging(staging)?;
     Ok((file, frame.entries))
-}
-
-fn replay_preflighted_suffix(
-    file: fs::File,
-    limits: Limits,
-    staging: retained_base_v2::StagingLimits,
-    suffix: &[u8],
-    suffix_limits: SuffixLimits,
-    expected: &SuffixExpected,
-) -> io::Result<Vec<crate::Entry>> {
-    let (base, mut state) = load_base(file, limits, staging, &expected.candidate)?;
-    let mut replay = ReplayBudget {
-        limits,
-        staging,
-        work: base.entries,
-        work_limit: suffix_limits.work,
-        entries: base.entries,
-        keys: base.key_bytes,
-        payload: base.file_bytes - retained_base_v2::FRAME_BYTES - 8 * base.entries,
-    };
-    visit_suffix(suffix, suffix_limits, |operation, key, value| {
-        apply_suffix(&mut state, operation, key, &suffix[value], &mut replay)
-    })?;
-    Ok(state)
 }
 
 fn check_suffix_binding(

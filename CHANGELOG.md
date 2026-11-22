@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream detached file inspection and allocate values only for the final
+  live rows returned to the caller.
+
 - Authenticate the retained base during the suffix export's historical
   prefix comparison, eliminating a separate base verification pass.
 

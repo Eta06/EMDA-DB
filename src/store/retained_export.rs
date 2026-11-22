@@ -2445,7 +2445,8 @@ mod tests {
     fn seeded_suffix_matches_full_log_store_and_preserves_inputs() {
         use crate::retained_base_v2::StagingLimits;
         use crate::retained_candidate::{
-            IndexLimits, IndexedSuffix, OverlayLimits, SuffixExpected, SuffixLimits, replay_suffix,
+            IndexLimits, IndexedSuffix, OverlayLimits, SuffixExpected, SuffixLimits,
+            open_exported_suffix, replay_suffix,
         };
         use std::collections::BTreeMap;
 
@@ -2540,6 +2541,17 @@ mod tests {
             assert_eq!(actual, model.into_iter().collect::<Vec<_>>());
             let suffix_path = root.path().join("suffix");
             std::fs::write(&suffix_path, suffix).unwrap();
+            let inspect = |stage, cap| {
+                open_exported_suffix(
+                    &dest,
+                    &suffix_path,
+                    candidate_budgets(),
+                    stage,
+                    cap,
+                    &expected,
+                )
+            };
+            assert_eq!(inspect(stage, cap).unwrap(), actual, "seed {seed}");
             let indexed = IndexedSuffix::open(
                 &dest,
                 &suffix_path,
@@ -2593,21 +2605,24 @@ mod tests {
                     )
                     .is_err()
                 );
+                assert!(inspect(stage, reduced).is_err(), "seed {seed}");
             }
+            let smaller_stage = StagingLimits {
+                staging_bytes: stage.staging_bytes - 1,
+                ..stage
+            };
             assert!(
                 replay_suffix(
                     &dest,
                     candidate_budgets(),
-                    StagingLimits {
-                        staging_bytes: stage.staging_bytes - 1,
-                        ..stage
-                    },
+                    smaller_stage,
                     suffix,
                     cap,
                     &expected
                 )
                 .is_err()
             );
+            assert!(inspect(smaller_stage, cap).is_err(), "seed {seed}");
             let mut corrupt = suffix.to_vec();
             *corrupt.last_mut().unwrap() ^= 1;
             let corrupt_binding = SuffixExpected {

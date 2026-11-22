@@ -153,6 +153,31 @@ impl RestoreReplay {
         Ok(())
     }
 
+    pub(super) fn into_entries(self) -> io::Result<Vec<crate::Entry>> {
+        let count = usize::try_from(self.size.entries).map_err(|_| invalid())?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(count).map_err(io::Error::other)?;
+        self.visit_rows(|file, key, value| {
+            if rows.len() == count {
+                return Err(invalid());
+            }
+            let bytes = OverlayValue::Disk {
+                file,
+                offset: value.offset,
+                len: value.length,
+                digest: &value.digest,
+            }
+            .to_owned_bytes()?;
+            rows.push((copy_replay_bytes(key)?, bytes));
+            Ok(())
+        })?;
+        if rows.len() != count {
+            return Err(invalid());
+        }
+        self.check_lengths()?;
+        Ok(rows)
+    }
+
     pub(super) fn write(
         &self,
         copy: &mut GroupedCopy<'_>,
@@ -318,8 +343,29 @@ mod tests {
             admit(18).err().unwrap().to_string(),
             "suffix work limit exceeded"
         );
-        admit(19).unwrap();
+        let verified = admit(19).unwrap();
         let suffix_bytes = fs::read(&suffix).unwrap();
+        let value_offset = suffix_bytes
+            .windows(b"suffix-data".len())
+            .position(|bytes| bytes == b"suffix-data")
+            .unwrap();
+        let mut changed_value = suffix_bytes.clone();
+        changed_value[value_offset] ^= 1;
+        fs::write(&suffix, changed_value).unwrap();
+        let error = verified.into_entries().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error.to_string().contains("value digest mismatch"),
+            "{error}"
+        );
+        fs::write(&suffix, &suffix_bytes).unwrap();
+        assert_eq!(
+            admit(19).unwrap().into_entries().unwrap(),
+            [
+                (b"a".to_vec(), b"base-data".to_vec()),
+                (b"z".to_vec(), b"suffix-data".to_vec()),
+            ]
+        );
         let no_operations = || {
             RestoreReplay::open(
                 &candidate,

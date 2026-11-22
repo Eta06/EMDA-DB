@@ -273,6 +273,10 @@ the base frame before reading the suffix body. They reject impossible
 initial replay work, total staging bytes, and per-value limits inferred from
 the declared value bytes and entry count. Successful calls still verify
 both inputs and charge the exact ordered replay work. No on-disk fields change.
+File inspection uses verified value locations for replay and allocates
+payload only for live rows. The returned bytes are checked against the
+captured digests. Touched-key metadata, decode buffers and allocator
+overhead are additional costs.
 Offline restore and private suffix-export staging authenticate the suffix
 while discovering touched keys. If discovery returns an error, a raw
 digest check distinguishes changed bytes from a replay error.

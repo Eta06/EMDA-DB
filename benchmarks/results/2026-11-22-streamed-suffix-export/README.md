@@ -64,3 +64,23 @@ Eight fresh processes per variant alternated first position on macOS ARM64.
 Every export matched the known suffix digest and binding. One output from
 each variant also matched the fixture's full live state after replay.
 The comparison measures export on one warm workload. [Raw samples](prefix-samples.json)
+
+## Materialize detached inspection from verified locations
+
+The same fixture compared file inspection at `e38f2a4` with streaming
+replay followed by materialization of live rows. Each of eight fresh
+processes per variant verified every returned key and value. For this run,
+the harness computed the last operation for each key directly to check one
+row at a time. The reported inspection elapsed time ends before this model
+check. Peak RSS covers the whole process, including the result check.
+
+| File inspection | Median peak RSS | Median inspection elapsed |
+| --- | ---: | ---: |
+| Buffered suffix | 175.34 MiB | 0.077 s |
+| Location-based replay | 58.44 MiB | 0.214 s |
+
+Both variants used the same validated 109 MiB suffix on macOS ARM64.
+First position alternated between variants. Location-based replay does
+additional reads and retains the returned payload and touched-key
+metadata. These samples cover a warm large-value workload.
+[Raw samples](inspection-samples.json)
