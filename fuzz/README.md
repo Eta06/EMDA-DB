@@ -52,3 +52,12 @@ does not replace concurrent reservation, I/O fault or power-loss tests.
 The `recovered_view_order` target compares point reads and bounded ordered scans
 against a reference map spanning a multi-block checkpoint and a mixed suffix.
 It exercises merged ordering, not concurrent writers or power-loss behavior.
+
+The `bounded_rebuild` target compares the two bounded managed-checkpoint
+rebuild entry points against ordinary log recovery and a generated model of
+live rows, historical peaks and physical value locations. Its full-log cases
+use variable-length keys and a missing selected checkpoint. Cases with a
+complete unwitnessed tail preserve the old witness and selection on budget
+rejection, then recover at the exact model limits. The checked-in
+`bounded-rebuild-seeds` include one-under tests for operations, log bytes,
+historical keys and key bytes, checkpoint bytes, and the block directory.

@@ -22,13 +22,16 @@
 //! witnessed before the first rebuild, so these calls do not adopt a tail.
 //!
 //! Inputs longer than 48 bytes are discarded. At most 12 children are applied.
-//! Every key is one byte and every value is at most three bytes.
+//! The high bit of the second byte instead selects full-log rebuild, with
+//! variable-length keys. Bit 6 rolls back the witness to the base boundary
+//! before rebuilding. Bits 3–5 select a one-under admission test. Every
+//! value is at most three bytes.
 
 #![no_main]
 
 use database_engine::{
-    BatchOperation, CheckpointStore, Entry, MAX_SCAN_ENTRIES, ManagedRebuildFailure, Store,
-    cleanup_abandoned_staging,
+    BatchOperation, BoundedFullRebuildLimits, CheckpointStore, CheckpointViewLimits, Entry,
+    MAX_SCAN_ENTRIES, ManagedRebuildFailure, Store, cleanup_abandoned_staging,
 };
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
@@ -119,6 +122,7 @@ struct Oracle<'a> {
     live: &'a BTreeMap<Vec<u8>, Vec<u8>>,
     reference_digest: [u8; 32],
     reference_bytes: &'a [u8],
+    variable_keys: bool,
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -132,13 +136,16 @@ fn exercise(data: &[u8]) {
     let input = hex(data);
     let limits = limits_from(data[0]);
     let v2 = data[0] & 1 == 1;
+    let options = data.get(1).copied().unwrap_or(0);
+    let full = options & 0x80 != 0;
     let mut children = parse(data.get(2..).unwrap_or_default());
-    let base_len = usize::from(data.get(1).copied().unwrap_or(0) & 0b111).min(children.len());
+    let base_len = usize::from(options & 0b111).min(children.len());
     let suffix_children = children.split_off(base_len);
     let base_steps = group(children);
     let suffix_steps = group(suffix_children);
     let mut present = [false; KEY_SPACE];
     let mut peak = 0_usize;
+    let mut peak_bytes = 0_u64;
     for child in base_steps
         .iter()
         .chain(&suffix_steps)
@@ -146,24 +153,37 @@ fn exercise(data: &[u8]) {
     {
         present[usize::from(child.key)] = !child.delete;
         peak = peak.max(present.iter().filter(|value| **value).count());
+        let live_bytes = present
+            .iter()
+            .enumerate()
+            .filter(|&(_, live)| *live)
+            .map(|(key, _)| key_len(key as u8, full) as u64)
+            .sum();
+        peak_bytes = peak_bytes.max(live_bytes);
     }
 
     let root = tempfile::tempdir().expect("temporary directory");
     let path = root.path().join("store");
     let base = root.path().join("base");
     let mut model = BTreeMap::new();
-    let digest = {
+    let (digest, old_witness) = {
         let store = open_writer(&path, v2, &input);
-        apply(&store, &base_steps, &mut model);
+        apply(&store, &base_steps, &mut model, full);
         let digest = store
             .checkpoint_to(&base)
             .unwrap_or_else(|error| panic!("{input}: base checkpoint: {error}"));
-        apply(&store, &suffix_steps, &mut model);
-        digest
+        let old_witness = if full && options & 0x40 != 0 && !suffix_steps.is_empty() {
+            let log = fs::read(path.join("records.log")).unwrap();
+            Some(witness_bytes(&path, &log, &input))
+        } else {
+            None
+        };
+        apply(&store, &suffix_steps, &mut model, full);
+        (digest, old_witness)
     };
     let image = snapshot(&path, &base, &input);
     let reference_path = root.path().join("reference");
-    let reference = full_log_reference(&path, &reference_path, &model, &input);
+    let reference = full_log_reference(&path, &reference_path, &model, full, &input);
     assert_eq!(&reference.bytes[..8], b"EMDAIDX1", "{input}");
     let count = u64::from_le_bytes(reference.bytes[16..24].try_into().unwrap());
     let stored_peak = u64::from_le_bytes(reference.bytes[24..32].try_into().unwrap());
@@ -174,6 +194,7 @@ fn exercise(data: &[u8]) {
         &suffix_steps,
         &reference.bytes,
         &image.log,
+        full,
         &input,
     );
     assert_preserved(
@@ -199,7 +220,27 @@ fn exercise(data: &[u8]) {
         live: &reference.live,
         reference_digest: reference.digest,
         reference_bytes: &reference.bytes,
+        variable_keys: full,
     };
+    if full {
+        let limits = BoundedFullRebuildLimits {
+            max_log_bytes: image.log.len() as u64,
+            max_operations: operation_count(&base_steps) + suffix_ops,
+            max_live_keys: peak,
+            max_live_key_bytes: peak_bytes,
+            max_chunk_keys: limits.chunk_keys,
+            max_chunk_key_bytes: limits.chunk_key_bytes * 1024,
+            max_spill_bytes: SPILL_BUDGET,
+            max_merge_fan_in: limits.fan_in,
+        };
+        let checkpoint_limits = CheckpointViewLimits {
+            max_file_bytes: reference.bytes.len() as u64,
+            // Eight possible keys of at most 1024 bytes fit one view block.
+            max_blocks: usize::from(!model.is_empty()),
+        };
+        oracle.rebuild_full(limits, checkpoint_limits, old_witness, (options >> 3) & 7);
+        return;
+    }
 
     if suffix_ops >= 1 {
         oracle.reject(
@@ -363,9 +404,18 @@ fn distinct_keys(steps: &[Step]) -> usize {
     seen.into_iter().filter(|present| *present).count()
 }
 
-fn key_bytes(key: u8) -> [u8; 1] {
+fn key_len(key: u8, variable_keys: bool) -> usize {
+    const LENGTHS: [usize; KEY_SPACE] = [1, 2, 3, 4, 7, 15, 31, 1024];
+    if variable_keys {
+        LENGTHS[usize::from(key)]
+    } else {
+        1
+    }
+}
+
+fn key_bytes(key: u8, variable_keys: bool) -> Vec<u8> {
     assert!(usize::from(key) < KEY_SPACE, "key id {key}");
-    [b'a' + key]
+    vec![b'a' + key; key_len(key, variable_keys)]
 }
 
 // Model DB01/DB02 lengths from the generated operations, rather than using
@@ -375,6 +425,7 @@ fn check_generated_locations(
     suffix: &[Step],
     checkpoint: &[u8],
     log: &[u8],
+    variable_keys: bool,
     input: &str,
 ) {
     let mut locations = BTreeMap::<Vec<u8>, (u64, u32, u32)>::new();
@@ -385,7 +436,8 @@ fn check_generated_locations(
             Step::Batch(_) => offset + 17 + 1 + 4, // outer header, key, count
         };
         for child in step.children() {
-            let key = key_bytes(child.key).to_vec();
+            let key = key_bytes(child.key, variable_keys);
+            let key_len = key.len() as u64;
             let value_len = if child.delete { 0 } else { child.value.len() };
             if child.delete {
                 locations.remove(&key);
@@ -393,13 +445,13 @@ fn check_generated_locations(
                 locations.insert(
                     key,
                     (
-                        child_offset + 17 + 1,
+                        child_offset + 17 + key_len,
                         value_len as u32,
                         crc32fast::hash(&child.value),
                     ),
                 );
             }
-            child_offset += 17 + 1 + value_len as u64 + 4;
+            child_offset += 17 + key_len + value_len as u64 + 4;
         }
         offset = match step {
             Step::One(_) => child_offset,
@@ -437,25 +489,30 @@ fn check_generated_locations(
     );
 }
 
-fn apply(store: &Store, steps: &[Step], model: &mut BTreeMap<Vec<u8>, Vec<u8>>) {
+fn apply(
+    store: &Store,
+    steps: &[Step],
+    model: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    variable_keys: bool,
+) {
     for step in steps {
         match step {
             Step::One(child) => {
-                apply_child(store, child);
-                observe(model, child);
+                apply_child(store, child, variable_keys);
+                observe(model, child, variable_keys);
             }
             Step::Batch(children) => {
-                apply_batch(store, children);
+                apply_batch(store, children, variable_keys);
                 for child in children {
-                    observe(model, child);
+                    observe(model, child, variable_keys);
                 }
             }
         }
     }
 }
 
-fn apply_child(store: &Store, child: &Child) {
-    let key = key_bytes(child.key);
+fn apply_child(store: &Store, child: &Child, variable_keys: bool) {
+    let key = key_bytes(child.key, variable_keys);
     let result = if child.delete {
         store.delete(&key)
     } else {
@@ -464,9 +521,12 @@ fn apply_child(store: &Store, child: &Child) {
     result.unwrap_or_else(|error| panic!("key {} delete {}: {error}", child.key, child.delete));
 }
 
-fn apply_batch(store: &Store, children: &[Child]) {
+fn apply_batch(store: &Store, children: &[Child], variable_keys: bool) {
     assert!(!children.is_empty(), "batch has no children");
-    let keys: Vec<[u8; 1]> = children.iter().map(|child| key_bytes(child.key)).collect();
+    let keys: Vec<_> = children
+        .iter()
+        .map(|child| key_bytes(child.key, variable_keys))
+        .collect();
     let operations: Vec<BatchOperation<'_>> = children
         .iter()
         .enumerate()
@@ -486,8 +546,8 @@ fn apply_batch(store: &Store, children: &[Child]) {
         .unwrap_or_else(|error| panic!("batch of {}: {error}", children.len()));
 }
 
-fn observe(state: &mut BTreeMap<Vec<u8>, Vec<u8>>, child: &Child) {
-    let key = key_bytes(child.key).to_vec();
+fn observe(state: &mut BTreeMap<Vec<u8>, Vec<u8>>, child: &Child, variable_keys: bool) {
+    let key = key_bytes(child.key, variable_keys);
     if child.delete {
         state.remove(&key);
     } else {
@@ -516,6 +576,7 @@ fn full_log_reference(
     path: &Path,
     destination: &Path,
     model: &BTreeMap<Vec<u8>, Vec<u8>>,
+    variable_keys: bool,
     input: &str,
 ) -> FullLog {
     let store = retry(|| Store::open(path))
@@ -528,7 +589,12 @@ fn full_log_reference(
         &live, model,
         "{input}: generator final state differs from the full-log scan"
     );
-    assert_reads(&live, |key| store.get(key), &format!("{input}: full log"));
+    assert_reads(
+        &live,
+        variable_keys,
+        |key| store.get(key),
+        &format!("{input}: full log"),
+    );
     let digest = store
         .checkpoint_to(destination)
         .unwrap_or_else(|error| panic!("{input}: full-log checkpoint: {error}"));
@@ -543,6 +609,99 @@ fn full_log_reference(
 }
 
 impl Oracle<'_> {
+    fn rebuild_full(
+        &self,
+        limits: BoundedFullRebuildLimits,
+        checkpoint_limits: CheckpointViewLimits,
+        old_witness: Option<Vec<u8>>,
+        cap: u8,
+    ) {
+        let previous = self.root.join("missing-selected");
+        CheckpointStore::rebuild_managed_selection(self.path, &previous).unwrap();
+        let selection = self.path.join("checkpoint.selection");
+        let selection_before = fs::read(&selection).unwrap();
+        fs::remove_file(&previous).unwrap();
+
+        if let Some(witness) = old_witness {
+            assert_ne!(
+                witness, self.image.witness,
+                "{}: witness did not advance",
+                self.input
+            );
+            restore_witness(self.path, &self.image.log, &witness).unwrap();
+        }
+        let before = snapshot(self.path, self.base, self.input);
+        let destination = self.root.join("full-rebuilt");
+        let attempt = |limits, checkpoint_limits| {
+            CheckpointStore::rebuild_managed_selection_full_bounded_with_checkpoint_limits(
+                self.path,
+                &destination,
+                limits,
+                checkpoint_limits,
+            )
+        };
+
+        let mut tight = limits;
+        let mut tight_output = checkpoint_limits;
+        let expected = match cap {
+            0 if tight.max_operations > 0 => {
+                tight.max_operations -= 1;
+                Some("operation limit")
+            }
+            1 => {
+                tight.max_log_bytes -= 1;
+                Some("log exceeds configured limit")
+            }
+            2 if tight.max_live_keys > 0 => {
+                tight.max_live_keys -= 1;
+                Some("historical live key limit")
+            }
+            3 if tight.max_live_key_bytes > 0 => {
+                tight.max_live_key_bytes -= 1;
+                Some("historical live key-byte limit")
+            }
+            4 => {
+                tight_output.max_file_bytes -= 1;
+                Some("file size limit")
+            }
+            5 if tight_output.max_blocks > 0 => {
+                tight_output.max_blocks -= 1;
+                Some("too many view blocks")
+            }
+            _ => None,
+        };
+        if let Some(expected) = expected {
+            let result = attempt(tight, tight_output);
+            let Err(ManagedRebuildFailure::NotPublished(error)) = result else {
+                panic!("{}: expected {expected}: {result:?}", self.input);
+            };
+            assert_eq!(
+                error.kind(),
+                ErrorKind::InvalidInput,
+                "{}: {error}",
+                self.input
+            );
+            assert!(
+                error.to_string().contains(expected),
+                "{}: {error}",
+                self.input
+            );
+            assert_eq!(
+                fs::read(&selection).unwrap(),
+                selection_before,
+                "{}",
+                self.input
+            );
+            assert!(!destination.exists(), "{}", self.input);
+            assert_preserved(self.path, self.base, &before, self.input);
+            self.no_stages(self.input);
+        }
+        let digest = attempt(limits, checkpoint_limits).unwrap_or_else(|error| {
+            panic!("{}: full rebuild at exact limits: {error}", self.input)
+        });
+        self.check_published(&destination, digest, self.input);
+    }
+
     fn reject(
         &self,
         destination: &Path,
@@ -655,7 +814,7 @@ impl Oracle<'_> {
         );
         let scanned = scan_all(|after| store.scan(after, None, MAX_SCAN_ENTRIES), context);
         assert_eq!(scanned, *self.live, "{context} scan");
-        assert_reads(self.live, |key| store.get(key), context);
+        assert_reads(self.live, self.variable_keys, |key| store.get(key), context);
         drop(store);
         assert_preserved(self.path, self.base, self.image, context);
         self.no_stages(context);
@@ -785,6 +944,25 @@ fn witness_bytes(path: &Path, log: &[u8], input: &str) -> Vec<u8> {
     }
 }
 
+fn restore_witness(path: &Path, log: &[u8], witness: &[u8]) -> io::Result<()> {
+    if log.starts_with(b"EMDALOG3") {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(path.join("records.log"))?;
+        rustix::fs::fsetxattr(
+            &file,
+            "user.db.commit.v3",
+            witness,
+            rustix::fs::XattrFlags::REPLACE,
+        )?;
+        file.sync_all()
+    } else {
+        let file = path.join("commit.state");
+        fs::write(&file, witness)?;
+        File::open(file)?.sync_all()
+    }
+}
+
 fn assert_preserved(path: &Path, base: &Path, image: &Image, context: &str) {
     let log = fs::read(path.join("records.log"))
         .unwrap_or_else(|error| panic!("{context}: read log: {error}"));
@@ -823,11 +1001,12 @@ fn assert_same_bytes(actual: &[u8], expected: &[u8], context: &str) {
 
 fn assert_reads(
     live: &BTreeMap<Vec<u8>, Vec<u8>>,
+    variable_keys: bool,
     mut get: impl FnMut(&[u8]) -> io::Result<Option<Vec<u8>>>,
     context: &str,
 ) {
     for id in 0..u8::try_from(KEY_SPACE).expect("key space") {
-        let key = key_bytes(id);
+        let key = key_bytes(id, variable_keys);
         let found = get(&key).unwrap_or_else(|error| panic!("{context}: get {id}: {error}"));
         assert_eq!(
             found.as_deref(),
