@@ -8,6 +8,7 @@ use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::ops::ControlFlow;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Maximum suffix bytes replayed by one recovered checkpoint view.
 pub const MAX_RECOVERED_VIEW_TAIL_BYTES: u64 = 64 * 1024 * 1024;
@@ -54,7 +55,7 @@ impl Default for RecoveredViewLimits {
 /// of `CheckpointView` still apply. This is not a writable disk-backed index.
 pub struct RecoveredCheckpointView {
     pub(crate) base: CheckpointView,
-    pub(crate) overlay: BTreeMap<Vec<u8>, Option<ValueLocation>>,
+    pub(crate) overlay: Arc<BTreeMap<Vec<u8>, Option<ValueLocation>>>,
     pub(crate) tail_bytes: u64,
 }
 
@@ -247,7 +248,7 @@ impl RecoveredCheckpointView {
         Ok((
             Self {
                 base,
-                overlay,
+                overlay: Arc::new(overlay),
                 tail_bytes,
             },
             adoption_digest,

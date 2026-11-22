@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Share checkpoint suffix overlays across snapshots of the same state.
+  The first writer detaches a shared overlay before appending.
+
 - Share checkpoint files and block directories across snapshots while
   preserving their logical reservations and captured views across rollover.
 

@@ -8,9 +8,9 @@ use std::time::Instant;
 pub const MAX_CHECKPOINT_ACTIVE_SNAPSHOTS: usize = 16;
 /// Maximum combined checkpoint-directory blocks reserved across active snapshots.
 pub const MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS: usize = 262_144;
-/// Maximum combined copied overlay keys, including tombstones, across snapshots.
+/// Maximum combined overlay keys reserved across snapshots, including tombstones.
 pub const MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS: usize = 65_536;
-/// Maximum combined copied overlay-key bytes across active snapshots.
+/// Maximum combined overlay-key bytes reserved across active snapshots.
 pub const MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES: usize = 16 * 1024 * 1024;
 
 /// Per-open logical checkpoint-snapshot reservation limits and usage.
@@ -26,7 +26,7 @@ pub struct CheckpointSnapshotBudgetStatus {
     pub block_limit: usize,
     /// Block-directory entries currently reserved.
     pub blocks: usize,
-    /// Maximum combined copied suffix-overlay keys.
+    /// Maximum combined suffix-overlay keys reserved.
     pub key_limit: usize,
     /// Overlay keys currently reserved, including tombstones.
     pub keys: usize,
@@ -157,8 +157,9 @@ impl Drop for Reservation<'_> {
 
 /// A stable process-local checkpoint-backed view borrowing its store.
 ///
-/// It shares the verified checkpoint file and block directory and copies the
-/// bounded suffix overlay. Its original log locations remain valid
+/// It shares the verified checkpoint file, block directory and captured
+/// suffix overlay. The writer detaches a shared overlay before appending.
+/// Captured log locations remain valid
 /// because the live source log is append-only. Snapshots cannot outlive the
 /// store or survive reopening and do not provide write transactions. Limits
 /// count each snapshot's logical blocks and overlay entries, even when the
@@ -419,7 +420,7 @@ impl CheckpointStore {
         };
         let view = RecoveredCheckpointView {
             base: capture_base(&state.view.base)?,
-            overlay: state.view.overlay.clone(),
+            overlay: Arc::clone(&state.view.overlay),
             tail_bytes: state.view.tail_bytes,
         };
         let snapshot = CheckpointSnapshot {
@@ -519,6 +520,39 @@ mod tests {
                 .unwrap();
         store.put(b"suffix", b"value").unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn snapshots_share_a_suffix_until_a_writer_needs_to_mutate_it() {
+        let (_dir, store) = fixture();
+        store.delete(b"base").unwrap();
+        let first = store.snapshot().unwrap();
+        let second = store.snapshot().unwrap();
+        let old = Arc::clone(&first.state.read().unwrap().view.as_ref().unwrap().overlay);
+        assert!(Arc::ptr_eq(&old, &store.read().unwrap().view.overlay));
+        assert!(Arc::ptr_eq(
+            &old,
+            &second.state.read().unwrap().view.as_ref().unwrap().overlay
+        ));
+        assert_eq!(store.snapshot_budget_status().unwrap().keys, 4);
+
+        store
+            .write_batch(&[
+                crate::BatchOperation::Delete { key: b"suffix" },
+                crate::BatchOperation::Put {
+                    key: b"base",
+                    value: b"new",
+                },
+            ])
+            .unwrap();
+        assert!(!Arc::ptr_eq(&old, &store.read().unwrap().view.overlay));
+        for view in [&first, &second] {
+            assert_eq!(view.get(b"base").unwrap(), None);
+            assert_eq!(view.get(b"suffix").unwrap().as_deref(), Some(&b"value"[..]));
+        }
+        assert_eq!(store.get(b"base").unwrap().as_deref(), Some(&b"new"[..]));
+        assert_eq!(store.get(b"suffix").unwrap(), None);
+        assert_eq!(store.snapshot_budget_status().unwrap().keys, 4);
     }
 
     #[test]

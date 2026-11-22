@@ -82,8 +82,10 @@ impl CheckpointStore {
         // verification or panic leaves the instance unusable until recovery.
         let encoded = record::encode(operation, key, value)?;
         let owned_key = (operation != Operation::Batch).then(|| key.to_vec());
-        // Automatic maintenance can take time. Preserve the transaction's
-        // pre-append expiry guarantee after the checkpoint handoff completes.
+        // A snapshot can pin this overlay. Detach before submission, keeping
+        // the same entries until the append and its witness are synchronized.
+        let overlay = Arc::make_mut(&mut state.view.overlay);
+        // Maintenance and detaching a shared overlay can take time.
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err(crate::TimedTransactionError::DeadlineExceeded);
         }
@@ -115,7 +117,7 @@ impl CheckpointStore {
         };
         self.log.sync_data()?;
         for update in updates {
-            state.view.overlay.insert(update.key, update.location);
+            overlay.insert(update.key, update.location);
         }
         state.view.tail_bytes = next_tail;
         state.overlay_key_bytes = new_key_bytes;
