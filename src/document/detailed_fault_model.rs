@@ -104,6 +104,116 @@ pub(crate) enum RecoveryExpectation {
     Torn,
 }
 
+fn restart_index() -> IndexDefinition {
+    IndexDefinition {
+        name: "guarded".into(),
+        fields: vec![vec!["x".into()]],
+        unique: true,
+        partial: None,
+    }
+}
+
+pub(crate) fn prepare_guarded_restart(db: &DocumentDatabase<'_>) {
+    prepare(db);
+    db.insert("c", "b", &json!({"x":2})).unwrap();
+    db.start_index_build("c", restart_index()).unwrap();
+    assert_eq!(
+        db.advance_index_build("c", "guarded", 1).unwrap().processed,
+        1
+    );
+}
+
+pub(crate) fn guarded_restart(
+    db: &DocumentDatabase<'_>,
+    key: &crate::MaintenanceKey,
+) -> Result<(), TransactionFailure> {
+    db.transaction_detailed(crate::DocumentTransactionMode::ReadSet, None, None, |tx| {
+        tx.restart_index_build_guarded("c", &restart_index(), key)?;
+        tx.put_raw(b"restart-receipt", b"guarded")
+    })
+}
+
+pub(crate) fn verify_guarded_restart_recovery(
+    path: &Path,
+    checkpoint: &Path,
+    digest: &[u8; 32],
+    key: &crate::MaintenanceKey,
+    expected: RecoveryExpectation,
+    checkpoint_first: bool,
+) {
+    use crate::{CheckpointStore, IndexJobStatus, Store, test_support::retry_lock};
+    use std::{fs, io};
+
+    let log = path.join("records.log");
+    let witness = path.join("commit.state");
+    let before_log = fs::read(&log).unwrap();
+    let before_witness = fs::read(&witness).unwrap();
+    let check = |db: &DocumentDatabase<'_>| {
+        let RecoveryExpectation::Committed(committed) = expected else {
+            panic!("torn guarded restart reopened");
+        };
+        let receipt = db.transaction(|tx| tx.get_raw(b"restart-receipt")).unwrap();
+        assert_eq!(
+            receipt.as_deref(),
+            committed.then_some(b"guarded".as_slice())
+        );
+        assert_eq!(
+            db.index_jobs("c").unwrap(),
+            vec![IndexJobStatus::Building {
+                definition: restart_index(),
+                after: (!committed).then(|| "a".to_owned()),
+            }]
+        );
+        verify(db, 0, true);
+        if committed {
+            assert_eq!(
+                db.advance_index_build("c", "guarded", 1)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
+        // Verify the recovered seal and progress without changing the fixture
+        // before the other recovery path opens it.
+        let result = db.transaction::<()>(|tx| {
+            let advance = |tx: &mut crate::DocumentTransaction<'_, '_>| {
+                if committed {
+                    tx.advance_index_build_guarded("c", "guarded", 1, key)
+                } else {
+                    tx.advance_index_build("c", "guarded", 1)
+                }
+            };
+            for _ in 0..if committed { 2 } else { 1 } {
+                let step = advance(tx)?;
+                assert_eq!((step.processed, step.complete), (1, false));
+            }
+            assert!(advance(tx)?.complete);
+            let integrity = tx.verify_collection("c")?;
+            assert_eq!((integrity.documents, integrity.index_keys), (2, 8));
+            Err(io::Error::other("discard recovery probe"))
+        });
+        assert_eq!(result.unwrap_err().to_string(), "discard recovery probe");
+    };
+    for checkpoint_mode in [checkpoint_first, !checkpoint_first] {
+        let result = if checkpoint_mode {
+            retry_lock(|| CheckpointStore::open(path, checkpoint, digest))
+                .map(|store| check(&DocumentDatabase::with_checkpoint_store(&store)))
+        } else {
+            retry_lock(|| Store::open(path)).map(|store| check(&DocumentDatabase::new(&store)))
+        };
+        if matches!(expected, RecoveryExpectation::Torn) {
+            assert!(matches!(
+                result.unwrap_err().kind(),
+                io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+            ));
+            assert_eq!(fs::read(&witness).unwrap(), before_witness);
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(fs::read(&log).unwrap(), before_log);
+    }
+}
+
 pub(crate) fn verify_recovery(
     path: &Path,
     checkpoint: &Path,

@@ -6,6 +6,39 @@ use crate::document::detailed_fault_model::{
 use crate::{DocumentDatabase, TransactionFailure};
 
 #[test]
+fn guarded_index_restart_recovers_atomically_with_its_receipt() {
+    use crate::document::detailed_fault_model::{
+        guarded_restart, prepare_guarded_restart, verify_guarded_restart_recovery,
+    };
+
+    for (fault, expected) in [
+        (LogFault::Partial(0), RecoveryExpectation::Committed(false)),
+        (LogFault::Partial(1), RecoveryExpectation::Torn),
+        (LogFault::SyncAfter, RecoveryExpectation::Committed(true)),
+    ] {
+        let (_root, path, checkpoint, digest) = fixture();
+        let key = crate::MaintenanceKey::generate().unwrap();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        prepare_guarded_restart(&DocumentDatabase::with_checkpoint_store(&store));
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        store
+            .log
+            .replace_io_for_test(Box::new(FaultLog { file, fault }));
+        let result = guarded_restart(&DocumentDatabase::with_checkpoint_store(&store), &key);
+        assert!(
+            matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
+            "{result:?}"
+        );
+        drop(store);
+        verify_guarded_restart_recovery(&path, &checkpoint, &digest, &key, expected, false);
+    }
+}
+
+#[test]
 fn detailed_document_mutations_report_unknown_and_recover_atomic_indexes() {
     for v2 in [true, false] {
         if !v2 && !cfg!(target_os = "linux") {
