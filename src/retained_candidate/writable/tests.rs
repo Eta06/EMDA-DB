@@ -1013,6 +1013,7 @@ fn killed_retained_writer_recovers_the_synced_batch() {
         binding.extend(f.expected.base_digest);
         fs::write(f.root.path().join("binding"), binding).unwrap();
         let before = fs::read(f.witness()).unwrap();
+        let stderr_path = f.root.path().join("child.stderr");
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -1022,25 +1023,43 @@ fn killed_retained_writer_recovers_the_synced_batch() {
             .env("EMDA_WRITABLE_RETAINED_CRASH_ROOT", f.root.path())
             .env("EMDA_WRITABLE_RETAINED_CRASH_POINT", point)
             .stdout(Stdio::piped())
+            .stderr(File::create(&stderr_path).unwrap())
             .spawn()
             .unwrap();
         let input = BufReader::new(child.stdout.take().unwrap());
         let (tell, wait) = mpsc::channel();
         let reader = std::thread::spawn(move || {
-            for line in input.lines().map_while(Result::ok) {
-                if line == "retained commit boundary" {
-                    let _ = tell.send(());
-                    break;
+            let mut output = String::new();
+            for line in input.lines() {
+                match line {
+                    Ok(line) if line == "retained commit boundary" => {
+                        let _ = tell.send(());
+                        break;
+                    }
+                    Ok(line) => {
+                        output.push_str(&line);
+                        output.push('\n');
+                    }
+                    Err(error) => {
+                        output.push_str(&format!("could not read child stdout: {error}"));
+                        break;
+                    }
                 }
             }
+            output
         });
         let reached = wait.recv_timeout(Duration::from_secs(15));
         let kill = child.kill();
         let status = child.wait().unwrap();
-        reader.join().unwrap();
-        reached.expect("child did not reach the retained commit boundary");
-        kill.unwrap();
-        assert!(!status.success());
+        let stdout = reader.join().unwrap();
+        if let Err(error) = reached {
+            panic!(
+                "child missed retained commit boundary {point}: {error:?} ({status})\nstdout:\n{stdout}\nstderr:\n{}",
+                String::from_utf8_lossy(&fs::read(&stderr_path).unwrap())
+            );
+        }
+        kill.unwrap_or_else(|error| panic!("could not kill child at {point}: {error} ({status})"));
+        assert!(!status.success(), "child exited successfully at {point}");
         assert_eq!(fs::read(f.witness()).unwrap() == before, point == "log");
         let store = f.open(LIMITS).unwrap();
         assert_eq!(store.get(b"a", 4).unwrap(), None);
