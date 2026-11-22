@@ -2206,6 +2206,42 @@ mod tests {
         let run = |bytes: &[u8], expected: &SuffixExpected, stage, cap| {
             replay_suffix(&dest, candidate_budgets(), stage, bytes, cap, expected)
         };
+        // Corrupt only the entry body. Rejection by the frame's budget checks
+        // must happen before the body is read and its digest checked.
+        let base_path = dest.join("base");
+        let original = std::fs::read(&base_path).unwrap();
+        let mut damaged = original.clone();
+        let last_value_byte = damaged.len() - 33;
+        damaged[last_value_byte] ^= 1;
+        std::fs::write(&base_path, damaged).unwrap();
+        for (bytes, work) in [(b"".as_slice(), 0), (suffix.as_slice(), 4)] {
+            let err = run(bytes, &binding(bytes), stage, SuffixLimits { work, ..cap }).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+            assert_eq!(err.to_string(), "suffix work limit exceeded");
+        }
+        let err = run(
+            &[],
+            &binding(&[]),
+            StagingLimits {
+                staging_bytes: 3,
+                ..stage
+            },
+            cap,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "staging budget exceeded");
+        let err = run(
+            &[],
+            &binding(&[]),
+            StagingLimits {
+                staging_bytes: 4,
+                ..stage
+            },
+            cap,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "digest mismatch");
+        std::fs::write(base_path, original).unwrap();
         assert_eq!(
             run(&suffix, &binding(&suffix), stage, cap).unwrap(),
             vec![(b"b".to_vec(), b"x".to_vec())]

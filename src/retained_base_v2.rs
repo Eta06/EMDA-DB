@@ -295,6 +295,12 @@ pub(crate) struct BaseHeader {
     file_bytes: u64,
 }
 
+impl BaseHeader {
+    pub(crate) fn payload_bytes(&self) -> u64 {
+        self.encoded - 8 * self.entries
+    }
+}
+
 // Cheap rejection only. Callers must authenticate the full entry bytes
 // against the independent digest before using the base.
 pub(crate) fn preflight_file(

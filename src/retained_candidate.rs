@@ -287,13 +287,24 @@ pub fn load(
 ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let dir = directory.as_ref();
     check_files(dir, expected)?;
-    let (base, staged) = retained_base_v2::load_with_metadata(
+    let (_, staged) = load_base(
         open_regular(&dir.join("base"))?,
         limits,
         staging_limits,
+        expected,
     )?;
-    check_binding(&base, expected)?;
     Ok(staged)
+}
+
+fn load_base(
+    file: fs::File,
+    limits: Limits,
+    staging_limits: retained_base_v2::StagingLimits,
+    expected: &Expected,
+) -> io::Result<(Validated, Vec<crate::store::Entry>)> {
+    let (base, staged) = retained_base_v2::load_with_metadata(file, limits, staging_limits)?;
+    check_binding(&base, expected)?;
+    Ok((base, staged))
 }
 
 fn check_files(dir: &Path, expected: &Expected) -> io::Result<()> {
@@ -419,8 +430,9 @@ fn require_suffix_eof(reader: &mut impl Read) -> io::Result<()> {
 /// Validate and privately replay a detached suffix against an independently
 /// trusted binding. The candidate directory and suffix bytes must stay stable
 /// throughout. Errors, including budget errors, can precede full validation and
-/// establish nothing about authenticity. No partial state is returned. This is
-/// an offline, non-authoritative inspection; it does not modify or open a store.
+/// establish nothing about authenticity. The frame can reject insufficient
+/// work or staging budgets before reading base entries. No partial state is
+/// returned. This offline, non-authoritative inspection does not modify or open a store.
 pub fn replay_suffix(
     directory: impl AsRef<Path>,
     limits: Limits,
@@ -430,29 +442,40 @@ pub fn replay_suffix(
     expected: &SuffixExpected,
 ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     check_suffix_binding(suffix, suffix_limits, expected)?;
-    let mut state = load(directory, limits, staging, &expected.candidate)?;
-    let initial_work = u64::try_from(state.len()).map_err(|_| invalid())?;
-    if initial_work > suffix_limits.work {
+    let directory = directory.as_ref();
+    check_files(directory, &expected.candidate)?;
+    let file = open_regular(&directory.join("base"))?;
+    let frame = retained_base_v2::preflight_file(
+        &file,
+        file.metadata()?.len(),
+        limits,
+        expected.candidate.base_binding(),
+    )?;
+    let mut minimum_work = frame.entries;
+    if minimum_work > suffix_limits.work {
+        return Err(suffix_capacity("suffix work limit exceeded"));
+    }
+    // Every valid nonempty suffix must apply a first operation to this
+    // live set. The hint only permits early rejection.
+    if !suffix.is_empty() {
+        let entries = usize::try_from(frame.entries).map_err(|_| invalid())?;
+        charge_suffix_work(&mut minimum_work, suffix_limits.work, entries)?;
+    }
+    if frame.payload_bytes() > staging.staging_bytes {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "suffix work limit exceeded",
+            io::ErrorKind::InvalidData,
+            "staging budget exceeded",
         ));
     }
-    let (entries, keys, payload) = live_totals(&state)?;
-    if entries > limits.entries || keys > limits.key_bytes || payload > staging.staging_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "live set limit exceeded",
-        ));
-    }
+    let (base, mut state) = load_base(file, limits, staging, &expected.candidate)?;
     let mut replay = ReplayBudget {
         limits,
         staging,
-        work: initial_work,
+        work: base.entries,
         work_limit: suffix_limits.work,
-        entries,
-        keys,
-        payload,
+        entries: base.entries,
+        keys: base.key_bytes,
+        payload: base.file_bytes - retained_base_v2::FRAME_BYTES - 8 * base.entries,
     };
     visit_suffix(suffix, suffix_limits, |operation, key, value| {
         apply_suffix(&mut state, operation, key, &suffix[value], &mut replay)
@@ -569,6 +592,7 @@ struct ReplayBudget {
     payload: u64,
 }
 
+#[cfg(test)]
 fn live_totals(state: &[(Vec<u8>, Vec<u8>)]) -> io::Result<(u64, u64, u64)> {
     let mut keys = 0u64;
     let mut payload = 0u64;
