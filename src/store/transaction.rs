@@ -115,6 +115,39 @@ impl Drop for Transaction<'_> {
 }
 
 impl Transaction<'_> {
+    fn validate_against(&self, current: &Inner) -> Result<(), TimedTransactionError> {
+        let same_generation = current.generation == self.snapshot.generation
+            && current.log_generation == self.snapshot.log_generation;
+        let valid = if let Some(read_set) = &self.read_set {
+            let read_set = read_set
+                .lock()
+                .map_err(|_| io::Error::other("transaction read set poisoned"))?;
+            if same_generation {
+                true
+            } else {
+                let snapshot = self
+                    .snapshot
+                    .read_index()
+                    .map_err(classify_validation_snapshot_error)?;
+                read_set.matches(
+                    &snapshot.index,
+                    &current.index,
+                    snapshot.log_generation,
+                    current.log_generation,
+                )?
+            }
+        } else {
+            same_generation
+        };
+        if !valid {
+            return Err(crate::transaction_conflict::conflict(
+                "transaction conflict: observed state changed since snapshot",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// Reads from staged changes first, then from the initial snapshot.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         crate::cancellation::check(self.cancellation.as_ref())?;
@@ -347,7 +380,7 @@ impl Store {
     ///
     /// Unrelated intervening writes do not force a conflict. The validator
     /// compares immutable record locations and the complete requested ranges
-    /// under the writer barrier. An absent key inserted and deleted before
+    /// against a stable published index. An absent key inserted and deleted before
     /// validation may return to the same state without a conflict. Callbacks
     /// are not retried and external side effects are not rolled back.
     /// Read dependencies have per-transaction count and byte limits.
@@ -538,6 +571,31 @@ impl Store {
         } else {
             None
         };
+        if txn.staged.is_empty() {
+            // A stable published index is sufficient to serialize a
+            // read-only transaction. A concurrent append has not published
+            // yet and cannot change this index while the guard is held.
+            match self.inner.try_read() {
+                Ok(current) => {
+                    check_deadline(deadline)?;
+                    crate::cancellation::check(cancellation)?;
+                    self.check_read_only_validation()?;
+                    txn.validate_against(&current)?;
+                    check_deadline(deadline)?;
+                    crate::cancellation::check(cancellation)?;
+                    self.check_read_only_validation()?;
+                    drop(current);
+                    txn.snapshot.cancel();
+                    return Ok(result);
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(io::Error::other("store lock poisoned").into());
+                }
+                // Keep the existing cancellation-aware wait when index
+                // publication is already holding the exclusive index lock.
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+        }
         let _writer =
             crate::cancellation::write_lock(&self.writes, deadline, cancellation, || {
                 io::Error::other("write barrier poisoned")
@@ -549,36 +607,7 @@ impl Store {
         }
         {
             let current = self.read()?;
-            let valid = if let Some(read_set) = &txn.read_set {
-                let read_set = read_set
-                    .lock()
-                    .map_err(|_| io::Error::other("transaction read set poisoned"))?;
-                if current.generation == txn.snapshot.generation
-                    && current.log_generation == txn.snapshot.log_generation
-                {
-                    true
-                } else {
-                    let snapshot = txn
-                        .snapshot
-                        .read_index()
-                        .map_err(classify_validation_snapshot_error)?;
-                    read_set.matches(
-                        &snapshot.index,
-                        &current.index,
-                        snapshot.log_generation,
-                        current.log_generation,
-                    )?
-                }
-            } else {
-                current.generation == txn.snapshot.generation
-                    && current.log_generation == txn.snapshot.log_generation
-            };
-            if !valid {
-                return Err(crate::transaction_conflict::conflict(
-                    "transaction conflict: observed state changed since snapshot",
-                )
-                .into());
-            }
+            txn.validate_against(&current)?;
         }
         // The callback is finished and validation holds the exclusive writer
         // barrier. Its private snapshot is no longer observed, so release it
@@ -607,6 +636,16 @@ impl Store {
             crate::cancellation::check(cancellation)?;
         }
         Ok(result)
+    }
+
+    fn check_read_only_validation(&self) -> io::Result<()> {
+        if self.writes.is_poisoned() {
+            return Err(io::Error::other("write barrier poisoned"));
+        }
+        if self.commits.failed() {
+            return Err(uncertain_error());
+        }
+        Ok(())
     }
 }
 
@@ -990,6 +1029,10 @@ mod tests {
             .is_err()
         );
         assert!(store.put(b"after", b"rejected").is_err());
+        assert_eq!(
+            store.transaction(|_| Ok(())).unwrap_err().to_string(),
+            "write barrier poisoned"
+        );
         drop(store);
         let reopened = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
         assert_eq!(

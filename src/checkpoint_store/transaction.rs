@@ -545,6 +545,35 @@ impl CheckpointStore {
         }
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
+        let validate = |state: &State| -> Result<(), TimedTransactionError> {
+            if state.failed {
+                return Err(uncertain().into());
+            }
+            check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
+            let valid = if let Some(read_set) = &transaction.read_set {
+                read_set
+                    .lock()
+                    .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
+                    .matches(state)?
+            } else {
+                state.generation == generation && state.log_generation == log_generation
+            };
+            if !valid {
+                return Err(conflict().into());
+            }
+            Ok(())
+        };
+
+        if transaction.staged.is_empty() {
+            let state =
+                crate::cancellation::read_lock(&self.state, deadline, cancellation, uncertain)?;
+            validate(&state)?;
+            check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
+            return Ok(result);
+        }
+
         let operations = transaction
             .staged
             .iter()
@@ -553,52 +582,28 @@ impl CheckpointStore {
                 None => BatchOperation::Delete { key },
             })
             .collect::<Vec<_>>();
-        let payload = if operations.is_empty() {
-            None
-        } else {
-            Some(encode_payload(&operations)?)
-        };
+        let payload = encode_payload(&operations)?;
         let mut state =
             crate::cancellation::write_lock(&self.state, deadline, cancellation, uncertain)?;
-        if state.failed {
-            return Err(uncertain().into());
-        }
+        validate(&state)?;
+        let keys = operations
+            .iter()
+            .map(|operation| operation.fields().1)
+            .collect::<Vec<_>>();
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
-        let valid = if let Some(read_set) = &transaction.read_set {
-            read_set
-                .lock()
-                .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
-                .matches(&state)?
-        } else {
-            state.generation == generation && state.log_generation == log_generation
-        };
-        if !valid {
-            return Err(conflict().into());
-        }
-        if let Some(payload) = payload {
-            let keys = operations
-                .iter()
-                .map(|operation| operation.fields().1)
-                .collect::<Vec<_>>();
-            check_deadline(deadline)?;
-            crate::cancellation::check(cancellation)?;
-            self.commit_until(
-                &mut state,
-                Operation::Batch,
-                &[0],
-                &payload,
-                &keys,
-                crate::cancellation::CommitControl {
-                    deadline,
-                    cancellation,
-                    tracker,
-                },
-            )?;
-        } else {
-            check_deadline(deadline)?;
-            crate::cancellation::check(cancellation)?;
-        }
+        self.commit_until(
+            &mut state,
+            Operation::Batch,
+            &[0],
+            &payload,
+            &keys,
+            crate::cancellation::CommitControl {
+                deadline,
+                cancellation,
+                tracker,
+            },
+        )?;
         Ok(result)
     }
 }

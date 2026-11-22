@@ -57,8 +57,8 @@ impl Store {
             second.map(|location| log.read(location)).transpose()
         };
         let result = action(first, &mut read_second)?;
-        // Match a conservative read-only transaction: wait for in-flight
-        // writes, reject uncertain outcomes, and reject any changed generation.
+        // Resolve in-flight writes before returning a successful standalone
+        // point read. Reject uncertain outcomes and a changed generation.
         let _writer = self
             .writes
             .write()

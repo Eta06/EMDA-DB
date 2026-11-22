@@ -73,9 +73,13 @@ impl<T> ControlledRwLock<T> {
         }
     }
 
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.poisoned.load(Ordering::Acquire)
+    }
+
     fn wrap_read<'a>(&'a self, inner: RwLockReadGuard<'a, T>) -> LockResult<ReadGuard<'a, T>> {
         let guard = ReadGuard { inner };
-        if self.poisoned.load(Ordering::Acquire) {
+        if self.is_poisoned() {
             Err(PoisonError::new(guard))
         } else {
             Ok(guard)
@@ -88,7 +92,7 @@ impl<T> ControlledRwLock<T> {
             poisoned: &self.poisoned,
             acquired_during_panic: std::thread::panicking(),
         };
-        if self.poisoned.load(Ordering::Acquire) {
+        if self.is_poisoned() {
             Err(PoisonError::new(guard))
         } else {
             Ok(guard)

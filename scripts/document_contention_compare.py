@@ -43,6 +43,8 @@ def main():
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--baseline-binary", type=Path)
+    parser.add_argument("--baseline-revision")
     parser.add_argument("--clients", default="1,2,4")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=100)
@@ -55,7 +57,9 @@ def main():
     if (not args.binary.is_file() or not args.directory.is_dir() or len(set(clients)) != len(clients)
             or not all(1 <= count <= 8 for count in clients)
             or not 2 <= args.rounds <= 20 or not 1 <= args.cycles <= 1000
-            or not max(clients) <= args.documents <= 1000):
+            or not max(clients) <= args.documents <= 1000
+            or bool(args.baseline_binary) != bool(args.baseline_revision)
+            or (args.baseline_binary is not None and not args.baseline_binary.is_file())):
         parser.error("invalid benchmark path or workload dimensions")
     root = Path(__file__).resolve().parents[1]
     hashed = {
@@ -63,8 +67,16 @@ def main():
         "driver": Path(__file__),
         "example": root / "examples/document_contention_bench.rs",
     }
+    variants = [(engine, engine, args.binary) for engine in ENGINES]
+    if args.baseline_binary is not None:
+        hashed["baseline_binary"] = args.baseline_binary
+        variants.extend(
+            (f"{engine}-before", engine, args.baseline_binary)
+            for engine in ENGINES if engine != "sqlite"
+        )
     report = {
         "source_revision": args.source_revision,
+        "baseline_revision": args.baseline_revision,
         "sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in hashed.items()},
         "platform": platform.platform(),
         "cpu_affinity": sorted(os.sched_getaffinity(0)),
@@ -81,19 +93,19 @@ def main():
         try:
             for dimension, count in enumerate(clients):
                 for round_index in range(args.rounds):
-                    offset = (dimension + round_index) % len(ENGINES)
-                    order = ENGINES[offset:] + ENGINES[:offset]
-                    for engine in order:
-                        command = [str(args.binary.resolve()), engine, str(args.directory.resolve()),
+                    offset = (dimension + round_index) % len(variants)
+                    order = variants[offset:] + variants[:offset]
+                    for label, engine, binary in order:
+                        command = [str(binary.resolve()), engine, str(args.directory.resolve()),
                                    str(count), str(args.cycles), str(args.documents)]
                         before = snapshot()
                         completed = subprocess.run(command, text=True, capture_output=True, timeout=360, check=False)
-                        run = {"round": round_index + 1, "command": command,
+                        run = {"variant": label, "round": round_index + 1, "command": command,
                                "telemetry": difference(before, snapshot()), "returncode": completed.returncode,
                                "stderr": completed.stderr}
                         report["runs"].append(run)
                         if completed.returncode != 0:
-                            raise ValueError(f"{engine} with {count} clients failed: {completed.stderr}")
+                            raise ValueError(f"{label} with {count} clients failed: {completed.stderr}")
                         result = json.loads(completed.stdout)
                         validate(result, engine, count, args.cycles, args.documents)
                         run["result"] = result

@@ -449,6 +449,27 @@ fn conditional_mismatch_does_not_write_and_failed_match_is_uncertain() {
 }
 
 #[test]
+fn read_only_transaction_rejects_a_sync_failure_after_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let fault = Arc::new(Mutex::new(None));
+    let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
+    store.put(b"key", b"old").unwrap();
+    let result = store.transaction_with_read_set(|tx| {
+        let value = tx.get(b"key")?;
+        assert_eq!(value.as_deref(), Some(b"old".as_slice()));
+        *fault.lock().unwrap() = Some(Fault::SyncBefore);
+        assert!(store.put(b"unrelated", b"uncertain").is_err());
+        Ok(value)
+    });
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("uncertain outcome")
+    );
+}
+
+#[test]
 fn increment_sync_failure_is_uncertain_and_requires_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));
@@ -884,18 +905,17 @@ fn reads_observe_previous_value_while_a_write_is_syncing() {
     let (read_tx, read_rx) = mpsc::channel();
     let reader_store = Arc::clone(&store);
     let reader = thread::spawn(move || {
-        let _ = read_tx.send(reader_store.get(b"key"));
+        let direct = reader_store.get(b"key");
+        let transaction = reader_store.transaction_with_read_set(|tx| tx.get(b"key"));
+        let _ = read_tx.send((direct, transaction));
     });
     let read = read_rx.recv_timeout(Duration::from_secs(3));
     resume_tx.send(()).unwrap();
     writer.join().unwrap().unwrap();
     reader.join().unwrap();
-    assert_eq!(
-        read.expect("read blocked on an in-flight sync")
-            .unwrap()
-            .as_deref(),
-        Some(&b"old"[..])
-    );
+    let (direct, transaction) = read.expect("read blocked on an in-flight sync");
+    assert_eq!(direct.unwrap().as_deref(), Some(&b"old"[..]));
+    assert_eq!(transaction.unwrap().as_deref(), Some(&b"old"[..]));
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
 }
 

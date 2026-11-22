@@ -1,6 +1,26 @@
 use super::*;
 
 #[test]
+fn read_only_transaction_finishes_with_another_state_reader_present() {
+    use crate::CheckpointTransactionMode;
+    use std::time::{Duration, Instant};
+
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.put(b"key", b"published").unwrap();
+    let reader = store.state.read().unwrap();
+    let value = store
+        .transaction_until(
+            Instant::now() + Duration::from_secs(3),
+            CheckpointTransactionMode::ReadSet,
+            |tx| tx.get(b"key"),
+        )
+        .unwrap();
+    assert_eq!(value.as_deref(), Some(b"published".as_slice()));
+    drop(reader);
+}
+
+#[test]
 fn poisoned_transaction_budget_rejects_new_admissions() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();

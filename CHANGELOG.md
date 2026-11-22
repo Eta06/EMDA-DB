@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Validate read-only transactions against the published index on Store and
+  use a shared state lock on CheckpointStore. Write transactions retain
+  exclusive commit locking.
+
 - Reuse the verified prefix hash during bounded suffix rebuild, eliminating
   one full log read while preserving verification before witness advancement.
 
