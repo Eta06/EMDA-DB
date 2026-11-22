@@ -1,377 +1,75 @@
-# Database engine prototype
+# EMDA-DB
 
-> **Historical handoff, November 14–15, 2026.** The
-> [staging cleanup handoff](docs/HANDOFF_STAGING_CLEANUP_2026_11_14.md) records
-> the failures and verification steps known at that point. The
-> [session handoff](docs/SESSION_HANDOFF_2026_11_15.md) records the project
-> goals and work carried forward.
+EMDA-DB is an embedded database written in Rust for **macOS and Linux**. It has a
+byte-key store and a JSON document interface built on the same storage engine.
 
-This is a standalone storage-engine prototype. Its name is a placeholder. It provides byte-key/byte-value operations and an experimental document interface on the same transaction engine. A SQL interface is not implemented.
+**Experimental · 0.1.0 unreleased.** Use disposable data for
+evaluation. The Rust API and disk formats can change before a stable release.
 
-The engine source is available under Apache License 2.0. A separately operated managed cloud service and other products may be offered commercially; no hosted service is implemented in this repository yet.
+## What works today
 
-## Current progress
+- **Key-value storage.** Put, get, delete, ordered scans, atomic batches, and
+  optimistic transactions.
+- **Documents.** JSON collections with schema validation, secondary indexes,
+  filters, projection, sorting, and basic aggregation.
+- **Recovery.** Checksummed logs with a commit witness, verified backup and
+  restore, and experimental checkpoint-backed and retained stores.
 
-The package version is **0.1.0, unreleased**. Statuses describe the current prototype, not production guarantees. We do not assign completion percentages to features without a defined and tested scope.
+The [storage contract](docs/STORAGE_TRANSACTION_CONTRACT.md) explains what an
+acknowledged write means, when an outcome is uncertain, and which filesystem
+assumptions apply. Platform and format details are in the
+[architecture](docs/ARCHITECTURE.md) and [version policy](docs/VERSIONING.md).
 
-Specific tests requested on independent machines are listed in [external test requests](external-test-requests/README.md), with commands and evidence to return.
+## Try it
 
-A [targeted deadline-race test](docs/DOCUMENT_DEADLINE_RACES_2026_11_06.md) checks concurrent document, index and raw-key atomicity across both writable backends and clean reopens; broader failure and recovery validation remains open.
+Clone the repository and run the atomic batch tests with Rust 1.85 or newer.
 
-[Initialization, staging and commit checks](docs/INITIALIZATION_AND_STAGING_BOUNDARIES_2026_11_06.md) cover additional interruption boundaries, synthetic torn-commit states and ownership-marker synchronization.
-The [failure and recovery matrix](docs/FOUNDATION_FAILURE_MATRIX.md) maps current evidence and remaining gaps to the storage contract.
-The [filesystem EIO checks](docs/FOUNDATION_FAILURE_MATRIX.md#running-filesystem-eio-injection) exercise initialization and ordinary/checkpoint-backed operations across both recovery orders, including synchronization, read, write, open and namespace errors.
-The [interrupted-call campaign](docs/INTERRUPTED_FILESYSTEM_CALLS_2026_11_06.md) checks 2,742 synthetic `EINTR` returns through both recovery orders.
-The [backup and filesystem-failure report](docs/BACKUP_AND_FILESYSTEM_FAILURES_2026_11_06.md) records 1,772 additional injected errors, concurrent backup cuts and a model-based backup/restore fuzz run on a clean revision.
-The [long transaction-history report](docs/LONG_TRANSACTION_HISTORY_2026_11_06.md) checks concurrent transfers, live-reader invariants and recovery across both writable backends.
-The [long key-value history](docs/LONG_SERIAL_HISTORY_2026_11_06.md) checks successive concurrent operation windows against a serial model, with repeated reopens.
-The [mixed transaction histories](docs/LONG_TRANSACTION_SERIAL_2026_11_06.md) check longer sequences of concurrent transactions, batches and direct operations on both writable paths; they also record conflicts in deliberately contended tests.
-
-The [mixed-operation serial model](docs/MIXED_TRANSACTION_HISTORY_2026_11_14.md) adds concurrent missing-key and range reads, deletes and conditional writes, with clean recovery checks on both writable paths.
-The [structured transaction outcome report](docs/DETAILED_TRANSACTION_OUTCOMES_2026_11_14.md) records failure classification, concurrent recovery tests and local transaction comparisons with SQLite.
-The [submission-boundary follow-up](docs/TRANSACTION_SUBMISSION_BOUNDARY_2026_11_14.md) records more precise limit rejections, fault checks and direct-write measurements.
-The [direct-mutation outcome report](docs/DIRECT_MUTATION_OUTCOMES_2026_11_14.md) records classification checks, process-kill recovery and local write measurements.
-The [backup publication report](docs/BACKUP_PUBLICATION_OUTCOMES_2026_11_14.md) records failure classifications, filesystem-fault checks and their limits.
-The [document mutation report](docs/DOCUMENT_MUTATION_OUTCOMES_2026_11_14.md) records structured outcomes, index recovery checks and local SQLite comparisons.
-The [coordinator admission report](docs/COORDINATOR_ADMISSION_OUTCOMES_2026_11_14.md) records which failures are confirmed before queuing and the tested limits.
-The [transaction snapshot report](docs/TRANSACTION_SNAPSHOT_RELEASE_2026_11_14.md) records a measured copy reduction, concurrent and recovery checks, and benchmark limitations.
-The [checkpoint and compaction publication report](docs/COPY_PUBLICATION_OUTCOMES_2026_11_14.md) records classified failures and their recovery limits.
-The [upgrade publication report](docs/UPGRADE_PUBLICATION_OUTCOMES_2026_11_14.md) records classified copy failures and legacy-data limitations.
-The [legacy-upgrade fault report](docs/LEGACY_UPGRADE_FAILURES_2026_11_14.md) checks nonempty and explicitly confirmed empty legacy sources.
-The [rollover publication report](docs/ROLLOVER_PUBLICATION_OUTCOMES_2026_11_14.md) records failure classifications and recovery checks for unmanaged checkpoints.
-The [managed-rollover report](docs/MANAGED_ROLLOVER_OUTCOMES_2026_11_14.md) checks the separate checkpoint and selection publication boundaries.
-The [managed suffix report](docs/MANAGED_ROLLOVER_SUFFIX_FAILURES_2026_11_14.md) checks recovery of an acknowledged write after the previous checkpoint under injected errors.
-The [managed outcome model](docs/MANAGED_ROLLOVER_MODEL_2026_11_14.md) checks failed-handle behavior and mixed rollover histories.
-The [handoff outcome report](docs/HANDOFF_OUTCOMES_2026_11_14.md) records classified compaction failures and recovery checks.
-The [handoff filesystem-fault report](docs/HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md) checks selected errors across ordinary and checkpoint-backed stores.
-The [online handoff report](docs/ONLINE_HANDOFF_OUTCOMES_2026_11_14.md) records its distinct failure and concurrent-write behavior.
-The [online reclamation outcome report](docs/ONLINE_RECLAMATION_OUTCOMES_2026_11_14.md) records classified handoff and cleanup failures.
-The [online handoff fault report](docs/ONLINE_HANDOFF_FILESYSTEM_FAILURES_2026_11_14.md) checks returned filesystem errors, path recovery and disabled handles.
-The [online handoff model](docs/ONLINE_HANDOFF_MODEL_2026_11_14.md) checks mixed compaction histories against a replayable reference model.
-The [automatic-checkpoint configuration report](docs/AUTOMATIC_CONFIGURATION_OUTCOMES_2026_11_14.md) checks classified failures, recovery and local backup restoration.
-The [deadline-race model](docs/TRANSACTION_DEADLINE_MODEL_2026_11_06.md) checks confirmed expiries, uncertain operation errors and recovery against serial histories.
-The [concurrent witness and sync-error report](docs/CONCURRENT_WITNESS_EIO_2026_11_06.md) checks acknowledged writes, two-key transactions and uncertain outcomes when syscalls return errors. A separate [process-kill campaign](docs/CONCURRENT_UPDATE_KILL_2026_11_06.md) checks concurrent updates and deletions through both recovery paths.
-The [witness interruption report](docs/WITNESS_INTERRUPTION_RETRY_2026_11_06.md) records a targeted V3 retry fix and confirms that a later sync error still cannot be acknowledged.
-The [metadata and lock fault report](docs/METADATA_LOCK_FAULTS_2026_11_06.md) covers returned errors in observed metadata, path and lock calls across recovery paths.
-The [transaction crash report](docs/CONCURRENT_TRANSACTION_KILL_2026_11_06.md) checks acknowledged concurrent commits and a staged, unsubmitted transaction after process termination.
-The [large crash comparison](docs/LARGE_CROSS_ENGINE_CRASH_2026_11_06.md) checks 100,000 seeded keys after process restarts against SQLite, PostgreSQL and MongoDB.
-The [native macOS CI matrix](https://github.com/Eta06/EMDA-DB/actions/runs/42161569466) passed on Apple silicon with both stable Rust and Rust 1.85; V3 metadata witnesses and atomic compaction handoffs remain Linux-only.
-An isolated [real ENOSPC campaign](benchmarks/results/2026-11-06-tmpfs-enospc.json) checks writes and copy operations on a disposable, size-limited tmpfs; physical power-loss testing remains open.
-The [local staging restore comparison](docs/STAGING_RESTORE_COMPARISON_2026_11_06.md) records the successful restore path before and after that synchronization change.
-The [current local engine comparison](docs/FOUNDATION_ENGINE_COMPARISON_2026_11_06.md) reports prototype, SQLite, PostgreSQL and MongoDB byte-key workloads with their settings and limitations.
-The [100,000-key follow-up](docs/100K_ENGINE_COMPARISON_2026_11_06.md) compares mixed and write-only throughput and latency across the same four configurations; SQLite retained lower sampled median write latency.
-The [cross-engine restart check](docs/CROSS_ENGINE_PROCESS_CRASH_2026_11_06.md) repeats a small acknowledged-write, update and delete workload across eleven configurations; it does not test physical power loss.
-
-| Area | Status | Current behavior or next step |
-| --- | --- | --- |
-| Embedded key-value core | Prototype | Byte-key operations, bounded bulk reads, atomic write batches, conditional updates, signed 64-bit increments, and ordered paginated scans; one store per process with an advisory lock. |
-| Persistence and recovery | Prototype, limited | On supported Linux filesystems, V3 synchronizes log data and a metadata witness in one full inode sync; V2 retains two syncs. Both detect loss below an intact boundary; incomplete tails fail closed. Legacy stores retain their earlier limitations. Power-loss safety is not established. |
-| Backup and restore | Prototype | Full-log backup and restore stream record validation and verify a SHA-256 digest; restore uses a new path. Independent backups and disaster recovery remain operational responsibilities. |
-| On-disk index checkpoint | Prototype | Verified checkpoint readers and a writable checkpoint-backed store with a bounded suffix overlay, transactions, opt-in automatic checkpoint rollover and a stoppable background worker; bounded recovery time remains open. |
-| Concurrent access | Prototype, limited | Concurrent writes can share a sync. Both writable stores expose opt-in per-open direct-read and per-open direct-write admission limits; the ordinary store also exposes group-commit reservation limits. Bounded optimistic serializable transactions offer conservative or opt-in read-set validation and separate transaction admission limits. |
-| Benchmarking | Expanded local baseline | Ten engines across six byte-key workloads: 264 repeated measurements, 36 CPU-affinity comparisons, and eleven process-restart configurations. VM interference is recorded; broader feature workloads remain planned. |
-| Versioning and CI | In progress | Changelog, format marker, release workflow, and automated tests exist; no release has been tagged and the release workflow has not run on a real tag. |
-| Document model and queries | Experimental prototype | JSON collections, resumable schema validation and collection deletion, atomic CRUD/bulk, bounded array and scalar updates, combined equality and membership filter budgets, bounded same-object array-element matching, bounded queries with opt-in complete-tuple equality, bounded single-field and complete compound-tuple membership unions, eligible compound scalar ranges and safely implied partial-index selection, compound/unique/partial indexes with resumable builds and drops, bounded index verification and repair, basic aggregation, grouped integer statistics and ID lookup. [Limits and semantics](docs/DOCUMENT_MODEL.md); [query comparison](docs/COMPOUND_RANGE_CURRENT_2026_11_05.md); [deletion measurements](docs/CHECKPOINT_DROP_CURSOR_2026_11_05.md); [remaining work](docs/DOCUMENT_FOLLOW_UP.md). |
-| SQL interface | Planned | Requires relational semantics, parsing, planning and indexes. |
-| Bounded memory and compaction | Limited prototype | Both writable paths can create verified separate copies of live keys; the checkpoint-backed path streams its index and provides a checkpoint for the copy. On Linux, an opt-in ordinary-store handle prepares compaction while callbacks continue and can retain or reclaim the previous copy, including through an explicitly started background worker with optional scoped cleanup of matching retired stages; final verification pauses callbacks. Blocking handoffs exist for both writable paths. Total memory and recovery time remain unbounded. |
-| Cloud, isolation, sleep/wake, and replication | Planned | There is no network server or managed service yet. |
-
-The latest [ten-engine comparison](docs/LOCAL_COMPARISON_2026_11_03.md) includes SQLite, PostgreSQL, Redis, MongoDB, Turso, RocksDB, LMDB, DuckDB and FoundationDB. In the four-client mixed workload, the prototype delivered **10,397 operations/s versus SQLite's 4,514**, while SQLite had faster median writes: **288 µs versus 628 µs**. SQLite also won write-only p99 latency. All 300 performance runs and eleven process-restart checks passed. The report includes run ranges, adapter differences and remaining VM interference; these are small local workloads, not a universal ranking.
-
-A separate [initial document comparison](docs/DOCUMENT_COMPARISON_2026_11_04.md) measures a small single-client CRUD/indexed-lookup cycle against SQLite, PostgreSQL and MongoDB. SQLite had lower median latency than the prototype on each sampled operation; the PostgreSQL and MongoDB adapters use different drivers and transport. The workload is not a general ranking.
-
-A [larger-collection read comparison](docs/DOCUMENT_POINT_READ_COMPARISON_2026_11_04.md) measured the ordinary-store standalone read at 3,000 live documents: prototype median fell from 2.35 ms to 17.62 µs in the first sample; SQLite measured 3.54 µs with a different JSON adapter. This comparison predates the shared-snapshot implementation; ordinary-store snapshots remain logically bounded and writes may copy the index. VM interference limits the comparison.
-
-A [shared-snapshot comparison](docs/SHARED_SNAPSHOT_COMPARISON_2026_11_04.md) measured 3,000-document indexed-query p50 falling from 2.33 ms to 23.65 µs; SQLite measured 3.81 µs with a different JSON adapter. A separate concurrent workload improved median writer throughput, while one sampled reader tail and some small-collection write tails worsened. Results include the full measurements and VM limitations.
-
-The [document planner comparison](docs/DOCUMENT_QUERY_PLANNER_COMPARISON_2026_11_04.md) measured median filtered-query latency at 1,000 baseline documents: 1,034.57 µs for a complete scan, 17.31 µs with the opt-in planner, and 3.75 µs for SQLite with a different JSON adapter. The report includes explicit-index results and VM limitations.
-
-A [paired metadata-reuse comparison](docs/PLANNER_METADATA_COMPARISON_2026_11_04.md) records small median gains and mixed p99 results, including a repeat and the earlier exploratory sample.
-
-A [nonunique equality-query comparison](docs/NONUNIQUE_QUERY_COMPARISON_2026_11_04.md) reports the prototype scan and planned paths against SQLite, including a repeat and a corrected SQLite scan baseline.
-
-A [scalar range-query comparison](docs/RANGE_QUERY_COMPARISON_2026_11_04.md) measures the planned path, scans and SQLite using the same returned rows, with a repeat and a forced SQLite index.
-
-A [compound equality-query comparison](docs/COMPOUND_QUERY_COMPARISON_2026_11_04.md) measures a complete two-field tuple against full scans and SQLite, with raw samples and a repeat.
-
-A [compound membership comparison](docs/COMPOUND_MEMBERSHIP_COMPARISON_2026_11_04.md) measures four tuple probes against scans and SQLite. The planned path improved on our scan, while SQLite's indexed path was faster in these samples.
-
-A [membership union comparison](docs/MEMBERSHIP_UNION_COMPARISON_2026_11_04.md) measures two indexed scalar probes against scans and SQLite. The new path improved the sampled prototype queries; SQLite remained faster on the indexed cases.
-
-A [grouped statistics comparison](docs/AGGREGATE_STATS_COMPARISON_2026_11_04.md) measures full scans and records lower SQLite latency on the sampled workload, with explicit JSON-versus-normalized-column differences. A [streaming follow-up](docs/AGGREGATE_STREAM_COMPARISON_2026_11_04.md) improved the sampled prototype median, while SQLite remained faster.
-
-An [update-input accounting comparison](docs/UPDATE_INPUT_COMPARISON_2026_11_04.md) records the substantial cost of enforcing the new input limit on large ignored values, and the measured improvement from exact optimized counting. Small inputs and the before-limit implementation are included for context.
-
-A [transaction cancellation overhead comparison](docs/TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) measures the existing transaction APIs before and after cancellation support. Results varied across runs; the largest sampled slowdown did not repeat.
-
-An [admission comparison](docs/TRANSACTION_ADMISSION_COMPARISON_2026_11_04.md) records the cost of the active-transaction cap and a rejected atomic-counter experiment. The concurrent results varied considerably between runs.
-
-The [empty-log recovery report](docs/EMPTY_RECOVERY_COMPARISON_2026_11_04.md) records fail-closed initialization, fault and fuzz checks, and paired reopen measurements with observed VM noise.
-
-The [short-write report](docs/SHORT_WRITE_FAILURES_2026_11_14.md) records 224 selected Linux cases involving actual partial log or witness writes, subsequent retries or injected errors, and both recovery paths. Damaged evidence can require investigation or restore; these checks do not establish physical power-loss safety.
-
-The [filesystem EAGAIN report](docs/WOULD_BLOCK_FILESYSTEM_FAILURES_2026_11_14.md) records selected synchronization, lock, write, open, namespace and metadata-read failures with recovery checks.
-
-The [writable-index resource comparison](docs/WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) measures reopen time, sampled process memory and point reads through 200,000 keys. The checkpoint-backed writer used less sampled memory but had slower sampled base-key reads than full-log recovery.
-
-The [multi-store resource measurement](docs/MULTI_STORE_RESOURCES_2026_11_14.md) records process RSS, file descriptors and warm-cache open time for up to 100 separate databases, alongside SQLite. It does not establish a project quota or scale-to-zero service.
-
-The [checkpoint descriptor follow-up](docs/CHECKPOINT_VIEW_DESCRIPTORS_2026_11_14.md) reduced the sample from 804 to 604 open descriptors for 100 checkpoint-backed stores, with recovery and fault checks; transaction timings varied.
-
-A [V3 shared-witness follow-up](docs/CHECKPOINT_SHARED_WITNESS_2026_11_14.md) reduced that 100-store sample further to 504 descriptors while retaining the writer's full synchronization; latency samples remained mixed.
-
-A [validated-view sharing follow-up](docs/CHECKPOINT_SHARED_VIEW_2026_11_14.md) reduced the same-size V3 checkpoint sample from 504 to 404 descriptors in two paired runs. Startup timings varied; the report includes recovery, fault and fuzz evidence and its limits.
-
-The [current SQLite multi-store comparison](docs/CURRENT_MULTI_STORE_SQLITE_2026_11_14.md) measured 404 prototype checkpoint descriptors versus 304 for SQLite across 100 open databases; startup timings reversed between the two noisy runs.
-
-A [concurrent-write and restart resource run](docs/CONCURRENT_RESTART_RESOURCES_2026_11_06.md) checks acknowledged workload values after fresh-process reopens through one million base keys, with observed memory, I/O and VM noise.
-
-A [SQLite restart comparison](docs/SQLITE_RESTART_RESOURCES_2026_11_06.md) adds a repeated three-way large-fixture run, including the different open and integrity-check semantics and long-tail samples.
-
-A [fixture-cache experiment](docs/FILE_CACHE_RECOVERY_2026_11_06.md) records advisory eviction requests, kernel read accounting and VM memory-reclaim noise without dropping global caches.
-
-The [checkpoint landmark comparison](docs/CHECKPOINT_LANDMARK_COMPARISON_2026_11_05.md) measures sparse in-memory lookup offsets that retain full-block verification, including their memory cost and mixed tails.
-
-The [managed replacement comparison](docs/MANAGED_REPLACEMENT_COMPARISON_2026_11_06.md) records a removed duplicate directory sync, paired checkpoint timings and their VM-noise limits.
-
-A [partial-index comparison](docs/PARTIAL_QUERY_COMPARISON_2026_11_04.md) records verified SQLite plans, raw samples, a repeat and a pronounced execution-order effect.
-
-A [streaming scan comparison](docs/STREAM_SCAN_COMPARISON_2026_11_04.md) measures the filtered-query change against its prior implementation and SQLite, including a repeat and VM noise.
-
-A [compound-range comparison](docs/COMPOUND_RANGE_QUERY_COMPARISON_2026_11_04.md) includes SQLite, PostgreSQL and MongoDB with checked plans, repeated results and explicit transport differences.
-
-A [rejected scan-exhaustion experiment](docs/SCAN_EXHAUSTION_EXPERIMENT_2026_11_04.md) records mixed results and retains its unmerged patches and raw samples.
-
-A [retired-log reclamation comparison](docs/ONLINE_RECLAMATION_COMPARISON_2026_11_04.md) records its extra cleanup time and lower named log lengths, along with the filesystem and workload limitations.
-
-The earlier [V3 optimization comparison](docs/BENCHMARKS.md#v3-latency-optimization-2026-11-03) measured a **50% reduction in single-client median write latency** versus V2. The expanded comparison changes benchmark tooling and VM preparation, not engine durability or storage code.
-
-## Featured directions
-
-Our intended features include a shared engine for key-value, document, and SQL interfaces; deterministic fault injection; reproducible workload replay; observability; change streams and reactive queries; TTL; embedded-to-cloud portability; optional compression; and safely optimized low-copy access. [Project scale-to-zero](docs/SCALE_TO_ZERO.md) remains planned: inactive projects can stop their dedicated workers while their data remains stored. Online migrations and adaptive storage are longer-term research. See [performance and feature ideas](docs/PERFORMANCE_AND_FEATURE_IDEAS.md) for prerequisites and status.
-
-**No performance optimization may violate the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](docs/STORAGE_TRANSACTION_CONTRACT.md) and [project isolation design goals](docs/PROJECT_ISOLATION.md) for current limitations and the evidence required before making a guarantee.
-
-Standalone document `get` on the ordinary store captures and verifies its metadata and document locations without copying the complete key index, while retaining conservative conflict checks and shared snapshot admission. Explicit transactions retain their existing isolation and admission limits; the checkpoint-backed path is separate.
-
-An existing zero-byte log is rejected on ordinary open: it could be an interrupted initialization, a genuinely empty legacy database, or a database that lost its contents. The engine does not infer which. After independently verifying that an unwitnessed legacy log is intended to be empty, `Store::upgrade_empty_legacy(source, destination)` creates a new witnessed store at a separate path without modifying the source log; it cannot recover lost data. A valid backup with a zero-byte legacy log restores as a new witnessed empty store with a new identity and format. Other legacy backups retain their format. Backup checksums are not authentication.
-
-The [document model guide](docs/DOCUMENT_MODEL.md) describes the shared-transaction JSON API, query semantics and strict limits. The engine appends checksummed records to a log and synchronizes every successful mutation before returning. The ordinary `Store` rebuilds an in-memory key-to-file-offset index when reopened; the experimental `CheckpointStore` below can instead read its base index from a verified checkpoint. Concurrent single-key writes on `Store` can share one synchronization; this is not a multi-key transaction. Values are read from disk. Advisory locking coordinates cooperating access to a database directory. Incomplete or invalid records cause opening to fail without truncating the log.
-
-Use `is_transaction_conflict(&error)` on a directly returned transaction error to identify an engine-marked pre-commit conflict. `WouldBlock` alone can instead mean admission, callback or an I/O error with an unknown outcome. Retrying a callback can repeat independent writes and external effects.
-
-The [conflict-safety report](docs/TRANSACTION_CONFLICT_SAFETY_2026_11_14.md) records the fault checks, read-set fuzzing and a small local comparison with SQLite, including the observed timing variability.
-
-`Store::write_batch` atomically publishes an ordered set of puts and deletes in one synchronized record. It supports up to 1,024 operations and a 16 MiB encoded payload, and requires a witnessed V2/V3 store. A failed write can have an unknown outcome. Batches introduce `DB02` records: **older revisions cannot reopen logs containing them**. See [format compatibility](docs/VERSIONING.md#independent-compatibility-boundaries). A batch is a blind atomic write. `Store::transaction` additionally offers optimistic serializable read-modify-write transactions with bounded snapshots, point/range reads and rollback on callback error. Any intervening mutation causes a `WouldBlock` conflict; callbacks are never automatically retried, and external side effects are not rolled back. Transaction snapshots currently support at most 16,384 keys and 4 MiB of key bytes. Writes use the same DB02 format and compatibility rules.
-
-Transactions on one open store share a 64 MiB limit on encoded staged records, in addition to the per-transaction limits. Staging that would exceed the shared limit fails before changing that staged entry. A callback that catches the error can continue with its earlier staged changes; propagating the error aborts the transaction. The limit excludes snapshots, response copies, commit encoding and allocator overhead, so it is not a total memory quota.
-
-Each open store also admits at most 64 active transactions by default, including callbacks, FIFO waiters and commits. `set_active_transaction_limit` can lower this limit, and `transaction_budget_status` reports the current count. Overload returns `WouldBlock` before the callback begins; a zero limit rejects all new transactions. Lowering the limit below the active count also returns `WouldBlock`. The setting survives supported compaction handoffs but resets on reopen. Direct writes, independent snapshots and other open stores are outside this process-local count; it is not a project quota, a fairness guarantee or a limit on total memory or caller threads.
-
-`snapshot_budget_status` reports each open store's aggregate snapshot reservations and limits. `set_snapshot_budget_limits` can lower those limits; a reduction below existing reservations returns `WouldBlock` without changing them. On the ordinary store, transactions, standalone document point reads, and online-compaction snapshots also use this budget, so a zero active limit can block them. On the checkpoint-backed store it applies to checkpoint snapshots. Expired snapshots remain counted until reaped, cancelled or dropped. The limits survive supported in-process compaction handoffs, reset on reopen, and do not measure total memory or enforce project isolation. [Local validation and contention measurements](docs/SNAPSHOT_BUDGET_CONTROLS_2026_11_05.md) record their scope and observed variability.
-
-`Store::transaction_with_read_set` offers an opt-in serializable validation mode that can commit despite unrelated writes. It validates each point read and the complete requested range of every scan under the writer barrier, including entries beyond a limited page. A present value changed and changed back still conflicts because its log location changed; a missing key inserted and deleted before validation may return to the same state and not conflict. The mode permits at most 2,048 distinct read constraints, 2 MiB of key and bound bytes, and 65,536 validation items per transaction; exceeding a limit returns an error without committing. It retains a bounded shared snapshot, can hold the writer barrier while checking ranges, and never retries callbacks automatically. Use the transaction's own read methods; independent store reads and external side effects are outside its transaction.
-
-`Store::transaction_with_read_set_fifo` optionally admits its callers to validation in FIFO order after their callbacks finish. Other operations and non-FIFO transactions do not join that queue, and it offers no bounded waiting guarantee. FIFO can reduce some tail stalls but can also increase median latency and retries; measure the tradeoff for the workload.
-
-`Store::transaction_until` adds an optional monotonic deadline for any of the three transaction modes. `TimedTransactionError::DeadlineExceeded` means the engine detected expiry before submitting that transaction's staged writes for commit. `TimedTransactionError::Operation` covers callback and I/O errors, including an I/O timeout whose commit outcome may be unknown. FIFO waiters and pre-commit writer-barrier waiters can expire while waiting. Callbacks, other internal lock waits and I/O are not forcibly interrupted, and completion time is not bounded. A commit that has started can succeed after the deadline; callback side effects are not rolled back.
-
-`Store::set_group_commit_limits` can lower the ordinary store's per-open encoded-byte and record reservation caps; `group_commit_status` reports reservations and capacity waiters. A reduction below active reservations fails without changing the limits. A record that cannot fit, or a zero record cap, returns `WouldBlock` before submission; writers already waiting recheck changed limits. Limits survive supported in-process ordinary compaction handoffs and reset on reopen. They exclude caller buffers, other lock waiters, total memory and other stores; the checkpoint-backed store has a different write path. [Measurements and details](docs/GROUP_COMMIT_LIMITS_2026_11_05.md).
-
-`enable_direct_read_limit` optionally bounds independent key-value `get`, `get_many`, and `scan` calls on each open writable store. Enable it before sharing the store: exclusive access ensures no earlier read is left untracked. Thereafter `set_active_direct_read_limit` may change the limit without dropping below active calls, and `direct_read_status` reports the limit and count; both values are `None` while disabled. The maximum is 65,535 and zero rejects new direct reads. Reopening disables this per-open limit; supported in-process compaction preserves it. Writes, transactions, snapshots, document APIs, maintenance and other stores are outside this counter. It is not a project quota, total-memory limit, or fairness guarantee; admission and input errors do not prove the store healthy. [Details and measurements](docs/DIRECT_READ_ADMISSION_2026_11_05.md).
-
-`set_active_direct_write_limit` on either writable store limits independent write calls before they wait for the storage lock; `direct_write_status` reports the configured limit and active admissions. The default and maximum are 65,535. Zero rejects new direct writes with `WouldBlock`, and reductions below active admissions fail without changing the limit. Transactions have separate limits. An admission rejection means that call was not submitted; it does not prove the store is healthy or resolve an earlier uncertain write. These per-open counters are not project isolation or total-memory quotas. [Details and measurements](docs/DIRECT_WRITE_ADMISSION_2026_11_05.md).
-
-`transaction_controlled` on either writable store or `DocumentDatabase` accepts a cloneable `CancellationToken`, an optional deadline and a transaction mode. Engine-reported cancellation or deadline expiry means that transaction did not submit its staged writes. FIFO waiters and transactions waiting for the pre-commit writer barrier or checkpoint state lock observe cancellation while waiting. Callbacks, other internal lock waits and I/O are not forcibly interrupted, and completion time is not bounded. Cancellation can race with commit: a commit already in progress can succeed, or an I/O error can leave its outcome unknown. Callback side effects are not rolled back.
-
-`transaction_detailed` on both writable stores and `DocumentDatabase` offers an opt-in `TransactionFailure` enum. `Callback` and `Rejected` mean this transaction did not submit its staged writes; `Cancelled` and `DeadlineExceeded` have the same pre-submission meaning. Configured log, group-commit and checkpoint suffix limits can reject a transaction before submission. Once an ordinary-store request is queued, `OutcomeUnknown` can include failures before append and requires reconciliation before retry. Recovery alone may not identify a particular request. Independent writes and other callback effects are never rolled back; a callback error may itself describe an independent write with an unknown outcome. Automatic checkpoint maintenance can have effects even when transaction submission is rejected. Panics unwind instead of returning the enum. The existing transaction methods and direct-write APIs keep their previous error types.
-
-For direct key-value writes, both stores also offer `put_detailed`, `delete_detailed`, `compare_exchange_detailed`, `increment_i64_detailed` and `write_batch_detailed`; the checkpoint-backed store additionally offers `compare_exchange_batch_detailed`. Their `MutationFailure::Rejected` means that call was not submitted, while `OutcomeUnknown` requires reconciliation before retry and can include an ordinary request queued but not yet appended. Rejection does not prove the store healthy or resolve an earlier uncertain write; automatic checkpoint maintenance can have independent effects. Existing direct-write methods keep their previous error types.
-
-`DocumentDatabase` also provides `insert_detailed`, `replace_detailed`, `update_if_detailed`, `delete_detailed` and `bulk_detailed`. They return `TransactionFailure` using the same conservative transaction as their existing counterparts: `Callback` and `Rejected` mean this call's staged document and index changes were not submitted, and `OutcomeUnknown` requires reconciliation. Other document maintenance calls can use the general `transaction_detailed` interface. Existing methods retain their error types.
-
-Both writable stores provide `backup_detailed`, and `Store::restore_detailed` restores a backup, with `PublicationFailure` outcomes. `NotPublished` means this call did not begin publishing its destination; a pre-existing destination or staging artifacts can still exist. `OutcomeUnknown` means publication may have happened and must be inspected before retry, including conservative cases such as an existing destination. These results do not establish source health, cleanup completion or an independent off-host backup. Panics unwind, and the existing backup and restore methods keep their previous error types.
-
-Both writable stores also provide `checkpoint_to_detailed` with the same publication classification. A successful call returns a digest that must be retained in trusted metadata separately; an uncertain failure does not return that digest. A checkpoint contains index data rather than an independent backup, and its visible presence does not establish source health or durability.
-
-`compact_to_detailed` on both writable stores classifies publication of a separate compacted copy. The checkpoint-backed version returns a digest on success that needs separately trusted metadata; an uncertain failure does not return the digest. A pre-existing destination or temporary staging artifacts can remain. In-place handoffs have separate semantics.
-
-For ordinary `Store`, `compact_to_with_verification_limits` optionally admits historical replay using limits on encoded log length, simultaneous live key count, and total live key bytes. Exceeding a limit returns `PublicationFailure::NotPublished` with `InvalidInput`; verification is incomplete and the result says nothing about source validity. These are logical limits, not peak-memory limits: replay buffers, map overhead, existing indexes, values, and copy buffers add memory. Admitted calls still perform full verification before publishing. Existing compaction methods retain their behavior.
-
-`Store::upgrade_format_detailed`, `upgrade_legacy_detailed` and `upgrade_empty_legacy_detailed` classify destination publication for format upgrades. A legacy upgrade cannot detect data lost before the upgrade. The empty-legacy operation requires independent confirmation that the source is intended to be empty and may create a source lock file.
-
-`CheckpointStore::rollover_to_detailed` classifies publication during unmanaged checkpoint rollover. If it returns an error after publication, the prior view remains active, the destination may exist, and no new digest is returned. Managed rollover uses a separate API.
-
-`CheckpointStore::rollover_managed_detailed` separately classifies whether this call began checkpoint publication or selection publication. A selection-publication error disables the handle: reopen the visible managed selection, or recover with the previously trusted checkpoint or full log if no selection exists. A failed call returns no new digest. Neither classification establishes store health or cleanup.
-
-Both consuming `compact_and_replace_detailed` APIs distinguish failures before candidate publication, during candidate preparation, and after directory exchange may have begun. The original handle is consumed even on error. A candidate can be partly configured, and an uncertain exchange requires coordinated reopening and reconciliation of both paths; these results do not establish cleanup or store health.
-
-`OnlineStore::compact_and_replace_detailed` provides similar classifications for guarded online compaction. Other callbacks can write while preparation runs, so a candidate may omit concurrent writes. An uncertain exchange disables the online handle; coordinate callers, drop the handle, and reopen both paths to reconcile them. This does not classify subsequent retired-copy reclamation.
-
-For example, a transaction can read and update multiple keys together:
-
-```rust
-use database_engine::Store;
-
-fn example(db: &Store) -> std::io::Result<()> {
-    db.transaction(|tx| {
-        let old = tx.get(b"account:1")?;
-        if old.as_deref() == Some(b"open") {
-            tx.put(b"account:1", b"closed")?;
-            tx.put(b"audit:1", b"closed")?;
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
+```sh
+git clone https://github.com/Eta06/EMDA-DB.git
+cd EMDA-DB
+cargo test --locked --test atomic_batch
 ```
 
-`Store::scan` returns keys in bytewise order with exclusive optional bounds. Each call captures the index at one instant, but separate pages can see concurrent changes. A page contains at most 1,024 entries and 32 MiB of key/value bytes. Because the byte limit can make a page short, continue using its last key until a page is empty.
-
-For stable pagination, `Store::snapshot(max_keys, max_key_bytes)` retains a bounded immutable index view and returns a read-only snapshot borrowing the open store. Views share an index root; a later write may copy the full index before publication. `Snapshot::get` and `Snapshot::scan` continue to see that view across later writes. Each snapshot supports at most 16,384 keys and 4 MiB of key bytes. An open store allows at most 16 active snapshots, 65,536 logical snapshot keys and 16 MiB of logical snapshot key bytes in total, counted for each view even when roots are shared. These are not total process-memory limits. `Snapshot::cancel` releases its retained view and reservation early; later reads fail. `Store::snapshot_until` accepts a monotonic deadline and rejects operations started after expiry. Later snapshot requests or an explicit `Store::reap_expired_snapshots` call reclaim expired views that are not being read. An optional `Store::start_snapshot_reaper` worker can schedule checks; without it, an idle expired view remains allocated until a later reaping call, cancellation, or drop. Ongoing reads and I/O are not interrupted. Snapshots do not survive reopening, and are not multi-key write transactions. The `OnlineStore` handoff described below waits for callback-scoped snapshots before switching logs; reclamation is available after the handoff, either explicitly or through the opt-in worker described below.
-
-Both writable stores can explicitly start one snapshot reaper from an `Arc` with an interval between 1 ms and 24 hours. Its checks and reclaimed-view count are observable; requests may coalesce, busy views are skipped, and a failure or panic stops the worker and appears in its status. Stop or drop joins the thread, so a lock wait or in-flight check can delay shutdown. The worker retains the store until it exits, does not persist across reopen, and does not impose a total memory limit or guarantee reclamation latency.
-
-Both writable stores expose `set_transaction_staging_limit` and `transaction_budget_status` for the logical aggregate reservations held by active transactions. The limit can be lowered to zero or raised up to 64 MiB; reducing it below the bytes currently reserved returns `WouldBlock` without changing it. Checkpoint-backed read-set observations also use this budget. Direct single-key and batch writes, snapshots, allocator overhead, other stores and total process memory are outside the limit. The configured value survives the supported in-process compaction handoffs and resets to the default after reopening; it is neither a persistent project quota nor an isolation boundary.
-
-`Store::compact_to` creates a verified, non-overwriting copy containing only live keys. It blocks mutations while copying, leaves the source unchanged, and does not automatically switch applications to the copy. Writes accepted by the source after it returns are not in the copy. It copies ordinary records in groups of at most 64 records and 4 MiB of encoded data, except that a single larger value occupies its own group; every group is synchronized before verification and publication. It needs memory for multiple indexes and is not an online or bounded-memory compactor.
-
-On Linux, `Store::compact_and_replace` consumes the exclusively owned ordinary store, creates and verifies a compacted sibling, and atomically exchanges the directories while holding both store locks. It returns the compacted store at the original path and retains the complete old store at the caller-chosen sibling path. Both paths must share a resolved parent; the old path must not exist. Existing per-open limits are preserved. This blocks access during the handoff and requires trusted directories and cooperating current-version clients; unknown files and managed checkpoint metadata are rejected. Existing external checkpoints must be recreated. A failure after the exchange has an uncertain publication outcome, so reopen and inspect both paths. The retained old directory contains historical data and is not deleted automatically. This is not online compaction, total-memory control or a power-loss guarantee. See the [storage contract](docs/STORAGE_TRANSACTION_CONTRACT.md).
-
-`OnlineStore` adds an experimental Linux ordinary-store handoff that permits callbacks to run during the initial copy and bounded catch-up passes. All access must use `with_store`: a callback may use transactions, snapshots and the document API, but its borrowed objects cannot outlive it. Final replay, full verification and the atomic exchange wait for every callback and have no guaranteed pause bound. The chosen previous path must be an unused sibling in a trusted parent; the old complete store remains there and requires explicit lifecycle management. The source must contain only recognized ordinary-store files; this does not support `CheckpointStore` or managed checkpoint metadata. Limits constrain snapshot keys, key bytes, catch-up rounds, final suffix and temporary target log, not total memory, disk use or recovery time. Concurrent changes that exceed a limit abort the attempt before exchange; after an exchange or directory-sync error, the handle refuses operations and callers must drop it and reopen both paths. Callbacks must not re-enter the same handle or wait for another thread that needs its compaction barrier. This operation can produce DB02 batch records, which older readers cannot open; external checkpoints must be recreated. Process-kill tests do not prove power-loss safety.
-
-`OnlineStore::compact_and_reclaim` explicitly requests deletion of the redundant old store after the verified handoff and parent-directory synchronization. It moves that copy into a private marked staging directory before removing its files, so another store created at the original previous path is not deleted. Callback-scoped readers and snapshots finish before the handoff; direct reads can use the new store during cleanup, while mutations wait for reclamation to finish. `OnlineReclaimError::Compaction` follows the handoff's existing uncertainty rules; `OnlineReclaimError::Reclamation` means the handoff succeeded but cleanup failed, and the previous copy may be partial or retained in a staging path. Inspect the previous or reported staging path; matching new retired stages can be cleaned with the scoped method below. A crash or panic can leave a staging marker or old copy behind; a panic can poison a state or maintenance lock and require reopening. Reclamation permanently discards old history, is not secure erasure or an independent backup, and is not a background service, total-disk quota or physical power-loss guarantee.
-
-`OnlineStore::start_reclamation_worker` optionally schedules the same reclamation on an `Arc<OnlineStore>`. It checks a configured synchronized log-size threshold and, after its own successful handoff, a minimum growth threshold measured from a subsequently observed boundary. `request_check` requests another check without bypassing thresholds; `status` and `stop` report completed handoffs, successful cleanups and any failure stage. When another maintenance operation holds the lock before compaction starts, the worker defers that check until the next interval or request; `busy_checks` reports these deferrals. Other errors, including I/O and cleanup failures with potentially uncertain outcomes, stop the worker for inspection. Manual handoffs can change the store between observation and compaction, so thresholds are scheduling hints rather than storage limits. The worker is process-local, holds a store reference, is not restarted automatically, and can wait without a time bound for in-flight work at shutdown. Never stop or drop it inside a callback or another resource it needs. It does not bound total disk use, memory, recovery or pauses, automatically clean crash leftovers, provide a backup, or establish power-loss behavior.
-
-`OnlineStore::cleanup_retired_staging` optionally removes only new retired stages marked for the current witnessed log identity. Before removal it excludes mutations and verifies the whole current log against a bounded snapshot; corruption or insufficient verification limits preserves the stage. It skips locked or unexpected contents and synchronizes directory changes. `start_reclamation_worker_with_retired_cleanup` runs that check before each scheduled compaction and exposes counts via `retired_cleanup_status`; it defers on a recognized busy maintenance or parent lock and stops on ambiguous errors. It skips compaction while a retired stage is unsafe; a malformed retired marker anywhere in the trusted parent can therefore require inspection. This can pause writes for a full-log scan, and the worker's configured previous path must be unused at startup. Neither method removes named previous paths, legacy generic markers, or stages for different log identities. The generic `cleanup_abandoned_staging` skips the new retired markers. Older engine versions and noncooperating or adversarial directory access are unsupported. The checksum identifies accidental marker corruption, not an authorization boundary; these methods are not a storage quota, backup, or proof of power-loss safety.
-
-```rust
-use database_engine::{OnlineCompactionOptions, OnlineReclamationWorker, OnlineStore};
-use std::{sync::Arc, time::Duration};
-
-fn schedule(db: &Arc<OnlineStore>) -> std::io::Result<OnlineReclamationWorker> {
-    db.start_reclamation_worker(
-        "/data/previous-copy", // an unused sibling of the live store
-        Duration::from_secs(60),
-        64 * 1024 * 1024, // minimum synchronized log length
-        8 * 1024 * 1024,  // minimum growth after this worker's last handoff
-        OnlineCompactionOptions::default(),
-    )
-}
-```
-
-```rust
-use database_engine::{OnlineCompactionOptions, OnlineStore};
-
-fn maintain(db: &OnlineStore) -> std::io::Result<()> {
-    db.with_store(|store| store.put(b"key", b"value"))?;
-    let _report = db.compact_and_replace("/data/previous-copy", &OnlineCompactionOptions::default())?;
-    Ok(())
-}
-```
-
-For explicit reclamation after handoff:
-
-```rust
-use database_engine::{OnlineCompactionOptions, OnlineCompactionReport, OnlineReclaimError, OnlineStore};
-
-fn compact_and_reclaim(db: &OnlineStore) -> Result<OnlineCompactionReport, OnlineReclaimError> {
-    db.compact_and_reclaim("/data/previous-copy", &OnlineCompactionOptions::default())
-}
-```
-
-`compact_and_reclaim_detailed` additionally classifies failures before candidate publication, after candidate publication may have begun, and after exchange may have begun. An exchange-uncertain result disables the handle until coordinated reopening and inspection of both paths. A separate reclamation failure means the handoff succeeded, but the previous copy may be partially removed or retained in owned staging; neither outcome establishes an independent backup.
-
-`CheckpointStore::compact_to` also creates a verified, non-overwriting copy while blocking source mutations, but streams the verified on-disk index and bounded suffix rather than rebuilding full indexes. The copy includes `COMPACTED_CHECKPOINT_FILE` and the method returns its digest; protect that digest separately to open the copy with `CheckpointStore`. The copy's historical key-count peak starts over from its live keys. The operation uses bounded record groups and verification buffers, not a total-memory quota. It leaves the source unchanged, does not include later source writes, does not switch applications automatically, and is not in-place or online log reclamation.
-
-`CheckpointStore::compact_and_replace` provides the same blocking Linux handoff for a checkpoint-backed store, streaming the live index into a verified compacted sibling and returning the new store and checkpoint digest. Managed selection and the enabled/disabled automatic-checkpoint setting are preserved; for an unmanaged store, retain the digest separately and reopen with the new `COMPACTED_CHECKPOINT_FILE`. The previous directory retains the complete old log, but its old managed selection can contain paths that no longer resolve after the move; ordinary full-log recovery remains available. It has the same trusted-directory, cooperative-lock, uncertain-publication and physical-test limitations as the ordinary-store handoff. This is not online reclamation or a total-memory bound.
-
-`Store::checkpoint_to` creates a separately stored index checkpoint and returns its SHA-256 digest. Keep that digest in trusted metadata **separate from the checkpoint**; `Store::open_with_checkpoint` requires it, verifies the checkpoint and the covered log prefix, and replays the remaining tail. An attacker who controls both the checkpoint and its purported trusted digest can forge it. The checkpoint contains keys, is unencrypted, and is not a backup. It still hashes the entire covered prefix and loads the index into memory, so recovery time and memory are not bounded by this feature. A small [paired reopen comparison](docs/BENCHMARKS.md#verified-checkpoint-reopen-comparison-2026-11-04) records both improvements and an outlier. Use ordinary `Store::open` to ignore an invalid or lost checkpoint and replay the full log.
-
-`CheckpointView::open` provides a separate, read-only historical view without loading the full checkpoint index. It verifies the same trusted digest and log prefix at open, then verifies each index block when read. The view holds a shared advisory store lock for its lifetime: other views can coexist, but a cooperating writable `Store` cannot. It does not replay or validate the later log tail and may return older values; `has_log_tail` only reports whether bytes followed the checkpoint at open. Its per-view directory supports at most 131,072 blocks. Each call reads index blocks into a buffer of at most 32 KiB at a time; it may read multiple blocks, and scan results and values have their own limits. These are not aggregate process-memory quotas. Opening still hashes the entire covered log prefix. This view is not live writable recovery, and an independently trusted checkpoint digest remains essential.
-
-`RecoveredCheckpointView::open` also verifies and replays the witnessed log suffix into a bounded in-memory overlay, providing read-only point reads and ordered scans of the recovered state. It rejects any unacknowledged tail; open a writable store first to recover a valid complete tail. The default limits are 64 MiB of suffix bytes, 16,384 distinct touched keys and 4 MiB of touched key bytes, including tombstones; lower limits can be supplied explicitly. Like the historical view, it holds a shared lock that excludes cooperating writers and hashes the entire covered log prefix. These limits are not total memory or recovery-time guarantees, and the view is not a writable disk-backed index.
-
-`CheckpointStore::open` is an experimental writable path using the verified checkpoint as an on-disk base index and the same bounded in-memory suffix overlay. It serializes reads and writes around synchronization, supports point and bounded multi-key reads, ordered scans, puts, deletes, compare-exchange, signed increments, atomic blind batches, optimistic transactions, read-only snapshots and full-log backups, and holds an exclusive advisory store lock. It does not implement group commit; automatic checkpoint rollover is available as an opt-in managed mode. Without automatic checkpoints, writes that would exceed the selected suffix-byte, distinct-key or key-byte limit fail before appending; tombstones continue to count. `CheckpointStore::checkpoint_to` streams a verified new checkpoint without loading the full base index. `rollover_to` also switches the running instance to the new checkpoint and clears the overlay while retaining its lock. For these two methods, persist the returned digest in separately trusted metadata and choose the checkpoint on reopening. Rollover blocks reads and writes, still reads and hashes the full covered log prefix, and is not an automatic service or a total-memory bound. If publication succeeds but switching fails, the store keeps its old view and the new path may exist. Opening validates and synchronizes a complete unacknowledged tail before adopting it, within the suffix limits; an incomplete tail fails without truncation. A synchronization failure during recovery has an uncertain outcome. Append or synchronization errors on an open instance also leave an unknown outcome and disable it until recovery.
-
-`CheckpointStore::rollover_managed` is an opt-in alternative: while holding the store lock, it verifies a fresh checkpoint, synchronizes it and its directory ancestry, atomically replaces the store directory’s `checkpoint.selection` file, and synchronizes that directory and its ancestry before resuming writes. Reopen with `CheckpointStore::open_managed` (or `open_managed_with_resource_limits`). The `checkpoint.selection` name is reserved in every checkpoint-store directory, even before opting in. The selection contains an absolute checkpoint path and its digest; keep that checkpoint available and protect the selection file and its directory as trusted metadata. Its checksum detects accidental corruption, not malicious replacement of both the selection and checkpoint. A selection-publication error disables the instance because the rename may have happened; reopen the visible selection. If the first publication failed before any selection became visible, recover with the previous trusted checkpoint or full-log recovery. Once managed, `CheckpointStore::open` and `rollover_to` reject the store; use the managed methods. The ordinary `Store` and older engine revisions do not manage or enforce this selection: writing through them can leave the recorded checkpoint with a suffix too large for managed recovery. The full-log backup does not include the selection or checkpoint. This is an explicit handoff, not automatic scheduling, live compaction or bounded recovery time.
-
-An optional `CheckpointStore::start_checkpoint_worker` can periodically check an `Arc<CheckpointStore>` and trigger the same managed rollover after a configured suffix-byte threshold. Automatic checkpoints must already be enabled, and only one worker may run per open store. `request_check` asks for an additional check; `status` and `stop` report progress and errors. Stop or drop the worker before consuming the store for compaction. A running check holds the writer lock and is not interrupted, so shutdown can wait for I/O. Workers are not started automatically or persisted across reopen; stopping one releases its store reference. This does not reclaim the log, guarantee bounded recovery, or implement project sleep/wake.
-
-If a selected checkpoint is unavailable or its suffix is too large to reopen, `CheckpointStore::rebuild_managed_selection` explicitly replays the full log, creates and verifies a new checkpoint, and synchronizes a new selection while holding the store lock. It can also create the first managed selection for an existing witnessed store. It refuses malformed or symlink selection metadata and existing checkpoint destinations. `rebuild_managed_selection_with_limits` optionally caps whole-log bytes, historical live-key count and historical live-key bytes during replay. These limits are not persisted and exclude values, index overhead and other allocations. Full recovery loads the ordinary in-memory index and is not bounded in total memory or time. A failed selection publication has an uncertain outcome; reopen the visible selection or recover from the full log. The lock is released on return, so coordinate other writers before reopening.
-
-The opt-in `rebuild_managed_selection_detailed` and `rebuild_managed_selection_with_limits_detailed` APIs classify whether this call began neither publication, may have published the checkpoint, or may have published the selection. No failed call returns a new digest. Full-log recovery can still adopt an unacknowledged complete tail before a publication attempt, and the result does not certify source health or cleanup. See [rebuild outcome tests and fault evidence](docs/MANAGED_REBUILD_OUTCOMES_2026_11_14.md).
-
-`CheckpointStore::enable_automatic_checkpoints` persistently enables on-demand managed rollover. Before a write would exceed a suffix limit, the store builds and verifies a new checkpoint in one of two engine-owned slots and durably selects it before appending the write. `disable_automatic_checkpoints` persists the disabled state; the selected checkpoint and slots remain available, and re-enabling resumes reuse. Existing snapshots retain open checkpoint files across slot reuse. The `.emda-auto-checkpoints-v1` store-directory namespace is reserved for the engine and must be protected as trusted metadata. On managed open, recognized abandoned stages in the store and automatic-checkpoint directories are cleaned under cooperative directory locks; unknown entries are not deleted. A failed configuration or selection publication requires reopening because the visible state may have changed. Automatic rollover blocks reads and writes, still hashes the full covered log prefix, and does not reclaim log bytes, impose a total-memory or disk quota, or interrupt I/O. Unlinked old checkpoint files may retain disk space while snapshots hold them. Oversized individual writes and whole-log-cap violations are rejected before rollover.
-
-The opt-in `enable_automatic_checkpoints_detailed` and `disable_automatic_checkpoints_detailed` classify whether this call began publishing its configuration. `NotPublished` does not mean the configuration was absent or the handle remains healthy; an `OutcomeUnknown` requires reopening and inspecting the configuration before retrying. Existing enable/disable methods retain their error types.
-
-`CheckpointStore::snapshot` captures a stable read-only view by copying the checkpoint block directory and bounded suffix overlay, including tombstones; it does not copy the full base index or values. Snapshot point, bulk and paginated reads retain their captured state across later writes and checkpoint rollover. One open store allows at most 16 active snapshots, 262,144 copied checkpoint-directory blocks, 65,536 copied overlay keys and 16 MiB of copied overlay-key bytes in aggregate. These counters are not total-memory quotas. `snapshot_with_limits` can set lower per-view caps, and `snapshot_until` adds an operation-boundary deadline. Later snapshot requests or an explicit `reap_expired_snapshots` call reclaim expired views that are not being read; `cancel` or drop also releases resources. An optional `CheckpointStore::start_snapshot_reaper` worker can also schedule checks. Snapshots borrow the open store and do not survive reopening or enable live-log reclamation.
-
-`CheckpointStore::transaction` supports staged point reads, ordered scans, puts and deletes without copying the full index. Each transaction read checks a process-local generation while holding the read lock; the final validation and atomic DB02 commit hold the write lock. Any intervening successful mutation, even on an unrelated key or one changed and restored, causes a `WouldBlock` conflict. Use `is_transaction_conflict(&error)` on a directly returned error to identify a pre-commit conflict before retrying the whole callback. The `WouldBlock` kind alone can also come from admission, a callback or an I/O error with an unknown commit outcome. A callback error discards staged changes; external effects are not rolled back. Rollover alone does not conflict. Staged changes use the same 1,024-key, 16 MiB per-transaction and 64 MiB per-open-store encoded-record limits as the ordinary transaction path. Returned values, encoding buffers and allocator overhead remain outside these limits; active transactions are separately admitted as described above, without a fairness guarantee.
-
-`CheckpointStore::transaction_with_fifo` admits participating callbacks and commits through an optional FIFO queue. At most 16 participating transactions may queue; ordinary transactions and independent writes do not join the queue and can still cause conflicts. A callback must not wait for another FIFO transaction on the same store; same-thread nested admission returns an error. A slow callback delays queued callers, and there is no bounded waiting guarantee.
-
-`CheckpointStore::transaction_with_read_set` validates point values and complete requested scan ranges, allowing unrelated writes to commit without a conflict. When another write occurs, it revalidates earlier observations before returning another transactional read or accepting another staged write, and validates again before commit. Scans record the entire requested range, including entries beyond a limited page. A present value changed and changed back has a new location and conflicts; an unseen insertion and deletion can leave the same absence or range. Dependencies are limited to 2,048 distinct points and ranges, 2 MiB of retained key and bound bytes, and 65,536 point and range items. Their key and location reservations share the 64 MiB transaction budget. Large ranges can be expensive and are rejected before a page is returned if they exceed a limit. Validation may read checkpoint blocks while holding the state lock. `transaction_with_read_set_fifo` combines this validation with FIFO admission. Use the transaction's own reads; independent store calls are not tracked.
-
-`CheckpointStore::transaction_until` offers a monotonic operation-boundary deadline for conservative and read-set modes, with or without FIFO admission. `TimedTransactionError::DeadlineExceeded` means that transaction's staged changes were not submitted for commit; `Operation` includes callback and I/O errors, and an I/O timeout during commit can have an unknown outcome. FIFO and transaction state-lock waiters can expire while waiting. Callbacks, other internal lock waits and I/O are not forcibly interrupted; a started commit can finish after its deadline, and completion time is not bounded.
-
-Backup, restore, upgrade, checkpoint and separate-copy compaction synchronize the destination directory and its resolved ancestors after publication. A failure during this synchronization has an uncertain publication outcome. The engine syncs resolved paths, so callers must ensure symlink aliases are already durable or use canonical paths. This depends on filesystem and device synchronization behavior; physical power-loss validation remains open.
-
-Interrupted backup, restore, upgrade, checkpoint or compaction operations can leave plaintext staging data. `cleanup_abandoned_staging(parent)` explicitly removes recognized staging files in one trusted destination directory. It uses a nonblocking advisory directory lock and returns `WouldBlock` if a cooperating operation is still staging or publishing there. It synchronizes payload removal before deleting the ownership marker; a failed synchronization retains the marker for a later cleanup. A no-op cleanup performs no directory sync and does not prove sync support. The `.emda-stage-v1-` namespace is reserved; do not put user data there. The cleanup does not touch older unmarked `.db-*` staging paths; the [legacy staging lifecycle](docs/LEGACY_STAGING_LIFECYCLE.md) describes conservative operator review. It does not run automatically and is not secure erasure. It assumes no uncooperative process is concurrently replacing entries in that directory and depends on filesystem locking and synchronization support. See the [storage contract](docs/STORAGE_TRANSACTION_CONTRACT.md) for its scope.
-
-The opt-in `cleanup_abandoned_staging_detailed` reports whether this call began no removals or may have removed part of a stage. Inspect the trusted directory before resuming an uncertain cleanup; the result does not certify durability, source health or cleanup of every stage.
-
-`Store::open_with_log_limit` optionally caps the log file length for that open instance. It counts the header, overwrites and tombstones; at the cap even deletion can be rejected. In-flight records reserve space before admission, so independent writes can share a sync without exceeding the cap. The setting must be supplied again on reopen; an oversized log is rejected before replay. It does not cap the index, other files or total project storage. Normal `Store::open` has no limit.
-
-`Store::open_with_limits` can also cap the number of live keys. Existing keys can be updated and deleting a key frees a slot. Recovery enforces the count on every historical log prefix, so an open can be rejected even when the final key count is smaller; a verified compacted copy can reduce that historical peak. The setting is not persisted and is not a process-memory limit; compaction can still use multiple indexes.
-
-`Store::open_with_resource_limits` additionally accepts a cap on the combined byte length of live keys. It checks each ordered batch operation and each replayed historical state, and reclaims the allowance when keys are deleted. It is reapplied on each open. New-key puts, deletes and compound mutations serialize; updates to existing keys can share a sync, reserving log space first when a log cap is set. Values, index overhead, snapshots, other files and total process memory are outside the cap; it is not a project quota. This option uses full-log recovery because existing checkpoints do not store the historical key-byte peak.
-
-`CheckpointStore::open_with_resource_limits` can also enforce an optional whole-log byte cap alongside its suffix limits. It rejects an oversized log before replay or adoption and rejects writes before append when they would exceed the cap. The cap counts the log header, replaced records and tombstones; checkpoint rollover does not free log bytes. It is reapplied on each open and excludes checkpoints, backups, memory and total project storage.
-
-`CheckpointView::open_with_limits` can additionally cap checkpoint file bytes and block-directory entries. `CheckpointView::open_with_recovery_limits` and `RecoveredCheckpointView::open_with_options` can also reject a whole log exceeding a caller-selected byte cap before checkpoint prefix verification; the latter combines that cap with checkpoint and suffix limits. `CheckpointStore::open_with_options` and `open_managed_with_options` apply the same view limits alongside the existing suffix and optional log caps; rollover and the blocking compact-and-replace handoff preserve them. Explicit, managed and automatic rollovers enforce the checkpoint byte and block caps during creation, rejecting oversized candidates before publication. Independent `checkpoint_to` copies and compaction do not use those lower view limits; a compacted copy can remain and need cleanup. These logical limits must be supplied again on reopen; they do not bound allocator overhead, all temporary views or total process/project resources. An accepted log's entire covered prefix is still hashed, and elapsed time is not bounded.
-
-`CheckpointStore::compare_exchange_batch` atomically applies a batch only if all supplied point values still match; `None` means the key must be absent. A mismatch makes no write. It permits at most 1,024 conditions and 32 MiB of condition keys and expected values. Callers must include every point read their decision depends on. This operation does not validate ranges, detect a value changed and changed back, or provide the ordinary store's transaction callback.
-
-To try the experimental Rust library from another project:
+To embed the prototype, add `database-engine` as a Git dependency and pin a
+reviewed commit. For example, add this to your `Cargo.toml`.
 
 ```toml
 [dependencies]
-database-engine = { git = "https://github.com/Eta06/EMDA-DB.git" }
+database-engine = { git = "https://github.com/Eta06/EMDA-DB.git", rev = "7fa05928613718acd741386f8a00cd79630723fd" }
 ```
-
-For reproducible use, pin a reviewed Git revision with the `rev` field. This crate is not currently published to crates.io, and its API and on-disk format are not yet stable.
 
 ```rust
 use database_engine::Store;
 
 fn main() -> std::io::Result<()> {
     let db = Store::open("./example-data")?;
-    db.put(b"product:1", b"headphones")?;
-    assert_eq!(db.get(b"product:1")?, Some(b"headphones".to_vec()));
-    db.delete(b"product:1")?;
+    db.put(b"greeting", b"hello")?;
+    assert_eq!(db.get(b"greeting")?.as_deref(), Some(b"hello".as_slice()));
     Ok(())
 }
 ```
 
-This is an early experiment, **not a production database**. It does not yet offer SQL, MongoDB compatibility, a general query optimizer, automatic live compaction, a complete bounded-memory writable store, authentication, a production network service, project isolation, distributed replication, or an automatic sleep/wake service. Its append-only log grows until explicit compaction and writable recovery scans or hashes it entirely. Deletion adds a tombstone: earlier values remain in the log and full-log backups. Checksums detect some corruption but cannot recover damaged data. New stores can detect log truncation before an intact commit witness; rollback of both log data and witness (including V3 filesystem metadata) can still go undetected. `Store::upgrade_format` creates a verified copy of an older database at a new path. V3 requires Linux user xattrs and full `fsync`; existing V2 stores keep their two-sync path. Missing V3 metadata fails closed. Use the backup/restore API for copies, or preserve xattrs as well as the log and identity file. Backups are unencrypted full-log copies and are not authenticated. File locking is advisory and depends on filesystem behavior. Backup/restore publication has been exercised on Linux and Apple-silicon macOS 15; atomic compaction handoffs remain Linux-only. Durability depends on correct filesystem and storage-device behavior; tests cannot prove protection against all hardware failures. An I/O error during a mutation leaves its outcome uncertain; the instance refuses further operations until reopened.
+See the [document guide](docs/DOCUMENT_MODEL.md) for JSON examples and index
+semantics.
 
-To develop this repository, install Rust 1.85 or newer and Python 3.11 or newer, then run:
+## Where we’re going
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-cargo test --release --locked
-python3 -m unittest discover -s scripts/tests -v
-```
+The first priority is a dependable macOS and Linux foundation. The long-term
+goal is a database service that can stop idle project workers while retaining
+durable data, strongly isolate projects, and keep latency, CPU, and RAM costs
+low. We compare equivalent workloads with other engines and publish the
+settings, results, and trade-offs.
 
-The scheduled and manually dispatched recovery-fuzz workflow runs every declared fuzz target in one of four independent shards. Each target has a one-minute campaign; a failed target does not prevent the rest of its shard from running, and any reproducer is uploaded under a shard-specific artifact name. These short campaigns complement, rather than replace, longer fault and recovery tests.
+SQL, a hosted service, tenant isolation, and automatic sleep and wake are on the
+[roadmap](docs/ROADMAP.md). The current engine runs inside your application.
 
-Track outstanding foundation and storage work in the [follow-up checklist](docs/FOUNDATION_FOLLOW_UP.md).
+## Project records
 
-Explore the [changelog](CHANGELOG.md), [versioning policy](docs/VERSIONING.md), [architecture](docs/ARCHITECTURE.md), [storage and transaction contract](docs/STORAGE_TRANSACTION_CONTRACT.md), [prioritized roadmap](docs/ROADMAP.md), [competitor feature inventory](docs/COMPETITOR_FEATURES.md), and [benchmark plan and recorded results](docs/BENCHMARKS.md). The recorded measurements reflect their stated test conditions; they are not a general performance ranking. See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and verification expectations.
+- [Benchmarks and reproduction instructions](docs/BENCHMARKS.md), including the
+  [macOS and Linux recovery comparison with SQLite](benchmarks/results/2026-11-22-recovery-sqlite-matrix/README.md)
+- [Changelog](CHANGELOG.md) and [release policy](docs/VERSIONING.md)
+- [Previous README snapshot, November 22, 2026](README_HISTORY.md) and
+  [maintainer handoff](docs/MAINTAINER_HANDOFF.md)
+- [Contributing](CONTRIBUTING.md)
 
-Licensed under [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution and notices.
+Licensed under [Apache License 2.0](LICENSE). See [NOTICE](NOTICE).
