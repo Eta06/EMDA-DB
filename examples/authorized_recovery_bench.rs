@@ -16,13 +16,14 @@ type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
 
 const BATCH: u64 = 128;
 const CHURN: u64 = 4096;
-const MAX_KEYS: u64 = 262_144;
+const STANDARD_KEYS: u64 = 262_144;
+const MAX_KEYS: u64 = 1_048_576;
 const THRESHOLD: NonZeroU64 = NonZeroU64::new(640 * 1024).unwrap();
 const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
     base: Limits {
         file_bytes: 32 << 20,
-        entries: MAX_KEYS,
-        key_bytes: MAX_KEYS * 8,
+        entries: STANDARD_KEYS,
+        key_bytes: STANDARD_KEYS * 8,
         work_bytes: (32 << 20) + 1,
     },
     index: IndexLimits {
@@ -254,9 +255,17 @@ fn main() -> Result<()> {
     let keys: u64 = keys.parse()?;
     let epoch: u64 = epoch.parse()?;
     if !(CHURN..=MAX_KEYS).contains(&keys) || epoch > 1000 {
-        return Err("keys must be 4096–262144 and epoch must be 0–1000".into());
+        return Err("keys must be 4096–1048576 and epoch must be 0–1000".into());
     }
     let mut limits = LIMITS;
+    if keys > STANDARD_KEYS {
+        limits.base = Limits {
+            file_bytes: 128 << 20,
+            entries: MAX_KEYS,
+            key_bytes: MAX_KEYS * 8,
+            work_bytes: (128 << 20) + 1,
+        };
+    }
     match std::env::var("EMDA_BENCH_SUFFIX_WORK") {
         Ok(work) => limits.suffix.work = work.parse()?,
         Err(std::env::VarError::NotPresent) => {}
@@ -285,10 +294,10 @@ fn main() -> Result<()> {
                 source,
                 &path,
                 RetainedExportLimits {
-                    max_log_bytes: 64 << 20,
-                    max_live_keys: MAX_KEYS as usize,
-                    max_live_key_bytes: MAX_KEYS as usize * 8,
-                    max_output_bytes: LIMITS.base.file_bytes,
+                    max_log_bytes: limits.base.file_bytes * 2,
+                    max_live_keys: limits.base.entries as usize,
+                    max_live_key_bytes: limits.base.key_bytes as usize,
+                    max_output_bytes: limits.base.file_bytes,
                 },
                 limits,
             )?;

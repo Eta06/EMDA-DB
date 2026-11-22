@@ -23,7 +23,11 @@ EMDA_BENCH_SUFFIX_WORK=60000000 python3 examples/authorized_recovery_bench.py \
 Each run needs a fresh directory and enough space for both fixtures and
 the two retained generations that coexist during rotation. Run builds
 before timing and keep the tested binary and source stable through each
-run. The default suffix budget is 768 KiB, 8,192 operations, and 1,000,000
+run. The runner accepts up to 1,048,576 initial keys. Above 262,144
+keys it uses a 128 MiB retained-base admission limit and a 256 MiB
+source-log limit at cutover. Allow space for the original-path archive
+and the optional SQLite database as well. The default suffix budget is
+768 KiB, 8,192 operations, and 1,000,000
 replay-work units. The policy requests rotation at 640 KiB. The optional
 work-budget override must be applied to every phase of the same fixture.
 Both the authority directory and the database directories are local. The
@@ -60,5 +64,7 @@ power-loss validation or an independent off-host restore.
 See the [cross-platform results](../benchmarks/results/2026-11-19-authorized-recovery-resources/README.md).
 The [three-engine matrix](../benchmarks/results/2026-11-22-recovery-sqlite-matrix/README.md)
 covers three dataset sizes on macOS APFS and Linux ext4.
+The [million-key comparison](../benchmarks/results/2026-11-23-million-key-recovery/README.md)
+covers macOS APFS and Linux tmpfs, with a separate rotation I/O trace.
 The [authority read comparison](../benchmarks/results/2026-11-22-authority-read-sync/README.md)
 isolates record synchronization using the same fixture on each platform.

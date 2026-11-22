@@ -108,8 +108,8 @@ def main():
     parser.add_argument("epochs", type=int)
     parser.add_argument("--sqlite", action="store_true", help="include a WAL/FULL SQLite control")
     args = parser.parse_args()
-    if not 4096 <= args.keys <= 262144 or not 1 <= args.epochs <= 1000:
-        parser.error("keys must be 4096–262144 and epochs must be 1–1000")
+    if not 4096 <= args.keys <= 1048576 or not 1 <= args.epochs <= 1000:
+        parser.error("keys must be 4096–1048576 and epochs must be 1–1000")
     binary, directory = args.binary.resolve(strict=True), args.new_directory.resolve()
     directory.mkdir()
     backends = ["ordinary", "retained", "sqlite"] if args.sqlite else ["ordinary", "retained"]
