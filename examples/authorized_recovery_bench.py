@@ -15,7 +15,7 @@ import sys
 import time
 
 
-def allocated_bytes(paths):
+def allocated_bytes(paths, excluded=()):
     """Count allocated blocks once per inode, including any visible stages."""
     pending = list(paths)
     seen = set()
@@ -30,7 +30,7 @@ def allocated_bytes(paths):
             seen.add(identity)
             total += metadata.st_blocks * 512
             if stat.S_ISDIR(metadata.st_mode):
-                pending.extend(path.iterdir())
+                pending.extend(child for child in path.iterdir() if child not in excluded)
         except FileNotFoundError:
             # Publication may move a private stage between two samples.
             continue
@@ -48,7 +48,11 @@ def command(binary, phase, fixture, backend, keys, epoch):
 
 def run(binary, directory, phase, backend, keys, epoch):
     fixture = directory / "fixture"
-    if backend == "retained":
+    excluded = ()
+    if phase in {"bind-archive", "lifecycle"}:
+        paths = [fixture]
+        excluded = (fixture / "ordinary", fixture / "sqlite")
+    elif backend == "retained":
         paths = [fixture / backend, fixture / "authority"]
     elif phase == "setup":
         paths = [fixture]
@@ -56,7 +60,7 @@ def run(binary, directory, phase, backend, keys, epoch):
         paths = [fixture / backend]
     logfile = directory / f"{epoch:02}-{backend}-{phase}.log"
     start = time.monotonic()
-    initial = allocated_bytes(paths)
+    initial = allocated_bytes(paths, excluded)
     peak = initial
     samples = 1
     with logfile.open("w") as out:
@@ -64,7 +68,7 @@ def run(binary, directory, phase, backend, keys, epoch):
                                  stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             while child.poll() is None:
-                peak = max(peak, allocated_bytes(paths))
+                peak = max(peak, allocated_bytes(paths, excluded))
                 samples += 1
                 time.sleep(0.025)
         finally:
@@ -72,7 +76,7 @@ def run(binary, directory, phase, backend, keys, epoch):
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait()
     duration = time.monotonic() - start
-    final = allocated_bytes(paths)
+    final = allocated_bytes(paths, excluded)
     combined = logfile.read_text()
     metrics = {"phase": phase, "backend": backend, "keys": keys, "epoch": epoch,
                "exit": child.returncode, "observed_seconds": duration,
@@ -107,6 +111,7 @@ def main():
     parser.add_argument("keys", type=int)
     parser.add_argument("epochs", type=int)
     parser.add_argument("--sqlite", action="store_true", help="include a WAL/FULL SQLite control")
+    parser.add_argument("--retire-and-restore", action="store_true", help="verify a local backup, retire the legacy archive, and restore the final state")
     args = parser.parse_args()
     if not 4096 <= args.keys <= 1048576 or not 1 <= args.epochs <= 1000:
         parser.error("keys must be 4096–1048576 and epochs must be 1–1000")
@@ -120,9 +125,12 @@ def main():
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "keys": args.keys, "epochs": args.epochs, "backend_orders": orders,
         "suffix_work_override": os.environ.get("EMDA_BENCH_SUFFIX_WORK"),
+        "retire_and_restore": args.retire_and_restore,
     }
     (directory / "environment.json").write_text(json.dumps(provenance, indent=2) + "\n")
     run(binary, directory, "setup", "all" if args.sqlite else "both", args.keys, 0)
+    if args.retire_and_restore:
+        run(binary, directory, "bind-archive", "retained", args.keys, 0)
     run(binary, directory, "cutover", "retained", args.keys, 0)
     rotations = 0
     for epoch in range(1, args.epochs + 1):
@@ -133,6 +141,9 @@ def main():
             run(binary, directory, "verify", backend, args.keys, epoch)
         print(f"{directory.name}: verified {len(backends)} backends at epoch {epoch}", flush=True)
     print(f"rotations={rotations}", flush=True)
+    if args.retire_and_restore:
+        run(binary, directory, "lifecycle", "retained", args.keys, args.epochs)
+        print("verified restored and current retained state", flush=True)
 
 
 if __name__ == "__main__":

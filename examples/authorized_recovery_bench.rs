@@ -3,13 +3,14 @@ use database_engine::{
     BatchOperation, Entry, RetainedExportLimits, Store,
     retained_base_v2::Limits,
     retained_candidate::{
-        AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits, OverlayLimits,
-        RetainedAuthority, RetainedStoreLimits, SuffixLimits,
+        AuthorizedRetainedStore, CutoverArchiveBinding, FileRetainedAuthority, IndexLimits,
+        ManagedRetainedStore, OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
     },
 };
 use rusqlite::{Connection, OpenFlags, config::DbConfig, params};
 use rustix::time::{ClockId, clock_gettime};
-use std::{error::Error, fs, num::NonZeroU64, path::Path, time::Instant};
+use sha2::{Digest, Sha256};
+use std::{error::Error, fs, io, num::NonZeroU64, path::Path, time::Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
@@ -204,7 +205,11 @@ fn apply(store: &mut Backend, count: u64, epoch: u64) -> Result<()> {
     Ok(())
 }
 
-fn verify(store: &mut Backend, keys: u64, epoch: u64) -> Result<()> {
+fn verify(
+    mut next_page: impl FnMut(Option<&[u8]>) -> Result<Vec<Entry>>,
+    keys: u64,
+    epoch: u64,
+) -> Result<()> {
     let mut expected = (0..keys).filter_map(|id| {
         let revision = if id < CHURN { epoch } else { 0 };
         (!deleted(id, revision)).then(|| (id.to_be_bytes(), value(id, revision)))
@@ -212,7 +217,7 @@ fn verify(store: &mut Backend, keys: u64, epoch: u64) -> Result<()> {
     let mut after = None;
     let mut checked = 0;
     loop {
-        let page = store.page(after.as_deref())?;
+        let page = next_page(after.as_deref())?;
         if page.is_empty() {
             break;
         }
@@ -229,6 +234,60 @@ fn verify(store: &mut Backend, keys: u64, epoch: u64) -> Result<()> {
         return Err("missing entry".into());
     }
     println!("verified_entries={checked}");
+    Ok(())
+}
+
+fn bind_legacy_archive(root: &Path) -> Result<()> {
+    let source = root.join("retained");
+    let _store = Store::open(&source)?;
+    let mut log_digest = Sha256::new();
+    let log_bytes = io::copy(
+        &mut fs::File::open(source.join("records.log"))?,
+        &mut log_digest,
+    )?;
+    let witness_digest = Sha256::digest(fs::read(source.join("commit.state"))?);
+    let mut bytes = [0; 72];
+    bytes[..8].copy_from_slice(&log_bytes.to_le_bytes());
+    bytes[8..40].copy_from_slice(&log_digest.finalize());
+    bytes[40..].copy_from_slice(&witness_digest);
+    fs::write(root.join("archive-binding"), bytes)?;
+    Ok(())
+}
+
+fn run_lifecycle(root: &Path, limits: RetainedStoreLimits, keys: u64, epoch: u64) -> Result<()> {
+    let bytes: [u8; 72] = fs::read(root.join("archive-binding"))?
+        .try_into()
+        .map_err(|_| "invalid saved archive binding length")?;
+    let archive = CutoverArchiveBinding {
+        log_bytes: u64::from_le_bytes(bytes[..8].try_into()?),
+        log_digest: bytes[8..40].try_into()?,
+        witness_digest: bytes[40..].try_into()?,
+    };
+    let provider = FileRetainedAuthority::open(root.join("authority"))?;
+    let mut catalog =
+        Catalog::open_with_auto_reclaim(root.join("retained"), limits, provider, THRESHOLD)?;
+    let backup = root.join("backup");
+    let restored = root.join("restored");
+    let start = Instant::now();
+    let expected = catalog.backup_to(&backup)?;
+    println!("backup_ns={}", start.elapsed().as_nanos());
+    let start = Instant::now();
+    if !catalog.retire_cutover_archive(&archive, &backup, &expected)? {
+        return Err("expected to retire a legacy archive".into());
+    }
+    println!(
+        "retire_ns={} retired_log_bytes={}",
+        start.elapsed().as_nanos(),
+        archive.log_bytes
+    );
+    let start = Instant::now();
+    ManagedRetainedStore::restore_backup(&backup, &restored, limits, &expected)?;
+    println!("restore_ns={}", start.elapsed().as_nanos());
+    let restored = ManagedRetainedStore::open(restored, limits)?;
+    verify(|after| Ok(restored.scan(after, None, 1024)?), keys, epoch)?;
+    drop(catalog);
+    let mut source = Backend::open(root, "retained", limits)?;
+    verify(|after| source.page(after), keys, epoch)?;
     Ok(())
 }
 
@@ -249,7 +308,7 @@ fn authority_state(root: &Path) -> Result<(u64, u64, [u8; 16])> {
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let [_, phase, root, name, keys, epoch] = args.as_slice() else {
-        return Err("usage: authorized_recovery_bench <setup|cutover|mutate|reopen|verify> <root> <ordinary|retained|sqlite|both|all> <keys> <epoch>".into());
+        return Err("usage: authorized_recovery_bench <setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|retained|sqlite|both|all> <keys> <epoch>".into());
     };
     let root = Path::new(root);
     let keys: u64 = keys.parse()?;
@@ -287,6 +346,7 @@ fn main() -> Result<()> {
                 apply(&mut store, keys, 0)?;
             }
         }
+        "bind-archive" => bind_legacy_archive(root)?,
         "cutover" => {
             let path = root.join("retained");
             let source = Store::open(&path)?;
@@ -344,7 +404,7 @@ fn main() -> Result<()> {
             } else if phase == "verify" {
                 let start = Instant::now();
                 let cpu_start = cpu_ns();
-                verify(&mut store, keys, epoch)?;
+                verify(|after| store.page(after), keys, epoch)?;
                 let verify_cpu = cpu_ns() - cpu_start;
                 println!(
                     "verify_ns={} verify_cpu_ns={verify_cpu}",
@@ -383,6 +443,7 @@ fn main() -> Result<()> {
                 );
             }
         }
+        "lifecycle" => run_lifecycle(root, limits, keys, epoch)?,
         _ => return Err("invalid phase".into()),
     }
     println!("suffix_work={}", limits.suffix.work);

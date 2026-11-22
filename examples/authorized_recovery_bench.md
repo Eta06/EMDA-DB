@@ -18,6 +18,8 @@ EMDA_BENCH_SUFFIX_WORK=60000000 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/byte-threshold" 131072 8
 EMDA_BENCH_SUFFIX_WORK=60000000 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/sqlite-control" 131072 6 --sqlite
+EMDA_BENCH_SUFFIX_WORK=240000000 python3 examples/authorized_recovery_bench.py \
+  target/release/examples/authorized_recovery_bench "$run/archive-lifecycle" 131072 6 --retire-and-restore
 ```
 
 Each run needs a fresh directory and enough space for both fixtures and
@@ -33,6 +35,16 @@ work-budget override must be applied to every phase of the same fixture.
 Both the authority directory and the database directories are local. The
 authority directory is separate and on the same filesystem for this
 benchmark.
+
+With `--retire-and-restore`, the runner saves the witnessed source log
+and sidecar fingerprints before cutover. After the last epoch it
+publishes a verified backup of the authority-selected generation, retires
+the legacy archive within the benchmark fixture using the saved binding
+and backup, and restores the backup into a new directory. It reopens and
+compares every restored and source entry with the workload model. The
+lifecycle disk samples include visible sibling stages, the bound source,
+authority, backup and restored store, and exclude the ordinary and
+SQLite controls. Allow space for the backup and restore as well.
 
 The runner saves raw phase logs and JSONL measurements. Write latency is
 the time to apply an entire epoch of 32 durable batches, including
@@ -66,5 +78,7 @@ The [three-engine matrix](../benchmarks/results/2026-11-22-recovery-sqlite-matri
 covers three dataset sizes on macOS APFS and Linux ext4.
 The [million-key comparison](../benchmarks/results/2026-11-23-million-key-recovery/README.md)
 covers macOS APFS and Linux tmpfs, with a separate rotation I/O trace.
+The [archive lifecycle measurements](../benchmarks/results/2026-11-23-retained-archive-lifecycle/README.md)
+cover local backup, retirement, and restore on macOS APFS and Linux ext4.
 The [authority read comparison](../benchmarks/results/2026-11-22-authority-read-sync/README.md)
 isolates record synchronization using the same fixture on each platform.
