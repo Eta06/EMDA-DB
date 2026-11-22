@@ -10,6 +10,7 @@ use crate::{
 use std::collections::BTreeMap;
 use std::io;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 const RANGE_RESERVATION_QUANTUM: usize = 4 * 1024;
 
@@ -18,16 +19,32 @@ pub(super) struct RangeEntry {
     location: GenerationLocation,
 }
 
-struct Range {
+pub(super) struct Range {
     after: Option<Vec<u8>>,
     before: Option<Vec<u8>>,
     keys: Vec<u8>,
     entries: Vec<RangeEntry>,
 }
 
+impl Range {
+    pub(super) fn visit_entries(
+        &self,
+        mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
+    ) -> io::Result<()> {
+        let mut start = 0;
+        for entry in &self.entries {
+            if visit(&self.keys[start..entry.end], entry.location.location)?.is_break() {
+                break;
+            }
+            start = entry.end;
+        }
+        Ok(())
+    }
+}
+
 pub(super) struct ReadSet {
     points: BTreeMap<Vec<u8>, Option<GenerationLocation>>,
-    ranges: Vec<Range>,
+    ranges: Vec<Arc<Range>>,
     key_bytes: usize,
     items: usize,
     charged: usize,
@@ -116,7 +133,7 @@ impl ReadSet {
         state: &State,
         after: Option<&[u8]>,
         before: Option<&[u8]>,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<Arc<Range>>> {
         if self.conflicted {
             return Err(conflict());
         }
@@ -125,7 +142,7 @@ impl ReadSet {
             .iter()
             .any(|range| range.after.as_deref() == after && range.before.as_deref() == before)
         {
-            return Ok(());
+            return Ok(None);
         }
         let bounds_bytes = after.map_or(0, <[u8]>::len) + before.map_or(0, <[u8]>::len);
         if self.points.len() + self.ranges.len() >= MAX_TRANSACTION_READ_CONSTRAINTS
@@ -177,17 +194,18 @@ impl ReadSet {
         })?;
         let items = entries.len();
         reservation.shrink(reserved - charged);
-        self.ranges.push(Range {
+        let range = Arc::new(Range {
             after: after.map(<[u8]>::to_vec),
             before: before.map(<[u8]>::to_vec),
             keys,
             entries,
         });
+        self.ranges.push(Arc::clone(&range));
         self.key_bytes += key_bytes;
         self.items += items;
         self.charged += charged;
         reservation.finish();
-        Ok(())
+        Ok(Some(range))
     }
 
     // The caller holds a state lock. Matching all immutable locations and

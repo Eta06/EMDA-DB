@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Assemble the first checkpoint transaction page for a range from the
+  same verified locations recorded for conflict detection.
+
 - Merge bounded checkpoint spill files in groups spanning similar numbers
   of replay chunks, reducing repeated rewrites of large runs.
 

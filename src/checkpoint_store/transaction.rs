@@ -153,12 +153,6 @@ impl CheckpointTransaction<'_> {
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
         }
-        if let Some(read_set) = &self.read_set {
-            read_set
-                .lock()
-                .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
-                .record_scan(self.store, &state, after, before)?;
-        }
         let bounds = (
             after.map_or(Unbounded, Excluded),
             before.map_or(Unbounded, Excluded),
@@ -171,7 +165,7 @@ impl CheckpointTransaction<'_> {
             limit,
         };
         let mut stopped = false;
-        state.view.visit_entries(after, before, |key, location| {
+        let merge = |key: &[u8], location| {
             while pending
                 .peek()
                 .is_some_and(|(pending_key, _)| pending_key.as_slice() < key)
@@ -200,7 +194,24 @@ impl CheckpointTransaction<'_> {
                 return Ok(ControlFlow::Break(()));
             }
             Ok(ControlFlow::Continue(()))
-        })?;
+        };
+        let recorded = self
+            .read_set
+            .as_ref()
+            .map(|read_set| {
+                read_set
+                    .lock()
+                    .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
+                    .record_scan(self.store, &state, after, before)
+            })
+            .transpose()?
+            .flatten();
+        if let Some(range) = recorded {
+            range.visit_entries(merge)?;
+        } else {
+            // A previously observed range still needs fresh block checks.
+            state.view.visit_entries(after, before, merge)?;
+        }
         if !stopped {
             for (key, value) in pending {
                 if let Some(value) = value {

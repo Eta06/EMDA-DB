@@ -51,6 +51,10 @@ The initial document interface is bounded and experimental. This checklist recor
   batch, with clean recovery afterward. The [paired comparison](DOCUMENT_CONTENTION_2026_11_23.md#checkpoint-reads-during-synchronization)
   measures lower read tails at two and four clients and records write latency
   tradeoffs and the remaining SQLite gap.
+- [x] Assemble the first checkpoint transaction page for a range from
+  the verified observation used for conflict detection. A repeated scan
+  rechecks the checkpoint. The [paired Linux traces](../benchmarks/results/2026-11-23-checkpoint-transaction-range/README.md)
+  count reads for raw-key pages and a planned nonunique document query.
 - [ ] Measure and optimize document workloads with equivalent durability and comparable behavior against SQLite, MongoDB and other suitable alternatives. Publish workload definitions, distributions, concurrency, resource use, failures and noise; do not infer performance from the earlier byte-key baseline.
 - [x] Add resumable incremental index build and drop with atomic progress, bounded per-step work, writer coordination and recovery checks. Unique constraints take effect only after successful publication, and callers schedule and retry steps. The ordinary backend still has transaction snapshot limits; this is not a total-memory or latency guarantee.
 - [x] Reject index-drop cursors that skip surviving keys, including a unique phase with remaining entry keys. Both writable backends test skipped and live cursors and preserve the rejection after reopen. The guard detects inconsistent state and does not repair it or validate build cursors.

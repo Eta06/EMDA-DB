@@ -159,6 +159,41 @@ fn scan_validation_covers_entries_beyond_the_returned_page() {
 }
 
 #[test]
+fn repeated_scan_rechecks_checkpoint_after_using_new_range_with_staged_entries() {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::FileExt;
+
+    let (dir, store) = fixture();
+    let result = store.transaction_with_read_set(|tx| {
+        tx.delete(b"a")?;
+        tx.put(b"b", b"staged")?;
+        assert_eq!(
+            tx.scan(None, None, 2)?,
+            vec![
+                (b"b".to_vec(), b"staged".to_vec()),
+                (b"c".to_vec(), b"base".to_vec()),
+            ],
+        );
+        // The change does not touch the live log or advance its generation.
+        // Repeating the scan must still verify this checkpoint block again.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.path().join("checkpoint"))?;
+        let entry_start = 68;
+        let mut byte = [0_u8; 1];
+        file.read_exact_at(&mut byte, entry_start)?;
+        file.write_all_at(&[byte[0] ^ 1], entry_start)?;
+        let repeated = tx.scan(None, None, 2);
+        file.write_all_at(&byte, entry_start)?;
+        repeated
+    });
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+    assert_eq!(store.get(b"b").unwrap(), None);
+    assert_eq!(store.transaction_budget_status().unwrap().reserved_bytes, 0);
+}
+
+#[test]
 fn range_observations_survive_rollover_and_validate_later_writes() {
     let (dir, store) = fixture();
     let next = dir.path().join("next-checkpoint");
