@@ -1607,9 +1607,27 @@ fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
             })
             .unwrap_err();
         assert_eq!(error.to_string(), "after move");
-        assert!(retired.unwrap().join("commit.state").is_file());
+        let retired = retired.unwrap();
+        assert!(retired.join("commit.state").is_file());
         assert_eq!(store.scan(None, None, 4).unwrap(), before);
-        assert!(!store.reclaim_inactive().unwrap());
+        let summary = crate::cleanup_abandoned_staging(&f.root).unwrap();
+        assert_eq!(summary.removed_payloads, 0);
+        assert!(retired.join("base").is_file());
+        assert!(matches!(
+            store.compact(),
+            Err(PublicationFailure::NotPublished(ref error))
+                if error.kind() == io::ErrorKind::WouldBlock
+        ));
+        let selected = store.active.slot.path(&f.root).join("base");
+        let saved = f.root.join("saved-base");
+        fs::rename(&selected, &saved).unwrap();
+        fs::copy(&saved, &selected).unwrap();
+        assert_eq!(
+            store.reclaim_inactive().unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(retired.join("records.log").is_file());
+        fs::rename(&saved, selected).unwrap();
         assert!(fs::read_dir(&f.root).unwrap().count() > 4);
         drop(store);
         let recovered =

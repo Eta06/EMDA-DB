@@ -368,8 +368,13 @@ overlay, sparse indexes and staged files have their own resource costs.
 
 `reclaim_inactive` verifies the active bytes and synchronized selection,
 checks the inactive slot's ownership and file types, and moves it under
-an engine-owned stage before removing it. A cleanup error can leave an
-owned stage for explicit staging cleanup. Compaction and reclaim require
+an engine-owned stage marked with the replacement generation's identity.
+Generic staging cleanup skips these markers. Retry through
+`reclaim_inactive` or reopen with automatic reclamation. A retry verifies
+the selected replacement and its named files before resuming ordered
+removal. A conflicting or unrecognized retirement marker must be resolved
+before rotation. Generic stages left by older releases have no replacement
+binding and retain the earlier cleanup contract. Compaction and reclaim require
 exclusive use of the handle. No public reader or writer can pin the
 inactive slot outside that catalog. The requested successor limits can
 reject a rebase before changing the selection. The two slots, temporary

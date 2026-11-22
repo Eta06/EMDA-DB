@@ -732,6 +732,12 @@ impl ManagedRetainedStore {
         reclaim_after: bool,
         persisted_storage: Option<CatalogStorageLimits>,
     ) -> io::Result<(Active, RetainedStore, Option<CatalogStorage>)> {
+        if crate::staging::has_retained_stage(&self.root)? {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "retained retirement requires cleanup before rotation",
+            ));
+        }
         let slot = self.active.slot.other();
         let destination = slot.path(&self.root);
         match fs::symlink_metadata(&destination) {
@@ -774,7 +780,11 @@ impl ManagedRetainedStore {
         let max_base_bytes = catalog_storage(&self.root, self.catalog_magic, admission_limits)
             .map_or(Ok(u64::MAX), |quota| {
                 quota.room(
-                    Stage::DIRECTORY_MARKER_BYTES + generation_metadata + selection_bytes,
+                    (Stage::DIRECTORY_MARKER_BYTES + selection_bytes).max(if reclaim_after {
+                        Stage::RETAINED_MARKER_BYTES
+                    } else {
+                        0
+                    }) + generation_metadata,
                     entries,
                 )
             })?;
@@ -792,7 +802,8 @@ impl ManagedRetainedStore {
             generation_role(self.catalog_magic, self.active.catalog),
             persisted_storage,
         )?;
-        self.store.verify_complete()?;
+        self.store
+            .verify_complete(&self.active.slot.path(&self.root))?;
         let generation = next.generation_id();
         if generation == self.active.generation {
             return Err(record::invalid_data(
@@ -814,10 +825,29 @@ impl ManagedRetainedStore {
     }
 
     /// Retire only the catalog-owned inactive slot after verifying and
-    /// synchronizing the active selection. A failed removal can leave an
-    /// owned stage for explicit staging cleanup.
+    /// synchronizing the active selection. Retry this operation to resume
+    /// interrupted retirement of a stage bound to this replacement.
     pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
-        self.reclaim_using(sync_existing)
+        let resumed = self.resume_retirement()?;
+        Ok(self.reclaim_using(sync_existing)? || resumed)
+    }
+
+    fn resume_retirement(&self) -> io::Result<bool> {
+        if !crate::staging::has_retained_stage(&self.root)? {
+            return Ok(false);
+        }
+        let result = crate::staging::cleanup_retained(&self.root, &self.active.generation, || {
+            self.verify_selection()?;
+            self.store
+                .verify_complete(&self.active.slot.path(&self.root))
+        })?;
+        if crate::staging::has_retained_stage(&self.root)? {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "retained retirement needs inspection",
+            ));
+        }
+        Ok(result.removed_markers != 0)
     }
 
     fn reclaim_using(
@@ -837,25 +867,26 @@ impl ManagedRetainedStore {
             Err(error) => return Err(error),
         }
         self.reclaim_room()?;
-        self.store.verify_complete()?;
+        self.store
+            .verify_complete(&self.active.slot.path(&self.root))?;
         sync_existing(&self.root)?;
         let _retired_lock = lock_directory(&inactive)?;
         check_retired(&inactive, &self.active, self.catalog_magic)?;
-        let mut stage = crate::staging::Stage::directory(&self.root)?;
-        let moved = stage.child_path("retired".as_ref())?;
+        let mut stage =
+            crate::staging::Stage::retained_directory(&self.root, &self.active.generation)?;
+        let moved = stage.path().join("retired");
         crate::backup::publish_directory(&inactive, &moved)?;
         stage.preserve_payload_on_drop();
         sync_after_move(stage.path())?;
         // Retire the original slot name durably before deleting its contents.
         sync_after_move(&self.root)?;
-        fs::remove_dir_all(&moved)?;
-        sync_existing(stage.path())?;
+        crate::staging::remove_retained_stage(stage.path())?;
         stage.finish_retained_cleanup();
         Ok(true)
     }
 
     fn reclaim_room(&self) -> io::Result<()> {
-        self.storage_room(crate::staging::Stage::DIRECTORY_MARKER_BYTES, 2)?;
+        self.storage_room(crate::staging::Stage::RETAINED_MARKER_BYTES, 2)?;
         Ok(())
     }
 

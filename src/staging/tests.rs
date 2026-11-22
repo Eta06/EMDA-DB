@@ -232,7 +232,7 @@ fn selective_retired_cleanup_respects_parent_lock_and_reports_sync_failure() {
     let path = orphan(active);
     let error = cleanup_selected_with_sync(
         directory.path(),
-        Some(&id),
+        Some((Kind::Retired, &id)),
         |_| Err(io::Error::other("injected directory sync failure")),
         || Ok(()),
     )
@@ -251,7 +251,7 @@ fn selective_cleanup_avoids_sync_when_nothing_is_removed_and_classifies_only_its
     let id = [6_u8; 16];
     let result = cleanup_selected_with_sync(
         directory.path(),
-        Some(&id),
+        Some((Kind::Retired, &id)),
         |_| panic!("nothing changed"),
         || panic!("nothing to verify"),
     )
@@ -265,7 +265,8 @@ fn selective_cleanup_avoids_sync_when_nothing_is_removed_and_classifies_only_its
 
 #[test]
 fn retired_stage_removal_resumes_after_every_injected_interruption() {
-    for selected in [
+    let points = [
+        RetiredRemovalPoint::Base,
         RetiredRemovalPoint::Records,
         RetiredRemovalPoint::Witness,
         RetiredRemovalPoint::Lock,
@@ -273,36 +274,55 @@ fn retired_stage_removal_resumes_after_every_injected_interruption() {
         RetiredRemovalPoint::RetiredDirectory,
         RetiredRemovalPoint::StageSync,
         RetiredRemovalPoint::StageDirectory,
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        let id = [9_u8; 16];
-        let stage = Stage::retired_directory(directory.path(), &id).unwrap();
-        fs::create_dir(stage.path().join("retired")).unwrap();
-        for name in ["records.log", "commit.state", "store.lock"] {
-            fs::write(stage.path().join("retired").join(name), b"old").unwrap();
+    ];
+    for kind in [Kind::Retired, Kind::Retained] {
+        for &selected in points.iter().skip(usize::from(kind == Kind::Retired)) {
+            check_retired_stage_interruption(kind, selected);
         }
-        let path = orphan(stage);
-        let lock = lock_safe_retired_payload(&path).unwrap().unwrap();
-        assert!(
-            remove_retired_stage(&path, |point| {
-                if point == selected {
-                    Err(io::Error::other("interrupted"))
-                } else {
-                    Ok(())
-                }
-            })
-            .is_err(),
-            "{selected:?}"
-        );
-        drop(lock);
-        let report = retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap();
-        assert_eq!(
-            (report.removed_markers, report.skipped),
-            (1, 0),
-            "{selected:?}"
-        );
-        assert!(!path.exists());
     }
+}
+
+fn check_retired_stage_interruption(kind: Kind, selected: RetiredRemovalPoint) {
+    let directory = tempfile::tempdir().unwrap();
+    let id = [9_u8; 16];
+    let stage = Stage::replacement_stage(directory.path(), kind, &id).unwrap();
+    fs::create_dir(stage.path().join("retired")).unwrap();
+    if kind == Kind::Retained {
+        fs::write(stage.path().join("retired").join("base"), b"old").unwrap();
+    }
+    for name in ["records.log", "commit.state", "store.lock"] {
+        fs::write(stage.path().join("retired").join(name), b"old").unwrap();
+    }
+    let path = orphan(stage);
+    let lock = lock_safe_retired_payload(&path, kind).unwrap().unwrap();
+    assert!(
+        remove_retired_stage(&path, kind, |point| {
+            if point == selected {
+                Err(io::Error::other("interrupted"))
+            } else {
+                Ok(())
+            }
+        })
+        .is_err(),
+        "{selected:?}"
+    );
+    drop(lock);
+    let report = if kind == Kind::Retained {
+        let wrong = cleanup_retained(directory.path(), &[8; 16], || {
+            panic!("unmatched generation")
+        })
+        .unwrap();
+        assert_eq!(wrong.removed_markers, 0);
+        cleanup_retained(directory.path(), &id, || Ok(())).unwrap()
+    } else {
+        retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap()
+    };
+    assert_eq!(
+        (report.removed_markers, report.skipped),
+        (1, 0),
+        "{selected:?}"
+    );
+    assert!(!path.exists());
 }
 
 #[cfg(target_os = "linux")]
@@ -367,8 +387,10 @@ fn retired_cleanup_kill_child() {
         .find(|path| path.join("retired").is_dir())
         .unwrap();
     let _parent = ParentLock::exclusive(&root).unwrap();
-    let _lock = lock_safe_retired_payload(&stage).unwrap().unwrap();
-    let _ = remove_retired_stage(&stage, |point| {
+    let _lock = lock_safe_retired_payload(&stage, Kind::Retired)
+        .unwrap()
+        .unwrap();
+    let _ = remove_retired_stage(&stage, Kind::Retired, |point| {
         if format!("{point:?}") == selected {
             let mut signal = File::create(root.join("signal")).unwrap();
             signal.write_all(b"ready").unwrap();
@@ -640,7 +662,11 @@ fn retired_lock_failure_diagnostic_preserves_busy_result() {
     let owner = File::open(&path).unwrap();
     fs2::FileExt::try_lock_exclusive(&owner).unwrap();
     let metadata = owner.metadata().unwrap();
-    assert!(lock_safe_retired_payload(root.path()).unwrap().is_none());
+    assert!(
+        lock_safe_retired_payload(root.path(), Kind::Retired)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         crate::directory::take_lock_diagnostic(),
         Some((

@@ -151,7 +151,7 @@ fn catalog_storage_reserves_headroom_for_automatic_authorized_reclamation() {
     let fixed = (crate::retained_candidate::writable::MANAGED_HEADER_BYTES
         + crate::retained_candidate::writable::WITNESS_BYTES) as u64;
     let exact = CatalogStorageLimits {
-        bytes: used.bytes + base_bytes + fixed + Stage::DIRECTORY_MARKER_BYTES,
+        bytes: used.bytes + base_bytes + fixed + Stage::RETAINED_MARKER_BYTES,
         entries: used.entries + 7,
     };
     let mut store = AuthorizedRetainedStore::open_with_storage_limits(

@@ -333,7 +333,9 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             let have_log = check_archive_file(&log, archive.log_bytes, &archive.log_digest)?;
             let have_witness =
                 check_archive_file(&witness, witness_bytes, &archive.witness_digest)?;
-            self.inner.store.verify_complete()?;
+            self.inner
+                .store
+                .verify_complete(&self.inner.active.slot.path(&root))?;
             super::backup::verify_backup(backup, self.inner.store.limits, expected)?;
             super::backup::sync_backup(backup)?;
             self.verify_current()?;

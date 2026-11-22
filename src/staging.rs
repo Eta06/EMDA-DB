@@ -10,18 +10,21 @@ const RESERVED: &[u8] = b".emda-stage-v1-";
 const FILE_PREFIX: &str = ".emda-stage-v1-f-";
 const DIR_PREFIX: &str = ".emda-stage-v1-d-";
 const RETIRED_PREFIX: &str = ".emda-stage-v1-r-";
+const RETAINED_PREFIX: &str = ".emda-stage-v1-g-";
 const OWNER_SUFFIX: &str = ".owner";
 const PAYLOAD_SUFFIX: &str = ".data";
 const FILE_MARKER: &[u8] = b"EMDA-STAGING-V1-FILE\n";
 const DIR_MARKER: &[u8] = b"EMDA-STAGING-V1-DIRECTORY\n";
 const RETIRED_MARKER: &[u8] = b"EMDA-STAGING-V1-RETIRED\n";
+const RETAINED_MARKER: &[u8] = b"EMDA-STAGING-V1-RETAINED\n";
 const RANDOM_LEN: usize = 16;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     File,
     Directory,
     Retired,
+    Retained,
 }
 
 impl Kind {
@@ -30,6 +33,7 @@ impl Kind {
             Self::File => FILE_PREFIX,
             Self::Directory => DIR_PREFIX,
             Self::Retired => RETIRED_PREFIX,
+            Self::Retained => RETAINED_PREFIX,
         }
     }
 
@@ -38,11 +42,16 @@ impl Kind {
             Self::File => FILE_MARKER,
             Self::Directory => DIR_MARKER,
             Self::Retired => RETIRED_MARKER,
+            Self::Retained => RETAINED_MARKER,
         }
     }
 
     fn marker_len(self) -> usize {
-        self.marker().len() + if matches!(self, Self::Retired) { 20 } else { 0 }
+        self.marker().len() + if self.is_retired() { 20 } else { 0 }
+    }
+
+    fn is_retired(self) -> bool {
+        matches!(self, Self::Retired | Self::Retained)
     }
 }
 
@@ -135,6 +144,7 @@ pub(crate) struct Stage {
 impl Stage {
     pub(crate) const DIRECTORY_MARKER_BYTES: u64 = DIR_MARKER.len() as u64;
     pub(crate) const FILE_MARKER_BYTES: u64 = FILE_MARKER.len() as u64;
+    pub(crate) const RETAINED_MARKER_BYTES: u64 = (RETAINED_MARKER.len() + 20) as u64;
 
     fn new(parent: &Path, kind: Kind) -> io::Result<Self> {
         Self::new_with_sync(parent, kind, File::sync_all, File::sync_all)
@@ -202,16 +212,19 @@ impl Stage {
     /// Marks a redundant retired-store stage with the verified replacement's
     /// log identity. Called only after the replacement handoff is durable.
     pub(crate) fn retired_directory(parent: &Path, replacement_id: &[u8; 16]) -> io::Result<Self> {
-        let mut content = RETIRED_MARKER.to_vec();
+        Self::replacement_stage(parent, Kind::Retired, replacement_id)
+    }
+
+    pub(crate) fn retained_directory(parent: &Path, replacement_id: &[u8; 16]) -> io::Result<Self> {
+        Self::replacement_stage(parent, Kind::Retained, replacement_id)
+    }
+
+    fn replacement_stage(parent: &Path, kind: Kind, replacement_id: &[u8; 16]) -> io::Result<Self> {
+        let mut content = kind.marker().to_vec();
         content.extend_from_slice(replacement_id);
         content.extend_from_slice(&crc32fast::hash(&content).to_le_bytes());
-        let mut stage = Self::new_with_marker(
-            parent,
-            Kind::Retired,
-            &content,
-            File::sync_all,
-            File::sync_all,
-        )?;
+        let mut stage =
+            Self::new_with_marker(parent, kind, &content, File::sync_all, File::sync_all)?;
         fs::DirBuilder::new().mode(0o700).create(&stage.payload)?;
         stage.created = true;
         Ok(stage)
@@ -269,7 +282,7 @@ impl Stage {
                 crate::backup::publish_directory(&self.payload, destination)?;
                 self.created = false;
             }
-            Kind::Retired => {
+            Kind::Retired | Kind::Retained => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "retired staging cannot be published",
@@ -320,7 +333,9 @@ impl Stage {
         let (removed, needs_sync) = if self.created {
             let result = match self.kind {
                 Kind::File => fs::remove_file(&self.payload),
-                Kind::Directory | Kind::Retired => fs::remove_dir_all(&self.payload),
+                Kind::Directory | Kind::Retired | Kind::Retained => {
+                    fs::remove_dir_all(&self.payload)
+                }
             };
             match result {
                 Ok(()) => (true, true),
@@ -414,6 +429,8 @@ fn marker_kind(name: &OsStr) -> Option<Kind> {
         (Kind::File, rest)
     } else if let Some(rest) = name.strip_prefix(DIR_PREFIX) {
         (Kind::Directory, rest)
+    } else if let Some(rest) = name.strip_prefix(RETAINED_PREFIX) {
+        (Kind::Retained, rest)
     } else {
         (Kind::Retired, name.strip_prefix(RETIRED_PREFIX)?)
     };
@@ -437,8 +454,9 @@ fn marker_kind(name: &OsStr) -> Option<Kind> {
 /// secure erasure, an automatic janitor, or a total disk-usage quota.
 /// An unchanged directory is not synchronized; a successful no-op does not
 /// establish that the filesystem supports directory synchronization.
-/// Retired-store markers are skipped: their replacement must be verified with
-/// `OnlineStore::cleanup_retired_staging` before their contents are removed.
+/// Retired-store markers are skipped. Verify their replacement through
+/// `OnlineStore::cleanup_retired_staging` or the corresponding retained
+/// catalog's `reclaim_inactive` before their contents are removed.
 ///
 /// A process killed before it finishes can leave a marker or payload behind.
 /// Published destinations are outside the reserved namespace and are untouched.
@@ -475,7 +493,7 @@ fn cleanup_detailed_with_hooks(
 
 fn cleanup_selected_detailed(
     parent: &Path,
-    replacement_id: Option<&[u8; 16]>,
+    replacement: Option<(Kind, &[u8; 16])>,
     sync_payload_removal: impl FnMut(&File) -> io::Result<()>,
     sync_parent: impl FnOnce(&File) -> io::Result<()>,
     mut before_remove: impl FnMut() -> io::Result<()>,
@@ -483,7 +501,7 @@ fn cleanup_selected_detailed(
     let mut removal_started = false;
     cleanup_selected_with_syncs(
         parent,
-        replacement_id,
+        replacement,
         sync_payload_removal,
         sync_parent,
         || {
@@ -520,7 +538,7 @@ pub(crate) fn cleanup_retired_detailed(
     let mut verify = Some(verify);
     cleanup_selected_detailed(
         parent,
-        Some(replacement_id),
+        Some((Kind::Retired, replacement_id)),
         sync_payload_removal,
         sync_parent,
         || {
@@ -530,6 +548,29 @@ pub(crate) fn cleanup_retired_detailed(
             Ok(())
         },
     )
+}
+
+pub(crate) fn cleanup_retained(
+    parent: &Path,
+    replacement_id: &[u8; 16],
+    verify: impl FnOnce() -> io::Result<()>,
+) -> io::Result<StagingCleanup> {
+    let mut verify = Some(verify);
+    cleanup_selected_with_sync(
+        parent,
+        Some((Kind::Retained, replacement_id)),
+        File::sync_all,
+        || verify.take().map_or(Ok(()), |verify| verify()),
+    )
+}
+
+pub(crate) fn has_retained_stage(parent: &Path) -> io::Result<bool> {
+    for entry in fs::read_dir(parent)? {
+        if marker_kind(&entry?.file_name()) == Some(Kind::Retained) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -550,16 +591,16 @@ fn cleanup_retired(
 
 fn cleanup_selected_with_sync(
     parent: &Path,
-    replacement_id: Option<&[u8; 16]>,
+    replacement: Option<(Kind, &[u8; 16])>,
     sync: impl FnOnce(&File) -> io::Result<()>,
     before_remove: impl FnMut() -> io::Result<()>,
 ) -> io::Result<StagingCleanup> {
-    cleanup_selected_with_syncs(parent, replacement_id, File::sync_all, sync, before_remove)
+    cleanup_selected_with_syncs(parent, replacement, File::sync_all, sync, before_remove)
 }
 
 fn cleanup_selected_with_syncs(
     parent: &Path,
-    replacement_id: Option<&[u8; 16]>,
+    replacement: Option<(Kind, &[u8; 16])>,
     mut sync_payload_removal: impl FnMut(&File) -> io::Result<()>,
     sync: impl FnOnce(&File) -> io::Result<()>,
     before_remove: impl FnMut() -> io::Result<()>,
@@ -567,12 +608,12 @@ fn cleanup_selected_with_syncs(
     check_path(parent)?;
     let guard = match ParentLock::exclusive(parent) {
         Ok(guard) => guard,
-        Err(error) if replacement_id.is_some() && error.kind() == io::ErrorKind::WouldBlock => {
+        Err(error) if replacement.is_some() && error.kind() == io::ErrorKind::WouldBlock => {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, RetiredParentBusy));
         }
         Err(error) => return Err(error),
     };
-    let result = cleanup_locked(parent, replacement_id, before_remove, || {
+    let result = cleanup_locked(parent, replacement, before_remove, || {
         sync_payload_removal(&guard.0)
     });
     if matches!(&result, Ok(report) if report.removed_payloads == 0 && report.removed_markers == 0)
@@ -592,7 +633,7 @@ fn cleanup_selected_with_syncs(
 
 fn cleanup_locked(
     parent: &Path,
-    replacement_id: Option<&[u8; 16]>,
+    replacement: Option<(Kind, &[u8; 16])>,
     mut before_remove: impl FnMut() -> io::Result<()>,
     mut sync_payload_removal: impl FnMut() -> io::Result<()>,
 ) -> io::Result<StagingCleanup> {
@@ -602,11 +643,11 @@ fn cleanup_locked(
         let Some(kind) = marker_kind(&entry.file_name()) else {
             continue;
         };
-        if replacement_id.is_none() && matches!(kind, Kind::Retired) {
+        if replacement.is_none() && kind.is_retired() {
             report.skipped += 1;
             continue;
         }
-        if replacement_id.is_some() && !matches!(kind, Kind::Retired) {
+        if replacement.is_some_and(|(selected, _)| kind != selected) {
             continue;
         }
         let marker = entry.path();
@@ -619,9 +660,9 @@ fn cleanup_locked(
         File::open(&marker)?
             .take(kind.marker_len() as u64 + 1)
             .read_to_end(&mut content)?;
-        let valid = if matches!(kind, Kind::Retired) {
+        let valid = if kind.is_retired() {
             let split = content.len().saturating_sub(4);
-            content.starts_with(RETIRED_MARKER)
+            content.starts_with(kind.marker())
                 && content.len() == kind.marker_len()
                 && crc32fast::hash(&content[..split])
                     == u32::from_le_bytes(content[split..].try_into().expect("four checksum bytes"))
@@ -632,8 +673,9 @@ fn cleanup_locked(
             report.skipped += 1;
             continue;
         }
-        if let Some(expected) = replacement_id {
-            if &content[RETIRED_MARKER.len()..RETIRED_MARKER.len() + 16] != expected {
+        if let Some((_, expected)) = replacement {
+            let prefix_len = kind.marker().len();
+            if &content[prefix_len..prefix_len + 16] != expected {
                 continue;
             }
         }
@@ -642,7 +684,7 @@ fn cleanup_locked(
             Ok(meta) => {
                 let expected = match kind {
                     Kind::File => meta.file_type().is_file(),
-                    Kind::Directory | Kind::Retired => meta.file_type().is_dir(),
+                    Kind::Directory | Kind::Retired | Kind::Retained => meta.file_type().is_dir(),
                 };
                 if !expected {
                     report.skipped += 1;
@@ -650,8 +692,8 @@ fn cleanup_locked(
                 }
                 // A selective cleanup must not remove unknown files or an
                 // actively owned retired store. Keep its lock through unlink.
-                let retired_lock = if replacement_id.is_some() {
-                    match lock_safe_retired_payload(&payload)? {
+                let retired_lock = if kind.is_retired() {
+                    match lock_safe_retired_payload(&payload, kind)? {
                         Some(lock) => lock,
                         None => {
                             report.skipped += 1;
@@ -662,13 +704,16 @@ fn cleanup_locked(
                     None
                 };
                 before_remove()?;
+                if kind == Kind::Retained {
+                    File::open(&payload)?.sync_all()?;
+                    sync_payload_removal()?;
+                }
                 match kind {
                     Kind::File => fs::remove_file(&payload)?,
                     Kind::Directory => fs::remove_dir_all(&payload)?,
-                    Kind::Retired if replacement_id.is_some() => {
-                        remove_retired_stage(&payload, |_| Ok(()))?;
+                    Kind::Retired | Kind::Retained => {
+                        remove_retired_stage(&payload, kind, |_| Ok(()))?;
                     }
-                    Kind::Retired => unreachable!("generic cleanup skips retired stages"),
                 }
                 drop(retired_lock);
                 report.removed_payloads += 1;
@@ -694,6 +739,7 @@ fn cleanup_locked(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RetiredRemovalPoint {
+    Base,
     Records,
     Witness,
     Lock,
@@ -707,15 +753,24 @@ enum RetiredRemovalPoint {
 // resumable after a process interruption while preserving unexpected entries.
 fn remove_retired_stage(
     stage: &Path,
+    kind: Kind,
     mut hook: impl FnMut(RetiredRemovalPoint) -> io::Result<()>,
 ) -> io::Result<()> {
     let retired = stage.join("retired");
     if retired.exists() {
         for (name, point) in [
+            ("base", RetiredRemovalPoint::Base),
             ("records.log", RetiredRemovalPoint::Records),
             ("commit.state", RetiredRemovalPoint::Witness),
             ("store.lock", RetiredRemovalPoint::Lock),
         ] {
+            if kind == Kind::Retired && point == RetiredRemovalPoint::Base {
+                continue;
+            }
+            if kind == Kind::Retained && point == RetiredRemovalPoint::Lock {
+                // Keep the lock name recoverable until the file removal is durable.
+                File::open(&retired)?.sync_all()?;
+            }
             match fs::remove_file(retired.join(name)) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -735,10 +790,15 @@ fn remove_retired_stage(
     Ok(())
 }
 
+pub(crate) fn remove_retained_stage(stage: &Path) -> io::Result<()> {
+    remove_retired_stage(stage, Kind::Retained, |_| Ok(()))
+}
+
 // Outer Option: None means unexpected contents or a busy lock. Inner Option:
 // an empty stage or fully unlinked retired directory needs no lock descriptor.
 fn lock_safe_retired_payload(
     stage: &Path,
+    kind: Kind,
 ) -> io::Result<Option<Option<crate::store_lock::StoreLock>>> {
     let mut retired = None;
     for entry in fs::read_dir(stage)? {
@@ -753,14 +813,15 @@ fn lock_safe_retired_payload(
     };
     let mut has_lock = false;
     let mut has_other = false;
+    let known: &[_] = if kind == Kind::Retained {
+        &["base", "records.log", "commit.state", "store.lock"]
+    } else {
+        &["records.log", "commit.state", "store.lock"]
+    };
     for entry in fs::read_dir(&retired)? {
         let entry = entry?;
         let name = entry.file_name();
-        if !["records.log", "commit.state", "store.lock"]
-            .iter()
-            .any(|known| name == *known)
-            || !entry.file_type()?.is_file()
-        {
+        if !known.iter().any(|known| name == *known) || !entry.file_type()?.is_file() {
             return Ok(None);
         }
         if name == "store.lock" {

@@ -217,7 +217,7 @@ fn failed_payload_sync_keeps_marker_for_generic_and_retired_cleanup() {
         let (marker, payload) = orphan(stage);
         let error = cleanup_selected_with_syncs(
             root.path(),
-            retired.then_some(&id),
+            retired.then_some((Kind::Retired, &id)),
             |_| {
                 assert!(!payload.exists());
                 assert!(marker.exists());

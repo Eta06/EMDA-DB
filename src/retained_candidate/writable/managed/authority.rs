@@ -417,9 +417,10 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     /// attempts from older revisions. A failed comparison leaves both slots.
     pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
         self.verify_current()?;
+        let resumed = self.inner.resume_retirement()?;
         let inactive = self.inner.active.slot.other().path(&self.inner.root);
         match fs::symlink_metadata(&inactive) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(resumed),
             Err(error) => return Err(error),
             Ok(_) => {}
         }
@@ -428,7 +429,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         self.inner.uncertain = true;
         self.advance(fence)?;
         self.inner.uncertain = false;
-        self.inner.reclaim_inactive()
+        Ok(self.inner.reclaim_using(sync_existing)? || resumed)
     }
 
     fn write(&mut self, encoded: io::Result<Vec<u8>>) -> Result<(), MutationFailure> {

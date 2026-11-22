@@ -8,14 +8,23 @@ use crate::retained_base_v2::{FRAME_BYTES, Limits, encode_header, encoded_entry_
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufWriter, Write},
+    os::unix::fs::MetadataExt,
     path::Path,
 };
 
 impl RetainedStore {
     // Maintenance verifies actual file bytes, rather than just the recorded
     // digest and the cached view, before discarding an older generation.
-    pub(super) fn verify_complete(&self) -> io::Result<()> {
+    pub(super) fn verify_complete(&self, directory: &Path) -> io::Result<()> {
         self.ensure_healthy()?;
+        self.base.check_path(&directory.join("base"))?;
+        for (name, file) in [("records.log", &self.log), ("commit.state", &self.witness)] {
+            let pinned = file.metadata()?;
+            let named = directory.join(name).symlink_metadata()?;
+            if !named.is_file() || (pinned.dev(), pinned.ino()) != (named.dev(), named.ino()) {
+                return Err(record::invalid_data("retained generation file replaced"));
+            }
+        }
         let digest: [u8; 32] = self.hash.clone().finalize().into();
         self.verify_boundary(&digest)?;
         let mut observed = Sha256::new();
