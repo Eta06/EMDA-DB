@@ -1,4 +1,4 @@
-//! Phase runner for the paired full-log and authority-backed recovery workload.
+//! Phase runner for full-log, authority-backed, and SQLite recovery.
 use database_engine::{
     BatchOperation, Entry, RetainedExportLimits, Store,
     retained_base_v2::Limits,
@@ -7,6 +7,8 @@ use database_engine::{
         RetainedAuthority, RetainedStoreLimits, SuffixLimits,
     },
 };
+use rusqlite::{Connection, OpenFlags, config::DbConfig, params};
+use rustix::time::{ClockId, clock_gettime};
 use std::{error::Error, fs, num::NonZeroU64, path::Path, time::Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -41,6 +43,52 @@ const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
 enum Backend {
     Ordinary(Box<Store>),
     Retained(Box<Catalog>),
+    Sqlite(Connection),
+}
+
+fn sqlite(path: &Path, create: bool) -> Result<Connection> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE;
+    let connection = if create {
+        fs::create_dir(path)?;
+        Connection::open_with_flags(path.join("kv.db"), flags | OpenFlags::SQLITE_OPEN_CREATE)?
+    } else {
+        Connection::open_with_flags(path.join("kv.db"), flags)?
+    };
+    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    let journal: String = connection.query_row(
+        if create {
+            "PRAGMA journal_mode=WAL"
+        } else {
+            "PRAGMA journal_mode"
+        },
+        [],
+        |row| row.get(0),
+    )?;
+    let synchronous: i64 = connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
+    if journal != "wal" || synchronous != 2 {
+        return Err("SQLite requires WAL and synchronous=FULL".into());
+    }
+    if create {
+        connection.execute_batch(
+            "CREATE TABLE kv(key BLOB PRIMARY KEY, value BLOB NOT NULL, crc INTEGER NOT NULL) WITHOUT ROWID;",
+        )?;
+    }
+    Ok(connection)
+}
+
+fn checked_sqlite_value(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<Vec<u8>> {
+    let value: Vec<u8> = row.get(column)?;
+    let crc: u32 = row.get(column + 1)?;
+    if crc32fast::hash(&value) != crc {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Blob,
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "SQLite value CRC mismatch")
+                .into(),
+        ));
+    }
+    Ok(value)
 }
 
 impl Backend {
@@ -53,6 +101,7 @@ impl Backend {
                     Catalog::open_with_auto_reclaim(root.join(name), limits, provider, THRESHOLD)?;
                 Ok(Self::Retained(Box::new(store)))
             }
+            "sqlite" => Ok(Self::Sqlite(sqlite(&root.join(name), false)?)),
             _ => Err("invalid backend".into()),
         }
     }
@@ -61,14 +110,55 @@ impl Backend {
         match self {
             Self::Ordinary(store) => store.write_batch(operations)?,
             Self::Retained(store) => store.write_batch(operations)?,
+            Self::Sqlite(connection) => {
+                let transaction = connection.transaction()?;
+                {
+                    let mut put = transaction.prepare_cached(
+                        "INSERT INTO kv VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,crc=excluded.crc",
+                    )?;
+                    let mut delete = transaction.prepare_cached("DELETE FROM kv WHERE key=?1")?;
+                    for operation in operations {
+                        match operation {
+                            BatchOperation::Put { key, value } => {
+                                put.execute(params![key, value, crc32fast::hash(value)])?;
+                            }
+                            BatchOperation::Delete { key } => {
+                                delete.execute([key])?;
+                            }
+                        }
+                    }
+                }
+                transaction.commit()?;
+            }
         }
         Ok(())
+    }
+
+    fn get(&mut self, key: &[u8]) -> Result<Vec<u8>> {
+        Ok(match self {
+            Self::Ordinary(store) => store.get(key)?.ok_or("missing probe key")?,
+            Self::Retained(store) => store.get(key, 96)?.ok_or("missing probe key")?,
+            Self::Sqlite(connection) => {
+                connection.query_row("SELECT value,crc FROM kv WHERE key=?1", [key], |row| {
+                    checked_sqlite_value(row, 0)
+                })?
+            }
+        })
     }
 
     fn page(&mut self, after: Option<&[u8]>) -> Result<Vec<Entry>> {
         match self {
             Self::Ordinary(store) => Ok(store.scan(after, None, 1024)?),
             Self::Retained(store) => Ok(store.scan(after, None, 1024)?),
+            Self::Sqlite(connection) => {
+                let mut query = connection.prepare_cached(
+                    "SELECT key,value,crc FROM kv WHERE key > ?1 ORDER BY key LIMIT 1024",
+                )?;
+                let rows = query.query_map([after.unwrap_or_default()], |row| {
+                    Ok((row.get(0)?, checked_sqlite_value(row, 1)?))
+                })?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            }
         }
     }
 }
@@ -86,6 +176,11 @@ fn value(key: u64, epoch: u64) -> [u8; 96] {
 
 fn deleted(key: u64, epoch: u64) -> bool {
     epoch != 0 && (key + epoch) % 11 == 0
+}
+
+fn cpu_ns() -> i128 {
+    let time = clock_gettime(ClockId::ProcessCPUTime);
+    i128::from(time.tv_sec) * 1_000_000_000 + i128::from(time.tv_nsec)
 }
 
 fn apply(store: &mut Backend, count: u64, epoch: u64) -> Result<()> {
@@ -153,7 +248,7 @@ fn authority_state(root: &Path) -> Result<(u64, u64, [u8; 16])> {
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let [_, phase, root, name, keys, epoch] = args.as_slice() else {
-        return Err("usage: authorized_recovery_bench <setup|cutover|mutate|reopen|verify> <root> <ordinary|retained|both> <keys> <epoch>".into());
+        return Err("usage: authorized_recovery_bench <setup|cutover|mutate|reopen|verify> <root> <ordinary|retained|sqlite|both|all> <keys> <epoch>".into());
     };
     let root = Path::new(root);
     let keys: u64 = keys.parse()?;
@@ -176,6 +271,10 @@ fn main() -> Result<()> {
             fs::create_dir(root)?;
             for name in ["ordinary", "retained"] {
                 let mut store = Backend::Ordinary(Box::new(Store::open(root.join(name))?));
+                apply(&mut store, keys, 0)?;
+            }
+            if name == "all" {
+                let mut store = Backend::Sqlite(sqlite(&root.join("sqlite"), true)?);
                 apply(&mut store, keys, 0)?;
             }
         }
@@ -203,17 +302,24 @@ fn main() -> Result<()> {
                 return Err("mutation epochs start at 1".into());
             }
             let start = Instant::now();
+            let cpu_start = cpu_ns();
             let mut store = Backend::open(root, name, limits)?;
-            println!("open_ns={}", start.elapsed().as_nanos());
+            let open_cpu = cpu_ns() - cpu_start;
+            println!(
+                "open_ns={} open_cpu_ns={open_cpu}",
+                start.elapsed().as_nanos()
+            );
             if phase == "mutate" {
                 let before = (name == "retained")
                     .then(|| authority_state(root))
                     .transpose()?;
                 let start = Instant::now();
+                let cpu_start = cpu_ns();
                 apply(&mut store, CHURN, epoch)?;
+                let write_cpu = cpu_ns() - cpu_start;
                 let write_time = start.elapsed().as_nanos();
                 println!(
-                    "mutate_ns={write_time} batches={} operations={CHURN}",
+                    "mutate_ns={write_time} mutate_cpu_ns={write_cpu} batches={} operations={CHURN}",
                     CHURN / BATCH
                 );
                 if let Some((revision, _, _)) = before {
@@ -227,16 +333,44 @@ fn main() -> Result<()> {
                     println!("rotations={}", revisions / 2);
                 }
             } else if phase == "verify" {
+                let start = Instant::now();
+                let cpu_start = cpu_ns();
                 verify(&mut store, keys, epoch)?;
+                let verify_cpu = cpu_ns() - cpu_start;
+                println!(
+                    "verify_ns={} verify_cpu_ns={verify_cpu}",
+                    start.elapsed().as_nanos()
+                );
+            } else {
+                let (id, revision) = (0..keys)
+                    .rev()
+                    .map(|id| (id, if id < CHURN { epoch } else { 0 }))
+                    .find(|&(id, revision)| !deleted(id, revision))
+                    .ok_or("fixture has no probe key")?;
+                if store.get(&id.to_be_bytes())? != value(id, revision) {
+                    return Err("first read did not match the workload model".into());
+                }
+                let ready_cpu = cpu_ns() - cpu_start;
+                println!(
+                    "ready_ns={} ready_cpu_ns={ready_cpu}",
+                    start.elapsed().as_nanos()
+                );
             }
             if name == "retained" {
                 let (revision, suffix, generation) = authority_state(root)?;
                 assert!(suffix <= limits.suffix.bytes);
                 println!("revision={revision} suffix_bytes={suffix} generation={generation:02x?}");
-            } else {
+            } else if name == "ordinary" {
                 println!(
                     "log_bytes={}",
                     fs::metadata(root.join("ordinary/records.log"))?.len()
+                );
+            } else {
+                let wal = root.join("sqlite/kv.db-wal");
+                println!(
+                    "sqlite_version={} wal_bytes={}",
+                    rusqlite::version(),
+                    fs::metadata(wal)?.len()
                 );
             }
         }
