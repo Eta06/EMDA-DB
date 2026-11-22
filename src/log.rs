@@ -401,7 +401,7 @@ impl Log {
             if let Some(adoption) = validated_end.adoption {
                 // A complete but unacknowledged tail may survive a crash.
                 // Validate it first, then durably publish the adopted boundary.
-                adoption.verify_before_adoption(self)?;
+                adoption.verify_current_bytes(self)?;
                 self.sync_validated_boundary(validated_end.length)?;
             }
             if self.file.len()? != validated_end.length {

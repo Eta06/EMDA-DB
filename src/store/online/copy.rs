@@ -3,6 +3,7 @@ use super::OnlineCompactionOptions;
 use crate::log::ValueLocation;
 use crate::store::{Snapshot, Store};
 use crate::{BatchOperation, MAX_ATOMIC_BATCH_BYTES};
+use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::io;
 
@@ -52,12 +53,13 @@ pub(super) fn verify_initial(
     snapshot: &Snapshot<'_>,
     end: u64,
     options: &OnlineCompactionOptions,
+    digest: Option<&mut Sha256>,
 ) -> io::Result<()> {
     let mut index = BTreeMap::<Vec<u8>, ValueLocation>::new();
     let mut bytes = 0_usize;
     let data = snapshot.read_index()?;
     let log = data.log.as_ref().expect("active snapshot retains its log");
-    log.visit_synchronized_range(0, end, |key, location| {
+    let visit = |key: Vec<u8>, location| {
         match location {
             Some(location) => {
                 if !index.contains_key(&key) {
@@ -82,7 +84,12 @@ pub(super) fn verify_initial(
             }
         }
         Ok(())
-    })?;
+    };
+    if let Some(digest) = digest {
+        log.visit_records_with_digest(0, end, end, digest, visit)?;
+    } else {
+        log.visit_synchronized_range(0, end, visit)?;
+    }
     if &index != data.index.as_ref() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -154,11 +161,17 @@ pub(super) fn copy_snapshot(snapshot: &Snapshot<'_>, target: &Store) -> io::Resu
     }
     writer.flush()
 }
-pub(super) fn replay(source: &Store, target: &Store, start: u64, end: u64) -> io::Result<()> {
+pub(super) fn replay(
+    source: &Store,
+    target: &Store,
+    start: u64,
+    end: u64,
+    digest: &mut Sha256,
+) -> io::Result<()> {
     let mut writer = Writer::new(target);
     source
         .log
-        .visit_synchronized_range(start, end, |key, location| {
+        .visit_records_with_digest(start, end, end, digest, |key, location| {
             let value = location
                 .map(|location| source.log.read(location))
                 .transpose()?;
@@ -206,13 +219,13 @@ mod tests {
         captured.put(b"key", b"captured").unwrap();
         let options = OnlineCompactionOptions::default();
         let (mut snapshot, end) = capture(&captured, &options).unwrap();
-        verify_initial(&snapshot, end, &options).unwrap();
+        verify_initial(&snapshot, end, &options, None).unwrap();
         copy_snapshot(&snapshot, &target).unwrap();
         assert_eq!(target.get(b"key").unwrap(), Some(b"captured".to_vec()));
         assert_eq!(source.get(b"key").unwrap(), Some(b"source!!".to_vec()));
-        assert!(verify_initial(&snapshot, 0, &options).is_err());
+        assert!(verify_initial(&snapshot, 0, &options, None).is_err());
         snapshot.cancel();
-        assert!(verify_initial(&snapshot, end, &options).is_err());
+        assert!(verify_initial(&snapshot, end, &options, None).is_err());
         assert!(copy_snapshot(&snapshot, &target).is_err());
     }
 }

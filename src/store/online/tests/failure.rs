@@ -342,6 +342,76 @@ fn source_prefix_corruption_does_not_publish_a_copy_or_repair_data() {
 }
 
 #[test]
+fn online_reclaim_rejects_changed_history_after_replay() {
+    use std::os::unix::fs::FileExt;
+
+    for change_catchup in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (source, previous) = paths(root.path());
+        let store = OnlineStore::open(&source).unwrap();
+        let write_history = || {
+            store.with_store(|s| {
+                s.put(b"key", b"obsolete")?;
+                s.put(b"key", b"latest")
+            })
+        };
+        write_history().unwrap();
+        let log = source.join("records.log");
+        let replacement =
+            crate::record::encode(crate::record::Operation::Put, b"key", b"replaced").unwrap();
+        let offset = if change_catchup {
+            fs::metadata(&log).unwrap().len()
+        } else {
+            crate::witness::LOG_HEADER_SIZE as u64
+        };
+        let mut original = Vec::new();
+        let result = store.compact_reclaim_with_hooks_detailed(
+            &previous,
+            &Default::default(),
+            |point| {
+                if change_catchup && point == copy::Point::InitialCopy {
+                    write_history()?;
+                }
+                if point == copy::Point::BeforeFinalBarrier {
+                    original = fs::read(&log)?;
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .open(&log)?
+                        .write_all_at(&replacement, offset)?;
+                }
+                Ok(())
+            },
+            crate::directory::sync_existing,
+            |_| panic!("reclamation started despite changed source history"),
+        );
+        let Err(OnlineReclaimFailure::Compaction(crate::OnlineHandoffFailure::NotPublished(error))) =
+            result
+        else {
+            panic!(
+                "expected rejection before publication (catch-up: {change_catchup}): {result:?}"
+            );
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("log bytes changed"));
+        let mut changed = original.clone();
+        let offset = offset as usize;
+        changed[offset..offset + replacement.len()].copy_from_slice(&replacement);
+        assert_eq!(fs::read(&log).unwrap(), changed);
+        assert!(!previous.exists());
+
+        fs::write(&log, original).unwrap();
+        store
+            .compact_and_reclaim(&previous, &Default::default())
+            .unwrap();
+        assert_eq!(
+            store.with_store(|s| s.get(b"key")).unwrap(),
+            Some(b"latest".to_vec())
+        );
+        assert!(!previous.exists());
+    }
+}
+
+#[test]
 fn target_quota_failure_during_catchup_keeps_later_source_write() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());

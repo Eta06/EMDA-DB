@@ -38,7 +38,7 @@ pub(crate) struct VerifiedLog {
 }
 
 impl VerifiedLog {
-    /// Bind a checkpoint to bytes already validated by the caller's replay.
+    /// Bind publication to bytes already validated by the caller's replay.
     pub(crate) fn from_replay(length: u64, hasher: Sha256) -> Self {
         Self {
             length,
@@ -46,11 +46,11 @@ impl VerifiedLog {
         }
     }
 
-    pub(crate) fn verify_before_adoption(&self, log: &Log) -> io::Result<()> {
+    pub(crate) fn verify_current_bytes(&self, log: &Log) -> io::Result<()> {
         check_checkpoint_length(log, self.length)?;
         if hash_log_prefix(log, self.length)?.finalize().as_slice() != self.digest {
             return Err(record::invalid_data(
-                "log bytes changed after recovery replay",
+                "log bytes changed after verified replay",
             ));
         }
         check_checkpoint_length(log, self.length)

@@ -81,7 +81,7 @@ fn replayed_tail_adoption_rejects_changes_after_validation() {
         let error = log.adopt_replayed_tail(Some(boundary), end).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         if same_length {
-            assert_eq!(error.to_string(), "log bytes changed after recovery replay");
+            assert_eq!(error.to_string(), "log bytes changed after verified replay");
         }
         assert_eq!(
             std::fs::read(path.join("commit.state")).unwrap(),

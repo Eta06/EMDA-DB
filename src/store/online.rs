@@ -9,6 +9,7 @@ pub use worker::{
 };
 
 use super::{LogQuota, Store, compact_exchange};
+use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::fs;
 use std::io;
@@ -409,7 +410,7 @@ impl OnlineStore {
         crate::staging::cleanup_retired(parent, &id, || {
             let snapshot =
                 current.snapshot(options.max_snapshot_keys, options.max_snapshot_key_bytes)?;
-            copy::verify_initial(&snapshot, boundary, options)
+            copy::verify_initial(&snapshot, boundary, options, None)
         })
     }
 
@@ -543,7 +544,8 @@ impl OnlineStore {
         current._lock_file.verify_identity(&source)?;
         compact_exchange::source_directory_is_owned(&source)?;
         let (snapshot, initial) = copy::capture(&current, options)?;
-        copy::verify_initial(&snapshot, initial, options)?;
+        let mut replay_digest = Sha256::new();
+        copy::verify_initial(&snapshot, initial, options, Some(&mut replay_digest))?;
         let mut stage = crate::staging::Stage::directory(&parent)?;
         let target = Store::open_with_resource_limits(
             stage.path(),
@@ -559,7 +561,7 @@ impl OnlineStore {
             if end == offset {
                 break;
             }
-            copy::replay(&current, &target, offset, end)?;
+            copy::replay(&current, &target, offset, end, &mut replay_digest)?;
             offset = end;
         }
         let concurrent_replay_bytes = offset
@@ -583,7 +585,13 @@ impl OnlineStore {
                 "final compaction suffix exceeds configured limit",
             ));
         }
-        copy::replay(&current, &target, offset, final_boundary)?;
+        copy::replay(
+            &current,
+            &target,
+            offset,
+            final_boundary,
+            &mut replay_digest,
+        )?;
         copy::verify_target(&current, &target)?;
         let target_length = target.log.len()?;
         let original_log_limit = current.log_quota.as_ref().map(LogQuota::limit);
@@ -615,6 +623,9 @@ impl OnlineStore {
         current._lock_file.verify_identity(&source)?;
         compact_exchange::source_directory_is_owned(&source)?;
         fs::File::open(stage.path())?.sync_all()?;
+        crate::checkpoint::VerifiedLog::from_replay(final_boundary, replay_digest)
+            .verify_current_bytes(&current.log)?;
+        current.log.verify_witness()?;
         if let Some(tracker) = tracker {
             tracker.begin_candidate();
         }
