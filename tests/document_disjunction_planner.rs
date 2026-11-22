@@ -17,6 +17,13 @@ fn eq(field: &str, value: Value) -> DocumentFilter {
     }
 }
 
+fn exists(field: &[&str], present: bool) -> DocumentFilter {
+    DocumentFilter::Exists {
+        path: field.iter().map(|component| (*component).into()).collect(),
+        exists: present,
+    }
+}
+
 fn negated(filter: DocumentFilter) -> DocumentFilter {
     DocumentFilter::Not(Box::new(filter))
 }
@@ -80,6 +87,133 @@ fn access(names: &[&str], probes: usize) -> DocumentQueryAccess {
         indexes: names.iter().map(|name| name.to_string()).collect(),
         probes,
     }
+}
+
+#[test]
+fn full_index_scan_requires_explicit_presence_and_the_partial_guard() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "items",
+            IndexDefinition {
+                name: "covered".into(),
+                fields: vec![vec!["meta".into(), "score".into()], path("rank")],
+                unique: true,
+                partial: Some(PartialFilter::Equals {
+                    path: path("active"),
+                    value: IndexValue::Boolean(true),
+                }),
+            },
+        )
+        .unwrap();
+        for (id, document) in [
+            ("a", json!({"meta":{"score":7},"rank":true,"active":true})),
+            (
+                "b",
+                json!({"meta":{"score":null},"rank":false,"active":true}),
+            ),
+            ("c", json!({"meta":{"score":7},"active":true})),
+            ("d", json!({"meta":{},"rank":true,"active":true})),
+            ("e", json!({"meta":{"score":7},"rank":true,"active":false})),
+        ] {
+            db.insert("items", id, &document).unwrap();
+        }
+        let score = exists(&["meta", "score"], true);
+        let rank = negated(exists(&["rank"], false));
+        let active = eq("active", json!(true));
+        let filter = DocumentFilter::And(vec![
+            negate_disjunctions(DocumentFilter::Or(vec![
+                score.clone(),
+                DocumentFilter::And(vec![score.clone(), active.clone()]),
+            ])),
+            rank.clone(),
+            active.clone(),
+        ]);
+        let query = request(filter.clone(), 2);
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::PresenceIndex {
+                index: "covered".into(),
+                partial: true,
+            }
+        );
+        assert_eq!(planned.result.plan.scanned, 2);
+        assert_eq!(planned.result.documents[0].id, "a");
+        assert_eq!(planned.result.documents[1].id, "b");
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &request(filter.clone(), 5))
+                .unwrap()
+                .documents
+        );
+        assert_eq!(
+            db.query_planned("items", &request(filter, 1))
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidInput
+        );
+        for uncovered in [
+            DocumentFilter::And(vec![score.clone(), rank]),
+            DocumentFilter::And(vec![score, active]),
+        ] {
+            let query = request(uncovered, 5);
+            let planned = db.query_planned("items", &query).unwrap();
+            assert_eq!(planned.access, DocumentQueryAccess::CollectionScan);
+            assert_eq!(planned.result.documents.len(), 3);
+            assert_eq!(
+                planned.result.documents,
+                db.query("items", &query).unwrap().documents
+            );
+        }
+    });
+}
+
+#[test]
+fn empty_presence_scan_tracks_concurrent_index_entries() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index("items", index("flag", &["flag"])).unwrap();
+        db.insert("items", "old", &json!({})).unwrap();
+        let query = request(exists(&["flag"], true), 1);
+        let (read, observed) = mpsc::channel();
+        let (commit, written) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                observed.recv_timeout(Duration::from_secs(5)).unwrap();
+                db.replace("items", "old", &json!({"flag":null}), false)
+                    .unwrap();
+                commit.send(()).unwrap();
+            });
+            let reader = db.transaction_with_read_set(|tx| {
+                let planned = tx.query_planned("items", &query)?;
+                assert_eq!(
+                    planned.access,
+                    DocumentQueryAccess::PresenceIndex {
+                        index: "flag".into(),
+                        partial: false
+                    }
+                );
+                assert!(planned.result.documents.is_empty());
+                read.send(()).unwrap();
+                written.recv_timeout(Duration::from_secs(5)).unwrap();
+                tx.put_raw(b"presence-read", b"stale")
+            });
+            writer.join().unwrap();
+            assert!(is_transaction_conflict(&reader.unwrap_err()));
+        });
+        let receipt = db.transaction(|tx| tx.get_raw(b"presence-read")).unwrap();
+        assert_eq!(receipt, None);
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &query).unwrap().documents
+        );
+        assert_eq!(planned.result.documents.len(), 1);
+        assert_eq!(planned.result.documents[0].document, json!({"flag":null}));
+    });
 }
 
 #[test]

@@ -208,6 +208,15 @@ share the 256-probe cap. A prefix can match several rows of a unique index, so
 the planner pages through those results under the same candidate and byte
 limits and applies the full filter.
 
+When no narrower plan qualifies, the planner can scan a single or compound
+index if explicit `Exists` predicates prove that every indexed field is
+present. Negation, ancestor paths and disjunctions use the same presence
+proof rules as partial-index eligibility. Explicit null counts as present.
+A partial index still requires proof of its guard. The `PresenceIndex`
+path scans all entries in the eligible index under the normal candidate
+and byte limits, then applies the original filter. This can avoid scanning
+documents with missing fields or documents omitted by the partial guard.
+
 A partial index is eligible only when a required predicate proves its filter. A required `Exists(true)`, equality, `In`, comparison or array predicate proves presence of its path and each ancestor. A required `Exists(false)` proves absence of its path and each descendant. Negating `Exists` flips its test. For presence and absence proofs, negation swaps the conjunction and disjunction rules, and double negation cancels. `NotIn` matches missing paths. When negated, a nonempty `NotIn` proves presence just like `In`. For a typed equality guard, the planner must prove both bounds at that scalar on the guarded path. A required typed equality, comparison at that scalar, or nonempty membership list can prove a bound. A membership proof requires every value to be indexable and on the appropriate side of the bound. Negating `NotIn` has the same proof as `In`. Conjunction, disjunction and double negation use the same proof rules as presence guards. A negated comparison on its own proves neither bound because it can match a missing or non-indexable field. Presence and absence proofs also follow through a nonempty `Or` when every branch proves the same condition. Explicit null counts as present. Other negated value and array predicates supply no presence or absence proof. If no eligible index qualifies, the method falls back to `query`'s complete scan. The result reports the selected path and actual candidate-document counts. This can succeed for a large collection when the explicit complete scan exceeds its work limit, but it is not a cost-based planner and does not handle arbitrary compound constraints or general boolean implication.
 
 The indexed path relies on the declared index being intact. It validates each encountered index entry and its unique mapping, but an entry removed by unsupported raw writes to the reserved namespace can cause an omission. `verify_collection` can detect such omissions within its existing small-collection limits. The query holds the same transaction view, read-set range dependencies, conflict behavior, document and response limits as the underlying indexed query; it does not introduce cross-store snapshots or a total-memory guarantee.

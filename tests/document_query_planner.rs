@@ -209,16 +209,6 @@ fn exercise(db: &DocumentDatabase<'_>) {
     for filter in [
         DocumentFilter::All,
         DocumentFilter::Not(Box::new(equal("email", json!("a@example")))),
-        DocumentFilter::And(vec![
-            DocumentFilter::Or(vec![
-                equal("email", json!("a@example")),
-                DocumentFilter::All,
-            ]),
-            DocumentFilter::Exists {
-                path: path("score"),
-                exists: true,
-            },
-        ]),
         equal("group", json!("x")),
         equal("rank", json!(1)),
         equal("email", json!([1])),
@@ -233,6 +223,27 @@ fn exercise(db: &DocumentDatabase<'_>) {
             DocumentQueryAccess::CollectionScan,
         );
     }
+    compare(
+        db,
+        &DocumentQuery {
+            filter: DocumentFilter::And(vec![
+                DocumentFilter::Or(vec![
+                    equal("email", json!("a@example")),
+                    DocumentFilter::All,
+                ]),
+                DocumentFilter::Exists {
+                    path: path("score"),
+                    exists: true,
+                },
+            ]),
+            max_scanned: 10,
+            ..Default::default()
+        },
+        DocumentQueryAccess::PresenceIndex {
+            index: "nonunique".into(),
+            partial: false,
+        },
+    );
     compare(
         db,
         &DocumentQuery {

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan bounded document index scans when explicit presence tests cover every
+  indexed field and the filter implies any partial-index guard.
+
 - Share checkpoint suffix overlays across snapshots of the same state.
   The first writer detaches a shared overlay before appending.
 

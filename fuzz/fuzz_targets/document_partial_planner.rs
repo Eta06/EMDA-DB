@@ -202,13 +202,45 @@ fuzz_target!(|data: &[u8]| {
         if compound {
             tuple.push(equal("tenant", json!("t")));
         }
-        let mode = bytes[0] % 18;
+        let mode = if bytes[0] >= 252 {
+            18 + (bytes[0] - 252)
+        } else {
+            bytes[0] % 18
+        };
         let partial_equality = || DocumentQueryAccess::PartialEqualityIndex {
             index: "i".into(),
             fields: if compound { 2 } else { 1 },
         };
         let not = |filter| DocumentFilter::Not(Box::new(filter));
         let expected_access = match mode {
+            18..=21 => {
+                let group = exists("group", mode != 19 || compound);
+                let group = if mode == 20 {
+                    not(and(vec![
+                        not(group.clone()),
+                        not(and(vec![group, guard.clone()])),
+                    ]))
+                } else {
+                    group
+                };
+                tuple = vec![group];
+                if compound && mode != 19 {
+                    tuple.push(not(exists("tenant", false)));
+                }
+                tuple.push(if mode == 21 {
+                    DocumentFilter::Or(vec![guard.clone(), DocumentFilter::All])
+                } else {
+                    guard.clone()
+                });
+                if matches!(mode, 18 | 20) {
+                    DocumentQueryAccess::PresenceIndex {
+                        index: "i".into(),
+                        partial: true,
+                    }
+                } else {
+                    DocumentQueryAccess::CollectionScan
+                }
+            }
             0 | 5 | 7 => {
                 tuple.push(if mode == 5 && kind == 0 {
                     equal("active", Value::Null)

@@ -80,6 +80,8 @@ pub enum DocumentQueryAccess {
         probes: usize,
         partial: bool,
     },
+    /// Scan an index whose fields are all required to be present.
+    PresenceIndex { index: String, partial: bool },
     /// Union the indexed candidates of every branch of a required disjunction.
     DisjunctionIndex {
         /// Distinct index names in ascending order.
@@ -230,13 +232,19 @@ fn path_implies_presence(field: &[String], actual: bool, path: &[String], exists
 fn required_presence(required: &[Predicate<'_>], path: &[String], exists: bool) -> bool {
     required
         .iter()
-        .any(|&(filter, negated)| proves_presence(filter, path, exists, negated))
+        .any(|&(filter, negated)| proves_presence(filter, path, exists, negated, false))
 }
 
-fn proves_presence(filter: &DocumentFilter, path: &[String], exists: bool, negated: bool) -> bool {
-    let proves = |child| proves_presence(child, path, exists, negated);
+fn proves_presence(
+    filter: &DocumentFilter,
+    path: &[String],
+    exists: bool,
+    negated: bool,
+    explicit_only: bool,
+) -> bool {
+    let proves = |child| proves_presence(child, path, exists, negated, explicit_only);
     match filter {
-        DocumentFilter::Not(child) => proves_presence(child, path, exists, !negated),
+        DocumentFilter::Not(child) => proves_presence(child, path, exists, !negated, explicit_only),
         DocumentFilter::And(children) if !negated => children.iter().any(proves),
         DocumentFilter::Or(children) if negated => children.iter().any(proves),
         DocumentFilter::And(children) | DocumentFilter::Or(children) => {
@@ -249,7 +257,9 @@ fn proves_presence(filter: &DocumentFilter, path: &[String], exists: bool, negat
         DocumentFilter::NotIn {
             path: field,
             values,
-        } if negated && !values.is_empty() => path_implies_presence(field, true, path, exists),
+        } if !explicit_only && negated && !values.is_empty() => {
+            path_implies_presence(field, true, path, exists)
+        }
         DocumentFilter::Equal { path: field, .. }
         | DocumentFilter::In { path: field, .. }
         | DocumentFilter::Compare { path: field, .. }
@@ -258,7 +268,7 @@ fn proves_presence(filter: &DocumentFilter, path: &[String], exists: bool, negat
         | DocumentFilter::ArrayContainsAll { path: field, .. }
         | DocumentFilter::ArrayLength { path: field, .. }
         | DocumentFilter::ArrayElementMatch { path: field, .. }
-            if !negated =>
+            if !explicit_only && !negated =>
         {
             path_implies_presence(field, true, path, exists)
         }
@@ -868,7 +878,31 @@ fn plan_query<'a>(
             )));
         }
     }
-    Ok(None)
+    // This scans the whole index, so keep every narrower plan above it.
+    // Opt in through explicit presence tests. An unsupported scalar probe
+    // alone should keep its existing collection-scan fallback.
+    let presence = indexes.iter().find(|index| {
+        eligible(index, &[(filter, false)])
+            && index
+                .fields
+                .iter()
+                .all(|field| proves_presence(filter, field, true, false, true))
+    });
+    Ok(presence.map(|index| {
+        (
+            DocumentQueryAccess::PresenceIndex {
+                index: index.name.clone(),
+                partial: index.partial.is_some(),
+            },
+            vec![IndexProbe {
+                index: &index.name,
+                equal: Vec::new(),
+                lower: None,
+                upper: None,
+                unique_equality: false,
+            }],
+        )
+    }))
 }
 
 struct Candidates<'a> {
