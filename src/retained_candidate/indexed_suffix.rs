@@ -275,6 +275,8 @@ impl Overlay {
         let mut key_bytes = self.key_bytes;
         let mut work = self.work;
         let mut added = 0;
+        let mut total_shifts = 0_usize;
+        let mut shift_span = 0;
         let remaining = remaining_operations(suffix_limits, self.operations)?;
         let operations = visit_suffix(record, remaining, |operation, key, range| {
             let current = self.entries.len() + added;
@@ -283,9 +285,12 @@ impl Overlay {
             match find(&changes, key) {
                 Ok(position) => changes[position].value = value,
                 Err(position) => {
-                    if find(&self.entries, key).is_err() {
+                    if let Err(position) = find(&self.entries, key) {
                         key_bytes = admit_key(overlay_limits, current, key_bytes, key)?;
                         added += 1;
+                        let shifts = self.entries.len() - position;
+                        total_shifts = total_shifts.saturating_add(shifts);
+                        shift_span = shift_span.max(shifts);
                     }
                     insert(&mut changes, position, key, value)?;
                 }
@@ -295,6 +300,10 @@ impl Overlay {
         self.entries.try_reserve(added).map_err(allocation)?;
         Ok(OverlayAppend {
             changes,
+            added,
+            // Keep direct updates for replacements, appends and sparse
+            // inserts. Merge when repeated shifts cost more than two passes.
+            merge: total_shifts > shift_span.saturating_mul(2),
             work,
             key_bytes,
             operations: self.operations + operations,
@@ -302,15 +311,51 @@ impl Overlay {
     }
 
     pub(super) fn commit_append(&mut self, prepared: OverlayAppend) {
-        for change in prepared.changes {
-            match find(&self.entries, &change.key) {
-                Ok(position) => self.entries[position].value = change.value,
-                Err(position) => self.entries.insert(position, change),
+        if !prepared.merge {
+            for change in prepared.changes {
+                match find(&self.entries, &change.key) {
+                    Ok(position) => self.entries[position].value = change.value,
+                    Err(position) => self.entries.insert(position, change),
+                }
             }
+        } else {
+            self.merge_append(prepared.changes, prepared.added);
         }
         self.operations = prepared.operations;
         self.key_bytes = prepared.key_bytes;
         self.work = prepared.work;
+    }
+
+    fn merge_append(&mut self, changes: Vec<OverlayEntry>, added: usize) {
+        // Preparation reserved the extra slots before the durable append.
+        // Merge from the end so each existing entry moves at most once.
+        let mut old = self.entries.len();
+        self.entries.resize_with(old + added, || OverlayEntry {
+            key: Vec::new(),
+            value: None,
+        });
+        let mut out = self.entries.len();
+        for change in changes.into_iter().rev() {
+            if out == old {
+                // All inserts are placed. Update earlier replacements
+                // directly instead of scanning the untouched prefix.
+                let position = find(&self.entries[..old], &change.key)
+                    .expect("prepared overlay replacement exists");
+                self.entries[position].value = change.value;
+                continue;
+            }
+            while old != 0 && self.entries[old - 1].key > change.key {
+                old -= 1;
+                out -= 1;
+                self.entries.swap(old, out);
+            }
+            out -= 1;
+            if old != 0 && self.entries[old - 1].key == change.key {
+                old -= 1;
+            }
+            self.entries[out] = change;
+        }
+        debug_assert_eq!(old, out);
     }
 
     pub(super) fn replay_disk(
@@ -454,6 +499,8 @@ pub(super) struct LivePeaks {
 
 pub(super) struct OverlayAppend {
     changes: Vec<OverlayEntry>,
+    added: usize,
+    merge: bool,
     key_bytes: usize,
     work: u64,
     operations: u64,

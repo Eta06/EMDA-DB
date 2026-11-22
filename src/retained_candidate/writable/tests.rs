@@ -378,6 +378,58 @@ fn batch_preflight_and_replay_charge_the_same_ordered_work() {
 }
 
 #[test]
+fn mixed_overlay_batch_merges_new_and_existing_keys_before_reopen() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open(LIMITS).unwrap();
+    for key in [b"b", b"d", b"f", b"h"] {
+        store.put(key, key).unwrap();
+    }
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"z",
+                value: b"end",
+            },
+            BatchOperation::Put {
+                key: b"e",
+                value: b"middle",
+            },
+            BatchOperation::Put {
+                key: b"a",
+                value: b"new",
+            },
+            BatchOperation::Delete { key: b"d" },
+            BatchOperation::Put {
+                key: b"f",
+                value: b"changed",
+            },
+            BatchOperation::Delete { key: b"c" },
+            BatchOperation::Put {
+                key: b"e",
+                value: b"last",
+            },
+        ])
+        .unwrap();
+    let expected = [
+        (b'a', "new"),
+        (b'b', "b"),
+        (b'e', "last"),
+        (b'f', "changed"),
+        (b'h', "h"),
+        (b'z', "end"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (vec![key], value.as_bytes().to_vec()))
+    .collect::<Vec<_>>();
+    assert_eq!(store.scan(None, None, 8).unwrap(), expected);
+    drop(store);
+    assert_eq!(
+        f.open(LIMITS).unwrap().scan(None, None, 8).unwrap(),
+        expected
+    );
+}
+
+#[test]
 fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
     for point in [
         CommitPoint::Appended,

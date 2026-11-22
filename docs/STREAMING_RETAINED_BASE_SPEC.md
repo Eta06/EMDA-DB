@@ -251,7 +251,10 @@ Ordered DB02 children are admitted as one atomic append. Preparation
 accounts for every child in replay order and reserves overlay growth
 and changed keys before the append. Commit appends the
 complete record, synchronizes the log, updates and synchronizes the
-witness, then publishes changes in memory. An uncertain write poisons
+witness, then publishes changes in memory. When many new keys would
+repeatedly shift the same overlay entries, publication uses a reverse
+merge in the reserved vector. Admission still charges every operation
+in replay order. An uncertain write poisons
 the handle until reopening. The caps govern the file input and logical
 retained state, while returned pages, encoded appends, staging,
 allocator overhead and filesystem blocks have separate costs.

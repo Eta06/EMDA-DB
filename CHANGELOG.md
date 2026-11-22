@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Merge admitted retained-overlay batches in place when inserting many keys
+  would otherwise shift the same entries repeatedly.
+
 - Avoid repeated authority-directory synchronization for unchanged records.
   Each open file-backed authority retains one descriptor for the record it
   last verified and synchronized.
