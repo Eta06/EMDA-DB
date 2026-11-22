@@ -357,7 +357,7 @@ impl CheckpointStore {
             lock,
             checkpoint_view,
         )?;
-        let mut view = RecoveredCheckpointView::from_base_for_writer(
+        let (mut view, adoption_digest) = RecoveredCheckpointView::from_base_for_writer(
             base,
             max_tail_bytes,
             max_tail_keys,
@@ -376,7 +376,19 @@ impl CheckpointStore {
             ));
         }
         let log = open_writer(&path, boundary, length)?;
-        if length > boundary {
+        if log.id() != view.base.log.id() {
+            return Err(record::invalid_data(
+                "log identity changed while opening checkpoint writer",
+            ));
+        }
+        if let Some(suffix_digest) = adoption_digest {
+            crate::checkpoint::bind_replayed_log(
+                &log,
+                view.base.log_boundary(),
+                length,
+                view.base.covered_log_digest(),
+                &suffix_digest,
+            )?;
             log.sync_validated_boundary(length).map_err(|error| {
                 io::Error::new(
                     error.kind(),

@@ -277,6 +277,56 @@ fn whole_log_limit_rejects_unacknowledged_tail_before_adoption() {
 }
 
 #[test]
+fn changed_tail_during_writer_open_leaves_witness_unchanged() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let log_path = path.join("records.log");
+    let witness_path = path.join("commit.state");
+    let tail = record::encode(Operation::Put, b"tail", b"value").unwrap();
+    let replacement = record::encode(Operation::Put, b"swap", b"value").unwrap();
+    assert_eq!(tail.len(), replacement.len());
+    OpenOptions::new()
+        .append(true)
+        .open(&log_path)
+        .unwrap()
+        .write_all(&tail)
+        .unwrap();
+    let original = fs::read(&log_path).unwrap();
+    let witness = fs::read(&witness_path).unwrap();
+    let result = CheckpointStore::open_using(
+        &path,
+        &checkpoint,
+        &digest,
+        OpenLimits::default(),
+        |path, boundary, length| {
+            let log = Log::open_checkpoint_writer(path, boundary, length)?;
+            let file = OpenOptions::new().write(true).open(&log_path)?;
+            FileExt::write_all_at(&file, &replacement, length - replacement.len() as u64)?;
+            Ok(log)
+        },
+    );
+    let error = result.err().expect("changed tail was accepted");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "checkpoint log suffix changed during replay"
+    );
+    assert_eq!(fs::read(&witness_path).unwrap(), witness);
+    let current = fs::read(&log_path).unwrap();
+    let offset = original.len() - tail.len();
+    assert_eq!(&current[..offset], &original[..offset]);
+    assert_eq!(&current[offset..], &replacement);
+
+    fs::write(&log_path, original).unwrap();
+    let recovered = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    assert_eq!(
+        recovered.get(b"tail").unwrap().as_deref(),
+        Some(b"value".as_slice())
+    );
+    assert_eq!(recovered.get(b"swap").unwrap(), None);
+    assert_ne!(fs::read(witness_path).unwrap(), witness);
+}
+
+#[test]
 fn unacknowledged_tail_log_sync_failures_return_error_and_retry_safely() {
     for fault in [LogFault::SyncBefore, LogFault::SyncAfter] {
         let (_dir, path, checkpoint, digest) = fixture();

@@ -158,6 +158,7 @@ impl RecoveredCheckpointView {
             max_tail_key_bytes,
             false,
         )
+        .map(|(view, _)| view)
     }
 
     // Only an exclusive writer may adopt a complete unacknowledged tail,
@@ -167,7 +168,7 @@ impl RecoveredCheckpointView {
         max_tail_bytes: u64,
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
-    ) -> io::Result<Self> {
+    ) -> io::Result<(Self, Option<[u8; 32]>)> {
         Self::from_base_mode(
             base,
             max_tail_bytes,
@@ -183,7 +184,7 @@ impl RecoveredCheckpointView {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
         allow_unacknowledged: bool,
-    ) -> io::Result<Self> {
+    ) -> io::Result<(Self, Option<[u8; 32]>)> {
         Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let boundary = base.witnessed_boundary;
         let length = base.log.len()?;
@@ -203,38 +204,50 @@ impl RecoveredCheckpointView {
         }
         let mut overlay = BTreeMap::new();
         let mut key_bytes = 0_usize;
-        base.log
-            .visit_records(base.log_boundary(), Some(boundary), |key, location| {
-                if !overlay.contains_key(&key) {
-                    if overlay.len() >= max_tail_keys {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "recovered view suffix key limit exceeded",
-                        ));
-                    }
-                    key_bytes = key_bytes
-                        .checked_add(key.len())
-                        .filter(|bytes| *bytes <= max_tail_key_bytes)
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidInput,
-                                "recovered view suffix key byte limit exceeded",
-                            )
-                        })?;
+        let visit = |key: Vec<u8>, location| {
+            if !overlay.contains_key(&key) {
+                if overlay.len() >= max_tail_keys {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "recovered view suffix key limit exceeded",
+                    ));
                 }
-                overlay.insert(key, location);
-                Ok(())
-            })?;
+                key_bytes = key_bytes
+                    .checked_add(key.len())
+                    .filter(|bytes| *bytes <= max_tail_key_bytes)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "recovered view suffix key byte limit exceeded",
+                        )
+                    })?;
+            }
+            overlay.insert(key, location);
+            Ok(())
+        };
+        let start = base.log_boundary();
+        let adoption_digest = if length > boundary {
+            Some(
+                base.log
+                    .visit_observed_suffix(start, length, boundary, visit)?,
+            )
+        } else {
+            base.log.visit_synchronized_range(start, length, visit)?;
+            None
+        };
         if base.log.len()? != length {
             return Err(record::invalid_data(
                 "log length changed while opening recovered view",
             ));
         }
-        Ok(Self {
-            base,
-            overlay,
-            tail_bytes,
-        })
+        Ok((
+            Self {
+                base,
+                overlay,
+                tail_bytes,
+            },
+            adoption_digest,
+        ))
     }
 
     /// Number of raw suffix bytes validated at open.
