@@ -1,4 +1,4 @@
-use database_engine::{BatchOperation, CheckpointStore, Store};
+use database_engine::{BatchOperation, CheckpointStore, PublicationFailure, Store};
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::FileExt;
 
@@ -68,6 +68,13 @@ fn checkpoint_store_backup_rejects_corrupt_obsolete_records() {
     log.write_all_at(&byte, 28).unwrap();
     let destination = dir.path().join("bad-backup");
     assert!(store.backup(&destination).is_err());
+    let failure =
+        store.backup_with_file_limit_detailed(&destination, log.metadata().unwrap().len() + 56);
+    assert!(
+        matches!(failure, Err(PublicationFailure::NotPublished(ref error))
+        if error.kind() == std::io::ErrorKind::InvalidData),
+        "{failure:?}"
+    );
     assert!(!destination.exists());
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"new"[..]));
     drop(store);

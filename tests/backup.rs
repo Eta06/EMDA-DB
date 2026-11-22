@@ -1,10 +1,71 @@
-use database_engine::{PublicationFailure, Store};
+use database_engine::{CheckpointStore, PublicationFailure, Store};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use tempfile::tempdir;
+
+#[test]
+fn backup_file_limit_includes_the_envelope_before_staging_on_both_backends() {
+    for checkpointed in [false, true] {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("source");
+        let target = dir.path().join("backup");
+        let checkpoint = dir.path().join("checkpoint");
+        let mut ordinary = Some(Store::open(&source).unwrap());
+        let store = ordinary.as_ref().unwrap();
+        store.put(b"key", b"value").unwrap();
+        let checkpoint_store = if checkpointed {
+            let digest = store.checkpoint_to(&checkpoint).unwrap();
+            drop(ordinary.take());
+            let store = CheckpointStore::open(&source, &checkpoint, &digest).unwrap();
+            store.put(b"key", b"checkpoint tail").unwrap();
+            Some(store)
+        } else {
+            None
+        };
+
+        let backup = |limit| match (&ordinary, &checkpoint_store) {
+            (Some(store), _) => store.backup_with_file_limit_detailed(&target, limit),
+            (_, Some(store)) => store.backup_with_file_limit_detailed(&target, limit),
+            _ => unreachable!(),
+        };
+        let log = fs::read(source.join("records.log")).unwrap();
+        let limit = log.len() as u64 + 56;
+        let entries = fs::read_dir(dir.path()).unwrap().count();
+
+        // A stage would need a shared lock on this directory.
+        let parent = fs::File::open(dir.path()).unwrap();
+        fs2::FileExt::try_lock_exclusive(&parent).unwrap();
+        for insufficient in [0, limit - 1] {
+            let result = backup(insufficient);
+            assert!(
+                matches!(result, Err(PublicationFailure::NotPublished(ref error))
+                    if error.kind() == std::io::ErrorKind::InvalidInput),
+                "{result:?}"
+            );
+            assert!(!target.exists());
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), entries);
+        }
+        fs2::FileExt::unlock(&parent).unwrap();
+
+        backup(limit).unwrap();
+        let bytes = fs::read(&target).unwrap();
+        assert_eq!(bytes.len() as u64, limit);
+        let destination = dir.path().join("restored");
+        Store::restore_with_log_limit_detailed(&target, &destination, log.len() as u64).unwrap();
+        assert_eq!(fs::read(destination.join("records.log")).unwrap(), log);
+        let conflict = backup(limit);
+        assert!(
+            matches!(conflict, Err(PublicationFailure::OutcomeUnknown(ref error))
+                if error.kind() == std::io::ErrorKind::AlreadyExists),
+            "{conflict:?}"
+        );
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        assert_eq!(fs::read(source.join("records.log")).unwrap(), log);
+    }
+}
 
 #[test]
 fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {

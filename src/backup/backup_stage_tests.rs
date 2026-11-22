@@ -78,7 +78,14 @@ fn prepare(root: &Path, v2: bool) -> SourceSnapshot {
 
 fn invoke(root: &Path, hook: impl FnMut(BackupCreationPoint) -> io::Result<()>) -> io::Result<()> {
     let (source, _) = Log::open(&root.join("source"), false)?;
-    create_with_stage_hooks(&source, &root.join("backup"), |_| Ok(()), || Ok(()), hook)
+    create_with_stage_hooks(
+        &source,
+        &root.join("backup"),
+        None,
+        |_| Ok(()),
+        || Ok(()),
+        hook,
+    )
 }
 
 fn assert_preserved_and_retry(root: &Path, before: &SourceSnapshot) {

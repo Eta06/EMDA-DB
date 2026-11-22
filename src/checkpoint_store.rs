@@ -545,9 +545,30 @@ impl CheckpointStore {
         &self,
         destination: impl AsRef<Path>,
     ) -> Result<(), crate::PublicationFailure> {
+        self.backup_detailed_with_limit(destination.as_ref(), None)
+    }
+
+    /// Creates a full-log backup with a byte ceiling on the complete backup
+    /// file, including its header and footer. An exact fit is accepted.
+    /// A backup over the limit returns `NotPublished(InvalidInput)` before
+    /// creating a stage or copying the log. This rejection does not establish
+    /// that the source log passes full verification.
+    pub fn backup_with_file_limit_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+        max_file_bytes: u64,
+    ) -> Result<(), crate::PublicationFailure> {
+        self.backup_detailed_with_limit(destination.as_ref(), Some(max_file_bytes))
+    }
+
+    fn backup_detailed_with_limit(
+        &self,
+        destination: &Path,
+        max_file_bytes: Option<u64>,
+    ) -> Result<(), crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.backup_using(destination.as_ref(), |log, destination| {
-                crate::backup::create_tracked(log, destination, tracker)
+            self.backup_using(destination, |log, destination| {
+                crate::backup::create_tracked(log, destination, max_file_bytes, tracker)
             })
         })
     }

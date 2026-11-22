@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a caller-selected backup file size limit to both writable stores. The
+  limit includes the full-log backup envelope and is checked before staging.
+
 - Seek to verified checkpoint entry offsets for bounded range scans and
   reuse the read buffer across index blocks.
 

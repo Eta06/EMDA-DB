@@ -94,7 +94,7 @@ fn publication_crash_child() {
     let result = match mode.as_str() {
         "backup-staged" => {
             let (log, _) = Log::open(&source, false).unwrap();
-            create_with_hooks(&log, &backup, |_| Ok(()), pause_at_boundary)
+            create_with_hooks(&log, &backup, None, |_| Ok(()), pause_at_boundary)
         }
         "backup-published" => {
             let (log, _) = Log::open(&source, false).unwrap();
@@ -517,6 +517,7 @@ fn structured_backup_failures_distinguish_before_and_after_publication() {
         create_with_stage_hooks(
             &log,
             &backup,
+            Some(log.len().unwrap() + HEADER_SIZE + FOOTER_SIZE),
             crate::directory::sync_existing,
             || {
                 tracker.begin_publication();
@@ -540,6 +541,7 @@ fn structured_backup_failures_distinguish_before_and_after_publication() {
         create_with_hooks(
             &log,
             &backup,
+            Some(log.len().unwrap() + HEADER_SIZE + FOOTER_SIZE),
             |_| Err(io::Error::other("injected directory sync")),
             || {
                 tracker.begin_publication();
@@ -578,6 +580,7 @@ fn backup_rejects_a_self_consistent_substitution_after_stage_sync() {
         create_with_stage_hooks(
             &log,
             &destination,
+            None,
             crate::directory::sync_existing,
             || {
                 tracker.begin_publication();

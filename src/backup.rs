@@ -64,12 +64,19 @@ pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
 pub(crate) fn create_tracked(
     log: &Log,
     destination: &Path,
+    max_file_bytes: Option<u64>,
     tracker: &crate::publication_outcome::Tracker,
 ) -> io::Result<()> {
-    create_with_hooks(log, destination, crate::directory::sync_existing, || {
-        tracker.begin_publication();
-        Ok(())
-    })
+    create_with_hooks(
+        log,
+        destination,
+        max_file_bytes,
+        crate::directory::sync_existing,
+        || {
+            tracker.begin_publication();
+            Ok(())
+        },
+    )
 }
 
 fn create_with_sync(
@@ -77,16 +84,24 @@ fn create_with_sync(
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    create_with_hooks(log, destination, sync_parent, || Ok(()))
+    create_with_hooks(log, destination, None, sync_parent, || Ok(()))
 }
 
 pub(crate) fn create_with_hooks(
     log: &Log,
     destination: &Path,
+    max_file_bytes: Option<u64>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
-    create_with_stage_hooks(log, destination, sync_parent, before_publish, |_| Ok(()))
+    create_with_stage_hooks(
+        log,
+        destination,
+        max_file_bytes,
+        sync_parent,
+        before_publish,
+        |_| Ok(()),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,14 +117,26 @@ enum BackupCreationPoint {
 fn create_with_stage_hooks(
     log: &Log,
     destination: &Path,
+    max_file_bytes: Option<u64>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
     mut hook: impl FnMut(BackupCreationPoint) -> io::Result<()>,
 ) -> io::Result<()> {
     log.verify_witness()?;
+    let log_len = log.len()?;
+    if let Some(limit) = max_file_bytes {
+        let file_bytes = HEADER_SIZE
+            .checked_add(log_len)
+            .and_then(|bytes| bytes.checked_add(FOOTER_SIZE));
+        if file_bytes.is_none_or(|bytes| bytes > limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "backup exceeds configured file byte limit",
+            ));
+        }
+    }
     let parent = parent_directory(destination)?;
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
-    let log_len = log.len()?;
     temp.write_all(HEADER)?;
     hook(BackupCreationPoint::HeaderWritten)?;
     let digest = copy_data_with_hook(

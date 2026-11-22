@@ -68,6 +68,14 @@ independent off-host copy. A visible result after a directory-sync failure may
 not be durable. Inspect and reconcile unknown outcomes before retry. Existing
 backup/restore APIs retain their previous error types.
 
+Both writable stores provide `backup_with_file_limit_detailed` to cap the
+complete backup file, including its header and footer. The store checks the
+captured log length under its writer barrier. An over-limit backup returns
+`NotPublished(InvalidInput)` before creating a stage or copying log bytes.
+An exact fit is accepted and still undergoes full backup verification.
+The limit covers the backup artifact's logical file length. Filesystem
+allocation and staging metadata are outside that limit.
+
 `Store::restore_with_log_limit_detailed` adds a per-call ceiling on the
 resulting `records.log`, including the new header installed for an empty
 legacy backup. After checking the backup envelope and declared length, an
