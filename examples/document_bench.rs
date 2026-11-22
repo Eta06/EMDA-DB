@@ -174,6 +174,19 @@ fn prototype(
     drop(store);
     let reopened = Store::open(&path)?;
     let db = DocumentDatabase::new(&reopened);
+    // Check the workload's primary keys independently of secondary-index coverage.
+    for number in 0..preload {
+        let (id, document) = base_document(number);
+        if db.get("docs", &id)?.as_ref() != Some(&document) {
+            return Err(format!("prototype recovered primary document mismatch: {id}").into());
+        }
+    }
+    for sequence in 0..iterations + WARMUP {
+        let id = format!("id-{sequence}");
+        if db.get("docs", &id)?.is_some() {
+            return Err(format!("prototype recovered a deleted primary document: {id}").into());
+        }
+    }
     let mut query = IndexQuery {
         limit: 256,
         ..Default::default()
