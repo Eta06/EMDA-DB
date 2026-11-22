@@ -660,11 +660,9 @@ impl CheckpointStore {
                 &replayed.finalize().into(),
             )?
         } else {
-            let verified = crate::checkpoint::VerifiedLog::from_replay(length, replayed);
-            if length > witness {
-                verified.verify_current_bytes(&writer)?;
-            }
-            verified
+            // Emission uses only replayed locations. Staged checkpoint
+            // verification checks the complete replay digest before adoption.
+            crate::checkpoint::VerifiedLog::from_replay(length, replayed)
         };
         let pending_tail = (view.is_none() && length > witness).then_some(witness);
         if length > witness && pending_tail.is_none() {
@@ -2261,7 +2259,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             if full {
-                "log bytes changed after verified replay"
+                "checkpoint does not match log prefix"
             } else {
                 "checkpoint log suffix changed during replay"
             }

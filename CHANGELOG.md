@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify full-log rebuild output against the replay digest before adopting an
+  unwitnessed tail, without a redundant source log pass.
+
 - Plan bounded document index unions and compound membership probes for
   disjunctions expressed with `Not` and `And`.
 
