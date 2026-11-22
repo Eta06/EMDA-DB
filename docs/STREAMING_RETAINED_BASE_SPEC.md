@@ -268,7 +268,11 @@ the handle until reopening. The caps govern the file input and logical
 retained state, while returned pages, encoded appends, staging,
 allocator overhead and filesystem blocks have separate costs.
 The detached inspection APIs that return materialized state have
-their own staging limits. No on-disk fields change.
+their own staging limits. Inspection from a file and offline restore check
+the base frame before reading the suffix body. They reject impossible
+initial replay work, total staging bytes, and per-value limits inferred from
+the declared value bytes and entry count. Successful calls still verify
+both inputs and charge the exact ordered replay work. No on-disk fields change.
 
 This is a separately created generation under the same trusted local
 filesystem model. The local witness can detect mismatches and loss below

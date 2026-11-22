@@ -2,7 +2,7 @@
 use database_engine::retained_base_v2::{Limits, StagingLimits};
 use database_engine::retained_candidate::{
     Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits, RestoreLimits,
-    SuffixExpected, SuffixLimits, restore_exported_suffix,
+    SuffixExpected, SuffixLimits, open_exported_suffix, restore_exported_suffix,
 };
 use database_engine::{BatchOperation, PublicationFailure, RetainedExportLimits, Store};
 use sha2::{Digest, Sha256};
@@ -838,6 +838,63 @@ fn new_history_restore_enforces_intermediate_batch_budgets() {
         assert!(error.to_string().contains(message), "{error}");
         assert!(!destination.exists());
     }
+
+    // The suffix length still matches its binding, but its digest does not.
+    // A base budget rejection must win before either file API reads that body.
+    let suffix_bytes = fs::read(&suffix_path).unwrap();
+    let mut damaged = suffix_bytes.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(&suffix_path, damaged).unwrap();
+    for (stage, replay, message) in [
+        (
+            staging,
+            SuffixLimits { work: 8, ..suffix },
+            "suffix work limit exceeded",
+        ),
+        (
+            StagingLimits {
+                staging_bytes: 2,
+                ..staging
+            },
+            suffix,
+            "staging budget exceeded",
+        ),
+        (
+            StagingLimits {
+                value_bytes: 0,
+                ..staging
+            },
+            suffix,
+            "staging budget exceeded",
+        ),
+    ] {
+        let inspected =
+            open_exported_suffix(&candidate_path, &suffix_path, base, stage, replay, &binding);
+        assert_eq!(inspected.unwrap_err().to_string(), message);
+        let Err(PublicationFailure::NotPublished(error)) = restore(base, stage, replay) else {
+            panic!("restore did not reject {message} before publication");
+        };
+        assert_eq!(error.to_string(), message);
+        assert!(!destination.exists());
+    }
+    assert!(
+        open_exported_suffix(
+            &candidate_path,
+            &suffix_path,
+            base,
+            staging,
+            suffix,
+            &binding
+        )
+        .is_err()
+    );
+    assert!(matches!(
+        restore(base, staging, suffix),
+        Err(PublicationFailure::NotPublished(_))
+    ));
+    assert!(!destination.exists());
+    fs::write(&suffix_path, suffix_bytes).unwrap();
+
     restore(base, staging, suffix).unwrap();
     let restored = Store::open(&destination).unwrap();
     assert_eq!(

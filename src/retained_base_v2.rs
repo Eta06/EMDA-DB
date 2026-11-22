@@ -298,8 +298,15 @@ pub(crate) struct BaseHeader {
 }
 
 impl BaseHeader {
-    pub(crate) fn payload_bytes(&self) -> u64 {
-        self.encoded - 8 * self.entries
+    pub(crate) fn admit_staging(&self, limits: StagingLimits) -> io::Result<()> {
+        let payload = self.encoded - 8 * self.entries;
+        let values = payload - self.key_bytes;
+        if payload > limits.staging_bytes
+            || values > self.entries.saturating_mul(limits.value_bytes as u64)
+        {
+            return Err(invalid("staging budget exceeded"));
+        }
+        Ok(())
     }
 }
 

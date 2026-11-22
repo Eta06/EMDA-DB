@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check the retained base frame for impossible work or staging budgets
+  before buffering a detached suffix or hashing it for offline restore.
+
 - Size recovery scratch buffers to short admitted log and retained-base
   ranges while keeping the 64 KiB ceiling for larger inputs.
 

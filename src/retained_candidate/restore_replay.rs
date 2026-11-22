@@ -1,13 +1,10 @@
 use super::suffix_file::SuffixFile;
 use super::{
     Expected, Limits, ReplayBudget, SuffixExpected, SuffixLimits, charge_suffix_work,
-    check_binding, check_files, copy_replay_bytes, invalid, open_regular, open_suffix,
-    suffix_capacity,
+    check_binding, copy_replay_bytes, invalid, open_suffix, preflight_replay_base, suffix_capacity,
 };
 use crate::retained_base_v2::index::OverlayValue;
-use crate::retained_base_v2::{
-    CapturedValue, FRAME_BYTES, StagingLimits, preflight_file, scan_value_locations,
-};
+use crate::retained_base_v2::{CapturedValue, FRAME_BYTES, StagingLimits, scan_value_locations};
 use crate::store::{GroupedCopy, RestoreSize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -39,6 +36,8 @@ impl RestoreReplay {
         expected: &SuffixExpected,
     ) -> io::Result<Self> {
         let (suffix, len) = open_suffix(suffix, suffix_limits, expected.end)?;
+        let (base, entries) =
+            preflight_replay_base(candidate, limits, staging, suffix_limits, expected)?;
         let source = SuffixFile {
             file: &suffix,
             start: 0,
@@ -54,19 +53,8 @@ impl RestoreReplay {
             return Err(invalid());
         }
         let boundary = Some((len, expected.digest));
-        check_files(candidate, &expected.candidate)?;
-        let base = open_regular(&candidate.join("base"))?;
-        let frame = preflight_file(
-            &base,
-            base.metadata()?.len(),
-            limits,
-            expected.candidate.base_binding(),
-        )?;
-        let mut minimum_work = frame.entries;
-        if minimum_work > suffix_limits.work {
-            return Err(suffix_capacity("suffix work limit exceeded"));
-        }
-        let mut minimum_live = usize::try_from(frame.entries).map_err(|_| invalid())?;
+        let mut minimum_work = entries;
+        let mut minimum_live = usize::try_from(entries).map_err(|_| invalid())?;
         let mut touched = HashMap::new();
         source.replay::<()>(boundary, suffix_limits.operations, |key, value| {
             // Puts cannot shrink the live set. Each delete can remove at

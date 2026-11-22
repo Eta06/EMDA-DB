@@ -396,7 +396,9 @@ pub struct SuffixLimits {
 /// captured boundary and the exact suffix endpoint and digest; it is not proof
 /// of freshness or authority. Directory ancestors and contents must remain
 /// trusted and stable during the operation. Final-component symlinks are rejected.
-/// The file is read once, with exact EOF, into a buffer bounded by `suffix_limits.bytes`;
+/// The base frame can reject impossible work or staging budgets before the
+/// suffix is buffered. The suffix file is read once, with exact EOF, into a
+/// buffer bounded by `suffix_limits.bytes`;
 /// the same bytes are hashed and replayed. Peak memory includes that buffer plus
 /// the staged live set, transient replacement values, batch decoding and allocator
 /// overhead. Entry and payload limits do not constitute a total process memory cap.
@@ -410,12 +412,20 @@ pub fn open_exported_suffix(
     suffix_limits: SuffixLimits,
     expected: &SuffixExpected,
 ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
-    let bytes = read_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
-    replay_suffix(directory, limits, staging, &bytes, suffix_limits, expected)
+    let (suffix, len) = open_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
+    let (base, _) =
+        preflight_replay_base(directory.as_ref(), limits, staging, suffix_limits, expected)?;
+    let bytes = read_open_suffix(suffix, len)?;
+    check_suffix_binding(&bytes, suffix_limits, expected)?;
+    replay_preflighted_suffix(base, limits, staging, &bytes, suffix_limits, expected)
 }
 
 fn read_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<Vec<u8>> {
-    let (mut file, len) = open_suffix(path, limits, end)?;
+    let (file, len) = open_suffix(path, limits, end)?;
+    read_open_suffix(file, len)
+}
+
+fn read_open_suffix(mut file: fs::File, len: usize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(len)
@@ -468,7 +478,18 @@ pub fn replay_suffix(
     expected: &SuffixExpected,
 ) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     check_suffix_binding(suffix, suffix_limits, expected)?;
-    let directory = directory.as_ref();
+    let (base, _) =
+        preflight_replay_base(directory.as_ref(), limits, staging, suffix_limits, expected)?;
+    replay_preflighted_suffix(base, limits, staging, suffix, suffix_limits, expected)
+}
+
+fn preflight_replay_base(
+    directory: &Path,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+) -> io::Result<(fs::File, u64)> {
     check_files(directory, &expected.candidate)?;
     let file = open_regular(&directory.join("base"))?;
     let frame = retained_base_v2::preflight_file(
@@ -483,16 +504,22 @@ pub fn replay_suffix(
     }
     // Every valid nonempty suffix must apply a first operation to this
     // live set. The hint only permits early rejection.
-    if !suffix.is_empty() {
+    if expected.end != 0 {
         let entries = usize::try_from(frame.entries).map_err(|_| invalid())?;
         charge_suffix_work(&mut minimum_work, suffix_limits.work, entries)?;
     }
-    if frame.payload_bytes() > staging.staging_bytes {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "staging budget exceeded",
-        ));
-    }
+    frame.admit_staging(staging)?;
+    Ok((file, frame.entries))
+}
+
+fn replay_preflighted_suffix(
+    file: fs::File,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    suffix: &[u8],
+    suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+) -> io::Result<Vec<crate::Entry>> {
     let (base, mut state) = load_base(file, limits, staging, &expected.candidate)?;
     let mut replay = ReplayBudget {
         limits,
@@ -896,7 +923,8 @@ pub struct RestoreLimits {
 /// only suffix-touched keys and their locations in memory. That memory grows
 /// with distinct suffix keys, including deleted keys. Discovery checks a
 /// lower bound on replay work before adding keys to the touched-key map.
-/// The suffix byte and operation limits also apply. The base is scanned once
+/// The suffix byte and operation limits also apply. An impossible base frame
+/// or staging budget can fail before the suffix body is read. The base is scanned once
 /// for exact admission and again while streaming the stage. Each write reads
 /// one value, and the private output synchronizes in groups of up to 64
 /// records and 4 MiB of encoded data. A larger record is copied in fixed-size
