@@ -58,5 +58,20 @@ Formatting and warnings-denied all-target Clippy passed on macOS.
 [Source manifest](linux-source.sha256), [macOS tests](macos-tests.log.gz),
 [Linux library](linux-library.log.gz), [Linux integration](linux-integration.log.gz).
 
+The Linux address-sanitized follow-up exercised 20,884 checkpoint-store
+inputs and 4,792 automatic-checkpoint inputs in two 31-second runs.
+Both completed without a reported finding. The tracked seeds, random
+seed 42 and a 128-byte input cap were used.
+[Campaign logs, corpora and binary hashes](linux-fuzz.tar.gz).
+
+The document-model follow-up passed on both platforms with 1,024
+histories each for ordinary stores, checkpoint-backed stores and managed
+retained stores. Each history checks serializability and recovered
+document, index and raw-key state. The retained model also requires a
+rotation in each history. The three targeted retained-document tests
+passed on both platforms.
+[macOS document checks](macos-document-model.log.gz),
+[Linux document checks](linux-document-model.log.gz).
+
 Physical power-loss testing and independent off-host restore remain
 deferred.
