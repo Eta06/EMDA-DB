@@ -1,0 +1,73 @@
+{
+  "binding": "0013d0060000000009af17ce76fde67dbd9607a4271e143140f9fe853d7c9be2902188257f575ddf",
+  "samples": {
+    "baseline": [
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.45
+      },
+      {
+        "rss_bytes": 2424832,
+        "wall_seconds": 0.41
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.43
+      },
+      {
+        "rss_bytes": 2424832,
+        "wall_seconds": 0.41
+      },
+      {
+        "rss_bytes": 2424832,
+        "wall_seconds": 0.4
+      },
+      {
+        "rss_bytes": 2424832,
+        "wall_seconds": 0.41
+      },
+      {
+        "rss_bytes": 2424832,
+        "wall_seconds": 0.42
+      },
+      {
+        "rss_bytes": 2424832,
+        "wall_seconds": 0.4
+      }
+    ],
+    "prefix": [
+      {
+        "rss_bytes": 2457600,
+        "wall_seconds": 0.61
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.38
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.39
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.38
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.38
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.38
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.39
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.38
+      }
+    ]
+  }
+}

@@ -197,16 +197,30 @@ pub fn verify(
     Ok(base)
 }
 
+pub(crate) fn preflight_bound_base(
+    directory: &Path,
+    limits: Limits,
+    expected: &Expected,
+) -> io::Result<(fs::File, retained_base_v2::BaseHeader)> {
+    check_files(directory, expected)?;
+    let file = open_regular(&directory.join("base"))?;
+    let header = retained_base_v2::preflight_file(
+        &file,
+        file.metadata()?.len(),
+        limits,
+        expected.base_binding(),
+    )?;
+    Ok((file, header))
+}
+
 // Keep visitor results private until the flat file and its binding pass.
 pub(crate) fn visit_base_values(
-    directory: &Path,
+    file: fs::File,
     limits: Limits,
     staging: retained_base_v2::StagingLimits,
     expected: &Expected,
     visit: impl FnMut(&[u8], retained_base_v2::CapturedValue) -> io::Result<()>,
 ) -> io::Result<Validated> {
-    check_files(directory, expected)?;
-    let file = open_regular(&directory.join("base"))?;
     let base = retained_base_v2::scan_value_locations(file, limits, staging, visit)?;
     check_binding(&base, expected)?;
     Ok(base)
@@ -506,14 +520,7 @@ fn preflight_replay_base(
     suffix_limits: SuffixLimits,
     expected: &SuffixExpected,
 ) -> io::Result<(fs::File, u64)> {
-    check_files(directory, &expected.candidate)?;
-    let file = open_regular(&directory.join("base"))?;
-    let frame = retained_base_v2::preflight_file(
-        &file,
-        file.metadata()?.len(),
-        limits,
-        expected.candidate.base_binding(),
-    )?;
+    let (file, frame) = preflight_bound_base(directory, limits, &expected.candidate)?;
     let mut minimum_work = frame.entries;
     if minimum_work > suffix_limits.work {
         return Err(suffix_capacity("suffix work limit exceeded"));

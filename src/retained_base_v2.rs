@@ -286,9 +286,9 @@ fn scan<R: Read>(
 }
 
 pub(crate) struct BaseHeader {
-    source_id: [u8; 16],
+    pub(crate) source_id: [u8; 16],
     base_id: [u8; 16],
-    boundary: u64,
+    pub(crate) boundary: u64,
     pub(crate) entries: u64,
     key_bytes: u64,
     peak_entries: u64,

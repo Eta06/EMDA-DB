@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Authenticate the retained base during the suffix export's historical
+  prefix comparison, eliminating a separate base verification pass.
+
 - Authenticate detached suffixes during the discovery pass used by offline
   restore and streaming export, avoiding a separate checksum pass on success.
 

@@ -273,8 +273,9 @@ impl Store {
             if self.commits.failed() {
                 return Err(uncertain_error());
             }
-            let base = crate::retained_candidate::verify(candidate, base_limits, expected)?;
-            if self.log.id() != Some(base.source_id) {
+            let (base_file, frame) =
+                crate::retained_candidate::preflight_bound_base(candidate, base_limits, expected)?;
+            if self.log.id() != Some(frame.source_id) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "candidate source identity mismatch",
@@ -282,52 +283,60 @@ impl Store {
             }
             let (prefix, peak_entries, peak_key_bytes) = self.log.reconstruct_prefix_index_peaks(
                 &inner.index,
-                base.boundary,
+                frame.boundary,
                 crate::log::PeakVerificationLimits {
                     max_log_bytes: source_limits.max_log_bytes,
                     max_live_keys: source_limits.max_live_keys,
                     max_live_key_bytes: source_limits.max_live_key_bytes,
                 },
             )?;
-            if base.peak_entries != peak_entries as u64
-                || base.peak_key_bytes != peak_key_bytes as u64
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "candidate historical peaks mismatch",
-                ));
-            }
             let mut buffer = [0u8; 65536];
             let mut prefix_rows = prefix.iter();
-            crate::retained_candidate::visit_base_values(
-                candidate,
+            let mut comparison = Ok(());
+            let base = crate::retained_candidate::visit_base_values(
+                base_file,
                 base_limits,
                 staging_limits,
                 expected,
                 |key, value| {
-                    let (source_key, location) = prefix_rows.next().ok_or_else(|| {
-                        crate::record::invalid_data("candidate prefix count mismatch")
-                    })?;
-                    if key != source_key || value.length != location.length {
-                        return Err(crate::record::invalid_data(
-                            "candidate prefix index mismatch",
-                        ));
-                    }
-                    let digest = hash_log_range(
-                        &self.log,
-                        location.offset,
-                        value.length as u64,
-                        &mut buffer,
-                        |_| Ok(()),
-                    )?;
-                    if digest != value.digest {
-                        return Err(crate::record::invalid_data(
-                            "candidate prefix value mismatch",
-                        ));
+                    // Keep the comparison private until the base digest and
+                    // authenticated historical peaks have been checked.
+                    if comparison.is_ok() {
+                        comparison = (|| {
+                            let (source_key, location) = prefix_rows.next().ok_or_else(|| {
+                                crate::record::invalid_data("candidate prefix count mismatch")
+                            })?;
+                            if key != source_key || value.length != location.length {
+                                return Err(crate::record::invalid_data(
+                                    "candidate prefix index mismatch",
+                                ));
+                            }
+                            let digest = hash_log_range(
+                                &self.log,
+                                location.offset,
+                                value.length as u64,
+                                &mut buffer,
+                                |_| Ok(()),
+                            )?;
+                            if digest != value.digest {
+                                return Err(crate::record::invalid_data(
+                                    "candidate prefix value mismatch",
+                                ));
+                            }
+                            Ok(())
+                        })();
                     }
                     Ok(())
                 },
             )?;
+            if base.peak_entries != peak_entries as u64
+                || base.peak_key_bytes != peak_key_bytes as u64
+            {
+                return Err(crate::record::invalid_data(
+                    "candidate historical peaks mismatch",
+                ));
+            }
+            comparison?;
             if prefix_rows.next().is_some() {
                 return Err(crate::record::invalid_data(
                     "candidate prefix count mismatch",
@@ -657,12 +666,16 @@ mod tests {
     #[test]
     fn suffix_rejects_forged_prefix_even_if_later_removed() {
         for delete in [false, true] {
-            for forged_peak in [false, true] {
+            for (rebind, forged_peak, message) in [
+                (false, false, "digest mismatch"),
+                (true, false, "candidate prefix value mismatch"),
+                (true, true, "candidate historical peaks mismatch"),
+            ] {
                 let root = tempfile::tempdir().unwrap();
                 let store = Store::open(root.path().join("source")).unwrap();
                 store.put(b"key", b"original-value").unwrap();
                 let candidate = root.path().join("candidate");
-                store
+                let expected = store
                     .build_retained_candidate(&candidate, [1; 16], [2; 16], limits())
                     .unwrap();
                 let path = candidate.join("base");
@@ -676,17 +689,24 @@ mod tests {
                     bytes[72..80].copy_from_slice(&2u64.to_le_bytes());
                     bytes[80..88].copy_from_slice(&4u64.to_le_bytes());
                 }
-                let end = bytes.len() - 32;
-                let mut hash = Sha256::new();
-                hash.update(b"EMDA retained base v2\0");
-                hash.update(&bytes[..end]);
-                bytes[end..].copy_from_slice(&hash.finalize());
+                let expected = if rebind {
+                    let end = bytes.len() - 32;
+                    let mut hash = Sha256::new();
+                    hash.update(b"EMDA retained base v2\0");
+                    hash.update(&bytes[..end]);
+                    bytes[end..].copy_from_slice(&hash.finalize());
+                    let base =
+                        crate::retained_base_v2::validate(&bytes[..], candidate_budgets()).unwrap();
+                    let updated = crate::retained_candidate::binding(&base, [2; 16]).unwrap();
+                    std::fs::write(candidate.join("records.log"), updated.header).unwrap();
+                    std::fs::write(candidate.join("witness"), updated.witness).unwrap();
+                    updated
+                } else {
+                    // Keep the matching header and trailer while the body is
+                    // corrupt. Frame admission cannot authorize publication.
+                    expected
+                };
                 std::fs::write(&path, &bytes).unwrap();
-                let base =
-                    crate::retained_base_v2::validate(&bytes[..], candidate_budgets()).unwrap();
-                let expected = crate::retained_candidate::binding(&base, [2; 16]).unwrap();
-                std::fs::write(candidate.join("records.log"), expected.header).unwrap();
-                std::fs::write(candidate.join("witness"), expected.witness).unwrap();
                 if delete {
                     store.delete(b"key").unwrap();
                 } else {
@@ -711,17 +731,13 @@ mod tests {
                         limits(),
                     )
                     .unwrap_err();
-                let message = if forged_peak {
-                    "candidate historical peaks mismatch"
-                } else {
-                    "candidate prefix value mismatch"
-                };
                 assert!(
                     matches!(&failure, SuffixExportFailure::NotPublished(e) if e.to_string().contains(message)),
                     "{failure:?}"
                 );
                 assert!(!out.exists());
                 assert!(!root.path().join("selection").exists());
+                assert_no_candidate_stages(root.path());
             }
         }
     }

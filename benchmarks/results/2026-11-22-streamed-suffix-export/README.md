@@ -46,3 +46,21 @@ Elapsed time covers the same export phase as above.
 
 The run measures export on the same warm fixture. It does not time offline
 restore or characterize other workloads. [Raw samples](discovery-samples.json)
+
+## Verify the base during prefix comparison
+
+A third paired run used the same fixture and compared `c145a5a` with the
+combined base verification and historical-prefix comparison. The frame
+identifies the bound source and boundary. The comparison then authenticates
+all base entries and checks the historical peaks before accepting the result.
+The successful path avoids one standalone base scan.
+
+| Streamed export | Median peak RSS | Median elapsed |
+| --- | ---: | ---: |
+| Separate base verification | 2.31 MiB | 0.410 s |
+| Verification during prefix comparison | 2.33 MiB | 0.380 s |
+
+Eight fresh processes per variant alternated first position on macOS ARM64.
+Every export matched the known suffix digest and binding. One output from
+each variant also matched the fixture's full live state after replay.
+The comparison measures export on one warm workload. [Raw samples](prefix-samples.json)

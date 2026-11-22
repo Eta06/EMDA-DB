@@ -276,6 +276,10 @@ both inputs and charge the exact ordered replay work. No on-disk fields change.
 Offline restore and private suffix-export staging authenticate the suffix
 while discovering touched keys. If discovery returns an error, a raw
 digest check distinguishes changed bytes from a replay error.
+Suffix export uses the independently bound base frame to select the historic
+source boundary, then authenticates the base while comparing its entries
+with the reconstructed source prefix. Comparison results are used only
+after the complete digest and historical peaks have been checked.
 
 This is a separately created generation under the same trusted local
 filesystem model. The local witness can detect mismatches and loss below
