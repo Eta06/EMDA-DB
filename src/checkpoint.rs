@@ -404,12 +404,16 @@ fn create_streaming_in_directory(
     check_checkpoint_length(log, prefix)?;
     if let Some(boundary) = options.pending_tail {
         log.verify_witness_at(boundary)?;
+        #[cfg(test)]
+        pause_full_rebuild("checkpoint-verified")?;
         log.sync_validated_boundary(prefix).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!("unacknowledged tail adoption may have started; inspect the witness before retrying: {error}"),
             )
         })?;
+        #[cfg(test)]
+        pause_full_rebuild("tail-adopted")?;
     }
     log.verify_witness()?;
     before_publish()?;
@@ -422,6 +426,18 @@ fn create_streaming_in_directory(
     })?;
     staging.publication_synchronized();
     Ok(checkpoint_digest)
+}
+
+#[cfg(test)]
+fn pause_full_rebuild(point: &str) -> io::Result<()> {
+    if std::env::var_os("EMDA_FULL_REBUILD_CRASH").as_deref() == Some(std::ffi::OsStr::new(point)) {
+        println!("BOUNDED_REBUILD_BOUNDARY {point}");
+        io::stdout().flush()?;
+        loop {
+            std::thread::park();
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn create_with_hooks(

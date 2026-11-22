@@ -1737,37 +1737,207 @@ mod tests {
 
     #[test]
     fn bounded_rebuild_crash_child() {
-        let Ok(mode) = std::env::var("EMDA_BOUNDED_REBUILD_CRASH") else {
+        let full_mode = std::env::var("EMDA_FULL_REBUILD_CRASH");
+        let full = full_mode.is_ok();
+        let Ok(mode) = full_mode.or_else(|_| std::env::var("EMDA_BOUNDED_REBUILD_CRASH")) else {
             return;
         };
         let path = std::path::PathBuf::from(std::env::var("EMDA_BOUNDED_REBUILD_PATH").unwrap());
-        let base = std::path::PathBuf::from(std::env::var("EMDA_BOUNDED_REBUILD_BASE").unwrap());
+        let base = (!full).then(|| {
+            (
+                std::path::PathBuf::from(std::env::var("EMDA_BOUNDED_REBUILD_BASE").unwrap()),
+                decode_hex(&std::env::var("EMDA_BOUNDED_REBUILD_DIGEST").unwrap()),
+            )
+        });
         let destination =
             std::path::PathBuf::from(std::env::var("EMDA_BOUNDED_REBUILD_DEST").unwrap());
-        let digest = decode_hex(&std::env::var("EMDA_BOUNDED_REBUILD_DIGEST").unwrap());
         let mut before_adopt = || pause_for(&mode, "adopt");
         let mut sync_checkpoint = |parent: &Path| {
             pause_for(&mode, "checkpoint")?;
             selection::sync_ancestors(parent)
         };
         let mut before_selection = || pause_for(&mode, "selection");
-        let mut sync_selection = |parent: &Path| selection::sync_ancestors(parent);
+        let mut sync_selection = |parent: &Path| {
+            pause_for(&mode, "selected")?;
+            selection::sync_ancestors(parent)
+        };
         let mut hooks = BoundedHooks {
             before_adopt: &mut before_adopt,
             sync_checkpoint_ancestors: &mut sync_checkpoint,
             before_selection_rename: &mut before_selection,
             sync_selection_parent: &mut sync_selection,
         };
-        let result = CheckpointStore::rebuild_bounded_using(
+        let result = CheckpointStore::rebuild_spilling(
             &path,
             &destination,
-            &base,
-            &digest,
+            base.as_ref().map(|(path, digest)| (path.as_path(), digest)),
             small_limits(),
             None,
             &mut hooks,
         );
         panic!("bounded rebuild child returned before {mode}: {result:?}");
+    }
+
+    #[test]
+    fn full_rebuild_process_kills_preserve_witness_and_selection() {
+        for v2 in [true, false] {
+            for mode in [
+                "checkpoint-verified",
+                "tail-adopted",
+                "checkpoint",
+                "selection",
+                "selected",
+            ] {
+                let Some(case) = prepare_unacknowledged_tail(v2) else {
+                    break;
+                };
+                check_full_rebuild_process_kill(&case, mode);
+            }
+        }
+    }
+
+    fn check_full_rebuild_process_kill(case: &AdoptionCase, mode: &str) {
+        let store = retry(|| Store::open(&case.path)).unwrap();
+        let initial = selection::Selection::new(case.base.clone(), case.digest).unwrap();
+        selection::publish(&case.path, &initial, || Ok(()), selection::sync_ancestors).unwrap();
+        let selection_before = fs::read(selection::path(&case.path)).unwrap();
+        let reference = case.root().join("reference");
+        let digest = store.checkpoint_to(&reference).unwrap();
+        drop(store);
+        let adopted = witness_bytes(&case.path);
+        assert_eq!(
+            boundary_of(&adopted, &case.id),
+            case.complete_log.len() as u64
+        );
+        restore_witness(&case.path, &case.rolled_back);
+
+        let destination = case.root().join("killed");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "checkpoint_store::rebuild::tests::bounded_rebuild_crash_child",
+                "--nocapture",
+            ])
+            .env("EMDA_FULL_REBUILD_CRASH", mode)
+            .env("EMDA_BOUNDED_REBUILD_PATH", &case.path)
+            .env("EMDA_BOUNDED_REBUILD_DEST", &destination)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = child.stdout.take().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(output).lines() {
+                let Ok(line) = line else { break };
+                if let Some(point) = line.split_once("BOUNDED_REBUILD_BOUNDARY ") {
+                    let _ = sender.send(point.1.to_owned());
+                    break;
+                }
+            }
+        });
+        let reached = receiver.recv_timeout(Duration::from_secs(30));
+        let cleanup_root = if matches!(mode, "selection" | "selected") {
+            case.path.as_path()
+        } else {
+            case.root()
+        };
+        let busy = reached
+            .as_ref()
+            .ok()
+            .map(|_| crate::cleanup_abandoned_staging(cleanup_root));
+        let killed = child.kill();
+        let status = child.wait().unwrap();
+        reader.join().unwrap();
+        assert_eq!(reached.as_deref(), Ok(mode), "v2={} {mode}", case.v2);
+        killed.unwrap();
+        assert!(!status.success(), "{mode}");
+        assert_eq!(
+            busy.unwrap().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "{mode}"
+        );
+
+        assert_eq!(
+            fs::read(case.path.join("records.log")).unwrap(),
+            case.complete_log,
+            "{mode}"
+        );
+        assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes, "{mode}");
+        if case.metadata {
+            assert_eq!(
+                fs::read(case.path.join("commit.state")).unwrap(),
+                case.anchor,
+                "{mode}"
+            );
+        }
+        let expected_witness = if mode == "checkpoint-verified" {
+            &case.rolled_back
+        } else {
+            &adopted
+        };
+        assert_eq!(&witness_bytes(&case.path), expected_witness, "{mode}");
+        let checkpoint = fs::read(reference).unwrap();
+        if matches!(mode, "checkpoint-verified" | "tail-adopted") {
+            assert!(!destination.exists(), "{mode}");
+        } else {
+            assert_eq!(fs::read(&destination).unwrap(), checkpoint, "{mode}");
+        }
+        if mode == "selected" {
+            assert_eq!(
+                selection::load(&case.path).unwrap(),
+                Some(
+                    selection::Selection::new(fs::canonicalize(&destination).unwrap(), digest)
+                        .unwrap()
+                ),
+            );
+        } else {
+            assert_eq!(
+                fs::read(selection::path(&case.path)).unwrap(),
+                selection_before,
+                "{mode}"
+            );
+        }
+        assert!(
+            retry(|| crate::cleanup_abandoned_staging(cleanup_root))
+                .unwrap()
+                .removed_markers
+                > 0,
+            "{mode}"
+        );
+        retry(|| crate::cleanup_abandoned_staging(case.root())).unwrap();
+        retry(|| crate::cleanup_abandoned_staging(&case.path)).unwrap();
+        assert_no_staged_markers(case.root());
+        assert_no_staged_markers(&case.path);
+
+        let retry_path = case.root().join("retry");
+        let rebuilt = CheckpointStore::rebuild_managed_selection_full_bounded(
+            &case.path,
+            &retry_path,
+            BoundedFullRebuildLimits {
+                max_log_bytes: case.complete_log.len() as u64,
+                max_operations: 7,
+                max_live_keys: 4,
+                max_live_key_bytes: 10,
+                max_chunk_keys: 1,
+                max_chunk_key_bytes: 4096,
+                max_spill_bytes: 32 << 20,
+                max_merge_fan_in: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(rebuilt, digest, "{mode}");
+        assert_eq!(fs::read(retry_path).unwrap(), checkpoint, "{mode}");
+        assert_eq!(witness_bytes(&case.path), adopted, "{mode}");
+        let managed = retry(|| CheckpointStore::open_managed(&case.path)).unwrap();
+        for (key, value) in [
+            (b"kept".as_slice(), Some(b"base".as_slice())),
+            (b"p", Some(b"two")),
+            (b"q", Some(b"batch")),
+            (b"r", Some(b"after")),
+            (b"safe", None),
+        ] {
+            assert_eq!(managed.get(key).unwrap().as_deref(), value, "{mode}");
+        }
     }
 
     fn crash_fixture_initial(
