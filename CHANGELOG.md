@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Buffer sequential spill reads and offset-sidecar writes during bounded
+  checkpoint rebuilds, and recheck buffered runs at the end of each pass.
+
 - Add bounded full-log managed checkpoint rebuild for witnessed stores,
   including historical live-key and key-byte admission before tail adoption.
 

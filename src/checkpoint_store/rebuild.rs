@@ -70,7 +70,8 @@ impl CheckpointStore {
     /// tail when present, and publishes the checkpoint before selection.
     /// A valid tail can be adopted even when later publication fails.
     /// Spill accounting excludes the checkpoint itself, the staging marker,
-    /// filesystem overhead, and total process memory.
+    /// filesystem overhead, and total process memory. Sequential merge
+    /// inputs use at most two 8 KiB read buffers each.
     pub fn rebuild_managed_selection_full_bounded(
         path: impl AsRef<Path>,
         destination: impl AsRef<Path>,

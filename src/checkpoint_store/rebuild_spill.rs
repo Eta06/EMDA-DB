@@ -11,7 +11,8 @@
 //! locators, and body. Merge, emission, and random lookup verify that checksum
 //! on the bytes of a single read before using the key or value. All opens
 //! compare the trailer with the digest retained by the writer. Merge and
-//! emission also hash the whole run before opening a cursor.
+//! emission also hash the whole run before opening a cursor, then recheck
+//! it before accepting the end of a buffered pass.
 //! Random lookup skips runs outside the key bounds retained by that writer.
 
 use crate::log::ValueLocation;
@@ -160,6 +161,47 @@ struct RunCursor {
     table_at: u64,
     expected_pos: u64,
     previous: Option<Vec<u8>>,
+    sequential: Option<SequentialRun>,
+}
+
+struct SequentialRun {
+    payload: ReadAhead,
+    offsets: ReadAhead,
+    digest: [u8; 32],
+    end: u64,
+}
+
+#[derive(Default)]
+struct ReadAhead {
+    start: u64,
+    bytes: Vec<u8>,
+}
+
+impl ReadAhead {
+    fn read(&mut self, file: &File, start: u64, size: usize, end: u64) -> io::Result<&[u8]> {
+        debug_assert!(size <= IO_BUFFER);
+        let available = end
+            .checked_sub(start)
+            .filter(|&bytes| bytes >= size as u64)
+            .ok_or_else(|| record::invalid_data("spill read exceeds its admitted region"))?;
+        let relative = start
+            .checked_sub(self.start)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .filter(|&offset| offset <= self.bytes.len().saturating_sub(size));
+        let offset = if let Some(offset) = relative.filter(|_| size <= self.bytes.len()) {
+            offset
+        } else {
+            let capacity = available.min(IO_BUFFER as u64) as usize;
+            self.bytes.resize(capacity, 0);
+            if let Err(error) = file.read_exact_at(&mut self.bytes, start) {
+                self.bytes.clear();
+                return Err(error);
+            }
+            self.start = start;
+            0
+        };
+        Ok(&self.bytes[offset..offset + size])
+    }
 }
 
 fn run_table_end(count: u64, table_at: u64) -> Option<u64> {
@@ -196,6 +238,12 @@ impl RunCursor {
             table_at,
             expected_pos: HEADER_LEN,
             previous: None,
+            sequential: verify_hash.then(|| SequentialRun {
+                payload: ReadAhead::default(),
+                offsets: ReadAhead::default(),
+                digest: run.digest,
+                end: len - CHECKSUM_LEN,
+            }),
         })
     }
 
@@ -228,21 +276,58 @@ impl RunCursor {
                     "spill run entries do not fill the payload",
                 ));
             }
+            if let Some(scan) = &self.sequential {
+                let mut trailer = [0_u8; 32];
+                self.file.read_exact_at(&mut trailer, scan.end)?;
+                if self.file.metadata()?.len() != scan.end + CHECKSUM_LEN
+                    || trailer != scan.digest
+                    || hash_prefix(&self.file, scan.end)? != scan.digest
+                {
+                    return Err(record::invalid_data("spill run checksum mismatch"));
+                }
+                self.sequential = None;
+            }
             return Ok(None);
         }
-        let range = self.entry_range(self.index)?;
+        let range = if let Some(scan) = &mut self.sequential {
+            let last = self.index + 1 == self.count;
+            let bytes = scan.offsets.read(
+                &self.file,
+                self.table_at + self.index * OFFSET_LEN,
+                if last { 8 } else { 16 },
+                scan.end,
+            )?;
+            decode_entry_range(bytes, self.table_at)
+        } else {
+            self.entry_range(self.index)?
+        };
         if range.start != self.expected_pos {
             return Err(record::invalid_data("spill run entry offset is not packed"));
         }
         let end = range.end;
-        let (key, state) = read_entry(
-            &self.file,
-            range,
-            self.table_at,
-            &self.identity,
-            self.index,
-            self.count,
-        )?;
+        let (key, state) = if let Some(scan) = &mut self.sequential {
+            let span = entry_span(&range, self.table_at)?;
+            let bytes = scan
+                .payload
+                .read(&self.file, range.start, span, self.table_at)?;
+            decode_entry(
+                bytes,
+                range.start,
+                self.table_at,
+                &self.identity,
+                self.index,
+                self.count,
+            )?
+        } else {
+            read_entry(
+                &self.file,
+                range,
+                self.table_at,
+                &self.identity,
+                self.index,
+                self.count,
+            )?
+        };
         if self
             .previous
             .as_ref()
@@ -262,20 +347,24 @@ impl RunCursor {
         let size = if last { 8 } else { 16 };
         self.file
             .read_exact_at(&mut bytes[..size], self.table_at + index * OFFSET_LEN)?;
-        let start = u64::from_le_bytes(bytes[..8].try_into().expect("offset slot"));
-        let end = if last {
-            self.table_at
-        } else {
-            u64::from_le_bytes(bytes[8..].try_into().expect("next offset slot"))
-        };
-        Ok(start..end)
+        Ok(decode_entry_range(&bytes[..size], self.table_at))
     }
+}
+
+fn decode_entry_range(bytes: &[u8], table_at: u64) -> Range<u64> {
+    let start = u64::from_le_bytes(bytes[..8].try_into().expect("offset slot"));
+    let end = if bytes.len() == 8 {
+        table_at
+    } else {
+        u64::from_le_bytes(bytes[8..].try_into().expect("next offset slot"))
+    };
+    start..end
 }
 
 struct RunWriter {
     file: io::BufWriter<File>,
     _permit: FdPermit,
-    offsets: File,
+    offsets: io::BufWriter<File>,
     _offset_permit: FdPermit,
     hasher: Sha256,
     cursor: u64,
@@ -335,7 +424,7 @@ impl RunWriter {
         let mut writer = Self {
             file: io::BufWriter::with_capacity(IO_BUFFER, file),
             _permit: permit,
-            offsets,
+            offsets: io::BufWriter::with_capacity(IO_BUFFER, offsets),
             _offset_permit: offset_permit,
             hasher: Sha256::new(),
             cursor: 0,
@@ -426,16 +515,16 @@ impl RunWriter {
             .checked_add(table_bytes)
             .ok_or_else(|| io::Error::other("spill size overflow"))?;
         self.offsets.flush()?;
-        self.offsets.seek(SeekFrom::Start(0))?;
+        self.offsets.get_mut().seek(SeekFrom::Start(0))?;
         let mut buffer = [0_u8; IO_BUFFER];
         let mut remaining = table_bytes;
         while remaining != 0 {
             let count = remaining.min(buffer.len() as u64) as usize;
-            self.offsets.read_exact(&mut buffer[..count])?;
+            self.offsets.get_mut().read_exact(&mut buffer[..count])?;
             self.write_hashed(&buffer[..count])?;
             remaining -= count as u64;
         }
-        if self.cursor != table_end || self.offsets.metadata()?.len() != table_bytes {
+        if self.cursor != table_end || self.offsets.get_ref().metadata()?.len() != table_bytes {
             return Err(record::invalid_data("spill offset table length mismatch"));
         }
         let digest: [u8; 32] = self.hasher.clone().finalize().into();
@@ -1057,27 +1146,48 @@ fn read_entry(
     index: u64,
     count: u64,
 ) -> io::Result<(Vec<u8>, Option<ValueLocation>)> {
-    let pos = range.start;
-    if pos < HEADER_LEN {
+    let span = entry_span(&range, table_at)?;
+    // Read the complete entry before interpreting its fields.
+    let mut buffer = [0_u8; MAX_ENTRY_ON_DISK];
+    file.read_exact_at(&mut buffer[..span], range.start)?;
+    decode_entry(
+        &buffer[..span],
+        range.start,
+        table_at,
+        identity,
+        index,
+        count,
+    )
+}
+
+fn entry_span(range: &Range<u64>, table_at: u64) -> io::Result<usize> {
+    if range.start < HEADER_LEN {
         return Err(record::invalid_data("spill entry overlaps its header"));
     }
-    let span = range
+    range
         .end
-        .checked_sub(pos)
+        .checked_sub(range.start)
         .filter(|&span| {
             range.end <= table_at && (ENTRY_OVERHEAD + 1..=MAX_ENTRY_ON_DISK as u64).contains(&span)
         })
-        .ok_or_else(|| record::invalid_data("invalid spill entry span"))? as usize;
-    // One read supplies the length, key, tag, location, and CRC. A later
-    // pread could observe a different generation of the same slot.
-    let mut buffer = [0_u8; MAX_ENTRY_ON_DISK];
-    file.read_exact_at(&mut buffer[..span], pos)?;
+        .map(|span| span as usize)
+        .ok_or_else(|| record::invalid_data("invalid spill entry span"))
+}
+
+fn decode_entry(
+    buffer: &[u8],
+    pos: u64,
+    table_at: u64,
+    identity: &[u8; 32],
+    index: u64,
+    count: u64,
+) -> io::Result<(Vec<u8>, Option<ValueLocation>)> {
     let key_len = u16::from_le_bytes([buffer[0], buffer[1]]) as usize;
     if key_len == 0 || key_len > MAX_SPILL_KEY_LEN {
         return Err(record::invalid_data("invalid spill key length"));
     }
     let total = 2 + key_len + TAIL_LEN + ENTRY_CRC_LEN;
-    if total != span {
+    if total != buffer.len() {
         return Err(record::invalid_data(
             "spill entry length does not match its span",
         ));
@@ -1536,6 +1646,30 @@ mod tests {
         assert!(bytes.starts_with(MAGIC));
         assert!(bytes.len() as u64 > HEADER_LEN + CHECKSUM_LEN);
         (session, directory, path)
+    }
+
+    #[test]
+    fn buffered_scan_rejects_changes_to_prefetched_entries_or_offsets_at_end() {
+        for change_offset in [false, true] {
+            let (session, _directory, path) = finished_single_run();
+            let mut cursor = RunCursor::open(&session.fd, &session.runs[0], true).unwrap();
+            let (first, _) = cursor.next_entry().unwrap().unwrap();
+            assert_eq!(first, b"a");
+            if change_offset {
+                write_offset_slot(&path, 1, HEADER_LEN);
+            } else {
+                xor_byte(&path, one_byte_key_at(1), 1);
+            }
+            // The buffered entry is the original verified image. A caller
+            // may use it only in private staging until the pass completes.
+            let (second, _) = cursor.next_entry().unwrap().unwrap();
+            assert_eq!(second, b"b");
+            for _ in 0..2 {
+                let error = must_err(cursor.next_entry());
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert_eq!(error.to_string(), "spill run checksum mismatch");
+            }
+        }
     }
 
     /// Two finished runs, not yet merged. Chunk limit is 1 key and 1024 key
