@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject suffix records that cannot fit the remaining overlay work budget
+  before allocating replay batch metadata or computing per-value digests.
+  The outer record checksum and witness still take precedence on rejection.
+
 - Preflight sparse-index limits before opening a read-only retained candidate.
   Read-only and writable opens now detect more impossible block and anchor
   budgets using the base frame, before reading any suffix records.

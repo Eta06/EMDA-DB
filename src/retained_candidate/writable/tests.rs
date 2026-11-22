@@ -491,6 +491,41 @@ fn sorted_tail_replay_checks_the_ordered_work_boundary_before_adoption() {
 }
 
 #[test]
+fn replay_work_preflight_accounts_for_the_committed_overlay() {
+    let mut payload = 2_u32.to_le_bytes().to_vec();
+    payload.extend_from_slice(&record::encode(Operation::Put, b"key", b"new").unwrap());
+    payload.extend_from_slice(&record::encode(Operation::Put, b"key", b"last").unwrap());
+    let batch = record::encode(Operation::Batch, &[0], &payload).unwrap();
+    for work in [8, 9] {
+        let limits = RetainedStoreLimits {
+            suffix: SuffixLimits {
+                work,
+                ..LIMITS.suffix
+            },
+            ..LIMITS
+        };
+        let f = Fixture::new(limits);
+        f.open(limits).unwrap().put(b"key", b"old").unwrap();
+        let witness = fs::read(f.witness()).unwrap();
+        f.append_unacknowledged(&batch);
+        let log = fs::read(f.log()).unwrap();
+        if work == 8 {
+            let error = f.open(limits).err().unwrap();
+            assert_eq!(error.to_string(), "suffix work limit exceeded");
+            assert_eq!(fs::read(f.witness()).unwrap(), witness);
+        } else {
+            let store = f.open(limits).unwrap();
+            assert_eq!(
+                store.get(b"key", 4).unwrap().as_deref(),
+                Some(b"last".as_slice())
+            );
+            assert_ne!(fs::read(f.witness()).unwrap(), witness);
+        }
+        assert_eq!(fs::read(f.log()).unwrap(), log);
+    }
+}
+
+#[test]
 fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
     for point in [
         CommitPoint::Appended,

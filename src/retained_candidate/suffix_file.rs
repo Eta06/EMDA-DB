@@ -1,6 +1,7 @@
 //! Positional reads within the admitted physical suffix.
 use super::{
     SuffixExpected, SuffixLimits, invalid, open_suffix, require_suffix_eof, suffix_capacity,
+    suffix_operation_work,
 };
 use crate::record::batch::stream::{self, StreamValue, Update, ValueHash};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Header, Operation};
@@ -78,7 +79,7 @@ impl SuffixFile<'_> {
         remaining_operations: u64,
         mut visit: impl FnMut(&[u8], Option<StreamValue<D::Output>>) -> io::Result<()>,
     ) -> io::Result<Sha256> {
-        self.replay_records::<D>(committed, remaining_operations, |record| {
+        self.replay_records::<D>(committed, remaining_operations, None, |record| {
             match record {
                 Changes::Batch(updates) => {
                     for update in updates {
@@ -87,17 +88,19 @@ impl SuffixFile<'_> {
                 }
                 Changes::Single(key, location) => visit(key, location)?,
             }
-            Ok(())
+            Ok(None)
         })
     }
 
     /// Pass one verified physical record to the visitor, retaining DB02
-    /// child order and ownership of the decoded keys.
+    /// child order and ownership of the decoded keys. The visitor supplies
+    /// the updated work budget for admission of the next record.
     pub(super) fn replay_records<D: ValueHash>(
         self,
         committed: Option<(usize, [u8; 32])>,
         mut remaining_operations: u64,
-        mut visit: impl FnMut(Changes<'_, D::Output>) -> io::Result<()>,
+        mut work: Option<ReplayWork>,
+        mut visit: impl FnMut(Changes<'_, D::Output>) -> io::Result<Option<ReplayWork>>,
     ) -> io::Result<Sha256> {
         let end = self
             .start
@@ -135,7 +138,7 @@ impl SuffixFile<'_> {
                     &header,
                     offset as u64,
                     |bytes| hash.update(bytes),
-                    |count| admit_operations(remaining_operations, count as u64),
+                    |count| admit_operations(remaining_operations, count as u64, work),
                 )
                 .map(Changes::Batch)
             } else {
@@ -146,7 +149,7 @@ impl SuffixFile<'_> {
                     &header,
                     key,
                     offset,
-                    admit_operations(remaining_operations, 1),
+                    admit_operations(remaining_operations, 1, work),
                 )
                 .map(|location| Changes::Single(key, location))
             };
@@ -160,7 +163,7 @@ impl SuffixFile<'_> {
                 Changes::Batch(updates) => updates.len() as u64,
                 Changes::Single(..) => 1,
             };
-            visit(changes)?;
+            work = visit(changes)?;
             offset = next;
         }
         Ok(hash)
@@ -180,6 +183,12 @@ impl SuffixFile<'_> {
 pub(super) enum Changes<'a, D> {
     Single(&'a [u8], Option<StreamValue<D>>),
     Batch(Vec<Update<D>>),
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ReplayWork {
+    pub remaining: u64,
+    pub entries: usize,
 }
 
 fn read_single<D: ValueHash>(
@@ -220,9 +229,20 @@ fn read_single<D: ValueHash>(
     }))
 }
 
-fn admit_operations(remaining: u64, needed: u64) -> io::Result<()> {
+fn admit_operations(remaining: u64, needed: u64, work: Option<ReplayWork>) -> io::Result<()> {
     if needed > remaining {
         return Err(suffix_capacity("suffix operation limit exceeded"));
+    }
+    // An overlay never shrinks during replay, even for a delete. Every
+    // child costs at least one operation against the current entry count.
+    if let Some(work) = work {
+        let minimum = suffix_operation_work(work.entries)?;
+        if minimum
+            .checked_mul(needed)
+            .is_none_or(|minimum| minimum > work.remaining)
+        {
+            return Err(suffix_capacity("suffix work limit exceeded"));
+        }
     }
     Ok(())
 }
@@ -438,6 +458,52 @@ mod tests {
                 None
             ]
         );
+    }
+
+    #[test]
+    fn impossible_work_skips_batch_child_hashing_and_preserves_outer_checks() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("suffix");
+        let child = record::encode(Operation::Put, b"key", &[0x4a; 70 * 1024]).unwrap();
+        let mut payload = 2_u32.to_le_bytes().to_vec();
+        payload.extend_from_slice(&child);
+        payload.extend_from_slice(&child);
+        let batch = record::encode(Operation::Batch, &[0], &payload).unwrap();
+        let digest = Sha256::digest(&batch).into();
+        let mut corrupt = batch.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        for (bytes, commitment, message) in [
+            (
+                &batch,
+                Some((batch.len(), digest)),
+                "suffix work limit exceeded",
+            ),
+            (&corrupt, None, "record checksum mismatch"),
+            (
+                &corrupt,
+                Some((batch.len(), digest)),
+                "committed suffix digest mismatch",
+            ),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            let file = File::open(&path).unwrap();
+            let error = SuffixFile {
+                file: &file,
+                start: 0,
+                len: bytes.len(),
+            }
+            .replay_records::<NoValueDigest>(
+                commitment,
+                2,
+                Some(ReplayWork {
+                    remaining: 7,
+                    entries: 1,
+                }),
+                |_| panic!("an over-budget batch must not reach the overlay"),
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), message);
+        }
     }
 
     #[test]

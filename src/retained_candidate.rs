@@ -654,18 +654,23 @@ fn suffix_capacity(message: &'static str) -> io::Error {
 }
 
 fn charge_suffix_work(work: &mut u64, limit: u64, entries: usize) -> io::Result<()> {
-    // Conservatively bound binary search comparisons and vector shifts.
-    // The extra unit covers the final binary-search comparison.
-    let cost = u64::try_from(entries)
-        .map_err(|_| invalid())?
-        .checked_mul(3)
-        .and_then(|n| n.checked_add(1))
+    *work = work
+        .checked_add(suffix_operation_work(entries)?)
         .ok_or_else(invalid)?;
-    *work = work.checked_add(cost).ok_or_else(invalid)?;
     if *work > limit {
         return Err(suffix_capacity("suffix work limit exceeded"));
     }
     Ok(())
+}
+
+fn suffix_operation_work(entries: usize) -> io::Result<u64> {
+    // Conservatively bound binary search comparisons and vector shifts.
+    // The extra unit covers the final binary-search comparison.
+    u64::try_from(entries)
+        .map_err(|_| invalid())?
+        .checked_mul(3)
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(invalid)
 }
 
 fn apply_suffix(

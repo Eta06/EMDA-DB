@@ -10,7 +10,7 @@ use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, fs::File, io, ops::Range, path::Path};
 
-use super::suffix_file::{Changes, SuffixFile};
+use super::suffix_file::{Changes, ReplayWork, SuffixFile};
 
 /// Separate overlay bounds for a detached suffix. Distinct touched keys and
 /// their bytes count even when their final operation is a deletion.
@@ -359,23 +359,34 @@ impl Overlay {
         overlay_limits: OverlayLimits,
     ) -> io::Result<Sha256> {
         let remaining = remaining_operations(suffix_limits, self.operations)?;
-        suffix.replay_records::<Sha256>(Some(committed), remaining.operations, |record| {
-            match record {
-                Changes::Single(key, location) => {
-                    self.apply_update(
-                        key,
-                        || location.map(stream_location),
-                        suffix_limits.work,
-                        overlay_limits,
-                    )?;
-                    self.operations += 1;
+        let replay_work = |overlay: &Self| {
+            Some(ReplayWork {
+                remaining: suffix_limits.work.saturating_sub(overlay.work),
+                entries: overlay.entries.len(),
+            })
+        };
+        suffix.replay_records::<Sha256>(
+            Some(committed),
+            remaining.operations,
+            replay_work(self),
+            |record| {
+                match record {
+                    Changes::Single(key, location) => {
+                        self.apply_update(
+                            key,
+                            || location.map(stream_location),
+                            suffix_limits.work,
+                            overlay_limits,
+                        )?;
+                        self.operations += 1;
+                    }
+                    Changes::Batch(updates) => {
+                        self.replay_batch(updates, suffix_limits.work, overlay_limits)?;
+                    }
                 }
-                Changes::Batch(updates) => {
-                    self.replay_batch(updates, suffix_limits.work, overlay_limits)?;
-                }
-            }
-            Ok(())
-        })
+                Ok(replay_work(self))
+            },
+        )
     }
 
     fn replay_batch(
