@@ -586,7 +586,7 @@ impl Drop for RunWriter {
 enum Emit {
     Pending,
     Memory(std::collections::btree_map::IntoIter<Vec<u8>, Option<ValueLocation>>),
-    File(RunCursor),
+    File(Box<RunCursor>),
     Exhausted,
 }
 
@@ -754,7 +754,7 @@ impl SpillSession {
             return Ok(());
         }
         let cursor = RunCursor::open(&self.fd, &self.runs[0], true)?;
-        self.emit = Emit::File(cursor);
+        self.emit = Emit::File(Box::new(cursor));
         Ok(())
     }
 

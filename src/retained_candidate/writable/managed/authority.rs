@@ -85,7 +85,7 @@ impl AuthorityRecord {
 
     pub(super) fn check_end(&self, end: u64) -> io::Result<()> {
         if end != self.committed.suffix_end
-            && !self.pending.is_some_and(|next| end == next.suffix_end)
+            && self.pending.is_none_or(|next| end != next.suffix_end)
         {
             return Err(record::invalid_data(
                 "retained suffix length does not match independent authority",
