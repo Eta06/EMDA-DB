@@ -3,10 +3,11 @@ use crate::backup;
 use crate::checkpoint_view::CheckpointViewLimits;
 use crate::log::{Log, ValueLocation};
 use crate::record;
+use crate::recovery::PositionalReader;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 8] = b"EMDAIDX1";
@@ -612,8 +613,7 @@ pub(crate) fn visit_index_file(
         return Err(record::invalid_data("incomplete index checkpoint"));
     }
     let payload_len = length - DIGEST_BYTES;
-    let mut reader = BufReader::new(file.try_clone()?);
-    reader.seek(SeekFrom::Start(0))?;
+    let mut reader = BufReader::new(PositionalReader::new(file, 0));
     let mut digest = Sha256::new();
     let mut header = [0_u8; HEADER_BYTES as usize];
     read_checked(&mut reader, &mut digest, &mut header)?;
@@ -656,14 +656,16 @@ pub(crate) fn visit_index_file(
         return Err(record::invalid_data("impossible checkpoint entry count"));
     }
     let mut consumed = HEADER_BYTES;
-    let mut previous = Vec::<u8>::new();
+    let mut keys = [[0_u8; record::MAX_KEY]; 2];
+    let [mut previous, mut current] = keys.each_mut();
+    let mut previous_len = 0;
     for _ in 0..count {
         let entry_start = consumed;
         let mut key_len = [0_u8; 2];
         read_checked(&mut reader, &mut digest, &mut key_len)?;
         let key_len_bytes = key_len;
         let key_len = u16::from_le_bytes(key_len_bytes) as usize;
-        if key_len == 0 || key_len > 1024 {
+        if key_len == 0 || key_len > record::MAX_KEY {
             return Err(record::invalid_data("invalid checkpoint key length"));
         }
         let entry_len = ENTRY_FIXED_BYTES + key_len as u64;
@@ -673,8 +675,8 @@ pub(crate) fn visit_index_file(
         if consumed > payload_len {
             return Err(record::invalid_data("checkpoint entry exceeds file"));
         }
-        let mut key = vec![0_u8; key_len];
-        read_checked(&mut reader, &mut digest, &mut key)?;
+        let key = &mut current[..key_len];
+        read_checked(&mut reader, &mut digest, key)?;
         let mut tail = [0_u8; 16];
         read_checked(&mut reader, &mut digest, &mut tail)?;
         let offset = u64::from_le_bytes(tail[..8].try_into().expect("eight bytes"));
@@ -690,7 +692,7 @@ pub(crate) fn visit_index_file(
                 "checkpoint value location outside log prefix",
             ));
         }
-        if !previous.is_empty() && previous >= key {
+        if previous[..previous_len].cmp(key).is_ge() {
             return Err(record::invalid_data(
                 "checkpoint keys are not strictly ordered",
             ));
@@ -698,7 +700,7 @@ pub(crate) fn visit_index_file(
         visit(
             entry_start,
             &key_len_bytes,
-            &key,
+            key,
             &tail,
             ValueLocation {
                 offset,
@@ -706,7 +708,8 @@ pub(crate) fn visit_index_file(
                 checksum,
             },
         )?;
-        previous = key;
+        previous_len = key_len;
+        std::mem::swap(&mut previous, &mut current);
     }
     if consumed != payload_len {
         return Err(record::invalid_data("trailing data in index checkpoint"));
@@ -762,6 +765,66 @@ mod tests {
             || if stage == "staged" { pause() } else { Ok(()) },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn nested_checkpoint_verification_keeps_separate_read_positions() {
+        use std::io::{Seek, SeekFrom};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source");
+        let checkpoint = directory.path().join("checkpoint");
+        let store = Store::open(&path).unwrap();
+        let keys: Vec<_> = (0..48_u8)
+            .map(|id| vec![id; if id % 2 == 0 { record::MAX_KEY } else { 1 }])
+            .collect();
+        let batch: Vec<_> = keys
+            .iter()
+            .map(|key| crate::BatchOperation::Put {
+                key,
+                value: b"value",
+            })
+            .collect();
+        store.write_batch(&batch).unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        let boundary = std::fs::metadata(path.join("records.log")).unwrap().len();
+        let mut file = File::open(&checkpoint).unwrap();
+        file.seek(SeekFrom::Start(9)).unwrap();
+
+        let mut seen = 0;
+        visit_index_file(
+            &file,
+            boundary,
+            boundary,
+            None,
+            &digest,
+            None,
+            |_, _, key, _, _| {
+                if seen == 0 {
+                    let mut nested = 0;
+                    visit_index_file(
+                        &file,
+                        boundary,
+                        boundary,
+                        None,
+                        &digest,
+                        None,
+                        |_, _, key, _, _| {
+                            assert_eq!(key, keys[nested]);
+                            nested += 1;
+                            Ok(())
+                        },
+                    )?;
+                    assert_eq!(nested, keys.len());
+                }
+                assert_eq!(key, keys[seen]);
+                seen += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, keys.len());
+        assert_eq!(file.stream_position().unwrap(), 9);
     }
 
     #[test]

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify checkpoints with independent positional reads and reusable key
+  buffers, removing one allocation per scanned entry.
+
 - Verify full-log rebuild output against the replay digest before adopting an
   unwitnessed tail, without a redundant source log pass.
 
