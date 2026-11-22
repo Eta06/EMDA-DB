@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream bounded document count and sum into aggregate groups without
+  retaining all decoded matches.
+
 - Resume interrupted retained generation retirement only after checking the
   selected replacement. Generic staging cleanup preserves these retirement
   stages, and maintenance verifies that selected file names still refer to

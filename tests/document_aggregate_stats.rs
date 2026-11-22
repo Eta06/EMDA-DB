@@ -1,6 +1,6 @@
 use database_engine::{
-    AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter,
-    IndexValue, Store,
+    AggregateRequest, AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase,
+    DocumentFilter, IndexValue, Store,
 };
 use serde_json::json;
 use std::{io::ErrorKind, sync::Barrier};
@@ -248,6 +248,22 @@ fn statistics_prioritize_scan_and_filter_errors_over_early_aggregate_errors() {
                 .to_string()
                 .contains("document scan exceeds the operation limit")
         );
+        let scan_error = db
+            .aggregate(
+                "c",
+                &AggregateRequest {
+                    filter: DocumentFilter::All,
+                    group_by: None,
+                    sum: Some(path("n")),
+                    max_scanned: 1,
+                },
+            )
+            .unwrap_err();
+        assert!(
+            scan_error
+                .to_string()
+                .contains("document scan exceeds the operation limit")
+        );
         let filter = DocumentFilter::And(
             (0..126)
                 .map(|_| DocumentFilter::ArrayContains {
@@ -260,7 +276,7 @@ fn statistics_prioritize_scan_and_filter_errors_over_early_aggregate_errors() {
             .aggregate_stats(
                 "c",
                 &AggregateStatsRequest {
-                    filter,
+                    filter: filter.clone(),
                     ..request()
                 },
             )
@@ -270,6 +286,57 @@ fn statistics_prioritize_scan_and_filter_errors_over_early_aggregate_errors() {
                 .to_string()
                 .contains("membership filter comparison limit exceeded")
         );
+        let filter_error = db
+            .aggregate(
+                "c",
+                &AggregateRequest {
+                    filter,
+                    group_by: None,
+                    sum: Some(path("n")),
+                    max_scanned: 2,
+                },
+            )
+            .unwrap_err();
+        assert!(
+            filter_error
+                .to_string()
+                .contains("membership filter comparison limit exceeded")
+        );
+    });
+}
+
+#[test]
+fn aggregate_checks_intermediate_sum_in_document_id_order() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        for (id, value) in [("c", -1), ("b", 1), ("a", i64::MAX)] {
+            db.insert("c", id, &json!({"n":value})).unwrap();
+        }
+        let request = AggregateRequest {
+            filter: DocumentFilter::All,
+            group_by: None,
+            sum: Some(path("n")),
+            max_scanned: 3,
+        };
+        let error = db.aggregate("c", &request).unwrap_err();
+        assert_eq!(error.to_string(), "aggregate sum overflow");
+        db.transaction(|tx| {
+            tx.replace("c", "b", &json!({"n":-1}), false)?;
+            let result = tx.aggregate("c", &request)?;
+            assert_eq!(result.groups[0].count, 3);
+            assert_eq!(result.groups[0].sum, Some(i64::MAX - 2));
+            assert_eq!(
+                (
+                    result.plan.scanned,
+                    result.plan.matched,
+                    result.plan.returned
+                ),
+                (3, 3, 3)
+            );
+            Ok(())
+        })
+        .unwrap();
     });
 }
 

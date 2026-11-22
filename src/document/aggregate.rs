@@ -81,49 +81,46 @@ impl DocumentTransaction<'_, '_> {
         if let Some(path) = &request.sum {
             schema::validate_path(path)?;
         }
-        super::filter::validate_filter(&request.filter)?;
-        let query = DocumentQuery {
-            filter: request.filter.clone(),
-            limit: 256,
-            max_scanned: request.max_scanned,
-            ..DocumentQuery::default()
-        };
-        let result = self.query(collection, &query)?;
         let mut groups = BTreeMap::<Vec<u8>, AggregateGroup>::new();
-        for row in result.documents {
-            let value = match &request.group_by {
-                None => None,
-                Some(path) => schema::field(&row.document, path)
+        let plan = self.visit_filtered_documents(
+            collection,
+            &request.filter,
+            request.max_scanned,
+            |document| {
+                let value = request
+                    .group_by
+                    .as_ref()
+                    .and_then(|path| schema::field(document, path))
                     .map(IndexValue::from_json)
-                    .transpose()?,
-            };
-            let mut encoded = Vec::new();
-            if let Some(value) = &value {
-                value.encode(&mut encoded)?;
-            }
-            let group = groups.entry(encoded).or_insert_with(|| AggregateGroup {
-                key: value,
-                count: 0,
-                sum: request.sum.as_ref().map(|_| 0),
-            });
-            group.count += 1;
-            if let Some(path) = &request.sum {
-                if let Some(value) = schema::field(&row.document, path) {
-                    if !value.is_null() {
-                        let value = value.as_i64().ok_or_else(|| {
-                            key::invalid("aggregate sum requires signed 64-bit integers")
-                        })?;
-                        group.sum = Some(
-                            group
-                                .sum
-                                .expect("requested sum")
-                                .checked_add(value)
-                                .ok_or_else(|| key::invalid("aggregate sum overflow"))?,
-                        );
-                    }
+                    .transpose()?;
+                let mut encoded = Vec::new();
+                if let Some(value) = &value {
+                    value.encode(&mut encoded)?;
                 }
-            }
-        }
+                let group = groups.entry(encoded).or_insert_with(|| AggregateGroup {
+                    key: value,
+                    count: 0,
+                    sum: request.sum.as_ref().map(|_| 0),
+                });
+                group.count += 1;
+                let Some(value) = request
+                    .sum
+                    .as_ref()
+                    .and_then(|path| schema::field(document, path))
+                    .filter(|value| !value.is_null())
+                else {
+                    return Ok(());
+                };
+                let value = value
+                    .as_i64()
+                    .ok_or_else(|| key::invalid("aggregate sum requires signed 64-bit integers"))?;
+                let sum = group.sum.as_mut().expect("requested sum");
+                *sum = sum
+                    .checked_add(value)
+                    .ok_or_else(|| key::invalid("aggregate sum overflow"))?;
+                Ok(())
+            },
+        )?;
         if request.group_by.is_none() && groups.is_empty() {
             groups.insert(
                 Vec::new(),
@@ -136,7 +133,7 @@ impl DocumentTransaction<'_, '_> {
         }
         Ok(AggregateResult {
             groups: groups.into_values().collect(),
-            plan: result.plan,
+            plan,
         })
     }
 
