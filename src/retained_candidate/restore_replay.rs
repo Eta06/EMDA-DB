@@ -14,7 +14,7 @@ use std::{
     path::Path,
 };
 
-pub(super) struct RestoreReplay {
+pub(crate) struct RestoreReplay {
     base: File,
     base_len: u64,
     suffix: File,
@@ -27,7 +27,7 @@ pub(super) struct RestoreReplay {
 }
 
 impl RestoreReplay {
-    pub(super) fn open(
+    pub(crate) fn open(
         candidate: &Path,
         suffix: &Path,
         limits: Limits,
@@ -133,7 +133,7 @@ impl RestoreReplay {
         Ok(replay)
     }
 
-    pub(super) fn check_lengths(&self) -> io::Result<()> {
+    pub(crate) fn check_lengths(&self) -> io::Result<()> {
         if self.base.metadata()?.len() != self.base_len
             || self.suffix.metadata()?.len() != self.suffix_len
         {
@@ -150,10 +150,7 @@ impl RestoreReplay {
         before_value: impl Fn() -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
         let mut hash = Sha256::new();
-        let mut changes = self.changes.iter().peekable();
-        let mut base_reader = &self.base;
-        base_reader.rewind()?;
-        let mut emit = |file: &File, key: &[u8], value: &CapturedValue| {
+        self.visit_rows(|file, key, value| {
             copy.put_retained(
                 key,
                 OverlayValue::Disk {
@@ -165,10 +162,20 @@ impl RestoreReplay {
                 &before_value,
             )?;
             hash_row(&mut hash, key, value.length, value.digest);
-            Ok::<(), io::Error>(())
-        };
-        // The scan may invoke the writer before checking the file digest.
-        // All writes remain private until the complete binding matches.
+            Ok(())
+        })?;
+        Ok(hash.finalize().into())
+    }
+
+    /// Visit sorted live keys and their value locations. Callers must keep
+    /// results private until the complete base binding has been checked.
+    pub(crate) fn visit_rows(
+        &self,
+        mut emit: impl FnMut(&File, &[u8], &CapturedValue) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut changes = self.changes.iter().peekable();
+        let mut base_reader = &self.base;
+        base_reader.rewind()?;
         let metadata =
             scan_value_locations(base_reader, self.limits, self.staging, |key, value| {
                 while let Some((other, replacement)) =
@@ -189,7 +196,7 @@ impl RestoreReplay {
                 emit(&self.suffix, key, value)?;
             }
         }
-        Ok(hash.finalize().into())
+        Ok(())
     }
 
     pub(super) fn verify_output(

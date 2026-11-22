@@ -1,0 +1,61 @@
+{
+  "suffix": [
+    114299648,
+    "09af17ce76fde67dbd9607a4271e143140f9fe853d7c9be2902188257f575ddf",
+    "0013d0060000000009af17ce76fde67dbd9607a4271e143140f9fe853d7c9be2902188257f575ddf"
+  ],
+  "samples": {
+    "baseline": [
+      {
+        "rss_bytes": 184123392,
+        "wall_seconds": 0.36
+      },
+      {
+        "rss_bytes": 184123392,
+        "wall_seconds": 0.29
+      },
+      {
+        "rss_bytes": 184123392,
+        "wall_seconds": 0.3
+      },
+      {
+        "rss_bytes": 184123392,
+        "wall_seconds": 0.29
+      },
+      {
+        "rss_bytes": 184139776,
+        "wall_seconds": 0.29
+      },
+      {
+        "rss_bytes": 184123392,
+        "wall_seconds": 0.3
+      }
+    ],
+    "change": [
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.84
+      },
+      {
+        "rss_bytes": 2457600,
+        "wall_seconds": 0.45
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.44
+      },
+      {
+        "rss_bytes": 2424832,
+        "wall_seconds": 0.45
+      },
+      {
+        "rss_bytes": 2457600,
+        "wall_seconds": 0.44
+      },
+      {
+        "rss_bytes": 2441216,
+        "wall_seconds": 0.46
+      }
+    ]
+  }
+}

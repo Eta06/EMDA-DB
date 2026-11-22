@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream retained suffix exports to private staging and compare authenticated
+  value digests without retaining entire suffixes or live value sets in memory.
+
 - Check the retained base frame for impossible work or staging budgets
   before buffering a detached suffix or hashing it for offline restore.
 

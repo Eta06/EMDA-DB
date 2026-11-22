@@ -14,6 +14,7 @@ use std::{
 mod indexed_suffix;
 pub use indexed_suffix::{IndexedSuffix, OverlayLimits};
 mod restore_replay;
+pub(crate) use restore_replay::RestoreReplay;
 mod suffix_file;
 mod writable;
 pub use writable::{
@@ -192,6 +193,21 @@ pub fn verify(
     let dir = directory.as_ref();
     check_files(dir, expected)?;
     let base = retained_base_v2::validate_buffered(open_regular(&dir.join("base"))?, limits)?;
+    check_binding(&base, expected)?;
+    Ok(base)
+}
+
+// Keep visitor results private until the flat file and its binding pass.
+pub(crate) fn visit_base_values(
+    directory: &Path,
+    limits: Limits,
+    staging: retained_base_v2::StagingLimits,
+    expected: &Expected,
+    visit: impl FnMut(&[u8], retained_base_v2::CapturedValue) -> io::Result<()>,
+) -> io::Result<Validated> {
+    check_files(directory, expected)?;
+    let file = open_regular(&directory.join("base"))?;
+    let base = retained_base_v2::scan_value_locations(file, limits, staging, visit)?;
     check_binding(&base, expected)?;
     Ok(base)
 }

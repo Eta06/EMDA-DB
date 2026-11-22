@@ -4,6 +4,28 @@ use sha2::{Digest, Sha256};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
+fn hash_log_range(
+    log: &crate::log::Log,
+    mut offset: u64,
+    mut remaining: u64,
+    buffer: &mut [u8; 65_536],
+    mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
+    let mut hash = Sha256::new();
+    while remaining != 0 {
+        let count = remaining.min(buffer.len() as u64) as usize;
+        let bytes = &mut buffer[..count];
+        log.read_bytes(bytes, offset)?;
+        hash.update(&*bytes);
+        visit(bytes)?;
+        offset = offset
+            .checked_add(count as u64)
+            .ok_or_else(|| io::Error::other("offset overflow"))?;
+        remaining -= count as u64;
+    }
+    Ok(hash.finalize().into())
+}
+
 /// Explicit limits for full replay and the resulting file.
 #[derive(Clone, Copy, Debug)]
 pub struct RetainedExportLimits {
@@ -202,8 +224,10 @@ impl Store {
     /// Candidate, source and destination parents must remain trusted and stable;
     /// destination must be outside the source and candidate directories and aliases.
     /// This is non-authoritative and does not change the source or enable recovery.
-    /// Memory includes the suffix byte cap, replay staging payload and entry overhead,
-    /// plus the full-index verification limits and a fixed 64 KiB comparison buffer.
+    /// The suffix is streamed into a private file. Memory includes the source
+    /// verification index, suffix-touched keys and value locations, and fixed
+    /// read and comparison buffers. Staging limits still apply to the logical
+    /// live payload, including intermediate batch states.
     #[allow(clippy::too_many_arguments)]
     pub fn export_retained_suffix(
         &self,
@@ -273,39 +297,42 @@ impl Store {
                     "candidate historical peaks mismatch",
                 ));
             }
-            let candidate_entries =
-                crate::retained_candidate::load(candidate, base_limits, staging_limits, expected)?;
-            if candidate_entries.len() != prefix.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "candidate prefix count mismatch",
-                ));
-            }
             let mut buffer = [0u8; 65536];
-            for ((key, value), (source_key, location)) in
-                candidate_entries.iter().zip(prefix.iter())
-            {
-                if key != source_key || value.len() != location.length {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "candidate prefix index mismatch",
-                    ));
-                }
-                for (i, chunk) in value.chunks(buffer.len()).enumerate() {
-                    let offset = location
-                        .offset
-                        .checked_add((i * buffer.len()) as u64)
-                        .ok_or_else(|| io::Error::other("offset overflow"))?;
-                    self.log.read_bytes(&mut buffer[..chunk.len()], offset)?;
-                    if &buffer[..chunk.len()] != chunk {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
+            let mut prefix_rows = prefix.iter();
+            crate::retained_candidate::visit_base_values(
+                candidate,
+                base_limits,
+                staging_limits,
+                expected,
+                |key, value| {
+                    let (source_key, location) = prefix_rows.next().ok_or_else(|| {
+                        crate::record::invalid_data("candidate prefix count mismatch")
+                    })?;
+                    if key != source_key || value.length != location.length {
+                        return Err(crate::record::invalid_data(
+                            "candidate prefix index mismatch",
+                        ));
+                    }
+                    let digest = hash_log_range(
+                        &self.log,
+                        location.offset,
+                        value.length as u64,
+                        &mut buffer,
+                        |_| Ok(()),
+                    )?;
+                    if digest != value.digest {
+                        return Err(crate::record::invalid_data(
                             "candidate prefix value mismatch",
                         ));
                     }
-                }
+                    Ok(())
+                },
+            )?;
+            if prefix_rows.next().is_some() {
+                return Err(crate::record::invalid_data(
+                    "candidate prefix count mismatch",
+                ));
             }
-            drop(candidate_entries);
             drop(prefix);
             let end = self.log.len()?;
             let len = end.checked_sub(base.boundary).ok_or_else(|| {
@@ -317,75 +344,50 @@ impl Store {
                     "suffix byte limit exceeded",
                 ));
             }
-            let size = usize::try_from(len).map_err(|_| io::Error::other("suffix too large"))?;
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve_exact(size)
-                .map_err(|_| io::Error::other("suffix allocation failed"))?;
-            bytes.resize(size, 0);
-            self.log.read_bytes(&mut bytes, base.boundary)?;
+            let parent = backup::parent_directory(destination)?;
+            let (mut stage, mut file) = crate::staging::Stage::file(parent)?;
+            let digest = hash_log_range(&self.log, base.boundary, len, &mut buffer, |bytes| {
+                file.write_all(bytes)
+            })?;
+            file.sync_all()?;
             let suffix_binding = crate::retained_candidate::SuffixExpected {
                 candidate: expected.clone(),
                 end: len,
-                digest: Sha256::digest(&bytes).into(),
+                digest,
             };
-            let replay = crate::retained_candidate::replay_suffix(
+            let replay = crate::retained_candidate::RestoreReplay::open(
                 candidate,
+                stage.path(),
                 base_limits,
                 staging_limits,
-                &bytes,
                 suffix_limits,
                 &suffix_binding,
             )?;
-            if replay.len() != inner.index.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "replay count mismatch",
-                ));
-            }
-            for ((key, value), (live_key, location)) in replay.iter().zip(inner.index.iter()) {
-                if key != live_key || value.len() != location.length {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "replay index mismatch",
-                    ));
+            let mut live_rows = inner.index.iter();
+            replay.visit_rows(|_, key, value| {
+                let (live_key, location) = live_rows
+                    .next()
+                    .ok_or_else(|| crate::record::invalid_data("replay count mismatch"))?;
+                if key != live_key || value.length != location.length {
+                    return Err(crate::record::invalid_data("replay index mismatch"));
                 }
-                for (i, chunk) in value.chunks(buffer.len()).enumerate() {
-                    let offset = location
-                        .offset
-                        .checked_add((i * buffer.len()) as u64)
-                        .ok_or_else(|| io::Error::other("offset overflow"))?;
-                    self.log.read_bytes(&mut buffer[..chunk.len()], offset)?;
-                    if &buffer[..chunk.len()] != chunk {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "replay value mismatch",
-                        ));
-                    }
+                let digest = hash_log_range(
+                    &self.log,
+                    location.offset,
+                    value.length as u64,
+                    &mut buffer,
+                    |_| Ok(()),
+                )?;
+                if digest != value.digest {
+                    return Err(crate::record::invalid_data("replay value mismatch"));
                 }
+                Ok(())
+            })?;
+            if live_rows.next().is_some() {
+                return Err(crate::record::invalid_data("replay count mismatch"));
             }
+            replay.check_lengths()?;
             self.log.verify_witness()?;
-            let parent = backup::parent_directory(destination)?;
-            let (mut stage, mut file) = crate::staging::Stage::file(parent)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            file.seek(SeekFrom::Start(0))?;
-            let mut staged_hash = Sha256::new();
-            let mut remaining = len;
-            while remaining > 0 {
-                let n = remaining.min(buffer.len() as u64) as usize;
-                std::io::Read::read_exact(&mut file, &mut buffer[..n])?;
-                staged_hash.update(&buffer[..n]);
-                remaining -= n as u64;
-            }
-            if file.metadata()?.len() != len
-                || <[u8; 32]>::from(staged_hash.finalize()) != suffix_binding.digest
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "staged suffix mismatch",
-                ));
-            }
             binding = Some(suffix_binding.clone());
             tracker.begin_publication();
             stage.publish(destination)?;
@@ -1422,6 +1424,26 @@ mod tests {
         );
         assert!(!small.exists());
         assert!(!root.path().join("selection").exists());
+        let failure = store
+            .export_retained_suffix(
+                &candidate,
+                &expected,
+                &small,
+                base_limits,
+                staging,
+                crate::retained_candidate::SuffixLimits {
+                    operations: 0,
+                    ..suffix
+                },
+                limits(),
+            )
+            .unwrap_err();
+        assert!(matches!(failure, SuffixExportFailure::NotPublished(error)
+            if error.to_string() == "suffix operation limit exceeded"));
+        assert!(!small.exists());
+        assert_no_candidate_stages(root.path());
+        assert_eq!(snapshot(&source), source_before);
+        assert_eq!(snapshot(&candidate), candidate_before);
         let uncertain = store.export_retained_suffix_impl(
             &candidate,
             &expected,
