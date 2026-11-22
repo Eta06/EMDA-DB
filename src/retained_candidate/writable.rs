@@ -382,6 +382,11 @@ impl RetainedStore {
         self.header.id()
     }
 
+    fn sync_recovered_commit(&self) -> io::Result<()> {
+        self.log.sync_data()?;
+        self.witness.sync_data()
+    }
+
     pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         self.ensure_healthy()?;
         self.overlay.get(

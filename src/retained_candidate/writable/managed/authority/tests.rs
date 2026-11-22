@@ -459,6 +459,50 @@ fn recovery_adopts_an_exact_proposed_tail_before_finalizing_a_pending_intent() {
 }
 
 #[test]
+fn pending_recovery_requires_local_sync_even_with_an_advanced_witness() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.authority.fault = Some((2, false));
+    assert!(matches!(
+        store.put(b"pending", b"proposed"),
+        Err(MutationFailure::OutcomeUnknown(_))
+    ));
+    drop(store);
+
+    let pending = f.provider.read().unwrap().unwrap();
+    let proposed = pending.pending.unwrap();
+    let slot = Slot::A.path(&f.root);
+    let log = fs::read(slot.join("records.log")).unwrap();
+    let witness = fs::read(slot.join("commit.state")).unwrap();
+    assert_eq!(
+        u64::from_le_bytes(witness[40..48].try_into().unwrap()),
+        proposed.suffix_end
+    );
+    let error =
+        AuthorizedRetainedStore::open_using(&f.root, LIMITS, f.provider.clone(), None, |store| {
+            assert_eq!(
+                AuthorityPoint::from_store(proposed.catalog, store),
+                proposed
+            );
+            store.log.sync_data()?;
+            Err(io::Error::other("injected recovery witness sync failure"))
+        })
+        .err()
+        .expect("recovery must return the sync failure before advancing authority");
+    assert_eq!(error.to_string(), "injected recovery witness sync failure");
+    assert_eq!(f.provider.read().unwrap(), Some(pending));
+    assert_eq!(fs::read(slot.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(slot.join("commit.state")).unwrap(), witness);
+
+    let mut reopened = f.open();
+    assert_eq!(reopened.get(b"pending", 8).unwrap().unwrap(), b"proposed");
+    let committed = f.provider.read().unwrap().unwrap();
+    assert_eq!(committed.committed, proposed);
+    assert!(committed.pending.is_none());
+}
+
+#[test]
 fn competing_copies_can_acknowledge_only_one_append() {
     let mut f = Fixture::prepare();
     f.register();

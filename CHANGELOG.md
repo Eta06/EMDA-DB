@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Synchronize the local retained log and witness before finalizing a recovered
+  authority intent, including when an interrupted witness write is already visible.
+
 - Reject impossible retained-base totals and insufficient sparse-index
   budgets before replaying the suffix.
 

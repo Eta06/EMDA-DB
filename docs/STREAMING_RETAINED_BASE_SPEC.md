@@ -464,7 +464,9 @@ Before replay, reopen admits only the physical suffix length named by the
 committed point or the pending proposal. It verifies the entire admitted
 suffix and checks its digest against the exact authority point. When an
 intent remains pending, it synchronizes or adopts the matching state before
-finalizing the recovery choice. An unrelated or partial suffix fails
+finalizing the recovery choice. Recovery synchronizes the pinned log and
+witness before the final CAS even if the visible witness already matches
+the proposed suffix. An unrelated or partial suffix fails
 closed. A stale copy can lose the CAS and must reopen against the current
 record. Revisions advance even when recovery selects the prior suffix.
 

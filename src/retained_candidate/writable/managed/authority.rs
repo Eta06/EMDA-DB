@@ -194,7 +194,13 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         limits: RetainedStoreLimits,
         authority: A,
     ) -> io::Result<Self> {
-        Self::open_using(root.as_ref(), limits, authority, None)
+        Self::open_using(
+            root.as_ref(),
+            limits,
+            authority,
+            None,
+            RetainedStore::sync_recovered_commit,
+        )
     }
 
     /// Recover with a per-open catalog limit, intersected with any persistent
@@ -208,7 +214,13 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         storage_limits: CatalogStorageLimits,
         suffix_threshold: Option<NonZeroU64>,
     ) -> io::Result<Self> {
-        let mut store = Self::open_using(root.as_ref(), limits, authority, Some(storage_limits))?;
+        let mut store = Self::open_using(
+            root.as_ref(),
+            limits,
+            authority,
+            Some(storage_limits),
+            RetainedStore::sync_recovered_commit,
+        )?;
         if suffix_threshold.is_some() {
             store.finish_maintenance()?;
             store.auto_reclaim = suffix_threshold;
@@ -221,6 +233,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         limits: RetainedStoreLimits,
         mut authority: A,
         storage_limits: Option<CatalogStorageLimits>,
+        sync_recovered_commit: impl FnOnce(&RetainedStore) -> io::Result<()>,
     ) -> io::Result<Self> {
         let current = authority
             .read()?
@@ -257,6 +270,10 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             cleanup_pending: false,
         };
         if current.pending.is_some() {
+            // A prior writer can stop after updating the visible witness but
+            // before synchronizing it. Confirm durability on the pinned files
+            // before the independent authority acknowledges this endpoint.
+            sync_recovered_commit(&this.inner.store)?;
             let actual = AuthorityPoint::from_store(this.inner.active.catalog, &this.inner.store);
             this.advance(current.finalized(actual)?)?;
         } else {
