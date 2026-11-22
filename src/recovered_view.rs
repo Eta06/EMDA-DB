@@ -100,8 +100,11 @@ impl RecoveredCheckpointView {
     }
 
     /// Opens with suffix, checkpoint and optional whole-log admission limits.
-    /// Whole-log admission happens before checkpoint prefix hashing. Limits
-    /// must be reapplied on reopen and do not bound total time or memory.
+    /// The whole-log cap is checked before checkpoint validation. The suffix
+    /// byte cap is checked against the verified checkpoint boundary before
+    /// hashing its covered log. Rejection by a cap leaves log verification
+    /// incomplete. Limits must be reapplied on reopen and do not bound total
+    /// time or memory.
     pub fn open_with_options(
         path: impl AsRef<Path>,
         checkpoint: impl AsRef<Path>,
@@ -113,19 +116,23 @@ impl RecoveredCheckpointView {
             limits.max_tail_keys,
             limits.max_tail_key_bytes,
         )?;
-        let base = CheckpointView::open_with_recovery_limits(
-            path,
-            checkpoint,
+        let base = CheckpointView::open_shared_with_log_limits(
+            path.as_ref(),
+            checkpoint.as_ref(),
             trusted_digest,
             limits.checkpoint_view,
             limits.max_log_bytes,
+            Some(limits.max_tail_bytes),
         )?;
-        Self::from_base(
+        Self::from_base_mode(
             base,
             limits.max_tail_bytes,
             limits.max_tail_keys,
             limits.max_tail_key_bytes,
+            false,
+            limits.max_log_bytes,
         )
+        .map(|(view, _)| view)
     }
 
     pub(crate) fn validate_limits(
@@ -157,6 +164,7 @@ impl RecoveredCheckpointView {
             max_tail_keys,
             max_tail_key_bytes,
             false,
+            None,
         )
         .map(|(view, _)| view)
     }
@@ -168,6 +176,7 @@ impl RecoveredCheckpointView {
         max_tail_bytes: u64,
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
+        max_log_bytes: Option<u64>,
     ) -> io::Result<(Self, Option<[u8; 32]>)> {
         Self::from_base_mode(
             base,
@@ -175,6 +184,7 @@ impl RecoveredCheckpointView {
             max_tail_keys,
             max_tail_key_bytes,
             true,
+            max_log_bytes,
         )
     }
 
@@ -184,24 +194,18 @@ impl RecoveredCheckpointView {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
         allow_unacknowledged: bool,
+        max_log_bytes: Option<u64>,
     ) -> io::Result<(Self, Option<[u8; 32]>)> {
         Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let boundary = base.witnessed_boundary;
-        let length = base.log.len()?;
+        let length = CheckpointView::check_log_limit(&base.log, max_log_bytes)?;
         if length < boundary || (!allow_unacknowledged && length != boundary) {
             return Err(record::invalid_data(
                 "log has an unacknowledged tail; open a writable store to recover it first",
             ));
         }
-        let tail_bytes = length
-            .checked_sub(base.log_boundary())
-            .ok_or_else(|| record::invalid_data("checkpoint is beyond the witnessed boundary"))?;
-        if tail_bytes > max_tail_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "recovered view suffix byte limit exceeded",
-            ));
-        }
+        let tail_bytes =
+            CheckpointView::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;
         let mut overlay = BTreeMap::new();
         let mut key_bytes = 0_usize;
         let visit = |key: Vec<u8>, location| {

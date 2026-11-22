@@ -133,6 +133,8 @@ impl CheckpointStore {
     }
 
     /// Opens with limits no greater than the recovered view's hard limits.
+    /// An oversized suffix is rejected after verifying the checkpoint file
+    /// but before hashing its covered log. This leaves log verification incomplete.
     /// A complete unacknowledged tail is validated and synchronized before
     /// it is adopted; incomplete or invalid tails fail without truncation.
     pub fn open_with_limits(
@@ -350,18 +352,21 @@ impl CheckpointStore {
                 ));
             }
         }
-        let base = CheckpointView::open_locked_with_limits(
+        let base = CheckpointView::open_locked_with_recovery_limits(
             &path,
             &checkpoint,
             &digest,
             lock,
             checkpoint_view,
+            max_log_bytes,
+            Some(max_tail_bytes),
         )?;
         let (mut view, adoption_digest) = RecoveredCheckpointView::from_base_for_writer(
             base,
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
+            max_log_bytes,
         )?;
         let boundary = view.base.witnessed_boundary;
         let length = view

@@ -163,19 +163,37 @@ impl CheckpointView {
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
     ) -> io::Result<Self> {
+        Self::open_shared_with_log_limits(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            max_log_bytes,
+            None,
+        )
+    }
+
+    pub(crate) fn open_shared_with_log_limits(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointViewLimits,
+        max_log_bytes: Option<u64>,
+        max_tail_bytes: Option<u64>,
+    ) -> io::Result<Self> {
         limits.validate()?;
-        let path = path.as_ref();
         let lock_file = File::open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_shared(&lock_file)?;
         let lock_file = crate::store_lock::StoreLock::acquired(lock_file);
         lock_file.verify_identity(path)?;
         Self::open_locked_with_recovery_limits(
             path,
-            checkpoint.as_ref(),
+            checkpoint,
             trusted_digest,
             lock_file,
             limits,
             max_log_bytes,
+            max_tail_bytes,
         )
     }
 
@@ -209,27 +227,29 @@ impl CheckpointView {
             lock_file,
             limits,
             None,
+            None,
         )
     }
 
-    fn open_locked_with_recovery_limits(
+    pub(crate) fn open_locked_with_recovery_limits(
         path: &Path,
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
         lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
+        max_tail_bytes: Option<u64>,
     ) -> io::Result<Self> {
         limits.validate()?;
         let (mut log, boundary) = Log::open_checkpoint_view(path)?;
-        Self::check_log_limit(&log, max_log_bytes)?;
+        let length = Self::check_log_limit(&log, max_log_bytes)?;
         let checkpoint = File::open(checkpoint)?;
         let mut blocks = Vec::new();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;
-        let (verified, _) = checkpoint::visit_file(
+        let verified = checkpoint::visit_index_file(
             &checkpoint,
-            &log,
+            length,
             boundary,
             None,
             trusted_digest,
@@ -282,6 +302,11 @@ impl CheckpointView {
         if let Some(block) = current {
             blocks.push(block.finish());
         }
+        let length = Self::check_log_limit(&log, max_log_bytes)?;
+        if let Some(limit) = max_tail_bytes {
+            Self::checked_tail_bytes(length, verified.prefix, limit)?;
+        }
+        checkpoint::verify_log_prefix(&log, &verified)?;
         let has_tail = Self::check_log_limit(&log, max_log_bytes)? > verified.prefix;
         log.release_view_witness()?;
         Ok(Self {
@@ -300,7 +325,7 @@ impl CheckpointView {
         })
     }
 
-    fn check_log_limit(log: &Log, max_log_bytes: Option<u64>) -> io::Result<u64> {
+    pub(crate) fn check_log_limit(log: &Log, max_log_bytes: Option<u64>) -> io::Result<u64> {
         let length = log.len()?;
         if max_log_bytes.is_some_and(|limit| length > limit) {
             return Err(io::Error::new(
@@ -309,6 +334,19 @@ impl CheckpointView {
             ));
         }
         Ok(length)
+    }
+
+    pub(crate) fn checked_tail_bytes(length: u64, prefix: u64, limit: u64) -> io::Result<u64> {
+        let tail_bytes = length
+            .checked_sub(prefix)
+            .ok_or_else(|| record::invalid_data("checkpoint is beyond the witnessed boundary"))?;
+        if tail_bytes > limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovered view suffix byte limit exceeded",
+            ));
+        }
+        Ok(tail_bytes)
     }
 
     /// Number of live keys in this historical checkpoint.
