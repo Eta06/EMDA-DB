@@ -307,6 +307,14 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   check every live key and value, and trace base reads during retained
   rotation. Durable-media timing at this size and the archive lifecycle
   remain open.
+- [x] Compare [two retained hashing changes](../benchmarks/results/2026-11-23-retained-hash-trials/README.md)
+  at 524,288 keys on macOS and Linux ARM64. Both passed full-state
+  comparisons. Neither reduced rotation CPU on Linux, so both changes
+  were dropped.
+- [x] Retry interrupted one-byte EOF checks on file-backed authority
+  records. The [Linux fault traces](../benchmarks/results/2026-11-23-retained-authority-eof/README.md)
+  show eight formerly failed reopen reads recovering, while a returned
+  I/O error still fails and the source files remain intact.
 - [ ] Complete live/online compaction, log garbage collection and bounded recovery. Explicit index checkpoints still hash the full covered prefix. Protect readers and snapshots during reclamation. Separate-copy compaction does not include later source writes; the guarded ordinary-store wrapper catches up later writes, can explicitly remove the old copy after handoff, and pauses callbacks for full final verification. Both blocking handoffs and the online wrapper require application coordination; the worker is explicitly started and stops on failure, and the ordinary-store compactor builds multiple in-memory indexes.
 - [x] Implement opt-in authority-backed retained cutover with a witnessed base and suffix, original-path older-reader rejection for the tested binaries and authority-checked selection. The [format specification](STREAMING_RETAINED_BASE_SPEC.md) defines the supported protocol and trust assumptions. The [buffered cutover campaign](../benchmarks/results/2026-11-19-buffered-retained-export/README.md) verified the complete base and exercised kernel failures before the original-path fence on Linux V2 and V3.
 - [x] Allow explicit retirement of the ordinary cutover archive after verifying the authority-selected state, matching independently retained archive fingerprints, and synchronizing a verified backup of the selected generation. The [retirement regression](../benchmarks/results/2026-11-19-cutover-archive-retirement/README.md) checks stale and damaged backups, archive substitution, and retry after the first unlink.

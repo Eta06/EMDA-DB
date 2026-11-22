@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Retry interrupted EOF checks when reading a file-backed retained authority record.
+
 - Assemble the first checkpoint transaction page for a range from the
   same verified locations recorded for conflict detection.
 

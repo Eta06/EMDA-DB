@@ -104,10 +104,14 @@ impl FileRetainedAuthority {
         let mut bytes = [0; LENGTH];
         file.read_exact(&mut bytes)?;
         let mut extra = [0; 1];
-        if file.read(&mut extra)? != 0 {
-            return Err(record::invalid_data(
-                "invalid retained authority record length",
-            ));
+        match file.read_exact(&mut extra) {
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {}
+            Err(error) => return Err(error),
+            Ok(()) => {
+                return Err(record::invalid_data(
+                    "invalid retained authority record length",
+                ));
+            }
         }
         let record = decode(&bytes)?;
         Ok(OpenedRecord::new(file, &metadata, record))
