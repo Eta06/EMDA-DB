@@ -679,6 +679,52 @@ fn partial_index_presence_follows_object_paths_and_negated_exists() {
                 vec!["array-parent", "missing", "null-parent", "other-child"],
             ),
             (
+                not(DocumentFilter::Or(vec![
+                    exists("profile", false),
+                    exists("profile.unlisted", true),
+                ])),
+                partial("present"),
+                vec!["array-parent", "null-child", "null-parent", "other-child"],
+            ),
+            (
+                not(DocumentFilter::And(vec![
+                    exists("profile.code", true),
+                    exists("profile", true),
+                ])),
+                partial("absent"),
+                vec!["array-parent", "missing", "null-parent", "other-child"],
+            ),
+            (
+                not(not(eq("profile.code", json!(null)))),
+                partial("present"),
+                vec!["null-child"],
+            ),
+            (
+                not(DocumentFilter::Or(vec![])),
+                DocumentQueryAccess::CollectionScan,
+                vec![
+                    "array-parent",
+                    "missing",
+                    "null-child",
+                    "null-parent",
+                    "other-child",
+                ],
+            ),
+            (
+                not(DocumentFilter::And(vec![
+                    exists("profile.code", true),
+                    exists("profile.other", true),
+                ])),
+                DocumentQueryAccess::CollectionScan,
+                vec![
+                    "array-parent",
+                    "missing",
+                    "null-child",
+                    "null-parent",
+                    "other-child",
+                ],
+            ),
+            (
                 exists("profile.other", false),
                 DocumentQueryAccess::CollectionScan,
                 vec!["array-parent", "missing", "null-child", "null-parent"],

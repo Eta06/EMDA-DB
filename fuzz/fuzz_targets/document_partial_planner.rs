@@ -202,7 +202,12 @@ fuzz_target!(|data: &[u8]| {
         if compound {
             tuple.push(equal("tenant", json!("t")));
         }
-        let mode = bytes[0] % 11;
+        let mode = bytes[0] % 14;
+        let partial_equality = || DocumentQueryAccess::PartialEqualityIndex {
+            index: "i".into(),
+            fields: if compound { 2 } else { 1 },
+        };
+        let not = |filter| DocumentFilter::Not(Box::new(filter));
         let expected_access = match mode {
             0 | 5 | 7 => {
                 tuple.push(if mode == 5 && kind == 0 {
@@ -231,8 +236,30 @@ fuzz_target!(|data: &[u8]| {
                 DocumentQueryAccess::CollectionScan
             }
             4 => {
-                tuple.push(DocumentFilter::Not(Box::new(opposite.clone())));
+                tuple.push(not(opposite.clone()));
+                if kind < 2 {
+                    partial_equality()
+                } else {
+                    DocumentQueryAccess::CollectionScan
+                }
+            }
+            11 if kind < 2 => {
+                tuple.push(not(DocumentFilter::Or(vec![
+                    opposite.clone(),
+                    exists("group", false),
+                ])));
+                partial_equality()
+            }
+            12 if kind < 2 => {
+                tuple.push(not(DocumentFilter::And(vec![
+                    opposite.clone(),
+                    exists("group", true),
+                ])));
                 DocumentQueryAccess::CollectionScan
+            }
+            13 if kind < 2 => {
+                tuple.push(not(not(guard.clone())));
+                partial_equality()
             }
             8 | 9 | 10 if guard_value.is_some() => {
                 let bound = |comparison| DocumentFilter::Compare {

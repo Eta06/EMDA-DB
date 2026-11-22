@@ -185,50 +185,42 @@ fn path_implies_presence(field: &[String], actual: bool, path: &[String], exists
     }
 }
 
-// An Or proves the condition only if every branch of a nonempty Or proves it.
-// A negated Exists flips the condition without changing how the path is read.
+// Query validation bounds recursion to 16 levels. Under negation, And and Or
+// swap roles. A conjunction needs one proof and a disjunction needs every
+// branch to prove the condition. Empty disjunctions are left to the filter.
 fn required_presence(required: &[&DocumentFilter], path: &[String], exists: bool) -> bool {
-    let mut pending = required.to_vec();
-    while let Some(filter) = pending.pop() {
-        match filter {
-            DocumentFilter::Exists {
-                path: field,
-                exists: actual,
-            } if path_implies_presence(field, *actual, path, exists) => return true,
-            DocumentFilter::Not(child)
-                if matches!(
-                    child.as_ref(),
-                    DocumentFilter::Exists { path: field, exists: actual }
-                        if path_implies_presence(field, !actual, path, exists)
-                ) =>
-            {
-                return true;
-            }
-            DocumentFilter::Equal { path: field, .. }
-            | DocumentFilter::In { path: field, .. }
-            | DocumentFilter::Compare { path: field, .. }
-            | DocumentFilter::ArrayContains { path: field, .. }
-            | DocumentFilter::ArrayContainsAny { path: field, .. }
-            | DocumentFilter::ArrayContainsAll { path: field, .. }
-            | DocumentFilter::ArrayLength { path: field, .. }
-            | DocumentFilter::ArrayElementMatch { path: field, .. }
-                if path_implies_presence(field, true, path, exists) =>
-            {
-                return true;
-            }
-            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
-            DocumentFilter::Or(filters)
-                if !filters.is_empty()
-                    && filters
-                        .iter()
-                        .all(|branch| required_presence(&[branch], path, exists)) =>
-            {
-                return true;
-            }
-            _ => {}
+    required
+        .iter()
+        .any(|filter| proves_presence(filter, path, exists, false))
+}
+
+fn proves_presence(filter: &DocumentFilter, path: &[String], exists: bool, negated: bool) -> bool {
+    let proves = |child| proves_presence(child, path, exists, negated);
+    match filter {
+        DocumentFilter::Not(child) => proves_presence(child, path, exists, !negated),
+        DocumentFilter::And(children) if !negated => children.iter().any(proves),
+        DocumentFilter::Or(children) if negated => children.iter().any(proves),
+        DocumentFilter::And(children) | DocumentFilter::Or(children) => {
+            !children.is_empty() && children.iter().all(proves)
         }
+        DocumentFilter::Exists {
+            path: field,
+            exists: actual,
+        } => path_implies_presence(field, *actual != negated, path, exists),
+        DocumentFilter::Equal { path: field, .. }
+        | DocumentFilter::In { path: field, .. }
+        | DocumentFilter::Compare { path: field, .. }
+        | DocumentFilter::ArrayContains { path: field, .. }
+        | DocumentFilter::ArrayContainsAny { path: field, .. }
+        | DocumentFilter::ArrayContainsAll { path: field, .. }
+        | DocumentFilter::ArrayLength { path: field, .. }
+        | DocumentFilter::ArrayElementMatch { path: field, .. }
+            if !negated =>
+        {
+            path_implies_presence(field, true, path, exists)
+        }
+        _ => false,
     }
-    false
 }
 
 // A typed equality follows when the filter requires both sides of the same
