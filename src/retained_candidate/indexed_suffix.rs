@@ -5,7 +5,7 @@ use super::{
 };
 use crate::record::batch::stream::{StreamValue, Update};
 use crate::record::{self, Operation};
-use crate::retained_base_v2::index::{EntryPart, IndexedBase, OverlayValue};
+use crate::retained_base_v2::index::{EntryPart, IndexedBase, OverlayValue, reserve_index_slots};
 use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, fs::File, io, ops::Range, path::Path};
@@ -14,10 +14,18 @@ use super::suffix_file::{Changes, ReplayWork, SuffixFile};
 
 /// Separate overlay bounds for a detached suffix. Distinct touched keys and
 /// their bytes count even when their final operation is a deletion.
+/// The limits also cap the number of vector slots requested for that overlay.
 #[derive(Clone, Copy, Debug)]
 pub struct OverlayLimits {
     pub entries: usize,
     pub key_bytes: usize,
+}
+
+impl OverlayLimits {
+    fn slots(self) -> usize {
+        // Every admitted key is nonempty.
+        self.entries.min(self.key_bytes)
+    }
 }
 
 /// Read-only, non-authoritative view of a retained base and its independently
@@ -295,9 +303,7 @@ impl Overlay {
                 overlay_limits,
             )
         })?;
-        self.entries
-            .try_reserve(prepared.added)
-            .map_err(allocation)?;
+        reserve_index_slots(&mut self.entries, prepared.added, overlay_limits.slots())?;
         Ok(prepared)
     }
 
@@ -409,9 +415,7 @@ impl Overlay {
                 prepared.key_bytes =
                     admit_key(overlay_limits, current, prepared.key_bytes, &update.key)?;
             }
-            self.entries
-                .try_reserve(updates.len())
-                .map_err(allocation)?;
+            reserve_index_slots(&mut self.entries, updates.len(), overlay_limits.slots())?;
             self.operations += updates.len() as u64;
             self.entries
                 .extend(updates.into_iter().map(|update| OverlayEntry {
@@ -431,9 +435,7 @@ impl Overlay {
                 overlay_limits,
             )?;
         }
-        self.entries
-            .try_reserve(prepared.added)
-            .map_err(allocation)?;
+        reserve_index_slots(&mut self.entries, prepared.added, overlay_limits.slots())?;
         self.commit_append(prepared);
         Ok(())
     }
@@ -472,7 +474,13 @@ impl Overlay {
             Err(position) => {
                 self.key_bytes =
                     admit_key(overlay_limits, self.entries.len(), self.key_bytes, key)?;
-                insert(&mut self.entries, position, key, value)?;
+                insert(
+                    &mut self.entries,
+                    position,
+                    key,
+                    value,
+                    overlay_limits.slots(),
+                )?;
             }
         }
         Ok(())
@@ -602,7 +610,13 @@ impl OverlayAppend {
                     Cow::Borrowed(bytes) => copy(bytes)?,
                     Cow::Owned(key) => key,
                 };
-                self.changes.try_reserve(1).map_err(allocation)?;
+                reserve_index_slots(
+                    &mut self.changes,
+                    1,
+                    limits
+                        .slots()
+                        .min(record::batch::MAX_ATOMIC_BATCH_OPERATIONS),
+                )?;
                 self.changes.insert(position, OverlayEntry { key, value });
             }
         }
@@ -647,10 +661,11 @@ fn insert(
     position: usize,
     key: &[u8],
     value: Option<ValueLocation>,
+    slots: usize,
 ) -> io::Result<()> {
     allocation_point()?;
     let key = copy(key)?;
-    entries.try_reserve(1).map_err(allocation)?;
+    reserve_index_slots(entries, 1, slots)?;
     entries.insert(position, OverlayEntry { key, value });
     Ok(())
 }
@@ -702,4 +717,80 @@ fn allocation(_: std::collections::TryReserveError) -> io::Error {
 
 fn invalid_overlay(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+#[cfg(test)]
+#[test]
+fn retained_overlay_reservations_stay_within_entry_and_key_limits() {
+    use crate::record::batch::{BatchOperation, encode_payload};
+    use std::io::Write;
+
+    let batch = |keys: &[&[u8]]| {
+        let operations: Vec<_> = keys
+            .iter()
+            .map(|key| BatchOperation::Put {
+                key,
+                value: b"value",
+            })
+            .collect();
+        record::encode(
+            Operation::Batch,
+            &[0],
+            &encode_payload(&operations).unwrap(),
+        )
+        .unwrap()
+    };
+    let first = batch(&[b"b", b"c", b"d"]);
+    let second = batch(&[b"e", b"a", b"d"]);
+    let extra = record::encode(Operation::Put, b"f", b"value").unwrap();
+    let suffix = [&first[..], &second].concat();
+    let expected: [u8; 32] = Sha256::digest(&suffix).into();
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&suffix).unwrap();
+    let work = SuffixLimits {
+        bytes: suffix.len() as u64,
+        operations: 7,
+        work: 128,
+    };
+    for limits in [
+        OverlayLimits {
+            entries: 5,
+            key_bytes: 12,
+        },
+        OverlayLimits {
+            entries: 12,
+            key_bytes: 5,
+        },
+    ] {
+        let mut inline = Overlay::default();
+        inline.apply(&suffix, 0, work, limits).unwrap();
+
+        let mut live = Overlay::default();
+        for (record, position) in [(&first, 0), (&second, first.len())] {
+            let prepared = live.prepare_append(record, position, work, limits).unwrap();
+            assert!(prepared.changes.capacity() <= 5);
+            assert!(live.entries.capacity() <= 5);
+            live.commit_append(prepared);
+        }
+        let error = live
+            .prepare_append(&extra, suffix.len(), work, limits)
+            .err()
+            .expect("an extra overlay key exceeds the configured limit");
+        assert!(error.to_string().starts_with("suffix overlay"));
+
+        let mut reopened = Overlay::default();
+        let source = SuffixFile {
+            file: &file,
+            start: 0,
+            len: suffix.len(),
+        };
+        reopened
+            .replay_disk(source, (suffix.len(), expected), work, limits)
+            .unwrap();
+        for overlay in [inline, live, reopened] {
+            assert!(overlay.entries.capacity() <= 5);
+            let keys: Vec<_> = overlay.entries.iter().map(|entry| entry.key[0]).collect();
+            assert_eq!(keys, b"abcde");
+        }
+    }
 }

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Keep retained block-directory and suffix-overlay vector reservations
+  within their configured entry and key limits.
+
 - Plan scalar index probes for required predicates exposed by double
   negation, negated disjunctions, and negated `NotIn`.
 

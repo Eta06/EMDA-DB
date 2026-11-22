@@ -18,8 +18,9 @@ use std::{
 const BLOCK_BYTES: u64 = 128 * 1024;
 
 /// Limits for the in-memory directory of a read-only retained base.
-/// Key bytes count only block anchors. Vector capacity and allocator
-/// overhead are separate, and queries have their own result limits.
+/// Key bytes count only block anchors. The block and anchor limits also
+/// cap the vector capacity requested from the allocator. Allocator
+/// rounding and query results have separate costs.
 #[derive(Clone, Copy, Debug)]
 pub struct IndexLimits {
     pub blocks: usize,
@@ -66,7 +67,11 @@ impl Builder {
             let mut first_key = Vec::new();
             first_key.try_reserve_exact(key.len()).map_err(allocation)?;
             first_key.extend_from_slice(key);
-            self.blocks.try_reserve(1).map_err(allocation)?;
+            reserve_index_slots(
+                &mut self.blocks,
+                1,
+                self.limits.blocks.min(self.limits.anchor_bytes),
+            )?;
             self.blocks.push(Block {
                 first_key,
                 start,
@@ -94,6 +99,64 @@ impl Builder {
 
 fn allocation(_: std::collections::TryReserveError) -> io::Error {
     io::Error::other("retained base allocation failed")
+}
+
+#[cfg(test)]
+#[test]
+fn retained_block_directory_reserves_within_block_and_anchor_limits() {
+    for limits in [
+        IndexLimits {
+            blocks: 5,
+            anchor_bytes: 12,
+        },
+        IndexLimits {
+            blocks: 12,
+            anchor_bytes: 5,
+        },
+    ] {
+        let mut builder = Builder {
+            limits,
+            blocks: Vec::new(),
+            anchor_bytes: 0,
+            hash: Sha256::new(),
+        };
+        let bytes = BLOCK_BYTES + 1;
+        for block in 0..5 {
+            builder
+                .entry(block * bytes, bytes, &[b'a' + block as u8], &[0; 8])
+                .unwrap();
+            assert!(builder.blocks.capacity() <= 5);
+        }
+        assert_eq!(builder.blocks.len(), 5);
+        assert!(builder.entry(5 * bytes, bytes, b"f", &[0; 8]).is_err());
+        assert_eq!(builder.blocks.len(), 5);
+    }
+}
+
+/// Grow retained index vectors geometrically without requesting slots that
+/// could never be filled under their configured admission limits.
+pub(crate) fn reserve_index_slots<T>(
+    entries: &mut Vec<T>,
+    additional: usize,
+    limit: usize,
+) -> io::Result<()> {
+    let needed = entries
+        .len()
+        .checked_add(additional)
+        .filter(|&needed| needed <= limit)
+        .ok_or_else(|| invalid("retained index slot limit exceeded"))?;
+    if needed > entries.capacity() {
+        let target = entries
+            .capacity()
+            .saturating_mul(2)
+            .max(4)
+            .max(needed)
+            .min(limit);
+        entries
+            .try_reserve_exact(target - entries.len())
+            .map_err(|_| io::Error::other("retained index allocation failed"))?;
+    }
+    Ok(())
 }
 
 pub(crate) struct IndexedBase {

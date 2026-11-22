@@ -315,6 +315,11 @@ length, and the trailer against the admitted limits and independent binding.
 The opener rejects impossible key and value totals and uses the declared
 lengths to reject sparse-index budgets that cannot fit even the minimum
 number of blocks and anchor bytes.
+Base block-directory and suffix-overlay reservations grow geometrically
+within the corresponding entry and key-byte ceilings. Each block requires
+a nonempty anchor and each overlay entry requires a nonempty key, so either
+ceiling can bound the number of requested slots. Allocator rounding, the
+decoded record, and read and result buffers have separate costs.
 A matching header and trailer still require full base validation, including
 hashing the entry bytes and validating their order and lengths, before any
 unacknowledged tail can be adopted or a handle returned.
