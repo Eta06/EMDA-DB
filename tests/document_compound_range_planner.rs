@@ -298,9 +298,12 @@ fn prefix_range_matches_scan_and_requires_every_omitted_field_to_be_present() {
         );
         let mut negated = bounds();
         negated.push(DocumentFilter::Not(Box::new(exists("flag", false))));
+        compare(db, &query(and(negated), 20), access(1, false));
+        let mut negated_equality = bounds();
+        negated_equality.push(DocumentFilter::Not(Box::new(eq("flag", json!(true)))));
         compare(
             db,
-            &query(and(negated), 20),
+            &query(and(negated_equality), 20),
             DocumentQueryAccess::CollectionScan,
         );
         compare(

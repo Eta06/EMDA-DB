@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Use nested path presence and absence, including directly negated existence
+  tests, to select eligible document indexes.
+
 - Add opt-in original-path cutover for witnessed ordinary stores with a
   durable old-reader fence and independent authority registration.
 

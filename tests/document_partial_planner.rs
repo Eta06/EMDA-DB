@@ -173,7 +173,7 @@ fn present_partial_condition_requires_a_proof_and_counts_null_as_present() {
                     eq("score", json!(1)),
                     DocumentFilter::Not(Box::new(exists("profile.tag", false))),
                 ]),
-                DocumentQueryAccess::CollectionScan,
+                partial_eq("score_present", 1),
             ),
             (
                 and(vec![
@@ -252,7 +252,7 @@ fn absent_partial_condition_is_not_inferred_from_nonrequired_predicates() {
                     eq("score", json!(1)),
                     DocumentFilter::Not(Box::new(exists("profile.tag", true))),
                 ]),
-                DocumentQueryAccess::CollectionScan,
+                partial_eq("score_absent", 1),
             ),
         ] {
             compare(db, &query(filter, 10), access);

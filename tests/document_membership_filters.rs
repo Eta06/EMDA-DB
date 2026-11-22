@@ -621,3 +621,80 @@ fn partial_presence_through_or_is_conservative_and_transactional() {
         }
     });
 }
+
+#[test]
+fn partial_index_presence_follows_object_paths_and_negated_exists() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        let exists = |field, exists| DocumentFilter::Exists {
+            path: path(field),
+            exists,
+        };
+        let not = |filter| DocumentFilter::Not(Box::new(filter));
+        for (name, field, exists) in [
+            ("present", "profile", true),
+            ("absent", "profile.code", false),
+        ] {
+            db.create_index(
+                "c",
+                index(
+                    name,
+                    &["score"],
+                    false,
+                    Some(PartialFilter::Exists {
+                        path: path(field),
+                        exists,
+                    }),
+                ),
+            )
+            .unwrap();
+        }
+        for (id, doc) in [
+            ("missing", json!({"score":1})),
+            ("null-parent", json!({"score":1,"profile":null})),
+            ("null-child", json!({"score":1,"profile":{"code":null}})),
+            ("other-child", json!({"score":1,"profile":{"other":1}})),
+            ("array-parent", json!({"score":1,"profile":[{"code":null}]})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        let partial = |name: &str| DocumentQueryAccess::PartialEqualityIndex {
+            index: name.into(),
+            fields: 1,
+        };
+        for (predicate, access, expected_ids) in [
+            (
+                DocumentFilter::Or(vec![
+                    eq("profile.code", json!(null)),
+                    not(exists("profile.other", false)),
+                ]),
+                partial("present"),
+                vec!["null-child", "other-child"],
+            ),
+            (exists("profile", false), partial("absent"), vec!["missing"]),
+            (
+                not(exists("profile.code", true)),
+                partial("absent"),
+                vec!["array-parent", "missing", "null-parent", "other-child"],
+            ),
+            (
+                exists("profile.other", false),
+                DocumentQueryAccess::CollectionScan,
+                vec!["array-parent", "missing", "null-child", "null-parent"],
+            ),
+            (
+                DocumentFilter::Or(vec![exists("profile.code", true), exists("profile", false)]),
+                DocumentQueryAccess::DisjunctionIndex {
+                    indexes: vec!["absent".into(), "present".into()],
+                    probes: 2,
+                },
+                vec!["missing", "null-child"],
+            ),
+        ] {
+            let filter = DocumentFilter::And(vec![eq("score", json!(1)), predicate]);
+            assert_eq!(ids(db, filter.clone()), expected_ids);
+            compare(db, &query(filter), access);
+        }
+    });
+}

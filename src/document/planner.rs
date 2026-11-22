@@ -176,10 +176,17 @@ fn required_membership(required: &[&DocumentFilter], path: &[String]) -> Option<
     None
 }
 
-// A successful equality, comparison or array predicate requires the path to
-// exist. Explicit Exists is the only currently recognized proof of absence.
-// An Or proves the condition only if every nonempty branch proves it.
-// Not and nested array-element filters do not establish root-path presence.
+fn path_implies_presence(field: &[String], actual: bool, path: &[String], exists: bool) -> bool {
+    match (actual, exists) {
+        // Field traversal visits each parent object before reaching the child.
+        (true, true) => field.starts_with(path),
+        (false, false) => path.starts_with(field),
+        _ => false,
+    }
+}
+
+// An Or proves the condition only if every branch of a nonempty Or proves it.
+// A negated Exists flips the condition without changing how the path is read.
 fn required_presence(required: &[&DocumentFilter], path: &[String], exists: bool) -> bool {
     let mut pending = required.to_vec();
     while let Some(filter) = pending.pop() {
@@ -187,7 +194,16 @@ fn required_presence(required: &[&DocumentFilter], path: &[String], exists: bool
             DocumentFilter::Exists {
                 path: field,
                 exists: actual,
-            } if field == path && *actual == exists => return true,
+            } if path_implies_presence(field, *actual, path, exists) => return true,
+            DocumentFilter::Not(child)
+                if matches!(
+                    child.as_ref(),
+                    DocumentFilter::Exists { path: field, exists: actual }
+                        if path_implies_presence(field, !actual, path, exists)
+                ) =>
+            {
+                return true;
+            }
             DocumentFilter::Equal { path: field, .. }
             | DocumentFilter::In { path: field, .. }
             | DocumentFilter::Compare { path: field, .. }
@@ -196,7 +212,7 @@ fn required_presence(required: &[&DocumentFilter], path: &[String], exists: bool
             | DocumentFilter::ArrayContainsAll { path: field, .. }
             | DocumentFilter::ArrayLength { path: field, .. }
             | DocumentFilter::ArrayElementMatch { path: field, .. }
-                if exists && field == path =>
+                if path_implies_presence(field, true, path, exists) =>
             {
                 return true;
             }
