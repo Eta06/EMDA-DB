@@ -1,5 +1,4 @@
 use super::*;
-use std::cell::Cell;
 
 mod cutover;
 mod file;
@@ -502,38 +501,25 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         self.inner
             .storage_room(encoded.len() as u64, 0)
             .map_err(MutationFailure::Rejected)?;
-        let mut hash = self.inner.store.hash.clone();
-        hash.update(encoded);
-        let end = suffix_end(
-            self.inner.store.suffix_len,
-            encoded.len(),
-            self.inner.store.limits,
-        )
-        .map_err(MutationFailure::Rejected)?;
-        let point = AuthorityPoint::new(
-            self.inner.active.catalog,
-            &self.inner.store.header,
-            end as u64,
-            hash.finalize().into(),
-        );
-        let pending = AuthorityRecord {
-            pending: Some(point),
-            ..self
-                .current
-                .finalized(self.current.committed)
-                .map_err(MutationFailure::Rejected)?
-        };
-        let final_record = pending
-            .finalized(point)
-            .map_err(MutationFailure::Rejected)?;
-        let attempted = Cell::new(false);
+        let current = self.current;
+        let mut attempted = None;
         let authority = &mut self.authority;
         let result = self.inner.store.write_encoded(
             encoded,
-            || {
+            |end, digest| {
+                let point = AuthorityPoint {
+                    suffix_end: end,
+                    suffix_digest: digest,
+                    ..current.committed
+                };
+                let pending = AuthorityRecord {
+                    pending: Some(point),
+                    ..current.finalized(current.committed)?
+                };
+                let final_record = pending.finalized(point)?;
                 admit()?;
-                attempted.set(true);
-                replace(authority, self.current, pending)
+                attempted = Some((pending, final_record));
+                replace(authority, current, pending)
             },
             |_point| {
                 #[cfg(test)]
@@ -541,10 +527,12 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 Ok(())
             },
         );
-        if attempted.get() {
+        if attempted.is_some() {
             self.inner.uncertain = true;
         }
         result?;
+        let (pending, final_record) =
+            attempted.expect("append requires a pending authority record");
         self.current = pending;
         self.advance(final_record)
             .map_err(MutationFailure::OutcomeUnknown)?;

@@ -1,5 +1,6 @@
 use super::*;
 use crate::retained_base_v2::Limits;
+use crate::retained_candidate::writable::decode_marker;
 use crate::retained_candidate::{IndexLimits, OverlayLimits, SuffixLimits};
 use std::{
     fs::OpenOptions,
@@ -233,6 +234,45 @@ fn prepared_catalog_requires_authority_and_a_witnessed_role() {
     let mut store = f.open();
     assert_eq!(store.get(b"base", 8).unwrap(), None);
     assert_eq!(store.get(b"new", 12).unwrap().unwrap(), b"acknowledged");
+}
+
+#[test]
+fn authority_and_local_witness_bind_the_same_appended_suffix() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    let mut observed = Sha256::new();
+    let mut end = 0;
+    for (key, value) in [(b"first", b"one"), (b"other", b"two")] {
+        store.put(key, value).unwrap();
+        let encoded = record::encode(Operation::Put, key, value).unwrap();
+        observed.update(&encoded);
+        end += encoded.len() as u64;
+        let digest: [u8; 32] = observed.clone().finalize().into();
+        let record = f.provider.read().unwrap().unwrap();
+        assert!(record.pending.is_none());
+        assert_eq!(record.committed.suffix_end, end);
+        assert_eq!(record.committed.suffix_digest, digest);
+        let generation = &store.inner.store;
+        assert_eq!(
+            decode_marker(
+                &read_marker(&generation.witness).unwrap(),
+                generation.header.bytes(),
+            )
+            .unwrap(),
+            (end, digest)
+        );
+    }
+    drop(store);
+    let mut reopened = f.open();
+    assert_eq!(
+        reopened.get(b"first", 3).unwrap().as_deref(),
+        Some(&b"one"[..])
+    );
+    assert_eq!(
+        reopened.get(b"other", 3).unwrap().as_deref(),
+        Some(&b"two"[..])
+    );
 }
 
 #[test]

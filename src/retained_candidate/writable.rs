@@ -452,13 +452,13 @@ impl RetainedStore {
     ) -> Result<(), MutationFailure> {
         self.ensure_healthy().map_err(MutationFailure::Rejected)?;
         let encoded = encode().map_err(MutationFailure::Rejected)?;
-        self.write_encoded(&encoded, || Ok(()), hook)
+        self.write_encoded(&encoded, |_, _| Ok(()), hook)
     }
 
     fn write_encoded(
         &mut self,
         encoded: &[u8],
-        admit: impl FnOnce() -> io::Result<()>,
+        admit: impl FnOnce(u64, [u8; 32]) -> io::Result<()>,
         mut hook: impl FnMut(CommitPoint) -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         crate::transaction_outcome::mutation(|tracker| {
@@ -487,14 +487,15 @@ impl RetainedStore {
             }
             let mut hash = self.hash.clone();
             hash.update(encoded);
-            admit()?;
+            let digest = hash.clone().finalize().into();
+            admit(end as u64, digest)?;
             tracker.commit();
             self.failed = true;
             self.log.write_all(encoded)?;
             hook(CommitPoint::Appended)?;
             self.log.sync_data()?;
             hook(CommitPoint::LogSynced)?;
-            write_witness(&self.witness, self.header.bytes(), end, &hash)?;
+            write_witness(&self.witness, self.header.bytes(), end, &digest)?;
             #[cfg(test)]
             hook(CommitPoint::WitnessWritten)?;
             self.witness.sync_data()?;
@@ -796,15 +797,12 @@ fn decode_marker(bytes: &[u8; WITNESS_BYTES], header: &[u8]) -> io::Result<(u64,
 }
 
 fn update_witness(file: &File, header: &[u8], end: usize, hash: &Sha256) -> io::Result<()> {
-    write_witness(file, header, end, hash)?;
+    write_witness(file, header, end, &hash.clone().finalize().into())?;
     file.sync_data()
 }
 
-fn write_witness(file: &File, header: &[u8], end: usize, hash: &Sha256) -> io::Result<()> {
-    file.write_all_at(
-        &marker(header, end as u64, &hash.clone().finalize().into()),
-        0,
-    )
+fn write_witness(file: &File, header: &[u8], end: usize, digest: &[u8; 32]) -> io::Result<()> {
+    file.write_all_at(&marker(header, end as u64, digest), 0)
 }
 
 fn read_marker(witness: &File) -> io::Result<[u8; WITNESS_BYTES]> {

@@ -623,7 +623,7 @@ impl ManagedRetainedStore {
     ) -> Result<(), MutationFailure> {
         self.storage_room(bytes.len() as u64, 0)
             .map_err(MutationFailure::Rejected)?;
-        self.store.write_encoded(bytes, admit, |_| Ok(()))
+        self.store.write_encoded(bytes, |_, _| admit(), |_| Ok(()))
     }
 
     fn storage_room(&self, reserve_bytes: u64, reserve_entries: u64) -> io::Result<u64> {
