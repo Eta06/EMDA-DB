@@ -26,6 +26,11 @@ struct State {
     claim: Option<&'static str>,
 }
 
+const INITIAL_STATE: State = State {
+    amounts: [3, 2],
+    claim: None,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Observation {
     amounts: [i64; 2],
@@ -58,7 +63,26 @@ enum Operation {
     Reset,
     Observe,
     Claim(&'static str),
+    Release,
 }
+
+const OPERATIONS: [Operation; 6] = [
+    Operation::Transfer(0),
+    Operation::Transfer(1),
+    Operation::Reset,
+    Operation::Observe,
+    Operation::Claim("c"),
+    Operation::Claim("d"),
+];
+const CHAINED_OPERATIONS: [Operation; 7] = [
+    OPERATIONS[0],
+    OPERATIONS[1],
+    OPERATIONS[2],
+    OPERATIONS[3],
+    OPERATIONS[4],
+    OPERATIONS[5],
+    Operation::Release,
+];
 
 #[derive(Debug)]
 enum Outcome {
@@ -80,6 +104,10 @@ struct Event {
 }
 
 fn serializes(events: &[Event], final_state: &State) -> bool {
+    serializes_from(&INITIAL_STATE, events, final_state)
+}
+
+fn serializes_from(initial: &State, events: &[Event], final_state: &State) -> bool {
     fn search(events: &[Event], final_state: &State, used: u64, state: State) -> bool {
         if used.count_ones() as usize == events.len() {
             return &state == final_state;
@@ -115,6 +143,11 @@ fn serializes(events: &[Event], final_state: &State) -> bool {
                 {
                     next.amounts = [4, 6];
                 }
+                (Operation::Release, Outcome::Write(observed))
+                    if *observed == state.observation() =>
+                {
+                    next.claim = None;
+                }
                 _ => continue,
             }
             if search(events, final_state, used | bit, next) {
@@ -123,15 +156,7 @@ fn serializes(events: &[Event], final_state: &State) -> bool {
         }
         false
     }
-    search(
-        events,
-        final_state,
-        0,
-        State {
-            amounts: [3, 2],
-            claim: None,
-        },
-    )
+    search(events, final_state, 0, initial.clone())
 }
 
 fn observe(tx: &DocumentTransaction<'_, '_>) -> io::Result<Observation> {
@@ -198,6 +223,13 @@ fn execute(
             std::thread::yield_now();
             tx.insert("accounts", id, &json!({"handle":"claim"}))?;
             Ok(Outcome::Claimed)
+        }
+        Operation::Release => {
+            let before = observe(tx)?;
+            if let Some(id) = before.claim_index.first() {
+                assert!(tx.delete("accounts", id)?);
+            }
+            Ok(Outcome::Write(before))
         }
         Operation::Transfer(from) => {
             let before = observe(tx)?;
@@ -418,6 +450,36 @@ fn history_checker_rejects_changes_attributed_only_to_cancelled_work() {
     ));
 }
 
+#[test]
+fn chained_checker_requires_recovered_unique_claim_before_release() {
+    let initial = State {
+        claim: Some("c"),
+        ..INITIAL_STATE
+    };
+    let final_state = State {
+        claim: Some("d"),
+        ..INITIAL_STATE
+    };
+    let mut events = [
+        Event {
+            operation: Operation::Release,
+            outcome: Outcome::Write(initial.observation()),
+            start: 0,
+            end: 1,
+        },
+        Event {
+            operation: Operation::Claim("d"),
+            outcome: Outcome::Claimed,
+            start: 2,
+            end: 3,
+        },
+    ];
+    assert!(serializes_from(&initial, &events, &final_state));
+    assert!(!serializes(&events, &final_state));
+    events[0].outcome = Outcome::Cancelled;
+    assert!(!serializes_from(&initial, &events, &final_state));
+}
+
 enum TestStore {
     Ordinary(Store),
     Checkpoint(CheckpointStore),
@@ -432,15 +494,12 @@ impl TestStore {
     }
 }
 
-fn record_history(db: &DocumentDatabase<'_>, iteration: usize, retained: bool) -> Vec<Event> {
-    let operations = [
-        Operation::Transfer(0),
-        Operation::Transfer(1),
-        Operation::Reset,
-        Operation::Observe,
-        Operation::Claim("c"),
-        Operation::Claim("d"),
-    ];
+fn record_history(
+    db: &DocumentDatabase<'_>,
+    iteration: usize,
+    retained: bool,
+    operations: &[Operation],
+) -> Vec<Event> {
     let barrier = Barrier::new(operations.len() + 1);
     let clock = AtomicUsize::new(0);
     std::thread::scope(|scope| {
@@ -501,7 +560,7 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
             };
             let db = backend.database();
             reset(&db);
-            let events = record_history(&db, iteration, false);
+            let events = record_history(&db, iteration, false, &OPERATIONS);
             let expected = read_state(&db);
             for event in &events {
                 match &event.outcome {
@@ -528,6 +587,102 @@ fn concurrent_document_histories_serialize_and_recover_on_both_backends() {
         );
         println!(
             "checkpoint={checkpoint_mode} histories={histories} cancelled={cancelled} completed={completed} rejected={rejected}"
+        );
+    }
+}
+
+#[test]
+fn chained_document_histories_alternate_writable_recovery_backends() {
+    let windows = std::env::var("EMDA_CHAINED_DOCUMENT_MODEL_WINDOWS")
+        .ok()
+        .map(|value| value.parse::<usize>().unwrap())
+        .unwrap_or(48);
+    assert!((1..=4096).contains(&windows));
+
+    for force_v2 in [false, true] {
+        if force_v2 && !cfg!(target_os = "linux") {
+            continue;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let mut checkpoint = root.path().join("base");
+        if force_v2 {
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(
+                path.join("records.log"),
+                include_bytes!("fixtures/v2-empty-records.log"),
+            )
+            .unwrap();
+            std::fs::write(
+                path.join("commit.state"),
+                include_bytes!("fixtures/v2-empty-commit.state"),
+            )
+            .unwrap();
+        }
+        let ordinary = retry_lock(|| Store::open(&path)).unwrap();
+        initialize(&DocumentDatabase::new(&ordinary));
+        let mut digest = ordinary.checkpoint_to(&checkpoint).unwrap();
+        drop(ordinary);
+        let header = std::fs::read(path.join("records.log")).unwrap();
+        let format = std::str::from_utf8(&header[..8]).unwrap();
+
+        let mut expected = INITIAL_STATE;
+        let (mut claims, mut releases, mut refreshes) = (0, 0, 0);
+        for window in 0..windows {
+            let checkpoint_writer = window % 2 != 0;
+            let backend = if checkpoint_writer {
+                TestStore::Checkpoint(
+                    retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap(),
+                )
+            } else {
+                TestStore::Ordinary(retry_lock(|| Store::open(&path)).unwrap())
+            };
+            let db = backend.database();
+            assert_eq!(read_state(&db), expected, "{format} window {window} start");
+            let events = record_history(&db, window, false, &CHAINED_OPERATIONS);
+            let observed = read_state(&db);
+            assert!(
+                serializes_from(&expected, &events, &observed),
+                "{format} checkpoint_writer={checkpoint_writer} window={window} initial={expected:?} events={events:?} final={observed:?}"
+            );
+            for event in &events {
+                match (&event.operation, &event.outcome) {
+                    (Operation::Claim(_), Outcome::Claimed) => claims += 1,
+                    (Operation::Release, Outcome::Write(before))
+                        if !before.claim_index.is_empty() =>
+                    {
+                        releases += 1;
+                    }
+                    _ => {}
+                }
+            }
+            expected = observed;
+            drop(backend);
+
+            let recovered =
+                retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            assert_eq!(
+                read_state(&DocumentDatabase::with_checkpoint_store(&recovered)),
+                expected,
+                "{format} window {window} checkpoint recovery"
+            );
+            drop(recovered);
+            let ordinary = retry_lock(|| Store::open(&path)).unwrap();
+            assert_eq!(
+                read_state(&DocumentDatabase::new(&ordinary)),
+                expected,
+                "{format} window {window} full recovery"
+            );
+            if (window + 1) % 16 == 0 {
+                checkpoint = root.path().join(format!("base-{window}"));
+                digest = ordinary.checkpoint_to(&checkpoint).unwrap();
+                refreshes += 1;
+            }
+        }
+        println!(
+            "format={format} windows={windows} operations={} recovery_checks={} claims={claims} releases={releases} checkpoint_refreshes={refreshes}",
+            windows * CHAINED_OPERATIONS.len(),
+            windows * 2,
         );
     }
 }
@@ -598,7 +753,7 @@ fn retained_document_histories_serialize_and_recover_across_reclamation() {
         let expected = {
             let db = DocumentDatabase::with_managed_retained_store(&mut backend);
             reset(&db);
-            let events = record_history(&db, iteration, true);
+            let events = record_history(&db, iteration, true, &OPERATIONS);
             let expected = read_state(&db);
             assert!(
                 serializes(&events, &expected),
