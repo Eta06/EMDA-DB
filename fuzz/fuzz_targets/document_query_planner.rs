@@ -101,23 +101,60 @@ fn filter(byte: u8) -> (DocumentFilter, bool) {
     }
 }
 
+fn negated(filter: DocumentFilter) -> DocumentFilter {
+    DocumentFilter::Not(Box::new(filter))
+}
+
+fn union(branches: Vec<DocumentFilter>, negate: bool) -> DocumentFilter {
+    if negate {
+        negated(DocumentFilter::And(
+            branches.into_iter().map(negated).collect(),
+        ))
+    } else {
+        DocumentFilter::Or(branches)
+    }
+}
+
 fn compound_disjunctions(value: u8) -> DocumentFilter {
-    let group = DocumentFilter::Or(vec![
-        equal("group", Value::Null),
-        DocumentFilter::Or(vec![equal("group", json!(0)), equal("group", json!(true))]),
-    ]);
-    let region = DocumentFilter::Or(vec![equal("region", json!(1)), equal("region", json!(2))]);
+    let group = union(
+        vec![
+            equal("group", Value::Null),
+            union(
+                vec![equal("group", json!(0)), equal("group", json!(true))],
+                value & 8 != 0,
+            ),
+        ],
+        value & 16 != 0,
+    );
+    let region = union(
+        vec![
+            equal("region", json!(1)),
+            negated(DocumentFilter::NotIn {
+                path: vec!["region".into()],
+                values: vec![json!(2)],
+            }),
+        ],
+        value & 32 != 0,
+    );
     let guard = equal("active", json!(true));
     match value % 3 {
+        0 if value & 64 != 0 => negated(DocumentFilter::Or(vec![
+            negated(guard),
+            negated(region),
+            negated(group),
+        ])),
         0 => DocumentFilter::And(vec![guard, region, group]),
         1 => DocumentFilter::And(vec![
             region,
-            DocumentFilter::Or(vec![
-                DocumentFilter::And(vec![guard, group]),
-                equal("group", json!(2)),
-            ]),
+            union(
+                vec![
+                    DocumentFilter::And(vec![guard, group]),
+                    equal("group", json!(2)),
+                ],
+                value & 64 != 0,
+            ),
         ]),
-        _ => DocumentFilter::And(vec![guard, region, DocumentFilter::Not(Box::new(group))]),
+        _ => DocumentFilter::And(vec![guard, region, negated(group)]),
     }
 }
 

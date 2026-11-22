@@ -17,6 +17,27 @@ fn eq(field: &str, value: Value) -> DocumentFilter {
     }
 }
 
+fn negated(filter: DocumentFilter) -> DocumentFilter {
+    DocumentFilter::Not(Box::new(filter))
+}
+
+fn negate_disjunctions(filter: DocumentFilter) -> DocumentFilter {
+    match filter {
+        DocumentFilter::And(children) => {
+            DocumentFilter::And(children.into_iter().map(negate_disjunctions).collect())
+        }
+        DocumentFilter::Or(children) => negated(DocumentFilter::And(
+            children
+                .into_iter()
+                .map(negate_disjunctions)
+                .map(negated)
+                .collect(),
+        )),
+        DocumentFilter::Not(child) => negated(negate_disjunctions(*child)),
+        other => other,
+    }
+}
+
 fn in_range(field: &str, length: usize) -> DocumentFilter {
     DocumentFilter::In {
         path: path(field),
@@ -323,6 +344,13 @@ fn disjunction_falls_back_for_unindexed_branches_and_shared_probe_overflow() {
                 DocumentQueryAccess::CollectionScan,
             ),
             (
+                negated(DocumentFilter::And(vec![
+                    eq("tag", json!("lone")),
+                    negated(eq("a", json!(0))),
+                ])),
+                DocumentQueryAccess::CollectionScan,
+            ),
+            (
                 DocumentFilter::Or(vec![]),
                 DocumentQueryAccess::CollectionScan,
             ),
@@ -334,13 +362,15 @@ fn disjunction_falls_back_for_unindexed_branches_and_shared_probe_overflow() {
                 DocumentQueryAccess::CollectionScan,
             ),
         ] {
-            let query = request(filter, 4);
-            let planned = db.query_planned("items", &query).unwrap();
-            assert_eq!(planned.access, expected);
-            assert_eq!(
-                planned.result.documents,
-                db.query("items", &query).unwrap().documents
-            );
+            for filter in [filter.clone(), negate_disjunctions(filter)] {
+                let query = request(filter, 4);
+                let planned = db.query_planned("items", &query).unwrap();
+                assert_eq!(planned.access, expected);
+                assert_eq!(
+                    planned.result.documents,
+                    db.query("items", &query).unwrap().documents
+                );
+            }
         }
     });
 }
@@ -415,29 +445,37 @@ fn independent_literal_disjunctions_complete_a_compound_range() {
                 max_scanned,
             )
         };
-        let planned = db.query_planned("items", &query(codes.clone(), 2)).unwrap();
-        assert_eq!(
-            planned.access,
-            DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
-                index: "compound".into(),
-                prefix_fields: 2,
-                probes: 4,
-            },
-        );
-        assert_eq!(planned.result.plan.scanned, 2);
-        assert_eq!(
-            planned
-                .result
-                .documents
-                .iter()
-                .map(|row| row.id.as_str())
-                .collect::<Vec<_>>(),
-            ["first", "other-type"],
-        );
-        assert_eq!(
-            planned.result.documents,
-            db.query("items", &query(codes, 7)).unwrap().documents,
-        );
+        for use_negation in [false, true] {
+            let mut tight = query(codes.clone(), 2);
+            if use_negation {
+                tight.filter = negate_disjunctions(tight.filter);
+            }
+            let planned = db.query_planned("items", &tight).unwrap();
+            assert_eq!(
+                planned.access,
+                DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+                    index: "compound".into(),
+                    prefix_fields: 2,
+                    probes: 4,
+                },
+            );
+            assert_eq!(planned.result.plan.scanned, 2);
+            assert_eq!(
+                planned
+                    .result
+                    .documents
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["first", "other-type"],
+            );
+            assert_eq!(
+                planned.result.documents,
+                db.query("items", &query(codes.clone(), 7))
+                    .unwrap()
+                    .documents,
+            );
+        }
 
         for (unsupported, expected) in [
             (eq("code", json!(1.0)), access(&["compound"], 2)),
@@ -638,7 +676,16 @@ fn overlapping_membership_deduplicates_probes_and_keeps_residual_predicates() {
 
 #[test]
 fn empty_disjunction_branches_detect_matching_phantoms() {
-    for (guarded, matching) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (use_negation, guarded, matching) in [
+        (false, false, false),
+        (false, false, true),
+        (false, true, false),
+        (false, true, true),
+        (true, false, false),
+        (true, false, true),
+        (true, true, false),
+        (true, true, true),
+    ] {
         on_backends(|db| {
             db.create_collection("items", CollectionSchema::default())
                 .unwrap();
@@ -667,6 +714,11 @@ fn empty_disjunction_branches_detect_matching_phantoms() {
                 DocumentFilter::And(vec![eq("active", json!(true)), alternatives])
             } else {
                 alternatives
+            };
+            let filter = if use_negation {
+                negate_disjunctions(filter)
+            } else {
+                filter
             };
             let query = request(filter, 4);
             let (read, observed) = mpsc::channel();

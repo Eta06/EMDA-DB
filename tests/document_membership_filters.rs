@@ -195,6 +195,18 @@ fn exercise(db: &DocumentDatabase<'_>) {
             &["c", "d"][..],
             2,
         ),
+        (
+            not(DocumentFilter::And(vec![
+                not(eq("handle", json!("hc"))),
+                not(eq("handle", json!("hd"))),
+            ])),
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["handle".into()],
+                probes: 2,
+            },
+            &["c", "d"][..],
+            2,
+        ),
     ] {
         let mut request = query(filter);
         compare(db, &request, access.clone());
@@ -219,10 +231,6 @@ fn exercise(db: &DocumentDatabase<'_>) {
         )),
         not(not_in("handle", vec![])),
         not(bound(Comparison::Less, "hd")),
-        not(DocumentFilter::And(vec![
-            not(eq("handle", json!("hc"))),
-            not(eq("handle", json!("hd"))),
-        ])),
     ] {
         compare(db, &query(filter), DocumentQueryAccess::CollectionScan);
     }

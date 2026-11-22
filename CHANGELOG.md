@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan bounded document index unions and compound membership probes for
+  disjunctions expressed with `Not` and `And`.
+
 - Admit full-log rebuild output against caller-selected checkpoint file and
   block-directory limits before adopting an unwitnessed tail.
 

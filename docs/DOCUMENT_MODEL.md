@@ -170,10 +170,11 @@ shares the same candidate and byte limits and registers read-set dependencies
 for every range, including empty ones. When no eligible path covers the full
 query, the planner performs the bounded collection scan.
 
-When those single-index choices do not apply, a required `Or` can use
-a union of branch plans, including when the `Or` appears within an
-`And`. Each branch must have an eligible index or a required disjunction
-with complete branch coverage. The branch and its surrounding required
+When those single-index choices do not apply, a required disjunction can
+use a union of branch plans. The planner recognizes both `Or` and negated
+`And` as disjunctions, including within an `And` or a negated `Or`.
+Each branch must have an eligible index or a required disjunction with
+complete branch coverage. The branch and its surrounding required
 conjunction can supply equality fields, scalar bounds, presence proofs and
 partial-index guards. A guard in one alternative does not qualify a sibling.
 The union can combine equality, membership, range and compound prefix probes
@@ -191,11 +192,11 @@ probe and revisit IDs on failure to preserve error order. Every probe
 participates in transaction validation, including empty scans.
 
 Before falling back to prefix scans, the planner can combine independent
-required disjunctions as compound membership predicates. Each such `Or`
-must consist entirely of literal equalities and nonempty `In` lists on
-the same field. Nested nonempty `Or` preserves this rule. Every value must
-be an indexable scalar. This can complete a compound tuple or enable a range
-on a later field. The probe cap applies to the product of distinct choices,
+required disjunctions as compound membership predicates. The alternatives
+must be literal equalities, nonempty `In` lists, or negated nonempty
+`NotIn` lists on the same field. Nested disjunctions follow the same rule.
+Every value must be an indexable scalar. This can complete a compound tuple or
+enable a range on a later field. The probe cap applies to the product of distinct choices,
 and the query still evaluates the original filter. Correlated alternatives
 use the branch rules above.
 

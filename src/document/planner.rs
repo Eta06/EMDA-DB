@@ -98,12 +98,14 @@ pub struct PlannedDocumentQueryResult {
     pub access: DocumentQueryAccess,
 }
 
-// Each supplied filter must hold. Descend through conjunctions, including
-// negated disjunctions, without treating alternatives as required predicates.
+type Predicate<'a> = (&'a DocumentFilter, bool);
+
+// Each supplied predicate must hold with the indicated polarity. Descend
+// through positive And and negated Or without entering alternatives.
 fn required_predicates<'a>(
-    required: &[&'a DocumentFilter],
-) -> impl Iterator<Item = (&'a DocumentFilter, bool)> + use<'a> {
-    let mut pending: Vec<_> = required.iter().map(|&filter| (filter, false)).collect();
+    required: &[Predicate<'a>],
+) -> impl Iterator<Item = Predicate<'a>> + use<'a> {
+    let mut pending = required.to_vec();
     std::iter::from_fn(move || {
         while let Some((filter, negated)) = pending.pop() {
             match (filter, negated) {
@@ -119,7 +121,7 @@ fn required_predicates<'a>(
 }
 
 fn required_equality(
-    required: &[&DocumentFilter],
+    required: &[Predicate<'_>],
     path: &[String],
 ) -> io::Result<Option<IndexValue>> {
     let (mut lower, mut upper) = (None, None);
@@ -172,7 +174,7 @@ fn required_equality(
 // Select one required, wholly indexable list. Deduplication uses the exact
 // scalar index encoding so repeated values cannot duplicate rows or work.
 // Non-indexable lists fall back rather than omitting potential matches.
-fn required_membership(required: &[&DocumentFilter], path: &[String]) -> Option<Vec<IndexValue>> {
+fn required_membership(required: &[Predicate<'_>], path: &[String]) -> Option<Vec<IndexValue>> {
     for (filter, negated) in required_predicates(required) {
         match (filter, negated) {
             (
@@ -225,10 +227,10 @@ fn path_implies_presence(field: &[String], actual: bool, path: &[String], exists
 // Query validation bounds recursion to 16 levels. Under negation, And and Or
 // swap roles. A conjunction needs one proof and a disjunction needs every
 // branch to prove the condition. Empty disjunctions are left to the filter.
-fn required_presence(required: &[&DocumentFilter], path: &[String], exists: bool) -> bool {
+fn required_presence(required: &[Predicate<'_>], path: &[String], exists: bool) -> bool {
     required
         .iter()
-        .any(|filter| proves_presence(filter, path, exists, false))
+        .any(|&(filter, negated)| proves_presence(filter, path, exists, negated))
 }
 
 fn proves_presence(filter: &DocumentFilter, path: &[String], exists: bool, negated: bool) -> bool {
@@ -313,21 +315,21 @@ fn requires_guard_bound(
     }
 }
 
-fn partial_is_implied(required: &[&DocumentFilter], partial: &PartialFilter) -> bool {
+fn partial_is_implied(required: &[Predicate<'_>], partial: &PartialFilter) -> bool {
     match partial {
         PartialFilter::Exists { path, exists } => required_presence(required, path, *exists),
         PartialFilter::Equals { path, value } => {
             let requires = |lower| {
-                required
-                    .iter()
-                    .any(|filter| requires_guard_bound(filter, path, value, lower, false))
+                required.iter().any(|&(filter, negated)| {
+                    requires_guard_bound(filter, path, value, lower, negated)
+                })
             };
             requires(true) && requires(false)
         }
     }
 }
 
-fn eligible(index: &IndexDefinition, required: &[&DocumentFilter]) -> bool {
+fn eligible(index: &IndexDefinition, required: &[Predicate<'_>]) -> bool {
     index
         .partial
         .as_ref()
@@ -393,7 +395,7 @@ impl Selection {
 }
 
 fn compound_membership(
-    required: &[&DocumentFilter],
+    required: &[Predicate<'_>],
     fields: &[Vec<String>],
 ) -> io::Result<Option<Vec<Vec<IndexValue>>>> {
     let Some((choices, has_membership)) = compound_choices(required, fields)? else {
@@ -405,7 +407,7 @@ fn compound_membership(
 // Gather the longest constrained prefix. Reject an excessive product before
 // building it. The caller establishes completeness for any omitted fields.
 fn compound_choices(
-    required: &[&DocumentFilter],
+    required: &[Predicate<'_>],
     fields: &[Vec<String>],
 ) -> io::Result<Option<(Vec<Vec<IndexValue>>, bool)>> {
     let mut choices = Vec::with_capacity(fields.len());
@@ -511,7 +513,7 @@ fn tighten_range(
 }
 
 fn required_range(
-    required: &[&DocumentFilter],
+    required: &[Predicate<'_>],
     path: &[String],
 ) -> io::Result<Option<(Option<IndexBound>, Option<IndexBound>)>> {
     let mut lower = None;
@@ -541,7 +543,7 @@ fn required_range(
 }
 
 fn compound_bounds(
-    required: &[&DocumentFilter],
+    required: &[Predicate<'_>],
     fields: &[Vec<String>],
     position: usize,
 ) -> io::Result<Option<(Option<IndexBound>, Option<IndexBound>)>> {
@@ -559,7 +561,7 @@ fn compound_bounds(
 }
 
 fn choose_index<'a>(
-    required: &[&DocumentFilter],
+    required: &[Predicate<'_>],
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
     // Prefer a unique exact tuple, then a nonunique one, regardless of range.
@@ -659,7 +661,7 @@ fn choose_index<'a>(
 }
 
 fn choose_prefix<'a>(
-    required: &[&DocumentFilter],
+    required: &[Predicate<'_>],
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
     for index in indexes
@@ -704,64 +706,80 @@ fn admit_probes<'a>(
     true
 }
 
-// Find a required OR under zero or more ANDs. The original filter and
-// each selected ancestor branch remain required within a branch. Sibling
-// alternatives are never added to that context.
+// Both a positive Or and a negated And are unions. A branch can use
+// the other required predicates in its context, but never a sibling branch.
+fn disjunction(filter: &DocumentFilter, negated: bool) -> Option<&[DocumentFilter]> {
+    match (filter, negated) {
+        (DocumentFilter::Or(branches), false) | (DocumentFilter::And(branches), true)
+            if !branches.is_empty() =>
+        {
+            Some(branches)
+        }
+        _ => None,
+    }
+}
+
 fn choose_disjunction<'a, 'filter>(
-    filter: &'filter DocumentFilter,
-    context: &mut Vec<&'filter DocumentFilter>,
+    predicate: Predicate<'filter>,
+    context: &mut Vec<Predicate<'filter>>,
     indexes: &'a [IndexDefinition],
     planned: &mut HashMap<IndexProbe<'a>, usize>,
     allow_prefix: bool,
 ) -> io::Result<bool> {
-    let mut required = vec![filter];
-    while let Some(filter) = required.pop() {
-        match filter {
-            DocumentFilter::And(filters) => required.extend(filters.iter().rev()),
-            DocumentFilter::Or(filters) if !filters.is_empty() => {
-                let start = planned.len();
-                let mut complete = true;
-                for branch in filters {
-                    context.push(branch);
-                    let mut selection = choose_index(context, indexes)?;
-                    if selection.is_none() && allow_prefix {
-                        selection = choose_prefix(context, indexes)?;
-                    }
-                    let covered = selection.is_some_and(|(index, selection)| {
-                        admit_probes(planned, selection.into_probes(index))
-                    });
-                    let covered = covered
-                        || choose_disjunction(branch, context, indexes, planned, allow_prefix)?;
-                    context.pop();
-                    if !covered {
-                        complete = false;
-                        break;
-                    }
-                }
-                if complete {
-                    return Ok(true);
-                }
-                planned.retain(|_, ordinal| *ordinal < start);
+    for (filter, negated) in required_predicates(&[predicate]) {
+        let Some(branches) = disjunction(filter, negated) else {
+            continue;
+        };
+        let start = planned.len();
+        let mut complete = true;
+        for branch in branches {
+            let branch = (branch, negated);
+            context.push(branch);
+            let mut selection = choose_index(context, indexes)?;
+            if selection.is_none() && allow_prefix {
+                selection = choose_prefix(context, indexes)?;
             }
-            _ => {}
+            let covered = selection.is_some_and(|(index, selection)| {
+                admit_probes(planned, selection.into_probes(index))
+            });
+            let covered =
+                covered || choose_disjunction(branch, context, indexes, planned, allow_prefix)?;
+            context.pop();
+            if !covered {
+                complete = false;
+                break;
+            }
         }
+        if complete {
+            return Ok(true);
+        }
+        planned.retain(|_, ordinal| *ordinal < start);
     }
     Ok(false)
 }
 
 // Only choices on one field with indexable scalar values are equivalent to
 // a membership predicate. Keep correlated alternatives as branch plans.
-fn literal_disjunction(branches: &[DocumentFilter]) -> Option<DocumentFilter> {
-    let mut pending: Vec<_> = branches.iter().collect();
+fn literal_disjunction(branches: &[DocumentFilter], negated: bool) -> Option<DocumentFilter> {
+    let mut pending: Vec<_> = branches.iter().map(|branch| (branch, negated)).collect();
     let mut path = None;
     let mut distinct = HashSet::new();
     let mut values = Vec::new();
-    while let Some(branch) = pending.pop() {
-        let (field, alternatives) = match branch {
-            DocumentFilter::Equal { path, value } => (path, std::slice::from_ref(value)),
-            DocumentFilter::In { path, values } if !values.is_empty() => (path, values.as_slice()),
-            DocumentFilter::Or(filters) if !filters.is_empty() => {
-                pending.extend(filters);
+    while let Some((branch, negated)) = pending.pop() {
+        if let Some(children) = disjunction(branch, negated) {
+            pending.extend(children.iter().map(|child| (child, negated)));
+            continue;
+        }
+        let (field, alternatives) = match (branch, negated) {
+            (DocumentFilter::Equal { path, value }, false) => (path, std::slice::from_ref(value)),
+            (DocumentFilter::In { path, values }, false)
+            | (DocumentFilter::NotIn { path, values }, true)
+                if !values.is_empty() =>
+            {
+                (path, values.as_slice())
+            }
+            (DocumentFilter::Not(child), _) => {
+                pending.push((child, !negated));
                 continue;
             }
             _ => return None,
@@ -788,20 +806,14 @@ fn choose_literal_disjunctions<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
-    let mut memberships = Vec::new();
-    let mut pending = vec![filter];
-    while let Some(required) = pending.pop() {
-        match required {
-            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
-            DocumentFilter::Or(branches) => memberships.extend(literal_disjunction(branches)),
-            _ => {}
-        }
-    }
+    let memberships: Vec<_> = required_predicates(&[(filter, false)])
+        .filter_map(|(filter, negated)| literal_disjunction(disjunction(filter, negated)?, negated))
+        .collect();
     if memberships.is_empty() {
         return Ok(None);
     }
-    let mut required = vec![filter];
-    required.extend(&memberships);
+    let mut required = vec![(filter, false)];
+    required.extend(memberships.iter().map(|membership| (membership, false)));
     choose_index(&required, indexes)
 }
 
@@ -809,7 +821,7 @@ fn plan_query<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(DocumentQueryAccess, Vec<IndexProbe<'a>>)>> {
-    if let Some((index, selection)) = choose_index(&[filter], indexes)? {
+    if let Some((index, selection)) = choose_index(&[(filter, false)], indexes)? {
         return Ok(Some((
             describe_selection(index, &selection),
             selection.into_probes(index).collect(),
@@ -822,7 +834,7 @@ fn plan_query<'a>(
             // falling back to prefix scans. Complete branch plans have priority.
             let selected = match choose_literal_disjunctions(filter, indexes)? {
                 some @ Some(_) => some,
-                None => choose_prefix(&[filter], indexes)?,
+                None => choose_prefix(&[(filter, false)], indexes)?,
             };
             if let Some((index, selection)) = selected {
                 return Ok(Some((
@@ -832,8 +844,8 @@ fn plan_query<'a>(
             }
         }
         if choose_disjunction(
-            filter,
-            &mut vec![filter],
+            (filter, false),
+            &mut vec![(filter, false)],
             indexes,
             &mut planned,
             allow_prefix,
