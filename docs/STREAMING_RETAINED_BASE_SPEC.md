@@ -449,7 +449,11 @@ record. Missing or damaged records on open fail closed. Under an exclusive
 file lock, updates check the full prior record and next revision, sync a
 complete replacement, rename it atomically, and sync the authority
 directory before returning success. Reads synchronize the visible record's
-directory before returning after uncertain replacement.
+directory when observing a replacement. Each provider retains one descriptor
+for its last validated, synchronized record. Under the same lock, a read
+checks the complete record again and can reuse that synchronization for
+the same open inode and contents. A different inode or failed sync requires
+successful synchronization before the provider returns the record.
 
 The deployment must put the authority directory on independently protected
 storage and keep its contents and ancestors trusted and stable. A local

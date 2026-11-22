@@ -1,4 +1,5 @@
 use super::*;
+use std::{fs::File, io::Read, os::unix::fs::MetadataExt};
 
 #[cfg(test)]
 mod tests;
@@ -14,6 +15,28 @@ pub(super) const LENGTH: usize = CHECKSUM + 32;
 /// rollback of this directory can defeat the catalog's freshness guarantees.
 pub struct FileRetainedAuthority {
     root: PathBuf,
+    durable: Option<OpenedRecord>,
+}
+
+struct OpenedRecord {
+    // Pin the inode so an unrelated replacement cannot reuse its identity.
+    _file: File,
+    identity: (u64, u64),
+    record: Option<AuthorityRecord>,
+}
+
+impl OpenedRecord {
+    fn new(file: File, metadata: &fs::Metadata, record: Option<AuthorityRecord>) -> Self {
+        Self {
+            _file: file,
+            identity: (metadata.dev(), metadata.ino()),
+            record,
+        }
+    }
+
+    fn matches(&self, observed: &Self) -> bool {
+        self.identity == observed.identity && self.record == observed.record
+    }
 }
 
 impl FileRetainedAuthority {
@@ -43,8 +66,9 @@ impl FileRetainedAuthority {
         if !root.symlink_metadata()?.file_type().is_dir() {
             return Err(record::invalid_data("invalid authority directory"));
         }
-        let this = Self {
+        let mut this = Self {
             root: root.canonicalize()?,
+            durable: None,
         };
         if !this
             .root
@@ -57,7 +81,7 @@ impl FileRetainedAuthority {
         }
         let _guard = this.lock()?;
         sync_existing(&this.root)?;
-        this.read_locked()?;
+        this.durable = Some(this.read_locked()?);
         Ok(this)
     }
 
@@ -69,9 +93,45 @@ impl FileRetainedAuthority {
         Ok(lock)
     }
 
-    fn read_locked(&self) -> io::Result<Option<AuthorityRecord>> {
-        let bytes = exact(&self.root.join(NAME), LENGTH)?;
-        decode(&bytes)
+    fn read_locked(&self) -> io::Result<OpenedRecord> {
+        let mut file = open_regular(&self.root.join(NAME))?;
+        let metadata = file.metadata()?;
+        if metadata.len() != LENGTH as u64 {
+            return Err(record::invalid_data(
+                "invalid retained authority record length",
+            ));
+        }
+        let mut bytes = [0; LENGTH];
+        file.read_exact(&mut bytes)?;
+        let mut extra = [0; 1];
+        if file.read(&mut extra)? != 0 {
+            return Err(record::invalid_data(
+                "invalid retained authority record length",
+            ));
+        }
+        let record = decode(&bytes)?;
+        Ok(OpenedRecord::new(file, &metadata, record))
+    }
+
+    fn read_using(
+        &mut self,
+        sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<Option<AuthorityRecord>> {
+        let _guard = self.lock()?;
+        let observed = self.read_locked()?;
+        // Every cooperating replacement is a new inode. An unseen record
+        // may have become visible before its publisher synced the directory.
+        if self
+            .durable
+            .as_ref()
+            .is_none_or(|known| !known.matches(&observed))
+        {
+            sync_directory(&self.root)?;
+            let record = observed.record;
+            self.durable = Some(observed);
+            return Ok(record);
+        }
+        Ok(observed.record)
     }
 
     fn compare_and_swap_using(
@@ -82,30 +142,27 @@ impl FileRetainedAuthority {
         sync_directory: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<bool> {
         let _guard = self.lock()?;
-        if self.read_locked()? != previous {
+        if self.read_locked()?.record != previous {
             return Ok(false);
         }
         validate_update(previous, next)?;
         let (mut stage, mut file) = crate::staging::Stage::file(&self.root)?;
         file.write_all(&encode(Some(next)))?;
         file.sync_all()?;
-        drop(file);
+        let metadata = file.metadata()?;
+        let replacement = OpenedRecord::new(file, &metadata, Some(next));
         before_replace()?;
         stage.replace_file(&self.root.join(NAME))?;
         sync_directory(&self.root)?;
         stage.publication_synchronized();
+        self.durable = Some(replacement);
         Ok(true)
     }
 }
 
 impl RetainedAuthority for FileRetainedAuthority {
     fn read(&mut self) -> io::Result<Option<AuthorityRecord>> {
-        let _guard = self.lock()?;
-        let record = self.read_locked()?;
-        // A prior process may have replaced the record before it could
-        // synchronize the directory. Synchronize the visible choice.
-        sync_directory(&self.root)?;
-        Ok(record)
+        self.read_using(sync_directory)
     }
 
     fn compare_and_swap(

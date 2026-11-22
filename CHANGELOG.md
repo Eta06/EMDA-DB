@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Avoid repeated authority-directory synchronization for unchanged records.
+  Each open file-backed authority retains one descriptor for the record it
+  last verified and synchronized.
+
 - Synchronize the local retained log and witness before finalizing a recovered
   authority intent, including when an interrupted witness write is already visible.
 

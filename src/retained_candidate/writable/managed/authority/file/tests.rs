@@ -87,6 +87,71 @@ fn file_authority_validates_transitions_and_detects_damage() {
 }
 
 #[test]
+fn reuse_requires_the_same_validated_inode_and_successful_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("authority");
+    let mut first = registered(&root);
+    let mut second = FileRetainedAuthority::open(&root).unwrap();
+    for provider in [&mut first, &mut second] {
+        assert_eq!(
+            provider
+                .read_using(|_| panic!("known record was synced"))
+                .unwrap(),
+            Some(initial())
+        );
+    }
+
+    let pending = intent(1);
+    let fail = |_: &Path| Err(io::Error::other("injected directory sync failure"));
+    assert!(
+        first
+            .compare_and_swap_using(Some(initial()), pending, || Ok(()), fail,)
+            .is_err()
+    );
+    for provider in [&mut first, &mut second] {
+        // Both providers must synchronize the replacement, even after one
+        // of them has already succeeded. A failed sync must never be cached.
+        assert_eq!(
+            provider.read_using(fail).unwrap_err().to_string(),
+            "injected directory sync failure"
+        );
+        let mut called = false;
+        assert_eq!(
+            provider
+                .read_using(|root| {
+                    called = true;
+                    sync_directory(root)
+                })
+                .unwrap(),
+            Some(pending)
+        );
+        assert!(called);
+        assert_eq!(
+            provider
+                .read_using(|_| panic!("replacement already synced"))
+                .unwrap(),
+            Some(pending)
+        );
+    }
+
+    let copy = root.join("replacement");
+    write_new(&copy, &encode(Some(pending))).unwrap();
+    fs::rename(copy, root.join(NAME)).unwrap();
+    assert!(second.read_using(fail).is_err());
+
+    let path = root.join(NAME);
+    assert_eq!(first.read().unwrap(), Some(pending));
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[24] ^= 1;
+    fs::write(path, bytes).unwrap();
+    assert!(
+        first
+            .read_using(|_| panic!("corrupt record needs no sync"))
+            .is_err()
+    );
+}
+
+#[test]
 fn file_authority_child() {
     let Some(root) = std::env::var_os("EMDA_FILE_AUTHORITY_ROOT") else {
         return;
