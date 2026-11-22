@@ -4,7 +4,9 @@ use super::{
     check_binding, copy_replay_bytes, invalid, open_suffix, preflight_replay_base, suffix_capacity,
 };
 use crate::retained_base_v2::index::OverlayValue;
-use crate::retained_base_v2::{CapturedValue, FRAME_BYTES, StagingLimits, scan_value_locations};
+use crate::retained_base_v2::{
+    CapturedValue, FRAME_BYTES, StagingLimits, scan_value_lengths, scan_value_locations,
+};
 use crate::store::{GroupedCopy, RestoreSize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -24,6 +26,20 @@ pub(crate) struct RestoreReplay {
     staging: StagingLimits,
     changes: Vec<(Vec<u8>, Option<CapturedValue>)>,
     pub(super) size: RestoreSize,
+}
+
+enum ReplayValue {
+    BaseLength(usize),
+    SuffixLocation(CapturedValue),
+}
+
+impl ReplayValue {
+    fn len(&self) -> usize {
+        match self {
+            Self::BaseLength(len) => *len,
+            Self::SuffixLocation(value) => value.length,
+        }
+    }
 }
 
 impl RestoreReplay {
@@ -78,9 +94,9 @@ impl RestoreReplay {
         if suffix.metadata()?.len() != expected.end {
             return Err(invalid());
         }
-        let metadata = scan_value_locations(&base, limits, staging, |key, location| {
+        let metadata = scan_value_lengths(&base, limits, staging, |key, length| {
             if let Some(value) = touched.get_mut(key) {
-                *value = Some(location);
+                *value = Some(ReplayValue::BaseLength(length));
             }
             Ok(())
         })?;
@@ -106,13 +122,15 @@ impl RestoreReplay {
             let current = touched.get_mut(key).ok_or_else(invalid)?;
             let next = budget.changed_live_set(
                 key,
-                current.as_ref().map(|value| value.length),
+                current.as_ref().map(ReplayValue::len),
                 value.as_ref().map(|value| value.length),
             )?;
-            *current = value.map(|value| CapturedValue {
-                offset: value.offset,
-                length: value.length,
-                digest: value.digest,
+            *current = value.map(|value| {
+                ReplayValue::SuffixLocation(CapturedValue {
+                    offset: value.offset,
+                    length: value.length,
+                    digest: value.digest,
+                })
             });
             (budget.entries, budget.keys, budget.payload) = next;
             Ok(())
@@ -121,7 +139,14 @@ impl RestoreReplay {
         changes
             .try_reserve_exact(touched.len())
             .map_err(io::Error::other)?;
-        changes.extend(touched);
+        for (key, value) in touched {
+            let location = match value {
+                None => None,
+                Some(ReplayValue::SuffixLocation(location)) => Some(location),
+                Some(ReplayValue::BaseLength(_)) => return Err(invalid()),
+            };
+            changes.push((key, location));
+        }
         changes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let replay = Self {
             base,

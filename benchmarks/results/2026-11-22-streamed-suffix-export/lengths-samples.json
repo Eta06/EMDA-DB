@@ -1,0 +1,89 @@
+{
+  "binding": "0013d0060000000009af17ce76fde67dbd9607a4271e143140f9fe853d7c9be2902188257f575ddf",
+  "samples": {
+    "streamed": [
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 220543625
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 213233125
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 213464708
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 213033500
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 214098875
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 225411792
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 213223208
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 213661833
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 213349334
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 214959291
+      }
+    ],
+    "lengths": [
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 224805667
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 194803917
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 194401625
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 195053500
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 194719208
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 194388583
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 195279709
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 194079833
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 194972500
+      },
+      {
+        "rss_bytes": 61276160,
+        "inspection_ns": 196153792
+      }
+    ]
+  }
+}

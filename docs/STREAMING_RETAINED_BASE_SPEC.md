@@ -277,6 +277,9 @@ File inspection uses verified value locations for replay and allocates
 payload only for live rows. The returned bytes are checked against the
 captured digests. Touched-key metadata, decode buffers and allocator
 overhead are additional costs.
+The admission pass uses value lengths for intermediate payload budgets.
+It authenticates the full base while reserving per-value digests for
+later passes that need them.
 Offline restore and private suffix-export staging authenticate the suffix
 while discovering touched keys. If discovery returns an error, a raw
 digest check distinguishes changed bytes from a replay error.

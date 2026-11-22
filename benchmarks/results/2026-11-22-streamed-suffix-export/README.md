@@ -84,3 +84,21 @@ First position alternated between variants. Location-based replay does
 additional reads and retains the returned payload and touched-key
 metadata. These samples cover a warm large-value workload.
 [Raw samples](inspection-samples.json)
+
+## Read lengths during replay admission
+
+A follow-up run compared location-based inspection at `acb36f5` with
+an admission pass that collects lengths while checking the full base
+digest. It omits separate value digests during that pass. The merge and
+materialization still verify the selected values.
+
+| File inspection | Median peak RSS | Median inspection elapsed |
+| --- | ---: | ---: |
+| Per-value digests during admission | 58.44 MiB | 0.214 s |
+| Lengths during admission | 58.44 MiB | 0.195 s |
+
+Ten fresh processes per variant alternated first position on the same
+macOS ARM64 fixture and checked every returned key and value. The
+measurement times inspection before the model check. Restore and export
+also use the changed admission pass. This run measures inspection only.
+[Raw samples](lengths-samples.json)

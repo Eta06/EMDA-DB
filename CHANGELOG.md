@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify the base during replay admission without computing per-value digests
+  for lengths used only to account for intermediate live-state budgets.
+
 - Stream detached file inspection and allocate values only for the final
   live rows returned to the caller.
 

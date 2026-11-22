@@ -106,14 +106,36 @@ pub(crate) struct CapturedValue {
 }
 
 type ValueVisitor<'a> = dyn FnMut(&[u8], CapturedValue) -> io::Result<()> + 'a;
+type LengthVisitor<'a> = dyn FnMut(&[u8], usize) -> io::Result<()> + 'a;
 
 enum ScanIndex<'a> {
     None,
     Blocks(&'a mut index::Builder),
+    Lengths {
+        staging: StagingLimits,
+        visit: &'a mut LengthVisitor<'a>,
+    },
     Locations {
         staging: StagingLimits,
         visit: &'a mut ValueVisitor<'a>,
     },
+}
+
+// Lengths remain private until the full base digest and binding pass.
+pub(crate) fn scan_value_lengths(
+    reader: impl Read,
+    limits: Limits,
+    staging: StagingLimits,
+    mut visit: impl FnMut(&[u8], usize) -> io::Result<()>,
+) -> io::Result<Validated> {
+    scan_buffered_using(
+        reader,
+        limits,
+        ScanIndex::Lengths {
+            staging,
+            visit: &mut visit,
+        },
+    )
 }
 
 // Locations refer to the bytes hashed by this scan. Keep them private until
@@ -435,7 +457,7 @@ fn scan_using<R: Read, B: Read>(
     let mut keys = 0u64;
     let mut staged_bytes = 0u64;
     let staging_budget = match &index {
-        ScanIndex::Locations { staging, .. } => Some(*staging),
+        ScanIndex::Locations { staging, .. } | ScanIndex::Lengths { staging, .. } => Some(*staging),
         _ => staging.as_ref().map(|(_, limits)| *limits),
     };
     for _ in 0..entries {
@@ -517,15 +539,17 @@ fn scan_using<R: Read, B: Read>(
                 value.extend_from_slice(bytes);
             }
         })?;
-        if let ScanIndex::Locations { visit, .. } = &mut index {
-            visit(
+        match &mut index {
+            ScanIndex::Lengths { visit, .. } => visit(&key[..kl], vl)?,
+            ScanIndex::Locations { visit, .. } => visit(
                 &key[..kl],
                 CapturedValue {
                     offset: HEADER_BYTES + observed - vl as u64,
                     length: vl,
                     digest: value_hash.unwrap().finalize().into(),
                 },
-            )?;
+            )?,
+            _ => {}
         }
         if let Some(entry) = staged_entry {
             let entries = &mut staging.as_mut().unwrap().0;
