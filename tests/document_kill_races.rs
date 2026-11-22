@@ -88,6 +88,9 @@ fn child_work(db: &DocumentDatabase<'_>, signal: &Path) -> ! {
     let mut go = [0_u8; 1];
     io::stdin().read_exact(&mut go).unwrap();
     insert_pending(db);
+    if env::var_os("EMDA_DOCUMENT_KILL_WAIT_FOR_PENDING").is_some() {
+        fs::write(signal.with_extension("complete"), b"acknowledged").unwrap();
+    }
     loop {
         thread::park();
     }
@@ -300,7 +303,7 @@ fn killed_retained_document_writers_preserve_acknowledgements_during_reclamation
                 &signal,
                 Path::new(""),
                 Path::new(""),
-                delay,
+                Some(delay),
                 || (),
             );
             let files = [
@@ -403,6 +406,113 @@ fn verify_recovered(db: &DocumentDatabase<'_>) -> bool {
     receipt.is_some()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct InterruptedImage {
+    log: Vec<u8>,
+    witness_file: Vec<u8>,
+    metadata_witness: Option<[u8; 36]>,
+}
+
+impl InterruptedImage {
+    fn capture(path: &Path) -> Self {
+        let log_path = path.join("records.log");
+        let log = fs::read(&log_path).unwrap();
+        let metadata_witness = if log.starts_with(b"EMDALOG3") {
+            #[cfg(target_os = "linux")]
+            {
+                let mut bytes = [0; 36];
+                assert_eq!(
+                    rustix::fs::getxattr(&log_path, "user.db.commit.v3", &mut bytes[..]).unwrap(),
+                    bytes.len()
+                );
+                Some(bytes)
+            }
+            #[cfg(not(target_os = "linux"))]
+            panic!("unexpected V3 fixture")
+        } else {
+            assert!(log.starts_with(b"EMDALOG2"));
+            None
+        };
+        Self {
+            log,
+            witness_file: fs::read(path.join("commit.state")).unwrap(),
+            metadata_witness,
+        }
+    }
+
+    fn write_to(&self, path: &Path) {
+        fs::create_dir(path).unwrap();
+        let log = path.join("records.log");
+        fs::write(&log, &self.log).unwrap();
+        fs::write(path.join("commit.state"), &self.witness_file).unwrap();
+        fs::File::create(path.join("store.lock")).unwrap();
+        #[cfg(target_os = "linux")]
+        if let Some(witness) = &self.metadata_witness {
+            rustix::fs::setxattr(
+                &log,
+                "user.db.commit.v3",
+                witness,
+                rustix::fs::XattrFlags::empty(),
+            )
+            .unwrap();
+        }
+        assert_eq!(Self::capture(path), *self, "copied crash image differs");
+    }
+}
+
+fn recover_killed_document_image(
+    image: &InterruptedImage,
+    checkpoint: &Path,
+    digest: &[u8; 32],
+) -> (Option<bool>, InterruptedImage) {
+    fn check<T>(opened: io::Result<T>, verify: impl FnOnce(T) -> bool) -> Option<bool> {
+        match opened {
+            Ok(store) => Some(verify(store)),
+            Err(error) => {
+                assert!(
+                    matches!(
+                        error.kind(),
+                        ErrorKind::InvalidData | ErrorKind::UnexpectedEof
+                    ),
+                    "unexpected recovery error: {error}"
+                );
+                None
+            }
+        }
+    }
+
+    let root = tempfile::tempdir_in(checkpoint.parent().unwrap()).unwrap();
+    let ordinary = root.path().join("ordinary");
+    let checkpoint_store = root.path().join("checkpoint");
+    image.write_to(&ordinary);
+    image.write_to(&checkpoint_store);
+    let first = check(retry_lock(|| Store::open(&ordinary)), |store| {
+        verify_recovered(&DocumentDatabase::new(&store))
+    });
+    let second = check(
+        retry_lock(|| CheckpointStore::open(&checkpoint_store, checkpoint, digest)),
+        |store| verify_recovered(&DocumentDatabase::with_checkpoint_store(&store)),
+    );
+    assert_eq!(first, second, "independent recovery paths disagree");
+    let first_bytes = InterruptedImage::capture(&ordinary);
+    let second_bytes = InterruptedImage::capture(&checkpoint_store);
+    assert_eq!(
+        first_bytes, second_bytes,
+        "recovery changed the copies differently"
+    );
+    assert_eq!(first_bytes.log, image.log, "recovery modified the log");
+    if first.is_none() {
+        assert_eq!(first_bytes, *image, "failed recovery changed the witness");
+    }
+    if image.metadata_witness.is_some() {
+        assert_eq!(
+            first_bytes.witness_file, image.witness_file,
+            "V3 anchor changed"
+        );
+    }
+    (first, first_bytes)
+}
+
 #[test]
 fn killed_document_writers_recover_acknowledged_transactions_or_fail_closed() {
     let repetitions = env::var("EMDA_DOCUMENT_KILL_REPETITIONS")
@@ -410,71 +520,100 @@ fn killed_document_writers_recover_acknowledged_transactions_or_fail_closed() {
         .map(|v| v.parse::<usize>().unwrap())
         .unwrap_or(2);
     assert!((1..=100).contains(&repetitions));
-    for mode in ["ordinary", "checkpoint"] {
-        let mut recovered_count = 0;
-        let mut fail_closed_count = 0;
-        let mut pending_present_count = 0;
-        for _ in 0..repetitions {
-            for delay in [0_u64, 50, 500, 2_000] {
+    for force_v2 in [false, true] {
+        if force_v2 && !cfg!(target_os = "linux") {
+            continue;
+        }
+        for mode in ["ordinary", "checkpoint"] {
+            let (mut recovered, mut fail_closed, mut present, mut adopted) = (0, 0, 0, 0);
+            let mut format = "";
+            for delay in [None]
+                .into_iter()
+                .chain((0..repetitions).flat_map(|_| [0, 50, 500, 2_000].map(Some)))
+            {
                 let root = tempfile::tempdir().unwrap();
                 let path = root.path().join("store");
                 let checkpoint = root.path().join("checkpoint");
                 let digest_file = root.path().join("digest");
                 let signal = root.path().join("signal");
+                if force_v2 {
+                    fs::create_dir(&path).unwrap();
+                    fs::write(
+                        path.join("records.log"),
+                        include_bytes!("fixtures/v2-empty-records.log"),
+                    )
+                    .unwrap();
+                    fs::write(
+                        path.join("commit.state"),
+                        include_bytes!("fixtures/v2-empty-commit.state"),
+                    )
+                    .unwrap();
+                }
                 let store = Store::open(&path).unwrap();
                 initialize(&DocumentDatabase::new(&store));
                 let digest = store.checkpoint_to(&checkpoint).unwrap();
                 fs::write(&digest_file, digest).unwrap();
                 drop(store);
-                let acknowledged_prefix = interrupt_writer(
+                let acknowledged = interrupt_writer(
                     mode,
                     &path,
                     &signal,
                     &checkpoint,
                     &digest_file,
                     delay,
-                    || fs::read(path.join("records.log")).unwrap(),
+                    || InterruptedImage::capture(&path),
                 );
-                let interrupted = fs::read(path.join("records.log")).unwrap();
-                assert!(interrupted.starts_with(&acknowledged_prefix));
-                match retry_lock(|| Store::open(&path)) {
-                    Ok(recovered) => {
-                        let pending_present = verify_recovered(&DocumentDatabase::new(&recovered));
-                        drop(recovered);
-                        let checkpoint_recovered =
-                            retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest))
-                                .unwrap();
-                        assert_eq!(
-                            verify_recovered(&DocumentDatabase::with_checkpoint_store(
-                                &checkpoint_recovered
-                            )),
-                            pending_present,
-                            "full-log and checkpoint recovery disagree"
-                        );
-                        recovered_count += 1;
-                        pending_present_count += usize::from(pending_present);
-                    }
-                    Err(error) => {
-                        assert!(
-                            matches!(
-                                error.kind(),
-                                ErrorKind::InvalidData | ErrorKind::UnexpectedEof
-                            ),
-                            "unexpected recovery error: {error}"
-                        );
-                        assert_eq!(
-                            fs::read(path.join("records.log")).unwrap(),
-                            interrupted,
-                            "failed recovery changed the log"
-                        );
-                        fail_closed_count += 1;
+                let interrupted = InterruptedImage::capture(&path);
+                assert!(interrupted.log.starts_with(&acknowledged.log));
+                format = if interrupted.metadata_witness.is_some() {
+                    "V3"
+                } else {
+                    "V2"
+                };
+                let (result, after) =
+                    recover_killed_document_image(&interrupted, &checkpoint, &digest);
+                if delay.is_none() {
+                    assert_eq!(result, Some(true));
+                    // Model persistence states using the actual pending
+                    // document batch and the last acknowledged witness.
+                    let mut without_new_witness = acknowledged.clone();
+                    without_new_witness.log = interrupted.log.clone();
+                    let (result, after) =
+                        recover_killed_document_image(&without_new_witness, &checkpoint, &digest);
+                    assert_eq!(result, Some(true), "complete tail must be adopted");
+                    assert_eq!(
+                        after, interrupted,
+                        "adoption advanced to the wrong boundary"
+                    );
+
+                    without_new_witness.log.pop().unwrap();
+                    assert!(without_new_witness.log.len() > acknowledged.log.len());
+                    assert_eq!(
+                        recover_killed_document_image(&without_new_witness, &checkpoint, &digest).0,
+                        None,
+                        "torn tail was accepted"
+                    );
+                    assert_eq!(
+                        recover_killed_document_image(&acknowledged, &checkpoint, &digest).0,
+                        Some(false),
+                        "old witness and complete prefix must reopen"
+                    );
+                } else {
+                    match result {
+                        Some(pending) => {
+                            recovered += 1;
+                            present += usize::from(pending);
+                            adopted += usize::from(after != interrupted);
+                        }
+                        None => fail_closed += 1,
                     }
                 }
+                assert_eq!(InterruptedImage::capture(&path), interrupted);
             }
+            println!(
+                "format={format} mode={mode} repetitions={repetitions} recovered={recovered} pending_present={present} fail_closed={fail_closed} adopted={adopted} deterministic_images=4"
+            );
         }
-        println!(
-            "mode={mode} repetitions={repetitions} recovered={recovered_count} pending_present={pending_present_count} failed_closed={fail_closed_count}"
-        );
     }
 }
 
@@ -484,10 +623,14 @@ fn interrupt_writer<T>(
     signal: &Path,
     checkpoint: &Path,
     digest_file: &Path,
-    delay: u64,
+    delay: Option<u64>,
     capture: impl FnOnce() -> T,
 ) -> T {
-    let mut child = Command::new(env::current_exe().unwrap())
+    let mut command = Command::new(env::current_exe().unwrap());
+    if delay.is_none() {
+        command.env("EMDA_DOCUMENT_KILL_WAIT_FOR_PENDING", "1");
+    }
+    let mut child = command
         .arg("--exact")
         .arg("document_kill_race_child")
         .env("EMDA_DOCUMENT_KILL_CHILD", mode)
@@ -513,8 +656,24 @@ fn interrupt_writer<T>(
     }
     let before = capture();
     child.stdin.take().unwrap().write_all(b"x").unwrap();
-    if delay > 0 {
-        thread::sleep(Duration::from_micros(delay));
+    if let Some(delay) = delay {
+        if delay > 0 {
+            thread::sleep(Duration::from_micros(delay));
+        }
+    } else {
+        let complete = signal.with_extension("complete");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !complete.exists() {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("child exited before the final acknowledgement: {status}");
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not acknowledge the final transaction");
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
     }
     if let Some(status) = child.try_wait().unwrap() {
         panic!("child exited before interruption: {status}");
