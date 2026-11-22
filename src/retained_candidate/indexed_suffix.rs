@@ -93,12 +93,18 @@ impl IndexedSuffix {
         overlay_limits: OverlayLimits,
         expected: &SuffixExpected,
     ) -> io::Result<Self> {
+        let base = IndexedCandidate::preflight(
+            directory.as_ref(),
+            limits,
+            index_limits,
+            &expected.candidate,
+        )?;
         let suffix = read_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
         check_suffix_binding(&suffix, suffix_limits, expected)?;
         let mut overlay = Overlay::default();
         overlay.apply(&suffix, 0, suffix_limits, overlay_limits)?;
         let candidate =
-            IndexedCandidate::open(directory, limits, index_limits, &expected.candidate)?;
+            IndexedCandidate::open_preflighted(base, limits, index_limits, &expected.candidate)?;
         Ok(Self {
             candidate,
             suffix: DetachedSuffix::Buffered(suffix),
@@ -125,6 +131,12 @@ impl IndexedSuffix {
         overlay_limits: OverlayLimits,
         expected: &SuffixExpected,
     ) -> io::Result<Self> {
+        let base = IndexedCandidate::preflight(
+            directory.as_ref(),
+            limits,
+            index_limits,
+            &expected.candidate,
+        )?;
         let (file, len) = open_suffix(suffix_path.as_ref(), suffix_limits, expected.end)?;
         let source = SuffixFile {
             file: &file,
@@ -139,7 +151,7 @@ impl IndexedSuffix {
             overlay_limits,
         )?;
         let candidate =
-            IndexedCandidate::open(directory, limits, index_limits, &expected.candidate)?;
+            IndexedCandidate::open_preflighted(base, limits, index_limits, &expected.candidate)?;
         let suffix = DetachedSuffix::File { file, len };
         suffix.source()?;
         Ok(Self {

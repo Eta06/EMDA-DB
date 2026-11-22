@@ -213,14 +213,25 @@ impl IndexedBase {
         // Even a block holding one oversized entry contains at most
         // BLOCK_BYTES of lengths and keys. Every block has a nonempty anchor.
         let framing_bytes = header.entries * 8 + header.key_bytes;
-        let largest_entry = 8 + MAX_KEY_BYTES as u64 + crate::record::MAX_VALUE as u64;
+        let value_bytes = header.encoded - framing_bytes;
+        let largest_entry = 8
+            + header.key_bytes.min(MAX_KEY_BYTES as u64)
+            + value_bytes.min(crate::record::MAX_VALUE as u64);
         let minimum_blocks = framing_bytes
             .div_ceil(BLOCK_BYTES)
             .max(header.encoded.div_ceil(BLOCK_BYTES.max(largest_entry)));
         if minimum_blocks > index_limits.blocks as u64 {
             return Err(invalid("retained base block limit exceeded"));
         }
-        if minimum_blocks > index_limits.anchor_bytes as u64 {
+        // Each block has one anchor. Any remaining keys can account for at
+        // most MAX_KEY_BYTES each, so the rest belong to anchors.
+        let non_anchors = header.entries.saturating_sub(minimum_blocks);
+        let minimum_anchor_bytes = minimum_blocks.max(
+            header
+                .key_bytes
+                .saturating_sub(non_anchors.saturating_mul(MAX_KEY_BYTES as u64)),
+        );
+        if minimum_anchor_bytes > index_limits.anchor_bytes as u64 {
             return Err(invalid("retained base anchor byte limit exceeded"));
         }
         Ok(())

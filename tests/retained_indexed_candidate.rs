@@ -122,6 +122,105 @@ fn indexed_pages_and_points_match_the_candidate_under_exact_limits() {
 }
 
 #[test]
+fn indexed_open_rejects_infeasible_frame_budgets_before_reading_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path().join("source")).unwrap();
+    let value = vec![7; 64 * 1024 - 1024];
+    for key in [vec![b'a'; 1024], vec![b'b'; 1024]] {
+        store.put(&key, &value).unwrap();
+    }
+    let path = root.path().join("candidate");
+    let expected = store
+        .build_retained_candidate(
+            &path,
+            [3; 16],
+            [4; 16],
+            RetainedExportLimits {
+                max_live_key_bytes: 2048,
+                ..EXPORT_LIMITS
+            },
+        )
+        .unwrap();
+    let base_limits = Limits {
+        key_bytes: 2048,
+        ..BASE_LIMITS
+    };
+    let exact = IndexLimits {
+        blocks: 2,
+        anchor_bytes: 2048,
+    };
+    let open = |limits| IndexedCandidate::open(&path, base_limits, limits, &expected);
+    assert_eq!(open(exact).unwrap().metadata().entries, 2);
+
+    // Lengths and keys alone fit in a block. The frame's value total proves
+    // that neither entry can be oversized, but their encoded sum needs two
+    // blocks. Both keys must therefore be anchors.
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path.join("base"))
+        .unwrap();
+    file.write_all_at(&u32::MAX.to_le_bytes(), 116).unwrap();
+    for (limits, error) in [
+        (
+            IndexLimits { blocks: 1, ..exact },
+            "retained base block limit exceeded",
+        ),
+        (
+            IndexLimits {
+                anchor_bytes: 2047,
+                ..exact
+            },
+            "retained base anchor byte limit exceeded",
+        ),
+    ] {
+        assert_eq!(open(limits).err().unwrap().to_string(), error);
+    }
+    assert!(open(exact).is_err());
+
+    let suffix_expected = SuffixExpected {
+        candidate: expected,
+        end: 0,
+        digest: Sha256::digest([]).into(),
+    };
+    let missing_suffix = root.path().join("missing-suffix");
+    let too_few_blocks = IndexLimits { blocks: 1, ..exact };
+    let suffix = SuffixLimits {
+        bytes: 0,
+        operations: 0,
+        work: 0,
+    };
+    let overlay = OverlayLimits {
+        entries: 0,
+        key_bytes: 0,
+    };
+    for outcome in [
+        IndexedSuffix::open(
+            &path,
+            &missing_suffix,
+            base_limits,
+            too_few_blocks,
+            suffix,
+            overlay,
+            &suffix_expected,
+        ),
+        IndexedSuffix::open_file_backed(
+            &path,
+            &missing_suffix,
+            base_limits,
+            too_few_blocks,
+            suffix,
+            overlay,
+            &suffix_expected,
+        ),
+    ] {
+        assert_eq!(
+            outcome.err().unwrap().to_string(),
+            "retained base block limit exceeded"
+        );
+    }
+}
+
+#[test]
 fn indexed_reads_authenticate_touched_blocks_from_the_captured_file() {
     let root = tempfile::tempdir().unwrap();
     let large = vec![42; 128 * 1024];

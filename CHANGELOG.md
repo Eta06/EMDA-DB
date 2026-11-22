@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Preflight sparse-index limits before opening a read-only retained candidate.
+  Read-only and writable opens now detect more impossible block and anchor
+  budgets using the base frame, before reading any suffix records.
+
 - Reject insufficient detached replay work and staging budgets before
   loading retained base entries.
 

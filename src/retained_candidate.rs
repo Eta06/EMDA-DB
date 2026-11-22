@@ -216,9 +216,35 @@ impl IndexedCandidate {
         index_limits: IndexLimits,
         expected: &Expected,
     ) -> io::Result<Self> {
-        let dir = directory.as_ref();
+        let file = Self::preflight(directory.as_ref(), limits, index_limits, expected)?;
+        Self::open_preflighted(file, limits, index_limits, expected)
+    }
+
+    fn preflight(
+        dir: &Path,
+        limits: Limits,
+        index_limits: IndexLimits,
+        expected: &Expected,
+    ) -> io::Result<fs::File> {
         check_files(dir, expected)?;
-        let base = IndexedBase::open(open_regular(&dir.join("base"))?, limits, index_limits)?;
+        let file = open_regular(&dir.join("base"))?;
+        IndexedBase::preflight(
+            &file,
+            file.metadata()?.len(),
+            limits,
+            index_limits,
+            expected.base_binding(),
+        )?;
+        Ok(file)
+    }
+
+    fn open_preflighted(
+        file: fs::File,
+        limits: Limits,
+        index_limits: IndexLimits,
+        expected: &Expected,
+    ) -> io::Result<Self> {
+        let base = IndexedBase::open(file, limits, index_limits)?;
         check_binding(base.metadata(), expected)?;
         Ok(Self { base })
     }
