@@ -113,3 +113,34 @@ revision, preserve its binary, and add
 `--baseline-binary /path/to/before/document_contention_bench`
 and `--baseline-revision cff3a8a` to the command above. Use five rounds
 and the candidate's source revision.
+
+## Checkpoint reads during synchronization
+
+CheckpointStore now holds a writer gate through append and sync, while
+releasing the state lock so readers can use the published view. A
+synchronized batch replaces the overlay atomically. Full-log copies
+still wait on the writer gate, and append failures and panics leave
+the instance failed until reopen.
+
+The [paired raw results](../benchmarks/results/2026-11-23-linux-arm64-checkpoint-sync-reads.json.gz)
+compare `beacc6d` with `a86b213` using separate Rust 1.85.0 release builds
+on Linux ARM64, 500 documents on ext4, and five rotated rounds. All 75
+runs verified the primary documents and email index after reopening.
+VM-wide I/O wait reached 11.54%. Use separate Cargo target directories
+when building each revision for reproduction. The driver refuses
+byte-identical baseline and candidate binaries.
+
+| Clients | CheckpointStore read p99 before / after, µs | CheckpointStore update p99 before / after, µs | SQLite read p99, µs |
+| ---: | ---: | ---: | ---: |
+| 1 | 115.04 / 108.33 | 362.75 / 316.04 | 9.29 |
+| 2 | 410.46 / 234.96 | 606.00 / 633.67 | 15.62 |
+| 4 | 1,060.29 / 252.50 | 2,495.88 / 1,427.67 | 14.71 |
+
+At four clients, the checkpoint read p99 range dropped from
+1,047.92–1,091.92 µs to 248.38–262.67 µs. Median throughput increased
+from 6,470 to 6,811 operations/s. Median update latency increased from
+739.08 to 960.21 µs, even as the update tail fell. The two-client update
+p99 also increased in this sample. Checkpoint-backed reads still had
+higher p99 than SQLite and the ordinary store at each tested client count.
+The measurements cover this workload and leave cold-cache behavior,
+resource ceilings, and crash recovery outside the comparison.

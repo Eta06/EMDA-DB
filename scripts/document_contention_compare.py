@@ -74,10 +74,13 @@ def main():
             (f"{engine}-before", engine, args.baseline_binary)
             for engine in ENGINES if engine != "sqlite"
         )
+    fingerprints = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in hashed.items()}
+    if fingerprints.get("baseline_binary") == fingerprints["binary"]:
+        parser.error("baseline and candidate binaries are identical")
     report = {
         "source_revision": args.source_revision,
         "baseline_revision": args.baseline_revision,
-        "sha256": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in hashed.items()},
+        "sha256": fingerprints,
         "platform": platform.platform(),
         "cpu_affinity": sorted(os.sched_getaffinity(0)),
         "filesystem": subprocess.check_output(
