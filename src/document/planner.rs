@@ -98,35 +98,64 @@ pub struct PlannedDocumentQueryResult {
     pub access: DocumentQueryAccess,
 }
 
-// Each supplied filter must hold for the current plan. Within it, descend
-// only through And: Or and Not do not require any particular child.
+// Each supplied filter must hold. Descend through conjunctions, including
+// negated disjunctions, without treating alternatives as required predicates.
+fn required_predicates<'a>(
+    required: &[&'a DocumentFilter],
+) -> impl Iterator<Item = (&'a DocumentFilter, bool)> + use<'a> {
+    let mut pending: Vec<_> = required.iter().map(|&filter| (filter, false)).collect();
+    std::iter::from_fn(move || {
+        while let Some((filter, negated)) = pending.pop() {
+            match (filter, negated) {
+                (DocumentFilter::Not(child), _) => pending.push((child, !negated)),
+                (DocumentFilter::And(children), false) | (DocumentFilter::Or(children), true) => {
+                    pending.extend(children.iter().rev().map(|child| (child, negated)));
+                }
+                _ => return Some((filter, negated)),
+            }
+        }
+        None
+    })
+}
+
 fn required_equality(
     required: &[&DocumentFilter],
     path: &[String],
 ) -> io::Result<Option<IndexValue>> {
-    let mut pending = required.to_vec();
     let (mut lower, mut upper) = (None, None);
-    while let Some(filter) = pending.pop() {
-        match filter {
-            DocumentFilter::Equal { path: field, value } if field == path => {
+    for (filter, negated) in required_predicates(required) {
+        match (filter, negated) {
+            (DocumentFilter::Equal { path: field, value }, false) if field == path => {
                 if let Ok(value) = IndexValue::from_json(value) {
                     return Ok(Some(value));
                 }
             }
-            DocumentFilter::In {
-                path: field,
-                values,
-            } if field == path && values.len() == 1 => {
+            (
+                DocumentFilter::In {
+                    path: field,
+                    values,
+                },
+                false,
+            )
+            | (
+                DocumentFilter::NotIn {
+                    path: field,
+                    values,
+                },
+                true,
+            ) if field == path && values.len() == 1 => {
                 if let Ok(value) = IndexValue::from_json(&values[0]) {
                     return Ok(Some(value));
                 }
             }
-            DocumentFilter::Compare {
-                path: field,
-                comparison,
-                value,
-            } if field == path => tighten_range(&mut lower, &mut upper, value, *comparison)?,
-            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
+            (
+                DocumentFilter::Compare {
+                    path: field,
+                    comparison,
+                    value,
+                },
+                false,
+            ) if field == path => tighten_range(&mut lower, &mut upper, value, *comparison)?,
             _ => {}
         }
     }
@@ -144,13 +173,22 @@ fn required_equality(
 // scalar index encoding so repeated values cannot duplicate rows or work.
 // Non-indexable lists fall back rather than omitting potential matches.
 fn required_membership(required: &[&DocumentFilter], path: &[String]) -> Option<Vec<IndexValue>> {
-    let mut pending = required.to_vec();
-    while let Some(filter) = pending.pop() {
-        match filter {
-            DocumentFilter::In {
-                path: field,
-                values,
-            } if field == path && values.len() > 1 => {
+    for (filter, negated) in required_predicates(required) {
+        match (filter, negated) {
+            (
+                DocumentFilter::In {
+                    path: field,
+                    values,
+                },
+                false,
+            )
+            | (
+                DocumentFilter::NotIn {
+                    path: field,
+                    values,
+                },
+                true,
+            ) if field == path && values.len() > 1 => {
                 let mut distinct = BTreeMap::new();
                 let mut usable = true;
                 for value in values {
@@ -169,7 +207,6 @@ fn required_membership(required: &[&DocumentFilter], path: &[String]) -> Option<
                     return Some(distinct.into_values().collect());
                 }
             }
-            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
             _ => {}
         }
     }
@@ -207,6 +244,10 @@ fn proves_presence(filter: &DocumentFilter, path: &[String], exists: bool, negat
             path: field,
             exists: actual,
         } => path_implies_presence(field, *actual != negated, path, exists),
+        DocumentFilter::NotIn {
+            path: field,
+            values,
+        } if negated && !values.is_empty() => path_implies_presence(field, true, path, exists),
         DocumentFilter::Equal { path: field, .. }
         | DocumentFilter::In { path: field, .. }
         | DocumentFilter::Compare { path: field, .. }
@@ -475,15 +516,18 @@ fn required_range(
 ) -> io::Result<Option<(Option<IndexBound>, Option<IndexBound>)>> {
     let mut lower = None;
     let mut upper = None;
-    let mut pending = required.to_vec();
-    while let Some(filter) = pending.pop() {
-        match filter {
-            DocumentFilter::Compare {
-                path: field,
-                comparison,
-                value,
-            } if field == path => tighten_range(&mut lower, &mut upper, value, *comparison)?,
-            DocumentFilter::And(filters) => pending.extend(filters.iter().rev()),
+    for (filter, negated) in required_predicates(required) {
+        match (filter, negated) {
+            (
+                DocumentFilter::Compare {
+                    path: field,
+                    comparison,
+                    value,
+                },
+                false,
+            ) if field == path => {
+                tighten_range(&mut lower, &mut upper, value, *comparison)?;
+            }
             _ => {}
         }
     }

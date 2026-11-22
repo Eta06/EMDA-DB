@@ -149,6 +149,83 @@ fn exercise(db: &DocumentDatabase<'_>) {
         &query(not_in("handle", vec![json!("hc")])),
         DocumentQueryAccess::CollectionScan,
     );
+    let not = |filter| DocumentFilter::Not(Box::new(filter));
+    let bound = |comparison, value: &str| DocumentFilter::Compare {
+        path: path("handle"),
+        comparison,
+        value: IndexValue::String(value.into()),
+    };
+    for (filter, access, expected, visits) in [
+        (
+            not(not(eq("handle", json!("hc")))),
+            DocumentQueryAccess::UniqueEqualityIndex {
+                index: "handle".into(),
+            },
+            &["c"][..],
+            1,
+        ),
+        (
+            not(not_in("handle", vec![json!("hc")])),
+            DocumentQueryAccess::UniqueEqualityIndex {
+                index: "handle".into(),
+            },
+            &["c"][..],
+            1,
+        ),
+        (
+            not(not_in(
+                "handle",
+                vec![json!("hc"), json!("hd"), json!("hc")],
+            )),
+            DocumentQueryAccess::MembershipIndex {
+                index: "handle".into(),
+                probes: 2,
+            },
+            &["c", "d"][..],
+            2,
+        ),
+        (
+            not(DocumentFilter::Or(vec![
+                not(bound(Comparison::GreaterOrEqual, "hc")),
+                not(bound(Comparison::LessOrEqual, "hd")),
+            ])),
+            DocumentQueryAccess::RangeIndex {
+                index: "handle".into(),
+            },
+            &["c", "d"][..],
+            2,
+        ),
+    ] {
+        let mut request = query(filter);
+        compare(db, &request, access.clone());
+        request.max_scanned = visits;
+        let planned = db.query_planned("c", &request).unwrap();
+        assert_eq!(planned.access, access);
+        assert_eq!(
+            planned
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(db.query("c", &request).is_err());
+    }
+    for filter in [
+        not(not_in(
+            "handle",
+            vec![json!("hc"), json!({"not": "indexable"})],
+        )),
+        not(not_in("handle", vec![])),
+        not(bound(Comparison::Less, "hd")),
+        not(DocumentFilter::And(vec![
+            not(eq("handle", json!("hc"))),
+            not(eq("handle", json!("hd"))),
+        ])),
+    ] {
+        compare(db, &query(filter), DocumentQueryAccess::CollectionScan);
+    }
     let aggregation = db
         .aggregate(
             "c",
@@ -312,6 +389,19 @@ fn partial_presence_and_compound_suffix_plans_never_omit_missing_values() {
         ]));
         compare(db, &includes_missing, DocumentQueryAccess::CollectionScan);
         assert_eq!(ids(db, includes_missing.filter), ["a", "c"]);
+        let guarded = query(DocumentFilter::And(vec![
+            eq("score", json!(1)),
+            DocumentFilter::Not(Box::new(not_in("active", vec![json!(true)]))),
+        ]));
+        compare(
+            db,
+            &guarded,
+            DocumentQueryAccess::PartialEqualityIndex {
+                index: "score".into(),
+                fields: 1,
+            },
+        );
+        assert_eq!(ids(db, guarded.filter), ["a"]);
     });
     on_backends(|db| {
         db.create_collection("c", CollectionSchema::default())
@@ -479,7 +569,7 @@ fn membership_and_array_predicates_share_input_and_work_budgets() {
     });
 }
 
-fn phantom(db: &DocumentDatabase<'_>, inside: bool) {
+fn phantom(db: &DocumentDatabase<'_>, inside: bool, filter: DocumentFilter) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
     db.create_index("c", index("score", &["score"], false, None))
@@ -494,7 +584,7 @@ fn phantom(db: &DocumentDatabase<'_>, inside: bool) {
             changed.wait();
         });
         let result = db.transaction_with_read_set(|tx| {
-            let planned = tx.query_planned("c", &query(in_values("score", vec![json!(5)])))?;
+            let planned = tx.query_planned("c", &query(filter))?;
             assert_eq!(
                 planned.access,
                 DocumentQueryAccess::EqualityIndex {
@@ -527,7 +617,14 @@ fn phantom(db: &DocumentDatabase<'_>, inside: bool) {
 #[test]
 fn singleton_membership_detects_index_phantoms_and_allows_unrelated_inserts() {
     for inside in [false, true] {
-        on_backends(|db| phantom(db, inside));
+        on_backends(|db| phantom(db, inside, in_values("score", vec![json!(5)])));
+        on_backends(|db| {
+            phantom(
+                db,
+                inside,
+                DocumentFilter::Not(Box::new(not_in("score", vec![json!(5)]))),
+            )
+        });
     }
 }
 

@@ -202,7 +202,7 @@ fuzz_target!(|data: &[u8]| {
         if compound {
             tuple.push(equal("tenant", json!("t")));
         }
-        let mode = bytes[0] % 17;
+        let mode = bytes[0] % 18;
         let partial_equality = || DocumentQueryAccess::PartialEqualityIndex {
             index: "i".into(),
             fields: if compound { 2 } else { 1 },
@@ -269,6 +269,9 @@ fuzz_target!(|data: &[u8]| {
                 };
                 match mode {
                     14 => {
+                        for predicate in &mut tuple {
+                            *predicate = not(not(predicate.clone()));
+                        }
                         tuple.push(not(DocumentFilter::Or(vec![
                             not(bound(Comparison::GreaterOrEqual)),
                             not(bound(Comparison::LessOrEqual)),
@@ -298,6 +301,25 @@ fuzz_target!(|data: &[u8]| {
                             bound(Comparison::Greater),
                         ])));
                         DocumentQueryAccess::CollectionScan
+                    }
+                }
+            }
+            17 => {
+                tuple[0] = not(DocumentFilter::NotIn {
+                    path: vec!["group".into()],
+                    values: vec![json!("g"), Value::Null, json!("g")],
+                });
+                tuple.push(guard.clone());
+                if compound {
+                    DocumentQueryAccess::PartialCompoundMembershipIndex {
+                        index: "i".into(),
+                        fields: 2,
+                        probes: 2,
+                    }
+                } else {
+                    DocumentQueryAccess::PartialMembershipIndex {
+                        index: "i".into(),
+                        probes: 2,
                     }
                 }
             }
