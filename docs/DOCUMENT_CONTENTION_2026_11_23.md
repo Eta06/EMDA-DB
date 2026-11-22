@@ -75,3 +75,41 @@ python3 scripts/document_contention_compare.py \
   --source-revision "$(git rev-parse HEAD)" --clients 1,2,4 \
   --rounds 4 --cycles 100 --documents 500
 ```
+
+## Read-only validation follow-up
+
+On Store, read-only transactions can validate against the published
+index during log synchronization. They still detect changed observations,
+cancellation, deadline expiry, and uncertain writes. On CheckpointStore,
+read-only validation uses the shared state lock, while writes hold the
+exclusive lock through the commit. Both backends retain their exclusive
+write-commit path.
+
+The [paired raw results](../benchmarks/results/2026-11-23-linux-arm64-read-validation.json.gz)
+compare `cff3a8a` with `0e94bb8` on the same 500-document workload.
+All 75 runs verified every primary document and the index after reopening.
+The Linux ARM64 VM ran on ext4 with four available CPUs and Rust 1.85.0
+release builds. Five rounds rotated both engine revisions and the SQLite
+reference. This run was separate from the macOS fault-suite workload.
+VM-wide I/O wait reached 16.67%.
+
+| Clients | Store read p99 before / after, µs | CheckpointStore read p99 before / after, µs | SQLite read p99, µs |
+| ---: | ---: | ---: | ---: |
+| 1 | 15.62 / 14.75 | 116.29 / 117.71 | 11.12 |
+| 2 | 565.58 / 13.58 | 443.79 / 397.50 | 11.79 |
+| 4 | 1,442.88 / 18.17 | 1,350.92 / 1,041.38 | 14.21 |
+
+The four-client Store read p99 fell from 1,442.88 to 18.17 µs. The
+before runs ranged from 1,134.46 to 1,776.88 µs, and the after runs
+ranged from 11.83 to 29.42 µs. Median throughput rose from 9,007 to
+9,431 operations/s, while update p99 rose from 1,465.75 to 1,975.25 µs.
+One single-client Store after run had a read p99 of 491.71 µs. The
+checkpoint-backed store still had substantially higher concurrent
+read tails than SQLite. These observations apply to this closed-loop
+workload and filesystem.
+
+To reproduce the paired run, build the same example at the baseline
+revision, preserve its binary, and add
+`--baseline-binary /path/to/before/document_contention_bench`
+and `--baseline-revision cff3a8a` to the command above. Use five rounds
+and the candidate's source revision.

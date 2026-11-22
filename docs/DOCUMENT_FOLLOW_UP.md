@@ -40,6 +40,11 @@ The initial document interface is bounded and experimental. This checklist recor
   checks every recovered primary document and the index, and records per-client
   latency, retries, process RSS, and VM noise. The large indexed-read tails under
   concurrent writes remain to be profiled.
+- [x] Allow read-only transactions to validate without exclusive commit locking
+  when their published view is available. The [paired 75-run comparison](DOCUMENT_CONTENTION_2026_11_23.md#read-only-validation-follow-up)
+  measures lower concurrent indexed-read tails, a higher four-client Store
+  update tail, and a remaining gap on the checkpoint-backed store. Tests cover
+  suspended synchronization, fail-closed validation and clean reopening.
 - [ ] Measure and optimize document workloads with equivalent durability and comparable behavior against SQLite, MongoDB and other suitable alternatives. Publish workload definitions, distributions, concurrency, resource use, failures and noise; do not infer performance from the earlier byte-key baseline.
 - [x] Add resumable incremental index build and drop with atomic progress, bounded per-step work, writer coordination and recovery checks. Unique constraints take effect only after successful publication, and callers schedule and retry steps. The ordinary backend still has transaction snapshot limits; this is not a total-memory or latency guarantee.
 - [x] Reject index-drop cursors that skip surviving keys, including a unique phase with remaining entry keys. Both writable backends test skipped and live cursors and preserve the rejection after reopen. The guard detects inconsistent state and does not repair it or validate build cursors.
