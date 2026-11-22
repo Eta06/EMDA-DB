@@ -1,0 +1,101 @@
+diff --git a/src/retained_base_v2.rs b/src/retained_base_v2.rs
+index c233c12..bb8631a 100644
+--- a/src/retained_base_v2.rs
++++ b/src/retained_base_v2.rs
+@@ -420,7 +420,7 @@ fn scan_using<R: Read, B: Read>(
+     hash.update(header);
+     let mut previous = [0u8; MAX_KEY_BYTES];
+     let mut previous_len = 0usize;
+-    let mut key = [0u8; MAX_KEY_BYTES];
++    let mut entry_header = [0u8; 8 + MAX_KEY_BYTES];
+     let mut captured = None;
+     let mut observed = 0u64;
+     let mut keys = 0u64;
+@@ -434,28 +434,28 @@ fn scan_using<R: Read, B: Read>(
+         if add(observed, 8)? > encoded {
+             return Err(invalid("entry exceeds declared bytes"));
+         }
+-        let mut lengths = [0u8; 8];
+-        reader.read_exact(&mut lengths)?;
+-        hash.update(lengths);
+-        let (kl, vl) = entry_lengths(lengths)?;
++        reader.read_exact(&mut entry_header[..8])?;
++        let (kl, vl) = entry_lengths(entry_header[..8].try_into().unwrap())?;
+         observed = add(add(add(observed, 8)?, kl as u64)?, vl as u64)?;
+         keys = add(keys, kl as u64)?;
+         if observed > encoded || keys > key_bytes {
+             return Err(invalid("entry exceeds totals"));
+         }
+-        reader.read_exact(&mut key[..kl])?;
+-        hash.update(&key[..kl]);
+-        if previous_len != 0 && previous[..previous_len] >= key[..kl] {
++        let entry_header = &mut entry_header[..8 + kl];
++        reader.read_exact(&mut entry_header[8..])?;
++        hash.update(&*entry_header);
++        let key = &entry_header[8..];
++        if previous_len != 0 && &previous[..previous_len] >= key {
+             return Err(invalid("keys not strictly ordered"));
+         }
+-        previous[..kl].copy_from_slice(&key[..kl]);
++        previous[..kl].copy_from_slice(key);
+         previous_len = kl;
+         if let ScanIndex::Blocks(builder) = &mut index {
+             builder.entry(
+                 add(HEADER_BYTES, start)?,
+                 observed - start,
+-                &key[..kl],
+-                &lengths,
++                key,
++                entry_header,
+             )?;
+         }
+         if let Some(budget) = staging_budget {
+@@ -469,7 +469,7 @@ fn scan_using<R: Read, B: Read>(
+             staged_key
+                 .try_reserve_exact(kl)
+                 .map_err(|_| io::Error::other("staging allocation failed"))?;
+-            staged_key.extend_from_slice(&key[..kl]);
++            staged_key.extend_from_slice(key);
+             let mut value = Vec::new();
+             value
+                 .try_reserve_exact(vl)
+@@ -478,7 +478,7 @@ fn scan_using<R: Read, B: Read>(
+         } else {
+             None
+         };
+-        let selected = selection.is_some_and(|(wanted, _)| wanted == &key[..kl]);
++        let selected = selection.is_some_and(|(wanted, _)| wanted == key);
+         if selected {
+             if vl > selection.unwrap().1 {
+                 return Err(io::Error::new(
+@@ -510,7 +510,7 @@ fn scan_using<R: Read, B: Read>(
+         })?;
+         if let ScanIndex::Locations { visit, .. } = &mut index {
+             visit(
+-                &key[..kl],
++                key,
+                 CapturedValue {
+                     offset: HEADER_BYTES + observed - vl as u64,
+                     length: vl,
+diff --git a/src/retained_base_v2/index.rs b/src/retained_base_v2/index.rs
+index 53ae769..e508def 100644
+--- a/src/retained_base_v2/index.rs
++++ b/src/retained_base_v2/index.rs
+@@ -46,7 +46,7 @@ impl Builder {
+         start: u64,
+         bytes: u64,
+         key: &[u8],
+-        lengths: &[u8; 8],
++        entry_header: &[u8],
+     ) -> io::Result<()> {
+         let end = add(start, bytes)?;
+         if self
+@@ -76,7 +76,6 @@ impl Builder {
+         } else {
+             self.blocks.last_mut().unwrap().end = end;
+         }
+-        self.hash.update(lengths);
+-        self.hash.update(key);
++        self.hash.update(entry_header);
+         Ok(())
+     }
