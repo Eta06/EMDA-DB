@@ -115,9 +115,19 @@ its work. A valid protected cursor remains usable after its document is
 deleted through the document API. Normal writes continue enforcing
 pending definitions. Cancellation still discards the job through the
 existing API. If the key is lost, cancel the job and start over with a
-new key. Existing unguarded jobs continue with their current methods.
+new key. Existing unguarded jobs can continue with their current methods.
 An older build that rejects unknown metadata fields cannot access a
 collection while a pending guarded job adds its tag.
+
+To migrate an unfinished unguarded job, persist a fresh key and call
+`restart_index_build_guarded` or `restart_schema_migration_guarded` with
+the expected definition from the job request. The transaction requires
+the stored definition to match exactly and rejects a job that already has
+a tag. It atomically adds a tag and clears the cursor, so subsequent
+guarded steps check the collection from its beginning. Restart retains
+pending index entries, which the rescan checks against their documents.
+Normal writes still maintain the pending index and enforce the pending
+schema. A staged old step can lose the transaction conflict and roll back.
 
 Keep writers within the document API and protect the key from the store
 and its backups. Guarded advancement authenticates the job parameters

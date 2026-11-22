@@ -72,6 +72,77 @@ fn prepare(root: &Path) -> ManagedRetainedStore {
 }
 
 #[test]
+fn guarded_restart_survives_retained_rotation_and_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = prepare(root.path());
+    let index = IndexDefinition {
+        name: "by_number".into(),
+        fields: vec![vec!["n".into()]],
+        unique: true,
+        partial: None,
+    };
+    let schema = CollectionSchema::default();
+    let index_key = MaintenanceKey::generate().unwrap();
+    let schema_key = MaintenanceKey::generate().unwrap();
+    {
+        let db = DocumentDatabase::with_managed_retained_store(&mut store);
+        db.start_index_build("items", index.clone()).unwrap();
+        db.start_schema_migration("items", schema.clone()).unwrap();
+        assert_eq!(
+            db.advance_index_build("items", "by_number", 1)
+                .unwrap()
+                .processed,
+            1
+        );
+        assert_eq!(
+            db.advance_schema_migration("items", 1).unwrap().processed,
+            1
+        );
+    }
+    let generation = store.generation_id().unwrap();
+    DocumentDatabase::with_managed_retained_store(&mut store)
+        .transaction(|tx| {
+            tx.restart_index_build_guarded("items", &index, &index_key)?;
+            tx.restart_schema_migration_guarded("items", &schema, &schema_key)?;
+            tx.put_raw(b"guarded-restart", b"committed")
+        })
+        .unwrap();
+    assert_ne!(store.generation_id().unwrap(), generation);
+    drop(store);
+
+    let mut store = ManagedRetainedStore::open(root.path().join("catalog"), LIMITS).unwrap();
+    let db = DocumentDatabase::with_managed_retained_store(&mut store);
+    assert_eq!(db.schema_migration("items").unwrap().unwrap().after, None);
+    assert_eq!(
+        db.transaction(|tx| tx.get_raw(b"guarded-restart")).unwrap(),
+        Some(b"committed".to_vec())
+    );
+    assert_eq!(
+        db.advance_index_build_guarded("items", "by_number", 2, &index_key)
+            .unwrap()
+            .processed,
+        2
+    );
+    assert_eq!(
+        db.advance_schema_migration_guarded("items", 2, &schema_key)
+            .unwrap()
+            .processed,
+        2
+    );
+    assert!(
+        db.advance_index_build_guarded("items", "by_number", 1, &index_key)
+            .unwrap()
+            .complete
+    );
+    assert!(
+        db.advance_schema_migration_guarded("items", 1, &schema_key)
+            .unwrap()
+            .complete
+    );
+    assert_eq!(db.verify_collection("items").unwrap().documents, 2);
+}
+
+#[test]
 fn authorized_cutover_preserves_document_transactions_through_reclamation() {
     type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
     let dir = tempfile::tempdir().unwrap();

@@ -320,6 +320,16 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.start_schema_migration_guarded(collection, schema, key))
     }
 
+    /// Restarts an unguarded migration with a fresh key and a verified definition.
+    pub fn restart_schema_migration_guarded(
+        &self,
+        collection: &str,
+        expected: &CollectionSchema,
+        key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.transaction(|tx| tx.restart_schema_migration_guarded(collection, expected, key))
+    }
+
     /// Advances a schema migration by a bounded number of documents.
     pub fn advance_schema_migration(
         &self,
@@ -469,6 +479,16 @@ impl<'a> DocumentDatabase<'a> {
         key: &MaintenanceKey,
     ) -> io::Result<()> {
         self.transaction(|tx| tx.start_index_build_guarded(collection, definition, key))
+    }
+
+    /// Restarts an unguarded index build with a fresh key and a verified definition.
+    pub fn restart_index_build_guarded(
+        &self,
+        collection: &str,
+        expected: &IndexDefinition,
+        key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.transaction(|tx| tx.restart_index_build_guarded(collection, expected, key))
     }
 
     /// Advances an incremental index build by a bounded number of documents.

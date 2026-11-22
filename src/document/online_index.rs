@@ -246,6 +246,44 @@ impl DocumentTransaction<'_, '_> {
         })
     }
 
+    /// Protects an unfinished unguarded build with a fresh, separately saved
+    /// key and the expected definition. Starts scanning from the beginning,
+    /// checking pending entries against their documents during advancement.
+    pub fn restart_index_build_guarded(
+        &mut self,
+        collection: &str,
+        expected: &IndexDefinition,
+        maintenance_key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.mutate(|this| {
+            let mut metadata = this.metadata(collection)?;
+            let position = job_position(&metadata, &expected.name)?;
+            let IndexJob::Building {
+                definition,
+                after,
+                seal,
+            } = &mut metadata.jobs[position]
+            else {
+                return Err(key::invalid("index job is not a build"));
+            };
+            if seal.is_some() {
+                return Err(key::invalid("index build is already guarded"));
+            }
+            if definition != expected {
+                return Err(key::invalid(
+                    "pending index does not match expected definition",
+                ));
+            }
+            *seal = maintenance_key::seal(
+                Some(maintenance_key),
+                BUILD_PROGRESS_DOMAIN,
+                (collection, expected, Option::<&str>::None),
+            )?;
+            *after = None;
+            this.save_metadata(collection, &metadata)
+        })
+    }
+
     /// Scans at most `limit` documents and persists progress atomically. An
     /// empty page publishes the completed index. Conflicting writes can make
     /// the transaction return a conflict. Use [`crate::is_transaction_conflict`]

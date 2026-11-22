@@ -103,6 +103,38 @@ impl DocumentTransaction<'_, '_> {
         })
     }
 
+    /// Protects an unfinished unguarded migration with a fresh, separately
+    /// saved key. The pending schema must match the expected definition.
+    /// The next step validates from the beginning of the collection.
+    pub fn restart_schema_migration_guarded(
+        &mut self,
+        collection: &str,
+        expected: &CollectionSchema,
+        maintenance_key: &MaintenanceKey,
+    ) -> io::Result<()> {
+        self.mutate(|this| {
+            let mut metadata = this.metadata(collection)?;
+            let job = metadata.schema_job.as_mut().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "schema migration does not exist")
+            })?;
+            if job.seal.is_some() {
+                return Err(key::invalid("schema migration is already guarded"));
+            }
+            if &job.schema != expected {
+                return Err(key::invalid(
+                    "pending schema does not match expected schema",
+                ));
+            }
+            job.seal = maintenance_key::seal(
+                Some(maintenance_key),
+                SCHEMA_PROGRESS_DOMAIN,
+                (collection, expected, Option::<&str>::None),
+            )?;
+            job.after = None;
+            this.save_metadata(collection, &metadata)
+        })
+    }
+
     /// Validates at most 128 documents in one transaction and saves progress.
     /// An empty page atomically publishes the new schema. A validation error
     /// commits nothing; fix or delete the document and retry the step.

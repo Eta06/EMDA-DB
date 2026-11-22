@@ -320,3 +320,166 @@ fn a_fresh_guarded_job_rejects_a_saved_cursor_from_a_cancelled_job() {
         );
     }
 }
+
+#[test]
+fn restarting_an_unguarded_index_conflicts_with_a_staged_old_step_and_reopens() {
+    use std::{sync::mpsc, time::Duration};
+
+    for checkpoint in [false, true] {
+        let fixture = Fixture::new(checkpoint);
+        let store = fixture.open();
+        let db = store.docs();
+        let key = MaintenanceKey::generate().unwrap();
+        let saved_key = key.to_bytes();
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.insert("c", "a", &json!({"n": 1})).unwrap();
+        db.insert("c", "b", &json!({"n": 2})).unwrap();
+        db.start_index_build("c", index()).unwrap();
+        assert_eq!(
+            db.advance_index_build("c", "score", 1).unwrap().processed,
+            1
+        );
+        let unguarded = store.metadata();
+        assert_eq!(unguarded["jobs"][0]["after"], "a");
+
+        let mut wrong = index();
+        wrong.unique = false;
+        reject(
+            db.restart_index_build_guarded("c", &wrong, &key),
+            io::ErrorKind::InvalidInput,
+        );
+        let aborted = db.transaction(|tx| {
+            tx.restart_index_build_guarded("c", &index(), &key)?;
+            tx.put_raw(RECEIPT, b"discard")?;
+            Err::<(), _>(io::Error::other("abort restart"))
+        });
+        assert_eq!(aborted.unwrap_err().to_string(), "abort restart");
+        assert_eq!(store.metadata(), unguarded);
+
+        std::thread::scope(|scope| {
+            let (staged, ready) = mpsc::channel();
+            let (resume, allowed) = mpsc::channel();
+            let db = &db;
+            let old_step = scope.spawn(move || {
+                db.transaction_with_read_set(|tx| {
+                    assert_eq!(tx.advance_index_build("c", "score", 1)?.processed, 1);
+                    tx.put_raw(RECEIPT, b"old step")?;
+                    staged.send(()).unwrap();
+                    allowed.recv_timeout(Duration::from_secs(10)).unwrap();
+                    Ok(())
+                })
+            });
+            ready.recv_timeout(Duration::from_secs(10)).unwrap();
+            db.restart_index_build_guarded("c", &index(), &key).unwrap();
+            resume.send(()).unwrap();
+            let error = old_step.join().unwrap().unwrap_err();
+            assert!(database_engine::is_transaction_conflict(&error));
+        });
+        let restarted = store.metadata();
+        assert!(restarted["jobs"][0]["after"].is_null());
+        assert!(restarted["jobs"][0]["seal"].is_array());
+        assert_eq!(db.transaction(|tx| tx.get_raw(RECEIPT)).unwrap(), None);
+        drop(store);
+
+        let store = fixture.open();
+        let db = store.docs();
+        let key = MaintenanceKey::from_bytes(saved_key);
+        assert_eq!(store.metadata(), restarted);
+        reject(
+            db.advance_index_build("c", "score", 1),
+            io::ErrorKind::PermissionDenied,
+        );
+        reject(
+            db.restart_index_build_guarded("c", &index(), &key),
+            io::ErrorKind::InvalidInput,
+        );
+        for _ in 0..2 {
+            let step = db
+                .advance_index_build_guarded("c", "score", 1, &key)
+                .unwrap();
+            assert_eq!(step.processed, 1);
+            assert!(!step.complete);
+        }
+        assert!(
+            db.advance_index_build_guarded("c", "score", 1, &key)
+                .unwrap()
+                .complete
+        );
+        assert_eq!(db.verify_collection("c").unwrap().documents, 2);
+        reject(
+            db.insert("c", "duplicate", &json!({"n": 2})),
+            io::ErrorKind::AlreadyExists,
+        );
+    }
+}
+
+#[test]
+fn restarting_an_unguarded_migration_revalidates_documents_before_its_old_frontier() {
+    for checkpoint in [false, true] {
+        let fixture = Fixture::new(checkpoint);
+        let store = fixture.open();
+        let db = store.docs();
+        let key = MaintenanceKey::generate().unwrap();
+        let saved_key = key.to_bytes();
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.insert("c", "a", &json!({"email": "a"})).unwrap();
+        db.insert("c", "b", &json!({})).unwrap();
+        db.start_schema_migration("c", schema()).unwrap();
+        assert_eq!(db.advance_schema_migration("c", 1).unwrap().processed, 1);
+        let mut unguarded = store.metadata();
+        unguarded["schema_job"]["after"] = json!("z");
+        store.replace_metadata(&unguarded);
+        reject(
+            db.restart_schema_migration_guarded("c", &CollectionSchema::default(), &key),
+            io::ErrorKind::InvalidInput,
+        );
+        assert_eq!(store.metadata(), unguarded);
+        db.restart_schema_migration_guarded("c", &schema(), &key)
+            .unwrap();
+        drop(store);
+
+        let store = fixture.open();
+        let db = store.docs();
+        let key = MaintenanceKey::from_bytes(saved_key);
+        assert_eq!(db.schema_migration("c").unwrap().unwrap().after, None);
+        reject(
+            db.advance_schema_migration("c", 1),
+            io::ErrorKind::PermissionDenied,
+        );
+        reject(
+            db.restart_schema_migration_guarded("c", &schema(), &key),
+            io::ErrorKind::InvalidInput,
+        );
+        assert_eq!(
+            db.advance_schema_migration_guarded("c", 1, &key)
+                .unwrap()
+                .processed,
+            1
+        );
+        let progress = store.metadata();
+        assert!(db.advance_schema_migration_guarded("c", 1, &key).is_err());
+        assert_eq!(store.metadata(), progress);
+        assert_eq!(db.get("c", "b").unwrap(), Some(json!({})));
+        db.replace("c", "b", &json!({"email": "b"}), false).unwrap();
+        assert_eq!(
+            db.advance_schema_migration_guarded("c", 1, &key)
+                .unwrap()
+                .processed,
+            1
+        );
+        assert!(
+            db.advance_schema_migration_guarded("c", 1, &key)
+                .unwrap()
+                .complete
+        );
+        drop(store);
+
+        let store = fixture.open();
+        let db = store.docs();
+        assert!(db.schema_migration("c").unwrap().is_none());
+        assert!(db.insert("c", "invalid", &json!({})).is_err());
+        assert_eq!(db.get("c", "b").unwrap(), Some(json!({"email": "b"})));
+    }
+}
