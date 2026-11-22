@@ -22,6 +22,7 @@ pub(crate) struct Loaded {
     pub(crate) prefix: u64,
     pub(crate) index: BTreeMap<Vec<u8>, ValueLocation>,
     pub(crate) peak: usize,
+    pub(crate) log_hasher: Sha256,
 }
 
 pub(crate) struct VerifiedCheckpoint {
@@ -43,6 +44,16 @@ impl VerifiedLog {
             length,
             digest: hasher.finalize().into(),
         }
+    }
+
+    pub(crate) fn verify_before_adoption(&self, log: &Log) -> io::Result<()> {
+        check_checkpoint_length(log, self.length)?;
+        if hash_log_prefix(log, self.length)?.finalize().as_slice() != self.digest {
+            return Err(record::invalid_data(
+                "log bytes changed after recovery replay",
+            ));
+        }
+        check_checkpoint_length(log, self.length)
     }
 }
 
@@ -510,6 +521,7 @@ fn load_file(
         prefix: verified.prefix,
         index,
         peak: verified.peak,
+        log_hasher: verified.log_hasher,
     })
 }
 

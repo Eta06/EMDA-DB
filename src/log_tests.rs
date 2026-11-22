@@ -17,57 +17,96 @@ fn verification_key_byte_overflow_distinguishes_admission_from_corruption() {
 }
 
 #[test]
-fn replayed_tail_adoption_rejects_growth_after_validation() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path();
-    std::fs::write(
-        path.join("records.log"),
-        include_bytes!("../tests/fixtures/v2-empty-records.log"),
-    )
-    .unwrap();
-    std::fs::write(
-        path.join("commit.state"),
-        include_bytes!("../tests/fixtures/v2-empty-commit.state"),
-    )
-    .unwrap();
-    let original_witness = std::fs::read(path.join("commit.state")).unwrap();
-    let store = crate::Store::open(path).unwrap();
-    store.put(b"tail", b"complete").unwrap();
-    drop(store);
-    std::fs::write(path.join("commit.state"), &original_witness).unwrap();
-    let file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(path.join("records.log"))
+fn replayed_tail_adoption_rejects_changes_after_validation() {
+    for (same_length, use_checkpoint) in [(false, false), (true, false), (true, true)] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        std::fs::write(
+            path.join("records.log"),
+            include_bytes!("../tests/fixtures/v2-empty-records.log"),
+        )
         .unwrap();
-    let (id, metadata) = log_identity(&file).unwrap();
-    let (witness, boundary) = Witness::open(path, id.unwrap()).unwrap();
-    let (log, index, end) = Log::from_parts(
-        Box::new(file),
-        id,
-        Some(witness),
-        Some(boundary),
-        metadata,
-        (None, None),
-        None,
-    )
-    .unwrap();
-    assert!(index.contains_key(&b"tail"[..]));
-    let mut expected = std::fs::read(path.join("records.log")).unwrap();
-    OpenOptions::new()
-        .append(true)
-        .open(path.join("records.log"))
-        .unwrap()
-        .write_all(b"x")
+        std::fs::write(
+            path.join("commit.state"),
+            include_bytes!("../tests/fixtures/v2-empty-commit.state"),
+        )
         .unwrap();
-    expected.push(b'x');
-    let error = log.adopt_replayed_tail(Some(boundary), end).unwrap_err();
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-    assert_eq!(
-        std::fs::read(path.join("commit.state")).unwrap(),
-        original_witness
-    );
-    assert_eq!(std::fs::read(path.join("records.log")).unwrap(), expected);
+        let store = crate::Store::open(path).unwrap();
+        store.put(b"base", b"committed").unwrap();
+        let checkpoint_path = path.join("checkpoint");
+        let digest = store.checkpoint_to(&checkpoint_path).unwrap();
+        let checkpoint = use_checkpoint.then_some((checkpoint_path.as_path(), &digest));
+        let original_witness = std::fs::read(path.join("commit.state")).unwrap();
+        store.put(b"tail", b"complete").unwrap();
+        drop(store);
+        std::fs::write(path.join("commit.state"), &original_witness).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        let (id, metadata) = log_identity(&file).unwrap();
+        let (witness, boundary) = Witness::open(path, id.unwrap()).unwrap();
+        let (log, index, end) = Log::from_parts(
+            Box::new(file),
+            id,
+            Some(witness),
+            Some(boundary),
+            metadata,
+            (None, None),
+            checkpoint,
+        )
+        .unwrap();
+        assert!(index.contains_key(&b"tail"[..]));
+        let original = std::fs::read(path.join("records.log")).unwrap();
+        let mut expected = original.clone();
+        if same_length {
+            let replacement = record::encode(Operation::Put, b"swap", b"complete").unwrap();
+            let start = end.length - replacement.len() as u64;
+            let file = OpenOptions::new()
+                .write(true)
+                .open(path.join("records.log"))
+                .unwrap();
+            std::os::unix::fs::FileExt::write_all_at(&file, &replacement, start).unwrap();
+            expected[start as usize..].copy_from_slice(&replacement);
+        } else {
+            OpenOptions::new()
+                .append(true)
+                .open(path.join("records.log"))
+                .unwrap()
+                .write_all(b"x")
+                .unwrap();
+            expected.push(b'x');
+        }
+        let error = log.adopt_replayed_tail(Some(boundary), end).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        if same_length {
+            assert_eq!(error.to_string(), "log bytes changed after recovery replay");
+        }
+        assert_eq!(
+            std::fs::read(path.join("commit.state")).unwrap(),
+            original_witness
+        );
+        assert_eq!(std::fs::read(path.join("records.log")).unwrap(), expected);
+
+        drop(log);
+        std::fs::write(path.join("records.log"), original).unwrap();
+        let recovered = match checkpoint {
+            Some((path_to_checkpoint, digest)) => {
+                crate::Store::open_with_checkpoint(path, path_to_checkpoint, digest).unwrap()
+            }
+            None => crate::Store::open(path).unwrap(),
+        };
+        assert_eq!(
+            recovered.get(b"base").unwrap().as_deref(),
+            Some(b"committed".as_slice())
+        );
+        assert_eq!(
+            recovered.get(b"tail").unwrap().as_deref(),
+            Some(b"complete".as_slice())
+        );
+        assert_eq!(recovered.get(b"swap").unwrap(), None);
+    }
 }
 
 #[test]
@@ -1247,8 +1286,8 @@ fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
                 (None, None),
                 None,
             )?;
-            assert_eq!(end, original_log.len() as u64);
-            assert!(boundary < end);
+            assert_eq!(end.length, original_log.len() as u64);
+            assert!(boundary < end.length);
             assert!(index.contains_key(&b"base"[..]));
             assert!(index.contains_key(&b"tail"[..]));
             log.adopt_replayed_tail(Some(boundary), end)?;

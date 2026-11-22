@@ -96,6 +96,11 @@ pub(crate) struct AppendRecord<'a> {
     pub(crate) checksum: u32,
 }
 
+struct ReplayedEnd {
+    length: u64,
+    adoption: Option<checkpoint::VerifiedLog>,
+}
+
 pub(crate) struct Log {
     file: Box<dyn LogIo>,
     log_id: Option<LogId>,
@@ -387,14 +392,19 @@ impl Log {
         Ok((log, index))
     }
 
-    fn adopt_replayed_tail(&self, boundary: Option<u64>, validated_end: u64) -> io::Result<()> {
-        if let Some(boundary) = boundary {
-            if validated_end > boundary {
+    fn adopt_replayed_tail(
+        &self,
+        boundary: Option<u64>,
+        validated_end: ReplayedEnd,
+    ) -> io::Result<()> {
+        if boundary.is_some() {
+            if let Some(adoption) = validated_end.adoption {
                 // A complete but unacknowledged tail may survive a crash.
                 // Validate it first, then durably publish the adopted boundary.
-                self.sync_validated_boundary(validated_end)?;
+                adoption.verify_before_adoption(self)?;
+                self.sync_validated_boundary(validated_end.length)?;
             }
-            if self.file.len()? != validated_end {
+            if self.file.len()? != validated_end.length {
                 return Err(record::invalid_data("log length changed after recovery"));
             }
         }
@@ -456,7 +466,7 @@ impl Log {
         metadata: bool,
         limits: (Option<usize>, Option<usize>),
         checkpoint: Option<(&Path, &[u8; 32])>,
-    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>, u64)> {
+    ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>, ReplayedEnd)> {
         let log = Self {
             file,
             log_id,
@@ -490,7 +500,7 @@ impl Log {
         };
         let mut peak = start.as_ref().map_or(0, |checkpoint| checkpoint.peak);
         let validated_end = log.file.len()?;
-        let index = log.recover_from(
+        let (index, replayed_end) = log.recover_from(
             validated_end,
             boundary,
             max_live_keys,
@@ -498,7 +508,7 @@ impl Log {
             start,
             &mut peak,
         )?;
-        Ok((log, index, validated_end))
+        Ok((log, index, replayed_end))
     }
 
     pub(crate) fn read(&self, location: ValueLocation) -> io::Result<Vec<u8>> {
@@ -909,13 +919,19 @@ impl Log {
         max_live_key_bytes: Option<usize>,
         start: Option<checkpoint::Loaded>,
         peak: &mut usize,
-    ) -> io::Result<BTreeMap<Vec<u8>, ValueLocation>> {
-        let (mut index, offset) = match start {
-            Some(checkpoint) => (checkpoint.index, checkpoint.prefix),
-            None => (BTreeMap::new(), 0),
+    ) -> io::Result<(BTreeMap<Vec<u8>, ValueLocation>, ReplayedEnd)> {
+        use sha2::Digest;
+        let (mut index, offset, log_hasher) = match start {
+            Some(checkpoint) => (checkpoint.index, checkpoint.prefix, checkpoint.log_hasher),
+            None => (BTreeMap::new(), 0, Sha256::new()),
         };
+        let mut adoption_hasher = boundary.filter(|&end| end < total).map(|_| log_hasher);
+        let mut reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
+        if let Some(hasher) = adoption_hasher.as_mut() {
+            reader = reader.with_digest(hasher);
+        }
         let mut live_key_bytes = 0_usize;
-        self.visit_records_to(offset, total, boundary, |key, location| {
+        self.visit_locations(reader, total, boundary, |key, location| {
             match location {
                 Some(location) => {
                     if max_live_keys
@@ -943,7 +959,14 @@ impl Log {
             *peak = (*peak).max(index.len());
             Ok(())
         })?;
-        Ok(index)
+        Ok((
+            index,
+            ReplayedEnd {
+                length: total,
+                adoption: adoption_hasher
+                    .map(|hasher| checkpoint::VerifiedLog::from_replay(total, hasher)),
+            },
+        ))
     }
 
     /// Visits fully verified log mutations without materializing record values.
