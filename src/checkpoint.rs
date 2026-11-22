@@ -406,7 +406,7 @@ fn create_streaming_in_directory(
     if let Some(boundary) = options.pending_tail {
         log.verify_witness_at(boundary)?;
         #[cfg(test)]
-        pause_bounded_rebuild("checkpoint-verified")?;
+        crate::test_support::pause_bounded_rebuild("checkpoint-verified")?;
         log.sync_validated_boundary(prefix).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -414,7 +414,7 @@ fn create_streaming_in_directory(
             )
         })?;
         #[cfg(test)]
-        pause_bounded_rebuild("tail-adopted")?;
+        crate::test_support::pause_bounded_rebuild("tail-adopted")?;
     }
     log.verify_witness()?;
     before_publish()?;
@@ -427,21 +427,6 @@ fn create_streaming_in_directory(
     })?;
     staging.publication_synchronized();
     Ok(checkpoint_digest)
-}
-
-#[cfg(test)]
-fn pause_bounded_rebuild(point: &str) -> io::Result<()> {
-    if ["EMDA_FULL_REBUILD_CRASH", "EMDA_BOUNDED_REBUILD_CRASH"]
-        .iter()
-        .any(|name| std::env::var_os(name).as_deref() == Some(std::ffi::OsStr::new(point)))
-    {
-        println!("BOUNDED_REBUILD_BOUNDARY {point}");
-        io::stdout().flush()?;
-        loop {
-            std::thread::park();
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn create_with_hooks(

@@ -519,6 +519,8 @@ impl RunWriter {
             .checked_add(table_bytes)
             .ok_or_else(|| io::Error::other("spill size overflow"))?;
         self.offsets.flush()?;
+        #[cfg(test)]
+        crate::test_support::pause_bounded_rebuild("spill-sidecar-flushed")?;
         self.offsets.get_mut().seek(SeekFrom::Start(0))?;
         let mut buffer = [0_u8; IO_BUFFER];
         let mut remaining = table_bytes;
@@ -854,6 +856,8 @@ impl SpillSession {
         let (count, key_bytes) = self.plan_merge()?;
         self.ensure_additional(temporary_bytes(count, key_bytes)?)?;
         let merged = self.write_merge(count, key_bytes)?;
+        #[cfg(test)]
+        crate::test_support::pause_bounded_rebuild("spill-merge-written")?;
         if merged.bytes != run_len(count, key_bytes)? {
             let _ = fs::remove_file(&merged.path);
             return Err(record::invalid_data("merged spill run length mismatch"));

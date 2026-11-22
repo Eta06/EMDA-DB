@@ -867,6 +867,7 @@ fn emit_merged(
 mod tests {
     use super::*;
     use crate::publication_outcome::track_managed_rebuild;
+    use crate::test_support::pause_bounded_rebuild;
     use crate::{ManagedRebuildFailure, Store};
     use std::io::{BufRead, Write};
     use std::os::unix::fs::FileExt;
@@ -1761,17 +1762,6 @@ mod tests {
         digest
     }
 
-    fn pause_for(mode: &str, expected: &str) -> io::Result<()> {
-        if mode == expected {
-            println!("BOUNDED_REBUILD_BOUNDARY {expected}");
-            let _ = std::io::stdout().flush();
-            loop {
-                std::thread::park();
-            }
-        }
-        Ok(())
-    }
-
     #[test]
     fn bounded_rebuild_crash_child() {
         let full_mode = std::env::var("EMDA_FULL_REBUILD_CRASH");
@@ -1788,14 +1778,14 @@ mod tests {
         });
         let destination =
             std::path::PathBuf::from(std::env::var("EMDA_BOUNDED_REBUILD_DEST").unwrap());
-        let mut before_adopt = || pause_for(&mode, "adopt");
+        let mut before_adopt = || pause_bounded_rebuild("adopt");
         let mut sync_checkpoint = |parent: &Path| {
-            pause_for(&mode, "checkpoint")?;
+            pause_bounded_rebuild("checkpoint")?;
             selection::sync_ancestors(parent)
         };
-        let mut before_selection = || pause_for(&mode, "selection");
+        let mut before_selection = || pause_bounded_rebuild("selection");
         let mut sync_selection = |parent: &Path| {
-            pause_for(&mode, "selected")?;
+            pause_bounded_rebuild("selected")?;
             selection::sync_ancestors(parent)
         };
         let mut hooks = BoundedHooks {
@@ -1841,6 +1831,23 @@ mod tests {
                     break;
                 };
                 check_staged_rebuild_process_kill(&case, mode, false);
+            }
+        }
+    }
+
+    #[test]
+    fn spill_rebuild_process_kills_preserve_source_and_allow_exact_retry() {
+        for v2 in [true, false] {
+            for full in [true, false] {
+                for mode in ["spill-sidecar-flushed", "spill-merge-written"] {
+                    let Some(case) = prepare_unacknowledged_tail(v2) else {
+                        break;
+                    };
+                    check_staged_rebuild_process_kill(&case, mode, full);
+                    let format = if case.metadata { "V3" } else { "V2" };
+                    let rebuild = if full { "full" } else { "suffix" };
+                    println!("{format} {rebuild} {mode}: recovered");
+                }
             }
         }
     }
@@ -1892,7 +1899,8 @@ mod tests {
             }
         });
         let reached = receiver.recv_timeout(Duration::from_secs(30));
-        let cleanup_root = if matches!(mode, "selection" | "selected") {
+        let in_spill = matches!(mode, "spill-sidecar-flushed" | "spill-merge-written");
+        let cleanup_root = if in_spill || matches!(mode, "selection" | "selected") {
             case.path.as_path()
         } else {
             case.root()
@@ -1912,6 +1920,17 @@ mod tests {
             io::ErrorKind::WouldBlock,
             "{mode}"
         );
+        if in_spill {
+            let runs = spill_run_paths(&case.path);
+            if mode == "spill-sidecar-flushed" {
+                assert_eq!(runs.len(), 1);
+                let sidecar = fs::read(runs[0].with_extension("off")).unwrap();
+                assert_eq!(sidecar.len(), std::mem::size_of::<u64>());
+            } else {
+                assert_eq!(runs.len(), 3, "two merge inputs and the finished output");
+                assert!(runs.iter().all(|run| !run.with_extension("off").exists()));
+            }
+        }
 
         assert_eq!(
             fs::read(case.path.join("records.log")).unwrap(),
@@ -1926,14 +1945,15 @@ mod tests {
                 "{mode}"
             );
         }
-        let expected_witness = if mode == "checkpoint-verified" {
+        let before_adoption = in_spill || mode == "checkpoint-verified";
+        let expected_witness = if before_adoption {
             &case.rolled_back
         } else {
             &adopted
         };
         assert_eq!(&witness_bytes(&case.path), expected_witness, "{mode}");
         let checkpoint = fs::read(reference).unwrap();
-        if matches!(mode, "checkpoint-verified" | "tail-adopted") {
+        if before_adoption || mode == "tail-adopted" {
             assert!(!destination.exists(), "{mode}");
         } else {
             assert_eq!(fs::read(&destination).unwrap(), checkpoint, "{mode}");
@@ -1953,13 +1973,12 @@ mod tests {
                 "{mode}"
             );
         }
-        assert!(
-            retry(|| crate::cleanup_abandoned_staging(cleanup_root))
-                .unwrap()
-                .removed_markers
-                > 0,
-            "{mode}"
-        );
+        let cleaned = retry(|| crate::cleanup_abandoned_staging(cleanup_root)).unwrap();
+        assert!(cleaned.removed_markers > 0, "{mode}");
+        if in_spill {
+            assert_eq!(cleaned.removed_payloads, 1, "{mode}");
+            assert!(spill_run_paths(&case.path).is_empty(), "{mode}");
+        }
         retry(|| crate::cleanup_abandoned_staging(case.root())).unwrap();
         retry(|| crate::cleanup_abandoned_staging(&case.path)).unwrap();
         assert_no_staged_markers(case.root());
@@ -2430,7 +2449,7 @@ mod tests {
         assert_eq!(fs::read(&fixture.base).unwrap(), fixture.base_bytes);
     }
 
-    fn finished_spill_runs(store: &Path) -> Vec<PathBuf> {
+    fn spill_run_paths(store: &Path) -> Vec<PathBuf> {
         let mut runs = Vec::new();
         for entry in fs::read_dir(store).unwrap().flatten() {
             let name = entry.file_name();
@@ -2483,7 +2502,7 @@ mod tests {
             spill.push(key, *location, |_| Ok(None)).unwrap();
         }
         spill.prepare_for_emit().unwrap();
-        let files = finished_spill_runs(foreign.path());
+        let files = spill_run_paths(foreign.path());
         assert_eq!(files.len(), 1);
         let alternate = fs::read(&files[0]).unwrap();
         assert_eq!(
@@ -2533,7 +2552,7 @@ mod tests {
                     );
                     assert!(!destination.exists(), "{damage:?}");
                     assert!(!selection::path(&case.path).exists(), "{damage:?}");
-                    let runs = finished_spill_runs(&case.path);
+                    let runs = spill_run_paths(&case.path);
                     assert_eq!(runs.len(), 1, "{damage:?}: {runs:?}");
                     let bytes = fs::read(&runs[0]).unwrap();
                     assert!(bytes.starts_with(b"EMDASP01"), "{damage:?}");

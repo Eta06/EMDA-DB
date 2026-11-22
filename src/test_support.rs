@@ -3,6 +3,22 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+pub(crate) fn pause_bounded_rebuild(point: &str) -> io::Result<()> {
+    use std::io::Write as _;
+
+    if ["EMDA_FULL_REBUILD_CRASH", "EMDA_BOUNDED_REBUILD_CRASH"]
+        .iter()
+        .any(|name| std::env::var_os(name).as_deref() == Some(std::ffi::OsStr::new(point)))
+    {
+        println!("BOUNDED_REBUILD_BOUNDARY {point}");
+        io::stdout().flush()?;
+        loop {
+            std::thread::park();
+        }
+    }
+    Ok(())
+}
+
 /// Report lock-holder evidence without changing the result or retrying.
 pub(crate) fn diagnose_lock<T>(path: &Path, phase: &str, result: io::Result<T>) -> io::Result<T> {
     if let Err(error) = &result {
