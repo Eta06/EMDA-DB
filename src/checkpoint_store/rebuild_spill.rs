@@ -14,6 +14,8 @@
 //! emission also hash the whole run before opening a cursor, then recheck
 //! it before accepting the end of a buffered pass.
 //! Random lookup skips runs outside the key bounds retained by that writer.
+//! Runs cover consecutive chunks in replay order. A merge replaces a suffix
+//! of that list, so its new run ID still orders it after every older run.
 
 use crate::log::ValueLocation;
 use crate::record;
@@ -107,6 +109,7 @@ impl SpillLimits {
 #[derive(Clone)]
 struct RunMeta {
     id: u64,
+    level: u32,
     identity: [u8; 32],
     digest: [u8; 32],
     path: PathBuf,
@@ -553,6 +556,7 @@ impl RunWriter {
         self.committed = true;
         Ok(RunMeta {
             id: self.id,
+            level: 0,
             identity: self.identity,
             digest,
             path: self.path.clone(),
@@ -748,8 +752,8 @@ impl SpillSession {
             }
             self.write_dirty()?;
         }
-        if self.runs.len() > 1 {
-            self.merge_all()?;
+        while self.runs.len() > 1 {
+            self.merge_newest(self.runs.len().min(self.limits.max_merge_fan_in))?;
         }
         if self.runs.is_empty() {
             self.emit = Emit::Memory(BTreeMap::new().into_iter());
@@ -814,7 +818,7 @@ impl SpillSession {
         if self.dirty.is_empty() {
             return Ok(());
         }
-        self.ensure_run_slot()?;
+        self.merge_full_levels()?;
         let (count, key_bytes) = map_stats(&self.dirty)?;
         self.ensure_additional(temporary_bytes(count, key_bytes)?)?;
         let directory = self.stage_dir()?;
@@ -834,40 +838,39 @@ impl SpillSession {
         Ok(())
     }
 
-    fn ensure_run_slot(&mut self) -> io::Result<()> {
-        if self.runs.len() == self.limits.max_merge_fan_in {
-            self.merge_all()?;
-        }
-        if self.runs.len() >= self.limits.max_merge_fan_in {
-            return Err(io::Error::other(
-                "rebuild spill merge did not free a run slot",
-            ));
+    // A new chunk has level zero. Carry a full group at the end of the
+    // list before appending, just as carrying a digit in base fan-in.
+    // Levels count source chunks, regardless of deduplication in a run.
+    fn merge_full_levels(&mut self) -> io::Result<()> {
+        let fan_in = self.limits.max_merge_fan_in;
+        while self.runs.len() >= fan_in {
+            let first = self.runs.len() - fan_in;
+            if self.runs[first].level != self.runs.last().unwrap().level {
+                break;
+            }
+            self.merge_newest(fan_in)?;
         }
         Ok(())
     }
 
-    fn merge_all(&mut self) -> io::Result<()> {
-        if self.runs.len() <= 1 {
-            return Ok(());
-        }
-        if self.runs.len() > self.limits.max_merge_fan_in {
-            return Err(io::Error::other("rebuild spill fan-in exceeded"));
-        }
-        let (count, key_bytes) = self.plan_merge()?;
+    fn merge_newest(&mut self, inputs: usize) -> io::Result<()> {
+        let first = self.runs.len() - inputs;
+        let level = self.runs[first].level + 1;
+        let (count, key_bytes) = self.plan_merge(&self.runs[first..])?;
         self.ensure_additional(temporary_bytes(count, key_bytes)?)?;
-        let merged = self.write_merge(count, key_bytes)?;
+        let mut merged = self.write_merge(first, count, key_bytes)?;
+        merged.level = level;
         #[cfg(test)]
         crate::test_support::pause_bounded_rebuild("spill-merge-written")?;
         if merged.bytes != run_len(count, key_bytes)? {
             let _ = fs::remove_file(&merged.path);
             return Err(record::invalid_data("merged spill run length mismatch"));
         }
-        let old_bytes = self
-            .runs
+        let old_bytes = self.runs[first..]
             .iter()
             .try_fold(0_u64, |sum, run| sum.checked_add(run.bytes))
             .ok_or_else(|| io::Error::other("spill size overflow"))?;
-        for run in &self.runs {
+        for run in &self.runs[first..] {
             fs::remove_file(&run.path)?;
         }
         self.spill_bytes = self
@@ -875,16 +878,16 @@ impl SpillSession {
             .checked_sub(old_bytes)
             .and_then(|bytes| bytes.checked_add(merged.bytes))
             .ok_or_else(|| io::Error::other("spill size overflow"))?;
-        self.runs.clear();
+        self.runs.truncate(first);
         self.runs.push(merged);
         Ok(())
     }
 
-    fn plan_merge(&self) -> io::Result<(u64, u64)> {
+    fn plan_merge(&self, runs: &[RunMeta]) -> io::Result<(u64, u64)> {
         let mut count = 0_u64;
         let mut key_bytes = 0_u64;
-        let generations = self.runs.iter().map(|run| run.id).collect::<Vec<_>>();
-        self.with_inputs(&self.runs, |cursors| {
+        let generations = runs.iter().map(|run| run.id).collect::<Vec<_>>();
+        self.with_inputs(runs, |cursors| {
             merge_walk(cursors, &generations, |key, _| {
                 count = count
                     .checked_add(1)
@@ -901,10 +904,10 @@ impl SpillSession {
         Ok((count, key_bytes))
     }
 
-    fn write_merge(&mut self, count: u64, key_bytes: u64) -> io::Result<RunMeta> {
+    fn write_merge(&mut self, first: usize, count: u64, key_bytes: u64) -> io::Result<RunMeta> {
         let directory = self.stage_dir()?;
         let id = self.allocate_id();
-        let runs = &self.runs;
+        let runs = &self.runs[first..];
         let generations = runs.iter().map(|run| run.id).collect::<Vec<_>>();
         let fd = Rc::clone(&self.fd);
         self.with_inputs(runs, |cursors| {
@@ -1444,6 +1447,44 @@ mod tests {
             }
             drop(session);
         }
+    }
+
+    #[test]
+    fn small_merges_leave_older_large_runs_and_preserve_latest_locations() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = SpillSession::create(
+            directory.path(),
+            SpillLimits::new(1, 1024, 1 << 20, 2, 127).unwrap(),
+            0,
+            0,
+        )
+        .unwrap();
+        let ops = (0..127_u64)
+            .map(|step| {
+                let key = (step % 64).to_be_bytes().to_vec();
+                let location = (step < 64 || step % 2 == 0).then(|| loc(100 + step));
+                (key, location)
+            })
+            .collect::<Vec<_>>();
+        let mut oldest = None;
+        for (step, (key, location)) in ops.iter().enumerate() {
+            session.push(key, *location, |_| Ok(None)).unwrap();
+            session.write_dirty().unwrap();
+            // The 65th flush carries the first 64 chunks into one run.
+            if step == 64 {
+                assert_eq!(session.runs[0].entries, 64);
+                oldest = Some(session.runs[0].id);
+            }
+            if let Some(id) = oldest {
+                assert_eq!(session.runs[0].id, id, "flush {step}");
+                assert!(session.runs.len() <= 8, "flush {step}");
+            }
+        }
+        let (expected, count, peak) = reference(&BTreeMap::new(), 0, 0, &ops);
+        assert_eq!(session.live_count(), count);
+        assert_eq!(session.peak(), peak);
+        assert_same_locations(&emitted(&mut session), &expected);
+        assert_eq!(session.peak_open_fds(), 4);
     }
 
     #[test]

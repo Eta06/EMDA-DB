@@ -254,6 +254,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   the abandoned spill stage explicitly, and compare the retry with a
   full-log reference checkpoint byte for byte. This exercises a running
   OS and complete unacknowledged tails.
+- [x] Merge runs spanning the same number of chunks during bounded rebuild
+  replay. Keep older runs closed until a merge needs them, and charge all
+  runs, temporary output, and the sidecar to the existing byte cap.
+  [Paired rebuild measurements](../benchmarks/results/2026-11-23-spill-merge-levels/README.md)
+  cover small chunks and a fan-in of two.
 - [x] Rebuild a missing managed checkpoint directly from a complete witnessed log using `CheckpointStore::rebuild_managed_selection_full_bounded`. This path starts with an empty spill index and enforces whole-log, operation, spill, historical live-key count and historical live-key byte limits before adopting a tail. The witnessed log remains in place, and the checkpoint still records only the historical key-count peak. Tests compare exact checkpoint bytes with ordinary replay and cover missing selected files, intermediate batch peaks, changed tails, and a torn tail. Spill limits exclude checkpoint output, filesystem allocation overhead, and other process memory.
 - [x] Allow caller-selected checkpoint file and block-directory limits on full-log rebuild and its post-publication verification. The staged checkpoint must fit before a complete unwitnessed tail is adopted. Regression cases preserve the old witness and selection on output-limit rejection and on spill damage during emission, then verify exact-limit recovery.
 - [x] Apply independent checkpoint file and block limits to trusted-base suffix

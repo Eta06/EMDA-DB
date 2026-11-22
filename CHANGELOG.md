@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Merge bounded checkpoint spill files in groups spanning similar numbers
+  of replay chunks, reducing repeated rewrites of large runs.
+
 - Reuse a verified checkpoint block within point, range, and bulk reads.
   Each operation starts with an empty buffer and verifies any block it reads.
 

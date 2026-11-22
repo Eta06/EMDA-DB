@@ -381,7 +381,9 @@ impl CheckpointStore {
     /// the fixed staging marker and filesystem allocation overhead are excluded.
     /// `max_merge_fan_in` is the maximum number of run inputs opened for one
     /// merge (2..=32); the output and its offset file use two further
-    /// descriptors. `max_operations` bounds the number of suffix child
+    /// descriptors. Replay can retain closed runs at multiple merge levels,
+    /// and all retained runs count toward the spill byte limit.
+    /// `max_operations` bounds the number of suffix child
     /// operations applied. Exceeding any limit fails before publication.
     ///
     /// A complete unacknowledged tail is validated, including that the old
