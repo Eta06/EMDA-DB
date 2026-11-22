@@ -710,3 +710,121 @@ fn empty_disjunction_branches_detect_matching_phantoms() {
         });
     }
 }
+
+#[test]
+fn guarded_index_union_detects_a_membership_swap_after_reopen() {
+    fn assert_rows(db: &DocumentDatabase<'_>, query: &DocumentQuery, wanted_id: &str) {
+        let planned = db.query_planned("items", query).unwrap();
+        assert_eq!(planned.access, access(&["left", "right"], 2));
+        // The same document occurs in both probes and must be returned once.
+        assert_eq!(planned.result.plan.scanned, 2);
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", query).unwrap().documents
+        );
+        assert_eq!(planned.result.documents.len(), 1);
+        assert_eq!(planned.result.documents[0].id, wanted_id);
+    }
+
+    let query = request(
+        DocumentFilter::And(vec![
+            DocumentFilter::Not(Box::new(DocumentFilter::Or(vec![
+                DocumentFilter::Exists {
+                    path: path("visible"),
+                    exists: false,
+                },
+                eq("blocked", json!(true)),
+            ]))),
+            DocumentFilter::Or(vec![eq("left", json!(1)), eq("right", json!(2))]),
+        ]),
+        2,
+    );
+    let present = json!({"left": 1, "right": 2, "visible": null});
+    let absent = json!({"left": 1, "right": 2});
+    let seed = |db: &DocumentDatabase<'_>| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        for name in ["left", "right"] {
+            db.create_index(
+                "items",
+                IndexDefinition {
+                    partial: Some(PartialFilter::Exists {
+                        path: path("visible"),
+                        exists: true,
+                    }),
+                    ..index(name, &[name])
+                },
+            )
+            .unwrap();
+        }
+        db.insert("items", "a", &present).unwrap();
+        db.insert("items", "b", &absent).unwrap();
+    };
+    let race = |db: &DocumentDatabase<'_>| {
+        assert_rows(db, &query, "a");
+        let (present, absent) = (&present, &absent);
+        let (read, observed) = mpsc::channel();
+        let (committed, written) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                observed.recv_timeout(Duration::from_secs(5)).unwrap();
+                db.transaction(|tx| {
+                    tx.replace("items", "a", absent, false)?;
+                    tx.replace("items", "b", present, false)?;
+                    tx.put_raw(b"swap", b"committed")
+                })
+                .unwrap();
+                committed.send(()).unwrap();
+            });
+            let reader = db.transaction_with_read_set(|tx| {
+                let before = tx.query_planned("items", &query)?;
+                assert_eq!(before.access, access(&["left", "right"], 2));
+                assert_eq!(before.result.documents.len(), 1);
+                assert_eq!(before.result.documents[0].id, "a");
+                tx.put_raw(b"reader", b"must roll back")?;
+                read.send(()).unwrap();
+                written.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(tx.query_planned("items", &query)?, before);
+                Ok(())
+            });
+            writer.join().unwrap();
+            assert!(is_transaction_conflict(&reader.unwrap_err()));
+        });
+    };
+    let verify_reopen = |db: &DocumentDatabase<'_>| {
+        assert_rows(db, &query, "b");
+        assert_eq!(db.get("items", "a").unwrap().as_ref(), Some(&absent));
+        assert_eq!(db.get("items", "b").unwrap().as_ref(), Some(&present));
+        db.transaction(|tx| {
+            assert_eq!(
+                tx.get_raw(b"swap")?.as_deref(),
+                Some(b"committed".as_slice())
+            );
+            assert_eq!(tx.get_raw(b"reader")?, None);
+            Ok(())
+        })
+        .unwrap();
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    for (name, checkpoint_writer) in [("ordinary", false), ("checkpoint", true)] {
+        let source = root.path().join(name);
+        let checkpoint = root.path().join(format!("{name}.checkpoint"));
+        let initial = Store::open(&source).unwrap();
+        seed(&DocumentDatabase::new(&initial));
+        let digest = initial.checkpoint_to(&checkpoint).unwrap();
+        if checkpoint_writer {
+            drop(initial);
+            let writer = CheckpointStore::open(&source, &checkpoint, &digest).unwrap();
+            race(&DocumentDatabase::with_checkpoint_store(&writer));
+        } else {
+            race(&DocumentDatabase::new(&initial));
+            drop(initial);
+        }
+        let view = CheckpointStore::open(&source, &checkpoint, &digest).unwrap();
+        verify_reopen(&DocumentDatabase::with_checkpoint_store(&view));
+        drop(view);
+        let store = Store::open(&source).unwrap();
+        verify_reopen(&DocumentDatabase::new(&store));
+    }
+}
