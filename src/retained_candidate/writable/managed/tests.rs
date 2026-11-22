@@ -1584,6 +1584,44 @@ fn reclamation_refuses_unknown_files_and_an_invalid_active_base() {
 }
 
 #[test]
+fn automatic_reclamation_resumes_after_interrupted_marker_preparation() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.compact().unwrap();
+    let inactive = store.active.slot.other().path(&f.root);
+    let expected = store.scan(None, None, 4).unwrap();
+    drop(store);
+
+    let pending = f.root.join(".emda-stage-v1-g-0123456789abcdef.pending");
+    // Older writers created the owner name before writing its contents.
+    // Recovery preserves a malformed owner because it cannot trust it.
+    let incomplete_owner = pending.with_extension("owner");
+    fs::write(&incomplete_owner, []).unwrap();
+    let error = ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN)
+        .err()
+        .expect("malformed published owner must block reclamation");
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(error.to_string(), "retained retirement needs inspection");
+    assert_eq!(fs::read(&incomplete_owner).unwrap(), b"");
+    fs::remove_file(incomplete_owner).unwrap();
+
+    // In the new protocol an interruption before sync leaves an empty
+    // preparation file. The inactive generation is still intact.
+    fs::write(&pending, []).unwrap();
+    assert!(inactive.join("records.log").is_file());
+    let mut recovered =
+        ManagedRetainedStore::open_with_auto_reclaim(&f.root, LIMITS, NonZeroU64::MIN).unwrap();
+    assert!(!pending.exists());
+    assert!(!inactive.exists());
+    assert_eq!(recovered.scan(None, None, 4).unwrap(), expected);
+    recovered.put(b"z", b"after recovery").unwrap();
+    assert_eq!(
+        recovered.get(b"z", 32).unwrap().as_deref(),
+        Some(b"after recovery".as_slice())
+    );
+}
+
+#[test]
 fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
     for fail_catalog_sync in [false, true] {
         let f = Fixture::new(LIMITS);

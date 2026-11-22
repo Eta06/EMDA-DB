@@ -30,6 +30,99 @@ fn retry_fixture_retired_cleanup(
 }
 
 #[test]
+fn retained_owner_appears_only_after_complete_marker_sync() {
+    let directory = tempfile::tempdir().unwrap();
+    let parent = directory.path();
+    let id = [8_u8; 16];
+    let mut content = Kind::Retained.marker().to_vec();
+    content.extend_from_slice(&id);
+    content.extend_from_slice(&crc32fast::hash(&content).to_le_bytes());
+    let stage = Stage::new_with_marker(
+        parent,
+        Kind::Retained,
+        &content,
+        |file| {
+            assert!(!has_retained_stage(parent).unwrap());
+            let pending = fs::read_dir(parent).unwrap().next().unwrap().unwrap();
+            assert!(is_pending_retained_marker(&pending.file_name()));
+            assert_eq!(fs::read(pending.path()).unwrap(), content);
+            assert_eq!(
+                cleanup_abandoned_staging(parent).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            file.sync_all()
+        },
+        |parent_file| {
+            let owner = fs::read_dir(parent).unwrap().next().unwrap().unwrap();
+            assert!(has_retained_stage(parent).unwrap());
+            assert_eq!(fs::read(owner.path()).unwrap(), content);
+            assert!(!payload_path(&owner.path()).exists());
+            parent_file.sync_all()
+        },
+    )
+    .unwrap();
+    drop(stage);
+
+    let result = Stage::new_with_marker(
+        parent,
+        Kind::Retained,
+        &content,
+        |file| {
+            let pending = fs::read_dir(parent).unwrap().next().unwrap().unwrap();
+            fs::write(pending.path().with_extension("owner"), b"existing")?;
+            file.sync_all()
+        },
+        |_| panic!("a conflict cannot sync a new owner"),
+    );
+    assert_eq!(result.err().unwrap().kind(), io::ErrorKind::AlreadyExists);
+    let mut entries = fs::read_dir(parent).unwrap();
+    let owner = entries.next().unwrap().unwrap();
+    assert_eq!(fs::read(owner.path()).unwrap(), b"existing");
+    assert!(entries.next().is_none());
+    assert_eq!(
+        cleanup_abandoned_staging(parent).unwrap().removed_markers,
+        0
+    );
+    assert!(owner.path().exists());
+}
+
+#[test]
+fn interrupted_retained_marker_cleanup_does_not_follow_or_remove_payloads() {
+    let directory = tempfile::tempdir().unwrap();
+    let parent = directory.path();
+    let pending = parent.join(".emda-stage-v1-g-0123456789abcdef.pending");
+    let owner = pending.with_extension("owner");
+    let payload = payload_path(&owner);
+    let invalid_pending = parent.join(".emda-stage-v1-g-0123456789abcdeg.pending");
+
+    fs::write(&pending, b"EMDA-STAGING").unwrap();
+    fs::write(&owner, b"legacy incomplete owner").unwrap();
+    fs::create_dir(&payload).unwrap();
+    fs::write(payload.join("untouched"), b"keep").unwrap();
+    symlink(&owner, &invalid_pending).unwrap();
+
+    let report = cleanup_abandoned_staging(parent).unwrap();
+    assert_eq!(
+        (
+            report.removed_markers,
+            report.removed_payloads,
+            report.skipped
+        ),
+        (1, 0, 2)
+    );
+    assert!(!pending.exists());
+    assert_eq!(fs::read(&owner).unwrap(), b"legacy incomplete owner");
+    assert_eq!(fs::read(payload.join("untouched")).unwrap(), b"keep");
+    assert!(
+        fs::symlink_metadata(&invalid_pending)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(has_retained_stage(parent).unwrap());
+}
+
+#[test]
 fn busy_retired_fixture_is_preserved_until_its_lock_is_released() {
     let directory = tempfile::tempdir().unwrap();
     let id = [8_u8; 16];

@@ -333,7 +333,15 @@ fn killed_retained_document_writers_preserve_acknowledgements_during_reclamation
                             error.kind(),
                             ErrorKind::InvalidData | ErrorKind::UnexpectedEof
                         ),
-                        "unexpected retained recovery error: {error}"
+                        "delay={delay} unexpected retained recovery error ({:?}): {error}; catalog: {:?}",
+                        error.kind(),
+                        fs::read_dir(&catalog)
+                            .unwrap()
+                            .map(|entry| {
+                                let entry = entry.unwrap();
+                                (entry.file_name(), entry.metadata().unwrap().len())
+                            })
+                            .collect::<Vec<_>>()
                     );
                     assert_eq!(
                         files.map(|file| fs::read(catalog.join(file)).ok()),

@@ -369,8 +369,12 @@ overlay, sparse indexes and staged files have their own resource costs.
 `reclaim_inactive` verifies the active bytes and synchronized selection,
 checks the inactive slot's ownership and file types, and moves it under
 an engine-owned stage marked with the replacement generation's identity.
-Generic staging cleanup skips these markers. Retry through
-`reclaim_inactive` or reopen with automatic reclamation. A retry verifies
+Retirement writes and synchronizes its marker under a preparation name,
+then publishes the complete marker by a no-replace rename and synchronizes
+the catalog directory before creating the payload. Generic staging cleanup
+can remove abandoned preparation files under its exclusive parent lock.
+It skips published retirement markers. Retry through `reclaim_inactive`
+or reopen with automatic reclamation. A retry verifies
 the selected replacement and its named files before resuming ordered
 removal. A conflicting or unrecognized retirement marker must be resolved
 before rotation. Generic stages left by older releases have no replacement

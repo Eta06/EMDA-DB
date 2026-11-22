@@ -875,7 +875,7 @@ impl ManagedRetainedStore {
         let mut stage =
             crate::staging::Stage::retained_directory(&self.root, &self.active.generation)?;
         let moved = stage.path().join("retired");
-        crate::backup::publish_directory(&inactive, &moved)?;
+        crate::backup::publish_noreplace(&inactive, &moved)?;
         stage.preserve_payload_on_drop();
         sync_after_move(stage.path())?;
         // Retire the original slot name durably before deleting its contents.

@@ -153,7 +153,7 @@ fn discard(
         let moved = stage.child_path("preparation".as_ref())?;
         tracker.begin_publication();
         stage.preserve_payload_on_drop();
-        crate::backup::publish_directory(&path, &moved)?;
+        crate::backup::publish_noreplace(&path, &moved)?;
         sync_existing(stage.path())?;
         // The child sync above also syncs its parent and the original root.
         fs::remove_dir_all(&moved)?;
