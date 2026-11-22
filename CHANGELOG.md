@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Authenticate detached suffixes during the discovery pass used by offline
+  restore and streaming export, avoiding a separate checksum pass on success.
+
 - Stream retained suffix exports to private staging and compare authenticated
   value digests without retaining entire suffixes or live value sets in memory.
 

@@ -43,20 +43,12 @@ impl RestoreReplay {
             start: 0,
             len,
         };
-        // Maintain the detached replay contract: authenticate the whole suffix
-        // before using its mutations to admit the base or live states.
-        let mut hash = Sha256::new();
-        source.copy_to(&mut hash)?;
-        if <[u8; 32]>::from(hash.finalize()) != expected.digest
-            || suffix.metadata()?.len() != expected.end
-        {
-            return Err(invalid());
-        }
         let boundary = Some((len, expected.digest));
         let mut minimum_work = entries;
         let mut minimum_live = usize::try_from(entries).map_err(|_| invalid())?;
         let mut touched = HashMap::new();
-        source.replay::<()>(boundary, suffix_limits.operations, |key, value| {
+        // Keep discovered keys private until replay authenticates the suffix.
+        let discovery = source.replay::<()>(boundary, suffix_limits.operations, |key, value| {
             // Puts cannot shrink the live set. Each delete can remove at
             // most one entry. Admission still uses exact membership below.
             charge_suffix_work(&mut minimum_work, suffix_limits.work, minimum_live)?;
@@ -68,7 +60,24 @@ impl RestoreReplay {
                 touched.insert(copy_replay_bytes(key)?, None);
             }
             Ok(())
-        })?;
+        });
+        if let Err(error) = discovery {
+            drop(touched);
+            // A parser or budget error can end discovery before the final
+            // boundary. Check the raw binding before reporting that error.
+            let mut hash = Sha256::new();
+            source.copy_to(&mut hash)?;
+            if <[u8; 32]>::from(hash.finalize()) != expected.digest
+                || suffix.metadata()?.len() != expected.end
+            {
+                return Err(invalid());
+            }
+            return Err(error);
+        }
+        // Successful discovery already checked the digest at the exact end.
+        if suffix.metadata()?.len() != expected.end {
+            return Err(invalid());
+        }
         let metadata = scan_value_locations(&base, limits, staging, |key, location| {
             if let Some(value) = touched.get_mut(key) {
                 *value = Some(location);
@@ -311,6 +320,31 @@ mod tests {
         );
         admit(19).unwrap();
         let suffix_bytes = fs::read(&suffix).unwrap();
+        let no_operations = || {
+            RestoreReplay::open(
+                &candidate,
+                &suffix,
+                limits,
+                staging,
+                SuffixLimits {
+                    operations: 0,
+                    ..suffix_limits
+                },
+                &binding,
+            )
+        };
+        assert_eq!(
+            no_operations().err().unwrap().to_string(),
+            "suffix operation limit exceeded"
+        );
+        // The operation cap rejects the first record. Damage to the later
+        // record must still be reported as a binding failure.
+        let mut damaged_later = suffix_bytes.clone();
+        *damaged_later.last_mut().unwrap() ^= 1;
+        fs::write(&suffix, damaged_later).unwrap();
+        let error = no_operations().err().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "invalid candidate");
         let mut damaged = suffix_bytes.clone();
         damaged[0] ^= 1;
         fs::write(&suffix, damaged).unwrap();

@@ -28,3 +28,21 @@ only, pad the existing `value` result to `1 << 20` bytes with
 for setup, then run build and mutate once. Time each export via
 `/usr/bin/time -l` and clear its output paths before the next sample.
 Run `open` to verify the full live state outside the measured phase.
+
+## Authenticate while discovering touched keys
+
+A second paired run reused the 109 MiB suffix fixture and compared
+the streamed exporter at `e2837f7` with authentication during discovery.
+The latter avoids a full suffix read and hash on successful export and
+offline restore. Eight fresh processes per variant alternated first
+position on macOS ARM64. The harness checked each output's exact digest
+and binding and performed a full replay for one output from each variant.
+Elapsed time covers the same export phase as above.
+
+| Streamed export | Median peak RSS | Median elapsed |
+| --- | ---: | ---: |
+| Separate digest pass | 2.31 MiB | 0.450 s |
+| Digest during discovery | 2.31 MiB | 0.410 s |
+
+The run measures export on the same warm fixture. It does not time offline
+restore or characterize other workloads. [Raw samples](discovery-samples.json)

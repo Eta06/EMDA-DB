@@ -273,6 +273,9 @@ the base frame before reading the suffix body. They reject impossible
 initial replay work, total staging bytes, and per-value limits inferred from
 the declared value bytes and entry count. Successful calls still verify
 both inputs and charge the exact ordered replay work. No on-disk fields change.
+Offline restore and private suffix-export staging authenticate the suffix
+while discovering touched keys. If discovery returns an error, a raw
+digest check distinguishes changed bytes from a replay error.
 
 This is a separately created generation under the same trusted local
 filesystem model. The local witness can detect mismatches and loss below
