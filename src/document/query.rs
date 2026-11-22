@@ -216,13 +216,19 @@ impl DocumentTransaction<'_, '_> {
                 bound
             };
         }
-        crate::record::validate_key(&after)?;
-        crate::record::validate_key(&before)?;
         if let Some(cursor) = &query.after {
             if !cursor.0.starts_with(&equal_prefix) || cursor.0 >= before || cursor.0 < after {
                 return Err(key::invalid("cursor is outside the query bounds"));
             }
             after = cursor.0.clone();
+        }
+        // No stored key can extend a maximum-length prefix. An exclusive
+        // lower bound can drop its remaining bytes. An exclusive upper bound
+        // must also include a key equal to its truncated prefix.
+        after.truncate(crate::record::MAX_KEY);
+        if before.len() > crate::record::MAX_KEY {
+            before.truncate(crate::record::MAX_KEY);
+            before = key::end(&before);
         }
         let plan = |entries_read, returned| IndexQueryPlan {
             index: definition.name.clone(),

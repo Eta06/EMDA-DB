@@ -1,7 +1,8 @@
 //! Compound ranges must not omit documents missing an indexed suffix field.
 use database_engine::{
     CheckpointStore, CollectionSchema, Comparison, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue, PartialFilter, Store,
+    DocumentQueryAccess, DocumentSort, IndexBound, IndexDefinition, IndexQuery, IndexValue,
+    PartialFilter, Store,
 };
 use serde_json::{Value, json};
 use std::io::ErrorKind;
@@ -121,6 +122,97 @@ fn on_backends(exercise: impl Fn(&DocumentDatabase<'_>)) {
             exercise(&DocumentDatabase::new(&initial));
         }
     }
+}
+
+#[test]
+fn encoded_compound_bounds_beyond_the_storage_key_limit_match_the_scan() {
+    on_backends(|db| {
+        let tenant = "\0".repeat(256);
+        let bound = IndexValue::String("\0".repeat(256));
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(&["tenant", "score"], None))
+            .unwrap();
+        for (id, owner, score) in [
+            ("short", tenant.as_str(), "".to_owned()),
+            ("zeros", tenant.as_str(), "\0".repeat(200)),
+            ("greater", tenant.as_str(), "a".to_owned()),
+            ("outside", "other", "".to_owned()),
+        ] {
+            db.insert("c", id, &json!({"tenant":owner,"score":score}))
+                .unwrap();
+        }
+
+        for comparison in [
+            Comparison::Less,
+            Comparison::LessOrEqual,
+            Comparison::Greater,
+            Comparison::GreaterOrEqual,
+        ] {
+            compare(
+                db,
+                &query(
+                    and(vec![
+                        eq("tenant", json!(tenant)),
+                        cmp("score", comparison, bound.clone()),
+                    ]),
+                    4,
+                ),
+                access(1, false),
+            );
+        }
+        compare(
+            db,
+            &query(
+                and(vec![
+                    eq("tenant", json!(tenant)),
+                    closed_bounds("score", bound.clone()),
+                ]),
+                4,
+            ),
+            DocumentQueryAccess::CompoundEqualityIndex {
+                index: "compound".into(),
+                fields: 2,
+            },
+        );
+        compare(
+            db,
+            &query(
+                and(vec![
+                    eq("tenant", json!(tenant)),
+                    membership("score", vec![json!("a"), json!("\0".repeat(256))]),
+                ]),
+                4,
+            ),
+            DocumentQueryAccess::CompoundMembershipIndex {
+                index: "compound".into(),
+                fields: 2,
+                probes: 2,
+            },
+        );
+
+        let mut query = IndexQuery {
+            equal: vec![IndexValue::String(tenant)],
+            upper: Some(IndexBound {
+                value: bound,
+                inclusive: false,
+            }),
+            limit: 1,
+            ..Default::default()
+        };
+        for expected in ["short", "zeros"] {
+            let page = db.query_index("c", "compound", &query).unwrap();
+            assert_eq!(page.documents.len(), 1);
+            assert_eq!(page.documents[0].id, expected);
+            query.after = page.next;
+        }
+        assert!(
+            db.query_index("c", "compound", &query)
+                .unwrap()
+                .documents
+                .is_empty()
+        );
+    });
 }
 
 #[test]
