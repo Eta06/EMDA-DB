@@ -227,7 +227,7 @@ impl CheckpointView {
         let mut blocks = Vec::new();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;
-        let verified = checkpoint::visit_file(
+        let (verified, _) = checkpoint::visit_file(
             &checkpoint,
             &log,
             boundary,
@@ -361,10 +361,16 @@ impl CheckpointView {
     // Revalidate the original trusted checkpoint and its covered log bytes
     // before deriving another checkpoint from this long-lived view.
     pub(crate) fn verify_for_rollover(&self) -> io::Result<Sha256> {
+        checkpoint::verify_log_prefix(&self.log, &self.verify_checkpoint_file()?)
+    }
+
+    // Bounded rebuild separately binds the log to this verified checkpoint
+    // and to the suffix bytes consumed during replay.
+    pub(crate) fn verify_checkpoint_file(&self) -> io::Result<checkpoint::VerifiedCheckpoint> {
         let mut count = 0_u64;
-        let verified = checkpoint::visit_file(
+        let verified = checkpoint::visit_index_file(
             &self.checkpoint,
-            &self.log,
+            self.log.len()?,
             self.witnessed_boundary,
             None,
             &self.trusted_digest,
@@ -374,10 +380,14 @@ impl CheckpointView {
                 Ok(())
             },
         )?;
-        if verified.prefix != self.prefix || verified.peak != self.peak || count != self.keys {
+        if verified.prefix != self.prefix
+            || verified.peak != self.peak
+            || verified.log_digest != self.log_digest
+            || count != self.keys
+        {
             return Err(record::invalid_data("checkpoint changed since opening"));
         }
-        Ok(verified.log_hasher)
+        Ok(verified)
     }
 
     pub(crate) fn covered_log_digest(&self) -> &[u8; 32] {

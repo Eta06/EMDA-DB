@@ -521,15 +521,15 @@ impl CheckpointStore {
             ));
         }
         spill.prepare_for_emit()?;
-        view.verify_for_rollover()?;
         if length > witness {
             (hooks.before_adopt)()?;
         }
+        let base = view.verify_checkpoint_file()?;
         let verified_log = crate::checkpoint::bind_replayed_log(
             &writer,
             prefix,
             length,
-            view.covered_log_digest(),
+            &base.log_digest,
             &suffix_digest,
         )?;
         if length > witness {
@@ -548,7 +548,9 @@ impl CheckpointStore {
             ));
         }
         writer.verify_witness()?;
-        view.verify_for_rollover()?;
+        // The staged checkpoint verifies the whole source against verified_log
+        // before publication. Recheck the base index before using its entries.
+        view.verify_checkpoint_file()?;
         let count = u64::try_from(spill.live_count())
             .map_err(|_| io::Error::other("live key count overflow"))?;
         let peak = spill.peak();
@@ -1829,6 +1831,68 @@ mod tests {
             log,
             base_bytes,
         }
+    }
+
+    #[test]
+    fn changed_base_checkpoint_after_spill_replay_does_not_advance_witness() {
+        let case = unacknowledged_suffix_for_spill();
+        let destination = case._directory.path().join("rebuilt");
+        let mut damaged = case.base_bytes.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        let mut changed_base = false;
+        let mut before_adopt = || {
+            fs::write(&case.base, &damaged)?;
+            changed_base = true;
+            Ok(())
+        };
+        let failure = track_managed_rebuild(|tracker| {
+            with_standard_hooks(|standard| {
+                let mut hooks = BoundedHooks {
+                    before_adopt: &mut before_adopt,
+                    sync_checkpoint_ancestors: standard.sync_checkpoint_ancestors,
+                    before_selection_rename: standard.before_selection_rename,
+                    sync_selection_parent: standard.sync_selection_parent,
+                };
+                CheckpointStore::rebuild_bounded_using(
+                    &case.path,
+                    &destination,
+                    &case.base,
+                    &case.digest,
+                    small_limits(),
+                    Some(tracker),
+                    &mut hooks,
+                )
+            })
+        });
+        assert!(changed_base);
+        let Err(ManagedRebuildFailure::NotPublished(error)) = failure else {
+            panic!("rebuild did not reject the changed checkpoint: {failure:?}");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "index checkpoint checksum mismatch");
+        assert_eq!(witness_bytes(&case.path), case.witness);
+        assert_eq!(fs::read(case.path.join("records.log")).unwrap(), case.log);
+        assert_eq!(fs::read(&case.base).unwrap(), damaged);
+        assert!(!destination.exists());
+        assert!(!selection::path(&case.path).exists());
+        assert_no_staged_markers(&case.path);
+        assert_no_staged_markers(case._directory.path());
+
+        fs::write(&case.base, &case.base_bytes).unwrap();
+        with_standard_hooks(|hooks| {
+            CheckpointStore::rebuild_bounded_using(
+                &case.path,
+                &destination,
+                &case.base,
+                &case.digest,
+                small_limits(),
+                None,
+                hooks,
+            )
+        })
+        .unwrap();
+        let store = CheckpointStore::open_managed(&case.path).unwrap();
+        assert_eq!(store.get(b"c").unwrap(), Some(b"two".to_vec()));
     }
 
     #[test]

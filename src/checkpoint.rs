@@ -29,7 +29,6 @@ pub(crate) struct VerifiedCheckpoint {
     pub(crate) prefix: u64,
     pub(crate) peak: usize,
     pub(crate) log_digest: [u8; 32],
-    pub(crate) log_hasher: Sha256,
 }
 
 pub(crate) struct VerifiedLog {
@@ -368,7 +367,7 @@ fn create_streaming_in_directory(
     temp.sync_all()?;
     let mut verified_entries = Sha256::new();
     let mut verified_count = 0_u64;
-    let verified = visit_file(
+    let (verified, _) = visit_file(
         &temp,
         log,
         prefix,
@@ -505,7 +504,7 @@ fn load_file(
     trusted_digest: &[u8; 32],
 ) -> io::Result<Loaded> {
     let mut index = BTreeMap::new();
-    let verified = visit_file(
+    let (verified, log_hasher) = visit_file(
         file,
         log,
         witness_boundary,
@@ -521,7 +520,7 @@ fn load_file(
         prefix: verified.prefix,
         index,
         peak: verified.peak,
-        log_hasher: verified.log_hasher,
+        log_hasher,
     })
 }
 
@@ -530,6 +529,38 @@ fn load_file(
 pub(crate) fn visit_file(
     file: &File,
     log: &Log,
+    witness_boundary: u64,
+    max_live_keys: Option<usize>,
+    trusted_digest: &[u8; 32],
+    max_file_bytes: Option<u64>,
+    visit: impl FnMut(u64, &[u8; 2], &[u8], &[u8; 16], ValueLocation) -> io::Result<()>,
+) -> io::Result<(VerifiedCheckpoint, Sha256)> {
+    let verified = visit_index_file(
+        file,
+        log.len()?,
+        witness_boundary,
+        max_live_keys,
+        trusted_digest,
+        max_file_bytes,
+        visit,
+    )?;
+    let hasher = verify_log_prefix(log, &verified)?;
+    Ok((verified, hasher))
+}
+
+pub(crate) fn verify_log_prefix(log: &Log, verified: &VerifiedCheckpoint) -> io::Result<Sha256> {
+    let hasher = hash_log_prefix(log, verified.prefix)?;
+    if hasher.clone().finalize().as_slice() != verified.log_digest {
+        return Err(record::invalid_data("checkpoint does not match log prefix"));
+    }
+    Ok(hasher)
+}
+
+// Verify the independently trusted index file and its declared log binding.
+// Use this only when the caller verifies the actual log range separately.
+pub(crate) fn visit_index_file(
+    file: &File,
+    log_length: u64,
     witness_boundary: u64,
     max_live_keys: Option<usize>,
     trusted_digest: &[u8; 32],
@@ -580,7 +611,7 @@ pub(crate) fn visit_file(
     }
     if prefix < crate::witness::LOG_HEADER_SIZE as u64
         || prefix > witness_boundary
-        || prefix > log.len()?
+        || prefix > log_length
     {
         return Err(record::invalid_data(
             "checkpoint boundary is outside the witnessed log",
@@ -651,15 +682,10 @@ pub(crate) fn visit_file(
     if digest.finalize().as_slice() != expected || &expected != trusted_digest {
         return Err(record::invalid_data("index checkpoint checksum mismatch"));
     }
-    let log_hasher = hash_log_prefix(log, prefix)?;
-    if log_hasher.clone().finalize().as_slice() != expected_log_digest {
-        return Err(record::invalid_data("checkpoint does not match log prefix"));
-    }
     Ok(VerifiedCheckpoint {
         prefix,
         peak,
         log_digest: expected_log_digest,
-        log_hasher,
     })
 }
 
@@ -759,7 +785,7 @@ mod tests {
         drop(store);
         let (log, index) = Log::open(&path, false).unwrap();
         let end = log.len().unwrap();
-        let verified = visit_file(
+        let (verified, _) = visit_file(
             &File::open(base).unwrap(),
             &log,
             end,
