@@ -233,7 +233,11 @@ locations until the checksums and witness boundary pass. A batch over
 the remaining operation budget avoids child allocation and decoding.
 A single put over that budget skips the value digest used by the index.
 The decoder still checks the record checksum and the acknowledged
-digest before reporting admission failure. Recovery drops the read
+digest before reporting admission failure. Once a batch is verified,
+recovery charges its children in order and can merge its final edits in
+place. A strictly ordered batch above the existing overlay extends it
+directly after admission. Both paths move decoded keys without copying
+their bytes. Recovery drops the read
 buffer before opening the base. The overlay keeps the last value's
 file offset, length and SHA-256 digest for each touched live key.
 Point and page reads authenticate selected suffix values against

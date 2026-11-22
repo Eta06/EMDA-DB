@@ -75,8 +75,29 @@ impl SuffixFile<'_> {
     pub(super) fn replay<D: ValueHash>(
         self,
         committed: Option<(usize, [u8; 32])>,
-        mut remaining_operations: u64,
+        remaining_operations: u64,
         mut visit: impl FnMut(&[u8], Option<StreamValue<D::Output>>) -> io::Result<()>,
+    ) -> io::Result<Sha256> {
+        self.replay_records::<D>(committed, remaining_operations, |record| {
+            match record {
+                Changes::Batch(updates) => {
+                    for update in updates {
+                        visit(&update.key, update.location)?;
+                    }
+                }
+                Changes::Single(key, location) => visit(key, location)?,
+            }
+            Ok(())
+        })
+    }
+
+    /// Pass one verified physical record to the visitor, retaining DB02
+    /// child order and ownership of the decoded keys.
+    pub(super) fn replay_records<D: ValueHash>(
+        self,
+        committed: Option<(usize, [u8; 32])>,
+        mut remaining_operations: u64,
+        mut visit: impl FnMut(Changes<'_, D::Output>) -> io::Result<()>,
     ) -> io::Result<Sha256> {
         let end = self
             .start
@@ -127,25 +148,19 @@ impl SuffixFile<'_> {
                     offset,
                     admit_operations(remaining_operations, 1),
                 )
-                .map(Changes::Single)
+                .map(|location| Changes::Single(key, location))
             };
             // At a complete acknowledged boundary, retain the established
             // digest error precedence over parsing or admission errors.
             if reader.position() == self.start + next as u64 {
                 verify_boundary(&hash, next, committed)?;
             }
-            match updates? {
-                Changes::Batch(updates) => {
-                    remaining_operations -= updates.len() as u64;
-                    for update in updates {
-                        visit(&update.key, update.location)?;
-                    }
-                }
-                Changes::Single(location) => {
-                    remaining_operations -= 1;
-                    visit(key, location)?;
-                }
-            }
+            let changes = updates?;
+            remaining_operations -= match &changes {
+                Changes::Batch(updates) => updates.len() as u64,
+                Changes::Single(..) => 1,
+            };
+            visit(changes)?;
             offset = next;
         }
         Ok(hash)
@@ -162,8 +177,8 @@ impl SuffixFile<'_> {
     }
 }
 
-enum Changes<D> {
-    Single(Option<StreamValue<D>>),
+pub(super) enum Changes<'a, D> {
+    Single(&'a [u8], Option<StreamValue<D>>),
     Batch(Vec<Update<D>>),
 }
 

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse the retained-overlay batch merge when reopening a persisted suffix.
+
 - Merge admitted retained-overlay batches in place when inserting many keys
   would otherwise shift the same entries repeatedly.
 

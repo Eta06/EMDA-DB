@@ -3,13 +3,14 @@ use super::{
     charge_suffix_work, check_suffix_binding, open_suffix, read_suffix, suffix_capacity,
     visit_suffix,
 };
+use crate::record::batch::stream::{StreamValue, Update};
 use crate::record::{self, Operation};
 use crate::retained_base_v2::index::{EntryPart, IndexedBase, OverlayValue};
 use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
-use std::{fs::File, io, ops::Range, path::Path};
+use std::{borrow::Cow, fs::File, io, ops::Range, path::Path};
 
-use super::suffix_file::SuffixFile;
+use super::suffix_file::{Changes, SuffixFile};
 
 /// Separate overlay bounds for a detached suffix. Distinct touched keys and
 /// their bytes count even when their final operation is a deletion.
@@ -271,47 +272,27 @@ impl Overlay {
         suffix_limits: SuffixLimits,
         overlay_limits: OverlayLimits,
     ) -> io::Result<OverlayAppend> {
-        let mut changes = Vec::<OverlayEntry>::new();
-        let mut key_bytes = self.key_bytes;
-        let mut work = self.work;
-        let mut added = 0;
-        let mut total_shifts = 0_usize;
-        let mut shift_span = 0;
+        let mut prepared = OverlayAppend::new(self);
         let remaining = remaining_operations(suffix_limits, self.operations)?;
-        let operations = visit_suffix(record, remaining, |operation, key, range| {
-            let current = self.entries.len() + added;
-            charge_suffix_work(&mut work, suffix_limits.work, current)?;
-            let value = value_location(operation, record, offset, range);
-            match find(&changes, key) {
-                Ok(position) => changes[position].value = value,
-                Err(position) => {
-                    if let Err(position) = find(&self.entries, key) {
-                        key_bytes = admit_key(overlay_limits, current, key_bytes, key)?;
-                        added += 1;
-                        let shifts = self.entries.len() - position;
-                        total_shifts = total_shifts.saturating_add(shifts);
-                        shift_span = shift_span.max(shifts);
-                    }
-                    insert(&mut changes, position, key, value)?;
-                }
-            }
-            Ok(())
+        visit_suffix(record, remaining, |operation, key, range| {
+            prepared.stage(
+                &self.entries,
+                Cow::Borrowed(key),
+                || value_location(operation, record, offset, range),
+                suffix_limits.work,
+                overlay_limits,
+            )
         })?;
-        self.entries.try_reserve(added).map_err(allocation)?;
-        Ok(OverlayAppend {
-            changes,
-            added,
-            // Keep direct updates for replacements, appends and sparse
-            // inserts. Merge when repeated shifts cost more than two passes.
-            merge: total_shifts > shift_span.saturating_mul(2),
-            work,
-            key_bytes,
-            operations: self.operations + operations,
-        })
+        self.entries
+            .try_reserve(prepared.added)
+            .map_err(allocation)?;
+        Ok(prepared)
     }
 
     pub(super) fn commit_append(&mut self, prepared: OverlayAppend) {
-        if !prepared.merge {
+        // Keep direct updates for replacements, appends and sparse inserts.
+        // Merge when repeated shifts cost more than two passes.
+        if prepared.total_shifts <= prepared.shift_span.saturating_mul(2) {
             for change in prepared.changes {
                 match find(&self.entries, &change.key) {
                     Ok(position) => self.entries[position].value = change.value,
@@ -366,20 +347,72 @@ impl Overlay {
         overlay_limits: OverlayLimits,
     ) -> io::Result<Sha256> {
         let remaining = remaining_operations(suffix_limits, self.operations)?;
-        suffix.replay::<Sha256>(Some(committed), remaining.operations, |key, location| {
-            let value = location.map(|location| {
-                // The parser admits the suffix within usize and checks the
-                // entire enclosing record before reporting its value slices.
-                let start = location.offset as usize;
-                ValueLocation {
-                    range: start..start + location.length,
-                    digest: location.digest,
+        suffix.replay_records::<Sha256>(Some(committed), remaining.operations, |record| {
+            match record {
+                Changes::Single(key, location) => {
+                    self.apply_update(
+                        key,
+                        || location.map(stream_location),
+                        suffix_limits.work,
+                        overlay_limits,
+                    )?;
+                    self.operations += 1;
                 }
-            });
-            self.apply_update(key, || value, suffix_limits.work, overlay_limits)?;
-            self.operations += 1;
+                Changes::Batch(updates) => {
+                    self.replay_batch(updates, suffix_limits.work, overlay_limits)?;
+                }
+            }
             Ok(())
         })
+    }
+
+    fn replay_batch(
+        &mut self,
+        updates: Vec<Update<[u8; 32]>>,
+        work_limit: u64,
+        overlay_limits: OverlayLimits,
+    ) -> io::Result<()> {
+        let mut prepared = OverlayAppend::new(self);
+        let sorted_tail = updates
+            .first()
+            .is_some_and(|first| self.entries.last().is_none_or(|last| last.key < first.key))
+            && updates.windows(2).all(|pair| pair[0].key < pair[1].key);
+        if sorted_tail {
+            // Each key is distinct and past the overlay. Charge the complete
+            // ordered batch before reserving space, then move the owned keys.
+            for (added, update) in updates.iter().enumerate() {
+                let current = self.entries.len() + added;
+                charge_suffix_work(&mut prepared.work, work_limit, current)?;
+                prepared.key_bytes =
+                    admit_key(overlay_limits, current, prepared.key_bytes, &update.key)?;
+            }
+            self.entries
+                .try_reserve(updates.len())
+                .map_err(allocation)?;
+            self.operations += updates.len() as u64;
+            self.entries
+                .extend(updates.into_iter().map(|update| OverlayEntry {
+                    key: update.key,
+                    value: update.location.map(stream_location),
+                }));
+            self.work = prepared.work;
+            self.key_bytes = prepared.key_bytes;
+            return Ok(());
+        }
+        for update in updates {
+            prepared.stage(
+                &self.entries,
+                Cow::Owned(update.key),
+                || update.location.map(stream_location),
+                work_limit,
+                overlay_limits,
+            )?;
+        }
+        self.entries
+            .try_reserve(prepared.added)
+            .map_err(allocation)?;
+        self.commit_append(prepared);
+        Ok(())
     }
 
     fn apply(
@@ -500,10 +533,59 @@ pub(super) struct LivePeaks {
 pub(super) struct OverlayAppend {
     changes: Vec<OverlayEntry>,
     added: usize,
-    merge: bool,
+    total_shifts: usize,
+    shift_span: usize,
     key_bytes: usize,
     work: u64,
     operations: u64,
+}
+
+impl OverlayAppend {
+    fn new(overlay: &Overlay) -> Self {
+        Self {
+            changes: Vec::new(),
+            added: 0,
+            total_shifts: 0,
+            shift_span: 0,
+            key_bytes: overlay.key_bytes,
+            work: overlay.work,
+            operations: overlay.operations,
+        }
+    }
+
+    fn stage(
+        &mut self,
+        entries: &[OverlayEntry],
+        key: Cow<'_, [u8]>,
+        value: impl FnOnce() -> Option<ValueLocation>,
+        work_limit: u64,
+        limits: OverlayLimits,
+    ) -> io::Result<()> {
+        let current = entries.len() + self.added;
+        charge_suffix_work(&mut self.work, work_limit, current)?;
+        let value = value();
+        match find(&self.changes, &key) {
+            Ok(position) => self.changes[position].value = value,
+            Err(position) => {
+                if let Err(position) = find(entries, &key) {
+                    self.key_bytes = admit_key(limits, current, self.key_bytes, &key)?;
+                    self.added += 1;
+                    let shifts = entries.len() - position;
+                    self.total_shifts = self.total_shifts.saturating_add(shifts);
+                    self.shift_span = self.shift_span.max(shifts);
+                }
+                allocation_point()?;
+                let key = match key {
+                    Cow::Borrowed(bytes) => copy(bytes)?,
+                    Cow::Owned(key) => key,
+                };
+                self.changes.try_reserve(1).map_err(allocation)?;
+                self.changes.insert(position, OverlayEntry { key, value });
+            }
+        }
+        self.operations += 1;
+        Ok(())
+    }
 }
 
 fn remaining_operations(limits: SuffixLimits, used: u64) -> io::Result<SuffixLimits> {
@@ -560,6 +642,15 @@ fn value_location(
         digest: Sha256::digest(&bytes[range.clone()]).into(),
         range: offset + range.start..offset + range.end,
     })
+}
+
+fn stream_location(location: StreamValue<[u8; 32]>) -> ValueLocation {
+    // The parser bounds the enclosing record and the suffix fits usize.
+    let start = location.offset as usize;
+    ValueLocation {
+        range: start..start + location.length,
+        digest: location.digest,
+    }
 }
 
 fn value_at<'a>(suffix: OverlaySource<'a>, entry: &'a OverlayEntry) -> Option<OverlayValue<'a>> {

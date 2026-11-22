@@ -374,6 +374,20 @@ fn batch_preflight_and_replay_charge_the_same_ordered_work() {
         let page = store.scan(None, None, 8).unwrap();
         drop(store);
         assert_eq!(f.open(limits).unwrap().scan(None, None, 8).unwrap(), page);
+        if work == 15 {
+            let batch = record::encode(
+                Operation::Batch,
+                &[0],
+                &record::batch::encode_payload(&ops).unwrap(),
+            )
+            .unwrap();
+            f.append_unacknowledged(&batch);
+            let log = fs::read(f.log()).unwrap();
+            let error = f.open(limits).err().expect("over-budget recovery batch");
+            assert!(error.to_string().contains("work limit"), "{error}");
+            assert_eq!(fs::read(f.log()).unwrap(), log);
+            assert_eq!(fs::read(f.witness()).unwrap(), before.1);
+        }
     }
 }
 
@@ -427,6 +441,53 @@ fn mixed_overlay_batch_merges_new_and_existing_keys_before_reopen() {
         f.open(LIMITS).unwrap().scan(None, None, 8).unwrap(),
         expected
     );
+}
+
+#[test]
+fn sorted_tail_replay_checks_the_ordered_work_boundary_before_adoption() {
+    let ops = [
+        BatchOperation::Delete { key: b"a" },
+        BatchOperation::Put {
+            key: b"b",
+            value: b"new",
+        },
+        BatchOperation::Delete { key: b"z" },
+    ];
+    let bytes = record::encode(
+        Operation::Batch,
+        &[0],
+        &record::batch::encode_payload(&ops).unwrap(),
+    )
+    .unwrap();
+    for work in [11, 12] {
+        let limits = RetainedStoreLimits {
+            suffix: SuffixLimits {
+                work,
+                ..LIMITS.suffix
+            },
+            ..LIMITS
+        };
+        let f = Fixture::new(limits);
+        f.append_unacknowledged(&bytes);
+        let log = fs::read(f.log()).unwrap();
+        let witness = fs::read(f.witness()).unwrap();
+        if work == 11 {
+            let error = f
+                .open(limits)
+                .err()
+                .expect("work limit must reject the batch");
+            assert!(error.to_string().contains("work limit"), "{error}");
+            assert_eq!(fs::read(f.witness()).unwrap(), witness);
+        } else {
+            let store = f.open(limits).unwrap();
+            assert_eq!(
+                store.scan(None, None, 8).unwrap(),
+                [(b"b".to_vec(), b"new".to_vec())]
+            );
+            assert_ne!(fs::read(f.witness()).unwrap(), witness);
+        }
+        assert_eq!(fs::read(f.log()).unwrap(), log);
+    }
 }
 
 #[test]
