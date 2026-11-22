@@ -376,42 +376,81 @@ impl OnlineStore {
         &self,
         options: &OnlineCompactionOptions,
     ) -> io::Result<crate::StagingCleanup> {
-        Access::check_not_active(self as *const Self as usize)?;
-        options.validate()?;
+        self.cleanup_retired_staging_detailed(options)
+            .map_err(crate::StagingCleanupFailure::into_io_error)
+    }
+
+    /// Cleans matching retired stages with a classified removal outcome.
+    /// The verification and locking requirements of
+    /// [`Self::cleanup_retired_staging`] apply. `NotStarted` means this call
+    /// began no removal. `OutcomeUnknown` requires inspection before resuming.
+    pub fn cleanup_retired_staging_detailed(
+        &self,
+        options: &OnlineCompactionOptions,
+    ) -> Result<crate::StagingCleanup, crate::StagingCleanupFailure> {
+        self.cleanup_retired_staging_using(options, fs::File::sync_all, fs::File::sync_all)
+    }
+
+    fn cleanup_retired_staging_using(
+        &self,
+        options: &OnlineCompactionOptions,
+        sync_payload_removal: impl FnMut(&fs::File) -> io::Result<()>,
+        sync_parent: impl FnOnce(&fs::File) -> io::Result<()>,
+    ) -> Result<crate::StagingCleanup, crate::StagingCleanupFailure> {
+        use crate::StagingCleanupFailure::NotStarted;
+
+        Access::check_not_active(self as *const Self as usize).map_err(NotStarted)?;
+        options.validate().map_err(NotStarted)?;
         let _maintenance = match self.maintenance.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, MaintenanceBusy));
+                return Err(NotStarted(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    MaintenanceBusy,
+                )));
             }
-            Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
+            Err(TryLockError::Poisoned(_)) => return Err(NotStarted(uncertain())),
         };
-        let state = self.state.read().map_err(|_| uncertain())?;
+        let state = self.state.read().map_err(|_| NotStarted(uncertain()))?;
         if state.failed {
-            return Err(uncertain());
+            return Err(NotStarted(uncertain()));
         }
         let current = &state.store;
         let _writer = current
             .writes
             .write()
-            .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        let boundary = copy::boundary_locked(current)?;
-        current._lock_file.verify_identity(&self.path)?;
-        compact_exchange::source_directory_is_owned(&self.path)?;
-        let id = current.log.id().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::Unsupported,
-                "retired cleanup requires a witnessed store",
-            )
-        })?;
+            .map_err(|_| NotStarted(io::Error::other("write barrier poisoned")))?;
+        let boundary = copy::boundary_locked(current).map_err(NotStarted)?;
+        current
+            ._lock_file
+            .verify_identity(&self.path)
+            .map_err(NotStarted)?;
+        compact_exchange::source_directory_is_owned(&self.path).map_err(NotStarted)?;
+        let id = current
+            .log
+            .id()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "retired cleanup requires a witnessed store",
+                )
+            })
+            .map_err(NotStarted)?;
         let parent = self
             .path
             .parent()
-            .ok_or_else(|| io::Error::other("store has no parent directory"))?;
-        crate::staging::cleanup_retired(parent, &id, || {
-            let snapshot =
-                current.snapshot(options.max_snapshot_keys, options.max_snapshot_key_bytes)?;
-            copy::verify_initial(&snapshot, boundary, options, None)
-        })
+            .ok_or_else(|| NotStarted(io::Error::other("store has no parent directory")))?;
+        crate::staging::cleanup_retired_detailed(
+            parent,
+            &id,
+            || {
+                let snapshot =
+                    current.snapshot(options.max_snapshot_keys, options.max_snapshot_key_bytes)?;
+                copy::verify_initial(&snapshot, boundary, options, None)
+            },
+            sync_payload_removal,
+            sync_parent,
+        )
     }
 
     fn compact_reclaim_with_hooks(

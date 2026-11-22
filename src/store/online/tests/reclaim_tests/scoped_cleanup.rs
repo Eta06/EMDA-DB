@@ -73,6 +73,92 @@ fn scoped_cleanup_recovers_each_retired_stage_without_touching_live_data() {
 }
 
 #[test]
+fn detailed_retired_cleanup_reports_preflight_failures_and_respects_parent_lock() {
+    use crate::StagingCleanupFailure::NotStarted;
+
+    let root = tempfile::tempdir().unwrap();
+    let (source, previous) = paths(root.path());
+    let store = OnlineStore::open(&source).unwrap();
+    insert_history(&store);
+    abandon(&store, &previous, reclaim::Point::AfterMove);
+    let retired = retired_path(root.path());
+    let (active, _) = crate::staging::Stage::file(root.path()).unwrap();
+    assert!(matches!(
+        store.cleanup_retired_staging_detailed(&Default::default()),
+        Err(NotStarted(ref error)) if crate::staging::is_retired_parent_busy(error)
+    ));
+    assert!(retired.exists());
+    drop(active);
+
+    let options = OnlineCompactionOptions {
+        max_snapshot_keys: 0,
+        ..Default::default()
+    };
+    assert!(matches!(
+        store.cleanup_retired_staging_detailed(&options),
+        Err(NotStarted(ref error)) if error.to_string().contains("snapshot key count limit exceeded")
+    ));
+    assert!(retired.exists());
+    assert_eq!(
+        store
+            .cleanup_retired_staging_detailed(&Default::default())
+            .unwrap()
+            .removed_payloads,
+        1,
+    );
+    assert!(!retired.exists());
+}
+
+#[test]
+fn detailed_retired_cleanup_reports_uncertainty_at_both_directory_syncs() {
+    use crate::StagingCleanupFailure::OutcomeUnknown;
+
+    for fail_payload_sync in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (source, previous) = paths(root.path());
+        let store = OnlineStore::open(&source).unwrap();
+        insert_history(&store);
+        abandon(&store, &previous, reclaim::Point::AfterMove);
+        let retired = retired_path(root.path());
+        let marker = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "owner"))
+            .unwrap();
+        let live_bytes = fs::read(source.join("records.log")).unwrap();
+        let error = store.cleanup_retired_staging_using(
+            &Default::default(),
+            |file| {
+                if fail_payload_sync {
+                    Err(io::Error::other("injected payload sync error"))
+                } else {
+                    file.sync_all()
+                }
+            },
+            |file| {
+                if fail_payload_sync {
+                    file.sync_all()
+                } else {
+                    Err(io::Error::other("injected parent sync error"))
+                }
+            },
+        );
+        assert!(
+            matches!(error, Err(OutcomeUnknown(ref cause)) if cause.to_string().contains("injected"))
+        );
+        assert!(!retired.exists());
+        assert_eq!(marker.exists(), fail_payload_sync);
+        assert_eq!(fs::read(source.join("records.log")).unwrap(), live_bytes);
+        let retry = store
+            .cleanup_retired_staging_detailed(&Default::default())
+            .unwrap();
+        assert_eq!(retry.removed_payloads, 0);
+        assert_eq!(retry.removed_markers, usize::from(fail_payload_sync));
+        assert!(!marker.exists());
+    }
+}
+
+#[test]
 fn scoped_cleanup_preserves_a_named_previous_store() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());

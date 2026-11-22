@@ -122,6 +122,31 @@ fn failure_after_one_stage_reports_unknown_and_remaining_stage_is_retryable() {
 }
 
 #[test]
+fn retired_marker_sync_failure_before_removal_is_not_started() {
+    let root = tempfile::tempdir().unwrap();
+    let id = [8; 16];
+    let stage = Stage::retired_directory(root.path(), &id).unwrap();
+    let marker = stage.marker.as_ref().unwrap().path().to_path_buf();
+    fs::remove_dir(stage.path()).unwrap();
+    stage.retain_payload().unwrap();
+    let failure = cleanup_retired_detailed(
+        root.path(),
+        &id,
+        || panic!("no removal should be attempted"),
+        |_| Err(io::Error::other("injected marker-only sync failure")),
+        File::sync_all,
+    );
+    assert!(
+        matches!(failure, Err(StagingCleanupFailure::NotStarted(error)) if error.to_string().contains("injected"))
+    );
+    assert!(marker.exists());
+    let report =
+        cleanup_retired_detailed(root.path(), &id, || Ok(()), File::sync_all, File::sync_all)
+            .unwrap();
+    assert_eq!((report.removed_payloads, report.removed_markers), (0, 1));
+}
+
+#[test]
 fn detailed_cleanup_keeps_retired_and_symlink_payloads_untouched() {
     let root = tempfile::tempdir().unwrap();
     let (marker, payload) = orphan_file(root.path());

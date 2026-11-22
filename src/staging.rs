@@ -365,7 +365,7 @@ pub struct StagingCleanup {
     pub skipped: usize,
 }
 
-/// A failed explicit generic staging cleanup, classified by this call's
+/// A failed explicit staging cleanup, classified by this call's
 /// removal attempts. Existing stages and unrelated files may still exist in
 /// either case. The error does not certify directory durability, cleanup of
 /// every stage, source health, or an independent backup. Panics unwind instead
@@ -379,6 +379,14 @@ pub enum StagingCleanupFailure {
     /// This call may have removed a payload, marker, or part of a directory.
     /// Inspect the trusted directory before deciding how to resume cleanup.
     OutcomeUnknown(io::Error),
+}
+
+impl StagingCleanupFailure {
+    pub(crate) fn into_io_error(self) -> io::Error {
+        match self {
+            Self::NotStarted(error) | Self::OutcomeUnknown(error) => error,
+        }
+    }
 }
 
 impl std::fmt::Display for StagingCleanupFailure {
@@ -454,14 +462,36 @@ fn cleanup_detailed_with_hooks(
     parent: &Path,
     sync_payload_removal: impl FnMut(&File) -> io::Result<()>,
     sync_parent: impl FnOnce(&File) -> io::Result<()>,
+    before_remove: impl FnMut() -> io::Result<()>,
+) -> Result<StagingCleanup, StagingCleanupFailure> {
+    cleanup_selected_detailed(
+        parent,
+        None,
+        sync_payload_removal,
+        sync_parent,
+        before_remove,
+    )
+}
+
+fn cleanup_selected_detailed(
+    parent: &Path,
+    replacement_id: Option<&[u8; 16]>,
+    sync_payload_removal: impl FnMut(&File) -> io::Result<()>,
+    sync_parent: impl FnOnce(&File) -> io::Result<()>,
     mut before_remove: impl FnMut() -> io::Result<()>,
 ) -> Result<StagingCleanup, StagingCleanupFailure> {
     let mut removal_started = false;
-    cleanup_selected_with_syncs(parent, None, sync_payload_removal, sync_parent, || {
-        before_remove()?;
-        removal_started = true;
-        Ok(())
-    })
+    cleanup_selected_with_syncs(
+        parent,
+        replacement_id,
+        sync_payload_removal,
+        sync_parent,
+        || {
+            before_remove()?;
+            removal_started = true;
+            Ok(())
+        },
+    )
     .map_err(|error| {
         if removal_started {
             StagingCleanupFailure::OutcomeUnknown(error)
@@ -480,18 +510,42 @@ fn cleanup_with_sync(
 
 /// Removes only marked retired copies belonging to one verified replacement.
 /// Caller must hold the replacement's writer barrier and verify its witness.
-pub(crate) fn cleanup_retired(
+pub(crate) fn cleanup_retired_detailed(
+    parent: &Path,
+    replacement_id: &[u8; 16],
+    verify: impl FnOnce() -> io::Result<()>,
+    sync_payload_removal: impl FnMut(&File) -> io::Result<()>,
+    sync_parent: impl FnOnce(&File) -> io::Result<()>,
+) -> Result<StagingCleanup, StagingCleanupFailure> {
+    let mut verify = Some(verify);
+    cleanup_selected_detailed(
+        parent,
+        Some(replacement_id),
+        sync_payload_removal,
+        sync_parent,
+        || {
+            if let Some(verify) = verify.take() {
+                verify()?;
+            }
+            Ok(())
+        },
+    )
+}
+
+#[cfg(test)]
+fn cleanup_retired(
     parent: &Path,
     replacement_id: &[u8; 16],
     verify: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<StagingCleanup> {
-    let mut verify = Some(verify);
-    cleanup_selected_with_sync(parent, Some(replacement_id), File::sync_all, || {
-        if let Some(verify) = verify.take() {
-            verify()?;
-        }
-        Ok(())
-    })
+    cleanup_retired_detailed(
+        parent,
+        replacement_id,
+        verify,
+        File::sync_all,
+        File::sync_all,
+    )
+    .map_err(StagingCleanupFailure::into_io_error)
 }
 
 fn cleanup_selected_with_sync(

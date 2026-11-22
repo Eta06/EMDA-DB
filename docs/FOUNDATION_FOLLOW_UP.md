@@ -202,8 +202,12 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   solely from error kind.
 - [x] Add opt-in generic staging-cleanup outcomes distinguishing calls that
   began no removals from failures after removal may have started. The result
-  does not certify directory durability, cleanup, source health or a backup;
-  retired-stage cleanup retains its separate API.
+  does not certify directory durability, cleanup, source health or a backup.
+- [x] Expose the same outcomes through the separate scoped retired-stage
+  cleanup API. Tests check parent-lock contention and failed verification
+  before removal, synchronization failure with only a marker present, and
+  both parent sync boundaries after removal has begun. The ordinary cleanup
+  method still returns its original I/O error to existing callers.
 - [x] Add opt-in structured outcomes for offline managed-selection rebuild,
   including the limited variant. The result distinguishes checkpoint and
   selection publication attempts; full-log recovery can still adopt an
