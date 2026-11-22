@@ -460,6 +460,74 @@ fn indexed_suffix_matches_full_replay_across_batch_edits_and_page_boundaries() {
 }
 
 #[test]
+fn a_page_filled_by_earlier_suffix_keys_need_not_read_the_next_base_block() {
+    let root = tempfile::tempdir().unwrap();
+    let large = vec![42; 256 * 1024];
+    let expected = candidate(root.path(), &[(b"b", &large), (b"z", b"base tail")]);
+    let store = Store::open(root.path().join("source")).unwrap();
+    store.put(b"a", b"suffix value").unwrap();
+    let path = root.path().join("candidate");
+    let suffix = root.path().join("suffix");
+    let limits = SuffixLimits {
+        bytes: 4096,
+        operations: 1,
+        work: 64,
+    };
+    let binding = store
+        .export_retained_suffix(
+            &path,
+            &expected,
+            &suffix,
+            BASE_LIMITS,
+            StagingLimits {
+                value_bytes: large.len(),
+                staging_bytes: 2 * large.len() as u64,
+            },
+            limits,
+            EXPORT_LIMITS,
+        )
+        .unwrap();
+    let view = IndexedSuffix::open_file_backed(
+        &path,
+        &suffix,
+        BASE_LIMITS,
+        IndexLimits {
+            blocks: 2,
+            anchor_bytes: 2,
+        },
+        limits,
+        OverlayLimits {
+            entries: 1,
+            key_bytes: 1,
+        },
+        &binding,
+    )
+    .unwrap();
+    let first = vec![(b"a".to_vec(), b"suffix value".to_vec())];
+    assert_eq!(view.scan(None, None, 1).unwrap(), first);
+    assert_eq!(
+        view.scan(Some(b"a"), None, 1).unwrap(),
+        [(b"b".to_vec(), large.clone())]
+    );
+
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path.join("base"))
+        .unwrap();
+    file.write_all_at(&[0], 112 + 8 + 1 + large.len() as u64 - 1)
+        .unwrap();
+    assert_eq!(view.scan(None, None, 1).unwrap(), first);
+    assert_eq!(
+        view.scan(None, None, 2).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        view.scan(Some(b"a"), None, 1).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
 fn suffix_values_share_the_page_byte_budget_with_base_values() {
     let root = tempfile::tempdir().unwrap();
     let max = vec![23; MAX_VALUE];

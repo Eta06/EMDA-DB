@@ -440,6 +440,17 @@ impl IndexedBase {
             if before.is_some_and(|key| block.first_key.as_slice() >= key) {
                 break;
             }
+            // Earlier suffix keys can fill the page without touching this
+            // block. Keys equal to its verified anchor still merge within it.
+            while overlay
+                .peek()
+                .is_some_and(|(key, _)| *key < block.first_key.as_slice())
+            {
+                let (key, value) = overlay.next().unwrap();
+                if !budget.push_overlay(&mut result, key, value)? || result.len() == limit {
+                    return Ok(result);
+                }
+            }
             let stopped = self.read_block(block, &mut result, |key, len, result| {
                 if after.is_some_and(|bound| key <= bound) {
                     return Ok(Selection::Skip);

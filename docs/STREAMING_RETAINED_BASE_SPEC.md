@@ -172,6 +172,9 @@ keys and verified value locations. Tombstones remain in the overlay and count
 toward its explicit key and entry limits. Overlay work is charged separately
 from the base verification. A merged page applies one result budget across
 both sources, with suffix replacements and deletions taking precedence.
+A merged scan can fill its page with suffix rows strictly before the next
+verified base anchor. In that case it leaves the next block unread. Pages
+that need a base block still authenticate all of its bytes.
 The file-backed view checks the retained descriptor's length and authenticates
 returned suffix values against their captured digests. The base and suffix
 files must stay immutable for that view's lifetime. These checks cover the
