@@ -229,10 +229,13 @@ split boundary or recovery limit failure prevents adoption. The extra pass
 applies only when adoption is needed and reads at most the admitted suffix
 size. File stability under the cooperative locking contract still applies.
 
-Writable recovery streams physical records through a 64 KiB read
-buffer. For a batch it retains at most 1,024 child keys and value
+Writable recovery streams physical records through a read buffer no
+larger than 64 KiB or the admitted suffix. Buffered base verification and
+copying also size their buffers to the admitted byte range. For a batch,
+recovery retains at most 1,024 child keys and value
 locations until the checksums and witness boundary pass. A batch over
-the remaining operation budget avoids child allocation and decoding.
+the remaining operation budget or the minimum charged overlay work
+avoids child allocation and decoding.
 A single put over that budget skips the value digest used by the index.
 The decoder still checks the record checksum and the acknowledged
 digest before reporting admission failure. Once a batch is verified,

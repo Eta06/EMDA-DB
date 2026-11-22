@@ -344,7 +344,8 @@ impl IndexedBase {
     pub(crate) fn copy_to(&self, output: &mut impl Write) -> io::Result<()> {
         let length = self.metadata.file_bytes;
         let reader = PositionalReader::new(&self.file, 0).take(length);
-        let mut reader = io::BufReader::with_capacity(CHUNK_BYTES, reader);
+        let mut reader =
+            io::BufReader::with_capacity(length.min(CHUNK_BYTES as u64) as usize, reader);
         if io::copy(&mut reader, output)? != length {
             return Err(invalid("retained base shortened during copy"));
         }

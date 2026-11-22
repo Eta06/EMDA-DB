@@ -35,8 +35,10 @@ impl io::Read for PositionalReader<'_> {
 /// Maximum log bytes held while checksumming one slice of a record payload.
 ///
 /// Sequential recovery feeds payloads through a buffer of this size and
-/// discards each chunk after updating checksums. A put or delete retains its
-/// key — at most 1,024 bytes — plus this buffer. A batch retains at most
+/// discards each chunk after updating checksums. The buffer is allocated
+/// on first use, with at most the bytes remaining in the admitted range.
+/// A put or delete retains its key of up to 1,024 bytes plus this buffer.
+/// A batch retains at most
 /// 1,024 child keys and their locations, not its encoded values. `read_exact`
 /// can still fill a caller-supplied buffer in one read when this buffer is
 /// empty; record replay does not use that path for payloads. The in-memory
@@ -155,13 +157,13 @@ impl<'a> RecoveryReader<'a> {
                 "read past end of log",
             ));
         }
+        let count = (self.total - self.offset).min(RECOVERY_READ_BUFFER_BYTES as u64) as usize;
         if self.buffer.is_empty() {
             self.buffer
-                .try_reserve_exact(RECOVERY_READ_BUFFER_BYTES)
+                .try_reserve_exact(count)
                 .map_err(|_| io::Error::other("log recovery buffer allocation failed"))?;
-            self.buffer.resize(RECOVERY_READ_BUFFER_BYTES, 0);
+            self.buffer.resize(count, 0);
         }
-        let count = (self.total - self.offset).min(RECOVERY_READ_BUFFER_BYTES as u64) as usize;
         self.file
             .read_exact_at(&mut self.buffer[..count], self.offset)?;
         if let Some(digest) = self.digest.as_mut() {
@@ -224,6 +226,39 @@ mod tests {
         fn sync_data(&self) -> io::Result<()> {
             Err(io::Error::other("memory log is read-only"))
         }
+    }
+
+    #[test]
+    fn recovery_allocates_only_the_admitted_suffix_on_first_read() {
+        let file = Memory {
+            bytes: vec![0x42; RECOVERY_READ_BUFFER_BYTES + 13],
+            reads: Mutex::new(Vec::new()),
+        };
+        let total = file.len().unwrap();
+        let mut hash = Sha256::new();
+        let mut reader = RecoveryReader::at(&file, total, total - 13)
+            .unwrap()
+            .with_digest(&mut hash);
+        assert_eq!(reader.buffer.capacity(), 0);
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        assert_eq!(header, [0x42; 4]);
+        assert_eq!(reader.buffer.len(), 13);
+        assert_eq!(reader.buffer.capacity(), 13);
+        reader
+            .read_with(9, |bytes| assert_eq!(bytes, [0x42; 9]))
+            .unwrap();
+        assert_eq!(reader.position(), total);
+        assert_eq!(
+            reader.read_exact(&mut header).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(*file.reads.lock().unwrap(), [13]);
+        assert_eq!(hash.finalize(), Sha256::digest([0x42; 13]));
+
+        let mut empty = RecoveryReader::at(&file, total, total).unwrap();
+        empty.read_exact(&mut []).unwrap();
+        assert_eq!(empty.buffer.capacity(), 0);
     }
 
     #[test]

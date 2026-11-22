@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Size recovery scratch buffers to short admitted log and retained-base
+  ranges while keeping the 64 KiB ceiling for larger inputs.
+
 - Keep retained block-directory and suffix-overlay vector reservations
   within their configured entry and key limits.
 

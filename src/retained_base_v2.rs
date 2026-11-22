@@ -145,7 +145,9 @@ fn scan_buffered_using(
         None,
         None,
         index,
-        |reader, bytes| BufReader::with_capacity(CHUNK_BYTES, reader.take(bytes)),
+        |reader, bytes| {
+            BufReader::with_capacity(bytes.min(CHUNK_BYTES as u64) as usize, reader.take(bytes))
+        },
         visit_buffered_value,
     )
     .map(|(metadata, _)| metadata)
