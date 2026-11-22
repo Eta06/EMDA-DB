@@ -58,6 +58,27 @@ pub struct BoundedFullRebuildLimits {
     pub max_merge_fan_in: usize,
 }
 
+/// Admission limits for rebuilding a managed checkpoint from a trusted base.
+#[derive(Clone, Copy, Debug)]
+pub struct BoundedSuffixRebuildLimits {
+    /// Maximum physical log length, including the covered prefix and complete tail.
+    pub max_log_bytes: u64,
+    /// Maximum suffix operations, counting every child in a batch.
+    pub max_operations: u64,
+    /// Maximum distinct keys in a replay chunk, from 1 through 65,536.
+    pub max_chunk_keys: usize,
+    /// Maximum logical key bytes in a replay chunk, from 1 byte through 64 MiB.
+    pub max_chunk_key_bytes: usize,
+    /// Maximum temporary spill file bytes, including merge inputs and sidecars.
+    pub max_spill_bytes: u64,
+    /// Maximum simultaneous merge inputs, from 2 through 32.
+    pub max_merge_fan_in: usize,
+    /// File length and block directory limits for the trusted base.
+    pub base_checkpoint: crate::CheckpointViewLimits,
+    /// File length and block directory limits for the staged and published output.
+    pub output_checkpoint: crate::CheckpointViewLimits,
+}
+
 impl CheckpointStore {
     /// Rebuild a missing or obsolete managed checkpoint by spilling a complete
     /// witnessed V2 or V3 log replay. The source log is retained. Limits
@@ -365,7 +386,8 @@ impl CheckpointStore {
     ///
     /// A complete unacknowledged tail is validated, including that the old
     /// witness boundary falls on a record boundary, before the writer advances
-    /// the witness. A failure there is not a checkpoint publication, but the
+    /// the witness after the staged checkpoint has passed verification. A
+    /// failure while advancing the witness is not a checkpoint publication, but the
     /// witness may still need inspection. The exclusive store lock is held
     /// until selection publication and its directory synchronization return.
     /// Checkpoint and selection outcomes use the same classification as
@@ -484,6 +506,46 @@ impl CheckpointStore {
         })
     }
 
+    /// Rebuilds managed selection from a trusted checkpoint and its suffix
+    /// with independent base and output checkpoint limits. The whole-log,
+    /// suffix replay, spill and checkpoint limits must all pass before tail
+    /// adoption. Admitted logs still undergo full covered-prefix and suffix
+    /// verification. The limits do not cap total memory, I/O or elapsed time.
+    /// A later publication failure can leave a validated tail adopted.
+    pub fn rebuild_managed_selection_bounded_with_limits(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        base_checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: BoundedSuffixRebuildLimits,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        crate::publication_outcome::track_managed_rebuild(|tracker| {
+            limits.base_checkpoint.validate()?;
+            limits.output_checkpoint.validate()?;
+            let mut spill = SpillLimits::new(
+                limits.max_chunk_keys,
+                limits.max_chunk_key_bytes,
+                limits.max_spill_bytes,
+                limits.max_merge_fan_in,
+                limits.max_operations,
+            )?;
+            spill.max_log_bytes = Some(limits.max_log_bytes);
+            spill.base_checkpoint_limits = limits.base_checkpoint;
+            spill.checkpoint_limits = Some(limits.output_checkpoint);
+            with_standard_hooks(|hooks| {
+                Self::rebuild_bounded_using(
+                    path.as_ref(),
+                    destination.as_ref(),
+                    base_checkpoint.as_ref(),
+                    trusted_digest,
+                    spill,
+                    Some(tracker),
+                    hooks,
+                )
+            })
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn rebuild_bounded_using(
         path: &Path,
@@ -594,7 +656,13 @@ impl CheckpointStore {
         selection::load(&path)?;
         let view = base
             .map(|(checkpoint, digest)| {
-                CheckpointView::open_locked(&path, &checkpoint, digest, lock_file.clone())
+                CheckpointView::open_locked_with_limits(
+                    &path,
+                    &checkpoint,
+                    digest,
+                    lock_file.clone(),
+                    limits.base_checkpoint_limits,
+                )
             })
             .transpose()?;
         let (prefix, witness, length, base_live, base_peak) = match &view {
@@ -664,25 +732,9 @@ impl CheckpointStore {
             // verification checks the complete replay digest before adoption.
             crate::checkpoint::VerifiedLog::from_replay(length, replayed)
         };
-        let pending_tail = (view.is_none() && length > witness).then_some(witness);
-        if length > witness && pending_tail.is_none() {
-            writer.sync_validated_boundary(length).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!(
-                        "unacknowledged tail adoption may have started; inspect the witness before retrying: {error}"
-                    ),
-                )
-            })?;
-        }
-        if writer.len()? != length {
-            return Err(crate::record::invalid_data(
-                "log length changed while adopting its suffix; the witness may have advanced to the validated boundary",
-            ));
-        }
-        if pending_tail.is_none() {
-            writer.verify_witness()?;
-        }
+        // Keep the old witness until the staged output has passed its
+        // size limits and has been read back against the replay digest.
+        let pending_tail = (length > witness).then_some(witness);
         // The staged checkpoint verifies the whole source against verified_log
         // before publication. Recheck the base index before using its entries.
         if let Some(view) = &view {
@@ -1552,12 +1604,7 @@ mod tests {
                 );
                 let message = error.to_string();
                 assert!(
-                    message.contains("unacknowledged tail adoption may have started"),
-                    "v2={}: {message}",
-                    case.v2
-                );
-                assert!(
-                    message.contains("commit witness changed or moved backward"),
+                    message == "log or commit witness changed while the store was open",
                     "v2={}: {message}",
                     case.v2
                 );
@@ -1680,12 +1727,12 @@ mod tests {
         );
     }
 
-    // After the tail is validated, adoption observes a checksum-valid witness
+    // Before staging, witness verification observes a checksum-valid boundary
     // past the log. It must not rewrite that boundary or publish. V2 keeps the
     // mutable boundary in commit.state. V3 keeps it in the log xattr and leaves
     // the header-sized commit.state anchor unchanged.
     #[test]
-    fn substituted_witness_during_adoption_is_not_repaired_or_published() {
+    fn substituted_witness_before_adoption_is_not_repaired_or_published() {
         for v2 in [true, false] {
             let Some(case) = prepare_unacknowledged_tail(v2) else {
                 continue;
@@ -1789,12 +1836,24 @@ mod tests {
                 let Some(case) = prepare_unacknowledged_tail(v2) else {
                     break;
                 };
-                check_full_rebuild_process_kill(&case, mode);
+                check_staged_rebuild_process_kill(&case, mode, true);
             }
         }
     }
 
-    fn check_full_rebuild_process_kill(case: &AdoptionCase, mode: &str) {
+    #[test]
+    fn suffix_rebuild_process_kills_preserve_witness_around_tail_adoption() {
+        for v2 in [true, false] {
+            for mode in ["checkpoint-verified", "tail-adopted"] {
+                let Some(case) = prepare_unacknowledged_tail(v2) else {
+                    break;
+                };
+                check_staged_rebuild_process_kill(&case, mode, false);
+            }
+        }
+    }
+
+    fn check_staged_rebuild_process_kill(case: &AdoptionCase, mode: &str, full: bool) {
         let store = retry(|| Store::open(&case.path)).unwrap();
         let initial = selection::Selection::new(case.base.clone(), case.digest).unwrap();
         selection::publish(&case.path, &initial, || Ok(()), selection::sync_ancestors).unwrap();
@@ -1810,18 +1869,25 @@ mod tests {
         restore_witness(&case.path, &case.rolled_back);
 
         let destination = case.root().join("killed");
-        let mut child = Command::new(std::env::current_exe().unwrap())
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
             .args([
                 "--exact",
                 "checkpoint_store::rebuild::tests::bounded_rebuild_crash_child",
                 "--nocapture",
             ])
-            .env("EMDA_FULL_REBUILD_CRASH", mode)
             .env("EMDA_BOUNDED_REBUILD_PATH", &case.path)
             .env("EMDA_BOUNDED_REBUILD_DEST", &destination)
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .stdout(Stdio::piped());
+        if full {
+            command.env("EMDA_FULL_REBUILD_CRASH", mode);
+        } else {
+            command
+                .env("EMDA_BOUNDED_REBUILD_CRASH", mode)
+                .env("EMDA_BOUNDED_REBUILD_BASE", &case.base)
+                .env("EMDA_BOUNDED_REBUILD_DIGEST", encode_hex(&case.digest));
+        }
+        let mut child = command.spawn().unwrap();
         let output = child.stdout.take().unwrap();
         let (sender, receiver) = mpsc::channel();
         let reader = std::thread::spawn(move || {
@@ -1908,21 +1974,25 @@ mod tests {
         assert_no_staged_markers(&case.path);
 
         let retry_path = case.root().join("retry");
-        let rebuilt = CheckpointStore::rebuild_managed_selection_full_bounded(
-            &case.path,
-            &retry_path,
-            BoundedFullRebuildLimits {
-                max_log_bytes: case.complete_log.len() as u64,
-                max_operations: 7,
-                max_live_keys: 4,
-                max_live_key_bytes: 10,
-                max_chunk_keys: 1,
-                max_chunk_key_bytes: 4096,
-                max_spill_bytes: 32 << 20,
-                max_merge_fan_in: 2,
-            },
-        )
-        .unwrap();
+        let rebuilt = if full {
+            CheckpointStore::rebuild_managed_selection_full_bounded(
+                &case.path,
+                &retry_path,
+                BoundedFullRebuildLimits {
+                    max_log_bytes: case.complete_log.len() as u64,
+                    max_operations: 7,
+                    max_live_keys: 4,
+                    max_live_key_bytes: 10,
+                    max_chunk_keys: 1,
+                    max_chunk_key_bytes: 4096,
+                    max_spill_bytes: 32 << 20,
+                    max_merge_fan_in: 2,
+                },
+            )
+            .unwrap()
+        } else {
+            publish_bounded(&case.path, &retry_path, &case.base, &case.digest).unwrap()
+        };
         assert_eq!(rebuilt, digest, "{mode}");
         assert_eq!(fs::read(retry_path).unwrap(), checkpoint, "{mode}");
         assert_eq!(witness_bytes(&case.path), adopted, "{mode}");
@@ -2547,11 +2617,7 @@ mod tests {
             assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
             assert_eq!(
                 witness_bytes(&case.path),
-                if full {
-                    case.witness.clone()
-                } else {
-                    crate::witness::encode_for_test(&log_id(&case.path), case.log.len() as u64)
-                },
+                case.witness,
                 "{damage:?}: unexpected witness after failed spill read, full={full}"
             );
             assert_no_staged_markers(&case.path);

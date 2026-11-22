@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add independent input and output checkpoint limits to bounded managed
+  suffix rebuild. Verify the staged checkpoint before advancing a witness
+  for an unacknowledged tail.
+
 - Add a caller-selected backup file size limit to both writable stores. The
   limit includes the full-log backup envelope and is checked before staging.
 

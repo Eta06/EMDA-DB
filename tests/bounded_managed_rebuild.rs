@@ -1,7 +1,7 @@
 //! Public checks for bounded offline managed-checkpoint rebuild.
 use database_engine::{
-    BatchOperation, BoundedFullRebuildLimits, CheckpointStore, CheckpointViewLimits,
-    ManagedRebuildFailure, Store, cleanup_abandoned_staging,
+    BatchOperation, BoundedFullRebuildLimits, BoundedSuffixRebuildLimits, CheckpointStore,
+    CheckpointViewLimits, ManagedRebuildFailure, Store, cleanup_abandoned_staging,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -564,6 +564,160 @@ fn limits_locks_and_bad_selection_do_not_publish() {
     assert!(matches!(error, ManagedRebuildFailure::NotPublished(_)));
     assert_eq!(fs::read(&selection).unwrap(), b"not a selection");
     assert!(!destination.exists());
+}
+
+#[test]
+fn trusted_base_and_output_limits_are_admitted_before_tail_adoption() {
+    for v2 in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let base = root.path().join("base");
+        let reference = root.path().join("reference");
+        let destination = root.path().join("rebuilt");
+        let store = open_store(&path, v2);
+        store.put(b"base", b"old").unwrap();
+        drop(store);
+        let digest = retry(|| CheckpointStore::rebuild_managed_selection(&path, &base)).unwrap();
+        let previous_witness = witness_bytes(&path);
+        let store = retry(|| Store::open(&path)).unwrap();
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"base",
+                    value: b"new",
+                },
+                BatchOperation::Put {
+                    key: b"suffix",
+                    value: b"added",
+                },
+            ])
+            .unwrap();
+        let expected = store.checkpoint_to(&reference).unwrap();
+        drop(store);
+        let committed_witness = witness_bytes(&path);
+        restore_witness(&path, &previous_witness);
+
+        let log = fs::read(path.join("records.log")).unwrap();
+        let anchor = fs::read(path.join("commit.state")).unwrap();
+        let selection = fs::read(path.join("checkpoint.selection")).unwrap();
+        let base_file = fs::read(&base).unwrap();
+        let limits = BoundedSuffixRebuildLimits {
+            max_log_bytes: log.len() as u64,
+            max_operations: 2,
+            max_chunk_keys: 1,
+            max_chunk_key_bytes: 6,
+            max_spill_bytes: 4096,
+            max_merge_fan_in: 2,
+            base_checkpoint: CheckpointViewLimits {
+                max_file_bytes: base_file.len() as u64,
+                max_blocks: 1,
+            },
+            output_checkpoint: CheckpointViewLimits {
+                max_file_bytes: reference.metadata().unwrap().len(),
+                max_blocks: 1,
+            },
+        };
+        let rebuild = |limits| {
+            CheckpointStore::rebuild_managed_selection_bounded_with_limits(
+                &path,
+                &destination,
+                &base,
+                &digest,
+                limits,
+            )
+        };
+        for (rejected, message) in [
+            (
+                BoundedSuffixRebuildLimits {
+                    max_log_bytes: limits.max_log_bytes - 1,
+                    ..limits
+                },
+                "existing log exceeds configured limit",
+            ),
+            (
+                BoundedSuffixRebuildLimits {
+                    max_operations: 1,
+                    ..limits
+                },
+                "rebuild operation limit exceeded",
+            ),
+            (
+                BoundedSuffixRebuildLimits {
+                    base_checkpoint: CheckpointViewLimits {
+                        max_file_bytes: limits.base_checkpoint.max_file_bytes - 1,
+                        ..limits.base_checkpoint
+                    },
+                    ..limits
+                },
+                "checkpoint exceeds configured file size limit",
+            ),
+            (
+                BoundedSuffixRebuildLimits {
+                    base_checkpoint: CheckpointViewLimits {
+                        max_blocks: 0,
+                        ..limits.base_checkpoint
+                    },
+                    ..limits
+                },
+                "checkpoint has too many view blocks",
+            ),
+            (
+                BoundedSuffixRebuildLimits {
+                    output_checkpoint: CheckpointViewLimits {
+                        max_file_bytes: limits.output_checkpoint.max_file_bytes - 1,
+                        ..limits.output_checkpoint
+                    },
+                    ..limits
+                },
+                "checkpoint exceeds configured file size limit",
+            ),
+            (
+                BoundedSuffixRebuildLimits {
+                    output_checkpoint: CheckpointViewLimits {
+                        max_blocks: 0,
+                        ..limits.output_checkpoint
+                    },
+                    ..limits
+                },
+                "checkpoint has too many view blocks",
+            ),
+        ] {
+            let result = rebuild(rejected);
+            assert!(
+                matches!(&result, Err(ManagedRebuildFailure::NotPublished(error))
+                    if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message),
+                "{result:?}"
+            );
+            assert!(!destination.exists());
+            assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+            assert_eq!(fs::read(path.join("commit.state")).unwrap(), anchor);
+            assert_eq!(
+                fs::read(path.join("checkpoint.selection")).unwrap(),
+                selection
+            );
+            assert_eq!(fs::read(&base).unwrap(), base_file);
+            assert_eq!(witness_bytes(&path), previous_witness);
+            assert_no_stages(&path);
+            assert_no_stages(root.path());
+        }
+
+        assert_eq!(rebuild(limits).unwrap(), expected);
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            fs::read(&reference).unwrap()
+        );
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+        assert_eq!(witness_bytes(&path), committed_witness);
+        let reopened = retry(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"base").unwrap().as_deref(),
+            Some(b"new".as_slice())
+        );
+        assert_eq!(
+            reopened.get(b"suffix").unwrap().as_deref(),
+            Some(b"added".as_slice())
+        );
+    }
 }
 
 #[test]

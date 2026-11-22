@@ -57,6 +57,7 @@ pub(super) struct SpillLimits {
     pub(super) max_operations: u64,
     pub(super) max_log_bytes: Option<u64>,
     pub(super) live_limits: Option<(usize, u64)>,
+    pub(super) base_checkpoint_limits: crate::CheckpointViewLimits,
     pub(super) checkpoint_limits: Option<crate::CheckpointViewLimits>,
 }
 
@@ -76,6 +77,7 @@ impl SpillLimits {
             max_operations,
             max_log_bytes: None,
             live_limits: None,
+            base_checkpoint_limits: crate::CheckpointViewLimits::default(),
             checkpoint_limits: None,
         };
         limits.validate()?;
