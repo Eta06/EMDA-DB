@@ -562,6 +562,65 @@ fn structured_backup_failures_distinguish_before_and_after_publication() {
 }
 
 #[test]
+fn backup_rejects_a_self_consistent_substitution_after_stage_sync() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"key", b"original").unwrap();
+    drop(store);
+    let (log, _) = Log::open(&source, false).unwrap();
+    let before = std::fs::read(source.join("records.log")).unwrap();
+    let witness = std::fs::read(source.join("commit.state")).unwrap();
+    let destination = root.path().join("backup");
+    let result = crate::publication_outcome::track(|tracker| {
+        create_with_stage_hooks(
+            &log,
+            &destination,
+            crate::directory::sync_existing,
+            || {
+                tracker.begin_publication();
+                Ok(())
+            },
+            |point| {
+                if point == BackupCreationPoint::FileSynced {
+                    let stage = std::fs::read_dir(root.path())?
+                        .map(|entry| entry.unwrap().path())
+                        .find(|path| path.extension().is_some_and(|ext| ext == "data"))
+                        .expect("backup staging file");
+                    let mut alternate = before.clone();
+                    let replacement = record::encode(record::Operation::Put, b"key", b"modified")?;
+                    alternate[witness::LOG_HEADER_SIZE..].copy_from_slice(&replacement);
+                    let file = OpenOptions::new().read(true).write(true).open(stage)?;
+                    file.write_all_at(&alternate, HEADER_SIZE)?;
+                    file.write_all_at(
+                        &Sha256::digest(&alternate),
+                        HEADER_SIZE + alternate.len() as u64 + 16,
+                    )?;
+                    file.sync_all()?;
+                    assert!(validate(&file).is_ok());
+                }
+                Ok(())
+            },
+        )
+    });
+    let Err(crate::PublicationFailure::NotPublished(error)) = result else {
+        panic!("substituted backup was not rejected before publication: {result:?}");
+    };
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(!destination.exists());
+    assert_eq!(std::fs::read(source.join("records.log")).unwrap(), before);
+    assert_eq!(std::fs::read(source.join("commit.state")).unwrap(), witness);
+
+    create(&log, &destination).unwrap();
+    let restored = root.path().join("restored");
+    Store::restore(&destination, &restored).unwrap();
+    assert_eq!(
+        Store::open(&restored).unwrap().get(b"key").unwrap(),
+        Some(b"original".to_vec())
+    );
+}
+
+#[test]
 fn structured_restore_failures_distinguish_before_and_after_publication() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source");

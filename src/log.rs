@@ -435,6 +435,23 @@ impl Log {
     /// index. Used for backup/restore verification; the returned log has no
     /// witness and cannot acknowledge mutations.
     pub(crate) fn verify_io(file: Box<dyn LogIo>) -> io::Result<Self> {
+        Self::verify_io_using(file, None)
+    }
+
+    /// Check the digest against the same byte stream the record parser sees.
+    pub(crate) fn verify_io_digest(
+        file: Box<dyn LogIo>,
+        length: u64,
+        digest: &[u8; 32],
+    ) -> io::Result<Self> {
+        Self::verify_io_using(file, Some((length, digest)))
+    }
+
+    fn verify_io_using(
+        file: Box<dyn LogIo>,
+        expected: Option<(u64, &[u8; 32])>,
+    ) -> io::Result<Self> {
+        use sha2::Digest;
         let (log_id, metadata) = log_identity(file.as_ref())?;
         let log = Self {
             file,
@@ -443,7 +460,20 @@ impl Log {
             metadata,
             anchor: None,
         };
-        log.visit_records(0, None, |_, _| Ok(()))?;
+        if let Some((length, digest)) = expected {
+            if log.len()? != length {
+                return Err(record::invalid_data("verified log length mismatch"));
+            }
+            let mut hasher = Sha256::new();
+            log.visit_records_with_digest(0, length, length, &mut hasher, |_, _| Ok(()))?;
+            if hasher.finalize().as_slice() != digest || log.len()? != length {
+                return Err(record::invalid_data(
+                    "verified log checksum or length mismatch",
+                ));
+            }
+        } else {
+            log.visit_records(0, None, |_, _| Ok(()))?;
+        }
         Ok(log)
     }
 
@@ -1097,13 +1127,16 @@ impl Log {
         mut visit: impl FnMut(Vec<u8>, Option<StreamValue<D::Output>>) -> io::Result<()>,
     ) -> io::Result<()> {
         let mut offset = reader.position();
-        if offset == 0 && self.log_id.is_some() {
+        if let Some(expected_id) = self.log_id.filter(|_| offset == 0) {
             let mut header = [0_u8; LOG_HEADER_SIZE];
             reader.read_exact(&mut header)?;
-            if self.metadata {
-                metadata_witness::parse_header(&header)?;
+            let id = if self.metadata {
+                metadata_witness::parse_header(&header)?
             } else {
-                witness::parse_header(&header)?;
+                witness::parse_header(&header)?
+            };
+            if id != expected_id {
+                return Err(record::invalid_data("log identity changed during replay"));
             }
             offset = LOG_HEADER_SIZE as u64;
             debug_assert_eq!(reader.position(), offset);

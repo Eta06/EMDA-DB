@@ -125,7 +125,12 @@ fn create_with_stage_hooks(
     hook(BackupCreationPoint::FooterWritten)?;
     temp.sync_all()?;
     hook(BackupCreationPoint::FileSynced)?;
-    validate(&temp)?;
+    let verified = validate(&temp)?;
+    if verified.log_len != log_len || verified.digest != digest {
+        return Err(record::invalid_data(
+            "staged backup differs from the copied log",
+        ));
+    }
     hook(BackupCreationPoint::Verified)?;
     before_publish()?;
     // The temp file is on the destination filesystem. Publish only a complete,
@@ -458,23 +463,20 @@ fn restore_into(
     }
     log.sync_all()?;
     stage_hook(RebuildPoint::LogSynced)?;
-    // Read the target back after sync; a checksum of the source alone would
-    // not detect corruption introduced while writing the restored file.
-    if log.metadata()?.len() != info.log_len
-        || hash_data(info.log_len, |buffer, offset| {
-            FileExt::read_exact_at(&log, buffer, offset)
-        })? != info.digest
-    {
-        return Err(record::invalid_data("restored log checksum mismatch"));
-    }
     // A validated zero-byte legacy backup has no witness. Restore it as an
     // empty witnessed store so normal open cannot confuse it with an
     // interrupted initialization or silently weaken later acknowledgements.
-    if info.log_len == 0 {
+    let log = if info.log_len == 0 {
+        if log.metadata()?.len() != 0 {
+            return Err(record::invalid_data("restored empty log changed length"));
+        }
         initialize_empty_restored_log(&mut log, empty_hook, metadata_witness::initialize)?;
-    }
-    // Revalidate the restored bytes, including every record checksum.
-    let log = Log::verify_io(Box::new(log))?;
+        Log::verify_io(Box::new(log))?
+    } else {
+        // Read the synced target back and verify the same bytes against both
+        // the backup digest and every record checksum.
+        Log::verify_io_digest(Box::new(log), info.log_len, &info.digest)?
+    };
     stage_hook(RebuildPoint::LogVerified)?;
     log.install_restore_witness_with_hook(destination, witness_hook)?;
     stage_hook(RebuildPoint::WitnessInstalled)?;
@@ -533,17 +535,16 @@ fn validate(file: &File) -> io::Result<BackupInfo> {
         return Err(record::invalid_data("backup length mismatch"));
     }
     let digest: [u8; 32] = footer[16..].try_into().expect("fixed digest field");
-    let actual = hash_data(log_len, |buffer, offset| {
-        FileExt::read_exact_at(file, buffer, HEADER_SIZE + offset)
-    })?;
-    if actual != digest {
-        return Err(record::invalid_data("backup checksum mismatch"));
-    }
     let reader = BackupLog {
         file: file.try_clone()?,
         log_len,
     };
-    let _ = Log::verify_io(Box::new(reader))?;
+    Log::verify_io_digest(Box::new(reader), log_len, &digest)?;
+    if file.metadata()?.len() != total {
+        return Err(record::invalid_data(
+            "backup length changed during verification",
+        ));
+    }
     Ok(BackupInfo { log_len, digest })
 }
 

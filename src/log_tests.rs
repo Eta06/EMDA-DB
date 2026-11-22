@@ -527,6 +527,29 @@ fn assert_chunked(reads: &Arc<Mutex<Vec<usize>>>) {
 }
 
 #[test]
+fn detached_log_checks_digest_and_records_in_one_bounded_pass() {
+    use sha2::Digest;
+
+    let id = [7_u8; 16];
+    let value = vec![0x5a; crate::recovery::RECOVERY_READ_BUFFER_BYTES * 2 + 11];
+    let mut bytes = v2_header(id).to_vec();
+    bytes.extend(record::encode(record::Operation::Put, b"wide", &value).unwrap());
+    let length = bytes.len();
+    let digest = Sha256::digest(&bytes).into();
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let file = ReplayFile {
+        bytes,
+        reads: Arc::clone(&reads),
+        fail_read: None,
+    };
+    Log::verify_io_digest(Box::new(file), length as u64, &digest).unwrap();
+    assert_chunked(&reads);
+    let reads = reads.lock().unwrap();
+    assert_eq!(&reads[..2], &[8, LOG_HEADER_SIZE]);
+    assert_eq!(reads[2..].iter().sum::<usize>(), length);
+}
+
+#[test]
 fn put_and_delete_replay_checks_a_value_larger_than_the_read_buffer() {
     let id = [7_u8; 16];
     let value = vec![0x5a_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 100];
