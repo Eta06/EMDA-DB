@@ -19,6 +19,7 @@ const HEADER_BYTES: u64 = 112;
 pub(crate) const FRAME_BYTES: u64 = HEADER_BYTES + 32;
 const MAX_KEY_BYTES: usize = 1024;
 const CHUNK_BYTES: usize = 64 * 1024;
+const DIGEST_DOMAIN: &[u8] = b"EMDA retained base v2\0";
 
 // The key and value lengths are bounded by the format.
 pub(crate) fn encoded_entry_bytes(key: &[u8], value_len: usize) -> u64 {
@@ -447,7 +448,7 @@ fn scan_using<R: Read, B: Read>(
     } = parse_header(&header, limits)?;
     let mut reader = prepare_body(reader, file_bytes - HEADER_BYTES + 1);
     let mut hash = Sha256::new();
-    hash.update(b"EMDA retained base v2\0");
+    hash.update(DIGEST_DOMAIN);
     hash.update(header);
     let mut previous = [0u8; MAX_KEY_BYTES];
     let mut previous_len = 0usize;

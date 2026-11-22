@@ -360,9 +360,11 @@ merge to a private file through fixed-size buffers. The writer authenticates
 all base blocks, including values shadowed by replacements or deletes. The
 successor opens its synced base once to authenticate it against the writer's
 digest and construct its sparse index. Rotation then rechecks the complete
-source before publishing the successor. The sizing and writing paths allocate
-no scan pages or full value copies. The suffix, overlay, sparse indexes and
-staged files have their own resource costs.
+source before publishing the successor. For a base already parsed at open,
+the recheck hashes the original admitted range on the pinned descriptor
+and checks the authenticated digest, trailer and exact EOF. The sizing
+and writing paths allocate no scan pages or full value copies. The suffix,
+overlay, sparse indexes and staged files have their own resource costs.
 
 `reclaim_inactive` verifies the active bytes and synchronized selection,
 checks the inactive slot's ownership and file types, and moves it under

@@ -1563,7 +1563,23 @@ fn reclamation_refuses_unknown_files_and_an_invalid_active_base() {
     file.write_all_at(&[0], 0).unwrap();
     assert!(store.reclaim_inactive().is_err());
     assert!(inactive.exists());
-    file.write_all_at(&data, 0).unwrap();
+    let mut changed = data.clone();
+    let trailer = changed.len() - 32;
+    changed[trailer - 1] ^= 1;
+    let mut hash = Sha256::new();
+    hash.update(b"EMDA retained base v2\0");
+    hash.update(&changed[..trailer]);
+    changed[trailer..].copy_from_slice(&hash.finalize());
+    let mut bad_trailer = data.clone();
+    bad_trailer[trailer] ^= 1;
+    let mut extra = data.clone();
+    extra.push(0);
+    for bytes in [&changed, &bad_trailer, &data[..trailer], &extra] {
+        fs::write(&base, bytes).unwrap();
+        assert!(store.reclaim_inactive().is_err());
+        assert!(inactive.exists());
+    }
+    fs::write(&base, data).unwrap();
     assert!(store.reclaim_inactive().unwrap());
 }
 

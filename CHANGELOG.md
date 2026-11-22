@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify retained bases before maintenance by hashing the previously admitted
+  byte range and checking the original trailer and exact EOF.
+
 - Hash each authority-backed append once for both the pending authority
   record and the local witness.
 

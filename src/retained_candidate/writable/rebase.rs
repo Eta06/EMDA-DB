@@ -23,7 +23,7 @@ impl RetainedStore {
         if <[u8; 32]>::from(observed.finalize()) != digest {
             return Err(record::invalid_data("retained suffix changed"));
         }
-        self.base.verify(self.limits.base)?;
+        self.base.verify()?;
         self.verify_boundary(&digest)
     }
 

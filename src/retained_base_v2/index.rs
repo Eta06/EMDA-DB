@@ -1,7 +1,8 @@
 //! Sparse in-memory directory over the validated, immutable base file.
 use super::{
-    CHUNK_BYTES, Expected, FRAME_BYTES, HEADER_BYTES, Limits, MAX_KEY_BYTES, Validated, add,
-    encode_header, entry_lengths, invalid, preflight_file, scan_buffered, validate_value_budget,
+    CHUNK_BYTES, DIGEST_DOMAIN, Expected, FRAME_BYTES, HEADER_BYTES, Limits, MAX_KEY_BYTES,
+    Validated, add, encode_header, entry_lengths, invalid, preflight_file, scan_buffered,
+    validate_value_budget,
 };
 use crate::recovery::PositionalReader;
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
@@ -320,9 +321,25 @@ impl IndexedBase {
         &self.metadata
     }
 
-    pub(crate) fn verify(&self, limits: Limits) -> io::Result<()> {
-        let reader = PositionalReader::new(&self.file, 0);
-        if scan_buffered(reader, limits, None)? != self.metadata {
+    /// Check that the pinned file still contains the exact bytes parsed at
+    /// open. The validated length already includes admission for one EOF probe.
+    pub(crate) fn verify(&self) -> io::Result<()> {
+        let length = self.metadata.file_bytes;
+        let reader = PositionalReader::new(&self.file, 0).take(length + 1);
+        let mut reader =
+            io::BufReader::with_capacity(length.min(CHUNK_BYTES as u64) as usize, reader);
+        let mut digest = Sha256::new();
+        digest.update(DIGEST_DOMAIN);
+        let body = length - 32;
+        if io::copy(&mut reader.by_ref().take(body), &mut digest)? != body {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
+        }
+        let mut trailer = [0; 32];
+        reader.read_exact(&mut trailer)?;
+        if trailer != self.metadata.digest
+            || <[u8; 32]>::from(digest.finalize()) != self.metadata.digest
+            || io::copy(&mut reader, &mut io::sink())? != 0
+        {
             return Err(invalid("retained base changed"));
         }
         Ok(())
