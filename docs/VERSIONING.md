@@ -35,6 +35,13 @@ Automatic checkpointing adds an engine-owned `.emda-auto-checkpoints-v1` directo
 
 Add user-relevant changes to `CHANGELOG.md` under `Unreleased` when making them. Use categories as needed: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`, and `Limitations`. Describe behavior and migration requirements, not only internal commit names. Keep README status and compatibility information current.
 
+Use focused Git commits to track unreleased changes. Record the exact tested
+revision in validation and benchmark reports, along with commands and raw
+results when available. Preserve dated README and handoff claims as historical
+evidence and label their scope when newer work changes the current status.
+Publish coherent, validated batches to the integration target. Reserve software
+version changes and release tags for intentional releases.
+
 ## Preparing and publishing a release
 
 The current `0.1.0` package version is a prototype and has **not** been tagged or published. When a maintainer intentionally prepares a release:

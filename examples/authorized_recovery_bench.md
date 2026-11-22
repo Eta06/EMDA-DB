@@ -41,7 +41,8 @@ can encounter a WAL. A separate phase times a streaming scan against
 the workload model on every engine. SQLite's open does less integrity work
 than the retained and full-log opens. RSS and total process user and
 system CPU time come from the platform's `/usr/bin/time`. CPU readings
-are quantized to hundredths of a second. The runner samples allocated bytes,
+from `time` are quantized to hundredths of a second. The runner also
+measures phase CPU time with the process clock. It samples allocated bytes,
 including visible stages and legacy archives, about every 25 ms. It counts
 hard-linked files once per filesystem and inode. Directory traversal can
 race publication, and filesystem allocation may be shared or unreported.
@@ -57,3 +58,5 @@ does not provide end-to-end memory quotas, cold start at boot, physical
 power-loss validation or an independent off-host restore.
 
 See the [cross-platform results](../benchmarks/results/2026-11-19-authorized-recovery-resources/README.md).
+The [three-engine matrix](../benchmarks/results/2026-11-22-recovery-sqlite-matrix/README.md)
+covers three dataset sizes on macOS APFS and Linux ext4.
