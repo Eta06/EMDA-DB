@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject impossible offline restore work before collecting more suffix keys
+  or scanning retained base values.
+
 - Recognize presence and absence guards through negated boolean document
   filters when choosing eligible indexes.
 

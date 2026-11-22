@@ -182,15 +182,17 @@ values returned by each read. They do not revalidate unrelated suffix history
 after open. Writable recovery still needs a committed witness and durable
 generation selection.
 
-New-history restore verifies the full suffix before base admission and
-checks its digest again during ordered replay. The base validator and suffix
-replay retain live keys and per-value locations and digests. Staging limits
-count the logical payload at every intermediate state, including within a
-batch. Each value is authenticated again when read for the private store.
-Before publication an ordinary reopen verifies the new history, then a
-bounded scan checks each restored key, length and value digest. Restore
-memory includes the live-key metadata, ordinary store index, one decoded
-value and its encoded append, plus batch metadata and I/O buffers.
+New-history restore verifies the full suffix digest before base admission
+and checks it again during ordered replay. Before scanning base values,
+it uses the declared base entry count and ordered suffix operations to
+reject an impossible work budget. Each delete can reduce the minimum live
+count by at most one. Discovery checks this lower bound before adding a
+suffix key to its map. Full validation checks the base digest and charges
+exact live-state work and payload, including intermediate batch states.
+Each value is authenticated again when read for the private output. Before
+publication a streaming verification of the witnessed output checks the
+restored sequence of keys, lengths and value digests. Restore retains
+metadata for suffix-touched keys and uses separate batch and I/O buffers.
 
 ## Independent writable generations
 

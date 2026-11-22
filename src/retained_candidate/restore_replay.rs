@@ -5,7 +5,9 @@ use super::{
     suffix_capacity,
 };
 use crate::retained_base_v2::index::OverlayValue;
-use crate::retained_base_v2::{CapturedValue, FRAME_BYTES, StagingLimits, scan_value_locations};
+use crate::retained_base_v2::{
+    CapturedValue, FRAME_BYTES, StagingLimits, preflight_file, scan_value_locations,
+};
 use crate::store::{GroupedCopy, RestoreSize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -52,16 +54,33 @@ impl RestoreReplay {
             return Err(invalid());
         }
         let boundary = Some((len, expected.digest));
+        check_files(candidate, &expected.candidate)?;
+        let base = open_regular(&candidate.join("base"))?;
+        let frame = preflight_file(
+            &base,
+            base.metadata()?.len(),
+            limits,
+            expected.candidate.base_binding(),
+        )?;
+        let mut minimum_work = frame.entries;
+        if minimum_work > suffix_limits.work {
+            return Err(suffix_capacity("suffix work limit exceeded"));
+        }
+        let mut minimum_live = usize::try_from(frame.entries).map_err(|_| invalid())?;
         let mut touched = HashMap::new();
-        source.replay::<()>(boundary, suffix_limits.operations, |key, _| {
+        source.replay::<()>(boundary, suffix_limits.operations, |key, value| {
+            // Puts cannot shrink the live set. Each delete can remove at
+            // most one entry. Admission still uses exact membership below.
+            charge_suffix_work(&mut minimum_work, suffix_limits.work, minimum_live)?;
+            if value.is_none() {
+                minimum_live = minimum_live.saturating_sub(1);
+            }
             if !touched.contains_key(key) {
                 touched.try_reserve(1).map_err(io::Error::other)?;
                 touched.insert(copy_replay_bytes(key)?, None);
             }
             Ok(())
         })?;
-        check_files(candidate, &expected.candidate)?;
-        let base = open_regular(&candidate.join("base"))?;
         let metadata = scan_value_locations(&base, limits, staging, |key, location| {
             if let Some(value) = touched.get_mut(key) {
                 *value = Some(location);
@@ -261,6 +280,71 @@ mod tests {
                 export,
             )
             .unwrap();
+        let admit = |work| {
+            RestoreReplay::open(
+                &candidate,
+                &suffix,
+                limits,
+                staging,
+                SuffixLimits {
+                    work,
+                    ..suffix_limits
+                },
+                &binding,
+            )
+        };
+        let base_path = candidate.join("base");
+        let base_bytes = fs::read(&base_path).unwrap();
+        let mut damaged = base_bytes.clone();
+        let body = damaged
+            .windows(b"base-data".len())
+            .position(|value| value == b"base-data")
+            .unwrap();
+        damaged[body] ^= 1;
+        fs::write(&base_path, damaged).unwrap();
+        // The two declared live entries and two operations require at
+        // least 16 units. An adequate lower bound still authenticates the body.
+        assert_eq!(
+            admit(15).err().unwrap().to_string(),
+            "suffix work limit exceeded"
+        );
+        assert_eq!(admit(16).err().unwrap().to_string(), "digest mismatch");
+        fs::write(&base_path, base_bytes).unwrap();
+        assert_eq!(
+            admit(18).err().unwrap().to_string(),
+            "suffix work limit exceeded"
+        );
+        admit(19).unwrap();
+        let suffix_bytes = fs::read(&suffix).unwrap();
+        let mut damaged = suffix_bytes.clone();
+        damaged[0] ^= 1;
+        fs::write(&suffix, damaged).unwrap();
+        assert_eq!(admit(15).err().unwrap().to_string(), "invalid candidate");
+        fs::write(&suffix, suffix_bytes).unwrap();
+        let delete_first = root.path().join("delete-first");
+        let ordered = [
+            crate::record::encode(crate::record::Operation::Delete, b"m", b"").unwrap(),
+            crate::record::encode(crate::record::Operation::Put, b"z", b"suffix-data").unwrap(),
+        ]
+        .concat();
+        fs::write(&delete_first, &ordered).unwrap();
+        let delete_binding = SuffixExpected {
+            candidate: binding.candidate.clone(),
+            end: ordered.len() as u64,
+            digest: Sha256::digest(&ordered).into(),
+        };
+        RestoreReplay::open(
+            &candidate,
+            &delete_first,
+            limits,
+            staging,
+            SuffixLimits {
+                work: 13,
+                ..suffix_limits
+            },
+            &delete_binding,
+        )
+        .unwrap();
         let names = || {
             fs::read_dir(root.path())
                 .unwrap()

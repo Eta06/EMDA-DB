@@ -839,9 +839,10 @@ pub struct RestoreLimits {
 /// must be trusted by the caller; all external directories, their ancestors
 /// and input files must remain trusted and stable throughout. Replay keeps
 /// only suffix-touched keys and their locations in memory. That memory grows
-/// with distinct suffix keys, including deleted keys, under the suffix byte
-/// and operation limits. The base is scanned once for admission and again
-/// while streaming the stage. Each write reads
+/// with distinct suffix keys, including deleted keys. Discovery checks a
+/// lower bound on replay work before adding keys to the touched-key map.
+/// The suffix byte and operation limits also apply. The base is scanned once
+/// for exact admission and again while streaming the stage. Each write reads
 /// one value, and the private output synchronizes in groups of up to 64
 /// records and 4 MiB of encoded data. A larger record is copied in fixed-size
 /// chunks and synchronized after its value digest and length are checked.

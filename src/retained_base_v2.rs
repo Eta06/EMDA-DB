@@ -7,7 +7,11 @@
 //! from input; lookup allocates at most the explicit returned-value budget. The
 //! candidate loader stages privately under separate explicit limits.
 use sha2::{Digest, Sha256};
-use std::io::{self, BufRead, BufReader, Read};
+use std::{
+    fs::File,
+    io::{self, BufRead, BufReader, Read},
+    os::unix::fs::FileExt,
+};
 
 pub(crate) mod index;
 
@@ -279,16 +283,45 @@ fn scan<R: Read>(
     )
 }
 
-struct BaseHeader {
+pub(crate) struct BaseHeader {
     source_id: [u8; 16],
     base_id: [u8; 16],
     boundary: u64,
-    entries: u64,
+    pub(crate) entries: u64,
     key_bytes: u64,
     peak_entries: u64,
     peak_key_bytes: u64,
     encoded: u64,
     file_bytes: u64,
+}
+
+// Cheap rejection only. Callers must authenticate the full entry bytes
+// against the independent digest before using the base.
+pub(crate) fn preflight_file(
+    file: &File,
+    length: u64,
+    limits: Limits,
+    expected: Expected,
+) -> io::Result<BaseHeader> {
+    if length < FRAME_BYTES {
+        return Err(invalid("incomplete retained base frame"));
+    }
+    let mut header = [0; HEADER_BYTES as usize];
+    file.read_exact_at(&mut header, 0)?;
+    let header = parse_header(&header, limits)?;
+    if header.file_bytes != length
+        || header.source_id != expected.source_id
+        || header.base_id != expected.base_id
+        || header.boundary != expected.boundary
+    {
+        return Err(invalid("retained base header does not match its binding"));
+    }
+    let mut trailer = [0; 32];
+    file.read_exact_at(&mut trailer, length - 32)?;
+    if trailer != expected.digest {
+        return Err(invalid("retained base trailer does not match its binding"));
+    }
+    Ok(header)
 }
 
 fn parse_header(header: &[u8; HEADER_BYTES as usize], limits: Limits) -> io::Result<BaseHeader> {
