@@ -56,7 +56,6 @@ impl CheckpointViewLimits {
     }
 }
 
-#[derive(Clone)]
 struct Block {
     first_key_prefix: [u8; KEY_PREFIX_BYTES],
     first_key_len: usize,
@@ -110,8 +109,7 @@ impl BlockBuilder {
 /// The trusted digest must be stored independently from the checkpoint file.
 pub struct CheckpointView {
     pub(crate) log: Arc<Log>,
-    checkpoint: File,
-    blocks: Vec<Block>,
+    index: Arc<CheckpointIndex>,
     prefix: u64,
     log_digest: [u8; 32],
     keys: u64,
@@ -122,6 +120,12 @@ pub struct CheckpointView {
     pub(crate) witnessed_boundary: u64,
     // Borrowed snapshots rely on their still-live store's lock instead.
     _lock_file: Option<crate::store_lock::StoreLock>,
+}
+
+// A snapshot pins the exact file and directory verified together at open.
+struct CheckpointIndex {
+    file: File,
+    blocks: Vec<Block>,
 }
 
 impl CheckpointView {
@@ -311,8 +315,10 @@ impl CheckpointView {
         log.release_view_witness()?;
         Ok(Self {
             log: Arc::new(log),
-            checkpoint,
-            blocks,
+            index: Arc::new(CheckpointIndex {
+                file: checkpoint,
+                blocks,
+            }),
             prefix: verified.prefix,
             log_digest: verified.log_digest,
             keys,
@@ -359,7 +365,7 @@ impl CheckpointView {
     }
     /// Number of bounded index blocks retained in this view's directory.
     pub fn block_count(&self) -> usize {
-        self.blocks.len()
+        self.index.blocks.len()
     }
     /// Byte boundary covered by this checkpoint in the source log.
     pub fn log_boundary(&self) -> u64 {
@@ -379,11 +385,10 @@ impl CheckpointView {
 
     // The caller's snapshot borrows the open store and thus relies on its
     // exclusive lock; leaking a snapshot must not leak an extra lock descriptor.
-    pub(crate) fn duplicate_for_snapshot(&self) -> io::Result<Self> {
-        Ok(Self {
+    pub(crate) fn for_snapshot(&self) -> Self {
+        Self {
             log: Arc::clone(&self.log),
-            checkpoint: self.checkpoint.try_clone()?,
-            blocks: self.blocks.clone(),
+            index: Arc::clone(&self.index),
             prefix: self.prefix,
             log_digest: self.log_digest,
             keys: self.keys,
@@ -393,7 +398,7 @@ impl CheckpointView {
             has_tail: self.has_tail,
             witnessed_boundary: self.witnessed_boundary,
             _lock_file: None,
-        })
+        }
     }
 
     // Revalidate the original trusted checkpoint and its covered log bytes
@@ -407,7 +412,7 @@ impl CheckpointView {
     pub(crate) fn verify_checkpoint_file(&self) -> io::Result<checkpoint::VerifiedCheckpoint> {
         let mut count = 0_u64;
         let verified = checkpoint::visit_index_file(
-            &self.checkpoint,
+            &self.index.file,
             self.log.len()?,
             self.witnessed_boundary,
             None,
@@ -439,7 +444,7 @@ impl CheckpointView {
 
     fn read_block(&self, block: &Block) -> io::Result<Vec<u8>> {
         let mut bytes = vec![0_u8; block.length];
-        self.checkpoint.read_exact_at(&mut bytes, block.offset)?;
+        self.index.file.read_exact_at(&mut bytes, block.offset)?;
         if Sha256::digest(&bytes).as_slice() != block.digest {
             return Err(record::invalid_data(
                 "checkpoint view block checksum mismatch",
@@ -466,10 +471,12 @@ impl CheckpointView {
 
     fn preceding_block(&self, key: &[u8]) -> io::Result<Option<usize>> {
         let mut low = 0;
-        let mut high = self.blocks.len();
+        let mut high = self.index.blocks.len();
         while low < high {
             let middle = low + (high - low) / 2;
-            if self.compare_first_key(&self.blocks[middle], key)? != std::cmp::Ordering::Greater {
+            if self.compare_first_key(&self.index.blocks[middle], key)?
+                != std::cmp::Ordering::Greater
+            {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -490,7 +497,7 @@ impl CheckpointView {
         let Some(position) = self.preceding_block(key)? else {
             return Ok(None);
         };
-        let block = &self.blocks[position];
+        let block = &self.index.blocks[position];
         let bytes = self.read_block(block)?;
         let mut low = 0;
         let mut high = block.landmarks.len();
@@ -567,7 +574,7 @@ impl CheckpointView {
             Some(key) => self.preceding_block(key)?.unwrap_or(0),
             None => 0,
         };
-        for block in self.blocks.iter().skip(start) {
+        for block in self.index.blocks.iter().skip(start) {
             let bytes = self.read_block(block)?;
             let mut cursor = BlockCursor::new(&bytes, self.prefix);
             while let Some((key, location)) = cursor.next()? {
@@ -666,6 +673,36 @@ impl<'a> BlockCursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_share_the_verified_file_and_directory_until_the_last_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("index");
+        let store = crate::Store::open(&path).unwrap();
+        store.put(b"key", b"original").unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        drop(store);
+        let base =
+            crate::test_support::retry_lock(|| CheckpointView::open(&path, &checkpoint, &digest))
+                .unwrap();
+        let first = base.for_snapshot();
+        let second = base.for_snapshot();
+        assert!(Arc::ptr_eq(&first.index, &base.index));
+        assert!(Arc::ptr_eq(&second.index, &base.index));
+        assert!(first._lock_file.is_none() && second._lock_file.is_none());
+        let index = Arc::downgrade(&base.index);
+        std::fs::remove_file(&checkpoint).unwrap();
+        assert_eq!(
+            first.get(b"key").unwrap().as_deref(),
+            Some(&b"original"[..])
+        );
+        drop(first);
+        drop(second);
+        assert!(index.upgrade().is_some());
+        drop(base);
+        assert!(index.upgrade().is_none());
+    }
 
     #[test]
     fn prefix_order_is_exact_or_requires_full_key_comparison() {

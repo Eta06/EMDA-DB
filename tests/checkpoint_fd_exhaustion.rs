@@ -63,6 +63,26 @@ fn checkpoint_fd_exhaustion_child() {
         open[0].get(b"during-exhaustion").unwrap().as_deref(),
         Some(&b"acknowledged"[..])
     );
+    // The failed open above released its temporary descriptors. Occupy every
+    // spare slot to check a snapshot of an already-open checkpoint.
+    let mut spare = Vec::new();
+    loop {
+        match fs::File::open("/dev/null") {
+            Ok(file) => spare.push(file),
+            Err(error) => {
+                assert_eq!(error.raw_os_error(), Some(24), "{error}");
+                break;
+            }
+        }
+    }
+    let snapshot = open[0].snapshot().unwrap();
+    assert_eq!(
+        snapshot.get(b"safe").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    drop(snapshot);
+    drop(spare);
+
     // A failed open must release any partially opened descriptors and its
     // store lock. Free two stores to allow the next open's temporary handles.
     drop(open.pop());

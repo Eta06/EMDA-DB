@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Share checkpoint files and block directories across snapshots while
+  preserving their logical reservations and captured views across rollover.
+
 - Verify checkpoints with independent positional reads and reusable key
   buffers, removing one allocation per scanned entry.
 

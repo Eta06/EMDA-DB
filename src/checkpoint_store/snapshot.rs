@@ -6,7 +6,7 @@ use std::time::Instant;
 
 /// Maximum simultaneously active checkpoint snapshots per open store.
 pub const MAX_CHECKPOINT_ACTIVE_SNAPSHOTS: usize = 16;
-/// Maximum combined copied checkpoint-directory blocks across active snapshots.
+/// Maximum combined checkpoint-directory blocks reserved across active snapshots.
 pub const MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS: usize = 262_144;
 /// Maximum combined copied overlay keys, including tombstones, across snapshots.
 pub const MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS: usize = 65_536;
@@ -22,7 +22,7 @@ pub struct CheckpointSnapshotBudgetStatus {
     pub active_limit: usize,
     /// Current reserved checkpoint snapshots.
     pub active: usize,
-    /// Maximum combined copied checkpoint block-directory entries.
+    /// Maximum combined checkpoint block-directory entries reserved.
     pub block_limit: usize,
     /// Block-directory entries currently reserved.
     pub blocks: usize,
@@ -157,11 +157,12 @@ impl Drop for Reservation<'_> {
 
 /// A stable process-local checkpoint-backed view borrowing its store.
 ///
-/// It copies the checkpoint block directory and bounded suffix overlay, not
-/// the complete base index or values. Its original log locations remain valid
+/// It shares the verified checkpoint file and block directory and copies the
+/// bounded suffix overlay. Its original log locations remain valid
 /// because the live source log is append-only. Snapshots cannot outlive the
 /// store or survive reopening and do not provide write transactions. Limits
-/// cover logical copied entries, not allocator overhead or total process memory.
+/// count each snapshot's logical blocks and overlay entries, even when the
+/// checkpoint is shared. Allocator overhead and other memory are separate.
 /// Expired idle snapshots are reclaimed by a later snapshot request, an
 /// explicit reaping call or an optionally started worker.
 pub struct CheckpointSnapshot<'a> {
@@ -368,7 +369,7 @@ impl CheckpointStore {
         deadline: Option<Instant>,
     ) -> io::Result<CheckpointSnapshot<'_>> {
         self.snapshot_using(max_blocks, max_keys, max_key_bytes, deadline, |base| {
-            base.duplicate_for_snapshot()
+            Ok(base.for_snapshot())
         })
     }
 
@@ -378,7 +379,7 @@ impl CheckpointStore {
         max_keys: usize,
         max_key_bytes: usize,
         deadline: Option<Instant>,
-        duplicate: impl FnOnce(&CheckpointView) -> io::Result<CheckpointView>,
+        capture_base: impl FnOnce(&CheckpointView) -> io::Result<CheckpointView>,
     ) -> io::Result<CheckpointSnapshot<'_>> {
         if max_blocks > MAX_CHECKPOINT_VIEW_BLOCKS
             || max_keys > MAX_RECOVERED_VIEW_TAIL_KEYS
@@ -417,7 +418,7 @@ impl CheckpointStore {
             active: true,
         };
         let view = RecoveredCheckpointView {
-            base: duplicate(&state.view.base)?,
+            base: capture_base(&state.view.base)?,
             overlay: state.view.overlay.clone(),
             tail_bytes: state.view.tail_bytes,
         };
@@ -528,7 +529,7 @@ mod tests {
             MAX_RECOVERED_VIEW_TAIL_KEYS,
             MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
             None,
-            |_| Err(io::Error::other("injected snapshot duplication error")),
+            |_| Err(io::Error::other("injected snapshot capture error")),
         );
         assert!(failed.is_err());
         assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
@@ -538,7 +539,7 @@ mod tests {
                 MAX_RECOVERED_VIEW_TAIL_KEYS,
                 MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
                 None,
-                |_| panic!("injected snapshot duplication panic"),
+                |_| panic!("injected snapshot capture panic"),
             );
         }));
         assert!(panic.is_err());
@@ -585,7 +586,7 @@ mod tests {
                 std::thread::sleep(
                     deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(2),
                 );
-                base.duplicate_for_snapshot()
+                Ok(base.for_snapshot())
             },
         );
         assert_eq!(result.err().unwrap().kind(), io::ErrorKind::TimedOut);
