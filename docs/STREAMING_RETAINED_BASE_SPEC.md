@@ -295,8 +295,12 @@ Managed open accepts a recovery ceiling for each resource and checks the
 witness-bound persisted limits before loading the generation. The persisted
 values, available through `limits`, govern writes and ordinary compaction.
 Before reading record payloads, the opener checks the physical base length
-against the expected binding and the admitted byte and work limits. A
-matching length still requires full base validation.
+against the expected binding and the admitted byte and work limits. Before
+replaying the suffix, it also checks the base header, declared counts and
+length, and the trailer against the admitted limits and independent binding.
+A matching header and trailer still require full base validation, including
+hashing the entry bytes and validating their order and lengths, before any
+unacknowledged tail can be adopted or a handle returned.
 `compact_with_limits` verifies the active generation under its existing
 limits and publishes a successor with the explicitly requested values. This
 allows compaction when a readable live set has outgrown the current base

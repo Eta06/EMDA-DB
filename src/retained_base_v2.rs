@@ -279,21 +279,19 @@ fn scan<R: Read>(
     )
 }
 
-fn scan_using<R: Read, B: Read>(
-    mut reader: R,
-    limits: Limits,
-    selection: Option<(&[u8], usize)>,
-    mut staging: Option<(&mut StagedEntries, StagingLimits)>,
-    mut index: ScanIndex<'_>,
-    prepare_body: impl FnOnce(R, u64) -> B,
-    mut visit_value: impl FnMut(&mut B, usize, &mut dyn FnMut(&[u8])) -> io::Result<()>,
-) -> io::Result<(Validated, Option<Vec<u8>>)> {
-    let mut header = [0u8; HEADER_BYTES as usize];
-    // Require a budget for the header before performing any reads.
-    if limits.file_bytes < 144 || limits.work_bytes < 145 {
-        return Err(invalid("budget exceeded"));
-    }
-    reader.read_exact(&mut header)?;
+struct BaseHeader {
+    source_id: [u8; 16],
+    base_id: [u8; 16],
+    boundary: u64,
+    entries: u64,
+    key_bytes: u64,
+    peak_entries: u64,
+    peak_key_bytes: u64,
+    encoded: u64,
+    file_bytes: u64,
+}
+
+fn parse_header(header: &[u8; HEADER_BYTES as usize], limits: Limits) -> io::Result<BaseHeader> {
     if &header[..8] != b"EMDARB02"
         || u32::from_le_bytes(header[8..12].try_into().unwrap()) != 2
         || u32::from_le_bytes(header[12..16].try_into().unwrap()) != 112
@@ -326,6 +324,45 @@ fn scan_using<R: Read, B: Read>(
     {
         return Err(invalid("invalid totals or budget exceeded"));
     }
+    Ok(BaseHeader {
+        source_id,
+        base_id,
+        boundary,
+        entries,
+        key_bytes,
+        peak_entries,
+        peak_key_bytes,
+        encoded,
+        file_bytes,
+    })
+}
+
+fn scan_using<R: Read, B: Read>(
+    mut reader: R,
+    limits: Limits,
+    selection: Option<(&[u8], usize)>,
+    mut staging: Option<(&mut StagedEntries, StagingLimits)>,
+    mut index: ScanIndex<'_>,
+    prepare_body: impl FnOnce(R, u64) -> B,
+    mut visit_value: impl FnMut(&mut B, usize, &mut dyn FnMut(&[u8])) -> io::Result<()>,
+) -> io::Result<(Validated, Option<Vec<u8>>)> {
+    let mut header = [0u8; HEADER_BYTES as usize];
+    // Require a budget for the header before performing any reads.
+    if limits.file_bytes < 144 || limits.work_bytes < 145 {
+        return Err(invalid("budget exceeded"));
+    }
+    reader.read_exact(&mut header)?;
+    let BaseHeader {
+        source_id,
+        base_id,
+        boundary,
+        entries,
+        key_bytes,
+        peak_entries,
+        peak_key_bytes,
+        encoded,
+        file_bytes,
+    } = parse_header(&header, limits)?;
     let mut reader = prepare_body(reader, file_bytes - HEADER_BYTES + 1);
     let mut hash = Sha256::new();
     hash.update(b"EMDA retained base v2\0");

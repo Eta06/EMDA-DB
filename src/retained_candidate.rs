@@ -30,6 +30,17 @@ pub struct Expected {
     pub base_digest: [u8; 32],
 }
 
+impl Expected {
+    fn base_binding(&self) -> retained_base_v2::Expected {
+        retained_base_v2::Expected {
+            digest: self.base_digest,
+            source_id: self.header[8..24].try_into().unwrap(),
+            base_id: self.header[24..40].try_into().unwrap(),
+            boundary: u64::from_le_bytes(self.header[40..48].try_into().unwrap()),
+        }
+    }
+}
+
 /// Publication failure for a candidate. A binding is returned only after the
 /// complete staged candidate has passed verification. `NotPublished` does not
 /// imply that the destination was absent before the call or that all staging
@@ -249,18 +260,12 @@ pub fn lookup(
 ) -> io::Result<Option<Vec<u8>>> {
     let dir = directory.as_ref();
     check_files(dir, expected)?;
-    let base_expected = retained_base_v2::Expected {
-        digest: expected.base_digest,
-        source_id: expected.header[8..24].try_into().unwrap(),
-        base_id: expected.header[24..40].try_into().unwrap(),
-        boundary: u64::from_le_bytes(expected.header[40..48].try_into().unwrap()),
-    };
     let (base, value) = retained_base_v2::lookup_with_metadata(
         open_regular(&dir.join("base"))?,
         limits,
         key,
         max_value_bytes,
-        base_expected,
+        expected.base_binding(),
     )?;
     check_binding(&base, expected)?;
     Ok(value)

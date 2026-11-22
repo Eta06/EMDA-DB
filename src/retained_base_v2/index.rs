@@ -1,7 +1,7 @@
 //! Sparse in-memory directory over the validated, immutable base file.
 use super::{
-    CHUNK_BYTES, FRAME_BYTES, HEADER_BYTES, Limits, MAX_KEY_BYTES, Validated, add, encode_header,
-    entry_lengths, invalid, scan_buffered, validate_value_budget,
+    CHUNK_BYTES, Expected, FRAME_BYTES, HEADER_BYTES, Limits, MAX_KEY_BYTES, Validated, add,
+    encode_header, entry_lengths, invalid, parse_header, scan_buffered, validate_value_budget,
 };
 use crate::recovery::PositionalReader;
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
@@ -200,6 +200,35 @@ enum Selection {
 }
 
 impl IndexedBase {
+    // Reject impossible or mismatched frames before paying replay costs. The
+    // trailer is only a hint here. Opening must still verify the entire base.
+    pub(crate) fn preflight(
+        file: &File,
+        length: u64,
+        limits: Limits,
+        expected: Expected,
+    ) -> io::Result<()> {
+        if length < FRAME_BYTES {
+            return Err(invalid("incomplete retained base frame"));
+        }
+        let mut header = [0; HEADER_BYTES as usize];
+        file.read_exact_at(&mut header, 0)?;
+        let header = parse_header(&header, limits)?;
+        if header.file_bytes != length
+            || header.source_id != expected.source_id
+            || header.base_id != expected.base_id
+            || header.boundary != expected.boundary
+        {
+            return Err(invalid("retained base header does not match its binding"));
+        }
+        let mut trailer = [0; 32];
+        file.read_exact_at(&mut trailer, length - 32)?;
+        if trailer != expected.digest {
+            return Err(invalid("retained base trailer does not match its binding"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn open(file: File, limits: Limits, index_limits: IndexLimits) -> io::Result<Self> {
         let mut builder = Builder {
             limits: index_limits,

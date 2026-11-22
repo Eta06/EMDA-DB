@@ -474,6 +474,50 @@ fn recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix() {
 }
 
 #[test]
+fn recovery_preflights_the_base_frame_without_trusting_its_contents() {
+    let f = Fixture::new(LIMITS);
+    let base_path = f.path.join("base");
+    let base = fs::read(&base_path).unwrap();
+    let witness = fs::read(f.witness()).unwrap();
+    let acknowledged = fs::read(f.log()).unwrap();
+    f.append_unacknowledged(&[0]);
+    let partial = fs::read(f.log()).unwrap();
+
+    let mut malformed_header = base.clone();
+    malformed_header[0] ^= 1;
+    fs::write(&base_path, malformed_header).unwrap();
+    assert_eq!(f.open(LIMITS).err().unwrap().to_string(), "invalid header");
+
+    let trailer = base.len() - 32;
+    let mut modified_body = base.clone();
+    modified_body[trailer - 1] ^= 1;
+    let mut alternate = modified_body.clone();
+    let mut hash = Sha256::new();
+    hash.update(b"EMDA retained base v2\0");
+    hash.update(&alternate[..trailer]);
+    alternate[trailer..].copy_from_slice(&hash.finalize());
+    crate::retained_base_v2::validate(alternate.as_slice(), LIMITS.base).unwrap();
+    fs::write(&base_path, &alternate).unwrap();
+    assert_eq!(
+        f.open(LIMITS).err().unwrap().to_string(),
+        "retained base trailer does not match its binding"
+    );
+    assert_eq!(fs::read(f.log()).unwrap(), partial);
+    assert_eq!(fs::read(f.witness()).unwrap(), witness);
+
+    fs::write(&base_path, &modified_body).unwrap();
+    fs::write(f.log(), &acknowledged).unwrap();
+    f.append_unacknowledged(&record::encode(Operation::Put, b"tail", b"valid").unwrap());
+    let complete = fs::read(f.log()).unwrap();
+    assert_eq!(f.open(LIMITS).err().unwrap().to_string(), "digest mismatch");
+    assert_eq!(fs::read(f.log()).unwrap(), complete);
+    assert_eq!(fs::read(f.witness()).unwrap(), witness);
+    fs::write(&base_path, &base).unwrap();
+    let store = f.open(LIMITS).unwrap();
+    assert_eq!(store.get(b"tail", 5).unwrap(), Some(b"valid".to_vec()));
+}
+
+#[test]
 fn tampered_or_incomplete_suffix_leaves_witness_unchanged() {
     for mode in ["short header", "torn", "split", "missing", "substituted"] {
         let f = Fixture::new(LIMITS);
