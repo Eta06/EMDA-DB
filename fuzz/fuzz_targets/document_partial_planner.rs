@@ -237,7 +237,7 @@ fuzz_target!(|data: &[u8]| {
             }
             4 => {
                 tuple.push(not(opposite.clone()));
-                if kind < 2 {
+                if matches!(kind, 0 | 1 | 4) {
                     partial_equality()
                 } else {
                     DocumentQueryAccess::CollectionScan
