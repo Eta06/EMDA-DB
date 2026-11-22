@@ -230,29 +230,43 @@ fn requires_guard_bound(
     path: &[String],
     expected: &IndexValue,
     lower: bool,
+    negated: bool,
 ) -> bool {
-    let equal = |value| expected.compare_json(value) == Some(Ordering::Equal);
+    let within = |value| {
+        expected.compare_json(value).is_some_and(|order| {
+            order
+                != if lower {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+        })
+    };
+    let proves = |child| requires_guard_bound(child, path, expected, lower, negated);
     match filter {
-        DocumentFilter::Equal { path: field, value } if field == path => equal(value),
+        DocumentFilter::Not(child) => requires_guard_bound(child, path, expected, lower, !negated),
+        DocumentFilter::And(children) if !negated => children.iter().any(proves),
+        DocumentFilter::Or(children) if negated => children.iter().any(proves),
+        DocumentFilter::And(children) | DocumentFilter::Or(children) => {
+            !children.is_empty() && children.iter().all(proves)
+        }
+        DocumentFilter::Equal { path: field, value } if !negated && field == path => within(value),
         DocumentFilter::In {
             path: field,
             values,
-        } if field == path => !values.is_empty() && values.iter().all(equal),
+        } if !negated && field == path => !values.is_empty() && values.iter().all(within),
+        // NotIn includes missing fields, so its negation requires a present
+        // field in the list. A negated comparison has no such guarantee.
+        DocumentFilter::NotIn {
+            path: field,
+            values,
+        } if negated && field == path => !values.is_empty() && values.iter().all(within),
         DocumentFilter::Compare {
             path: field,
             comparison,
             value,
-        } if field == path && value == expected => {
+        } if !negated && field == path && value == expected => {
             matches!(comparison, Comparison::Greater | Comparison::GreaterOrEqual) == lower
-        }
-        DocumentFilter::And(filters) => filters
-            .iter()
-            .any(|child| requires_guard_bound(child, path, expected, lower)),
-        DocumentFilter::Or(filters) => {
-            !filters.is_empty()
-                && filters
-                    .iter()
-                    .all(|child| requires_guard_bound(child, path, expected, lower))
         }
         _ => false,
     }
@@ -265,7 +279,7 @@ fn partial_is_implied(required: &[&DocumentFilter], partial: &PartialFilter) -> 
             let requires = |lower| {
                 required
                     .iter()
-                    .any(|filter| requires_guard_bound(filter, path, value, lower))
+                    .any(|filter| requires_guard_bound(filter, path, value, lower, false))
             };
             requires(true) && requires(false)
         }

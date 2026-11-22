@@ -202,7 +202,7 @@ fuzz_target!(|data: &[u8]| {
         if compound {
             tuple.push(equal("tenant", json!("t")));
         }
-        let mode = bytes[0] % 14;
+        let mode = bytes[0] % 17;
         let partial_equality = || DocumentQueryAccess::PartialEqualityIndex {
             index: "i".into(),
             fields: if compound { 2 } else { 1 },
@@ -257,9 +257,49 @@ fuzz_target!(|data: &[u8]| {
                 ])));
                 DocumentQueryAccess::CollectionScan
             }
-            13 if kind < 2 => {
+            13 => {
                 tuple.push(not(not(guard.clone())));
                 partial_equality()
+            }
+            14..=16 if guard_value.is_some() => {
+                let bound = |comparison| DocumentFilter::Compare {
+                    path: vec!["active".into()],
+                    comparison,
+                    value: guard_value.clone().unwrap(),
+                };
+                match mode {
+                    14 => {
+                        tuple.push(not(DocumentFilter::Or(vec![
+                            not(bound(Comparison::GreaterOrEqual)),
+                            not(bound(Comparison::LessOrEqual)),
+                        ])));
+                        partial_equality()
+                    }
+                    15 => {
+                        let DocumentFilter::Equal { value, .. } = &guard else {
+                            unreachable!("typed guard");
+                        };
+                        let typed = bytes[3] & 1 == 0;
+                        let second = if typed { json!("higher") } else { json!(1.0) };
+                        tuple.push(bound(Comparison::LessOrEqual));
+                        tuple.push(not(DocumentFilter::NotIn {
+                            path: vec!["active".into()],
+                            values: vec![value.clone(), second],
+                        }));
+                        if typed {
+                            partial_equality()
+                        } else {
+                            DocumentQueryAccess::CollectionScan
+                        }
+                    }
+                    _ => {
+                        tuple.push(not(DocumentFilter::Or(vec![
+                            bound(Comparison::Less),
+                            bound(Comparison::Greater),
+                        ])));
+                        DocumentQueryAccess::CollectionScan
+                    }
+                }
             }
             8 | 9 | 10 if guard_value.is_some() => {
                 let bound = |comparison| DocumentFilter::Compare {

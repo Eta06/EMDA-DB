@@ -959,6 +959,88 @@ fn partial_value_proof_distinguishes_integer_float_null_and_missing() {
 }
 
 #[test]
+fn partial_equality_proves_typed_bounds_through_negated_booleans() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            index(
+                "group_one",
+                &["group"],
+                false,
+                PartialFilter::Equals {
+                    path: path("flag"),
+                    value: IndexValue::Integer(1),
+                },
+            ),
+        )
+        .unwrap();
+        for (id, doc) in [
+            ("zero", json!({"group":"g","flag":0})),
+            ("one", json!({"group":"g","flag":1})),
+            ("two", json!({"group":"g","flag":2})),
+            ("float", json!({"group":"g","flag":1.0})),
+            ("null", json!({"group":"g","flag":null})),
+            ("missing", json!({"group":"g"})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        let not = |filter| DocumentFilter::Not(Box::new(filter));
+        let flag = |comparison| cmp("flag", comparison, IndexValue::Integer(1));
+        let lower = || flag(Comparison::GreaterOrEqual);
+        let upper = || flag(Comparison::LessOrEqual);
+        let with_group = |guard| and(vec![eq("group", json!("g")), guard]);
+        let branch_proof = |values| {
+            and(vec![
+                upper(),
+                not(and(vec![
+                    not(lower()),
+                    DocumentFilter::NotIn {
+                        path: path("flag"),
+                        values,
+                    },
+                ])),
+            ])
+        };
+        for guard in [
+            not(not(eq("flag", json!(1)))),
+            not(DocumentFilter::Or(vec![not(lower()), not(upper())])),
+            branch_proof(vec![json!(1), json!(2), json!("above")]),
+        ] {
+            let filter = with_group(guard);
+            compare(db, &query(filter.clone(), 6), partial_eq("group_one", 1));
+            let bounded = db.query_planned("c", &query(filter, 1)).unwrap();
+            assert_eq!(bounded.access, partial_eq("group_one", 1));
+            assert_eq!(bounded.result.plan.scanned, 1);
+            assert_eq!(bounded.result.documents[0].id, "one");
+        }
+        for (guard, ids) in [
+            (branch_proof(vec![json!(0), json!(1)]), &["one", "zero"][..]),
+            (branch_proof(vec![json!(1), json!(1.0)]), &["one"][..]),
+            (
+                not(DocumentFilter::Or(vec![
+                    flag(Comparison::Less),
+                    flag(Comparison::Greater),
+                ])),
+                &["float", "missing", "one"][..],
+            ),
+        ] {
+            let request = query(with_group(guard), 6);
+            compare(db, &request, DocumentQueryAccess::CollectionScan);
+            let planned = db.query_planned("c", &request).unwrap();
+            let actual: Vec<_> = planned
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect();
+            assert_eq!(actual, ids);
+        }
+    });
+}
+
+#[test]
 fn partial_queries_see_staged_documents_entering_and_leaving_the_index() {
     on_backends(|db| {
         db.create_collection("c", CollectionSchema::default())

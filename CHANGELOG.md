@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Use typed bounds implied by negated boolean expressions and membership
+  predicates to select eligible partial document indexes.
+
 - Reject suffix records that cannot fit the remaining overlay work budget
   before allocating replay batch metadata or computing per-value digests.
   The outer record checksum and witness still take precedence on rejection.
