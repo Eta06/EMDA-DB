@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse the verified prefix hash during bounded suffix rebuild, eliminating
+  one full log read while preserving verification before witness advancement.
+
 - Publish retained retirement markers only after the complete marker is
   synchronized. Automatic recovery clears abandoned marker preparation
   files left before publication.

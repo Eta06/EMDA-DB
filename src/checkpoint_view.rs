@@ -199,6 +199,7 @@ impl CheckpointView {
             max_log_bytes,
             max_tail_bytes,
         )
+        .map(|(view, _)| view)
     }
 
     // The caller owns a shared or exclusive lock for the entire view lifetime.
@@ -233,6 +234,7 @@ impl CheckpointView {
             None,
             None,
         )
+        .map(|(view, _)| view)
     }
 
     pub(crate) fn open_locked_with_recovery_limits(
@@ -243,7 +245,7 @@ impl CheckpointView {
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
         max_tail_bytes: Option<u64>,
-    ) -> io::Result<Self> {
+    ) -> io::Result<(Self, Sha256)> {
         limits.validate()?;
         let (mut log, boundary) = Log::open_checkpoint_view(path)?;
         let length = Self::check_log_limit(&log, max_log_bytes)?;
@@ -310,10 +312,10 @@ impl CheckpointView {
         if let Some(limit) = max_tail_bytes {
             Self::checked_tail_bytes(length, verified.prefix, limit)?;
         }
-        checkpoint::verify_log_prefix(&log, &verified)?;
+        let covered_log_hash = checkpoint::verify_log_prefix(&log, &verified)?;
         let has_tail = Self::check_log_limit(&log, max_log_bytes)? > verified.prefix;
         log.release_view_witness()?;
-        Ok(Self {
+        let view = Self {
             log: Arc::new(log),
             index: Arc::new(CheckpointIndex {
                 file: checkpoint,
@@ -328,7 +330,8 @@ impl CheckpointView {
             has_tail,
             witnessed_boundary: boundary,
             _lock_file: Some(lock_file),
-        })
+        };
+        Ok((view, covered_log_hash))
     }
 
     pub(crate) fn check_log_limit(log: &Log, max_log_bytes: Option<u64>) -> io::Result<u64> {

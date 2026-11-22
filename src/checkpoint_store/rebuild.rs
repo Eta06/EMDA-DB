@@ -360,11 +360,11 @@ impl CheckpointStore {
     /// witnessed suffix without loading that suffix into an unbounded index.
     ///
     /// The base file must be a regular, non-symlink checkpoint whose digest
-    /// matches `trusted_digest`. Its covered log prefix is hashed before any
-    /// suffix state is trusted, again before an unacknowledged tail can be
-    /// adopted, and again immediately before the new checkpoint is published.
-    /// Adoption and publication also check the exact suffix bytes seen during
-    /// validation, including records that no longer contribute live values.
+    /// matches `trusted_digest`. The covered log prefix is verified before
+    /// replay and extends into a digest of the exact suffix bytes replayed,
+    /// including records that no longer contribute live values. The staged
+    /// checkpoint is checked against this digest before tail adoption and
+    /// checkpoint publication.
     /// A missing, unreadable, or digest-mismatched base fails before
     /// publication. This does not fall back to an in-memory full-log rebuild.
     ///
@@ -654,17 +654,21 @@ impl CheckpointStore {
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
         selection::load(&path)?;
-        let view = base
-            .map(|(checkpoint, digest)| {
-                CheckpointView::open_locked_with_limits(
+        let (view, mut replayed) = match base {
+            Some((checkpoint, digest)) => {
+                let (view, prefix_hash) = CheckpointView::open_locked_with_recovery_limits(
                     &path,
                     &checkpoint,
                     digest,
                     lock_file.clone(),
                     limits.base_checkpoint_limits,
-                )
-            })
-            .transpose()?;
+                    limits.max_log_bytes,
+                    None,
+                )?;
+                (Some(view), prefix_hash)
+            }
+            None => (None, Sha256::default()),
+        };
         let (prefix, witness, length, base_live, base_peak) = match &view {
             Some(view) => (
                 view.log_boundary(),
@@ -696,7 +700,6 @@ impl CheckpointStore {
         // valid, and it yields them in order. Each child is applied before
         // the next one; their value offsets are not collapsed to the outer
         // record offset.
-        let mut replayed = Sha256::default();
         writer.visit_records_with_digest(
             prefix,
             length,
@@ -717,21 +720,10 @@ impl CheckpointStore {
         if length > witness {
             (hooks.before_adopt)()?;
         }
-        let verified_log = if let Some(view) = &view {
-            use sha2::Digest;
-            let base = view.verify_checkpoint_file()?;
-            crate::checkpoint::bind_replayed_log(
-                &writer,
-                prefix,
-                length,
-                &base.log_digest,
-                &replayed.finalize().into(),
-            )?
-        } else {
-            // Emission uses only replayed locations. Staged checkpoint
-            // verification checks the complete replay digest before adoption.
-            crate::checkpoint::VerifiedLog::from_replay(length, replayed)
-        };
+        // Reuse the verified base-prefix hash, extended with the exact bytes
+        // consumed by replay. Staged readback compares this full digest with
+        // the source again before permitting witness advancement.
+        let verified_log = crate::checkpoint::VerifiedLog::from_replay(length, replayed);
         // Keep the old witness until the staged output has passed its
         // size limits and has been read back against the replay digest.
         let pending_tail = (length > witness).then_some(witness);
@@ -2284,19 +2276,32 @@ mod tests {
     #[test]
     fn same_length_tail_change_after_replay_does_not_advance_witness_or_publish() {
         for full in [false, true] {
-            check_same_length_tail_change(full);
+            check_same_length_log_change(full, false);
         }
     }
 
-    fn check_same_length_tail_change(full: bool) {
+    #[test]
+    fn same_length_covered_log_change_after_replay_does_not_advance_witness_or_publish() {
+        check_same_length_log_change(false, true);
+    }
+
+    fn check_same_length_log_change(full: bool, replace_prefix: bool) {
         let case = unacknowledged_suffix_for_spill();
         let destination = case._directory.path().join("rebuilt");
-        let replacement =
-            crate::record::encode(crate::record::Operation::Put, b"d", b"two").unwrap();
-        let offset = (case.log.len() - replacement.len()) as u64;
+        let (key, value) = if replace_prefix {
+            (b"a", b"edit".as_slice())
+        } else {
+            (b"d", b"two".as_slice())
+        };
+        let replacement = crate::record::encode(crate::record::Operation::Put, key, value).unwrap();
+        let offset = if replace_prefix {
+            crate::witness::LOG_HEADER_SIZE as u64
+        } else {
+            (case.log.len() - replacement.len()) as u64
+        };
         let log_path = case.path.join("records.log");
         let mut reached_adoption = false;
-        let mut change_tail = || {
+        let mut change_log = || {
             reached_adoption = true;
             OpenOptions::new()
                 .write(true)
@@ -2306,7 +2311,7 @@ mod tests {
         let failure = track_managed_rebuild(|tracker| {
             with_standard_hooks(|standard| {
                 let mut hooks = BoundedHooks {
-                    before_adopt: &mut change_tail,
+                    before_adopt: &mut change_log,
                     sync_checkpoint_ancestors: standard.sync_checkpoint_ancestors,
                     before_selection_rename: standard.before_selection_rename,
                     sync_selection_parent: standard.sync_selection_parent,
@@ -2323,21 +2328,14 @@ mod tests {
         });
         assert!(reached_adoption);
         let Err(ManagedRebuildFailure::NotPublished(error)) = failure else {
-            panic!("rebuild accepted a changed suffix: {failure:?}");
+            panic!("rebuild accepted a changed log: {failure:?}");
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
-        assert_eq!(
-            error.to_string(),
-            if full {
-                "checkpoint does not match log prefix"
-            } else {
-                "checkpoint log suffix changed during replay"
-            }
-        );
+        assert_eq!(error.to_string(), "checkpoint does not match log prefix");
         assert_eq!(witness_bytes(&case.path), case.witness);
         assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
         assert_eq!(
-            &fs::read(&log_path).unwrap()[offset as usize..],
+            &fs::read(&log_path).unwrap()[offset as usize..offset as usize + replacement.len()],
             &replacement
         );
         assert!(!destination.exists());

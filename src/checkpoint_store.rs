@@ -353,7 +353,7 @@ impl CheckpointStore {
                 ));
             }
         }
-        let base = CheckpointView::open_locked_with_recovery_limits(
+        let (base, _) = CheckpointView::open_locked_with_recovery_limits(
             &path,
             &checkpoint,
             &digest,

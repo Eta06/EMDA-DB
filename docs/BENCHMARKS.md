@@ -2,6 +2,27 @@
 
 A local comparison harness covers ten engines and six byte-key workloads; no general competitive performance claim has been established. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
 
+## Bounded managed suffix rebuild read volume
+
+A paired Linux ARM64 test compared the verified prefix hash reuse with
+baseline `7842a60`, using Rust 1.85.0 and fresh copies of the same tmpfs
+fixture. The fixture had 256 acknowledged puts to one key with 64 KiB
+values, a trusted checkpoint, and eight suffix puts with 16 KiB values.
+Each run entered through `rebuild_managed_selection_bounded_with_limits`
+with two keys per spill chunk, two-way merging and an eight-operation cap.
+
+| Source reads during rebuild | Baseline | Prefix hash reuse |
+| --- | ---: | ---: |
+| `read` and `pread64` bytes returned for `records.log` | 67,659,780 | 50,744,880 |
+| Successful source log read calls | 1,048 | 788 |
+
+The byte difference of 16,914,900 equals one entire log read. The rebuilt
+checkpoints were byte-identical, the source logs were unchanged, and both
+managed reopens returned all nine expected values. Counts use the return
+values from `strace -y -e trace=read,pread64` during rebuild only. They
+measure application read volume on one fixture. Physical I/O, elapsed
+time, and peak memory were outside this measurement.
+
 ## Verified checkpoint reopen comparison: 2026-11-04
 
 The [raw paired results](../benchmarks/results/2026-11-04-checkpoint-open-comparison.json) compare full replay with `open_with_checkpoint` at source revision `01de13a`. Each fixture used 64-byte values and DB02 batches of up to 256 puts. Checkpoint creation and fixture preparation finished before a bounded quiet check; eight timed warm-cache opens per mode alternated order, and recovered sample values were verified after each timer. The benchmark process ran on CPUs 1–3 and orchestration on CPU 4 of the same four-CPU-quota Intel Xeon Platinum 8573C VM, with `/workspace` overlay storage. The backing storage and host interference are not controlled.
