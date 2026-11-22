@@ -1,7 +1,7 @@
 //! Public checks for bounded offline managed-checkpoint rebuild.
 use database_engine::{
-    BatchOperation, BoundedFullRebuildLimits, CheckpointStore, ManagedRebuildFailure, Store,
-    cleanup_abandoned_staging,
+    BatchOperation, BoundedFullRebuildLimits, CheckpointStore, CheckpointViewLimits,
+    ManagedRebuildFailure, Store, cleanup_abandoned_staging,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -209,6 +209,45 @@ fn full_bounded_rebuild_admits_history_before_adopting_a_complete_tail() {
             assert_no_stages(&path);
         }
 
+        let checkpoint_limits = CheckpointViewLimits {
+            max_file_bytes: reference.metadata().unwrap().len(),
+            max_blocks: 1,
+        };
+        for (rejected, message) in [
+            (
+                CheckpointViewLimits {
+                    max_file_bytes: checkpoint_limits.max_file_bytes - 1,
+                    ..checkpoint_limits
+                },
+                "checkpoint exceeds configured file size limit",
+            ),
+            (
+                CheckpointViewLimits {
+                    max_blocks: 0,
+                    ..checkpoint_limits
+                },
+                "checkpoint has too many view blocks",
+            ),
+        ] {
+            let result =
+                CheckpointStore::rebuild_managed_selection_full_bounded_with_checkpoint_limits(
+                    &path,
+                    &destination,
+                    exact,
+                    rejected,
+                );
+            assert!(
+                matches!(&result, Err(ManagedRebuildFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message),
+                "{result:?}"
+            );
+            assert!(!destination.exists());
+            assert_eq!(fs::read(&selection).unwrap(), original_selection);
+            assert_eq!(witness_bytes(&path), previous_witness);
+            assert_eq!(fs::read(&log_path).unwrap(), log);
+            assert_no_stages(&path);
+        }
+
         fs::write(&log_path, &log[..log.len() - 1]).unwrap();
         let torn =
             CheckpointStore::rebuild_managed_selection_full_bounded(&path, &destination, exact);
@@ -219,8 +258,13 @@ fn full_bounded_rebuild_admits_history_before_adopting_a_complete_tail() {
         fs::write(&log_path, &log).unwrap();
 
         let actual =
-            CheckpointStore::rebuild_managed_selection_full_bounded(&path, &destination, exact)
-                .unwrap();
+            CheckpointStore::rebuild_managed_selection_full_bounded_with_checkpoint_limits(
+                &path,
+                &destination,
+                exact,
+                checkpoint_limits,
+            )
+            .unwrap();
         assert_eq!(actual, expected_digest);
         assert_eq!(
             fs::read(&destination).unwrap(),

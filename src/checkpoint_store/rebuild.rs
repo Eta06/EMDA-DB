@@ -77,7 +77,26 @@ impl CheckpointStore {
         destination: impl AsRef<Path>,
         limits: BoundedFullRebuildLimits,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_managed_selection_full_bounded_with_checkpoint_limits(
+            path,
+            destination,
+            limits,
+            crate::CheckpointViewLimits::default(),
+        )
+    }
+
+    /// Rebuild from the complete witnessed log with caller-selected limits
+    /// for the checkpoint file and its block directory. The staged output
+    /// must fit both limits before the rebuild advances an unwitnessed tail.
+    /// The same limits apply to verification after checkpoint publication.
+    pub fn rebuild_managed_selection_full_bounded_with_checkpoint_limits(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: BoundedFullRebuildLimits,
+        checkpoint_limits: crate::CheckpointViewLimits,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
         crate::publication_outcome::track_managed_rebuild(|tracker| {
+            checkpoint_limits.validate()?;
             let mut spill = SpillLimits::new(
                 limits.max_chunk_keys,
                 limits.max_chunk_key_bytes,
@@ -87,6 +106,7 @@ impl CheckpointStore {
             )?;
             spill.max_log_bytes = Some(limits.max_log_bytes);
             spill.live_limits = Some((limits.max_live_keys, limits.max_live_key_bytes));
+            spill.checkpoint_limits = Some(checkpoint_limits);
             with_standard_hooks(|hooks| {
                 Self::rebuild_spilling(
                     path.as_ref(),
@@ -646,7 +666,8 @@ impl CheckpointStore {
             }
             verified
         };
-        if length > witness {
+        let pending_tail = (view.is_none() && length > witness).then_some(witness);
+        if length > witness && pending_tail.is_none() {
             writer.sync_validated_boundary(length).map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -661,7 +682,9 @@ impl CheckpointStore {
                 "log length changed while adopting its suffix; the witness may have advanced to the validated boundary",
             ));
         }
-        writer.verify_witness()?;
+        if pending_tail.is_none() {
+            writer.verify_witness()?;
+        }
         // The staged checkpoint verifies the whole source against verified_log
         // before publication. Recheck the base index before using its entries.
         if let Some(view) = &view {
@@ -693,13 +716,20 @@ impl CheckpointStore {
             crate::checkpoint::StreamingOptions {
                 tracker: tracker.map(|tracker| &tracker.checkpoint),
                 verified_log,
-                limits: None,
+                limits: limits.checkpoint_limits,
+                pending_tail,
             },
         )?;
         drop(spill);
         let published_lock = lock_file.clone();
-        let published = CheckpointView::open_locked(&path, &destination, &digest, published_lock)
-            .map_err(|error| {
+        let published = CheckpointView::open_locked_with_limits(
+            &path,
+            &destination,
+            &digest,
+            published_lock,
+            limits.checkpoint_limits.unwrap_or_default(),
+        )
+        .map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!("checkpoint was published but managed verification failed: {error}"),
@@ -2233,18 +2263,25 @@ mod tests {
         assert_eq!(cleaned.removed_payloads, 0, "{}", parent.display());
     }
 
-    // The only hook after a finished run is opened and before emission is
-    // `before_adopt`. It runs before witness adoption. Returning success lets
-    // that adoption happen, then emission reads the damaged run and fails
-    // before checkpoint or selection publication.
+    // Damage a finished run after its cursor opens but before emission.
+    // Full rebuild waits for emission to succeed before adopting the tail.
     #[test]
     fn damaged_finished_spill_does_not_publish_checkpoint_or_selection() {
+        check_damaged_finished_spill(false);
+        check_damaged_finished_spill(true);
+    }
+
+    fn check_damaged_finished_spill(full: bool) {
         for damage in [
             SpillDamage::Truncate,
             SpillDamage::EntryTag,
             SpillDamage::Key,
             SpillDamage::SubstituteRun,
         ] {
+            // The substitution fixture matches the suffix-only run size.
+            if full && matches!(damage, SpillDamage::SubstituteRun) {
+                continue;
+            }
             let case = unacknowledged_suffix_for_spill();
             let destination = case._directory.path().join(format!("rebuilt-{damage:?}"));
             let mut saw_finished_run = false;
@@ -2302,11 +2339,10 @@ mod tests {
                     before_selection_rename: &mut before_selection,
                     sync_selection_parent: &mut sync_selection,
                 };
-                CheckpointStore::rebuild_bounded_using(
+                CheckpointStore::rebuild_spilling(
                     &case.path,
                     &destination,
-                    &case.base,
-                    &case.digest,
+                    (!full).then_some((case.base.as_path(), &case.digest)),
                     small_limits(),
                     Some(tracker),
                     &mut hooks,
@@ -2343,8 +2379,12 @@ mod tests {
             assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
             assert_eq!(
                 witness_bytes(&case.path),
-                crate::witness::encode_for_test(&log_id(&case.path), case.log.len() as u64),
-                "{damage:?}: validated tail was not adopted before the failed spill read"
+                if full {
+                    case.witness.clone()
+                } else {
+                    crate::witness::encode_for_test(&log_id(&case.path), case.log.len() as u64)
+                },
+                "{damage:?}: unexpected witness after failed spill read, full={full}"
             );
             assert_no_staged_markers(&case.path);
             assert_no_staged_markers(case._directory.path());

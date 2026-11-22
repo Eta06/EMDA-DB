@@ -958,6 +958,7 @@ impl CheckpointStore {
                 limits: for_rollover.then_some(self.checkpoint_view_limits),
                 tracker,
                 verified_log,
+                pending_tail: None,
             },
         )
     }

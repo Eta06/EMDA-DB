@@ -351,6 +351,7 @@ impl CheckpointStore {
                 limits: Some(self.checkpoint_view_limits),
                 verified_log,
                 tracker: None,
+                pending_tail: None,
             },
             |emit| {
                 state.view.visit_entries(None, None, |key, location| {

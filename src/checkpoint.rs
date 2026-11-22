@@ -60,6 +60,9 @@ pub(crate) struct StreamingOptions<'a> {
     pub(crate) limits: Option<CheckpointViewLimits>,
     pub(crate) tracker: Option<&'a crate::publication_outcome::Tracker>,
     pub(crate) verified_log: VerifiedLog,
+    /// The verified old witness boundary, when a locked caller wants to
+    /// adopt a complete replayed tail only after staging succeeds.
+    pub(crate) pending_tail: Option<u64>,
 }
 
 fn hash_log_prefix(log: &Log, length: u64) -> io::Result<Sha256> {
@@ -165,6 +168,7 @@ pub(crate) fn create_streaming_with_sync(
             limits,
             tracker: None,
             verified_log: VerifiedLog::from_replay(length, hash_log_prefix(log, length)?),
+            pending_tail: None,
         },
     )
 }
@@ -219,6 +223,7 @@ pub(crate) fn create_streaming_with_hooks(
                 limits: None,
                 tracker: None,
                 verified_log,
+                pending_tail: None,
             },
         ),
         entries,
@@ -273,7 +278,11 @@ fn create_streaming_in_directory(
     }
     let limits = options.limits.unwrap_or_default();
     limits.validate()?;
-    log.verify_witness()?;
+    if let Some(boundary) = options.pending_tail {
+        log.verify_witness_at(boundary)?;
+    } else {
+        log.verify_witness()?;
+    }
     let mut checkpoint_bytes = HEADER_BYTES + DIGEST_BYTES;
     if checkpoint_bytes > limits.max_file_bytes {
         return Err(io::Error::new(
@@ -393,6 +402,15 @@ fn create_streaming_in_directory(
         ));
     }
     check_checkpoint_length(log, prefix)?;
+    if let Some(boundary) = options.pending_tail {
+        log.verify_witness_at(boundary)?;
+        log.sync_validated_boundary(prefix).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("unacknowledged tail adoption may have started; inspect the witness before retrying: {error}"),
+            )
+        })?;
+    }
     log.verify_witness()?;
     before_publish()?;
     staging.publish(destination)?;
@@ -819,6 +837,7 @@ mod tests {
                 verified_log,
                 limits: None,
                 tracker: None,
+                pending_tail: None,
             },
         )
         .unwrap_err();

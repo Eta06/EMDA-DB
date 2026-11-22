@@ -782,6 +782,16 @@ impl Log {
     }
 
     pub(crate) fn verify_witness(&self) -> io::Result<()> {
+        self.verify_witness_boundary(None)
+    }
+
+    /// Verify the captured witness when an independently replayed tail still
+    /// extends past it. Callers must validate the physical log separately.
+    pub(crate) fn verify_witness_at(&self, boundary: u64) -> io::Result<()> {
+        self.verify_witness_boundary(Some(boundary))
+    }
+
+    fn verify_witness_boundary(&self, boundary: Option<u64>) -> io::Result<()> {
         self.require_attached_witness()?;
         if log_identity(self.file.as_ref())? != (self.log_id, self.metadata) {
             return Err(record::invalid_data(
@@ -792,7 +802,7 @@ impl Log {
             anchor.verify(LOG_HEADER_SIZE as u64)?;
         }
         if let Some(witness) = &self.witness {
-            witness.verify(self.file.len()?)?;
+            witness.verify(boundary.map_or_else(|| self.file.len(), Ok)?)?;
         }
         Ok(())
     }

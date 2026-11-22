@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Admit full-log rebuild output against caller-selected checkpoint file and
+  block-directory limits before adopting an unwitnessed tail.
+
 - Buffer sequential spill reads and offset-sidecar writes during bounded
   checkpoint rebuilds, and recheck buffered runs at the end of each pass.
 

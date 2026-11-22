@@ -170,6 +170,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
             verified_log: crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher),
             limits: None,
             tracker: None,
+            pending_tail: None,
         },
         |emit| {
             target.visit_records(0, Some(boundary), |key, location| {
