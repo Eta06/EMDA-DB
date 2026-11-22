@@ -285,6 +285,36 @@ impl RecoveredCheckpointView {
         }
     }
 
+    // Public callers validate all key lengths and the key count before
+    // capturing the view. Preserve input order for admission and errors.
+    pub(crate) fn get_many(&self, keys: &[&[u8]]) -> io::Result<Vec<Option<Vec<u8>>>> {
+        let mut size = 0_usize;
+        let mut locations = Vec::with_capacity(keys.len());
+        let mut lookup = self.base.lookup();
+        for key in keys {
+            let location = match self.overlay.get(*key) {
+                Some(location) => *location,
+                None => lookup.location(key)?,
+            };
+            size = size
+                .checked_add(key.len() + location.map_or(0, |entry| entry.length))
+                .filter(|bytes| *bytes <= MAX_SCAN_BYTES)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "bulk read exceeds 32 MiB")
+                })?;
+            locations.push(location);
+        }
+        drop(lookup);
+        locations
+            .into_iter()
+            .map(|location| {
+                location
+                    .map(|location| self.base.log.read(location))
+                    .transpose()
+            })
+            .collect()
+    }
+
     /// Scans recovered keys in bytewise order with exclusive optional bounds.
     /// Each page has the same entry and byte caps as `Store::scan`.
     pub fn scan(

@@ -106,3 +106,67 @@ fn sparse_search_still_detects_corruption_elsewhere_in_the_same_block() {
         ErrorKind::InvalidData
     );
 }
+
+#[test]
+fn bulk_reads_keep_order_and_recheck_blocks_across_calls() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let initial = Store::open(&path).unwrap();
+    let model = prepare(&initial, 640);
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    drop(initial);
+
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let snapshot = store.snapshot().unwrap();
+    let mut current = model.clone();
+    store.put(&key(0), b"replacement").unwrap();
+    current.insert(key(0), b"replacement".to_vec());
+    store.delete(&key(430)).unwrap();
+    current.remove(&key(430));
+    store.put(b"added", b"overlay").unwrap();
+    current.insert(b"added".to_vec(), b"overlay".to_vec());
+
+    let keys = [
+        key(639),
+        key(0),
+        key(1),
+        key(400),
+        key(430),
+        key(0),
+        b"added".to_vec(),
+        b"absent".to_vec(),
+        key(1),
+    ];
+    let requests = keys.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let expected = |values: &BTreeMap<Vec<u8>, Vec<u8>>| {
+        requests
+            .iter()
+            .map(|key| values.get(*key).cloned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(store.get_many(&requests).unwrap(), expected(&current));
+    assert_eq!(snapshot.get_many(&requests).unwrap(), expected(&model));
+
+    // Neither call may retain a checked block for a later API operation.
+    let bytes = std::fs::read(&checkpoint).unwrap();
+    let target = key(20);
+    let offset = bytes
+        .windows(target.len())
+        .position(|window| window == target)
+        .unwrap()
+        + target.len()
+        - 1;
+    OpenOptions::new()
+        .write(true)
+        .open(&checkpoint)
+        .unwrap()
+        .write_all_at(&[bytes[offset] ^ 1], offset as u64)
+        .unwrap();
+    for result in [
+        store.get_many(&[&key(1), &key(2)]),
+        snapshot.get_many(&[&key(1), &key(2)]),
+    ] {
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData);
+    }
+}

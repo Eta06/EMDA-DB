@@ -532,27 +532,7 @@ impl CheckpointStore {
             record::validate_key(key)?;
         }
         let _admission = self.direct_reads.acquire()?;
-        let state = self.read()?;
-        let mut size = 0_usize;
-        let mut locations = Vec::with_capacity(keys.len());
-        for key in keys {
-            let location = state.view.location(key)?;
-            size = size
-                .checked_add(key.len() + location.map_or(0, |entry| entry.length))
-                .filter(|bytes| *bytes <= MAX_SCAN_BYTES)
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "bulk read exceeds 32 MiB")
-                })?;
-            locations.push(location);
-        }
-        locations
-            .into_iter()
-            .map(|location| {
-                location
-                    .map(|location| state.view.base.log.read(location))
-                    .transpose()
-            })
-            .collect()
+        self.read()?.view.get_many(keys)
     }
 
     /// Reads one ordered page. Separate calls do not form a snapshot.

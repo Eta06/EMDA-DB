@@ -456,43 +456,6 @@ impl CheckpointView {
         Ok(())
     }
 
-    // Prefixes suffice for most comparisons. When both keys share a complete
-    // prefix, verify and inspect the on-disk block before choosing a branch.
-    // The directory is derived from the checkpoint only after its trusted
-    // digest and covered log prefix have been checked.
-    fn compare_first_key(
-        &self,
-        block: &Block,
-        key: &[u8],
-        bytes: &mut Vec<u8>,
-    ) -> io::Result<std::cmp::Ordering> {
-        if let Some(comparison) = block.compare_prefix(key) {
-            return Ok(comparison);
-        }
-        self.read_block(block, bytes)?;
-        let mut cursor = BlockCursor::new(bytes, self.prefix);
-        let (first, _) = cursor
-            .next()?
-            .ok_or_else(|| record::invalid_data("empty checkpoint index block"))?;
-        Ok(first.cmp(key))
-    }
-
-    fn preceding_block(&self, key: &[u8], bytes: &mut Vec<u8>) -> io::Result<Option<usize>> {
-        let mut low = 0;
-        let mut high = self.index.blocks.len();
-        while low < high {
-            let middle = low + (high - low) / 2;
-            if self.compare_first_key(&self.index.blocks[middle], key, bytes)?
-                != std::cmp::Ordering::Greater
-            {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
-        }
-        Ok(low.checked_sub(1))
-    }
-
     /// Reads one key from the historical checkpoint.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
@@ -502,21 +465,15 @@ impl CheckpointView {
     }
 
     pub(crate) fn location(&self, key: &[u8]) -> io::Result<Option<ValueLocation>> {
-        let mut bytes = Vec::new();
-        let Some(position) = self.preceding_block(key, &mut bytes)? else {
-            return Ok(None);
-        };
-        let block = &self.index.blocks[position];
-        self.read_block(block, &mut bytes)?;
-        let mut cursor = BlockCursor::at_key(&bytes, self.prefix, &block.landmarks, key)?;
-        while let Some((candidate, location)) = cursor.next()? {
-            match candidate.cmp(key) {
-                std::cmp::Ordering::Equal => return Ok(Some(location)),
-                std::cmp::Ordering::Greater => return Ok(None),
-                std::cmp::Ordering::Less => {}
-            }
+        self.lookup().location(key)
+    }
+
+    pub(crate) fn lookup(&self) -> CheckpointLookup<'_> {
+        CheckpointLookup {
+            view: self,
+            position: None,
+            bytes: Vec::new(),
         }
-        Ok(None)
     }
 
     /// Scans historical keys in bytewise order using exclusive optional bounds.
@@ -560,19 +517,19 @@ impl CheckpointView {
         before: Option<&[u8]>,
         mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
     ) -> io::Result<()> {
-        let mut bytes = Vec::new();
+        let mut lookup = self.lookup();
         let mut after = after;
         let start = match after {
-            Some(key) => self.preceding_block(key, &mut bytes)?.unwrap_or(0),
+            Some(key) => lookup.preceding_block(key)?.unwrap_or(0),
             None => 0,
         };
-        for block in self.index.blocks.iter().skip(start) {
-            self.read_block(block, &mut bytes)?;
+        for (position, block) in self.index.blocks.iter().enumerate().skip(start) {
+            let bytes = lookup.block(position)?;
             // Blocks after the first are strictly above the lower bound.
             let lower = after.take();
             let mut cursor = match lower {
-                Some(key) => BlockCursor::at_key(&bytes, self.prefix, &block.landmarks, key)?,
-                None => BlockCursor::new(&bytes, self.prefix),
+                Some(key) => BlockCursor::at_key(bytes, self.prefix, &block.landmarks, key)?,
+                None => BlockCursor::new(bytes, self.prefix),
             };
             while let Some((key, location)) = cursor.next()? {
                 if lower.is_some_and(|bound| key <= bound) {
@@ -587,6 +544,69 @@ impl CheckpointView {
             }
         }
         Ok(())
+    }
+}
+
+/// One operation's lookup buffer, tied to the verified directory it reads.
+pub(crate) struct CheckpointLookup<'a> {
+    view: &'a CheckpointView,
+    position: Option<usize>,
+    bytes: Vec<u8>,
+}
+
+impl CheckpointLookup<'_> {
+    fn block(&mut self, position: usize) -> io::Result<&[u8]> {
+        if self.position != Some(position) {
+            self.position = None;
+            self.view
+                .read_block(&self.view.index.blocks[position], &mut self.bytes)?;
+            self.position = Some(position);
+        }
+        Ok(&self.bytes)
+    }
+
+    fn preceding_block(&mut self, key: &[u8]) -> io::Result<Option<usize>> {
+        let view = self.view;
+        let mut low = 0;
+        let mut high = view.index.blocks.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            // The directory prefix is verified on open. An inconclusive
+            // comparison uses the complete checked block.
+            let comparison = match view.index.blocks[middle].compare_prefix(key) {
+                Some(comparison) => comparison,
+                None => {
+                    let mut cursor = BlockCursor::new(self.block(middle)?, view.prefix);
+                    let (first, _) = cursor
+                        .next()?
+                        .ok_or_else(|| record::invalid_data("empty checkpoint index block"))?;
+                    first.cmp(key)
+                }
+            };
+            if comparison == std::cmp::Ordering::Greater {
+                high = middle;
+            } else {
+                low = middle + 1;
+            }
+        }
+        Ok(low.checked_sub(1))
+    }
+
+    pub(crate) fn location(&mut self, key: &[u8]) -> io::Result<Option<ValueLocation>> {
+        let Some(position) = self.preceding_block(key)? else {
+            return Ok(None);
+        };
+        let view = self.view;
+        let landmarks = &view.index.blocks[position].landmarks;
+        let mut cursor = BlockCursor::at_key(self.block(position)?, view.prefix, landmarks, key)?;
+        while let Some((candidate, location)) = cursor.next()? {
+            match candidate.cmp(key) {
+                std::cmp::Ordering::Equal => return Ok(Some(location)),
+                std::cmp::Ordering::Greater => return Ok(None),
+                std::cmp::Ordering::Less => {}
+            }
+        }
+        Ok(None)
     }
 }
 

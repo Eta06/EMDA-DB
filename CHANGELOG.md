@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse a verified checkpoint block within point, range, and bulk reads.
+  Each operation starts with an empty buffer and verifies any block it reads.
+
 - Let checkpoint-backed reads use the published view during append and
   synchronization. Writers and full-log operations stay serialized, and a
   complete batch becomes visible only after successful sync.

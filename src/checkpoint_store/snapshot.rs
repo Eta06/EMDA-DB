@@ -249,27 +249,10 @@ impl CheckpointSnapshot<'_> {
         }
         let data = self.view()?;
         let _healthy = self.store.read()?;
-        let view = data.view.as_ref().expect("active snapshot has a view");
-        let mut size = 0_usize;
-        let mut locations = Vec::with_capacity(keys.len());
-        for key in keys {
-            let location = view.location(key)?;
-            size = size
-                .checked_add(key.len() + location.map_or(0, |entry| entry.length))
-                .filter(|bytes| *bytes <= MAX_SCAN_BYTES)
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "bulk read exceeds 32 MiB")
-                })?;
-            locations.push(location);
-        }
-        locations
-            .into_iter()
-            .map(|location| {
-                location
-                    .map(|location| view.base.log.read(location))
-                    .transpose()
-            })
-            .collect()
+        data.view
+            .as_ref()
+            .expect("active snapshot has a view")
+            .get_many(keys)
     }
 
     /// Reads a stable ordered page. Bounds are exclusive; continue until empty.
