@@ -25,6 +25,7 @@ mod compact_exchange;
 mod read_set;
 mod rebuild;
 mod rebuild_spill;
+pub use rebuild::BoundedFullRebuildLimits;
 mod selection;
 mod snapshot;
 mod transaction;

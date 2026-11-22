@@ -37,9 +37,9 @@ mod witness;
 
 pub use cancellation::{CancellationToken, ControlledTransactionError};
 pub use checkpoint_store::{
-    CheckpointSnapshot, CheckpointSnapshotBudgetStatus, CheckpointStore, CheckpointStoreLimits,
-    CheckpointTransaction, CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,
-    MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
+    BoundedFullRebuildLimits, CheckpointSnapshot, CheckpointSnapshotBudgetStatus, CheckpointStore,
+    CheckpointStoreLimits, CheckpointTransaction, CheckpointTransactionMode, CheckpointWorker,
+    CheckpointWorkerStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
 };
 pub use checkpoint_view::{

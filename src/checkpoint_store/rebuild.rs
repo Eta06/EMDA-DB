@@ -2,6 +2,7 @@
 use super::rebuild_spill::{SpillLimits, SpillSession};
 use super::{CheckpointStore, CheckpointView, selection};
 use crate::log::Log;
+use sha2::Sha256;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::ops::ControlFlow;
@@ -36,7 +37,67 @@ fn with_standard_hooks<T>(
     body(&mut hooks)
 }
 
+/// Admission limits for reconstructing a managed checkpoint from a witnessed log.
+#[derive(Clone, Copy, Debug)]
+pub struct BoundedFullRebuildLimits {
+    /// Maximum physical log length, including the header and complete tail.
+    pub max_log_bytes: u64,
+    /// Maximum log operations, counting every child in a batch.
+    pub max_operations: u64,
+    /// Maximum simultaneously live keys at any point in the history.
+    pub max_live_keys: usize,
+    /// Maximum logical bytes of simultaneously live keys at any point.
+    pub max_live_key_bytes: u64,
+    /// Maximum distinct keys in a replay chunk, from 1 through 65,536.
+    pub max_chunk_keys: usize,
+    /// Maximum logical key bytes in a replay chunk, from 1 byte through 64 MiB.
+    pub max_chunk_key_bytes: usize,
+    /// Maximum temporary spill file bytes, including merge inputs and sidecars.
+    pub max_spill_bytes: u64,
+    /// Maximum simultaneous merge inputs, from 2 through 32.
+    pub max_merge_fan_in: usize,
+}
+
 impl CheckpointStore {
+    /// Rebuild a missing or obsolete managed checkpoint by spilling a complete
+    /// witnessed V2 or V3 log replay. The source log is retained. Limits
+    /// apply before tail adoption and include every intermediate batch state.
+    /// The checkpoint records the historical key-count peak. It does not
+    /// persist the historical key-byte peak in the checkpoint format.
+    ///
+    /// This requires trusted, stable directories and the exclusive store lock.
+    /// It validates the complete history, synchronizes a valid unwitnessed
+    /// tail when present, and publishes the checkpoint before selection.
+    /// A valid tail can be adopted even when later publication fails.
+    /// Spill accounting excludes the checkpoint itself, the staging marker,
+    /// filesystem overhead, and total process memory.
+    pub fn rebuild_managed_selection_full_bounded(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: BoundedFullRebuildLimits,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        crate::publication_outcome::track_managed_rebuild(|tracker| {
+            let mut spill = SpillLimits::new(
+                limits.max_chunk_keys,
+                limits.max_chunk_key_bytes,
+                limits.max_spill_bytes,
+                limits.max_merge_fan_in,
+                limits.max_operations,
+            )?;
+            spill.max_log_bytes = Some(limits.max_log_bytes);
+            spill.live_limits = Some((limits.max_live_keys, limits.max_live_key_bytes));
+            with_standard_hooks(|hooks| {
+                Self::rebuild_spilling(
+                    path.as_ref(),
+                    destination.as_ref(),
+                    None,
+                    spill,
+                    Some(tracker),
+                    hooks,
+                )
+            })
+        })
+    }
     /// Rebuilds managed selection from full-log recovery while exclusively
     /// holding the existing store lock. This is useful when the old checkpoint
     /// is missing or its suffix exceeds managed limits. It loads the ordinary
@@ -412,6 +473,24 @@ impl CheckpointStore {
         tracker: Option<&crate::publication_outcome::ManagedTracker>,
         hooks: &mut BoundedHooks<'_>,
     ) -> io::Result<[u8; 32]> {
+        Self::rebuild_spilling(
+            path,
+            destination,
+            Some((base_checkpoint, trusted_digest)),
+            limits,
+            tracker,
+            hooks,
+        )
+    }
+
+    fn rebuild_spilling(
+        path: &Path,
+        destination: &Path,
+        base: Option<(&Path, &[u8; 32])>,
+        limits: SpillLimits,
+        tracker: Option<&crate::publication_outcome::ManagedTracker>,
+        hooks: &mut BoundedHooks<'_>,
+    ) -> io::Result<[u8; 32]> {
         let path = fs::canonicalize(path)?;
         for name in ["store.lock", "records.log"] {
             if !fs::metadata(path.join(name))?.is_file() {
@@ -421,21 +500,27 @@ impl CheckpointStore {
                 ));
             }
         }
-        let base_meta = fs::symlink_metadata(base_checkpoint)?;
-        if !base_meta.file_type().is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "base checkpoint must be a regular non-symlink file",
-            ));
-        }
-        let base_checkpoint = fs::canonicalize(base_checkpoint)?;
+        let base = base
+            .map(|(checkpoint, digest)| {
+                if !fs::symlink_metadata(checkpoint)?.file_type().is_file() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "base checkpoint must be a regular non-symlink file",
+                    ));
+                }
+                Ok((fs::canonicalize(checkpoint)?, digest))
+            })
+            .transpose()?;
         let parent = crate::backup::parent_directory(destination)?;
         let destination = fs::canonicalize(parent)?.join(
             destination
                 .file_name()
                 .expect("parent_directory validates the name"),
         );
-        if destination == base_checkpoint {
+        if base
+            .as_ref()
+            .is_some_and(|(checkpoint, _)| destination == *checkpoint)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "checkpoint destination overwrites the trusted base",
@@ -486,35 +571,54 @@ impl CheckpointStore {
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
         selection::load(&path)?;
-        let view_lock = lock_file.clone();
-        let view = CheckpointView::open_locked(&path, &base_checkpoint, trusted_digest, view_lock)?;
-        let witness = view.witnessed_boundary;
-        let prefix = view.log_boundary();
-        let length = view.log.len()?;
+        let view = base
+            .map(|(checkpoint, digest)| {
+                CheckpointView::open_locked(&path, &checkpoint, digest, lock_file.clone())
+            })
+            .transpose()?;
+        let (prefix, witness, length, base_live, base_peak) = match &view {
+            Some(view) => (
+                view.log_boundary(),
+                view.witnessed_boundary,
+                view.log.len()?,
+                usize::try_from(view.len()).map_err(|_| {
+                    crate::record::invalid_data("checkpoint key count does not fit this platform")
+                })?,
+                view.historical_peak(),
+            ),
+            None => {
+                let (log, witness) = Log::open_checkpoint_view(&path)?;
+                (0, witness, log.len()?, 0, 0)
+            }
+        };
         if prefix > witness || witness > length {
             return Err(crate::record::invalid_data(
                 "checkpoint boundary is outside the witnessed log",
             ));
         }
-        let base_live = usize::try_from(view.len()).map_err(|_| {
-            crate::record::invalid_data("checkpoint key count does not fit this platform")
-        })?;
         let writer = Log::open_checkpoint_writer(&path, witness, length)?;
         if writer.len()? != length {
             return Err(crate::record::invalid_data(
                 "log length changed while opening its witness",
             ));
         }
-        let mut spill = SpillSession::create(&path, limits, base_live, view.historical_peak())?;
+        let mut spill = SpillSession::create(&path, limits, base_live, base_peak)?;
         // `visit_records` yields DB02 children only after the outer record is
         // valid, and it yields them in order. Each child is applied before
         // the next one; their value offsets are not collapsed to the outer
         // record offset.
-        let suffix_digest =
-            writer.visit_observed_suffix(prefix, length, witness, |key, location| {
-                spill.push(&key, location, |key| view.location(key))?;
-                Ok(())
-            })?;
+        let mut replayed = Sha256::default();
+        writer.visit_records_with_digest(
+            prefix,
+            length,
+            witness,
+            &mut replayed,
+            |key, location| {
+                spill.push(&key, location, |key| {
+                    view.as_ref().map_or(Ok(None), |view| view.location(key))
+                })
+            },
+        )?;
         if writer.len()? != length {
             return Err(crate::record::invalid_data(
                 "log length changed during suffix replay",
@@ -524,14 +628,23 @@ impl CheckpointStore {
         if length > witness {
             (hooks.before_adopt)()?;
         }
-        let base = view.verify_checkpoint_file()?;
-        let verified_log = crate::checkpoint::bind_replayed_log(
-            &writer,
-            prefix,
-            length,
-            &base.log_digest,
-            &suffix_digest,
-        )?;
+        let verified_log = if let Some(view) = &view {
+            use sha2::Digest;
+            let base = view.verify_checkpoint_file()?;
+            crate::checkpoint::bind_replayed_log(
+                &writer,
+                prefix,
+                length,
+                &base.log_digest,
+                &replayed.finalize().into(),
+            )?
+        } else {
+            let verified = crate::checkpoint::VerifiedLog::from_replay(length, replayed);
+            if length > witness {
+                verified.verify_current_bytes(&writer)?;
+            }
+            verified
+        };
         if length > witness {
             writer.sync_validated_boundary(length).map_err(|error| {
                 io::Error::new(
@@ -550,7 +663,9 @@ impl CheckpointStore {
         writer.verify_witness()?;
         // The staged checkpoint verifies the whole source against verified_log
         // before publication. Recheck the base index before using its entries.
-        view.verify_checkpoint_file()?;
+        if let Some(view) = &view {
+            view.verify_checkpoint_file()?;
+        }
         let count = u64::try_from(spill.live_count())
             .map_err(|_| io::Error::other("live key count overflow"))?;
         let peak = spill.peak();
@@ -565,7 +680,7 @@ impl CheckpointStore {
             peak,
             &destination,
             |emit| {
-                let emitted = emit_merged(&view, &mut spill, emit)?;
+                let emitted = emit_merged(view.as_ref(), &mut spill, emit)?;
                 if emitted != count {
                     return Err(crate::record::invalid_data(
                         "rebuilt checkpoint count does not match suffix replay",
@@ -621,46 +736,48 @@ impl CheckpointStore {
 }
 
 fn emit_merged(
-    view: &CheckpointView,
+    view: Option<&CheckpointView>,
     spill: &mut SpillSession,
     mut emit: impl FnMut(&[u8], crate::log::ValueLocation) -> io::Result<()>,
 ) -> io::Result<u64> {
     let mut emitted = 0_u64;
     let mut spill_next = spill.next_latest()?;
-    view.visit_entries(None, None, |key, location| {
-        while spill_next
-            .as_ref()
-            .is_some_and(|(spill_key, _)| spill_key.as_slice() < key)
-        {
-            let (spill_key, state) = spill_next.take().expect("peeked spill entry");
-            if let Some(location) = state {
-                emit(&spill_key, location)?;
-                emitted = emitted
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("index count overflow"))?;
+    if let Some(view) = view {
+        view.visit_entries(None, None, |key, location| {
+            while spill_next
+                .as_ref()
+                .is_some_and(|(spill_key, _)| spill_key.as_slice() < key)
+            {
+                let (spill_key, state) = spill_next.take().expect("peeked spill entry");
+                if let Some(location) = state {
+                    emit(&spill_key, location)?;
+                    emitted = emitted
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::other("index count overflow"))?;
+                }
+                spill_next = spill.next_latest()?;
             }
-            spill_next = spill.next_latest()?;
-        }
-        if spill_next
-            .as_ref()
-            .is_some_and(|(spill_key, _)| spill_key.as_slice() == key)
-        {
-            let (_, state) = spill_next.take().expect("matched spill entry");
-            if let Some(location) = state {
+            if spill_next
+                .as_ref()
+                .is_some_and(|(spill_key, _)| spill_key.as_slice() == key)
+            {
+                let (_, state) = spill_next.take().expect("matched spill entry");
+                if let Some(location) = state {
+                    emit(key, location)?;
+                    emitted = emitted
+                        .checked_add(1)
+                        .ok_or_else(|| io::Error::other("index count overflow"))?;
+                }
+                spill_next = spill.next_latest()?;
+            } else {
                 emit(key, location)?;
                 emitted = emitted
                     .checked_add(1)
                     .ok_or_else(|| io::Error::other("index count overflow"))?;
             }
-            spill_next = spill.next_latest()?;
-        } else {
-            emit(key, location)?;
-            emitted = emitted
-                .checked_add(1)
-                .ok_or_else(|| io::Error::other("index count overflow"))?;
-        }
-        Ok(ControlFlow::Continue(()))
-    })?;
+            Ok(ControlFlow::Continue(()))
+        })?;
+    }
     while let Some((key, state)) = spill_next {
         if let Some(location) = state {
             emit(&key, location)?;
@@ -1897,6 +2014,12 @@ mod tests {
 
     #[test]
     fn same_length_tail_change_after_replay_does_not_advance_witness_or_publish() {
+        for full in [false, true] {
+            check_same_length_tail_change(full);
+        }
+    }
+
+    fn check_same_length_tail_change(full: bool) {
         let case = unacknowledged_suffix_for_spill();
         let destination = case._directory.path().join("rebuilt");
         let replacement =
@@ -1919,11 +2042,10 @@ mod tests {
                     before_selection_rename: standard.before_selection_rename,
                     sync_selection_parent: standard.sync_selection_parent,
                 };
-                CheckpointStore::rebuild_bounded_using(
+                CheckpointStore::rebuild_spilling(
                     &case.path,
                     &destination,
-                    &case.base,
-                    &case.digest,
+                    (!full).then_some((case.base.as_path(), &case.digest)),
                     small_limits(),
                     Some(tracker),
                     &mut hooks,
@@ -1937,7 +2059,11 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
         assert_eq!(
             error.to_string(),
-            "checkpoint log suffix changed during replay"
+            if full {
+                "log bytes changed after verified replay"
+            } else {
+                "checkpoint log suffix changed during replay"
+            }
         );
         assert_eq!(witness_bytes(&case.path), case.witness);
         assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
@@ -1951,17 +2077,16 @@ mod tests {
         assert_no_staged_markers(case._directory.path());
 
         fs::write(&log_path, &case.log).unwrap();
-        CheckpointStore::rebuild_managed_selection_bounded(
-            &case.path,
-            &destination,
-            &case.base,
-            &case.digest,
-            1,
-            4096,
-            32 << 20,
-            2,
-            10_000,
-        )
+        with_standard_hooks(|hooks| {
+            CheckpointStore::rebuild_spilling(
+                &case.path,
+                &destination,
+                (!full).then_some((case.base.as_path(), &case.digest)),
+                small_limits(),
+                None,
+                hooks,
+            )
+        })
         .unwrap();
         let rebuilt = CheckpointStore::open_managed(&case.path).unwrap();
         assert_eq!(

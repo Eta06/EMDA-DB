@@ -1,6 +1,7 @@
 //! Public checks for bounded offline managed-checkpoint rebuild.
 use database_engine::{
-    BatchOperation, CheckpointStore, ManagedRebuildFailure, Store, cleanup_abandoned_staging,
+    BatchOperation, BoundedFullRebuildLimits, CheckpointStore, ManagedRebuildFailure, Store,
+    cleanup_abandoned_staging,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -104,6 +105,142 @@ fn bounded_detailed(
 fn assert_no_stages(path: &Path) {
     let cleaned = cleanup_abandoned_staging(path).unwrap();
     assert_eq!(cleaned.removed_markers, 0, "{}", path.display());
+}
+
+#[test]
+fn full_bounded_rebuild_admits_history_before_adopting_a_complete_tail() {
+    for v2 in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let reference = root.path().join("reference");
+        let destination = root.path().join("rebuilt");
+        let missing = root.path().join("old-checkpoint");
+        let store = open_store(&path, v2);
+        store.put(b"abc", b"old").unwrap();
+        drop(store);
+        retry(|| CheckpointStore::rebuild_managed_selection(&path, &missing)).unwrap();
+        let selection = path.join("checkpoint.selection");
+        let original_selection = fs::read(&selection).unwrap();
+        fs::remove_file(missing).unwrap();
+        let store = retry(|| Store::open(&path)).unwrap();
+        let previous_witness = witness_bytes(&path);
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"longkey",
+                    value: b"temporary",
+                },
+                BatchOperation::Put {
+                    key: b"abc",
+                    value: b"retained",
+                },
+                BatchOperation::Delete { key: b"longkey" },
+                BatchOperation::Delete { key: b"missing" },
+            ])
+            .unwrap();
+        let expected_witness = witness_bytes(&path);
+        let expected_digest = store.checkpoint_to(&reference).unwrap();
+        drop(store);
+
+        let log_path = path.join("records.log");
+        let log = fs::read(&log_path).unwrap();
+        restore_witness(&path, &previous_witness);
+        let exact = BoundedFullRebuildLimits {
+            max_log_bytes: log.len() as u64,
+            max_operations: 5,
+            max_live_keys: 2,
+            max_live_key_bytes: 10,
+            max_chunk_keys: 1,
+            max_chunk_key_bytes: 7,
+            max_spill_bytes: 4096,
+            max_merge_fan_in: 2,
+        };
+        for (limits, message) in [
+            (
+                BoundedFullRebuildLimits {
+                    max_log_bytes: exact.max_log_bytes - 1,
+                    ..exact
+                },
+                "log exceeds",
+            ),
+            (
+                BoundedFullRebuildLimits {
+                    max_operations: 4,
+                    ..exact
+                },
+                "operation limit",
+            ),
+            (
+                BoundedFullRebuildLimits {
+                    max_live_keys: 1,
+                    ..exact
+                },
+                "historical live key limit",
+            ),
+            (
+                BoundedFullRebuildLimits {
+                    max_live_key_bytes: 9,
+                    ..exact
+                },
+                "historical live key-byte limit",
+            ),
+            (
+                BoundedFullRebuildLimits {
+                    max_spill_bytes: 1,
+                    ..exact
+                },
+                "spill byte limit",
+            ),
+        ] {
+            let result = CheckpointStore::rebuild_managed_selection_full_bounded(
+                &path,
+                &destination,
+                limits,
+            );
+            assert!(
+                matches!(&result, Err(ManagedRebuildFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidInput && error.to_string().contains(message)),
+                "{result:?}"
+            );
+            assert!(!destination.exists());
+            assert_eq!(fs::read(&selection).unwrap(), original_selection);
+            assert_eq!(witness_bytes(&path), previous_witness);
+            assert_eq!(fs::read(&log_path).unwrap(), log);
+            assert_no_stages(&path);
+        }
+
+        fs::write(&log_path, &log[..log.len() - 1]).unwrap();
+        let torn =
+            CheckpointStore::rebuild_managed_selection_full_bounded(&path, &destination, exact);
+        assert!(matches!(torn, Err(ManagedRebuildFailure::NotPublished(_))));
+        assert!(!destination.exists());
+        assert_eq!(fs::read(&selection).unwrap(), original_selection);
+        assert_eq!(witness_bytes(&path), previous_witness);
+        fs::write(&log_path, &log).unwrap();
+
+        let actual =
+            CheckpointStore::rebuild_managed_selection_full_bounded(&path, &destination, exact)
+                .unwrap();
+        assert_eq!(actual, expected_digest);
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            fs::read(reference).unwrap()
+        );
+        assert_eq!(witness_bytes(&path), expected_witness);
+        assert_ne!(fs::read(&selection).unwrap(), original_selection);
+        assert_eq!(fs::read(&log_path).unwrap(), log);
+        let reopened =
+            retry(|| CheckpointStore::open_managed_with_resource_limits(&path, 1024, 1, 64, None))
+                .unwrap();
+        assert_eq!(reopened.overlay_keys().unwrap(), 0);
+        assert_eq!(
+            reopened.get(b"abc").unwrap().as_deref(),
+            Some(&b"retained"[..])
+        );
+        assert!(reopened.get(b"longkey").unwrap().is_none());
+        drop(reopened);
+        assert_no_stages(&path);
+    }
 }
 
 #[test]

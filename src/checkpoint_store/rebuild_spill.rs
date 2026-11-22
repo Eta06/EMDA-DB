@@ -55,6 +55,7 @@ pub(super) struct SpillLimits {
     pub(super) max_merge_fan_in: usize,
     pub(super) max_operations: u64,
     pub(super) max_log_bytes: Option<u64>,
+    pub(super) live_limits: Option<(usize, u64)>,
 }
 
 impl SpillLimits {
@@ -72,6 +73,7 @@ impl SpillLimits {
             max_merge_fan_in,
             max_operations,
             max_log_bytes: None,
+            live_limits: None,
         };
         limits.validate()?;
         Ok(limits)
@@ -504,6 +506,7 @@ pub(super) struct SpillSession {
     spill_bytes: u64,
     next_id: u64,
     current: usize,
+    live_key_bytes: u64,
     peak: usize,
     applied: u64,
     emit: Emit,
@@ -541,6 +544,7 @@ impl SpillSession {
             spill_bytes: 0,
             next_id: 1,
             current: base_live,
+            live_key_bytes: 0,
             peak: base_peak,
             applied: 0,
             emit: Emit::Pending,
@@ -617,6 +621,20 @@ impl SpillSession {
             .dirty
             .get_mut(key)
             .ok_or_else(|| io::Error::other("suffix chunk lost a key"))?;
+        if let Some((max_keys, max_key_bytes)) = self.limits.live_limits {
+            let key_bytes = key.len() as u64;
+            let next_bytes = match (state.is_some(), location.is_some()) {
+                (false, true) if self.current >= max_keys => {
+                    return Err(invalid_input("rebuild historical live key limit exceeded"));
+                }
+                (false, true) => self.live_key_bytes.checked_add(key_bytes),
+                (true, false) => self.live_key_bytes.checked_sub(key_bytes),
+                _ => Some(self.live_key_bytes),
+            };
+            self.live_key_bytes = next_bytes
+                .filter(|&bytes| bytes <= max_key_bytes)
+                .ok_or_else(|| invalid_input("rebuild historical live key-byte limit exceeded"))?;
+        }
         apply_mutation(state, location, &mut self.current, &mut self.peak)?;
         self.applied += 1;
         Ok(())

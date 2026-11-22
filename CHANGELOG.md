@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add bounded full-log managed checkpoint rebuild for witnessed stores,
+  including historical live-key and key-byte admission before tail adoption.
+
 - Stream validated index candidates into the document query window while
   retaining per-ID deduplication, probe budgets, and validation error order.
 
