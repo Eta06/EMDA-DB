@@ -303,6 +303,9 @@ Before reading record payloads, the opener checks the physical base length
 against the expected binding and the admitted byte and work limits. Before
 replaying the suffix, it also checks the base header, declared counts and
 length, and the trailer against the admitted limits and independent binding.
+The opener rejects impossible key and value totals and uses the declared
+lengths to reject sparse-index budgets that cannot fit even the minimum
+number of blocks and anchor bytes.
 A matching header and trailer still require full base validation, including
 hashing the entry bytes and validating their order and lengths, before any
 unacknowledged tail can be adopted or a handle returned.

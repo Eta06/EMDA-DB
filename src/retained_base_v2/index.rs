@@ -206,6 +206,7 @@ impl IndexedBase {
         file: &File,
         length: u64,
         limits: Limits,
+        index_limits: IndexLimits,
         expected: Expected,
     ) -> io::Result<()> {
         if length < FRAME_BYTES {
@@ -225,6 +226,19 @@ impl IndexedBase {
         file.read_exact_at(&mut trailer, length - 32)?;
         if trailer != expected.digest {
             return Err(invalid("retained base trailer does not match its binding"));
+        }
+        // Even a block holding one oversized entry contains at most
+        // BLOCK_BYTES of lengths and keys. Every block has a nonempty anchor.
+        let framing_bytes = header.entries * 8 + header.key_bytes;
+        let largest_entry = 8 + MAX_KEY_BYTES as u64 + crate::record::MAX_VALUE as u64;
+        let minimum_blocks = framing_bytes
+            .div_ceil(BLOCK_BYTES)
+            .max(header.encoded.div_ceil(BLOCK_BYTES.max(largest_entry)));
+        if minimum_blocks > index_limits.blocks as u64 {
+            return Err(invalid("retained base block limit exceeded"));
+        }
+        if minimum_blocks > index_limits.anchor_bytes as u64 {
+            return Err(invalid("retained base anchor byte limit exceeded"));
         }
         Ok(())
     }

@@ -322,7 +322,13 @@ impl RetainedStore {
         {
             return Err(record::invalid_data("retained base byte limit exceeded"));
         }
-        IndexedBase::preflight(&base, base_bytes, limits.base, expected.base_binding())?;
+        IndexedBase::preflight(
+            &base,
+            base_bytes,
+            limits.base,
+            limits.index,
+            expected.base_binding(),
+        )?;
         let suffix_len = usize::try_from(suffix_len)
             .map_err(|_| invalid_input("suffix length exceeds platform range"))?;
         let committed = usize::try_from(committed).unwrap();

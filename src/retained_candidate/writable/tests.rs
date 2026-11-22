@@ -488,6 +488,21 @@ fn recovery_preflights_the_base_frame_without_trusting_its_contents() {
     fs::write(&base_path, malformed_header).unwrap();
     assert_eq!(f.open(LIMITS).err().unwrap().to_string(), "invalid header");
 
+    // An intact trailer cannot make impossible key or value totals admissible.
+    for (entries, keys) in [(2_u64, 1_u64), (2, 20), (0, 0)] {
+        let mut impossible = base.clone();
+        impossible[56..64].copy_from_slice(&entries.to_le_bytes());
+        impossible[64..72].copy_from_slice(&keys.to_le_bytes());
+        impossible[80..88].copy_from_slice(&keys.to_le_bytes());
+        fs::write(&base_path, &impossible).unwrap();
+        assert_eq!(
+            f.open(LIMITS).err().unwrap().to_string(),
+            "invalid totals or budget exceeded"
+        );
+        assert_eq!(fs::read(f.log()).unwrap(), partial);
+        assert_eq!(fs::read(f.witness()).unwrap(), witness);
+    }
+
     let trailer = base.len() - 32;
     let mut modified_body = base.clone();
     modified_body[trailer - 1] ^= 1;

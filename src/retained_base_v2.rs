@@ -314,13 +314,25 @@ fn parse_header(header: &[u8; HEADER_BYTES as usize], limits: Limits) -> io::Res
     let peak_key_bytes = number(&header[80..88]);
     let encoded = number(&header[88..96]);
     let file_bytes = add(add(HEADER_BYTES, encoded)?, 32)?;
+    let framing_bytes = add(
+        entries
+            .checked_mul(8)
+            .ok_or_else(|| invalid("invalid totals or budget exceeded"))?,
+        key_bytes,
+    )?;
     if file_bytes > limits.file_bytes
         || add(file_bytes, 1)? > limits.work_bytes
         || entries > limits.entries
         || key_bytes > limits.key_bytes
+        || key_bytes < entries
+        || key_bytes > entries.saturating_mul(MAX_KEY_BYTES as u64)
         || peak_entries < entries
         || peak_key_bytes < key_bytes
-        || entries.checked_mul(9).is_none_or(|min| min > encoded)
+        || encoded
+            .checked_sub(framing_bytes)
+            .is_none_or(|value_bytes| {
+                value_bytes > entries.saturating_mul(crate::record::MAX_VALUE as u64)
+            })
     {
         return Err(invalid("invalid totals or budget exceeded"));
     }
@@ -604,6 +616,77 @@ mod tests {
         let bytes = fixture(16 * 1024 * 1024);
         let result = validate(Short(&bytes), limits()).unwrap();
         assert_eq!(result.file_bytes, bytes.len() as u64);
+    }
+
+    #[test]
+    fn indexed_base_preflight_admits_only_feasible_block_and_anchor_limits() {
+        use index::{IndexLimits, IndexedBase};
+        use std::{fs, io::Write};
+
+        let entries = 128;
+        let key_bytes = entries * MAX_KEY_BYTES as u64;
+        let encoded = entries * 8 + key_bytes;
+        let header = encode_header(
+            [1; 16],
+            [2; 16],
+            [0, entries, key_bytes, entries, key_bytes, encoded],
+        );
+        let mut bytes = header.to_vec();
+        for number in 0..entries {
+            bytes.extend_from_slice(&(MAX_KEY_BYTES as u32).to_le_bytes());
+            bytes.extend_from_slice(&0_u32.to_le_bytes());
+            bytes.push(number as u8);
+            bytes.resize(bytes.len() + MAX_KEY_BYTES - 1, 0);
+        }
+        let mut hash = Sha256::new();
+        hash.update(b"EMDA retained base v2\0");
+        hash.update(&bytes);
+        let digest: [u8; 32] = hash.finalize().into();
+        bytes.extend_from_slice(&digest);
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&bytes).unwrap();
+        let limits = Limits {
+            entries,
+            key_bytes,
+            ..limits()
+        };
+        let expected = Expected {
+            source_id: [1; 16],
+            base_id: [2; 16],
+            boundary: 0,
+            digest,
+        };
+        let preflight = |index_limits| {
+            IndexedBase::preflight(
+                file.as_file(),
+                bytes.len() as u64,
+                limits,
+                index_limits,
+                expected,
+            )
+        };
+        let exact = IndexLimits {
+            blocks: 2,
+            anchor_bytes: MAX_KEY_BYTES * 2,
+        };
+        preflight(exact).unwrap();
+        let base = IndexedBase::open(fs::File::open(file.path()).unwrap(), limits, exact).unwrap();
+        assert_eq!(base.metadata().digest, digest);
+        assert_eq!(
+            preflight(IndexLimits { blocks: 1, ..exact })
+                .unwrap_err()
+                .to_string(),
+            "retained base block limit exceeded"
+        );
+        assert_eq!(
+            preflight(IndexLimits {
+                anchor_bytes: 1,
+                ..exact
+            })
+            .unwrap_err()
+            .to_string(),
+            "retained base anchor byte limit exceeded"
+        );
     }
 
     #[test]

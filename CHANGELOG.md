@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject impossible retained-base totals and insufficient sparse-index
+  budgets before replaying the suffix.
+
 - Use nested path presence and absence, including directly negated existence
   tests, to select eligible document indexes.
 
