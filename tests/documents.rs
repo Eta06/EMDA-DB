@@ -766,6 +766,73 @@ fn aggregate_and_lookup_use_bounded_consistent_document_reads() {
 }
 
 #[test]
+fn related_document_lookup_charges_repeated_and_staged_targets_at_the_exact_limit() {
+    use database_engine::DocumentQuery;
+
+    let exercise = |db: &DocumentDatabase<'_>| {
+        for name in ["source", "target"] {
+            db.create_collection(name, CollectionSchema::default())
+                .unwrap();
+        }
+        let target = json!({"body": "x".repeat(1024 * 1024 - br#"{"body":""}"#.len())});
+        db.insert("target", "large", &target).unwrap();
+        db.transaction(|tx| {
+            for index in 0..17 {
+                tx.insert("source", &format!("{index:02}"), &json!({"ref": "large"}))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let exact = DocumentQuery {
+            limit: 16,
+            ..Default::default()
+        };
+        let over = DocumentQuery {
+            limit: 17,
+            ..exact.clone()
+        };
+        let page = db.lookup("source", &exact, &path("ref"), "target").unwrap();
+        assert_eq!(page.documents.len(), 16);
+        assert!(
+            page.documents
+                .iter()
+                .all(|row| row.related.as_ref() == Some(&target))
+        );
+        drop(page);
+        let error = db
+            .lookup("source", &over, &path("ref"), "target")
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "lookup response exceeds 16 MiB");
+        db.transaction_with_read_set(|tx| {
+            let smaller = json!({"body":"staged"});
+            tx.replace("target", "large", &smaller, false)?;
+            let result = tx.lookup("source", &over, &path("ref"), "target")?;
+            assert_eq!(result.documents.len(), 17);
+            assert!(
+                result
+                    .documents
+                    .iter()
+                    .all(|row| row.related.as_ref() == Some(&smaller))
+            );
+            Ok(())
+        })
+        .unwrap();
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let ordinary = Store::open(dir.path().join("ordinary")).unwrap();
+    exercise(&DocumentDatabase::new(&ordinary));
+
+    let source = dir.path().join("checkpoint-source");
+    let checkpoint = dir.path().join("checkpoint");
+    let initial = Store::open(&source).unwrap();
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    drop(initial);
+    let store = CheckpointStore::open(&source, &checkpoint, &digest).unwrap();
+    exercise(&DocumentDatabase::with_checkpoint_store(&store));
+}
+
+#[test]
 fn read_set_transactions_allow_disjoint_document_inserts_and_deadlines_do_not_submit() {
     use database_engine::{DocumentTransactionMode, TimedTransactionError};
     use std::time::{Duration, Instant};

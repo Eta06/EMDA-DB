@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Enforce the 16 MiB related-document lookup budget before reading a
+  target document.
+
 - Add an optional historical live-key ceiling for bounded checkpoint
   rebuilds from a trusted checkpoint and its suffix. Reject an excessive
   checkpoint peak before scanning its index or hashing the covered log.

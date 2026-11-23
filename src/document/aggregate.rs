@@ -148,7 +148,7 @@ impl DocumentTransaction<'_, '_> {
         foreign_collection: &str,
     ) -> io::Result<LookupResult> {
         schema::validate_path(local_path)?;
-        self.metadata(foreign_collection)?;
+        let foreign = self.metadata(foreign_collection)?;
         if query.projection.is_some() {
             return Err(key::invalid(
                 "lookup does not accept a projected source query",
@@ -156,25 +156,25 @@ impl DocumentTransaction<'_, '_> {
         }
         let result = self.query(collection, query)?;
         let mut documents = Vec::with_capacity(result.documents.len());
-        let mut bytes = 0_usize;
+        let mut remaining = 16 * 1024 * 1024_usize;
         for source in result.documents {
             let related = match schema::field(&source.document, local_path) {
                 None | Some(Value::Null) => None,
-                Some(Value::String(id)) => self.get(foreign_collection, id)?,
+                Some(Value::String(id)) => self
+                    .read_document_bytes(&key::document(foreign_collection, id)?, |len| {
+                        remaining = remaining
+                            .checked_sub(len)
+                            .ok_or_else(|| key::invalid("lookup response exceeds 16 MiB"))?;
+                        Ok(())
+                    })?
+                    .map(|encoded| Self::decode_document(&encoded, &foreign.schema))
+                    .transpose()?,
                 Some(_) => {
                     return Err(key::invalid(
                         "lookup field must be a string ID, null, or missing",
                     ));
                 }
             };
-            if let Some(value) = &related {
-                bytes = bytes
-                    .checked_add(serde_json::to_vec(value).map_err(io::Error::other)?.len())
-                    .ok_or_else(|| key::invalid("lookup response size overflow"))?;
-                if bytes > 16 * 1024 * 1024 {
-                    return Err(key::invalid("lookup response exceeds 16 MiB"));
-                }
-            }
             documents.push(LookupEntry { source, related });
         }
         Ok(LookupResult {
