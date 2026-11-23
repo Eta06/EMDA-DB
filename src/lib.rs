@@ -53,12 +53,12 @@ pub use document::{
     AggregateGroup, AggregateRequest, AggregateResult, AggregateStatsGroup, AggregateStatsRequest,
     AggregateStatsResult, BulkOperation, BulkResult, CollectionDropStep, CollectionIntegrity,
     CollectionSchema, Comparison, DocumentDatabase, DocumentEntry, DocumentFilter, DocumentPage,
-    DocumentQuery, DocumentQueryAccess, DocumentQueryResult, DocumentSort, DocumentTransaction,
-    DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule, FieldType, IndexBound,
-    IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus, IndexQuery, IndexQueryPlan,
-    IndexStep, IndexValue, LookupEntry, LookupResult, MAX_DOCUMENT_UPDATE_INPUT_BYTES,
-    MaintenanceKey, NumericFieldStats, PartialFilter, PlannedDocumentQueryResult, QueryPlan,
-    SchemaMigrationStatus, SchemaStep,
+    DocumentQuery, DocumentQueryAccess, DocumentQueryResult, DocumentSnapshot, DocumentSort,
+    DocumentTransaction, DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule,
+    FieldType, IndexBound, IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus,
+    IndexQuery, IndexQueryPlan, IndexStep, IndexValue, LookupEntry, LookupResult,
+    MAX_DOCUMENT_UPDATE_INPUT_BYTES, MaintenanceKey, NumericFieldStats, PartialFilter,
+    PlannedDocumentQueryResult, QueryPlan, SchemaMigrationStatus, SchemaStep,
 };
 pub use log::PeakVerificationLimits;
 pub use publication_outcome::{

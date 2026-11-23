@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Query captured ordinary and checkpoint storage snapshots through
+  `DocumentSnapshot`. Pages use the captured documents and indexes across
+  intervening writes and checkpoint rollover.
+
 - Persist named-index seek positions with a versioned cursor encoding.
   Resumed queries validate the collection, index definition, position and bounds.
 

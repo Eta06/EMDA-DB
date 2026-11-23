@@ -1,6 +1,6 @@
 use database_engine::{
-    CheckpointStore, CollectionSchema, DocumentDatabase, IndexBound, IndexCursor, IndexDefinition,
-    IndexQuery, IndexValue, Store,
+    CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
+    DocumentSnapshot, IndexBound, IndexCursor, IndexDefinition, IndexQuery, IndexValue, Store,
 };
 use serde_json::{Value, json};
 use std::cmp::Ordering;
@@ -175,6 +175,124 @@ fn named_index_cursor_round_trips_across_reopen_and_validates_its_position() {
                 io::ErrorKind::InvalidInput
             );
         });
+    }
+}
+
+#[test]
+fn document_snapshot_pages_keep_the_captured_rows_across_writes_and_rollover() {
+    let exercise = |db: DocumentDatabase<'_>, view: DocumentSnapshot<'_>, rollover: &dyn Fn()| {
+        let first_query = IndexQuery {
+            limit: 1,
+            ..Default::default()
+        };
+        let first = view.query_index("c", "score", &first_query).unwrap();
+        assert_eq!(first.documents[0].id, "first");
+        let saved = first.next.unwrap().to_bytes();
+
+        db.delete("c", "second").unwrap();
+        db.replace("c", "first", &json!({"score": 8}), false)
+            .unwrap();
+        db.insert("c", "new", &json!({"score": 3})).unwrap();
+        rollover();
+
+        let next_query = IndexQuery {
+            after: Some(IndexCursor::from_bytes(&saved).unwrap()),
+            ..first_query
+        };
+        let next = view.query_index("c", "score", &next_query).unwrap();
+        assert_eq!(next.documents[0].id, "second");
+        assert_eq!(next.documents[0].document, json!({"score": 2}));
+        let end_query = IndexQuery {
+            after: next.next.clone(),
+            ..next_query.clone()
+        };
+        assert!(
+            view.query_index("c", "score", &end_query)
+                .unwrap()
+                .documents
+                .is_empty()
+        );
+        assert_eq!(
+            db.query_index("c", "score", &next_query).unwrap().documents[0].id,
+            "new"
+        );
+        assert_eq!(db.get("c", "second").unwrap(), None);
+        assert_eq!(view.get("c", "first").unwrap(), Some(json!({"score": 1})));
+
+        let equality = DocumentQuery {
+            filter: DocumentFilter::Equal {
+                path: vec!["score".into()],
+                value: json!(2),
+            },
+            ..Default::default()
+        };
+        let scanned = view.query("c", &equality).unwrap();
+        assert_eq!(scanned.documents.len(), 1);
+        assert_eq!(
+            view.query_planned("c", &equality).unwrap().result.documents,
+            scanned.documents
+        );
+        assert!(
+            db.query_planned("c", &equality)
+                .unwrap()
+                .result
+                .documents
+                .is_empty()
+        );
+        db.drop_index("c", "score").unwrap();
+        assert!(db.query_index("c", "score", &next_query).is_err());
+        assert_eq!(view.query_index("c", "score", &next_query).unwrap(), next);
+    };
+
+    for checkpoint_backed in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("checkpoint");
+        let store = Store::open(&path).unwrap();
+        let db = DocumentDatabase::new(&store);
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "score".into(),
+                fields: vec![vec!["score".into()]],
+                unique: true,
+                partial: None,
+            },
+        )
+        .unwrap();
+        db.insert("c", "first", &json!({"score": 1})).unwrap();
+
+        if checkpoint_backed {
+            let digest = store.checkpoint_to(&checkpoint).unwrap();
+            drop(store);
+            let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+            let db = DocumentDatabase::with_checkpoint_store(&store);
+            db.insert("c", "second", &json!({"score": 2})).unwrap();
+            let mut snapshot = store.snapshot().unwrap();
+            exercise(
+                db,
+                DocumentSnapshot::with_checkpoint_snapshot(&snapshot),
+                &|| {
+                    store
+                        .rollover_to(root.path().join("new-checkpoint"))
+                        .unwrap();
+                },
+            );
+            snapshot.cancel();
+            assert!(
+                DocumentSnapshot::with_checkpoint_snapshot(&snapshot)
+                    .get("c", "first")
+                    .is_err()
+            );
+        } else {
+            db.insert("c", "second", &json!({"score": 2})).unwrap();
+            let mut snapshot = store.snapshot(16, 4096).unwrap();
+            exercise(db, DocumentSnapshot::new(&snapshot), &|| {});
+            snapshot.cancel();
+            assert!(DocumentSnapshot::new(&snapshot).get("c", "first").is_err());
+        }
     }
 }
 

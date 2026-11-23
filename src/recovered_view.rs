@@ -269,9 +269,20 @@ impl RecoveredCheckpointView {
 
     /// Reads one key from the recovered checkpoint and suffix.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.get_admitted(key, |_| Ok(()))
+    }
+
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
         self.location(key)?
-            .map(|location| self.base.log.read(location))
+            .map(|location| {
+                admit(location.length)?;
+                self.base.log.read(location)
+            })
             .transpose()
     }
 
@@ -320,6 +331,16 @@ impl RecoveredCheckpointView {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        self.scan_admitted(after, before, limit, |_, _| true)
+    }
+
+    pub(crate) fn scan_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        mut admit: impl FnMut(&[u8], usize) -> bool,
+    ) -> io::Result<Vec<Entry>> {
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
         }
@@ -335,9 +356,16 @@ impl RecoveredCheckpointView {
         let mut result = Vec::new();
         let mut bytes = 0_usize;
         self.visit_entries(after, before, |key, location| {
-            if !push_entry(&self.base, &mut result, &mut bytes, limit, key, location)? {
+            let size = key.len() + location.length;
+            if result.len() == limit
+                || bytes + size > MAX_SCAN_BYTES
+                || !admit(key, location.length)
+            {
                 return Ok(ControlFlow::Break(()));
             }
+            let value = self.base.log.read(location)?;
+            bytes += size;
+            result.push((key.to_vec(), value));
             Ok(ControlFlow::Continue(()))
         })?;
         Ok(result)
@@ -403,21 +431,4 @@ impl RecoveredCheckpointView {
         }
         Ok(())
     }
-}
-
-fn push_entry(
-    base: &CheckpointView,
-    result: &mut Vec<Entry>,
-    bytes: &mut usize,
-    limit: usize,
-    key: &[u8],
-    location: ValueLocation,
-) -> io::Result<bool> {
-    if result.len() == limit || *bytes + key.len() + location.length > MAX_SCAN_BYTES {
-        return Ok(false);
-    }
-    let value = base.log.read(location)?;
-    *bytes += key.len() + location.length;
-    result.push((key.to_vec(), value));
-    Ok(true)
 }

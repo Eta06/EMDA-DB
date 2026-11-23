@@ -191,6 +191,12 @@ maintenance operations remain separate.
 
 ### Isolation, snapshots, and interfaces
 
+`DocumentSnapshot` borrows an ordinary or checkpoint storage snapshot for
+read-only document queries. Separate pages over that same snapshot share
+its captured metadata, documents and indexes. Each underlying read still
+checks the snapshot's admission, deadline and store health. The wrapper
+does not acquire another snapshot or persist the captured view.
+
 - A validated read-only checkpoint view retains its log and checkpoint file
   descriptors and captured witnessed boundary, but releases validation-only
   witness and anchor descriptors. It continues to verify checkpoint blocks and

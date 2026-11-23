@@ -227,13 +227,21 @@ impl CheckpointSnapshot<'_> {
 
     /// Reads one key from the captured state.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.get_admitted(key, |_| Ok(()))
+    }
+
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.view()?;
         let _healthy = self.store.read()?;
         data.view
             .as_ref()
             .expect("active snapshot has a view")
-            .get(key)
+            .get_admitted(key, admit)
     }
 
     /// Reads up to 1,024 keys, preserving order and duplicates. The combined
@@ -264,13 +272,23 @@ impl CheckpointSnapshot<'_> {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        self.scan_admitted(after, before, limit, |_, _| true)
+    }
+
+    pub(crate) fn scan_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        admit: impl FnMut(&[u8], usize) -> bool,
+    ) -> io::Result<Vec<Entry>> {
         let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.view()?;
         let _healthy = self.store.read()?;
         data.view
             .as_ref()
             .expect("active snapshot has a view")
-            .scan(after, before, limit)
+            .scan_admitted(after, before, limit, admit)
     }
 
     /// Releases the captured view and its reservation. Repeated calls are safe.

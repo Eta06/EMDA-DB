@@ -15,6 +15,7 @@ mod query;
 mod retained;
 mod schema;
 mod schema_migration;
+mod snapshot;
 mod transaction;
 mod update;
 
@@ -44,6 +45,7 @@ pub use planner::{DocumentQueryAccess, PlannedDocumentQueryResult};
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
 pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
+pub use snapshot::DocumentSnapshot;
 pub use transaction::DocumentTransaction;
 pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES};
 

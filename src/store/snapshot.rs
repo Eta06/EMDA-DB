@@ -410,6 +410,14 @@ impl Snapshot<'_> {
 
     /// Reads the value selected when this snapshot was created.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.get_admitted(key, |_| Ok(()))
+    }
+
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
         let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.read_index()?;
@@ -417,6 +425,7 @@ impl Snapshot<'_> {
             .get(key)
             .copied()
             .map(|location| {
+                admit(location.length)?;
                 data.log
                     .as_ref()
                     .expect("active snapshot retains its log")
@@ -432,6 +441,16 @@ impl Snapshot<'_> {
         after: Option<&[u8]>,
         before: Option<&[u8]>,
         limit: usize,
+    ) -> io::Result<Vec<Entry>> {
+        self.scan_admitted(after, before, limit, |_, _| true)
+    }
+
+    pub(crate) fn scan_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        mut admit: impl FnMut(&[u8], usize) -> bool,
     ) -> io::Result<Vec<Entry>> {
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
@@ -455,7 +474,7 @@ impl Snapshot<'_> {
         let mut bytes = 0_usize;
         for (key, &location) in data.index.range::<[u8], _>(bounds).take(limit) {
             let size = key.len() + location.length;
-            if bytes + size > MAX_SCAN_BYTES {
+            if bytes + size > MAX_SCAN_BYTES || !admit(key, location.length) {
                 break;
             }
             bytes += size;

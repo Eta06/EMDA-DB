@@ -158,6 +158,17 @@ The cursor contains the encoded tuple and document ID in plaintext, with
 a checksum for accidental damage. Keep it under caller control. It does
 not authenticate a position, identify a database instance, or retain a snapshot.
 
+For a consistent view across separate calls, borrow an existing
+`Store::snapshot` with `DocumentSnapshot::new`, or borrow a
+`CheckpointStore::snapshot` with `DocumentSnapshot::with_checkpoint_snapshot`.
+Point reads, collection scans, planned queries and named-index pages read
+the captured documents and index definitions. Keep using the same snapshot
+for every page, including after checkpoint rollover. The underlying storage
+snapshot's admission limits, deadline, cancellation and reaping rules
+apply. Each query also enforces its usual document limits. The snapshot
+is process-local. Once released, a saved cursor can seek in a later view,
+but it cannot restore the old view.
+
 `query` performs a **complete bounded collection scan**, with existence/equality/typed-scalar comparisons, boolean composition, optional scalar sorting, projection, offset and limit. It fails rather than returning a silently truncated answer if its explicit scan limit (at most 1,024 documents) or 32 MiB scan budget is exceeded. The result includes actual scanned, matched, sorted and returned counts; this is a collection-scan plan, not an automatic cost-based optimizer. Sort accepts the same scalar types as indexes; missing sorts before null in ascending order, and IDs break ties in ascending order. Projection paths cannot overlap. Filtering and ranking use the full document. The window retains only the projected fields when a projection is requested. The scan validates every bounded document while filtering. It applies row, byte and stored-document size limits before materializing each payload. An over-limit row can therefore be rejected before checking its payload checksum. Already admitted documents retain their validation order. Retained scans may read the rest of a touched block to authenticate it. For unsorted queries it retains only the requested matching window. For sorted queries it checks every matching sort value and keeps at most the best `offset + limit` ranked entries. Scan or stored-document errors retain precedence over an earlier filtering or sort error. These bounds are not total-memory limits.
 
 
