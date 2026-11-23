@@ -36,7 +36,9 @@ fn copy_live_records(
 ) -> io::Result<()> {
     let mut copy = GroupedCopy::new(target, None);
     for (key, &location) in index {
-        copy.put(key, location.length, || source.read(location))?;
+        copy.put(key, location.length, |value| {
+            source.read_into(location, value)
+        })?;
     }
     copy.finish()
 }
@@ -90,29 +92,39 @@ impl<'a> GroupedCopy<'a> {
         &mut self,
         key: &[u8],
         value_len: usize,
-        read: impl FnOnce() -> io::Result<Vec<u8>>,
+        read: impl FnOnce(&mut [u8]) -> io::Result<()>,
     ) -> io::Result<()> {
         if let Some(remaining) = &mut self.remaining {
             remaining.consume(key.len(), value_len)?;
         }
-        let length = record::HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE;
+        let header = record::encode_header(Operation::Put, key, value_len)?;
+        let value_end = header.len() + key.len() + value_len;
+        let length = value_end + record::CHECKSUM_SIZE;
         if !self.records.is_empty()
             && (self.records.len() == MAX_COPY_RECORDS || self.bytes + length > MAX_COPY_BYTES)
         {
             flush_copy(self.target, &mut self.records)?;
             self.bytes = 0;
         }
-        let value = read()?;
-        if value.len() != value_len {
-            return Err(record::invalid_data("copy source value length changed"));
-        }
-        let checksum = crc32fast::hash(&value);
-        let encoded = record::encode(Operation::Put, key, &value)?;
-        self.bytes += encoded.len();
+        let mut encoded = Vec::new();
+        encoded
+            .try_reserve_exact(length)
+            .map_err(io::Error::other)?;
+        encoded.extend_from_slice(&header);
+        encoded.extend_from_slice(key);
+        let value_start = encoded.len();
+        encoded.resize(value_end, 0);
+        // Authenticate the value in its final buffer before admitting the record.
+        let value = &mut encoded[value_start..];
+        read(value)?;
+        let checksum = crc32fast::hash(value);
+        let record_checksum = crc32fast::hash(&encoded);
+        encoded.extend_from_slice(&record_checksum.to_le_bytes());
+        self.bytes += length;
         self.records.push(CopyRecord {
             encoded,
             key_len: key.len(),
-            value_len: value.len(),
+            value_len,
             checksum,
         });
         Ok(())
@@ -128,9 +140,9 @@ impl<'a> GroupedCopy<'a> {
     ) -> io::Result<()> {
         let value_len = value.len();
         if record::HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE <= MAX_COPY_BYTES {
-            return self.put(key, value_len, || {
+            return self.put(key, value_len, |buffer| {
                 before_value()?;
-                value.to_owned_bytes()
+                value.read_into(buffer)
             });
         }
         if let Some(remaining) = &mut self.remaining {
@@ -486,6 +498,42 @@ mod tests {
     }
 
     #[test]
+    fn grouped_restore_never_queues_an_unverified_value() {
+        use sha2::{Digest, Sha256};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("records.log");
+        let (log, appends, syncs) = target_log(&path, Fault::None);
+        let mut copy = GroupedCopy::new(&log, None);
+        copy.put_retained(b"a", OverlayValue::Inline(b""), || Ok(()))
+            .unwrap();
+        let source_path = root.path().join("source");
+        std::fs::write(&source_path, b"damaged").unwrap();
+        let file = File::open(source_path).unwrap();
+        let digest = Sha256::digest(b"correct").into();
+        let error = copy
+            .put_retained(
+                b"b",
+                OverlayValue::Disk {
+                    file: &file,
+                    offset: 0,
+                    len: 7,
+                    digest: &digest,
+                },
+                || Ok(()),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(appends.load(Ordering::SeqCst), 0);
+        assert_eq!(syncs.load(Ordering::SeqCst), 0);
+        copy.finish().unwrap();
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            record::encode(Operation::Put, b"a", b"").unwrap()
+        );
+    }
+
+    #[test]
     fn failed_large_restore_value_leaves_its_record_unwitnessed() {
         use sha2::{Digest, Sha256};
 
@@ -510,7 +558,11 @@ mod tests {
             let target = Store::open(stage.path()).unwrap();
             let initial = target.log.len().unwrap();
             let mut copy = GroupedCopy::new(&target.log, None);
-            copy.put(b"a", 1, || Ok(vec![42])).unwrap();
+            copy.put(b"a", 1, |value| {
+                value[0] = 42;
+                Ok(())
+            })
+            .unwrap();
             let witnessed =
                 initial + record::encode(Operation::Put, b"a", &[42]).unwrap().len() as u64;
             let error = copy
@@ -602,14 +654,15 @@ mod tests {
         store
             .write_private_restore(size, |copy| {
                 for (key, value) in &entries {
-                    copy.put(key, value.len(), || {
+                    copy.put(key, value.len(), |buffer| {
                         let flushed = read / MAX_COPY_RECORDS * MAX_COPY_RECORDS;
                         assert_eq!(
                             std::fs::metadata(path.join("records.log"))?.len(),
                             header + length * flushed as u64
                         );
                         read += 1;
-                        Ok(value.to_vec())
+                        buffer.copy_from_slice(value.as_slice());
+                        Ok(())
                     })?;
                 }
                 Ok(())

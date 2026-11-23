@@ -192,22 +192,36 @@ impl OverlayValue<'_> {
     pub(crate) fn to_owned_bytes(&self) -> io::Result<Vec<u8>> {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(self.len()).map_err(allocation)?;
-        match *self {
+        match self {
             Self::Inline(value) => bytes.extend_from_slice(value),
-            Self::Disk {
-                file,
-                offset,
-                len,
-                digest,
-            } => {
+            Self::Disk { len, .. } => {
+                let len = *len;
                 bytes.resize(len, 0);
-                if len != 0 {
-                    file.read_exact_at(&mut bytes, offset)?;
-                }
-                verify_overlay_digest(Sha256::digest(&bytes).into(), digest)?;
+                self.read_into(&mut bytes)?;
             }
         }
         Ok(bytes)
+    }
+
+    pub(crate) fn read_into(&self, bytes: &mut [u8]) -> io::Result<()> {
+        if bytes.len() != self.len() {
+            return Err(invalid("retained value buffer length mismatch"));
+        }
+        match *self {
+            Self::Inline(value) => bytes.copy_from_slice(value),
+            Self::Disk {
+                file,
+                offset,
+                digest,
+                ..
+            } => {
+                if !bytes.is_empty() {
+                    file.read_exact_at(bytes, offset)?;
+                }
+                verify_overlay_digest(Sha256::digest(bytes).into(), digest)?;
+            }
+        }
+        Ok(())
     }
 
     fn visit_chunks(self, visit: impl FnMut(&[u8]) -> io::Result<()>) -> io::Result<()> {

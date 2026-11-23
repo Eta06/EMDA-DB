@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Read grouped restore and compaction values directly into their encoded
+  record buffers and check integrity before queuing the record.
+
 - Allow file-backed detached replay and restore to cap distinct suffix keys
   and their bytes independently of the live data.
 

@@ -189,8 +189,11 @@ reject an impossible work budget. Each delete can reduce the minimum live
 count by at most one. Discovery checks this lower bound before adding a
 suffix key to its map. Full validation checks the base digest and charges
 exact live-state work and payload, including intermediate batch states.
-Each value is authenticated again when read for the private output. Before
-publication a streaming verification of the witnessed output checks the
+Each value is authenticated again when read for the private output. Values
+that fit in a write group are read directly into their record buffers and
+checked before the record joins the group. Larger values use the separate
+streamed record path. Before publication, a streaming verification of the
+witnessed output checks the
 restored sequence of keys, lengths and value digests. Restore retains
 metadata for suffix-touched keys and uses separate batch and I/O buffers.
 

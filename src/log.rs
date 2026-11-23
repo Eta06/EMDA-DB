@@ -557,11 +557,19 @@ impl Log {
 
     pub(crate) fn read(&self, location: ValueLocation) -> io::Result<Vec<u8>> {
         let mut value = vec![0; location.length];
-        self.file.read_exact_at(&mut value, location.offset)?;
-        if crc32fast::hash(&value) != location.checksum {
+        self.read_into(location, &mut value)?;
+        Ok(value)
+    }
+
+    pub(crate) fn read_into(&self, location: ValueLocation, value: &mut [u8]) -> io::Result<()> {
+        if value.len() != location.length {
+            return Err(record::invalid_data("stored value buffer length mismatch"));
+        }
+        self.file.read_exact_at(value, location.offset)?;
+        if crc32fast::hash(value) != location.checksum {
             return Err(record::invalid_data("stored value checksum mismatch"));
         }
-        Ok(value)
+        Ok(())
     }
 
     pub(crate) fn len(&self) -> io::Result<u64> {
