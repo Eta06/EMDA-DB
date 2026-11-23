@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Publish ordinary retired-store ownership markers only after they are
+  complete and synchronized. Generic staging cleanup can remove abandoned
+  marker preparations without touching retired data.
+
 - Synchronize the move of a retired ordinary store before unlinking its
   contents, including on cleanup retry. Persist data-file removal before
   unlinking its lock.

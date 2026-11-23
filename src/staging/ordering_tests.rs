@@ -259,16 +259,23 @@ fn interruption_child() {
     };
     let root = Path::new(&root);
     let mode = std::env::var("EMDA_STAGING_ORDER_MODE").unwrap();
-    let (mut stage, file) = Stage::file(root).unwrap();
-    drop(file);
-    let pause = |directory: &File| -> io::Result<()> {
-        directory.sync_all()?;
-        println!("STAGING_PAYLOAD_REMOVAL_SYNCED");
+    let pause = |file: &File| -> io::Result<()> {
+        file.sync_all()?;
+        println!("STAGING_INTERRUPTION_READY");
         std::io::stdout().flush()?;
         loop {
             std::thread::park();
         }
     };
+    if mode == "retired-marker" {
+        let kind = Kind::Retired;
+        let _ = Stage::new_with_marker(root, kind, kind.marker(), pause, |_| {
+            panic!("partial retirement marker must never become visible as an owner")
+        });
+        panic!("marker preparation hook did not pause");
+    }
+    let (mut stage, file) = Stage::file(root).unwrap();
+    drop(file);
     match mode.as_str() {
         "drop" => stage.cleanup_on_drop_with_sync(pause),
         "cleanup" => {
@@ -280,8 +287,8 @@ fn interruption_child() {
 }
 
 #[test]
-fn process_kill_after_payload_sync_leaves_a_recoverable_marker() {
-    for mode in ["drop", "cleanup"] {
+fn process_kill_during_staging_leaves_a_recoverable_marker() {
+    for mode in ["drop", "cleanup", "retired-marker"] {
         let root = tempfile::tempdir().unwrap();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
@@ -301,7 +308,7 @@ fn process_kill_after_payload_sync_leaves_a_recoverable_marker() {
                 .lines()
                 .map_while(Result::ok)
             {
-                if line.contains("STAGING_PAYLOAD_REMOVAL_SYNCED") {
+                if line.contains("STAGING_INTERRUPTION_READY") {
                     let _ = sender.send(());
                     break;
                 }
@@ -313,9 +320,16 @@ fn process_kill_after_payload_sync_leaves_a_recoverable_marker() {
             .then(|| cleanup_abandoned_staging(root.path()));
         let killed = child.kill();
         child.wait().unwrap();
-        reached.expect("child did not reach synchronized payload removal");
+        reached.expect("child did not reach the interruption point");
         killed.expect("could not terminate child");
         assert!(matches!(busy, Some(Err(ref error)) if error.kind() == io::ErrorKind::WouldBlock));
+        if mode == "retired-marker" {
+            let mut entries = fs::read_dir(root.path()).unwrap();
+            let pending = entries.next().unwrap().unwrap();
+            assert!(pending_marker_kind(&pending.file_name()) == Some(Kind::Retired));
+            assert_eq!(fs::read(pending.path()).unwrap(), Kind::Retired.marker());
+            assert!(entries.next().is_none());
+        }
         let report = cleanup_abandoned_staging(root.path()).unwrap();
         assert_eq!((report.removed_payloads, report.removed_markers), (0, 1));
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);

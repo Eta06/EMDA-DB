@@ -30,21 +30,27 @@ fn retry_fixture_retired_cleanup(
 }
 
 #[test]
-fn retained_owner_appears_only_after_complete_marker_sync() {
+fn retirement_owner_appears_only_after_complete_marker_sync() {
+    for kind in [Kind::Retired, Kind::Retained] {
+        check_owner_publication(kind);
+    }
+}
+
+fn check_owner_publication(kind: Kind) {
     let directory = tempfile::tempdir().unwrap();
     let parent = directory.path();
     let id = [8_u8; 16];
-    let mut content = Kind::Retained.marker().to_vec();
+    let mut content = kind.marker().to_vec();
     content.extend_from_slice(&id);
     content.extend_from_slice(&crc32fast::hash(&content).to_le_bytes());
     let stage = Stage::new_with_marker(
         parent,
-        Kind::Retained,
+        kind,
         &content,
         |file| {
-            assert!(!has_retained_stage(parent).unwrap());
             let pending = fs::read_dir(parent).unwrap().next().unwrap().unwrap();
-            assert!(is_pending_retained_marker(&pending.file_name()));
+            assert!(pending_marker_kind(&pending.file_name()) == Some(kind));
+            assert!(!pending.path().with_extension("owner").exists());
             assert_eq!(fs::read(pending.path()).unwrap(), content);
             assert_eq!(
                 cleanup_abandoned_staging(parent).unwrap_err().kind(),
@@ -54,7 +60,7 @@ fn retained_owner_appears_only_after_complete_marker_sync() {
         },
         |parent_file| {
             let owner = fs::read_dir(parent).unwrap().next().unwrap().unwrap();
-            assert!(has_retained_stage(parent).unwrap());
+            assert!(marker_kind(&owner.file_name(), OWNER_SUFFIX) == Some(kind));
             assert_eq!(fs::read(owner.path()).unwrap(), content);
             assert!(!payload_path(&owner.path()).exists());
             parent_file.sync_all()
@@ -65,7 +71,7 @@ fn retained_owner_appears_only_after_complete_marker_sync() {
 
     let result = Stage::new_with_marker(
         parent,
-        Kind::Retained,
+        kind,
         &content,
         |file| {
             let pending = fs::read_dir(parent).unwrap().next().unwrap().unwrap();
@@ -87,19 +93,29 @@ fn retained_owner_appears_only_after_complete_marker_sync() {
 }
 
 #[test]
-fn interrupted_retained_marker_cleanup_does_not_follow_or_remove_payloads() {
+fn interrupted_retirement_marker_cleanup_does_not_follow_or_remove_payloads() {
+    for kind in [Kind::Retired, Kind::Retained] {
+        check_interrupted_marker_cleanup(kind);
+    }
+}
+
+fn check_interrupted_marker_cleanup(kind: Kind) {
     let directory = tempfile::tempdir().unwrap();
     let parent = directory.path();
-    let pending = parent.join(".emda-stage-v1-g-0123456789abcdef.pending");
+    let pending = parent.join(format!("{}0123456789abcdef.pending", kind.prefix()));
     let owner = pending.with_extension("owner");
     let payload = payload_path(&owner);
-    let invalid_pending = parent.join(".emda-stage-v1-g-0123456789abcdeg.pending");
+    let symlink_pending = parent.join(format!("{}1123456789abcdef.pending", kind.prefix()));
+    let oversized_pending = parent.join(format!("{}2123456789abcdef.pending", kind.prefix()));
+    let unrelated_pending = parent.join(".emda-stage-v1-f-0123456789abcdef.pending");
 
     fs::write(&pending, b"EMDA-STAGING").unwrap();
     fs::write(&owner, b"legacy incomplete owner").unwrap();
     fs::create_dir(&payload).unwrap();
     fs::write(payload.join("untouched"), b"keep").unwrap();
-    symlink(&owner, &invalid_pending).unwrap();
+    symlink(&owner, &symlink_pending).unwrap();
+    fs::write(&oversized_pending, vec![0; kind.marker_len() + 1]).unwrap();
+    fs::write(&unrelated_pending, []).unwrap();
 
     let report = cleanup_abandoned_staging(parent).unwrap();
     assert_eq!(
@@ -108,18 +124,19 @@ fn interrupted_retained_marker_cleanup_does_not_follow_or_remove_payloads() {
             report.removed_payloads,
             report.skipped
         ),
-        (1, 0, 2)
+        (1, 0, 3)
     );
     assert!(!pending.exists());
     assert_eq!(fs::read(&owner).unwrap(), b"legacy incomplete owner");
     assert_eq!(fs::read(payload.join("untouched")).unwrap(), b"keep");
     assert!(
-        fs::symlink_metadata(&invalid_pending)
+        fs::symlink_metadata(&symlink_pending)
             .unwrap()
             .file_type()
             .is_symlink()
     );
-    assert!(has_retained_stage(parent).unwrap());
+    assert!(oversized_pending.is_file());
+    assert!(unrelated_pending.is_file());
 }
 
 #[test]

@@ -215,6 +215,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   the first unlink and data-file removal before unlinking the lock. The
   [Linux ext4 campaign](../benchmarks/results/2026-11-23-online-reclamation-order/README.md)
   verifies the new failure boundaries on V2 and V3 starting stores.
+- [x] Publish ordinary retired-store markers only after the complete marker
+  is synchronized. The [process-kill and Linux namespace fault evidence](../benchmarks/results/2026-11-23-ordinary-retirement-marker/README.md)
+  verifies isolated preparation cleanup and preservation of the named previous
+  copy when marker publication fails.
 - [x] Add opt-in structured outcomes for offline managed-selection rebuild,
   including the limited variant. The result distinguishes checkpoint and
   selection publication attempts; full-log recovery can still adopt an

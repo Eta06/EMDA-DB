@@ -12,7 +12,7 @@ const DIR_PREFIX: &str = ".emda-stage-v1-d-";
 const RETIRED_PREFIX: &str = ".emda-stage-v1-r-";
 const RETAINED_PREFIX: &str = ".emda-stage-v1-g-";
 const OWNER_SUFFIX: &str = ".owner";
-const RETAINED_PENDING_SUFFIX: &str = ".pending";
+const PENDING_SUFFIX: &str = ".pending";
 const PAYLOAD_SUFFIX: &str = ".data";
 const FILE_MARKER: &[u8] = b"EMDA-STAGING-V1-FILE\n";
 const DIR_MARKER: &[u8] = b"EMDA-STAGING-V1-DIRECTORY\n";
@@ -168,8 +168,8 @@ impl Stage {
         sync_parent: impl FnOnce(&File) -> io::Result<()>,
     ) -> io::Result<Self> {
         let parent_lock = ParentLock::shared(parent)?;
-        let suffix = if kind == Kind::Retained {
-            RETAINED_PENDING_SUFFIX
+        let suffix = if kind.is_retired() {
+            PENDING_SUFFIX
         } else {
             OWNER_SUFFIX
         };
@@ -180,7 +180,7 @@ impl Stage {
             .tempfile_in(parent)?;
         marker.write_all(content)?;
         sync_marker(marker.as_file())?;
-        if kind == Kind::Retained {
+        if kind.is_retired() {
             // A killed process can leave a partial preparation file. Only a
             // complete, synced marker may become visible as an owner.
             let owner = marker.path().with_extension(&OWNER_SUFFIX[1..]);
@@ -441,30 +441,19 @@ impl std::error::Error for StagingCleanupFailure {
     }
 }
 
-fn marker_kind(name: &OsStr) -> Option<Kind> {
-    let name = name.to_str()?;
-    let (kind, remainder) = if let Some(rest) = name.strip_prefix(FILE_PREFIX) {
-        (Kind::File, rest)
-    } else if let Some(rest) = name.strip_prefix(DIR_PREFIX) {
-        (Kind::Directory, rest)
-    } else if let Some(rest) = name.strip_prefix(RETAINED_PREFIX) {
-        (Kind::Retained, rest)
-    } else {
-        (Kind::Retired, name.strip_prefix(RETIRED_PREFIX)?)
-    };
-    let random = remainder.strip_suffix(OWNER_SUFFIX)?;
-    valid_stage_id(random).then_some(kind)
+fn marker_kind(name: &OsStr, suffix: &str) -> Option<Kind> {
+    let name = name.to_str()?.strip_suffix(suffix)?;
+    [Kind::File, Kind::Directory, Kind::Retired, Kind::Retained]
+        .into_iter()
+        .find(|kind| name.strip_prefix(kind.prefix()).is_some_and(valid_stage_id))
 }
 
 fn valid_stage_id(id: &str) -> bool {
     id.len() == RANDOM_LEN && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
-fn is_pending_retained_marker(name: &OsStr) -> bool {
-    name.to_str()
-        .and_then(|name| name.strip_prefix(RETAINED_PREFIX))
-        .and_then(|name| name.strip_suffix(RETAINED_PENDING_SUFFIX))
-        .is_some_and(valid_stage_id)
+fn pending_marker_kind(name: &OsStr) -> Option<Kind> {
+    marker_kind(name, PENDING_SUFFIX).filter(|kind| kind.is_retired())
 }
 
 /// Deletes recognized, abandoned staging payloads in one trusted directory.
@@ -482,7 +471,7 @@ fn is_pending_retained_marker(name: &OsStr) -> bool {
 /// secure erasure, an automatic janitor, or a total disk-usage quota.
 /// An unchanged directory is not synchronized; a successful no-op does not
 /// establish that the filesystem supports directory synchronization.
-/// Abandoned retained-marker preparation files can be removed under the
+/// Abandoned retirement-marker preparation files can be removed under the
 /// parent lock. Preparation files never own a payload.
 ///
 /// Retired-store markers are skipped. Verify their replacement through
@@ -597,7 +586,7 @@ pub(crate) fn cleanup_retained(
 
 pub(crate) fn has_retained_stage(parent: &Path) -> io::Result<bool> {
     for entry in fs::read_dir(parent)? {
-        if marker_kind(&entry?.file_name()) == Some(Kind::Retained) {
+        if marker_kind(&entry?.file_name(), OWNER_SUFFIX) == Some(Kind::Retained) {
             return Ok(true);
         }
     }
@@ -672,9 +661,9 @@ fn cleanup_locked(
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
         let name = entry.file_name();
-        if replacement.is_none() && is_pending_retained_marker(&name) {
+        if let Some(kind) = pending_marker_kind(&name).filter(|_| replacement.is_none()) {
             let meta = fs::symlink_metadata(entry.path())?;
-            if meta.file_type().is_file() && meta.len() <= Kind::Retained.marker_len() as u64 {
+            if meta.file_type().is_file() && meta.len() <= kind.marker_len() as u64 {
                 // A preparation name never owns a payload. The exclusive
                 // parent lock excludes a cooperating marker writer.
                 before_remove()?;
@@ -685,7 +674,7 @@ fn cleanup_locked(
             }
             continue;
         }
-        let Some(kind) = marker_kind(&name) else {
+        let Some(kind) = marker_kind(&name, OWNER_SUFFIX) else {
             continue;
         };
         if replacement.is_none() && kind.is_retired() {
