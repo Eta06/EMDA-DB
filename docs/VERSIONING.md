@@ -56,6 +56,28 @@ The workflow currently creates release notes, not binary packages or published c
 
 ## Experimental document format
 
+### Portable collection archives
+
+Version 1 is a UTF-8 JSON object with `version: 1`, `schema`, `indexes`
+and `documents`. Each document record contains an `id` and a JSON
+`document` object. IDs are strictly increasing in UTF-8 byte order.
+Schema rules and index definitions use the declared document model's
+JSON names and value types. The destination name is supplied at import.
+The reader rejects duplicate or unknown archive fields and unsupported
+versions. A fixed version 1 fixture is checked on macOS and Linux.
+
+The archive version is independent of log and collection metadata versions.
+For a compatible migration, open the source using a revision that supports
+its current log and metadata, complete pending maintenance, then export and
+import into a fresh collection with a reader that supports that archive
+version. A format or semantic change that prevents the reader from preserving
+the logical collection requires a new archive version and a documented
+conversion path. Keep the original source and any independent backups
+through validation of the imported collection. The experimental release
+offers no automatic downgrade or cross-engine wire compatibility.
+
+### Stored document metadata
+
 Persisted named-index seek positions use the `EMDAIC01` cursor encoding. It
 contains the magic, the SHA-256 of that magic followed by the compact JSON
 pair of collection name and index definition, the encoded index key, and a

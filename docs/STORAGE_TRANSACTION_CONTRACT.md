@@ -191,6 +191,12 @@ maintenance operations remain separate.
 
 ### Isolation, snapshots, and interfaces
 
+Document collection export captures one logical transaction view. Import
+stages a fresh collection's metadata, documents and rebuilt indexes in a
+single transaction. A rejected import discards the staged changes. An
+unknown outcome requires the same recovery and reconciliation as any
+other detailed transaction. The archive excludes log and witness state.
+
 The matching guarded document maintenance methods require both an authentic
 stored job and the expected independently retained progress token. The
 transaction reads that progress and stages changes together. A token returned

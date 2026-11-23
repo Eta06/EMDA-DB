@@ -373,6 +373,29 @@ the error and returns success, the engine aborts before commit. The limits
 do not measure underlying I/O, validation reads at commit, allocator use
 or elapsed time. Deadlines, cancellation and per-operation bounds still apply.
 
+### Moving a collection
+
+`export_collection` returns a versioned JSON archive from one transaction's
+view. It includes the active schema, index definitions and documents ordered
+by ID. Pending index and schema maintenance must finish or be cancelled
+first. The archive carries logical documents and definitions. The destination
+rebuilds index entries using its normal schema, uniqueness and partial-index
+checks.
+
+`import_collection` creates a new named collection in one transaction.
+Existing collections and orphan document or index keys are rejected.
+Malformed archives, unsupported versions and any staging or validation
+error abort the import. Use the detailed outcome to distinguish an unknown
+commit from a rejected archive. After an unknown outcome, reopen and
+inspect the destination before retrying.
+
+The version 1 format admits up to 256 documents, 16 indexes and 8 MiB of
+encoded JSON. Normal transaction key, byte and backend limits can reject a
+collection below those ceilings. The archive contains plaintext data.
+Preserve and verify its bytes separately if the transport or storage is
+untrusted. Archive transfer preserves the logical collection and leaves
+out raw keys, maintenance state, witnesses and log history.
+
 ## Namespace, integrity and compatibility
 
 The versioned byte prefix `00 65 6d 64 61 2d 64 6f 63 75 6d 65 6e 74 01` is reserved for document metadata, documents and indexes. The document transaction's raw methods reject this prefix. Direct raw `Store`/`CheckpointStore` access and older binaries do not enforce the reservation; applications must not use them to modify document-owned keys. The prefix is **not** a security or tenant-isolation boundary. Invalid or unknown metadata and invalid documents fail when detected, and queries check the entries they return; checksums and these checks do not repair corruption, authenticate data, or guarantee discovery of a missing index entry. In particular, a well-formed but improperly replaced build or schema-migration cursor can skip documents and publish an incomplete index or schema. A later bounded verification or read may detect the inconsistency; publication does not independently revalidate the whole collection.

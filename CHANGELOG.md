@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Export bounded document collections as versioned JSON and import them
+  atomically under a new name, rebuilding declared indexes.
+
 - Compare guarded index-build and schema-migration progress against a token
   retained independently by the caller before advancing either job.
 

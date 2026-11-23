@@ -17,6 +17,7 @@ mod schema;
 mod schema_migration;
 mod snapshot;
 mod transaction;
+mod transfer;
 mod update;
 
 #[cfg(test)]
@@ -47,6 +48,7 @@ pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use snapshot::DocumentSnapshot;
 pub use transaction::{DocumentReadLimits, DocumentTransaction};
+pub use transfer::{MAX_COLLECTION_ARCHIVE_BYTES, MAX_COLLECTION_ARCHIVE_DOCUMENTS};
 pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES};
 
 use crate::retained_candidate::{AuthorizedRetainedStore, ManagedRetainedStore, RetainedAuthority};

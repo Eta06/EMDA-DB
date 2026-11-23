@@ -198,4 +198,8 @@ The initial document interface is bounded and experimental. This checklist recor
   Point reads of present and absent keys inside that range also reuse the
   observation. Exclusive endpoints still require separate validation.
 - [ ] Add an authenticated service and genuine project isolation in the later security/service priority. The raw reserved prefix is not an isolation boundary; uncooperative raw writes can corrupt document metadata or create undetected omissions until bounded verification.
-- [ ] Establish versioned migration, import/export and compatibility policy before a stable release. Neither MongoDB wire/query compatibility nor a downgrade promise exists.
+- [x] Establish versioned migration, import/export and compatibility policy
+  before a stable release. The [version 1 archive](VERSIONING.md#portable-collection-archives)
+  moves a bounded logical collection through an atomic import. Fixed-format
+  and cross-backend tests cover unsupported input, schema and index
+  enforcement, reopening, and rollback after rejected imports.
