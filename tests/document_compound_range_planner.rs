@@ -1358,6 +1358,33 @@ fn membership_prefix_ranges_preserve_partial_and_suffix_requirements() {
         assert_eq!(plan.result.plan.scanned, 2);
         assert_eq!(plan.result.documents, scan.documents);
 
+        let mut scores = predicates.clone();
+        scores.push(membership("score", vec![json!(3), json!(99)]));
+        let scan = db.query("c", &query(and(scores.clone()), 7)).unwrap();
+        let plan = db.query_planned("c", &query(and(scores), 2)).unwrap();
+        assert_eq!(plan.access, prefix_access(3, 2, true));
+        assert_eq!(plan.result.plan.scanned, 2);
+        assert_eq!(plan.result.documents, scan.documents);
+
+        let mut wide = predicates.clone();
+        wide[1] = membership(
+            "tenant",
+            [Value::Null, json!("t")]
+                .into_iter()
+                .chain((0..15).map(|n| json!(format!("other-{n}"))))
+                .collect(),
+        );
+        wide[3] = cmp("score", Comparison::Less, IndexValue::Integer(18));
+        wide.push(membership(
+            "score",
+            (2..18).map(|score| json!(score)).collect(),
+        ));
+        compare(
+            db,
+            &query(and(wide), 7),
+            membership_range_access(2, 17, true),
+        );
+
         for missing in [4, 5] {
             let mut unsafe_to_plan = predicates.clone();
             unsafe_to_plan.remove(missing);

@@ -1,6 +1,6 @@
 //! Compound membership plans must be equivalent to a bounded complete scan.
 use database_engine::{
-    CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
+    CheckpointStore, CollectionSchema, Comparison, DocumentDatabase, DocumentFilter, DocumentQuery,
     DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue, PartialFilter, Store,
 };
 use serde_json::{Value, json};
@@ -196,6 +196,31 @@ fn compound_probe_product_is_bounded_before_allocating() {
         compare(db, &exact, access(256, false));
         let above = query(and(vec![inside("a", values(17)), inside("b", values(16))]));
         compare(db, &above, DocumentQueryAccess::CollectionScan);
+
+        db.insert("c", "outside-membership", &json!({"a": 1, "b": -1}))
+            .unwrap();
+        let narrowed = query(and(vec![
+            inside("a", values(16)),
+            inside("b", values(17)),
+            DocumentFilter::Compare {
+                path: path("b"),
+                comparison: Comparison::Less,
+                value: IndexValue::Integer(16),
+            },
+        ]));
+        let scan = db.query("c", &narrowed).unwrap();
+        let plan = db
+            .query_planned(
+                "c",
+                &DocumentQuery {
+                    max_scanned: 1,
+                    ..narrowed
+                },
+            )
+            .unwrap();
+        assert_eq!(plan.access, access(256, false));
+        assert_eq!(plan.result.plan.scanned, 1);
+        assert_eq!(plan.result.documents, scan.documents);
     });
 }
 
@@ -240,6 +265,7 @@ fn each_compound_probe_tracks_phantoms_and_transactional_staging() {
         (1, "x", true),
         (2, "y", true),
         (3, "x", false),
+        (1, "a", false),
         (1, "z", false),
     ] {
         on_backends(|db| {
@@ -248,7 +274,20 @@ fn each_compound_probe_tracks_phantoms_and_transactional_staging() {
             db.create_index("c", index(false, None)).unwrap();
             let request = query(and(vec![
                 inside("a", vec![json!(1), json!(2)]),
-                inside("b", vec![json!("x"), json!("y")]),
+                inside(
+                    "b",
+                    vec![json!("a"), json!("x"), json!("y"), json!("z"), json!([2])],
+                ),
+                DocumentFilter::Compare {
+                    path: path("b"),
+                    comparison: Comparison::Greater,
+                    value: IndexValue::String("w".into()),
+                },
+                DocumentFilter::Compare {
+                    path: path("b"),
+                    comparison: Comparison::Less,
+                    value: IndexValue::String("z".into()),
+                },
             ]));
             db.transaction_with_read_set(|tx| {
                 tx.insert("c", "staged", &json!({"a": 1, "b": "y"}))?;

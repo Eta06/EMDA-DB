@@ -173,6 +173,10 @@ and exclusive bounds. Values that cannot satisfy a scalar comparison are
 discarded. Surviving values become deduplicated equality or compound-prefix
 probes, subject to the same proof of partial-index coverage and trailing-field
 presence as the range. An empty intersection keeps the existing range plan.
+When earlier fields also use membership, the planner applies the same bounds
+before counting complete compound tuples or extending a compound prefix.
+If the narrower prefixes still exceed the 256-probe cap, the existing
+membership-prefix range can remain eligible.
 The normal candidate budgets and read-set checks apply to the resulting probes.
 When every surviving value is an integer, consecutive values can share an
 inclusive range probe. The planner reports this access as

@@ -495,11 +495,16 @@ fn compound_choices(
     for field in fields {
         let values = if let Some(value) = required_equality(required, field)? {
             vec![value]
-        } else if let Some(values) = required_membership(required, field, |_| true) {
+        } else {
+            let narrowed = required_range(required, field)?.and_then(|(lower, upper)| {
+                membership_within_bounds(required, field, lower.as_ref(), upper.as_ref())
+            });
+            let Some(values) = narrowed.or_else(|| required_membership(required, field, |_| true))
+            else {
+                break;
+            };
             has_membership = true;
             values
-        } else {
-            break;
         };
         let Some(count) = probe_count
             .checked_mul(values.len())
@@ -517,17 +522,21 @@ fn compound_choices(
 fn expand_tuples(choices: Vec<Vec<IndexValue>>) -> Vec<Vec<IndexValue>> {
     let mut tuples = vec![Vec::new()];
     for values in choices {
-        let mut next = Vec::with_capacity(tuples.len() * values.len());
-        for tuple in tuples {
-            for value in &values {
-                let mut next_tuple = tuple.clone();
-                next_tuple.push(value.clone());
-                next.push(next_tuple);
-            }
-        }
-        tuples = next;
+        tuples = extend_tuples(tuples, &values);
     }
     tuples
+}
+
+fn extend_tuples(tuples: Vec<Vec<IndexValue>>, values: &[IndexValue]) -> Vec<Vec<IndexValue>> {
+    let mut next = Vec::with_capacity(tuples.len() * values.len());
+    for tuple in tuples {
+        for value in values {
+            let mut next_tuple = tuple.clone();
+            next_tuple.push(value.clone());
+            next.push(next_tuple);
+        }
+    }
+    next
 }
 
 // Keep the tighter bound in the index's actual encoded ordering. Equal bounds
@@ -799,6 +808,22 @@ fn choose_index<'a>(
                 continue;
             };
             if let Some(prefixes) = compound_membership(required, &index.fields[..position])? {
+                if position + 1 < index.fields.len() {
+                    let bounded_values = membership_within_bounds(
+                        required,
+                        &index.fields[position],
+                        lower.as_ref(),
+                        upper.as_ref(),
+                    );
+                    if let Some(values) = bounded_values
+                        .filter(|values| prefixes.len() <= MAX_INDEX_PROBES / values.len())
+                    {
+                        return Ok(Some((
+                            index,
+                            Selection::CompoundPrefix(extend_tuples(prefixes, &values)),
+                        )));
+                    }
+                }
                 return Ok(Some((
                     index,
                     Selection::MembershipRange {

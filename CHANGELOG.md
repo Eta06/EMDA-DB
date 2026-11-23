@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Apply required scalar bounds before admitting compound membership tuples
+  and extending membership prefixes.
+
 - Verify synchronized backup descriptors and recheck backup file identities
   before retiring a retained cutover archive.
 
