@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Compare guarded index-build and schema-migration progress against a token
+  retained independently by the caller before advancing either job.
+
 - Reuse checkpoint transaction range observations for point reads inside
   those ranges, including missing keys.
 

@@ -1,6 +1,6 @@
 use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, FieldRule, FieldType, IndexDefinition,
-    IndexQuery, MaintenanceKey, Store,
+    IndexQuery, MaintenanceKey, MaintenanceProgress, Store,
 };
 use serde_json::{Value, json};
 use std::{io, path::PathBuf};
@@ -103,6 +103,99 @@ fn reject<T>(result: io::Result<T>, kind: io::ErrorKind) {
             .kind(),
         kind
     );
+}
+
+#[test]
+fn independent_progress_tokens_reject_authentic_old_index_and_schema_states() {
+    for checkpoint in [false, true] {
+        let fixture = Fixture::new(checkpoint);
+        let store = fixture.open();
+        let db = store.docs();
+        let build_key = MaintenanceKey::generate().unwrap();
+        let schema_key = MaintenanceKey::generate().unwrap();
+        let build_start =
+            MaintenanceProgress::initial_index_build("c", &index(), &build_key).unwrap();
+        let schema_start =
+            MaintenanceProgress::initial_schema_migration("c", &schema(), &schema_key).unwrap();
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.insert("c", "a", &json!({"n": 1, "email": "a@example.test"}))
+            .unwrap();
+        db.insert("c", "b", &json!({"n": 2, "email": "b@example.test"}))
+            .unwrap();
+        db.start_index_build_guarded("c", index(), &build_key)
+            .unwrap();
+        db.start_schema_migration_guarded("c", schema(), &schema_key)
+            .unwrap();
+        let old = store.metadata();
+        let advance = |db: &DocumentDatabase<'_>, build, schema| {
+            db.transaction(|tx| {
+                let (index, next_index) =
+                    tx.advance_index_build_guarded_matching("c", "score", 1, &build_key, build)?;
+                let (schema, next_schema) =
+                    tx.advance_schema_migration_guarded_matching("c", 1, &schema_key, schema)?;
+                assert_eq!(index.complete, schema.complete);
+                assert_eq!(index.processed, schema.processed);
+                Ok((next_index, next_schema))
+            })
+        };
+        let (build_next, schema_next) = advance(&db, build_start, schema_start).unwrap();
+        let build_next = MaintenanceProgress::from_bytes(build_next.unwrap().to_bytes());
+        let schema_next = MaintenanceProgress::from_bytes(schema_next.unwrap().to_bytes());
+        let latest = store.metadata();
+        drop(store);
+
+        let store = fixture.open();
+        let db = store.docs();
+        let confirm_mismatch = |build, schema| {
+            let error = db
+                .transaction(|tx| {
+                    tx.put_raw(RECEIPT, b"uncommitted")?;
+                    if build {
+                        tx.advance_index_build_guarded_matching(
+                            "c", "score", 1, &build_key, schema,
+                        )?;
+                    } else {
+                        tx.advance_schema_migration_guarded_matching("c", 1, &schema_key, schema)?;
+                    }
+                    Ok(())
+                })
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(
+                error.to_string(),
+                "document maintenance progress does not match the trusted token"
+            );
+            assert_eq!(db.transaction(|tx| tx.get_raw(RECEIPT)).unwrap(), None);
+        };
+        // A stale caller fails against the newer on-disk progress.
+        confirm_mismatch(true, build_start);
+        confirm_mismatch(false, schema_start);
+        reject(
+            advance(&db, build_next, schema_start),
+            io::ErrorKind::InvalidData,
+        );
+        assert_eq!(store.metadata(), latest);
+        // Replay old metadata including its valid original authentication tags.
+        store.replace_metadata(&old);
+        confirm_mismatch(true, build_next);
+        confirm_mismatch(false, schema_next);
+        assert_eq!(store.metadata(), old);
+        store.replace_metadata(&latest);
+        let (build_end, schema_end) = advance(&db, build_next, schema_next).unwrap();
+        assert_eq!(
+            advance(&db, build_end.unwrap(), schema_end.unwrap()).unwrap(),
+            (None, None)
+        );
+        assert_eq!(
+            db.query_index("c", "score", &IndexQuery::default())
+                .unwrap()
+                .documents
+                .len(),
+            2
+        );
+        assert!(db.schema_migration("c").unwrap().is_none());
+    }
 }
 
 #[test]

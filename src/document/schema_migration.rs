@@ -1,7 +1,7 @@
 //! Resumable, bounded schema validation with concurrent-write enforcement.
 use super::{
     key,
-    maintenance_key::{self, MaintenanceKey, Seal},
+    maintenance_key::{self, MaintenanceKey, MaintenanceProgress, Seal},
     schema::CollectionSchema,
     transaction::DocumentTransaction,
 };
@@ -10,6 +10,21 @@ use std::io;
 
 const MAX_STEP: usize = 128;
 const SCHEMA_PROGRESS_DOMAIN: &[u8] = b"EMDA guarded schema migration v1\0";
+
+impl MaintenanceProgress {
+    /// Computes the initial token from a trusted migration request and fresh key.
+    pub fn initial_schema_migration(
+        collection: &str,
+        schema: &CollectionSchema,
+        key: &MaintenanceKey,
+    ) -> io::Result<Self> {
+        maintenance_key::progress_token(
+            key,
+            SCHEMA_PROGRESS_DOMAIN,
+            (collection, schema, Option::<&str>::None),
+        )
+    }
+}
 
 /// A pending schema and the last document ID durably validated.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,7 +158,8 @@ impl DocumentTransaction<'_, '_> {
         collection: &str,
         limit: usize,
     ) -> io::Result<SchemaStep> {
-        self.advance_schema_migration_using(collection, limit, None)
+        self.advance_schema_migration_using(collection, limit, None, None)
+            .map(|(step, _)| step)
     }
 
     /// Verifies the guarded schema and cursor before validating or publishing.
@@ -153,7 +169,26 @@ impl DocumentTransaction<'_, '_> {
         limit: usize,
         maintenance_key: &MaintenanceKey,
     ) -> io::Result<SchemaStep> {
-        self.advance_schema_migration_using(collection, limit, Some(maintenance_key))
+        self.advance_schema_migration_using(collection, limit, Some(maintenance_key), None)
+            .map(|(step, _)| step)
+    }
+
+    /// Advances only if the authenticated migration matches the independently
+    /// saved token. The returned token is provisional until commit. A
+    /// completed step returns no successor token.
+    pub fn advance_schema_migration_guarded_matching(
+        &mut self,
+        collection: &str,
+        limit: usize,
+        maintenance_key: &MaintenanceKey,
+        expected: MaintenanceProgress,
+    ) -> io::Result<(SchemaStep, Option<MaintenanceProgress>)> {
+        self.advance_schema_migration_using(
+            collection,
+            limit,
+            Some(maintenance_key),
+            Some(expected),
+        )
     }
 
     fn advance_schema_migration_using(
@@ -161,7 +196,8 @@ impl DocumentTransaction<'_, '_> {
         collection: &str,
         limit: usize,
         maintenance_key: Option<&MaintenanceKey>,
-    ) -> io::Result<SchemaStep> {
+        expected: Option<MaintenanceProgress>,
+    ) -> io::Result<(SchemaStep, Option<MaintenanceProgress>)> {
         self.mutate(|this| {
             if limit == 0 || limit > MAX_STEP {
                 return Err(key::invalid(
@@ -177,6 +213,7 @@ impl DocumentTransaction<'_, '_> {
                 job.seal.as_ref(),
                 SCHEMA_PROGRESS_DOMAIN,
                 (collection, &job.schema, job.after.as_deref()),
+                expected,
             )?;
             let prefix = key::collection(b'D', collection)?;
             let end = key::end(&prefix);
@@ -189,10 +226,13 @@ impl DocumentTransaction<'_, '_> {
                 metadata.schema = job.schema;
                 metadata.schema_job = None;
                 this.save_metadata(collection, &metadata)?;
-                return Ok(SchemaStep {
-                    processed: 0,
-                    complete: true,
-                });
+                return Ok((
+                    SchemaStep {
+                        processed: 0,
+                        complete: true,
+                    },
+                    None,
+                ));
             }
             let mut last = None;
             for (key_bytes, bytes) in &rows {
@@ -218,10 +258,13 @@ impl DocumentTransaction<'_, '_> {
                 seal,
             });
             this.save_metadata(collection, &metadata)?;
-            Ok(SchemaStep {
-                processed: rows.len(),
-                complete: false,
-            })
+            Ok((
+                SchemaStep {
+                    processed: rows.len(),
+                    complete: false,
+                },
+                seal.map(MaintenanceProgress::from_bytes),
+            ))
         })
     }
 

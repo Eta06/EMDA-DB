@@ -39,7 +39,7 @@ pub use filter::{
 pub use index::{IndexDefinition, IndexValue, PartialFilter};
 pub use integrity::CollectionIntegrity;
 pub use lifecycle::CollectionDropStep;
-pub use maintenance_key::MaintenanceKey;
+pub use maintenance_key::{MaintenanceKey, MaintenanceProgress};
 pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
 pub use planner::{DocumentQueryAccess, PlannedDocumentQueryResult};
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};

@@ -173,7 +173,12 @@ The initial document interface is bounded and experimental. This checklist recor
   under [V2 append and V3 metadata faults](../benchmarks/results/2026-11-23-guarded-maintenance-restart-faults/README.md).
   Ordinary and checkpoint recovery agree after faults on both writers, including
   a torn batch containing the full metadata child and no receipt.
-- [ ] Define freshness and rollback protection for independently managed progress. Guarded advancement authenticates the current parameters and cursor under its key. Replay of a valid state from the same job and arbitrary reserved-namespace mutation remain outside that protection.
+- [x] Define freshness and rollback protection for independently managed
+  progress. Compare authenticated job state to the caller's latest
+  independently retained token before advancing. The [guarded progress contract](DOCUMENT_MODEL.md#guarded-progress-for-index-builds-and-schema-migrations)
+  requires reconciliation of unresolved intents. Regressions on ordinary
+  and checkpoint stores reject older authentic state after reopening and
+  verify rollback of staged metadata and raw writes.
 - [ ] Consider durable cursors/snapshots, cancellation, request budgets and more scalable transactions. Page calls outside one transaction can observe intervening writes. Existing budgets are not total memory or project quotas.
   Named-index seek positions now have a [versioned encoding](VERSIONING.md#experimental-document-format)
   and resume across close and reopen on both writable transaction backends.

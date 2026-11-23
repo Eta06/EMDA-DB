@@ -2,7 +2,7 @@
 use super::{
     index::{self, IndexDefinition},
     key,
-    maintenance_key::{self, MaintenanceKey, Seal},
+    maintenance_key::{self, MaintenanceKey, MaintenanceProgress, Seal},
     transaction::{DocumentTransaction, Metadata},
 };
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,21 @@ use std::io;
 
 const MAX_STEP: usize = 128;
 const BUILD_PROGRESS_DOMAIN: &[u8] = b"EMDA guarded index build v1\0";
+
+impl MaintenanceProgress {
+    /// Computes the initial token from a trusted build request and fresh key.
+    pub fn initial_index_build(
+        collection: &str,
+        definition: &IndexDefinition,
+        key: &MaintenanceKey,
+    ) -> io::Result<Self> {
+        maintenance_key::progress_token(
+            key,
+            BUILD_PROGRESS_DOMAIN,
+            (collection, definition, Option::<&str>::None),
+        )
+    }
+}
 
 /// The key namespace currently being removed by an incremental drop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +310,8 @@ impl DocumentTransaction<'_, '_> {
         name: &str,
         limit: usize,
     ) -> io::Result<IndexStep> {
-        self.advance_index_build_using(collection, name, limit, None)
+        self.advance_index_build_using(collection, name, limit, None, None)
+            .map(|(step, _)| step)
     }
 
     /// Verifies the guarded build definition and cursor before scanning or
@@ -307,7 +323,28 @@ impl DocumentTransaction<'_, '_> {
         limit: usize,
         maintenance_key: &MaintenanceKey,
     ) -> io::Result<IndexStep> {
-        self.advance_index_build_using(collection, name, limit, Some(maintenance_key))
+        self.advance_index_build_using(collection, name, limit, Some(maintenance_key), None)
+            .map(|(step, _)| step)
+    }
+
+    /// Advances only if the authenticated build matches the independently
+    /// saved token. The returned token is provisional until commit. A
+    /// completed step returns no successor token.
+    pub fn advance_index_build_guarded_matching(
+        &mut self,
+        collection: &str,
+        name: &str,
+        limit: usize,
+        maintenance_key: &MaintenanceKey,
+        expected: MaintenanceProgress,
+    ) -> io::Result<(IndexStep, Option<MaintenanceProgress>)> {
+        self.advance_index_build_using(
+            collection,
+            name,
+            limit,
+            Some(maintenance_key),
+            Some(expected),
+        )
     }
 
     fn advance_index_build_using(
@@ -316,7 +353,8 @@ impl DocumentTransaction<'_, '_> {
         name: &str,
         limit: usize,
         maintenance_key: Option<&MaintenanceKey>,
-    ) -> io::Result<IndexStep> {
+        expected: Option<MaintenanceProgress>,
+    ) -> io::Result<(IndexStep, Option<MaintenanceProgress>)> {
         self.mutate(|this| {
             validate_step(limit)?;
             let mut metadata = this.metadata(collection)?;
@@ -332,6 +370,7 @@ impl DocumentTransaction<'_, '_> {
                         seal.as_ref(),
                         BUILD_PROGRESS_DOMAIN,
                         (collection, definition, after.as_deref()),
+                        expected,
                     )?;
                     (definition.clone(), after.clone())
                 }
@@ -348,10 +387,13 @@ impl DocumentTransaction<'_, '_> {
                 metadata.jobs.remove(position);
                 metadata.indexes.push(definition);
                 this.save_metadata(collection, &metadata)?;
-                return Ok(IndexStep {
-                    processed: 0,
-                    complete: true,
-                });
+                return Ok((
+                    IndexStep {
+                        processed: 0,
+                        complete: true,
+                    },
+                    None,
+                ));
             }
             let mut last = None;
             for (key_bytes, bytes) in &rows {
@@ -403,10 +445,13 @@ impl DocumentTransaction<'_, '_> {
                 seal,
             };
             this.save_metadata(collection, &metadata)?;
-            Ok(IndexStep {
-                processed: rows.len(),
-                complete: false,
-            })
+            Ok((
+                IndexStep {
+                    processed: rows.len(),
+                    complete: false,
+                },
+                seal.map(MaintenanceProgress::from_bytes),
+            ))
         })
     }
 

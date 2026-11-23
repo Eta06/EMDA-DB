@@ -191,6 +191,12 @@ maintenance operations remain separate.
 
 ### Isolation, snapshots, and interfaces
 
+The matching guarded document maintenance methods require both an authentic
+stored job and the expected independently retained progress token. The
+transaction reads that progress and stages changes together. A token returned
+inside the callback is provisional until commit is acknowledged. A caller
+with an unresolved independent intent must reconcile before advancing again.
+
 Checkpoint read-set transactions reuse a prior complete range observation
 when it contains the entire new requested range. Later pages still verify
 the checkpoint blocks they read and merge the transaction's staged changes.

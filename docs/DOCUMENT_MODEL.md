@@ -136,12 +136,35 @@ Normal writes still maintain the pending index and enforce the pending
 schema. A staged old step can lose the transaction conflict and roll back.
 
 Keep writers within the document API and protect the key from the store
-and its backups. Guarded advancement authenticates the job parameters
-and cursor under that key. It does not prevent replay of an authenticated
-state from the same job or detect unrelated writes into the reserved
-namespace. The metadata status methods still display the stored state.
-Use the guarded methods consistently so that removing a tag cannot cause
-a switch to unguarded advancement.
+and its backups. The basic guarded methods authenticate the job and cursor.
+An independently managed job can also reject an older authentic cursor by
+requiring its latest independently retained `MaintenanceProgress` token:
+
+1. Save the fresh key and initial token before starting or restarting the
+   guarded job. Compute it from the trusted request with
+   `MaintenanceProgress::initial_index_build` or
+   `MaintenanceProgress::initial_schema_migration`.
+2. Have one controller per job. Use `transaction_detailed` and call the
+   matching `advance_index_build_guarded_matching` or
+   `advance_schema_migration_guarded_matching` on its transaction. The
+   compare runs inside the transaction before the step reads documents or
+   changes progress. A different authentic token returns `InvalidData`.
+3. Save an independent durable intent before submitting the step. It can
+   include the expected and provisional next token from inside the callback.
+   The next token becomes current only after acknowledged commit. Record
+   completion independently when the step returns no next token.
+4. Clear the intent only after recording the acknowledged result or a
+   confirmed abort. If interruption or an unknown commit leaves an intent,
+   stop advancement until independent evidence resolves the result.
+   Do not repopulate the trusted token from the database's current metadata.
+   When the outcome cannot be established, recover or rebuild under a new
+   job key from a separately trusted state.
+
+The caller owns durability and ordering of that independent record and
+must use the matching methods consistently. Database status calls read the
+stored state. The comparison protects job progress relative to a trusted
+token. It does not authenticate other reserved keys or detect a rollback
+of both the database and the independent record.
 
 Document and index changes are maintained in one transaction. One-shot `create_index` scans and validates at most 256 existing documents and 32 MiB of encoded input; unique conflicts abort the build. One-shot `drop_index` is atomic and limited to 768 index keys and 32 MiB of scanned key/value bytes. These one-shot maintenance operations block or conflict according to the chosen underlying transaction mode. Incremental builds and drops are described above; schema changes can use the separate resumable validation path described above.
 

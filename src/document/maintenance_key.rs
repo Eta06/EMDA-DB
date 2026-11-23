@@ -10,6 +10,24 @@ use std::{
 pub(super) type Seal = [u8; 32];
 type ProgressMac = Hmac<Sha256>;
 
+/// The exact guarded job progress expected by an independent caller.
+/// Keep the latest acknowledged token outside the database. After an
+/// uncertain commit, reconcile before issuing another step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaintenanceProgress(Seal);
+
+impl MaintenanceProgress {
+    /// Restores a token saved in independently trusted caller storage.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Encodes the token for independent storage.
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
 /// An independently kept per-job key for guarded document maintenance.
 /// Persist the key before starting the job and use it for every advancement.
 /// Generate a fresh key for each job and keep it outside the database.
@@ -46,8 +64,18 @@ pub(super) fn seal(
     domain: &[u8],
     progress: impl Serialize,
 ) -> io::Result<Option<Seal>> {
-    key.map(|key| Ok(key.mac(domain, progress)?.finalize().into_bytes().into()))
+    key.map(|key| progress_token(key, domain, progress).map(MaintenanceProgress::to_bytes))
         .transpose()
+}
+
+pub(super) fn progress_token(
+    key: &MaintenanceKey,
+    domain: &[u8],
+    progress: impl Serialize,
+) -> io::Result<MaintenanceProgress> {
+    Ok(MaintenanceProgress(
+        key.mac(domain, progress)?.finalize().into_bytes().into(),
+    ))
 }
 
 pub(super) fn verify(
@@ -55,6 +83,7 @@ pub(super) fn verify(
     persisted: Option<&Seal>,
     domain: &[u8],
     progress: impl Serialize,
+    expected: Option<MaintenanceProgress>,
 ) -> io::Result<()> {
     match (key, persisted) {
         (None, None) => Ok(()),
@@ -67,7 +96,14 @@ pub(super) fn verify(
             .mac(domain, progress)?
             .verify_slice(persisted)
             .map_err(|_| invalid_progress()),
+    }?;
+    if expected.is_some_and(|expected| persisted != Some(&expected.0)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "document maintenance progress does not match the trusted token",
+        ));
     }
+    Ok(())
 }
 
 fn invalid_progress() -> io::Error {
