@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Share immutable checkpoint suffix keys across snapshot versions and
+  rollover verification to reduce repeated allocations.
+
 - Export bounded document collections as versioned JSON and import them
   atomically under a new name, rebuilding declared indexes.
 

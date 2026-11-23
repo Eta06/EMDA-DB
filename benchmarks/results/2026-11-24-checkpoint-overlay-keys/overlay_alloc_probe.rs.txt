@@ -1,0 +1,89 @@
+use database_engine::{BatchOperation, CheckpointStore, Store};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+
+struct CountingAllocator;
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+static BYTES: AtomicUsize = AtomicUsize::new(0);
+
+fn count(size: usize) {
+    if COUNTING.load(Relaxed) {
+        CALLS.fetch_add(1, Relaxed);
+        BYTES.fetch_add(size, Relaxed);
+    }
+}
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        count(size);
+        unsafe { System.realloc(pointer, layout, size) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(pointer, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn main() -> std::io::Result<()> {
+    let mode = std::env::args().nth(1).expect("pinned or unpinned");
+    assert!(mode == "pinned" || mode == "unpinned");
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("store");
+    let checkpoint = directory.path().join("checkpoint");
+    let store = Store::open(&source)?;
+    let digest = store.checkpoint_to(&checkpoint)?;
+    let keys: Vec<_> = (0..4096_u32)
+        .map(|number| {
+            let mut key = [b'k'; 1024];
+            key[..4].copy_from_slice(&number.to_be_bytes());
+            key
+        })
+        .collect();
+    for group in keys.chunks(1024) {
+        let operations: Vec<_> = group
+            .iter()
+            .map(|key| BatchOperation::Put { key, value: b"old" })
+            .collect();
+        store.write_batch(&operations)?;
+    }
+    drop(store);
+    let store = CheckpointStore::open(&source, &checkpoint, &digest)?;
+    let snapshot = if mode == "pinned" {
+        Some(store.snapshot()?)
+    } else {
+        None
+    };
+    COUNTING.store(true, Relaxed);
+    let result = store.put(&keys[0], b"new");
+    COUNTING.store(false, Relaxed);
+    result?;
+    println!(
+        "{mode} calls={} requested_bytes={}",
+        CALLS.load(Relaxed),
+        BYTES.load(Relaxed)
+    );
+    assert_eq!(store.get(&keys[0])?.as_deref(), Some(b"new".as_slice()));
+    if let Some(snapshot) = snapshot.as_ref() {
+        assert_eq!(snapshot.get(&keys[0])?.as_deref(), Some(b"old".as_slice()));
+    }
+    drop(snapshot);
+    drop(store);
+
+    let reopened = CheckpointStore::open(&source, &checkpoint, &digest)?;
+    assert_eq!(reopened.get(&keys[0])?.as_deref(), Some(b"new".as_slice()));
+    Ok(())
+}

@@ -549,7 +549,15 @@ mod tests {
                 },
             ])
             .unwrap();
-        assert!(!Arc::ptr_eq(&old, &store.read().unwrap().view.overlay));
+        {
+            let live = store.read().unwrap();
+            assert!(!Arc::ptr_eq(&old, &live.view.overlay));
+            for key in [b"base".as_slice(), b"suffix".as_slice()] {
+                let (old_key, _) = old.get_key_value(key).unwrap();
+                let (live_key, _) = live.view.overlay.get_key_value(key).unwrap();
+                assert!(Arc::ptr_eq(old_key, live_key));
+            }
+        }
         for view in [&first, &second] {
             assert_eq!(view.get(b"base").unwrap(), None);
             assert_eq!(view.get(b"suffix").unwrap().as_deref(), Some(&b"value"[..]));

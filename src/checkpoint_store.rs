@@ -449,7 +449,7 @@ impl CheckpointStore {
         if let Some(view_log) = Arc::get_mut(&mut view.base.log) {
             view_log.try_share_checkpoint_view_file(&log);
         }
-        let overlay_key_bytes = view.overlay.keys().map(Vec::len).sum();
+        let overlay_key_bytes = view.overlay.keys().map(|key| key.len()).sum();
         let log_generation = log.id().map(GenerationId);
         Ok(Self {
             log,
@@ -1077,19 +1077,19 @@ impl CheckpointStore {
             probes.get_mut(&first).expect("first probe exists").0 =
                 view.base.location(&first)?.is_some();
             let mut pending = probes
-                .range_mut::<[u8], _>((Excluded(first.as_slice()), Unbounded))
+                .range_mut::<[u8], _>((Excluded(first.as_ref()), Unbounded))
                 .peekable();
             if pending.peek().is_some() {
                 view.base.visit_entries(Some(&first), None, |base_key, _| {
                     while pending
                         .peek()
-                        .is_some_and(|(key, _)| key.as_slice() < base_key)
+                        .is_some_and(|(key, _)| key.as_ref() < base_key)
                     {
                         pending.next();
                     }
                     if pending
                         .peek()
-                        .is_some_and(|(key, _)| key.as_slice() == base_key)
+                        .is_some_and(|(key, _)| key.as_ref() == base_key)
                     {
                         pending.next().expect("peeked probe").1.0 = true;
                     }
@@ -1108,7 +1108,7 @@ impl CheckpointStore {
             &mut log_hasher,
             |key, location| {
                 let probe = probes
-                    .get_mut(&key)
+                    .get_mut(key.as_slice())
                     .ok_or_else(|| record::invalid_data("verified suffix has an unexpected key"))?;
                 match (probe.0, location.is_some()) {
                     (false, true) => {

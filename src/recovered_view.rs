@@ -55,7 +55,7 @@ impl Default for RecoveredViewLimits {
 /// of `CheckpointView` still apply. This is not a writable disk-backed index.
 pub struct RecoveredCheckpointView {
     pub(crate) base: CheckpointView,
-    pub(crate) overlay: Arc<BTreeMap<Vec<u8>, Option<ValueLocation>>>,
+    pub(crate) overlay: Arc<BTreeMap<Arc<[u8]>, Option<ValueLocation>>>,
     pub(crate) tail_bytes: u64,
 }
 
@@ -204,27 +204,29 @@ impl RecoveredCheckpointView {
         }
         let tail_bytes =
             crate::checkpoint::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;
-        let mut overlay = BTreeMap::new();
+        let mut overlay = BTreeMap::<Arc<[u8]>, Option<ValueLocation>>::new();
         let mut key_bytes = 0_usize;
         let visit = |key: Vec<u8>, location| {
-            if !overlay.contains_key(&key) {
-                if overlay.len() >= max_tail_keys {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "recovered view suffix key limit exceeded",
-                    ));
-                }
-                key_bytes = key_bytes
-                    .checked_add(key.len())
-                    .filter(|bytes| *bytes <= max_tail_key_bytes)
-                    .ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "recovered view suffix key byte limit exceeded",
-                        )
-                    })?;
+            if let Some(existing) = overlay.get_mut(key.as_slice()) {
+                *existing = location;
+                return Ok(());
             }
-            overlay.insert(key, location);
+            if overlay.len() >= max_tail_keys {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "recovered view suffix key limit exceeded",
+                ));
+            }
+            key_bytes = key_bytes
+                .checked_add(key.len())
+                .filter(|bytes| *bytes <= max_tail_key_bytes)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "recovered view suffix key byte limit exceeded",
+                    )
+                })?;
+            overlay.insert(key.into(), location);
             Ok(())
         };
         let start = base.log_boundary();
@@ -389,7 +391,7 @@ impl RecoveredCheckpointView {
             .visit_entries(after, before, |base_key, base_location| {
                 while updates
                     .peek()
-                    .is_some_and(|(key, _)| key.as_slice() < base_key)
+                    .is_some_and(|(key, _)| key.as_ref() < base_key)
                 {
                     let (key, location) = updates.next().expect("peeked overlay entry");
                     if let Some(location) = location {
@@ -401,7 +403,7 @@ impl RecoveredCheckpointView {
                 }
                 let chosen = if updates
                     .peek()
-                    .is_some_and(|(key, _)| key.as_slice() == base_key)
+                    .is_some_and(|(key, _)| key.as_ref() == base_key)
                 {
                     updates
                         .next()

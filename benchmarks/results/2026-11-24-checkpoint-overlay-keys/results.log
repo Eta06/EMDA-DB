@@ -1,0 +1,21 @@
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+
+Baseline ce79810f6fb8127d0958b5a593b268b78c63916f
+pinned calls=4784 requested_bytes=4636184
+pinned calls=4784 requested_bytes=4636184
+pinned calls=4784 requested_bytes=4636184
+unpinned calls=6 requested_bytes=2232
+unpinned calls=6 requested_bytes=2232
+unpinned calls=6 requested_bytes=2232
+
+With shared overlay keys
+pinned calls=686 requested_bytes=380872
+pinned calls=686 requested_bytes=380872
+pinned calls=686 requested_bytes=380872
+unpinned calls=4 requested_bytes=1152
+unpinned calls=4 requested_bytes=1152
+unpinned calls=4 requested_bytes=1152

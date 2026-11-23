@@ -1,6 +1,6 @@
 //! Admission, durable append and publication for checkpoint-backed writes.
 use super::*;
-use crate::log::{AppendRecord, BatchUpdate, prepare_batch};
+use crate::log::{AppendRecord, prepare_batch};
 use crate::record::batch::BatchLayout;
 use std::collections::BTreeSet;
 
@@ -105,9 +105,11 @@ impl CheckpointStore {
             }
             Err(error) => return Err(error.into()),
         };
-        let owned_key = (operation != Operation::Batch).then(|| key.to_vec());
+        let owned_key = (operation != Operation::Batch && !state.view.overlay.contains_key(key))
+            .then(|| Arc::<[u8]>::from(key));
         // A snapshot can pin this overlay. Detach before submission, keeping
         // the same entries until the append and its witness are synchronized.
+        // Immutable keys are shared between the old and new maps.
         let next_overlay = (Arc::strong_count(&state.view.overlay) > 1)
             .then(|| Arc::new(state.view.overlay.as_ref().clone()));
         let StateWrite { state, _writer } = state;
@@ -146,12 +148,9 @@ impl CheckpointStore {
             .next()
             .expect("one appended record returns one location");
         let updates = if operation == Operation::Batch {
-            prepare_batch(value, location)?
+            Some(prepare_batch(value, location)?)
         } else {
-            vec![BatchUpdate {
-                key: owned_key.expect("single record owns its key"),
-                location: (operation == Operation::Put).then_some(location),
-            }]
+            None
         };
         self.log.sync_data()?;
         let mut state = self.state.write().map_err(|_| uncertain())?;
@@ -161,8 +160,23 @@ impl CheckpointStore {
         // A snapshot may have pinned the formerly exclusive overlay during
         // the sync. It must keep the old entries through this publication.
         let overlay = Arc::make_mut(&mut state.view.overlay);
-        for update in updates {
-            overlay.insert(update.key, update.location);
+        if let Some(updates) = updates {
+            for update in updates {
+                if let Some(existing) = overlay.get_mut(update.key.as_slice()) {
+                    *existing = update.location;
+                } else {
+                    overlay.insert(update.key.into(), update.location);
+                }
+            }
+        } else {
+            let location = (operation == Operation::Put).then_some(location);
+            if let Some(key) = owned_key {
+                overlay.insert(key, location);
+            } else {
+                *overlay
+                    .get_mut(key)
+                    .expect("writer gate holds admitted key") = location;
+            }
         }
         state.view.tail_bytes = next_tail;
         state.overlay_key_bytes = new_key_bytes;
