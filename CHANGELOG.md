@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Compare ordinary checkpoint readback directly with the live index, avoiding
+  a duplicate map while preserving entry, digest, and witness verification.
+
 - Avoid hashing checkpoint entries twice during streaming publication. The
   complete staged checkpoint and bound source log still pass verification.
 

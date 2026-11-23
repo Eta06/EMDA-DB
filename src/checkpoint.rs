@@ -467,8 +467,30 @@ pub(crate) fn create_with_hooks(
         out.flush()?;
     }
     temp.sync_all()?;
-    let verified = load_file(&temp, log, prefix, None, &checkpoint_digest)?;
-    if verified.prefix != prefix || verified.peak != peak || &verified.index != index {
+    // Both the live index and the staged checkpoint are strictly ordered.
+    // Compare entries in place and let readback finish all digest checks
+    // before reporting a mismatch.
+    let mut expected = index.iter();
+    let mut entries_match = true;
+    let (verified, _) = visit_file(
+        &temp,
+        log,
+        prefix,
+        None,
+        &checkpoint_digest,
+        None,
+        |_, _, key, _, location| {
+            entries_match &= expected.next().is_some_and(|(live_key, live_location)| {
+                live_key.as_slice() == key && *live_location == location
+            });
+            Ok(())
+        },
+    )?;
+    if verified.prefix != prefix
+        || verified.peak != peak
+        || !entries_match
+        || expected.next().is_some()
+    {
         return Err(record::invalid_data("checkpoint verification mismatch"));
     }
     check_checkpoint_length(log, prefix)?;
