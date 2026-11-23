@@ -725,6 +725,11 @@ The [membership within indexed ranges study](../benchmarks/results/2026-11-23-do
 compares sparse and dense lists on the same field as a scalar range, with a
 range-only control and indexed SQLite on macOS and Linux ARM64.
 
+The [conjunctive membership comparison](../benchmarks/results/2026-11-23-conjunctive-membership/README.md)
+measures intersection of two required lists against the prior planner and
+indexed SQLite. Sparse overlap reduced candidate visits and latency.
+Full overlap added planning cost without reducing candidate visits.
+
 ### Transaction cancellation overhead
 
 [`transaction_before_after.py`](../scripts/transaction_before_after.py) alternates separately built binaries for the same two-key transaction workload and verifies every run's recovered counters and samples. It rejects dirty source checkouts and identical binaries; callers must build from the declared revisions in isolated Cargo target directories. The [paired cancellation comparison](TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) includes primary and repeat results, VM noise and the limitations of this small in-process workload.
