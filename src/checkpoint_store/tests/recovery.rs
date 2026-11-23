@@ -297,6 +297,7 @@ fn changed_tail_during_writer_open_leaves_witness_unchanged() {
         &checkpoint,
         &digest,
         OpenLimits::default(),
+        None,
         |path, boundary, length| {
             let log = Log::open_checkpoint_writer(path, boundary, length)?;
             let file = OpenOptions::new().write(true).open(&log_path)?;
@@ -351,6 +352,7 @@ fn unacknowledged_tail_log_sync_failures_return_error_and_retry_safely() {
                     max_log_bytes: None,
                     ..Default::default()
                 },
+                None,
                 |path, boundary, length| {
                     let mut log = Log::open_checkpoint_writer(path, boundary, length)?;
                     let file = OpenOptions::new()
@@ -416,6 +418,7 @@ fn unacknowledged_tail_witness_failures_never_return_a_store() {
                         max_log_bytes: None,
                         ..Default::default()
                     },
+                    None,
                     |path, boundary, length| {
                         let mut log = Log::open_checkpoint_writer(path, boundary, length)?;
                         let file = OpenOptions::new()

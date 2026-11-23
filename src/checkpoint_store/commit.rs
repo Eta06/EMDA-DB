@@ -11,6 +11,13 @@ pub(super) enum Mutation<'a> {
 }
 
 impl<'a> Mutation<'a> {
+    fn operations(self) -> u64 {
+        match self {
+            Self::Single(..) => 1,
+            Self::Batch(batch) => batch.operations().len() as u64,
+        }
+    }
+
     fn keys(self) -> impl Iterator<Item = &'a [u8]> {
         let (key, batch) = match self {
             Self::Single(_, key, _) => (Some(key), &[][..]),
@@ -92,16 +99,16 @@ impl CheckpointStore {
         if self.max_log_bytes.is_some_and(|max| next_log > max) {
             return Err(io::Error::other("configured log byte limit would be exceeded").into());
         }
-        let admission = self.admit_suffix(&state, length, mutation.keys());
-        let (next_tail, new_key_bytes) = match admission {
+        let admission = self.admit_suffix(&state, length, mutation);
+        let (next_tail, next_operations, new_key_bytes) = match admission {
             Ok(admitted) => admitted,
             Err(_)
                 if state.automatic
                     && state.view.tail_bytes > 0
-                    && self.fits_empty_suffix(length, mutation.keys()) =>
+                    && self.fits_empty_suffix(length, mutation) =>
             {
                 state = self.automatic_rollover(state)?;
-                self.admit_suffix(&state, length, mutation.keys())?
+                self.admit_suffix(&state, length, mutation)?
             }
             Err(error) => return Err(error.into()),
         };
@@ -179,25 +186,38 @@ impl CheckpointStore {
             }
         }
         state.view.tail_bytes = next_tail;
+        state.view.tail_operations = next_operations;
         state.overlay_key_bytes = new_key_bytes;
         state.generation = next_generation;
         pending.published = true;
         Ok(())
     }
 
-    fn admit_suffix<'a>(
+    fn admit_suffix(
         &self,
         state: &State,
         length: usize,
-        touched: impl Iterator<Item = &'a [u8]>,
-    ) -> io::Result<(u64, usize)> {
+        mutation: Mutation<'_>,
+    ) -> io::Result<(u64, u64, usize)> {
         let next_tail = state
             .view
             .tail_bytes
             .checked_add(length as u64)
             .filter(|total| *total <= self.max_tail_bytes)
             .ok_or_else(|| io::Error::other("checkpoint suffix byte limit would be exceeded"))?;
-        let new_keys = touched
+        let next_operations = state
+            .view
+            .tail_operations
+            .checked_add(mutation.operations())
+            .filter(|&count| self.max_tail_operations.is_none_or(|limit| count <= limit))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "checkpoint suffix operation limit exceeded",
+                )
+            })?;
+        let new_keys = mutation
+            .keys()
             .filter(|key| !state.view.overlay.contains_key(*key))
             .collect::<BTreeSet<_>>();
         if state.view.overlay.len() + new_keys.len() > self.max_tail_keys {
@@ -214,18 +234,18 @@ impl CheckpointStore {
                         io::Error::other("checkpoint suffix key byte limit would be exceeded")
                     })
             })?;
-        Ok((next_tail, new_key_bytes))
+        Ok((next_tail, next_operations, new_key_bytes))
     }
 
-    fn fits_empty_suffix<'a>(
-        &self,
-        length: usize,
-        touched: impl Iterator<Item = &'a [u8]>,
-    ) -> bool {
-        if length as u64 > self.max_tail_bytes {
+    fn fits_empty_suffix(&self, length: usize, mutation: Mutation<'_>) -> bool {
+        if length as u64 > self.max_tail_bytes
+            || self
+                .max_tail_operations
+                .is_some_and(|limit| mutation.operations() > limit)
+        {
             return false;
         }
-        let keys = touched.collect::<BTreeSet<_>>();
+        let keys = mutation.keys().collect::<BTreeSet<_>>();
         if keys.len() > self.max_tail_keys {
             return false;
         }

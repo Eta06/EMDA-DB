@@ -426,6 +426,7 @@ impl CheckpointStore {
             base: capture_base(&state.view.base)?,
             overlay: Arc::clone(&state.view.overlay),
             tail_bytes: state.view.tail_bytes,
+            tail_operations: state.view.tail_operations,
         };
         let snapshot = CheckpointSnapshot {
             store: self,

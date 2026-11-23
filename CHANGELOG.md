@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add per-open mutation ceilings for checkpoint suffix replay and writable
+  append admission, counting every child of an atomic batch.
+
 - Add bounded case-sensitive document string-prefix filters. Required
   prefixes can use eligible scalar indexes. Exhaustive Rust matches on
   `DocumentFilter` need a `StartsWith` arm.

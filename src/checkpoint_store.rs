@@ -135,6 +135,7 @@ pub struct CheckpointStore {
     checkpoint_worker: AtomicBool,
     path: PathBuf,
     max_tail_bytes: u64,
+    max_tail_operations: Option<u64>,
     max_tail_keys: usize,
     max_tail_key_bytes: usize,
     max_log_bytes: Option<u64>,
@@ -207,6 +208,7 @@ impl CheckpointStore {
                 max_log_bytes,
                 ..Default::default()
             },
+            None,
             Log::open_checkpoint_writer,
         )
     }
@@ -226,6 +228,28 @@ impl CheckpointStore {
             checkpoint.as_ref(),
             trusted_digest,
             limits,
+            None,
+            Log::open_checkpoint_writer,
+        )
+    }
+
+    /// Bounds suffix mutations on open and before each append, counting every
+    /// batch child. A zero limit permits an empty suffix and rejects writes.
+    /// Supply this per-open limit again after restart. The covered log prefix
+    /// is still verified and the limit does not cap all recovery I/O or memory.
+    pub fn open_with_suffix_operation_limit(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointStoreLimits,
+        max_tail_operations: u64,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            Some(max_tail_operations),
             Log::open_checkpoint_writer,
         )
     }
@@ -262,6 +286,7 @@ impl CheckpointStore {
                 max_log_bytes,
                 ..Default::default()
             },
+            None,
             Log::open_checkpoint_writer,
             selection::synchronize,
         )
@@ -278,12 +303,37 @@ impl CheckpointStore {
             path.as_ref(),
             OpenSource::Managed,
             limits,
+            None,
             Log::open_checkpoint_writer,
             selection::synchronize,
         )
     }
 
-    /// Returns the logical limits applied to this open instance.
+    /// Opens the managed checkpoint with the same per-open operation ceiling
+    /// as `open_with_suffix_operation_limit`. Automatic rollover may clear
+    /// the suffix before an otherwise over-limit write.
+    pub fn open_managed_with_suffix_operation_limit(
+        path: impl AsRef<Path>,
+        limits: CheckpointStoreLimits,
+        max_tail_operations: u64,
+    ) -> io::Result<Self> {
+        Self::open_source_using(
+            path.as_ref(),
+            OpenSource::Managed,
+            limits,
+            Some(max_tail_operations),
+            Log::open_checkpoint_writer,
+            selection::synchronize,
+        )
+    }
+
+    /// Returns the separately supplied suffix mutation ceiling, if configured.
+    pub fn suffix_operation_limit(&self) -> Option<u64> {
+        self.max_tail_operations
+    }
+
+    /// Returns the byte and key limits for this open instance. Use
+    /// `suffix_operation_limit` for the separately configured mutation limit.
     pub fn limits(&self) -> CheckpointStoreLimits {
         CheckpointStoreLimits {
             max_tail_bytes: self.max_tail_bytes,
@@ -299,12 +349,14 @@ impl CheckpointStore {
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
         limits: OpenLimits,
+        max_tail_operations: Option<u64>,
         open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
     ) -> io::Result<Self> {
         Self::open_source_using(
             path,
             OpenSource::Explicit(checkpoint, trusted_digest),
             limits,
+            max_tail_operations,
             open_writer,
             selection::synchronize,
         )
@@ -314,6 +366,7 @@ impl CheckpointStore {
         path: &Path,
         source: OpenSource<'_>,
         limits: OpenLimits,
+        max_tail_operations: Option<u64>,
         open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<Self> {
@@ -394,6 +447,7 @@ impl CheckpointStore {
             max_tail_keys,
             max_tail_key_bytes,
             max_log_bytes,
+            max_tail_operations,
         )?;
         let boundary = view.base.witnessed_boundary;
         let length = view
@@ -474,6 +528,7 @@ impl CheckpointStore {
             checkpoint_worker: AtomicBool::new(false),
             path,
             max_tail_bytes,
+            max_tail_operations,
             max_tail_keys,
             max_tail_key_bytes,
             max_log_bytes,
@@ -986,6 +1041,7 @@ impl CheckpointStore {
                 self.max_tail_bytes,
                 self.max_tail_keys,
                 self.max_tail_key_bytes,
+                self.max_tail_operations,
             )?;
             if view.tail_bytes != 0 || !view.overlay.is_empty() {
                 return Err(record::invalid_data(
@@ -1056,6 +1112,9 @@ impl CheckpointStore {
                 .ok_or_else(|| record::invalid_data("checkpoint suffix key byte count overflow"))
         })?;
         if view.tail_bytes > self.max_tail_bytes
+            || self
+                .max_tail_operations
+                .is_some_and(|limit| view.tail_operations > limit)
             || view.overlay.len() > self.max_tail_keys
             || touched_bytes > self.max_tail_key_bytes
             || touched_bytes != state.overlay_key_bytes
@@ -1101,12 +1160,14 @@ impl CheckpointStore {
                 })?;
             }
         }
+        let mut operations = 0_u64;
         self.log.visit_records_with_digest(
             view.base.log_boundary(),
             boundary,
             boundary,
             &mut log_hasher,
             |key, location| {
+                operations += 1;
                 let probe = probes
                     .get_mut(key.as_ref())
                     .ok_or_else(|| record::invalid_data("verified suffix has an unexpected key"))?;
@@ -1129,6 +1190,11 @@ impl CheckpointStore {
                 Ok(())
             },
         )?;
+        if operations != view.tail_operations {
+            return Err(record::invalid_data(
+                "checkpoint suffix operation count changed",
+            ));
+        }
         if view
             .overlay
             .iter()

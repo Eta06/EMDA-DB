@@ -140,11 +140,13 @@ impl CheckpointStore {
         }
         let digest = self.compact_to(&previous)?;
         (hook.borrow_mut())(ExchangePoint::CopyPublished)?;
-        let mut candidate = Self::open_with_options(
+        let mut candidate = Self::open_using(
             &previous,
-            previous.join(crate::COMPACTED_CHECKPOINT_FILE),
+            &previous.join(crate::COMPACTED_CHECKPOINT_FILE),
             &digest,
             self.limits(),
+            self.suffix_operation_limit(),
+            crate::log::Log::open_checkpoint_writer,
         )?;
         candidate.set_transaction_staging_limit(self.transaction_budget_status()?.limit_bytes)?;
         candidate.set_active_transaction_limit(self.transaction_budget_status()?.active_limit)?;

@@ -280,6 +280,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   show fewer bytes read during offline bounded rebuild when exact merge size
   can be calculated from run metadata. The temporary byte limit and input
   verification still apply.
+  The checkpoint writer and recovered view also accept a per-open suffix
+  mutation ceiling. It counts repeated writes, tombstones, and each batch
+  child. The writer applies the same ceiling before append and retains it
+  through rollover and consuming compaction. The caller reapplies it on reopen.
 - [x] Apply the suffix-byte cap before traversing checkpoint entries on recovered-view and checkpoint-writer opens. The [Linux ARM64 trace](../benchmarks/results/2026-11-23-checkpoint-suffix-admission/README.md) shows one buffered read for a rejected 65,536-key checkpoint and the same read volume as before at the exact accepted limit. Corruption and witness-preservation checks pass on macOS and Linux.
   At commit, check encoded size before allocating a checkpoint batch. In a
   Linux ext4 probe with a 4 MiB value, blind, conditional and transactional

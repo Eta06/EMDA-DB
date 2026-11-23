@@ -15,6 +15,7 @@ fn tail_adoption_rejects_log_growth_after_validation() {
         &path,
         OpenSource::Explicit(&checkpoint, &digest),
         OpenLimits::default(),
+        None,
         |path, boundary, length| {
             let log = Log::open_checkpoint_writer(path, boundary, length)?;
             std::fs::OpenOptions::new()
@@ -61,6 +62,7 @@ fn v3_tail_adoption_rejects_log_growth_after_validation() {
         &path,
         OpenSource::Explicit(&checkpoint, &digest),
         OpenLimits::default(),
+        None,
         |path, boundary, length| {
             let log = Log::open_checkpoint_writer(path, boundary, length)?;
             std::fs::OpenOptions::new()
@@ -691,6 +693,7 @@ fn managed_open_rejects_selection_and_directory_sync_failures_before_return() {
                     max_log_bytes: None,
                     ..Default::default()
                 },
+                None,
                 Log::open_checkpoint_writer,
                 |store| {
                     super::super::selection::synchronize_with(
@@ -834,6 +837,7 @@ fn managed_open_refuses_each_failed_selection_ancestor_sync() {
                     max_log_bytes: None,
                     ..Default::default()
                 },
+                None,
                 Log::open_checkpoint_writer,
                 |store| {
                     super::super::selection::synchronize_with(store, File::sync_all, |parent| {

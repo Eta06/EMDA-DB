@@ -427,6 +427,7 @@ fn unacknowledged_tail_metadata_failures_do_not_return_a_store() {
                         max_log_bytes: None,
                         ..Default::default()
                     },
+                    None,
                     |path, boundary, length| {
                         let mut log = Log::open_checkpoint_writer(path, boundary, length)?;
                         let file = OpenOptions::new()

@@ -1,5 +1,5 @@
 use database_engine::{
-    BatchOperation, CheckpointStore, MAX_RECOVERED_VIEW_TAIL_BYTES,
+    BatchOperation, CheckpointStore, CheckpointStoreLimits, MAX_RECOVERED_VIEW_TAIL_BYTES,
     MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS, RecoveredCheckpointView,
     RecoveredViewLimits, Store,
 };
@@ -26,6 +26,255 @@ fn fixture() -> (
     let length = fs::metadata(path.join("records.log")).unwrap().len();
     drop(store);
     (dir, path, checkpoint, digest, length)
+}
+
+fn assert_operation_limit<T>(result: io::Result<T>) {
+    let error = result.err().expect("suffix operation limit must reject");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "checkpoint suffix operation limit exceeded"
+    );
+}
+
+#[test]
+fn suffix_operation_limit_counts_batch_children_overwrites_and_tombstones() {
+    let (dir, path, checkpoint, digest, _) = fixture();
+    let log = path.join("records.log");
+    let limits = CheckpointStoreLimits {
+        max_tail_keys: 1,
+        ..Default::default()
+    };
+    let open = |limit| {
+        CheckpointStore::open_with_suffix_operation_limit(
+            &path,
+            &checkpoint,
+            &digest,
+            limits,
+            limit,
+        )
+    };
+    let empty = open(0).unwrap();
+    let initial = fs::read(&log).unwrap();
+    assert_operation_limit(empty.put(b"a", b"zero"));
+    assert_eq!(fs::read(&log).unwrap(), initial);
+    drop(empty);
+    let store = open(3).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"a",
+                value: b"first",
+            },
+            BatchOperation::Delete { key: b"a" },
+        ])
+        .unwrap();
+    let before = fs::read(&log).unwrap();
+    assert_operation_limit(store.transaction(|tx| {
+        tx.put(b"a", b"new")?;
+        tx.put(b"b", b"new")
+    }));
+    assert_eq!(fs::read(&log).unwrap(), before);
+    store.put(b"a", b"last").unwrap();
+    assert_operation_limit(store.delete(b"a"));
+    drop(store);
+    assert_operation_limit(open(2));
+    assert_operation_limit(RecoveredCheckpointView::open_with_suffix_operation_limit(
+        &path,
+        &checkpoint,
+        &digest,
+        RecoveredViewLimits::default(),
+        2,
+    ));
+    let view = RecoveredCheckpointView::open_with_suffix_operation_limit(
+        &path,
+        &checkpoint,
+        &digest,
+        RecoveredViewLimits::default(),
+        3,
+    )
+    .unwrap();
+    assert_eq!(view.get(b"a").unwrap().as_deref(), Some(b"last".as_slice()));
+    drop(view);
+    let store = open(3).unwrap();
+    assert_operation_limit(store.put(b"a", b"full"));
+    store.rollover_to(dir.path().join("next")).unwrap();
+    assert_eq!(store.suffix_operation_limit(), Some(3));
+    store.put(b"a", b"after rollover").unwrap();
+}
+
+#[test]
+fn suffix_operation_rejection_leaves_complete_tail_unadopted() {
+    let (_dir, path, checkpoint, digest, _) = fixture();
+    let log_path = path.join("records.log");
+    let anchor_path = path.join("commit.state");
+    let file = fs::File::open(&log_path).unwrap();
+    let metadata = fs::read(&log_path).unwrap().starts_with(b"EMDALOG3");
+    let read_witness = || {
+        if metadata {
+            let mut bytes = [0_u8; 36];
+            assert_eq!(
+                rustix::fs::fgetxattr(&file, "user.db.commit.v3", &mut bytes).unwrap(),
+                bytes.len()
+            );
+            bytes.to_vec()
+        } else {
+            fs::read(&anchor_path).unwrap()
+        }
+    };
+    let previous = read_witness();
+    let anchor = fs::read(&anchor_path).unwrap();
+    let store = Store::open(&path).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Delete { key: b"a" },
+            BatchOperation::Put {
+                key: b"a",
+                value: b"recovered",
+            },
+        ])
+        .unwrap();
+    drop(store);
+    let complete = read_witness();
+    if metadata {
+        rustix::fs::fsetxattr(
+            &file,
+            "user.db.commit.v3",
+            &previous,
+            rustix::fs::XattrFlags::REPLACE,
+        )
+        .unwrap();
+    } else {
+        fs::write(&anchor_path, &previous).unwrap();
+    }
+    let before = fs::read(&log_path).unwrap();
+    let open = |limit| {
+        CheckpointStore::open_with_suffix_operation_limit(
+            &path,
+            &checkpoint,
+            &digest,
+            CheckpointStoreLimits::default(),
+            limit,
+        )
+    };
+    assert_operation_limit(open(1));
+    assert_eq!(fs::read(&log_path).unwrap(), before);
+    assert_eq!(read_witness(), previous);
+    if metadata {
+        assert_eq!(fs::read(&anchor_path).unwrap(), anchor);
+    }
+    let store = open(2).unwrap();
+    assert_eq!(read_witness(), complete);
+    assert_eq!(
+        store.get(b"a").unwrap().as_deref(),
+        Some(b"recovered".as_slice())
+    );
+    assert_operation_limit(store.put(b"a", b"full"));
+}
+
+#[test]
+fn suffix_operation_limit_survives_automatic_rollover_and_managed_reopen() {
+    let (dir, path, checkpoint, digest, _) = fixture();
+    let limits = CheckpointStoreLimits::default();
+    let store =
+        CheckpointStore::open_with_suffix_operation_limit(&path, &checkpoint, &digest, limits, 1)
+            .unwrap();
+    store.rollover_managed(dir.path().join("managed")).unwrap();
+    store.enable_automatic_checkpoints().unwrap();
+    store.put(b"a", b"once").unwrap();
+    let log = path.join("records.log");
+    let selection = path.join("checkpoint.selection");
+    let before = fs::read(&log).unwrap();
+    let initial_selection = fs::read(&selection).unwrap();
+    assert_operation_limit(store.write_batch(&[
+        BatchOperation::Delete { key: b"a" },
+        BatchOperation::Put {
+            key: b"a",
+            value: b"too many",
+        },
+    ]));
+    assert_eq!(fs::read(&log).unwrap(), before);
+    assert_eq!(fs::read(&selection).unwrap(), initial_selection);
+    let snapshot = store.snapshot().unwrap();
+    store.put(b"a", b"after").unwrap();
+    assert_ne!(fs::read(&selection).unwrap(), initial_selection);
+    assert_eq!(
+        snapshot.get(b"a").unwrap().as_deref(),
+        Some(b"once".as_slice())
+    );
+    drop(snapshot);
+    drop(store);
+    let store =
+        CheckpointStore::open_managed_with_suffix_operation_limit(&path, limits, 1).unwrap();
+    assert!(store.automatic_checkpoints_enabled().unwrap());
+    assert_eq!(
+        store.get(b"a").unwrap().as_deref(),
+        Some(b"after".as_slice())
+    );
+    store.put(b"a", b"another rollover").unwrap();
+}
+
+#[test]
+fn concurrent_batches_cannot_oversubscribe_suffix_operations() {
+    let (_dir, path, checkpoint, digest, _) = fixture();
+    let open = || {
+        CheckpointStore::open_with_suffix_operation_limit(
+            &path,
+            &checkpoint,
+            &digest,
+            CheckpointStoreLimits::default(),
+            5,
+        )
+    };
+    let store = open().unwrap();
+    let start = Barrier::new(4);
+    let accepted = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                start.wait();
+                let result = store.write_batch(&[
+                    BatchOperation::Delete { key: b"a" },
+                    BatchOperation::Put {
+                        key: b"a",
+                        value: b"new",
+                    },
+                ]);
+                if result.is_ok() {
+                    accepted.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    assert_operation_limit(result);
+                }
+            });
+        }
+    });
+    assert_eq!(accepted.load(Ordering::Relaxed), 2);
+    drop(store);
+    let store = open().unwrap();
+    store.put(b"a", b"last").unwrap();
+    assert_operation_limit(store.delete(b"a"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn suffix_operation_limit_survives_directory_handoff() {
+    let (dir, path, checkpoint, digest, _) = fixture();
+    let store = CheckpointStore::open_with_suffix_operation_limit(
+        &path,
+        &checkpoint,
+        &digest,
+        CheckpointStoreLimits::default(),
+        1,
+    )
+    .unwrap();
+    store.put(b"a", b"new").unwrap();
+    let (next, _) = store
+        .compact_and_replace(dir.path().join("previous"))
+        .unwrap();
+    assert_eq!(next.suffix_operation_limit(), Some(1));
+    assert_eq!(next.get(b"a").unwrap().as_deref(), Some(b"new".as_slice()));
+    next.put(b"a", b"after").unwrap();
+    assert_operation_limit(next.delete(b"a"));
 }
 
 fn open(

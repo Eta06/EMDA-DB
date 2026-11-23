@@ -58,6 +58,7 @@ pub struct RecoveredCheckpointView {
     pub(crate) base: CheckpointView,
     pub(crate) overlay: Arc<BTreeMap<Arc<[u8]>, Option<ValueLocation>>>,
     pub(crate) tail_bytes: u64,
+    pub(crate) tail_operations: u64,
 }
 
 impl RecoveredCheckpointView {
@@ -112,14 +113,48 @@ impl RecoveredCheckpointView {
         trusted_digest: &[u8; 32],
         limits: RecoveredViewLimits,
     ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            None,
+        )
+    }
+
+    /// Also limits the number of suffix mutations, counting every batch child.
+    /// A zero limit admits an empty suffix. The covered prefix is still verified.
+    pub fn open_with_suffix_operation_limit(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: RecoveredViewLimits,
+        max_tail_operations: u64,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            Some(max_tail_operations),
+        )
+    }
+
+    fn open_using(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        limits: RecoveredViewLimits,
+        max_tail_operations: Option<u64>,
+    ) -> io::Result<Self> {
         Self::validate_limits(
             limits.max_tail_bytes,
             limits.max_tail_keys,
             limits.max_tail_key_bytes,
         )?;
         let base = CheckpointView::open_shared_with_log_limits(
-            path.as_ref(),
-            checkpoint.as_ref(),
+            path,
+            checkpoint,
             trusted_digest,
             limits.checkpoint_view,
             limits.max_log_bytes,
@@ -132,6 +167,7 @@ impl RecoveredCheckpointView {
             limits.max_tail_key_bytes,
             false,
             limits.max_log_bytes,
+            max_tail_operations,
         )
         .map(|(view, _)| view)
     }
@@ -158,6 +194,7 @@ impl RecoveredCheckpointView {
         max_tail_bytes: u64,
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
+        max_tail_operations: Option<u64>,
     ) -> io::Result<Self> {
         Self::from_base_mode(
             base,
@@ -166,6 +203,7 @@ impl RecoveredCheckpointView {
             max_tail_key_bytes,
             false,
             None,
+            max_tail_operations,
         )
         .map(|(view, _)| view)
     }
@@ -178,6 +216,7 @@ impl RecoveredCheckpointView {
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
         max_log_bytes: Option<u64>,
+        max_tail_operations: Option<u64>,
     ) -> io::Result<(Self, Option<[u8; 32]>)> {
         Self::from_base_mode(
             base,
@@ -186,6 +225,7 @@ impl RecoveredCheckpointView {
             max_tail_key_bytes,
             true,
             max_log_bytes,
+            max_tail_operations,
         )
     }
 
@@ -196,6 +236,7 @@ impl RecoveredCheckpointView {
         max_tail_key_bytes: usize,
         allow_unacknowledged: bool,
         max_log_bytes: Option<u64>,
+        max_tail_operations: Option<u64>,
     ) -> io::Result<(Self, Option<[u8; 32]>)> {
         Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let boundary = base.witnessed_boundary;
@@ -207,7 +248,10 @@ impl RecoveredCheckpointView {
             crate::checkpoint::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;
         let mut overlay = BTreeMap::<Arc<[u8]>, Option<ValueLocation>>::new();
         let mut key_bytes = 0_usize;
+        let mut tail_operations = 0_u64;
         let visit = |key: Cow<'_, [u8]>, location| {
+            // Each mutation consumes bytes in the admitted log range.
+            tail_operations += 1;
             if let Some(existing) = overlay.get_mut(key.as_ref()) {
                 *existing = location;
                 return Ok(());
@@ -231,15 +275,13 @@ impl RecoveredCheckpointView {
             Ok(())
         };
         let start = base.log_boundary();
-        let adoption_digest = if length > boundary {
-            Some(
-                base.log
-                    .visit_observed_suffix(start, length, boundary, visit)?,
-            )
-        } else {
-            base.log.visit_synchronized_range(start, length, visit)?;
-            None
-        };
+        let adoption_digest = base.log.visit_checkpoint_suffix(
+            start,
+            length,
+            boundary,
+            max_tail_operations,
+            visit,
+        )?;
         if base.log.len()? != length {
             return Err(record::invalid_data(
                 "log length changed while opening recovered view",
@@ -250,6 +292,7 @@ impl RecoveredCheckpointView {
                 base,
                 overlay: Arc::new(overlay),
                 tail_bytes,
+                tail_operations,
             },
             adoption_digest,
         ))

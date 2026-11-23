@@ -1094,19 +1094,27 @@ impl Log {
         self.visit_locations(reader, total, boundary, None, visit)
     }
 
-    /// Return the SHA-256 of the exact bytes parsed and validated by replay.
-    /// The caller pins the range and checks that the log still ends there.
-    pub(crate) fn visit_observed_suffix(
+    /// Replay an admitted checkpoint suffix and hash its exact bytes if it
+    /// contains an unwitnessed tail. The caller pins the range and checks its
+    /// length before adopting any bytes.
+    pub(crate) fn visit_checkpoint_suffix(
         &self,
         start: u64,
         end: u64,
         boundary: u64,
+        max_operations: Option<u64>,
         visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
-    ) -> io::Result<[u8; 32]> {
+    ) -> io::Result<Option<[u8; 32]>> {
         use sha2::Digest;
-        let mut digest = Sha256::new();
-        self.visit_records_with_digest(start, end, boundary, &mut digest, visit)?;
-        Ok(digest.finalize().into())
+        let mut digest = (end > boundary).then(Sha256::new);
+        let mut reader = RecoveryReader::at(self.file.as_ref(), end, start)?;
+        if let Some(digest) = &mut digest {
+            reader = reader.with_digest(digest);
+        }
+        let limit =
+            max_operations.map(|count| (count, "checkpoint suffix operation limit exceeded"));
+        self.visit_locations(reader, end, Some(boundary), limit, visit)?;
+        Ok(digest.map(|digest| digest.finalize().into()))
     }
 
     // Continue hashing a verified prefix with exactly the bytes validated
@@ -1132,7 +1140,8 @@ impl Log {
         visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         let reader = RecoveryReader::at(self.file.as_ref(), end, start)?.with_digest(digest);
-        self.visit_locations(reader, end, Some(boundary), max_operations, visit)
+        let limit = max_operations.map(|count| (count, "rebuild operation limit exceeded"));
+        self.visit_locations(reader, end, Some(boundary), limit, visit)
     }
 
     fn visit_locations(
@@ -1140,7 +1149,7 @@ impl Log {
         reader: RecoveryReader<'_>,
         total: u64,
         boundary: Option<u64>,
-        max_operations: Option<u64>,
+        max_operations: Option<(u64, &'static str)>,
         mut visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.visit_hashed_records_to::<crc32fast::Hasher>(
@@ -1195,17 +1204,14 @@ impl Log {
         mut reader: RecoveryReader<'_>,
         total: u64,
         boundary: Option<u64>,
-        mut remaining_operations: Option<u64>,
+        mut operation_limit: Option<(u64, &'static str)>,
         mut visit: impl FnMut(Cow<'_, [u8]>, Option<StreamValue<D::Output>>) -> io::Result<()>,
     ) -> io::Result<()> {
         let mut admit = |operations: usize| {
-            if let Some(remaining) = &mut remaining_operations {
-                *remaining = remaining.checked_sub(operations as u64).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "rebuild operation limit exceeded",
-                    )
-                })?;
+            if let Some((remaining, message)) = &mut operation_limit {
+                *remaining = remaining
+                    .checked_sub(operations as u64)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, *message))?;
             }
             Ok(())
         };

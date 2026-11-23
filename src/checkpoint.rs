@@ -1086,7 +1086,8 @@ mod tests {
         )
         .unwrap();
         let suffix_digest = log
-            .visit_observed_suffix(prefix, end, end, |_, _| Ok(()))
+            .visit_checkpoint_suffix(prefix, end, prefix, None, |_, _| Ok(()))
+            .unwrap()
             .unwrap();
         let verified_log =
             bind_replayed_log(&log, prefix, end, &verified.log_digest, &suffix_digest).unwrap();
