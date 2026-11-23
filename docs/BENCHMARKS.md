@@ -46,6 +46,9 @@ Existing comparisons are linked throughout this page. Start with the
 [million-key recovery and restore comparison](../benchmarks/results/2026-11-23-million-key-authorized-restore/README.md),
 the [larger-suffix recovery comparison](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md),
 and the [compound range comparison](COMPOUND_RANGE_CURRENT_2026_11_05.md).
+The [hosted cross-engine archive](../benchmarks/results/2026-11-24-hosted-competitor-cases/README.md)
+preserves the raw artifacts from 206 workflow runs, indexed by commit and
+run ID.
 
 ## macOS small-write comparison with SQLite
 
