@@ -618,23 +618,22 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         })
     }
 
-    /// Retire the catalog-owned inactive slot after fencing pending selection
-    /// attempts from older revisions. A failed comparison leaves both slots.
+    /// Lock and validate the catalog-owned inactive slot, then fence pending
+    /// selection attempts from older revisions before retiring it. A failed
+    /// comparison leaves both slots.
     pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
         self.verify_current()?;
         let resumed = self.inner.resume_retirement()?;
-        let inactive = self.inner.active.slot.other().path(&self.inner.root);
-        match fs::symlink_metadata(&inactive) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(resumed),
-            Err(error) => return Err(error),
-            Ok(_) => {}
-        }
-        self.inner.reclaim_room()?;
+        let Some((inactive, retired_lock)) = self.inner.lock_inactive_for_retirement()? else {
+            return Ok(resumed);
+        };
         let fence = self.current.finalized(self.current.committed)?;
         self.inner.uncertain = true;
         self.advance(fence)?;
         self.inner.uncertain = false;
-        Ok(self.inner.reclaim_using(sync_existing)? || resumed)
+        self.inner
+            .reclaim_locked(&inactive, retired_lock, sync_existing)?;
+        Ok(true)
     }
 
     fn write(&mut self, encoded: io::Result<Vec<u8>>) -> Result<(), MutationFailure> {

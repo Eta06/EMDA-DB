@@ -925,8 +925,16 @@ impl ManagedRetainedStore {
 
     fn reclaim_using(
         &mut self,
-        mut sync_after_move: impl FnMut(&Path) -> io::Result<()>,
+        sync_after_move: impl FnMut(&Path) -> io::Result<()>,
     ) -> io::Result<bool> {
+        let Some((inactive, retired_lock)) = self.lock_inactive_for_retirement()? else {
+            return Ok(false);
+        };
+        self.reclaim_locked(&inactive, retired_lock, sync_after_move)?;
+        Ok(true)
+    }
+
+    fn lock_inactive_for_retirement(&self) -> io::Result<Option<(PathBuf, StoreLock)>> {
         self.verify_selection()?;
         let inactive = self.active.slot.other().path(&self.root);
         match fs::symlink_metadata(&inactive) {
@@ -936,26 +944,38 @@ impl ManagedRetainedStore {
                     "invalid inactive generation directory",
                 ));
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error),
         }
         self.reclaim_room()?;
+        let retired_lock = lock_directory(&inactive)?;
+        check_retired(&inactive, &self.active, self.catalog_magic)?;
+        Ok(Some((inactive, retired_lock)))
+    }
+
+    fn reclaim_locked(
+        &mut self,
+        inactive: &Path,
+        retired_lock: StoreLock,
+        mut sync_after_move: impl FnMut(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.verify_selection()?;
         self.store
             .verify_complete(&self.active.slot.path(&self.root))?;
         sync_existing(&self.root)?;
-        let _retired_lock = lock_directory(&inactive)?;
-        check_retired(&inactive, &self.active, self.catalog_magic)?;
+        retired_lock.verify_identity(inactive)?;
+        check_retired(inactive, &self.active, self.catalog_magic)?;
         let mut stage =
             crate::staging::Stage::retained_directory(&self.root, &self.active.generation)?;
         let moved = stage.path().join("retired");
-        crate::backup::publish_noreplace(&inactive, &moved)?;
+        crate::backup::publish_noreplace(inactive, &moved)?;
         stage.preserve_payload_on_drop();
         sync_after_move(stage.path())?;
         // Retire the original slot name durably before deleting its contents.
         sync_after_move(&self.root)?;
         crate::staging::remove_retained_stage(stage.path())?;
         stage.finish_retained_cleanup();
-        Ok(true)
+        Ok(())
     }
 
     fn reclaim_room(&self) -> io::Result<()> {

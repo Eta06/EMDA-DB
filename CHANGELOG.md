@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check that the inactive generation is available and catalog-owned before
+  advancing the retained authority revision for reclamation.
+
 - Reject malformed document index markers and unique owners before using
   them in mutations, incremental builds or indexed queries. Check owner
   length before materializing the value.

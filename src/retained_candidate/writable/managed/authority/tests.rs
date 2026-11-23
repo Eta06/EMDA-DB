@@ -918,6 +918,46 @@ fn selected_missing_or_corrupt_successor_cannot_fall_back() {
 }
 
 #[test]
+fn reclamation_rejects_unavailable_inactive_slot_before_advancing_authority() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.compact().unwrap();
+    let inactive = Slot::A.path(&f.root);
+    let before = f.provider.read().unwrap().unwrap();
+    let witness = fs::read(inactive.join("commit.state")).unwrap();
+
+    let lock = lock_directory(&inactive).unwrap();
+    assert_eq!(
+        store.reclaim_inactive().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(f.provider.read().unwrap(), Some(before));
+    drop(lock);
+
+    let unknown = inactive.join("unknown");
+    fs::write(&unknown, b"not catalog data").unwrap();
+    let error = store.reclaim_inactive().unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "unknown file in inactive retained generation"
+    );
+    assert_eq!(f.provider.read().unwrap(), Some(before));
+    assert_eq!(fs::read(&unknown).unwrap(), b"not catalog data");
+    assert_eq!(fs::read(inactive.join("commit.state")).unwrap(), witness);
+    assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
+
+    fs::remove_file(unknown).unwrap();
+    assert!(store.reclaim_inactive().unwrap());
+    assert_eq!(
+        f.provider.read().unwrap(),
+        Some(before.finalized(before.committed).unwrap())
+    );
+    assert!(!inactive.exists());
+}
+
+#[test]
 fn reclamation_fence_failure_keeps_the_inactive_generation() {
     let mut f = Fixture::prepare();
     f.register();
