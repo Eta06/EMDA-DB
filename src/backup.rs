@@ -8,6 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::sync::Arc;
 
 const HEADER: &[u8; 8] = b"DBBKP001";
 const FOOTER: &[u8; 8] = b"DBBEND01";
@@ -281,7 +282,7 @@ fn restore_with_stage_hooks(
     mut witness_hook: impl FnMut(witness::CreationPoint) -> io::Result<()>,
     mut stage_hook: impl FnMut(RebuildPoint) -> io::Result<()>,
 ) -> io::Result<()> {
-    let backup = File::open(source)?;
+    let backup = crate::directory::open_regular_readonly(source, "backup is not a regular file")?;
     let info = validate(&backup, max_log_bytes)?;
     let parent = parent_directory(destination)?;
     // Build and verify a complete store in a private staging directory. Publish
@@ -416,6 +417,9 @@ fn upgrade_format_with_stage_hooks(
         .len()?
         .checked_sub(start)
         .ok_or_else(|| record::invalid_data("source log is shorter than its header"))?;
+    let verified_length = (witness::LOG_HEADER_SIZE as u64)
+        .checked_add(length)
+        .ok_or_else(|| record::invalid_data("upgraded log length overflow"))?;
     let digest = copy_data_with_hook(
         length,
         |buffer, offset| source.read_bytes(buffer, start + offset),
@@ -424,14 +428,14 @@ fn upgrade_format_with_stage_hooks(
     )?;
     stage_hook(RebuildPoint::DataCopied)?;
     let id = witness::parse_header(&header)?;
-    if metadata_witness::initialize(&target, &id, witness::LOG_HEADER_SIZE as u64 + length)? {
+    if metadata_witness::initialize(&target, &id, verified_length)? {
         metadata_witness::mark_header(&mut header);
         FileExt::write_all_at(&target, &header, 0)?;
     }
     stage_hook(RebuildPoint::MetadataPrepared)?;
     target.sync_all()?;
     stage_hook(RebuildPoint::LogSynced)?;
-    if target.metadata()?.len() != witness::LOG_HEADER_SIZE as u64 + length
+    if target.metadata()?.len() != verified_length
         || hash_data(length, |buffer, offset| {
             FileExt::read_exact_at(&target, buffer, witness::LOG_HEADER_SIZE as u64 + offset)
         })? != digest
@@ -439,14 +443,15 @@ fn upgrade_format_with_stage_hooks(
         return Err(record::invalid_data("upgraded log checksum mismatch"));
     }
     // Validate every copied record before establishing the new boundary.
-    let target = Log::verify_io(Box::new(target))?;
+    let target = Log::verify_io(Box::new(Arc::new(target)))?;
     stage_hook(RebuildPoint::LogVerified)?;
-    target.install_restore_witness_with_hook(staging.path(), witness_hook)?;
+    target.install_restore_witness_with_hook(staging.path(), verified_length, witness_hook)?;
     stage_hook(RebuildPoint::WitnessInstalled)?;
     lock.file.sync_all()?;
     stage_hook(RebuildPoint::LockSynced)?;
     File::open(staging.path())?.sync_all()?;
     stage_hook(RebuildPoint::DirectorySynced)?;
+    target.verify_staged_file(staging.path(), verified_length)?;
     before_publish()?;
     staging.publish(destination)?;
     let synchronized = sync_parent(parent).map_err(|error| {
@@ -499,19 +504,25 @@ fn restore_into(
     // A validated zero-byte legacy backup has no witness. Restore it as an
     // empty witnessed store so normal open cannot confuse it with an
     // interrupted initialization or silently weaken later acknowledgements.
-    let log = if info.log_len == 0 {
+    let (log, verified_length) = if info.log_len == 0 {
         if log.metadata()?.len() != 0 {
             return Err(record::invalid_data("restored empty log changed length"));
         }
         initialize_empty_restored_log(&mut log, empty_hook, metadata_witness::initialize)?;
-        Log::verify_io(Box::new(log))?
+        (
+            Log::verify_io(Box::new(Arc::new(log)))?,
+            witness::LOG_HEADER_SIZE as u64,
+        )
     } else {
         // Read the synced target back and verify the same bytes against both
         // the backup digest and every record checksum.
-        Log::verify_io_digest(Box::new(log), info.log_len, &info.digest)?
+        (
+            Log::verify_io_digest(Box::new(Arc::new(log)), info.log_len, &info.digest)?,
+            info.log_len,
+        )
     };
     stage_hook(RebuildPoint::LogVerified)?;
-    log.install_restore_witness_with_hook(destination, witness_hook)?;
+    log.install_restore_witness_with_hook(destination, verified_length, witness_hook)?;
     stage_hook(RebuildPoint::WitnessInstalled)?;
     if info.log_len == 0 {
         empty_hook(EmptyRestorePoint::AfterWitness)?;
@@ -525,6 +536,7 @@ fn restore_into(
     }
     lock.release()?;
     stage_hook(RebuildPoint::LockReleased)?;
+    log.verify_staged_file(destination, verified_length)?;
     Ok(())
 }
 

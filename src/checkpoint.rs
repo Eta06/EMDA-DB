@@ -545,22 +545,7 @@ pub(crate) fn load(
 }
 
 pub(crate) fn open_index_file(path: &Path) -> io::Result<File> {
-    use rustix::fs::{Mode, OFlags, open};
-    let invalid = || record::invalid_data("checkpoint is not a regular file");
-    // Preserve symlinks to regular files. Reject known special files before
-    // opening, and use nonblocking open in case a FIFO replaces the target.
-    if !std::fs::metadata(path)?.is_file() {
-        return Err(invalid());
-    }
-    let file = File::from(open(
-        path,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
-        Mode::empty(),
-    )?);
-    if !file.metadata()?.is_file() {
-        return Err(invalid());
-    }
-    Ok(file)
+    crate::directory::open_regular_readonly(path, "checkpoint is not a regular file")
 }
 
 fn load_file(

@@ -344,7 +344,12 @@ fn empty_legacy_restore_header_handles_unsupported_and_failed_metadata() {
     initialize_empty_restored_log(&mut file, &mut |_| Ok(()), |_, _, _| Ok(false)).unwrap();
     assert!(std::fs::read(&log_path).unwrap().starts_with(b"EMDALOG2"));
     let log = Log::verify_io(Box::new(file)).unwrap();
-    log.install_restore_witness(directory.path()).unwrap();
+    log.install_restore_witness_with_hook(
+        directory.path(),
+        witness::LOG_HEADER_SIZE as u64,
+        |_| Ok(()),
+    )
+    .unwrap();
     drop(log);
     let store = crate::test_support::retry_lock(|| Store::open(directory.path())).unwrap();
     store.transaction(|tx| tx.put(b"key", b"value")).unwrap();

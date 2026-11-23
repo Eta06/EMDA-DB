@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bind restore and upgrade witnesses to the verified staged log, reject
+  observed staged identity or length changes, and reject nonregular backup
+  inputs before opening them.
+
 - Reuse bounded key buffers across entries in spill merges during
   checkpoint rebuild.
 

@@ -133,6 +133,19 @@ fn kill_at(root: &Path, operation: &str, point: RebuildPoint) {
     assert!(matches!(busy, Some(Err(ref error)) if error.kind() == io::ErrorKind::WouldBlock));
 }
 
+fn staged_directory(root: &Path) -> std::path::PathBuf {
+    std::fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".owner.data")
+        })
+        .expect("private rebuild directory")
+}
+
 #[test]
 fn killed_rebuilds_never_publish_partial_restore_or_upgrade() {
     for (operation, points) in [
@@ -149,16 +162,7 @@ fn killed_rebuilds_never_publish_partial_restore_or_upgrade() {
                     "{operation} {v2} {point:?}"
                 );
                 if point == RebuildPoint::DataChunk {
-                    let payload = std::fs::read_dir(root.path())
-                        .unwrap()
-                        .map(|entry| entry.unwrap().path())
-                        .find(|path| {
-                            path.file_name()
-                                .unwrap()
-                                .to_string_lossy()
-                                .ends_with(".owner.data")
-                        })
-                        .expect("partial rebuild directory");
+                    let payload = staged_directory(root.path());
                     let header = if operation == "upgrade" {
                         witness::LOG_HEADER_SIZE
                     } else {
@@ -206,6 +210,46 @@ fn rebuild_errors_leave_source_and_backup_reusable() {
                 let cleanup = crate::cleanup_abandoned_staging(root.path()).unwrap();
                 assert_eq!((cleanup.removed_payloads, cleanup.removed_markers), (0, 0));
                 assert_preserved_and_retry(root.path(), operation, &before);
+            }
+        }
+    }
+}
+
+#[test]
+fn changed_staged_log_identity_or_length_prevents_publication() {
+    for &v2 in SOURCE_V2_CASES {
+        for operation in ["restore", "upgrade"] {
+            for point in [RebuildPoint::LogVerified, RebuildPoint::DirectorySynced] {
+                for replace in [false, true] {
+                    let root = tempfile::tempdir().unwrap();
+                    let before = prepare(root.path(), v2);
+                    let error = invoke(root.path(), operation, |current| {
+                        if current == point {
+                            let log = staged_directory(root.path()).join("records.log");
+                            if replace {
+                                let replacement = log.with_extension("replacement");
+                                std::fs::copy(&log, &replacement)?;
+                                std::fs::rename(replacement, log)?;
+                            } else {
+                                OpenOptions::new()
+                                    .append(true)
+                                    .open(log)?
+                                    .write_all(b"tail")?;
+                            }
+                        }
+                        Ok(())
+                    })
+                    .unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("staged log identity or length changed")
+                    );
+                    let cleanup = crate::cleanup_abandoned_staging(root.path()).unwrap();
+                    assert_eq!((cleanup.removed_payloads, cleanup.removed_markers), (0, 0));
+                    assert_preserved_and_retry(root.path(), operation, &before);
+                }
             }
         }
     }

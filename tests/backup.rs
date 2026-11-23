@@ -7,6 +7,45 @@ use std::thread;
 use tempfile::tempdir;
 
 #[test]
+fn restore_rejects_nonregular_backups_and_accepts_a_regular_symlink_target() {
+    use std::os::unix::fs::symlink;
+    use std::process::Command;
+
+    let dir = tempdir().unwrap();
+    let store = Store::open(dir.path().join("source")).unwrap();
+    store.put(b"key", b"value").unwrap();
+    let backup = dir.path().join("backup");
+    store.backup(&backup).unwrap();
+    let fifo = dir.path().join("fifo");
+    let alias = dir.path().join("alias");
+    let target = dir.path().join("restored");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let error = Store::restore_detailed(&fifo, &target).unwrap_err();
+    assert!(matches!(error, PublicationFailure::NotPublished(error)
+        if error.kind() == std::io::ErrorKind::InvalidData
+            && error.to_string().contains("backup is not a regular file")));
+    assert!(!target.exists());
+    assert_eq!(
+        database_engine::cleanup_abandoned_staging(dir.path())
+            .unwrap()
+            .removed_markers,
+        0
+    );
+    symlink(&backup, &alias).unwrap();
+    Store::restore(&alias, &target).unwrap();
+    assert_eq!(
+        Store::open(&target).unwrap().get(b"key").unwrap(),
+        Some(b"value".to_vec())
+    );
+}
+
+#[test]
 fn backup_file_limit_includes_the_envelope_before_staging_on_both_backends() {
     for checkpointed in [false, true] {
         let dir = tempdir().unwrap();

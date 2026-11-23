@@ -5,6 +5,25 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+pub(crate) fn open_regular_readonly(path: &Path, description: &'static str) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+    let invalid = || crate::record::invalid_data(description);
+    // Follow explicit symlinks to regular files. A replacement FIFO must
+    // not turn a failed file-type check into a blocking open.
+    if !fs::metadata(path)?.is_file() {
+        return Err(invalid());
+    }
+    let file = File::from(open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?);
+    if !file.metadata()?.is_file() {
+        return Err(invalid());
+    }
+    Ok(file)
+}
+
 #[cfg(test)]
 pub(crate) fn diagnose_lock_failure(
     result: io::Result<()>,

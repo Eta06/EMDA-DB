@@ -11,6 +11,7 @@ use sha2::Sha256;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, IoSlice, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -700,23 +701,32 @@ impl Log {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn install_restore_witness(&self, directory: &Path) -> io::Result<()> {
-        self.install_restore_witness_with_hook(directory, |_| Ok(()))
+    pub(crate) fn verify_staged_file(&self, directory: &Path, length: u64) -> io::Result<()> {
+        let entry = std::fs::symlink_metadata(directory.join("records.log"))?;
+        if !entry.is_file()
+            || entry.len() != length
+            || self.file.file_identity()? != Some((entry.dev(), entry.ino()))
+            || self.len()? != length
+        {
+            return Err(record::invalid_data(
+                "staged log identity or length changed after verification",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) fn install_restore_witness_with_hook(
         &self,
         directory: &Path,
+        length: u64,
         hook: impl FnMut(witness::CreationPoint) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.verify_staged_file(directory, length)?;
         if let Some(id) = self.log_id {
-            let length = self.file.len()?;
             let boundary = if self.metadata {
-                let file = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(directory.join("records.log"))?;
+                let file = self.file.shared_file().ok_or_else(|| {
+                    io::Error::other("verified staged log is missing its file handle")
+                })?;
                 metadata_witness::install(&file, &id, length)?;
                 LOG_HEADER_SIZE as u64
             } else {
