@@ -292,23 +292,30 @@ fn large(db: &DocumentDatabase<'_>) {
         })
         .unwrap();
     }
+    // Raw ID order across the internal page boundary includes prefixes, NUL
+    // and non-ASCII bytes, independent of insertion order.
+    let boundary_ids = ["0255\0", "0255a", "0255é"];
+    for id in boundary_ids.iter().rev() {
+        db.insert("c", id, &json!({"tenant":"t", "category":"match"}))
+            .unwrap();
+    }
     let base = DocumentQuery {
         filter: and(vec![
             equal("tenant", json!("t")),
             equal("category", json!("match")),
         ]),
         max_scanned: 400,
-        offset: 260,
-        limit: 20,
+        offset: 253,
+        limit: 12,
         ..Default::default()
     };
     compare(db, &base, compound("pair", 2));
     let exact = DocumentQuery {
-        max_scanned: 300,
+        max_scanned: 303,
         ..base.clone()
     };
     let result = db.query_planned("c", &exact).unwrap();
-    assert_eq!(result.result.plan.scanned, 300);
+    assert_eq!(result.result.plan.scanned, 303);
     assert_eq!(
         result
             .result
@@ -316,15 +323,20 @@ fn large(db: &DocumentDatabase<'_>) {
             .iter()
             .map(|row| row.id.as_str())
             .collect::<Vec<_>>(),
-        (260..280).map(|i| format!("{i:04}")).collect::<Vec<_>>()
+        [
+            "0253", "0254", "0255", "0255\0", "0255a", "0255é", "0256", "0257", "0258", "0259",
+            "0260", "0261",
+        ]
     );
     let too_small = DocumentQuery {
-        max_scanned: 299,
+        max_scanned: 302,
         ..base
     };
+    let error = db.query_planned("c", &too_small).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
     assert_eq!(
-        db.query_planned("c", &too_small).unwrap_err().kind(),
-        ErrorKind::InvalidInput
+        error.to_string(),
+        "document scan exceeds the operation limit"
     );
 }
 #[test]

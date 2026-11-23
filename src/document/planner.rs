@@ -1128,7 +1128,7 @@ fn plan_query<'a>(
 }
 
 struct Candidates<'a> {
-    ids: BTreeSet<String>,
+    ids: Option<BTreeSet<String>>,
     collector: Option<filter::QueryCollector<'a>>,
     visits: usize,
     bytes: usize,
@@ -1162,7 +1162,9 @@ impl DocumentTransaction<'_, '_> {
             index.name == probe.index && index.fields.len() == probe.equal.len()
         ));
         let mut candidates = Candidates {
-            ids: BTreeSet::new(),
+            // A validated entry in a single complete tuple has a unique ID
+            // suffix. Only unordered probes need deduplication or a retry.
+            ids: (!id_order).then(BTreeSet::new),
             collector: (id_order || filter::may_retry_in_id_order(&query.filter))
                 .then(|| filter::QueryCollector::new(query, id_order)),
             visits: 0,
@@ -1184,7 +1186,10 @@ impl DocumentTransaction<'_, '_> {
                 // Array walks consume their budget in collection order. Other
                 // filters retry only if needed to report the first error by ID.
                 let mut collector = filter::QueryCollector::new(query, true);
-                for id in candidates.ids {
+                for id in candidates
+                    .ids
+                    .expect("unordered probes retain candidate IDs")
+                {
                     let encoded = self
                         .read_document_bytes(&key::document(collection, &id)?, |_| Ok(()))?
                         .ok_or_else(|| {
@@ -1246,7 +1251,11 @@ impl DocumentTransaction<'_, '_> {
                     byte_limit: Some(filter::MAX_SCAN_BYTES - candidates.bytes),
                 },
                 |entry| {
-                    if candidates.ids.insert(entry.id.clone()) {
+                    if candidates
+                        .ids
+                        .as_mut()
+                        .is_none_or(|ids| ids.insert(entry.id.clone()))
+                    {
                         if let Some(collector) = &mut candidates.collector {
                             collector.push(entry.id, entry.document);
                         }

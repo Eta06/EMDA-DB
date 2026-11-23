@@ -88,6 +88,9 @@ The initial document interface is bounded and experimental. This checklist recor
   extends durable SQLite comparisons to eight concurrent clients and
   records measured compound-range reads across four engines. Concurrent
   server-engine document writes and comparable resource attribution remain open.
+  [Exact-index measurements](../benchmarks/results/2026-11-24-exact-index-streaming/README.md)
+  show fewer allocator requests and lower sampled latency after removing
+  duplicated IDs. Indexed SQLite remained faster in the sampled read workload.
 - [x] Add resumable incremental index build and drop with atomic progress, bounded per-step work, writer coordination and recovery checks. Unique constraints take effect only after successful publication, and callers schedule and retry steps. The ordinary backend still has transaction snapshot limits; this is not a total-memory or latency guarantee.
 - [x] Reject index-drop cursors that skip surviving keys, including a unique phase with remaining entry keys. Both writable backends test skipped and live cursors and preserve the rejection after reopen. The guard detects inconsistent state and does not repair it or validate build cursors.
 - [x] Add resumable schema validation and publication with durable progress, per-step limits and enforcement of both schemas on concurrent writes. One-shot schema changes and index rebuilds still have small limits; incompatible schemas can require removing documents or cancelling the job.

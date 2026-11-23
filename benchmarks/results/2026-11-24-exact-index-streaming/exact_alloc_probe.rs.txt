@@ -1,0 +1,107 @@
+use database_engine::{
+    CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery, DocumentQueryAccess,
+    IndexDefinition, Store,
+};
+use serde_json::json;
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+
+struct CountingAllocator;
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+static BYTES: AtomicUsize = AtomicUsize::new(0);
+
+fn count(size: usize) {
+    if COUNTING.load(Relaxed) {
+        CALLS.fetch_add(1, Relaxed);
+        BYTES.fetch_add(size, Relaxed);
+    }
+}
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        count(size);
+        unsafe { System.realloc(pointer, layout, size) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(pointer, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn main() -> std::io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = Store::open(directory.path().join("store"))?;
+    let db = DocumentDatabase::new(&store);
+    db.create_collection("docs", CollectionSchema::default())?;
+    db.create_index(
+        "docs",
+        IndexDefinition {
+            name: "pair".to_owned(),
+            fields: vec![vec!["tenant".into()], vec!["category".into()]],
+            unique: false,
+            partial: None,
+        },
+    )?;
+    let row = json!({"tenant":"test","category":"red"});
+    for start in (0..1024).step_by(64) {
+        db.transaction(|tx| {
+            for number in start..start + 64 {
+                tx.insert("docs", &format!("{number:04}-{}", "x".repeat(251)), &row)?;
+            }
+            Ok(())
+        })?;
+    }
+    let query = DocumentQuery {
+        filter: DocumentFilter::And(vec![
+            DocumentFilter::Equal {
+                path: vec!["tenant".into()],
+                value: json!("test"),
+            },
+            DocumentFilter::Equal {
+                path: vec!["category".into()],
+                value: json!("red"),
+            },
+        ]),
+        max_scanned: 1024,
+        offset: 900,
+        limit: 16,
+        ..Default::default()
+    };
+    COUNTING.store(true, Relaxed);
+    let planned = db.query_planned("docs", &query);
+    COUNTING.store(false, Relaxed);
+    let planned = planned?;
+    assert_eq!(
+        planned.access,
+        DocumentQueryAccess::CompoundEqualityIndex {
+            index: "pair".into(),
+            fields: 2
+        }
+    );
+    assert_eq!(planned.result.plan.scanned, 1024);
+    assert_eq!(
+        planned.result.documents,
+        db.query("docs", &query)?.documents
+    );
+    assert_eq!(planned.result.documents.len(), 16);
+    println!(
+        "allocations={} requested_bytes={}",
+        CALLS.load(Relaxed),
+        BYTES.load(Relaxed)
+    );
+    Ok(())
+}

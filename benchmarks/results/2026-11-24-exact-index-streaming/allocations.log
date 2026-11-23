@@ -1,0 +1,19 @@
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+
+Baseline 429c77df6c04fe39aa293247f544dbeb7d224d31
+allocations=24856 requested_bytes=2556937
+allocations=24856 requested_bytes=2556937
+allocations=24856 requested_bytes=2556937
+
+With streaming IDs
+allocations=23661 requested_bytes=2244513
+allocations=23661 requested_bytes=2244513
+allocations=23661 requested_bytes=2244513
+
+SHA-256 of the timing binaries
+50bacb895f37ddfee2b736c6acc71bc5de34888413ac3d520f0879232eec4cba  /tmp/emda-document-exact.i177jD/baseline-query
+792f609369320950fda3ef1e9aabe1211af58122ef455a5a875f0ebf2b25611d  /tmp/emda-document-exact.i177jD/current-query

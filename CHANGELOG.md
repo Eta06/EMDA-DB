@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream IDs from a single exact document-index probe without retaining a
+  second copy for deduplication.
+
 - Share immutable checkpoint suffix keys across snapshot versions and
   rollover verification to reduce repeated allocations.
 
