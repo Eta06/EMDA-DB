@@ -189,8 +189,9 @@ fn required_membership(
     path: &[String],
     accepts: impl Fn(&serde_json::Value) -> bool,
 ) -> Option<Vec<IndexValue>> {
-    let mut intersection: Option<BTreeMap<_, _>> = None;
-    for (filter, negated) in required_predicates(required) {
+    let mut intersection = BTreeMap::<Vec<u8>, (IndexValue, usize)>::new();
+    let mut encoded = Vec::new();
+    for (ordinal, (filter, negated)) in required_predicates(required).enumerate() {
         match (filter, negated) {
             (
                 DocumentFilter::In {
@@ -206,36 +207,51 @@ fn required_membership(
                 },
                 true,
             ) if field == path && values.len() > 1 => {
-                let mut distinct = BTreeMap::new();
+                let seed = intersection.is_empty();
                 let mut usable = true;
+                let mut has_values = false;
+                let mut matched = 0;
                 for value in values.iter().filter(|value| accepts(value)) {
                     let Ok(value) = IndexValue::from_json(value) else {
                         usable = false;
                         break;
                     };
-                    let mut encoded = Vec::new();
+                    encoded.clear();
                     if value.encode(&mut encoded).is_err() {
                         usable = false;
                         break;
                     }
-                    distinct.entry(encoded).or_insert(value);
-                }
-                if usable && !distinct.is_empty() {
-                    if let Some(previous) = &intersection {
-                        distinct.retain(|encoded, _| previous.contains_key(encoded));
-                        // Keep an existing bounded access path for disjoint
-                        // lists; the full filter still checks every predicate.
-                        if distinct.is_empty() {
-                            break;
+                    has_values = true;
+                    if seed {
+                        intersection
+                            .entry(std::mem::take(&mut encoded))
+                            .or_insert((value, ordinal));
+                    } else if let Some((_, seen)) = intersection.get_mut(encoded.as_slice()) {
+                        if *seen != ordinal {
+                            *seen = ordinal;
+                            matched += 1;
                         }
                     }
-                    intersection = Some(distinct);
+                }
+                if seed {
+                    if !usable {
+                        intersection.clear();
+                    }
+                } else if usable && has_values {
+                    // Preserve a usable access path for disjoint lists. An
+                    // unindexable list can mark entries but never prunes them.
+                    if matched == 0 {
+                        break;
+                    }
+                    if matched < intersection.len() {
+                        intersection.retain(|_, (_, seen)| *seen == ordinal);
+                    }
                 }
             }
             _ => {}
         }
     }
-    intersection.map(|values| values.into_values().collect())
+    (!intersection.is_empty()).then(|| intersection.into_values().map(|(value, _)| value).collect())
 }
 
 fn path_implies_presence(field: &[String], actual: bool, path: &[String], exists: bool) -> bool {

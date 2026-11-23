@@ -729,6 +729,9 @@ The [conjunctive membership comparison](../benchmarks/results/2026-11-23-conjunc
 measures intersection of two required lists against the prior planner and
 indexed SQLite. Sparse overlap reduced candidate visits and latency.
 Full overlap added planning cost without reducing candidate visits.
+The [map-reuse follow-up](../benchmarks/results/2026-11-23-membership-map-reuse/README.md)
+measures the cost of intersecting the same lists with one map and a reusable
+encoding buffer.
 
 ### Transaction cancellation overhead
 

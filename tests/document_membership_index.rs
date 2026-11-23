@@ -228,9 +228,9 @@ fn conjunctive_membership_uses_only_common_index_values() {
         let first = in_values(vec![json!(1), json!(2), Value::Null, json!(2)]);
         let second = DocumentFilter::Not(Box::new(DocumentFilter::NotIn {
             path: vec!["v".into()],
-            values: vec![json!(3), Value::Null, json!(2)],
+            values: vec![json!(3), Value::Null, json!(2), json!(2)],
         }));
-        let mixed = in_values(vec![json!(2.0), json!(2), Value::Null, json!([2])]);
+        let mixed = in_values(vec![json!(2), json!(2.0), Value::Null, json!([2])]);
         let request = query(DocumentFilter::And(vec![first.clone(), second, mixed]));
         let scan = db.query("c", &request).unwrap();
         let limited = DocumentQuery {

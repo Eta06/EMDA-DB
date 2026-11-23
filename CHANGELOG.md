@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse encoded keys and the ordered candidate map while intersecting
+  repeated document membership predicates.
+
 - Intersect required indexable membership lists on the same field before
   building single-field and compound index probes.
 
