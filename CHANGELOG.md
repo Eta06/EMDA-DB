@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Keep committed reads available during checkpoint preparation for automatic
+  rollover, including the optional background worker. Selection publication
+  still excludes readers, and any triggering write follows the durable handoff.
+
 - Keep the committed checkpoint view readable while manual checkpoint copies
   and rollovers prepare and verify the next checkpoint. Mutations still wait
   and the final manual rollover handoff remains exclusive.

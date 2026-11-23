@@ -21,9 +21,9 @@ impl Drop for PendingAppend<'_> {
 impl CheckpointStore {
     // The writer gate serializes append and maintenance. Only admission and
     // publishing the synchronized batch need exclusive access to the view.
-    pub(super) fn commit(
-        &self,
-        state: StateWrite<'_>,
+    pub(super) fn commit<'a>(
+        &'a self,
+        state: StateWrite<'a>,
         operation: Operation,
         key: &[u8],
         value: &[u8],
@@ -49,9 +49,9 @@ impl CheckpointStore {
         }
     }
 
-    pub(super) fn commit_until(
-        &self,
-        mut state: StateWrite<'_>,
+    pub(super) fn commit_until<'a>(
+        &'a self,
+        mut state: StateWrite<'a>,
         operation: Operation,
         key: &[u8],
         value: &[u8],
@@ -88,7 +88,7 @@ impl CheckpointStore {
                     && state.view.tail_bytes > 0
                     && self.fits_empty_suffix(length, touched) =>
             {
-                self.automatic_rollover(&mut state)?;
+                state = self.automatic_rollover(state)?;
                 self.admit_suffix(&state, length, touched)?
             }
             Err(error) => return Err(error.into()),

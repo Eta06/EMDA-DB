@@ -13,9 +13,8 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
         store.put(b"a", b"acknowledged").unwrap();
         let old_selection = fs::read(crate::checkpoint_store::selection::path(&path)).unwrap();
         let old_log = fs::read(path.join("records.log")).unwrap();
-        let mut state = store.write().unwrap();
         let result = store.automatic_rollover_with_hooks(
-            &mut state,
+            store.write().unwrap(),
             || {
                 if phase == "slot-staged" {
                     Err(io::Error::other("injected before slot publication"))
@@ -31,6 +30,10 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
                 }
             },
             || {
+                assert!(matches!(
+                    store.state.try_read(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
                 if phase == "selection-staged" {
                     Err(io::Error::other("injected before selection rename"))
                 } else {
@@ -45,9 +48,8 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
                 }
             },
         );
-        assert!(result.is_err());
-        let poisoned = state.failed;
-        drop(state);
+        assert!(result.map(drop).is_err());
+        let poisoned = store.state.read().unwrap().failed;
         assert_eq!(fs::read(path.join("records.log")).unwrap(), old_log);
         assert_eq!(poisoned, phase.starts_with("selection-"));
         if poisoned {

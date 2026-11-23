@@ -36,6 +36,83 @@ impl LogIo for PausingLog {
 }
 
 #[test]
+fn automatic_rollover_keeps_committed_reads_available_during_verification() {
+    use std::sync::{Arc, TryLockError};
+
+    for background in [false, true] {
+        let (_dir, path, mut store) = managed_default_fixture(1024, 1, 64);
+        store.enable_automatic_checkpoints().unwrap();
+        store.put(b"a", b"acknowledged").unwrap();
+        let selection = crate::checkpoint_store::selection::path(&path);
+        let old_selection = fs::read(&selection).unwrap();
+        let log = path.join("records.log");
+        let old_log = fs::read(&log).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        store.log.replace_io_for_test(Box::new(PausingLog {
+            file: OpenOptions::new()
+                .read(true)
+                .append(true)
+                .open(&log)
+                .unwrap(),
+            armed: AtomicBool::new(true),
+            entered: entered_tx,
+            resume: Mutex::new(resume_rx),
+        }));
+        let store = Arc::new(store);
+        let worker = background.then(|| {
+            let worker = store
+                .start_checkpoint_worker(Duration::from_secs(3600), 1)
+                .unwrap();
+            worker.request_check().unwrap();
+            worker
+        });
+        let snapshot = std::thread::scope(|scope| {
+            let store = store.as_ref();
+            let writer = (!background).then(|| scope.spawn(|| store.put(b"b", b"after")));
+            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(matches!(
+                store.writers.try_read(),
+                Err(TryLockError::WouldBlock)
+            ));
+            assert_eq!(fs::read(&log).unwrap(), old_log);
+            assert_eq!(fs::read(&selection).unwrap(), old_selection);
+
+            let (read_tx, read_rx) = mpsc::channel();
+            let reader = scope.spawn(move || {
+                let row = store.get_many(&[b"a", b"b"]).unwrap();
+                read_tx.send((row, store.snapshot().unwrap())).unwrap();
+            });
+            let observed = read_rx.recv_timeout(Duration::from_secs(3));
+            resume_tx.send(()).unwrap();
+            if let Some(writer) = writer {
+                writer.join().unwrap().unwrap();
+            }
+            reader.join().unwrap();
+            let (row, snapshot) = observed.expect("committed reads stalled during rollover");
+            assert_eq!(row, [Some(b"acknowledged".to_vec()), None]);
+            snapshot
+        });
+        if let Some(worker) = worker {
+            let status = worker.stop().unwrap();
+            assert_eq!(status.checkpoints, 1);
+            assert!(status.last_error.is_none());
+            assert_eq!(store.tail_bytes().unwrap(), 0);
+            assert_eq!(fs::read(&log).unwrap(), old_log);
+            store.put(b"b", b"after").unwrap();
+        }
+        assert_ne!(fs::read(&selection).unwrap(), old_selection);
+        assert_eq!(snapshot.get(b"a").unwrap(), Some(b"acknowledged".to_vec()));
+        assert_eq!(snapshot.get(b"b").unwrap(), None);
+        drop(snapshot);
+        drop(store);
+        let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(reopened.get(b"a").unwrap(), Some(b"acknowledged".to_vec()));
+        assert_eq!(reopened.get(b"b").unwrap(), Some(b"after".to_vec()));
+    }
+}
+
+#[test]
 fn transaction_deadline_expiring_during_automatic_rollover_prevents_append() {
     use std::sync::Arc;
     use std::time::Instant;

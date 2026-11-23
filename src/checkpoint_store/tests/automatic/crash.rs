@@ -11,10 +11,9 @@ fn automatic_rollover_crash_child() {
         CheckpointStore::open_managed_with_resource_limits(parent.join("store"), 1024, 1, 64, None)
     })
     .unwrap();
-    let mut state = store.write().unwrap();
     store
         .automatic_rollover_with_hooks(
-            &mut state,
+            store.write().unwrap(),
             || {
                 if phase == "slot-staged" {
                     pause_automatic_rollover()

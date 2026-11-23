@@ -1,5 +1,5 @@
 //! On-demand managed checkpoint rollover using two owned checkpoint slots.
-use super::{CheckpointStore, State, selection};
+use super::{CheckpointStore, State, StateWrite, selection, uncertain};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -151,9 +151,10 @@ impl CheckpointStore {
     /// reserved `.emda-auto-checkpoints-v1` directory must remain trusted.
     ///
     /// An oversized record or exhausted whole-log limit still fails before
-    /// append. Rollover blocks reads and writes and may fail before the user's
-    /// mutation is submitted. A selection-publication error poisons the store
-    /// until it is reopened. This does not bound total memory or disk usage.
+    /// append. Rollover pauses writes and lets readers use the committed view
+    /// during checkpoint preparation. It may fail before the user's mutation
+    /// is submitted. A selection-publication error poisons the store until
+    /// it is reopened. This does not bound total memory or disk usage.
     pub fn enable_automatic_checkpoints(&self) -> io::Result<()> {
         self.enable_automatic_checkpoints_tracked(None, || Ok(()), crate::directory::sync_existing)
     }
@@ -279,7 +280,10 @@ impl CheckpointStore {
         Ok(self.read()?.automatic)
     }
 
-    pub(super) fn automatic_rollover(&self, state: &mut State) -> io::Result<()> {
+    pub(super) fn automatic_rollover<'a>(
+        &'a self,
+        state: StateWrite<'a>,
+    ) -> io::Result<StateWrite<'a>> {
         self.automatic_rollover_with_hooks(
             state,
             || Ok(()),
@@ -300,14 +304,14 @@ impl CheckpointStore {
         Ok(())
     }
 
-    pub(super) fn automatic_rollover_with_hooks(
-        &self,
-        state: &mut State,
+    pub(super) fn automatic_rollover_with_hooks<'a>(
+        &'a self,
+        mut state: StateWrite<'a>,
         before_slot_publish: impl FnOnce() -> io::Result<()>,
         sync_slot_parent: impl FnOnce(&Path) -> io::Result<()>,
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
-    ) -> io::Result<()> {
+    ) -> io::Result<StateWrite<'a>> {
         if !state.automatic {
             return Err(invalid("automatic checkpointing is not enabled"));
         }
@@ -322,7 +326,7 @@ impl CheckpointStore {
                 return Err(error);
             }
         }
-        self.validate_automatic_selection(state)?;
+        self.validate_automatic_selection(&mut state)?;
         let selected = &state
             .selection
             .as_ref()
@@ -337,9 +341,14 @@ impl CheckpointStore {
         }
         let next_slot = usize::from(selected == &indexes[0]);
         let destination = root.join(SLOTS[next_slot]);
+        // Keep the writer gate across preparation and publication. The old
+        // selection and its open files remain usable while the slot is built.
+        let StateWrite { state, _writer } = state;
+        drop(state);
+        let state = self.read()?;
         crate::cleanup_abandoned_staging(&root)?;
         remove_inactive_slot(&root, &destination)?;
-        let (count, peak, verified_log) = self.verify_for_checkpoint(state)?;
+        let (count, peak, verified_log) = self.verify_for_checkpoint(&state)?;
         let mut stage = crate::staging::Stage::directory(&root)?;
         write_marker(stage.path(), SLOT_OWNER)?;
         let digest = crate::checkpoint::create_streaming_in_private_stage(
@@ -369,8 +378,10 @@ impl CheckpointStore {
             )
         })?;
         stage.publication_synchronized();
-        let next_view = self.rollover_view(state, &indexes[next_slot], &digest)?;
+        let next_view = self.rollover_view(&state, &indexes[next_slot], &digest)?;
         let next = selection::Selection::new(indexes[next_slot].clone(), digest)?;
+        drop(state);
+        let mut state = self.state.write().map_err(|_| uncertain())?;
         if let Err(error) = selection::publish(
             &self.path,
             &next,
@@ -388,7 +399,7 @@ impl CheckpointStore {
         state.view = next_view;
         state.overlay_key_bytes = 0;
         state.selection = Some(next);
-        Ok(())
+        Ok(StateWrite { state, _writer })
     }
 }
 

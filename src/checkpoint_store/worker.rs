@@ -183,11 +183,11 @@ impl CheckpointStore {
     }
 
     fn background_checkpoint(&self, minimum_suffix_bytes: u64) -> io::Result<bool> {
-        let mut state = self.write()?;
+        let state = self.write()?;
         if !state.automatic || state.view.tail_bytes < minimum_suffix_bytes {
             return Ok(false);
         }
-        self.automatic_rollover(&mut state)?;
+        self.automatic_rollover(state)?;
         Ok(true)
     }
 }
