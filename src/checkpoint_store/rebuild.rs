@@ -1918,7 +1918,9 @@ mod tests {
 
     #[test]
     fn corrupt_spill_intermediates_preserve_source_and_allow_exact_retry() {
-        use crate::checkpoint_store::rebuild_spill::corruption::{Point, with_fault};
+        use crate::checkpoint_store::rebuild_spill::corruption::{
+            Point, damage_last_merged_key, with_fault,
+        };
 
         for v2 in [true, false] {
             for full in [true, false] {
@@ -1932,6 +1934,11 @@ mod tests {
                         Point::MergeVerified,
                         damage_verified_spill_digest as fn(&Path),
                         "spill run checksum mismatch",
+                    ),
+                    (
+                        Point::MergeVerified,
+                        damage_last_merged_key as fn(&Path),
+                        "spill entry checksum mismatch",
                     ),
                 ] {
                     let Some(case) = prepare_unacknowledged_tail(v2) else {
@@ -1996,7 +2003,7 @@ mod tests {
                         .unwrap()
                     );
                     println!(
-                        "{} full={full} {point:?}: rejected damage and recovered exactly",
+                        "{} full={full} {point:?} ({expected_error}): rejected damage and recovered exactly",
                         if v2 { "V2" } else { "V3" }
                     );
                 }

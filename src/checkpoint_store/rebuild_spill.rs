@@ -44,7 +44,7 @@ const OFFSET_LEN: u64 = 8;
 
 #[cfg(test)]
 pub(super) mod corruption {
-    use super::{Cell, Path};
+    use super::{Cell, FileExt, OFFSET_LEN, OpenOptions, Path, read_header};
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(in crate::checkpoint_store) enum Point {
@@ -82,6 +82,25 @@ pub(super) mod corruption {
             FAULT.set(None);
             damage(path);
         }
+    }
+
+    pub(in crate::checkpoint_store) fn damage_last_merged_key(path: &Path) {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let (count, table_at, _) = read_header(&file).unwrap();
+        // The first binary-search probe of this fixture's two-entry run
+        // selects the last entry. Leave the header and trailer intact.
+        assert_eq!(count, 2);
+        let mut offset = [0; OFFSET_LEN as usize];
+        file.read_exact_at(&mut offset, table_at + OFFSET_LEN)
+            .unwrap();
+        let key_at = u64::from_le_bytes(offset) + 2;
+        let mut byte = [0];
+        file.read_exact_at(&mut byte, key_at).unwrap();
+        file.write_all_at(&[byte[0] ^ 1], key_at).unwrap();
     }
 }
 const IO_BUFFER: usize = 8 * 1024;
