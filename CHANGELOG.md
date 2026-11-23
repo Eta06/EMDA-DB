@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add bounded `DocumentFilter::ArrayAllElementsMatch` for relative
+  predicates that every object in an array must satisfy. Empty arrays
+  match. Downstream exhaustive Rust matches on `DocumentFilter` need a
+  new arm.
+
 - Admit detached restore destinations before replay and staging. Reject
   undersized output limits from the base frame when the suffix is empty.
 

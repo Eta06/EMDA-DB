@@ -25,6 +25,12 @@ fn elem(name: &str, filter: F) -> F {
         filter: Box::new(filter),
     }
 }
+fn all_elem(name: &str, filter: F) -> F {
+    F::ArrayAllElementsMatch {
+        path: path(name),
+        filter: Box::new(filter),
+    }
+}
 fn query(filter: F) -> DocumentQuery {
     DocumentQuery {
         filter,
@@ -114,6 +120,35 @@ fn exercise(db: &DocumentDatabase<'_>) {
         ["c"]
     );
     assert_eq!(ids(db, elem("items", F::All)), ["a", "b", "c"]);
+    assert_eq!(ids(db, all_elem("items", F::All)), ["a", "b", "e"]);
+    assert_eq!(ids(db, all_elem("items", eq("color", json!("red")))), ["e"]);
+    assert_eq!(
+        ids(
+            db,
+            all_elem("items", F::Not(Box::new(eq("color", json!("green")))))
+        ),
+        ["a", "b", "e"]
+    );
+    assert_eq!(
+        ids(db, F::Not(Box::new(all_elem("items", F::All)))),
+        ["c", "d", "m", "n", "s"]
+    );
+    assert_eq!(
+        ids(
+            db,
+            elem(
+                "items",
+                all_elem(
+                    "sub",
+                    F::Exists {
+                        path: path("x"),
+                        exists: true
+                    }
+                )
+            ),
+        ),
+        ["c"]
+    );
 
     // The nested `color` does not constrain the root color index. In particular,
     // b's root color is blue even though a matching element has red color.
@@ -147,6 +182,18 @@ fn exercise(db: &DocumentDatabase<'_>) {
         (aggregate.groups[0].count, aggregate.groups[0].sum),
         (2, Some(12))
     );
+    let all = db
+        .aggregate(
+            "c",
+            &AggregateRequest {
+                filter: all_elem("items", F::All),
+                group_by: None,
+                sum: Some(path("amount")),
+                max_scanned: 32,
+            },
+        )
+        .unwrap();
+    assert_eq!((all.groups[0].count, all.groups[0].sum), (3, Some(8)));
     assert_eq!(db.verify_collection("c").unwrap().documents, 8);
 }
 
@@ -182,23 +229,26 @@ fn bounds(db: &DocumentDatabase<'_>) {
     db.insert(
         "c",
         "a",
-        &json!({"items":vec![Value::Null; 31_250], "one":[null]}),
+        &json!({"items":vec![Value::Null; 31_250], "objects":vec![json!({}); 31_250], "one":[null]}),
     )
     .unwrap();
     let all_primitive = || F::Not(Box::new(elem("items", F::All)));
+    let at_limit = || {
+        (0..16)
+            .map(|_| all_primitive())
+            .chain((0..16).map(|_| all_elem("objects", F::All)))
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        db.query(
-            "c",
-            &query(F::And((0..32).map(|_| all_primitive()).collect()))
-        )
-        .unwrap()
-        .documents
-        .len(),
+        db.query("c", &query(F::And(at_limit())))
+            .unwrap()
+            .documents
+            .len(),
         1
     );
     let excessive = || {
-        let mut filters: Vec<_> = (0..32).map(|_| all_primitive()).collect();
-        filters.push(F::Not(Box::new(elem("one", F::All))));
+        let mut filters = at_limit();
+        filters.push(F::Not(Box::new(all_elem("one", F::All))));
         query(F::And(filters))
     };
     let error = db.query("c", &excessive()).unwrap_err();
@@ -230,7 +280,7 @@ fn bounds(db: &DocumentDatabase<'_>) {
     );
     let invalid = F::Or(vec![
         F::All,
-        F::ArrayElementMatch {
+        F::ArrayAllElementsMatch {
             path: vec![],
             filter: Box::new(F::All),
         },
@@ -256,7 +306,7 @@ fn bounds(db: &DocumentDatabase<'_>) {
     );
     let mut too_deep = F::All;
     for _ in 0..17 {
-        too_deep = elem("items", too_deep);
+        too_deep = all_elem("items", too_deep);
     }
     assert_eq!(
         db.query("c", &query(too_deep)).unwrap_err().kind(),
@@ -294,29 +344,32 @@ fn phantom(db: &DocumentDatabase<'_>) {
 }
 
 fn partial_presence(db: &DocumentDatabase<'_>) {
-    let matching = query(F::And(vec![
-        eq("handle", json!("target")),
+    for filter in [
         elem("items", eq("color", json!("red"))),
-    ]));
-    let planned = db.query_planned("c", &matching).unwrap();
-    assert_eq!(
-        planned.access,
-        DocumentQueryAccess::PartialUniqueEqualityIndex {
-            index: "handle".into(),
-            fields: 1,
-        }
-    );
-    assert_eq!(
-        planned.result.documents,
-        db.query("c", &matching).unwrap().documents
-    );
-    assert_eq!(planned.result.documents[0].id, "target");
+        all_elem("items", eq("color", json!("red"))),
+    ] {
+        let matching = query(F::And(vec![eq("handle", json!("target")), filter]));
+        let planned = db.query_planned("c", &matching).unwrap();
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::PartialUniqueEqualityIndex {
+                index: "handle".into(),
+                fields: 1,
+            }
+        );
+        assert_eq!(
+            planned.result.documents,
+            db.query("c", &matching).unwrap().documents
+        );
+        assert_eq!(planned.result.documents[0].id, "target");
+    }
 
     // Missing root items still matches these alternatives; neither the child
     // of an Or/Not nor a path relative to a nested object proves root presence.
     for filter in [
         F::Or(vec![elem("items", F::All), F::All]),
         F::Not(Box::new(elem("items", F::All))),
+        F::Not(Box::new(all_elem("items", F::All))),
     ] {
         let q = query(F::And(vec![eq("handle", json!("missing")), filter]));
         let planned = db.query_planned("c", &q).unwrap();
@@ -329,7 +382,7 @@ fn partial_presence(db: &DocumentDatabase<'_>) {
     }
     let nested = query(F::And(vec![
         eq("handle", json!("nested")),
-        elem(
+        all_elem(
             "groups",
             F::Exists {
                 path: path("items"),

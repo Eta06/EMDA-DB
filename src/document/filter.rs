@@ -62,6 +62,12 @@ pub enum DocumentFilter {
         path: Vec<String>,
         filter: Box<DocumentFilter>,
     },
+    /// Match when every array element is an object satisfying the relative
+    /// filter. An empty array matches. Missing and non-array paths fail.
+    ArrayAllElementsMatch {
+        path: Vec<String>,
+        filter: Box<DocumentFilter>,
+    },
     /// Compare indexable scalars by the documented index ordering.
     Compare {
         path: Vec<String>,
@@ -259,7 +265,8 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
                 value_budget.add_values(values)?;
             }
             DocumentFilter::ArrayLength { path, .. } => schema::validate_path(path)?,
-            DocumentFilter::ArrayElementMatch { path, filter } => {
+            DocumentFilter::ArrayElementMatch { path, filter }
+            | DocumentFilter::ArrayAllElementsMatch { path, filter } => {
                 schema::validate_path(path)?;
                 pending.push((filter, depth + 1));
             }
@@ -289,7 +296,8 @@ pub(super) fn may_retry_in_id_order(filter: &DocumentFilter) -> bool {
         DocumentFilter::ArrayContains { .. }
         | DocumentFilter::ArrayContainsAny { .. }
         | DocumentFilter::ArrayContainsAll { .. }
-        | DocumentFilter::ArrayElementMatch { .. } => false,
+        | DocumentFilter::ArrayElementMatch { .. }
+        | DocumentFilter::ArrayAllElementsMatch { .. } => false,
         DocumentFilter::And(children) | DocumentFilter::Or(children) => {
             children.iter().all(may_retry_in_id_order)
         }
@@ -308,6 +316,25 @@ fn encoded(value: &IndexValue) -> io::Result<Vec<u8>> {
     let mut result = Vec::new();
     value.encode(&mut result)?;
     Ok(result)
+}
+
+fn matches_array_elements(
+    field: Option<&Value>,
+    filter: &DocumentFilter,
+    budget: &mut FilterValueBudget,
+    require_all: bool,
+) -> io::Result<bool> {
+    let Some(array) = field.and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    for element in array {
+        budget.visit_array_element()?;
+        let matched = element.is_object() && matches(filter, element, budget)?;
+        if matched != require_all {
+            return Ok(matched);
+        }
+    }
+    Ok(require_all)
 }
 
 fn matches(
@@ -369,17 +396,10 @@ fn matches(
             .and_then(Value::as_array)
             .is_some_and(|array| array.len() == *length),
         DocumentFilter::ArrayElementMatch { path, filter } => {
-            let mut found = false;
-            if let Some(array) = schema::field(document, path).and_then(Value::as_array) {
-                for element in array {
-                    value_budget.visit_array_element()?;
-                    if element.is_object() && matches(filter, element, value_budget)? {
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            found
+            matches_array_elements(schema::field(document, path), filter, value_budget, false)?
+        }
+        DocumentFilter::ArrayAllElementsMatch { path, filter } => {
+            matches_array_elements(schema::field(document, path), filter, value_budget, true)?
         }
         DocumentFilter::Compare {
             path,

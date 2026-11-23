@@ -41,6 +41,16 @@ fn value(byte: u8) -> Value {
 }
 fn document(id: u8, byte: u8) -> Value {
     let mut doc = json!({"handle":format!("id{id}")});
+    if byte & 0x80 != 0 {
+        let element = json!({"x": byte % 3});
+        doc["tags"] = match byte % 4 {
+            0 => json!([]),
+            1 => json!([element]),
+            2 => json!([element, element]),
+            _ => json!([element, null]),
+        };
+        return doc;
+    }
     match byte % 4 {
         0 => {}
         1 => doc["tags"] = Value::Null,
@@ -114,7 +124,7 @@ fuzz_target!(|data: &[u8]| {
             .collect::<Vec<_>>();
         let needle = value(bytes[2]);
         let length = usize::from(bytes[2] % 6);
-        let mode = bytes[0] % 6;
+        let mode = bytes[0] % 8;
         let field = vec!["tags".into()];
         let mut filter = match mode {
             0 => DocumentFilter::ArrayContains {
@@ -146,7 +156,21 @@ fuzz_target!(|data: &[u8]| {
                     },
                 ])),
             },
-            _ => DocumentFilter::ArrayElementMatch {
+            5 => DocumentFilter::ArrayElementMatch {
+                path: field,
+                filter: Box::new(DocumentFilter::Not(Box::new(DocumentFilter::Exists {
+                    path: vec!["x".into()],
+                    exists: true,
+                }))),
+            },
+            6 => DocumentFilter::ArrayAllElementsMatch {
+                path: field,
+                filter: Box::new(DocumentFilter::Equal {
+                    path: vec!["x".into()],
+                    value: json!(bytes[2] % 3),
+                }),
+            },
+            _ => DocumentFilter::ArrayAllElementsMatch {
                 path: field,
                 filter: Box::new(DocumentFilter::Not(Box::new(DocumentFilter::Exists {
                     path: vec!["x".into()],
@@ -189,7 +213,17 @@ fuzz_target!(|data: &[u8]| {
                                     && object.get("y") == Some(&json!(bytes[3] % 3))
                             })
                         }),
-                        _ => array.iter().any(|element| {
+                        5 => array.iter().any(|element| {
+                            element
+                                .as_object()
+                                .is_some_and(|object| !object.contains_key("x"))
+                        }),
+                        6 => array.iter().all(|element| {
+                            element
+                                .as_object()
+                                .is_some_and(|object| object.get("x") == Some(&json!(bytes[2] % 3)))
+                        }),
+                        _ => array.iter().all(|element| {
                             element
                                 .as_object()
                                 .is_some_and(|object| !object.contains_key("x"))

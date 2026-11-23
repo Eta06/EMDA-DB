@@ -305,6 +305,7 @@ fn proves_presence(
         | DocumentFilter::ArrayContainsAll { path: field, .. }
         | DocumentFilter::ArrayLength { path: field, .. }
         | DocumentFilter::ArrayElementMatch { path: field, .. }
+        | DocumentFilter::ArrayAllElementsMatch { path: field, .. }
             if !explicit_only && !negated =>
         {
             path_implies_presence(field, true, path, exists)
