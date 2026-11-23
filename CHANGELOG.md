@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Capture owned, read-only online-store snapshots that remain readable
+  across a synchronized handoff and retired-log reclamation. Snapshot
+  reservations share one budget across generations.
+
 - Add per-open mutation ceilings for checkpoint suffix replay and writable
   append admission, counting every child of an atomic batch.
 

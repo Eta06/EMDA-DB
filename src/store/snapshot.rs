@@ -43,6 +43,44 @@ pub(super) struct SnapshotBudget {
     key_byte_limit: usize,
 }
 
+pub(super) enum SnapshotBudgetStorage {
+    Local(Mutex<SnapshotBudget>),
+    Shared(Arc<Mutex<SnapshotBudget>>),
+}
+
+impl Default for SnapshotBudgetStorage {
+    fn default() -> Self {
+        Self::Local(Mutex::default())
+    }
+}
+
+impl std::ops::Deref for SnapshotBudgetStorage {
+    type Target = Mutex<SnapshotBudget>;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Local(budget) => budget,
+            Self::Shared(budget) => budget,
+        }
+    }
+}
+
+impl SnapshotBudgetStorage {
+    pub(super) fn make_shared(&mut self) {
+        *self = match std::mem::take(self) {
+            Self::Local(budget) => Self::Shared(Arc::new(budget)),
+            shared => shared,
+        };
+    }
+
+    pub(super) fn clone_shared(&self) -> Self {
+        let Self::Shared(budget) = self else {
+            unreachable!("an online store always shares its snapshot budget");
+        };
+        Self::Shared(Arc::clone(budget))
+    }
+}
+
 impl Default for SnapshotBudget {
     fn default() -> Self {
         Self {
@@ -120,10 +158,27 @@ impl SnapshotBudget {
 /// reaping call or an optionally started worker. Expiry is checked at
 /// operation boundaries, not during I/O.
 pub struct Snapshot<'a> {
-    pub(super) store: &'a Store,
+    pub(super) store: SnapshotStore<'a>,
     pub(super) generation: u64,
     pub(super) log_generation: Option<GenerationId>,
     state: Arc<RwLock<SnapshotData>>,
+}
+
+#[derive(Clone)]
+pub(super) enum SnapshotStore<'a> {
+    Borrowed(&'a Store),
+    Owned(Arc<Store>),
+}
+
+impl std::ops::Deref for SnapshotStore<'_> {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        match self {
+            Self::Borrowed(store) => store,
+            Self::Owned(store) => store,
+        }
+    }
 }
 
 pub(super) type SnapshotRegistry = Vec<Weak<RwLock<SnapshotData>>>;
@@ -230,6 +285,28 @@ impl Store {
         max_key_bytes: usize,
         deadline: Option<Instant>,
     ) -> io::Result<Snapshot<'_>> {
+        Self::capture_snapshot(
+            SnapshotStore::Borrowed(self),
+            max_keys,
+            max_key_bytes,
+            deadline,
+        )
+    }
+
+    pub(super) fn owned_snapshot(
+        store: Arc<Self>,
+        max_keys: usize,
+        max_key_bytes: usize,
+    ) -> io::Result<Snapshot<'static>> {
+        Self::capture_snapshot(SnapshotStore::Owned(store), max_keys, max_key_bytes, None)
+    }
+
+    fn capture_snapshot(
+        store: SnapshotStore<'_>,
+        max_keys: usize,
+        max_key_bytes: usize,
+        deadline: Option<Instant>,
+    ) -> io::Result<Snapshot<'_>> {
         if max_keys > MAX_SNAPSHOT_KEYS || max_key_bytes > MAX_SNAPSHOT_KEY_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -239,9 +316,9 @@ impl Store {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
         }
-        self.reap_expired_snapshots()?;
-        let inner = self.read()?;
-        if self.commits.failed() {
+        store.reap_expired_snapshots()?;
+        let inner = store.read()?;
+        if store.commits.failed() {
             return Err(uncertain_error());
         }
         if inner.index.len() > max_keys {
@@ -252,19 +329,20 @@ impl Store {
             return Err(io::Error::other("snapshot key byte limit exceeded"));
         }
         let key_count = inner.index.len();
-        self.snapshot_budget
+        store
+            .snapshot_budget
             .lock()
             .map_err(|_| io::Error::other("snapshot budget poisoned"))?
             .reserve(key_count, key_bytes)?;
         // Protect the reservation even if allocating the shared state unwinds.
         let mut reservation = SnapshotReservation {
-            store: self,
+            store: &store,
             keys: key_count,
             key_bytes,
             active: true,
         };
         let snapshot = Snapshot {
-            store: self,
+            store: store.clone(),
             generation: inner.generation,
             log_generation: inner.log_generation,
             state: Arc::new(RwLock::new(SnapshotData {
@@ -282,7 +360,7 @@ impl Store {
         reservation.active = false;
         snapshot.ensure_healthy()?;
         if deadline.is_some() {
-            let mut registry = self
+            let mut registry = store
                 .snapshot_registry
                 .lock()
                 .map_err(|_| io::Error::other("snapshot registry poisoned"))?;
@@ -396,7 +474,7 @@ impl Snapshot<'_> {
             .state
             .write()
             .unwrap_or_else(|poison| poison.into_inner());
-        data.release(self.store, SnapshotStatus::Cancelled);
+        data.release(&self.store, SnapshotStatus::Cancelled);
     }
 
     /// Whether this snapshot has been explicitly cancelled.

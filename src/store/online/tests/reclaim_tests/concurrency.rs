@@ -6,6 +6,8 @@ fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
     let (source, previous) = paths(root.path());
     let store = Arc::new(OnlineStore::open(&source).unwrap());
     insert_history(&store);
+    let mut snapshot = store.snapshot(2, 64).unwrap();
+    let retired_owner = Arc::downgrade(&store.state.read().unwrap().store);
     let (ready_tx, ready_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
     let worker_store = Arc::clone(&store);
@@ -17,7 +19,7 @@ fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
             |_| Ok(()),
             crate::directory::sync_existing,
             |point| {
-                if point == reclaim::Point::AfterMove {
+                if point == reclaim::Point::AfterRecords {
                     ready_tx.send(()).unwrap();
                     resume_rx.recv_timeout(WAIT).unwrap();
                 }
@@ -26,6 +28,10 @@ fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
         )
     });
     ready_rx.recv_timeout(WAIT).unwrap();
+    assert_eq!(
+        snapshot.as_snapshot().unwrap().get(b"overwritten").unwrap(),
+        Some(b"39".to_vec())
+    );
     {
         let state = store.state.read().unwrap();
         assert!(matches!(
@@ -63,6 +69,9 @@ fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
     ));
     reader.join().unwrap();
     worker.join().unwrap().unwrap();
+    assert!(retired_owner.upgrade().is_some());
+    snapshot.cancel();
+    assert!(retired_owner.upgrade().is_none());
     write_rx.recv_timeout(WAIT).unwrap().unwrap();
     writer.join().unwrap();
     let replacement = retry_lock(|| Store::open(&previous)).unwrap();

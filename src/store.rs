@@ -38,7 +38,7 @@ use log_quota::LogQuota;
 pub use online::{
     OnlineCompactionOptions, OnlineCompactionReport, OnlineReclaimError, OnlineReclaimFailure,
     OnlineReclamationFailure, OnlineReclamationFailureStage, OnlineReclamationWorker,
-    OnlineReclamationWorkerStatus, OnlineStore, RetiredCleanupStatus,
+    OnlineReclamationWorkerStatus, OnlineSnapshot, OnlineStore, RetiredCleanupStatus,
 };
 pub use retained_export::{RetainedExportLimits, SuffixExportFailure};
 
@@ -88,7 +88,7 @@ pub struct Store {
     // With this limit enabled, the exclusive write barrier serializes every
     // mutation and the counter update. It excludes allocator overhead.
     live_key_bytes: AtomicUsize,
-    snapshot_budget: Mutex<snapshot::SnapshotBudget>,
+    snapshot_budget: snapshot::SnapshotBudgetStorage,
     snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
     pub(crate) snapshot_reaper_active: AtomicBool,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
@@ -367,7 +367,7 @@ impl Store {
             max_live_keys: None,
             max_live_key_bytes: None,
             live_key_bytes: AtomicUsize::new(0),
-            snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
+            snapshot_budget: snapshot::SnapshotBudgetStorage::default(),
             snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::default()),
             snapshot_reaper_active: AtomicBool::new(false),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),

@@ -1,4 +1,3 @@
-#[cfg(target_os = "linux")]
 use database_engine::Store;
 use database_engine::{
     OnlineCompactionOptions, OnlineHandoffFailure, OnlineReclaimFailure, OnlineStore,
@@ -32,6 +31,127 @@ fn create_store(path: &std::path::Path, v2: bool) -> OnlineStore {
         })
         .unwrap();
     store
+}
+
+#[test]
+fn owned_snapshot_keeps_a_captured_store_readable_until_cancelled() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let online = create_store(&source, true);
+    let mut snapshot = online.snapshot(1, 3).unwrap();
+    online.with_store(|db| db.put(b"key", b"new")).unwrap();
+    drop(online);
+    assert_eq!(
+        snapshot
+            .as_snapshot()
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(b"latest".as_slice())
+    );
+    assert_eq!(
+        Store::open(&source).err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    snapshot.cancel();
+    snapshot.cancel();
+    assert!(snapshot.as_snapshot().is_err());
+    assert_eq!(
+        Store::open(&source)
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(b"new".as_slice())
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn owned_snapshots_read_reclaimed_logs_and_share_capacity_across_generations() {
+    use database_engine::{CollectionSchema, DocumentDatabase, DocumentSnapshot};
+    use serde_json::json;
+
+    for v2 in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let previous = root.path().join("previous");
+        let online = create_store(&source, v2);
+        online
+            .with_store(|store| {
+                store.set_snapshot_budget_limits(3, 64, 8192)?;
+                let db = DocumentDatabase::new(store);
+                db.create_collection("c", CollectionSchema::default())?;
+                db.insert("c", "id", &json!({"generation": 0}))
+            })
+            .unwrap();
+        let mut first = online.snapshot(32, 4096).unwrap();
+        let mut middle = None;
+        for value in 1..=2 {
+            online
+                .compact_and_reclaim_detailed(&previous, &OnlineCompactionOptions::default())
+                .unwrap();
+            assert!(!previous.exists());
+            online
+                .with_store(|store| {
+                    store.put(b"key", &[value])?;
+                    DocumentDatabase::new(store).replace(
+                        "c",
+                        "id",
+                        &json!({"generation": value}),
+                        false,
+                    )
+                })
+                .unwrap();
+            if value == 1 {
+                assert_eq!(
+                    online
+                        .with_store(|store| Ok(store.snapshot_budget_status()?.active))
+                        .unwrap(),
+                    1
+                );
+                middle = Some(online.snapshot(32, 4096).unwrap());
+            }
+        }
+        let second = online.snapshot(32, 4096).unwrap();
+        assert!(online.snapshot(32, 4096).is_err());
+        assert_eq!(
+            first
+                .as_snapshot()
+                .unwrap()
+                .scan(Some(b"j"), None, 1)
+                .unwrap(),
+            vec![(b"key".to_vec(), b"latest".to_vec())]
+        );
+        let documents = DocumentSnapshot::new(first.as_snapshot().unwrap());
+        assert_eq!(
+            documents.get("c", "id").unwrap(),
+            Some(json!({"generation": 0}))
+        );
+        assert_eq!(
+            second.as_snapshot().unwrap().get(b"key").unwrap(),
+            Some(vec![2])
+        );
+        let middle = middle.unwrap();
+        assert_eq!(
+            middle.as_snapshot().unwrap().get(b"key").unwrap(),
+            Some(vec![1])
+        );
+        first.cancel();
+        drop(middle);
+        assert_eq!(
+            online
+                .with_store(|store| Ok(store.snapshot_budget_status()?.active))
+                .unwrap(),
+            1
+        );
+        let another = online.snapshot(32, 4096).unwrap();
+        assert_eq!(
+            another.as_snapshot().unwrap().get(b"key").unwrap(),
+            Some(vec![2])
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]

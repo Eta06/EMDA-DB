@@ -8,7 +8,7 @@ pub use worker::{
     OnlineReclamationWorkerStatus, RetiredCleanupStatus,
 };
 
-use super::{LogQuota, Store, compact_exchange};
+use super::{LogQuota, Snapshot, Store, compact_exchange};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::fs;
@@ -87,6 +87,28 @@ pub struct OnlineStore {
     state: RwLock<State>,
     maintenance: Mutex<()>,
     reclamation_worker: AtomicBool,
+}
+
+/// An owned read-only view captured from an online store.
+///
+/// Drop or cancel it to release its reservation and captured generation.
+/// A retired log that is still open can retain disk blocks after unlink.
+pub struct OnlineSnapshot {
+    snapshot: Option<Snapshot<'static>>,
+}
+
+impl OnlineSnapshot {
+    /// Borrows the captured view for key-value or document snapshot reads.
+    pub fn as_snapshot(&self) -> io::Result<&Snapshot<'_>> {
+        self.snapshot
+            .as_ref()
+            .ok_or_else(|| io::Error::other("snapshot has been cancelled"))
+    }
+
+    /// Cancels the view and releases its resources. Later reads fail.
+    pub fn cancel(&mut self) {
+        self.snapshot = None;
+    }
 }
 
 /// Logical limits for one online compaction attempt. These are not total
@@ -247,7 +269,7 @@ impl OnlineStore {
         max_live_keys: Option<usize>,
         max_live_key_bytes: Option<usize>,
     ) -> io::Result<Self> {
-        let store = Store::open_with_resource_limits(
+        let mut store = Store::open_with_resource_limits(
             path.as_ref(),
             max_log_bytes,
             max_live_keys,
@@ -255,6 +277,7 @@ impl OnlineStore {
         )?;
         let path = fs::canonicalize(path)?;
         store._lock_file.verify_identity(&path)?;
+        store.snapshot_budget.make_shared();
         Ok(Self {
             path,
             state: RwLock::new(State {
@@ -278,6 +301,27 @@ impl OnlineStore {
             return Err(uncertain());
         }
         action(&state.store)
+    }
+
+    /// Captures a read-only snapshot that can outlive a callback or handoff.
+    /// The snapshot sees only its captured state, even after reclamation.
+    ///
+    /// Snapshot reservations share one budget across generations of this open
+    /// online store. Holding a view retains the old log descriptor and store
+    /// lock, so reclamation can remove the old name while disk blocks remain
+    /// allocated. Drop or cancel the view to release that ownership. The view
+    /// is process-local and shares the captured store's read admission and
+    /// health checks.
+    pub fn snapshot(&self, max_keys: usize, max_key_bytes: usize) -> io::Result<OnlineSnapshot> {
+        let _access = Access::enter(self as *const Self as usize)?;
+        let state = self.state.read().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        let snapshot = Store::owned_snapshot(Arc::clone(&state.store), max_keys, max_key_bytes)?;
+        Ok(OnlineSnapshot {
+            snapshot: Some(snapshot),
+        })
     }
 
     /// Creates a verified compacted sibling while ordinary callbacks continue,
@@ -658,12 +702,9 @@ impl OnlineStore {
             .set_transaction_staging_limit(current.transaction_budget_status()?.limit_bytes)?;
         candidate
             .set_active_transaction_limit(current.transaction_budget_status()?.active_limit)?;
-        let snapshot_budget = current.snapshot_budget_status()?;
-        candidate.set_snapshot_budget_limits(
-            snapshot_budget.active_limit,
-            snapshot_budget.key_limit,
-            snapshot_budget.key_byte_limit,
-        )?;
+        // Owned views may still reserve capacity on the retired generation.
+        // Keep one aggregate budget across the handoff.
+        candidate.snapshot_budget = current.snapshot_budget.clone_shared();
         candidate.set_active_direct_write_limit(current.direct_write_status().limit)?;
         current
             .direct_reads
