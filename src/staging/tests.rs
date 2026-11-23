@@ -362,6 +362,7 @@ fn retired_stage_removal_resumes_after_every_injected_interruption() {
         RetiredRemovalPoint::Base,
         RetiredRemovalPoint::Records,
         RetiredRemovalPoint::Witness,
+        RetiredRemovalPoint::RetiredFilesSync,
         RetiredRemovalPoint::Lock,
         RetiredRemovalPoint::RetiredSync,
         RetiredRemovalPoint::RetiredDirectory,

@@ -110,10 +110,10 @@ fn detailed_retired_cleanup_reports_preflight_failures_and_respects_parent_lock(
 }
 
 #[test]
-fn detailed_retired_cleanup_reports_uncertainty_at_both_directory_syncs() {
-    use crate::StagingCleanupFailure::OutcomeUnknown;
+fn detailed_retired_cleanup_reports_failure_at_each_parent_sync() {
+    use crate::StagingCleanupFailure::{NotStarted, OutcomeUnknown};
 
-    for fail_payload_sync in [false, true] {
+    for fail_sync in 1..=3 {
         let root = tempfile::tempdir().unwrap();
         let (source, previous) = paths(root.path());
         let store = OnlineStore::open(&source).unwrap();
@@ -126,34 +126,48 @@ fn detailed_retired_cleanup_reports_uncertainty_at_both_directory_syncs() {
             .find(|path| path.extension().is_some_and(|ext| ext == "owner"))
             .unwrap();
         let live_bytes = fs::read(source.join("records.log")).unwrap();
+        let retired_bytes = fs::read(retired.join("records.log")).unwrap();
+        let mut payload_syncs = 0;
         let error = store.cleanup_retired_staging_using(
             &Default::default(),
             |file| {
-                if fail_payload_sync {
+                payload_syncs += 1;
+                if fail_sync == payload_syncs {
                     Err(io::Error::other("injected payload sync error"))
                 } else {
                     file.sync_all()
                 }
             },
             |file| {
-                if fail_payload_sync {
-                    file.sync_all()
-                } else {
+                if fail_sync == 3 {
                     Err(io::Error::other("injected parent sync error"))
+                } else {
+                    file.sync_all()
                 }
             },
         );
-        assert!(
-            matches!(error, Err(OutcomeUnknown(ref cause)) if cause.to_string().contains("injected"))
-        );
-        assert!(!retired.exists());
-        assert_eq!(marker.exists(), fail_payload_sync);
+        if fail_sync == 1 {
+            assert!(
+                matches!(error, Err(NotStarted(ref cause)) if cause.to_string().contains("injected"))
+            );
+            assert_eq!(
+                fs::read(retired.join("records.log")).unwrap(),
+                retired_bytes
+            );
+            assert!(retired.join("store.lock").is_file());
+        } else {
+            assert!(
+                matches!(error, Err(OutcomeUnknown(ref cause)) if cause.to_string().contains("injected"))
+            );
+            assert!(!retired.exists());
+        }
+        assert_eq!(marker.exists(), fail_sync != 3);
         assert_eq!(fs::read(source.join("records.log")).unwrap(), live_bytes);
         let retry = store
             .cleanup_retired_staging_detailed(&Default::default())
             .unwrap();
-        assert_eq!(retry.removed_payloads, 0);
-        assert_eq!(retry.removed_markers, usize::from(fail_payload_sync));
+        assert_eq!(retry.removed_payloads, usize::from(fail_sync == 1));
+        assert_eq!(retry.removed_markers, usize::from(fail_sync != 3));
         assert!(!marker.exists());
     }
 }

@@ -211,6 +211,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   before removal, synchronization failure with only a marker present, and
   both parent sync boundaries after removal has begun. The ordinary cleanup
   method still returns its original I/O error to existing callers.
+- [x] Make ordinary retired-store removal synchronize the staged move before
+  the first unlink and data-file removal before unlinking the lock. The
+  [Linux ext4 campaign](../benchmarks/results/2026-11-23-online-reclamation-order/README.md)
+  verifies the new failure boundaries on V2 and V3 starting stores.
 - [x] Add opt-in structured outcomes for offline managed-selection rebuild,
   including the limited variant. The result distinguishes checkpoint and
   selection publication attempts; full-log recovery can still adopt an

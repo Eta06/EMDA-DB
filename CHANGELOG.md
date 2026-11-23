@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Synchronize the move of a retired ordinary store before unlinking its
+  contents, including on cleanup retry. Persist data-file removal before
+  unlinking its lock.
+
 - Retain only projected fields in document query windows after evaluating
   the filter and sort keys on the complete document.
 

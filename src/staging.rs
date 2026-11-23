@@ -748,11 +748,14 @@ fn cleanup_locked(
                 } else {
                     None
                 };
-                before_remove()?;
-                if kind == Kind::Retained {
+                if kind.is_retired() {
+                    // The initial move may have been interrupted before either
+                    // directory was synchronized. Preserve the old files
+                    // until the move is durable.
                     File::open(&payload)?.sync_all()?;
                     sync_payload_removal()?;
                 }
+                before_remove()?;
                 match kind {
                     Kind::File => fs::remove_file(&payload)?,
                     Kind::Directory => fs::remove_dir_all(&payload)?,
@@ -787,6 +790,7 @@ enum RetiredRemovalPoint {
     Base,
     Records,
     Witness,
+    RetiredFilesSync,
     Lock,
     RetiredSync,
     RetiredDirectory,
@@ -812,9 +816,10 @@ fn remove_retired_stage(
             if kind == Kind::Retired && point == RetiredRemovalPoint::Base {
                 continue;
             }
-            if kind == Kind::Retained && point == RetiredRemovalPoint::Lock {
+            if point == RetiredRemovalPoint::Lock {
                 // Keep the lock name recoverable until the file removal is durable.
                 File::open(&retired)?.sync_all()?;
+                hook(RetiredRemovalPoint::RetiredFilesSync)?;
             }
             match fs::remove_file(retired.join(name)) {
                 Ok(()) => {}

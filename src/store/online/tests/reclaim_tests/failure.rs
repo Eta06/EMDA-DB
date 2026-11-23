@@ -5,8 +5,11 @@ fn every_reclamation_failure_keeps_the_synchronized_live_store_usable() {
     for fail_at in [
         reclaim::Point::BeforeMove,
         reclaim::Point::AfterMove,
+        reclaim::Point::AfterMoveStageSync,
+        reclaim::Point::AfterMoveParentSync,
         reclaim::Point::AfterRecords,
         reclaim::Point::AfterWitness,
+        reclaim::Point::AfterRetiredFilesSync,
         reclaim::Point::AfterLock,
         reclaim::Point::AfterRetiredSync,
         reclaim::Point::AfterRetiredRemoval,

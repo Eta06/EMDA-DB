@@ -8,8 +8,11 @@ use std::path::Path;
 pub(super) enum Point {
     BeforeMove,
     AfterMove,
+    AfterMoveStageSync,
+    AfterMoveParentSync,
     AfterRecords,
     AfterWitness,
+    AfterRetiredFilesSync,
     AfterLock,
     AfterRetiredSync,
     AfterRetiredRemoval,
@@ -73,10 +76,18 @@ pub(super) fn retire(
         hook(Point::AfterMove)?;
         retired._lock_file.verify_identity(&hidden)?;
         compact_exchange::source_directory_is_owned(&hidden)?;
+        // Persist both sides of the move before modifying the old store.
+        fs::File::open(stage.path())?.sync_all()?;
+        hook(Point::AfterMoveStageSync)?;
+        fs::File::open(parent)?.sync_all()?;
+        hook(Point::AfterMoveParentSync)?;
         fs::remove_file(hidden.join("records.log"))?;
         hook(Point::AfterRecords)?;
         remove_optional(&hidden.join("commit.state"))?;
         hook(Point::AfterWitness)?;
+        // A retry needs the lock name whenever data files can reappear.
+        fs::File::open(&hidden)?.sync_all()?;
+        hook(Point::AfterRetiredFilesSync)?;
         fs::remove_file(hidden.join("store.lock"))?;
         hook(Point::AfterLock)?;
         fs::File::open(&hidden)?.sync_all()?;

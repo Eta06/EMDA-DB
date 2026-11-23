@@ -11,8 +11,11 @@ fn online_reclaim_kill_child() {
     let selected = match selected.as_str() {
         "before-move" => reclaim::Point::BeforeMove,
         "after-move" => reclaim::Point::AfterMove,
+        "after-move-stage-sync" => reclaim::Point::AfterMoveStageSync,
+        "after-move-parent-sync" => reclaim::Point::AfterMoveParentSync,
         "after-records" => reclaim::Point::AfterRecords,
         "after-witness" => reclaim::Point::AfterWitness,
+        "after-retired-files-sync" => reclaim::Point::AfterRetiredFilesSync,
         "after-lock" => reclaim::Point::AfterLock,
         "after-retired-sync" => reclaim::Point::AfterRetiredSync,
         "after-retired-removal" => reclaim::Point::AfterRetiredRemoval,
@@ -49,8 +52,11 @@ fn process_kill_at_each_reclamation_boundary_preserves_acknowledged_data() {
     for point in [
         "before-move",
         "after-move",
+        "after-move-stage-sync",
+        "after-move-parent-sync",
         "after-records",
         "after-witness",
+        "after-retired-files-sync",
         "after-lock",
         "after-retired-sync",
         "after-retired-removal",

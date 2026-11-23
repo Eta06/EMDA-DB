@@ -218,7 +218,10 @@ fn failed_payload_sync_keeps_marker_for_generic_and_retired_cleanup() {
         let error = cleanup_selected_with_syncs(
             root.path(),
             retired.then_some((Kind::Retired, &id)),
-            |_| {
+            |directory| {
+                if retired && payload.exists() {
+                    return directory.sync_all();
+                }
                 assert!(!payload.exists());
                 assert!(marker.exists());
                 Err(io::Error::other("injected payload sync failure"))
