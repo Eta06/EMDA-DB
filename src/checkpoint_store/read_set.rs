@@ -27,12 +27,38 @@ pub(super) struct Range {
 }
 
 impl Range {
+    fn contains(&self, key: &[u8]) -> bool {
+        self.after.as_deref().is_none_or(|after| after < key)
+            && self.before.as_deref().is_none_or(|before| key < before)
+    }
+
     fn covers(&self, after: Option<&[u8]>, before: Option<&[u8]>) -> bool {
         self.after.as_deref() <= after
             && self
                 .before
                 .as_deref()
                 .is_none_or(|upper| before.is_some_and(|before| before <= upper))
+    }
+
+    fn key(&self, index: usize) -> &[u8] {
+        let start = index
+            .checked_sub(1)
+            .map_or(0, |previous| self.entries[previous].end);
+        &self.keys[start..self.entries[index].end]
+    }
+
+    fn observed_location(&self, key: &[u8]) -> Option<GenerationLocation> {
+        let mut low = 0;
+        let mut high = self.entries.len();
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match self.key(middle).cmp(key) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return Some(self.entries[middle].location),
+            }
+        }
+        None
     }
 
     pub(super) fn visit_entries(
@@ -110,8 +136,14 @@ impl ReadSet {
             generation: log_generation,
             location,
         });
-        if let Some(previous) = self.points.get(key) {
-            if *previous != location {
+        let observed = self.points.get(key).copied().or_else(|| {
+            self.ranges
+                .iter()
+                .find(|range| range.contains(key))
+                .map(|range| range.observed_location(key))
+        });
+        if let Some(previous) = observed {
+            if previous != location {
                 self.conflicted = true;
                 return Err(conflict());
             }
@@ -263,12 +295,7 @@ impl ReadSet {
                             "checkpoint transaction validation work limit exceeded",
                         ));
                     }
-                    let start = if index == 0 {
-                        0
-                    } else {
-                        range.entries[index - 1].end
-                    };
-                    if &range.keys[start..previous.end] != key
+                    if range.key(index) != key
                         || previous.location
                             != (GenerationLocation {
                                 generation: state.log_generation,

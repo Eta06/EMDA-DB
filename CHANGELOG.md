@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse checkpoint transaction range observations for point reads inside
+  those ranges, including missing keys.
+
 - Reuse a checkpoint transaction's existing range observation for later pages
   within the same bounds. Each page still verifies the checkpoint blocks it reads.
 

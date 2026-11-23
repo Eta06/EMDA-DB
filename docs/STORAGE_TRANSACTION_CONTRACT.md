@@ -196,6 +196,10 @@ when it contains the entire new requested range. Later pages still verify
 the checkpoint blocks they read and merge the transaction's staged changes.
 A wider request requires its own observation. The original dependency still
 covers unread keys and gaps when the transaction revalidates.
+Point reads strictly inside an observed range also use that dependency.
+The point lookup still checks any checkpoint block it reads and compares
+its location or absence with the captured range. The exclusive endpoints
+require their own point observation.
 
 `DocumentDatabase::transaction_with_read_limits` can additionally cap
 cumulative logical point and scan reads inside a detailed transaction.

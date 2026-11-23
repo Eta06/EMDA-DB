@@ -186,8 +186,10 @@ fn repeated_scan_rechecks_checkpoint_after_using_new_range_with_staged_entries()
         file.write_all_at(&[byte[0] ^ 1], entry_start)?;
         let repeated = tx.scan(None, None, 2);
         let narrower = tx.scan(Some(b"b"), None, 1);
+        let point = tx.get(b"c");
         file.write_all_at(&byte, entry_start)?;
         assert_eq!(narrower.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(point.unwrap_err().kind(), io::ErrorKind::InvalidData);
         repeated
     });
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
@@ -366,6 +368,18 @@ fn full_range_key_byte_limit_counts_observed_keys_and_bounds() {
                 after = Some(keys[seen - 1].as_slice());
             }
             assert_eq!(seen, count - 1);
+            let reserved = store.transaction_budget_status()?.reserved_bytes;
+            for key in [&keys[0], &keys[count / 2], &keys[count - 2]] {
+                assert_eq!(tx.get(key)?.as_deref(), Some(b"v".as_slice()));
+            }
+            assert_eq!(tx.get(b"\0\0\0\0")?, None);
+            assert_eq!(store.transaction_budget_status()?.reserved_bytes, reserved);
+            assert!(
+                tx.get(&keys[count - 1])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("read-set limit exceeded")
+            );
             Ok(())
         })
         .unwrap();
@@ -414,5 +428,30 @@ fn covering_ranges_preserve_phantom_checks_and_never_cover_wider_bounds() {
         assert!(database_engine::is_transaction_conflict(
             &result.unwrap_err()
         ));
+    }
+}
+
+#[test]
+fn covered_point_reads_keep_gaps_and_exclusive_range_boundaries_correct() {
+    let (_dir, store) = fixture();
+    for (key, original) in [(b"a", Some(b"old".as_slice())), (b"b", None), (b"d", None)] {
+        let result = store.transaction_with_read_set(|tx| {
+            tx.scan(Some(b"a"), Some(b"d"), 1)?;
+            let before_point = store.transaction_budget_status()?.reserved_bytes;
+            assert_eq!(tx.get(key)?.as_deref(), original);
+            let after_point = store.transaction_budget_status()?.reserved_bytes;
+            if key == b"b" {
+                assert_eq!(before_point, after_point);
+            } else {
+                assert!(after_point > before_point);
+            }
+            tx.put(b"receipt", b"must not commit")?;
+            store.put(key, b"changed")?;
+            Ok(())
+        });
+        assert!(database_engine::is_transaction_conflict(
+            &result.unwrap_err()
+        ));
+        assert_eq!(store.get(b"receipt").unwrap(), None);
     }
 }
