@@ -154,13 +154,60 @@ fn bounded_suffix_live_key_limit_covers_the_trusted_peak_and_batch_prefixes() {
                 &path, &output, &base, &digest, limits, max,
             )
         };
-        for max in [1, 2] {
+        let superseded = b"removed from the base";
+        let offset = log
+            .windows(superseded.len())
+            .position(|bytes| bytes == superseded)
+            .unwrap();
+        let log_file = OpenOptions::new()
+            .write(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        log_file
+            .write_all_at(&[log[offset] ^ 1], offset as u64)
+            .unwrap();
+        log_file.sync_all().unwrap();
+        let damaged = fs::read(path.join("records.log")).unwrap();
+        for (max, kind, message) in [
+            (
+                1,
+                io::ErrorKind::InvalidInput,
+                "recovery live key limit would be exceeded by checkpoint history",
+            ),
+            (
+                3,
+                io::ErrorKind::InvalidData,
+                "checkpoint does not match log prefix",
+            ),
+        ] {
+            assert!(matches!(
+                rebuild(max),
+                Err(ManagedRebuildFailure::NotPublished(error))
+                    if error.kind() == kind && error.to_string() == message
+            ));
+            assert_eq!(witness_bytes(&path), prior_witness);
+            assert_eq!(fs::read(path.join("records.log")).unwrap(), damaged);
+            assert!(!output.exists());
+            assert!(!path.join("checkpoint.selection").exists());
+            assert_no_stages(&path);
+        }
+        log_file
+            .write_all_at(&[log[offset]], offset as u64)
+            .unwrap();
+        log_file.sync_all().unwrap();
+        for (max, message) in [
+            (
+                1,
+                "recovery live key limit would be exceeded by checkpoint history",
+            ),
+            (2, "rebuild historical live key limit exceeded"),
+        ] {
             assert!(
                 matches!(
                     rebuild(max),
                     Err(ManagedRebuildFailure::NotPublished(error))
                         if error.kind() == io::ErrorKind::InvalidInput
-                        && error.to_string() == "rebuild historical live key limit exceeded"
+                        && error.to_string() == message
                 ),
                 "ceiling {max} must reject an earlier peak"
             );

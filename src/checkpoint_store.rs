@@ -382,7 +382,7 @@ impl CheckpointStore {
             &digest,
             lock,
             checkpoint_view,
-            max_log_bytes,
+            (max_log_bytes, None),
             crate::checkpoint_view::TailAdmission::Bounded(max_tail_bytes),
         )?;
         let (mut view, adoption_digest) = RecoveredCheckpointView::from_base_for_writer(

@@ -314,6 +314,8 @@ maintenance operations remain separate.
 The bounded suffix rebuild variant with a live-key limit checks the
 trusted checkpoint's historical peak and every ordered suffix mutation
 before witness advancement. This includes intermediate DB02 children.
+An over-limit checkpoint header can reject before scanning the index or
+hashing the covered log. Admitted checkpoints still undergo full verification.
 The limit covers logical live-key count. Historical key-byte limits still
 require full-log replay because the trusted checkpoint has no byte peak.
 

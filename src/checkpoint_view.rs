@@ -202,7 +202,7 @@ impl CheckpointView {
             trusted_digest,
             lock_file,
             limits,
-            max_log_bytes,
+            (max_log_bytes, None),
             tail,
         )
         .map(|(view, _)| view)
@@ -222,7 +222,7 @@ impl CheckpointView {
             trusted_digest,
             lock_file,
             limits,
-            None,
+            (None, None),
             TailAdmission::Unrestricted,
         )
         .map(|(view, _)| view)
@@ -234,7 +234,7 @@ impl CheckpointView {
         trusted_digest: &[u8; 32],
         lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
-        max_log_bytes: Option<u64>,
+        (max_log_bytes, max_live_keys): (Option<u64>, Option<usize>),
         tail: TailAdmission,
     ) -> io::Result<(Self, Sha256)> {
         limits.validate()?;
@@ -258,9 +258,9 @@ impl CheckpointView {
             boundary,
             trusted_digest,
             checkpoint::IndexAdmission {
+                max_live_keys,
                 max_file_bytes: Some(limits.max_file_bytes),
                 max_tail_bytes,
-                ..Default::default()
             },
             |offset, key_len, key, tail, _| {
                 let size = key_len.len() + key.len() + tail.len();

@@ -543,6 +543,8 @@ impl CheckpointStore {
     /// ceiling on historical live keys. The trusted base's recorded peak
     /// and every ordered suffix mutation, including intermediate DB02
     /// children, must fit before the witness or selection can advance.
+    /// An over-limit checkpoint header can reject before the base body or
+    /// covered log is read. Admitted checkpoints still undergo full verification.
     /// This bounds live key count. The checkpoint format does not record
     /// historical key bytes, and the separate spill limits still apply.
     pub fn rebuild_managed_selection_bounded_with_live_key_limit(
@@ -717,7 +719,7 @@ impl CheckpointStore {
                     digest,
                     lock_file.clone(),
                     limits.base_checkpoint_limits,
-                    limits.max_log_bytes,
+                    (limits.max_log_bytes, limits.max_live_keys),
                     crate::checkpoint_view::TailAdmission::Unrestricted,
                 )?;
                 (Some(view), prefix_hash)
