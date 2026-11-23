@@ -175,7 +175,7 @@ fn repeated_scan_rechecks_checkpoint_after_using_new_range_with_staged_entries()
             ],
         );
         // The change does not touch the live log or advance its generation.
-        // Repeating the scan must still verify this checkpoint block again.
+        // Both the original range and a covered page must recheck the block.
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -185,7 +185,9 @@ fn repeated_scan_rechecks_checkpoint_after_using_new_range_with_staged_entries()
         file.read_exact_at(&mut byte, entry_start)?;
         file.write_all_at(&[byte[0] ^ 1], entry_start)?;
         let repeated = tx.scan(None, None, 2);
+        let narrower = tx.scan(Some(b"b"), None, 1);
         file.write_all_at(&byte, entry_start)?;
+        assert_eq!(narrower.unwrap_err().kind(), io::ErrorKind::InvalidData);
         repeated
     });
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
@@ -349,7 +351,21 @@ fn full_range_key_byte_limit_counts_observed_keys_and_bounds() {
     // One bound and 2,047 observed keys exactly fill the byte allowance.
     store
         .transaction_with_read_set(|tx| {
-            assert_eq!(tx.scan(None, Some(&keys[count - 1]), 1)?.len(), 1);
+            let mut after = None;
+            let mut seen = 0;
+            loop {
+                let page = tx.scan(after, Some(&keys[count - 1]), 256)?;
+                if page.is_empty() {
+                    break;
+                }
+                for (key, value) in &page {
+                    assert_eq!(key, &keys[seen]);
+                    assert_eq!(value, b"v");
+                    seen += 1;
+                }
+                after = Some(keys[seen - 1].as_slice());
+            }
+            assert_eq!(seen, count - 1);
             Ok(())
         })
         .unwrap();
@@ -361,4 +377,42 @@ fn full_range_key_byte_limit_counts_observed_keys_and_bounds() {
             .contains("range observation limit")
     );
     store.put(b"later", b"ok").unwrap();
+}
+
+#[test]
+fn covering_ranges_preserve_phantom_checks_and_never_cover_wider_bounds() {
+    let (_dir, store) = fixture();
+    let result = store.transaction_with_read_set(|tx| {
+        let first = tx.scan(None, None, 1)?;
+        assert_eq!(first[0].0, b"a");
+        tx.delete(b"c")?;
+        tx.put(b"b", b"staged")?;
+        let second = tx.scan(Some(b"a"), Some(b"d"), 1)?;
+        assert_eq!(second, [(b"b".to_vec(), b"staged".to_vec())]);
+        store.put(b"z", b"phantom outside the second page")?;
+        Ok(())
+    });
+    assert!(database_engine::is_transaction_conflict(
+        &result.unwrap_err()
+    ));
+    assert_eq!(store.get(b"b").unwrap(), None);
+    assert_eq!(
+        store.get(b"c").unwrap().as_deref(),
+        Some(b"base".as_slice())
+    );
+
+    for (after, before, outside) in [
+        (None, Some(b"d".as_slice()), b"a".as_slice()),
+        (Some(b"a".as_slice()), None, b"z".as_slice()),
+    ] {
+        let result = store.transaction_with_read_set(|tx| {
+            tx.scan(Some(b"a"), Some(b"d"), 1)?;
+            tx.scan(after, before, 1)?;
+            store.put(outside, b"new version")?;
+            Ok(())
+        });
+        assert!(database_engine::is_transaction_conflict(
+            &result.unwrap_err()
+        ));
+    }
 }

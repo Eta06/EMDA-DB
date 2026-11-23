@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse a checkpoint transaction's existing range observation for later pages
+  within the same bounds. Each page still verifies the checkpoint blocks it reads.
+
 - Optionally limit cumulative document transaction reads by logical operation
   count and bytes. An exceeded limit discards the transaction's staged writes.
 

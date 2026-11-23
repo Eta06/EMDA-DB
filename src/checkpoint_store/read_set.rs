@@ -27,6 +27,14 @@ pub(super) struct Range {
 }
 
 impl Range {
+    fn covers(&self, after: Option<&[u8]>, before: Option<&[u8]>) -> bool {
+        self.after.as_deref() <= after
+            && self
+                .before
+                .as_deref()
+                .is_none_or(|upper| before.is_some_and(|before| before <= upper))
+    }
+
     pub(super) fn visit_entries(
         &self,
         mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
@@ -137,11 +145,10 @@ impl ReadSet {
         if self.conflicted {
             return Err(conflict());
         }
-        if self
-            .ranges
-            .iter()
-            .any(|range| range.after.as_deref() == after && range.before.as_deref() == before)
-        {
+        // A later page often starts farther into the same observed range.
+        // The existing dependency already validates every key and gap in
+        // the narrower request against the current state.
+        if self.ranges.iter().any(|range| range.covers(after, before)) {
             return Ok(None);
         }
         let bounds_bytes = after.map_or(0, <[u8]>::len) + before.map_or(0, <[u8]>::len);

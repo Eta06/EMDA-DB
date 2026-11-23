@@ -236,7 +236,8 @@ impl CheckpointTransaction<'_> {
         if let Some(range) = recorded {
             range.visit_entries(merge)?;
         } else {
-            // A previously observed range still needs fresh block checks.
+            // A range covered by a prior observation still needs fresh
+            // block checks for the entries read by this page.
             state.view.visit_entries(after, before, merge)?;
         }
         if !stopped {

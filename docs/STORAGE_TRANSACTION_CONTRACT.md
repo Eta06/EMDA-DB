@@ -191,6 +191,12 @@ maintenance operations remain separate.
 
 ### Isolation, snapshots, and interfaces
 
+Checkpoint read-set transactions reuse a prior complete range observation
+when it contains the entire new requested range. Later pages still verify
+the checkpoint blocks they read and merge the transaction's staged changes.
+A wider request requires its own observation. The original dependency still
+covers unread keys and gaps when the transaction revalidates.
+
 `DocumentDatabase::transaction_with_read_limits` can additionally cap
 cumulative logical point and scan reads inside a detailed transaction.
 A limit error aborts staged changes even if the callback returns success.
