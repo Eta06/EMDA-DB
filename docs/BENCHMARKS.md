@@ -2,6 +2,51 @@
 
 A local comparison harness covers ten engines and six byte-key workloads; no general competitive performance claim has been established. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
 
+## Competitor benchmark records
+
+Keep every competitor speed-test attempt, including warmups when the
+driver records them, measurement samples, smoke runs, errors,
+interruptions, and runs later ruled invalid. Give each workload a stable
+name and each attempt a new directory. Keep historical results under
+[`benchmarks/results`](../benchmarks/results). A retry gets a new attempt
+directory and can reference the earlier attempt in its report.
+
+Use the recorder around the existing benchmark driver. Give the driver
+its own sample file or phase subdirectory inside the attempt directory.
+For example, after building the release example:
+
+```sh
+case_dir=benchmarks/results/2026-11-24-retained-compare-attempt-01
+python3 -m scripts.benchmarks.record_case \
+  --directory "$case_dir" --case retained-recovery-sqlite -- \
+  python3 examples/authorized_recovery_bench.py \
+    target/release/examples/authorized_recovery_bench "$case_dir/phases" \
+    1048576 6 --sqlite --wide-suffix
+```
+
+The recorder saves the command, source revision, tracked-change status,
+platform, times and exit outcome in `attempt.json` and the original
+combined output in `command.log`. Abrupt termination of the recorder can
+leave the initial `running` record and partial output. Preserve both and
+label the attempt interrupted when reporting it. Supply credentials via
+the driver's documented environment handling, since arguments are recorded.
+Review output for secrets before archiving or uploading.
+
+Preserve the driver's per-case raw results and verification status along
+with the recorder files. Include engine versions and settings, durability
+mode, fixture and seed, workload size, concurrency, repetitions and order,
+filesystem, cache conditions and binary hashes. Include a source diff for
+an uncommitted comparison. Record why any sample is ineligible for a
+summary, keeping the original values and logs. A summary table cannot
+replace the raw results. Retain measured CI artifacts in the repository
+before the provider's artifact retention period expires.
+
+Existing comparisons are linked throughout this page. Start with the
+[ten-engine matrix](LOCAL_COMPARISON_2026_11_03.md), the
+[million-key recovery and restore comparison](../benchmarks/results/2026-11-23-million-key-authorized-restore/README.md),
+the [larger-suffix recovery comparison](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md),
+and the [compound range comparison](COMPOUND_RANGE_CURRENT_2026_11_05.md).
+
 ## macOS small-write comparison with SQLite
 
 The [36 raw runs](../benchmarks/results/2026-11-23-macos-kv-sqlite.json)

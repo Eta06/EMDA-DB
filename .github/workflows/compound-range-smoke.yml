@@ -28,6 +28,7 @@ run-name: Compound range cross-engine ${{ inputs.comparison_scale || 'smoke' }}
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
       - "scripts/tests/test_compound_range_external_compare.py"
+      - "scripts/tests/test_record_benchmark_case.py"
       - "scripts/tests/test_large_crash_compare.py"
       - "src/**"
   pull_request:
@@ -46,6 +47,7 @@ run-name: Compound range cross-engine ${{ inputs.comparison_scale || 'smoke' }}
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
       - "scripts/tests/test_compound_range_external_compare.py"
+      - "scripts/tests/test_record_benchmark_case.py"
       - "scripts/tests/test_large_crash_compare.py"
       - "src/**"
 
@@ -89,13 +91,20 @@ jobs:
           if [[ "$COMPARISON_SCALE" == measured ]]; then
             workload=(--cases 100:10,1000:10,1000:100 --rounds 4 --cycles 50)
           fi
-          "$RUNNER_TEMP/benchmark-venv/bin/python" scripts/compound_range_external_compare.py \
+          driver="$RUNNER_TEMP/benchmark-venv/bin/python"
+          range_case="$RUNNER_TEMP/compound-range-$COMPARISON_SCALE"
+          "$driver" -m scripts.benchmarks.record_case \
+            --directory "$range_case" --case "compound-range-$COMPARISON_SCALE" -- \
+            "$driver" scripts/compound_range_external_compare.py \
             --directory "$RUNNER_TEMP" --binary target/release/examples/compound_range_query_bench \
-            --output "$RUNNER_TEMP/compound-range-$COMPARISON_SCALE.json" "${workload[@]}" \
+            --output "$range_case/samples.json" "${workload[@]}" \
             --driver-cpus "$driver_cpu" --server-cpus "$server_cpu"
           cargo +stable build --release --locked --example network_bench_server --example index_memory_bench --example sqlite_restart_write_bench
-          "$RUNNER_TEMP/benchmark-venv/bin/python" scripts/large_crash_compare.py \
-            --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/large-crash-smoke.json" \
+          crash_case="$RUNNER_TEMP/large-crash-smoke"
+          "$driver" -m scripts.benchmarks.record_case \
+            --directory "$crash_case" --case large-crash-smoke -- \
+            "$driver" scripts/large_crash_compare.py \
+            --directory "$RUNNER_TEMP" --output "$crash_case/samples.json" \
             --keys 128 --client-cpus "$driver_cpu" --server-cpus "$server_cpu"
       - name: Preserve comparison report
         if: always()
@@ -103,6 +112,8 @@ jobs:
         with:
           name: compound-range-cross-engine-${{ inputs.comparison_scale || 'smoke' }}
           path: |
-            ${{ runner.temp }}/compound-range-*.json
-            ${{ runner.temp }}/large-crash-smoke.json
+            ${{ runner.temp }}/compound-range-*/attempt.json
+            ${{ runner.temp }}/compound-range-*/command.log
+            ${{ runner.temp }}/compound-range-*/samples.json
+            ${{ runner.temp }}/large-crash-smoke/
           if-no-files-found: ignore
