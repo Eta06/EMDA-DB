@@ -355,6 +355,5 @@ fn concurrent_transactions_batches_and_reads_match_a_serial_history_and_recovery
     );
 }
 
-#[cfg(target_os = "linux")]
 #[path = "transaction_model/long_history.rs"]
 mod long_history;

@@ -238,6 +238,5 @@ fn mixed_checkpoint_histories_match_a_serial_model_after_recovery() {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[path = "checkpoint_transaction_model/long_history.rs"]
 mod long_history;

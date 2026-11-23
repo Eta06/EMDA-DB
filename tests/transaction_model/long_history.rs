@@ -24,12 +24,19 @@ fn transaction_windows_compose_across_reopens() {
     let windows = std::env::var("EMDA_LONG_TRANSACTION_WINDOWS")
         .map(|value| value.parse::<usize>().expect("invalid window count"))
         .unwrap_or(64);
-    assert!((1..=256).contains(&windows));
+    assert!((1..=1024).contains(&windows));
     let mut committed = 0;
     let mut conflicts = 0;
     let mut comparisons = [0_usize; 2];
     let mut recovery_checks = 0;
-    for v2 in [true, false] {
+    // The V3 metadata witness requires Linux. Both platforms exercise
+    // the persistent V2 fixture, with and without the writer's key caps.
+    let formats: &[bool] = if cfg!(target_os = "linux") {
+        &[true, false]
+    } else {
+        &[true]
+    };
+    for &v2 in formats {
         for capped in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let path = root.path().join("store");
@@ -122,8 +129,8 @@ fn transaction_windows_compose_across_reopens() {
     }
     eprintln!(
         "windows={} operations={} recovery_checks={} committed={} conflicts={} compare_mismatch={} compare_success={}",
-        windows * 4,
-        windows * 4 * MODEL_OPERATIONS.len(),
+        windows * formats.len() * 2,
+        windows * formats.len() * 2 * MODEL_OPERATIONS.len(),
         recovery_checks,
         committed,
         conflicts,

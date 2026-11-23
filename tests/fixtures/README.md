@@ -20,3 +20,22 @@ normal Git checkout does not preserve file xattrs. The fixture is synthetic and
 contains no production data. A successful fixture test checks compatibility
 with these bytes only; it does not establish downgrade or future compatibility,
 physical power-loss safety, or support on filesystems without the required xattr.
+
+The `retained-v1-*` fixture was created on macOS APFS by revision
+`23b5964d5576a35e9f7867e76778c985b7b277c1`. Its standalone
+`EMDALOG4`/`EMDARW01` generation holds a base with `a=old` and
+`retired=old`. The witnessed suffix first changes `a` to `new`, then
+deletes `retired` and inserts a binary key and an empty value in an
+atomic batch. The binding records the candidate header (112 bytes),
+candidate witness (32 bytes), and base digest (32 bytes) separately
+from the generation's writable witness.
+
+- `retained-v1-base` SHA-256 `2d2209dc7bda132783b6e27030daa66d9d81b800048fc209faced2ddb1e1947e`
+- `retained-v1-binding.bin` SHA-256 `bb6c8e6c3d5d002de794cf6dc3fec6100629afe9450bc9f63dfd18211bbd7c56`
+- `retained-v1-commit.state` SHA-256 `cea776b72ab1304d7e4da8ff9ab9b05699637335c63f28e1b4dcb308958b4908`
+- `retained-v1-records.log` SHA-256 `d33857ab551cd5ffff77483b380774701249f6c0c73d5a192b24920044c49be9`
+
+The test makes an empty cooperating lock file, checks that the ordinary
+store rejects the format, then opens the retained generation without
+changing its bytes. It appends another batch and verifies the new state
+after reopen. This fixture covers standalone retained generations.
