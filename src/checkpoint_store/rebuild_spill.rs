@@ -41,6 +41,49 @@ const MAX_ENTRY_ON_DISK: usize = 2 + MAX_SPILL_KEY_LEN + TAIL_LEN + ENTRY_CRC_LE
 const ENTRY_OVERHEAD: u64 = 2 + TAIL_LEN as u64 + ENTRY_CRC_LEN as u64;
 const CHECKSUM_LEN: u64 = 32;
 const OFFSET_LEN: u64 = 8;
+
+#[cfg(test)]
+pub(super) mod corruption {
+    use super::{Cell, Path};
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::checkpoint_store) enum Point {
+        SidecarFlushed,
+        MergeVerified,
+    }
+
+    type Fault = (Point, fn(&Path));
+
+    thread_local! {
+        static FAULT: Cell<Option<Fault>> = const { Cell::new(None) };
+    }
+
+    pub(in crate::checkpoint_store) fn with_fault<T>(
+        point: Point,
+        damage: fn(&Path),
+        run: impl FnOnce() -> T,
+    ) -> T {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FAULT.set(None);
+            }
+        }
+
+        assert!(FAULT.replace(Some((point, damage))).is_none());
+        let _reset = Reset;
+        let result = run();
+        assert!(FAULT.get().is_none(), "did not reach {point:?}");
+        result
+    }
+
+    pub(super) fn apply(point: Point, path: &Path) {
+        if let Some((_, damage)) = FAULT.get().filter(|(target, _)| *target == point) {
+            FAULT.set(None);
+            damage(path);
+        }
+    }
+}
 const IO_BUFFER: usize = 8 * 1024;
 
 /// Largest distinct-key chunk a caller may request.
@@ -523,7 +566,10 @@ impl RunWriter {
             .ok_or_else(|| io::Error::other("spill size overflow"))?;
         self.offsets.flush()?;
         #[cfg(test)]
-        crate::test_support::pause_bounded_rebuild("spill-sidecar-flushed")?;
+        {
+            corruption::apply(corruption::Point::SidecarFlushed, &self.offset_path);
+            crate::test_support::pause_bounded_rebuild("spill-sidecar-flushed")?;
+        }
         self.offsets.get_mut().seek(SeekFrom::Start(0))?;
         let mut buffer = [0_u8; IO_BUFFER];
         let mut remaining = table_bytes;
@@ -861,7 +907,10 @@ impl SpillSession {
         let mut merged = self.write_merge(first, count, key_bytes)?;
         merged.level = level;
         #[cfg(test)]
-        crate::test_support::pause_bounded_rebuild("spill-merge-written")?;
+        {
+            corruption::apply(corruption::Point::MergeVerified, &merged.path);
+            crate::test_support::pause_bounded_rebuild("spill-merge-written")?;
+        }
         if merged.bytes != run_len(count, key_bytes)? {
             let _ = fs::remove_file(&merged.path);
             return Err(record::invalid_data("merged spill run length mismatch"));

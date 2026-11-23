@@ -1854,6 +1854,143 @@ mod tests {
         }
     }
 
+    #[test]
+    fn corrupt_spill_intermediates_preserve_source_and_allow_exact_retry() {
+        use crate::checkpoint_store::rebuild_spill::corruption::{Point, with_fault};
+
+        for v2 in [true, false] {
+            for full in [true, false] {
+                for (point, damage, expected_error) in [
+                    (
+                        Point::SidecarFlushed,
+                        damage_flushed_spill_offset as fn(&Path),
+                        "spill run entry offset is not packed",
+                    ),
+                    (
+                        Point::MergeVerified,
+                        damage_verified_spill_digest as fn(&Path),
+                        "spill run checksum mismatch",
+                    ),
+                ] {
+                    let Some(case) = prepare_unacknowledged_tail(v2) else {
+                        break;
+                    };
+                    let store = retry(|| Store::open(&case.path)).unwrap();
+                    let initial =
+                        selection::Selection::new(case.base.clone(), case.digest).unwrap();
+                    selection::publish(&case.path, &initial, || Ok(()), selection::sync_ancestors)
+                        .unwrap();
+                    let selection_before = fs::read(selection::path(&case.path)).unwrap();
+                    let reference = case.root().join("reference");
+                    let expected_digest = store.checkpoint_to(&reference).unwrap();
+                    drop(store);
+                    let adopted = witness_bytes(&case.path);
+                    restore_witness(&case.path, &case.rolled_back);
+
+                    let destination = case.root().join("rebuild");
+                    let rebuild = || rebuild_spill_adoption_case(&case, &destination, full);
+                    let failure = with_fault(point, damage, rebuild).unwrap_err();
+                    let ManagedRebuildFailure::NotPublished(error) = failure else {
+                        panic!("{point:?}, full={full}, v2={v2}: {failure}");
+                    };
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
+                    assert_eq!(
+                        error.to_string(),
+                        expected_error,
+                        "{point:?}, full={full}, v2={v2}"
+                    );
+                    assert_eq!(
+                        fs::read(case.path.join("records.log")).unwrap(),
+                        case.complete_log
+                    );
+                    assert_eq!(
+                        fs::read(case.path.join("commit.state")).unwrap(),
+                        case.anchor
+                    );
+                    assert_eq!(witness_bytes(&case.path), case.rolled_back);
+                    assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+                    assert_eq!(
+                        fs::read(selection::path(&case.path)).unwrap(),
+                        selection_before
+                    );
+                    assert!(!destination.exists());
+                    assert!(spill_run_paths(&case.path).is_empty());
+                    assert_no_staged_markers(&case.path);
+                    assert_no_staged_markers(case.root());
+
+                    assert_eq!(rebuild().unwrap(), expected_digest);
+                    assert_eq!(
+                        fs::read(&destination).unwrap(),
+                        fs::read(reference).unwrap()
+                    );
+                    assert_eq!(witness_bytes(&case.path), adopted);
+                    let selected = selection::load(&case.path).unwrap().unwrap();
+                    assert_eq!(
+                        selected,
+                        selection::Selection::new(
+                            fs::canonicalize(&destination).unwrap(),
+                            expected_digest
+                        )
+                        .unwrap()
+                    );
+                    println!(
+                        "{} full={full} {point:?}: rejected damage and recovered exactly",
+                        if v2 { "V2" } else { "V3" }
+                    );
+                }
+            }
+        }
+    }
+
+    fn rebuild_spill_adoption_case(
+        case: &AdoptionCase,
+        destination: &Path,
+        full: bool,
+    ) -> Result<[u8; 32], ManagedRebuildFailure> {
+        if full {
+            CheckpointStore::rebuild_managed_selection_full_bounded(
+                &case.path,
+                destination,
+                BoundedFullRebuildLimits {
+                    max_log_bytes: case.complete_log.len() as u64,
+                    max_operations: 7,
+                    max_live_keys: 4,
+                    max_live_key_bytes: 10,
+                    max_chunk_keys: 1,
+                    max_chunk_key_bytes: 4096,
+                    max_spill_bytes: 32 << 20,
+                    max_merge_fan_in: 2,
+                },
+            )
+        } else {
+            publish_bounded(&case.path, destination, &case.base, &case.digest)
+        }
+    }
+
+    fn damage_flushed_spill_offset(path: &Path) {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mut offset = [0; 8];
+        file.read_exact_at(&mut offset, 0).unwrap();
+        assert_eq!(u64::from_le_bytes(offset), 28);
+        file.write_all_at(&0_u64.to_le_bytes(), 0).unwrap();
+    }
+
+    fn damage_verified_spill_digest(path: &Path) {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let offset = file.metadata().unwrap().len() - 1;
+        let mut byte = [0];
+        file.read_exact_at(&mut byte, offset).unwrap();
+        file.write_all_at(&[byte[0] ^ 1], offset).unwrap();
+    }
+
     fn check_staged_rebuild_process_kill(case: &AdoptionCase, mode: &str, full: bool) {
         let store = retry(|| Store::open(&case.path)).unwrap();
         let initial = selection::Selection::new(case.base.clone(), case.digest).unwrap();
@@ -1987,25 +2124,7 @@ mod tests {
         assert_no_staged_markers(&case.path);
 
         let retry_path = case.root().join("retry");
-        let rebuilt = if full {
-            CheckpointStore::rebuild_managed_selection_full_bounded(
-                &case.path,
-                &retry_path,
-                BoundedFullRebuildLimits {
-                    max_log_bytes: case.complete_log.len() as u64,
-                    max_operations: 7,
-                    max_live_keys: 4,
-                    max_live_key_bytes: 10,
-                    max_chunk_keys: 1,
-                    max_chunk_key_bytes: 4096,
-                    max_spill_bytes: 32 << 20,
-                    max_merge_fan_in: 2,
-                },
-            )
-            .unwrap()
-        } else {
-            publish_bounded(&case.path, &retry_path, &case.base, &case.digest).unwrap()
-        };
+        let rebuilt = rebuild_spill_adoption_case(case, &retry_path, full).unwrap();
         assert_eq!(rebuilt, digest, "{mode}");
         assert_eq!(fs::read(retry_path).unwrap(), checkpoint, "{mode}");
         assert_eq!(witness_bytes(&case.path), adopted, "{mode}");

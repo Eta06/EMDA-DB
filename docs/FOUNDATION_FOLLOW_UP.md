@@ -254,6 +254,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   the abandoned spill stage explicitly, and compare the retry with a
   full-log reference checkpoint byte for byte. This exercises a running
   OS and complete unacknowledged tails.
+- [x] Inject [spill offset and merge-digest damage](../benchmarks/results/2026-11-23-spill-intermediate-integrity/README.md)
+  at those boundaries on macOS V2 and Linux V2/V3. Both bounded rebuild APIs
+  reject the damage before tail adoption, preserve the existing selection,
+  and produce a checkpoint matching ordinary full-log replay on retry.
 - [x] Merge runs spanning the same number of chunks during bounded rebuild
   replay. Keep older runs closed until a merge needs them, and charge all
   runs, temporary output, and the sidecar to the existing byte cap.
