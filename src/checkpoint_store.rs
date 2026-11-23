@@ -479,7 +479,8 @@ impl CheckpointStore {
     }
 
     fn ensure_healthy(&self, state: &State) -> io::Result<()> {
-        if state.failed || self.append_failed.load(Ordering::Acquire) {
+        if state.failed || self.append_failed.load(Ordering::Acquire) || self.writers.is_poisoned()
+        {
             return Err(uncertain());
         }
         Ok(())
@@ -672,8 +673,8 @@ impl CheckpointStore {
     }
 
     /// Creates a verified checkpoint by streaming the on-disk index and the
-    /// bounded suffix overlay while mutations are paused. The independently
-    /// trusted digest must be retained separately. The current instance keeps
+    /// bounded suffix overlay while mutations are paused. Readers can use
+    /// the committed view. Retain the trusted digest separately. The instance keeps
     /// using its original checkpoint; close it and reopen with the new one to
     /// clear the overlay. This independent copy is not subject to the current
     /// view's lower file-size or block limits. A publication sync error has an
@@ -698,9 +699,7 @@ impl CheckpointStore {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 32], crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.check_selection_destination(destination)?;
-            let state = self.write()?;
-            self.create_checkpoint_tracked(&state, destination, sync_parent, false, Some(tracker))
+            self.checkpoint_to_tracked(destination, sync_parent, Some(tracker))
         })
     }
 
@@ -709,13 +708,24 @@ impl CheckpointStore {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
-        self.check_selection_destination(destination)?;
-        let state = self.write()?;
-        self.create_checkpoint(&state, destination, sync_parent, false)
+        self.checkpoint_to_tracked(destination, sync_parent, None)
     }
 
-    /// Creates a checkpoint and switches the running instance to it under the
-    /// same exclusive lock, clearing the suffix overlay after verification.
+    fn checkpoint_to_tracked(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: Option<&crate::publication_outcome::Tracker>,
+    ) -> io::Result<[u8; 32]> {
+        self.check_selection_destination(destination)?;
+        let _writer = self.writers.write().map_err(|_| uncertain())?;
+        let state = self.read()?;
+        self.create_checkpoint_tracked(&state, destination, sync_parent, false, tracker)
+    }
+
+    /// Creates a checkpoint and switches the running instance to it while
+    /// holding the writer gate, clearing the suffix overlay after verification.
+    /// Readers can use the committed view until the final switch.
     /// The returned digest must be persisted separately by the caller. An
     /// error after publication can leave the new checkpoint at its destination;
     /// the instance continues using the previous checkpoint in that case. The
@@ -761,7 +771,8 @@ impl CheckpointStore {
         tracker: Option<&crate::publication_outcome::Tracker>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
-        let mut state = self.write()?;
+        let _writer = self.writers.write().map_err(|_| uncertain())?;
+        let state = self.read()?;
         if state.selection.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -771,6 +782,8 @@ impl CheckpointStore {
         let digest =
             self.create_checkpoint_tracked(&state, destination, sync_parent, true, tracker)?;
         let next_view = self.rollover_view(&state, destination, &digest)?;
+        drop(state);
+        let mut state = self.state.write().map_err(|_| uncertain())?;
         state.view = next_view;
         state.overlay_key_bytes = 0;
         Ok(digest)
@@ -798,7 +811,8 @@ impl CheckpointStore {
     }
 
     /// Creates a checkpoint and atomically records its selection before
-    /// allowing more writes. Protect the store's selection file as trusted
+    /// allowing more writes. Readers can use the committed view until selection
+    /// publication. Protect the store's selection file as trusted
     /// metadata. A publication error poisons this instance; reopen it using
     /// the visible managed selection, or recover explicitly if none exists.
     pub fn rollover_managed(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
@@ -871,11 +885,13 @@ impl CheckpointStore {
         tracker: Option<&crate::publication_outcome::ManagedTracker>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
-        let mut state = self.write()?;
+        let _writer = self.writers.write().map_err(|_| uncertain())?;
+        let state = self.read()?;
         let existing = selection::load(&self.path);
         if !matches!(&existing, Ok(found) if *found == state.selection) {
             if state.selection.is_some() {
-                state.failed = true;
+                drop(state);
+                self.state.write().map_err(|_| uncertain())?.failed = true;
             }
             return Err(io::Error::other(
                 "managed checkpoint selection is missing, invalid or changed",
@@ -907,6 +923,8 @@ impl CheckpointStore {
         )?;
         let next_view = self.rollover_view(&state, &destination, &digest)?;
         let next = selection::Selection::new(destination, digest)?;
+        drop(state);
+        let mut state = self.state.write().map_err(|_| uncertain())?;
         if let Some(tracker) = tracker {
             tracker.begin_selection();
         }
@@ -967,16 +985,6 @@ impl CheckpointStore {
                 format!("checkpoint was published but switching failed: {error}"),
             )
         })
-    }
-
-    fn create_checkpoint(
-        &self,
-        state: &State,
-        destination: &Path,
-        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
-        for_rollover: bool,
-    ) -> io::Result<[u8; 32]> {
-        self.create_checkpoint_tracked(state, destination, sync_parent, for_rollover, None)
     }
 
     fn create_checkpoint_tracked(

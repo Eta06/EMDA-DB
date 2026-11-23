@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Keep the committed checkpoint view readable while manual checkpoint copies
+  and rollovers prepare and verify the next checkpoint. Mutations still wait
+  and the final manual rollover handoff remains exclusive.
+
 - Compare ordinary checkpoint readback directly with the live index, avoiding
   a duplicate map while preserving entry, digest, and witness verification.
 

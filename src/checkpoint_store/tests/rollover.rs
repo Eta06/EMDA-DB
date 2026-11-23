@@ -201,80 +201,132 @@ fn streamed_checkpoint_prepublication_failure_leaves_source_usable() {
 }
 
 #[test]
-fn streamed_checkpoint_blocks_writes_until_verified_publication() {
-    use std::sync::{Arc, mpsc};
+fn manual_checkpoint_publication_allows_readers_and_excludes_writers() {
+    use std::sync::{TryLockError, mpsc};
     use std::time::Duration;
-    let (dir, path, checkpoint, digest) = fixture();
-    let store =
-        Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
-    store.put(b"before", b"value").unwrap();
-    let destination = dir.path().join("next");
-    let (entered_tx, entered_rx) = mpsc::channel();
-    let (resume_tx, resume_rx) = mpsc::channel();
-    let (started_tx, started_rx) = mpsc::channel();
-    let (done_tx, done_rx) = mpsc::channel();
-    let new_digest = std::thread::scope(|scope| {
-        let checkpoint_store = Arc::clone(&store);
-        let destination = &destination;
-        let checkpoint_thread = scope.spawn(move || {
-            let state = checkpoint_store.write().unwrap();
-            let (count, peak, verified_log) =
-                checkpoint_store.verify_for_checkpoint(&state).unwrap();
-            crate::checkpoint::create_streaming_with_hooks(
-                &checkpoint_store.log,
-                count,
-                peak,
-                (destination, verified_log),
-                |emit| {
-                    state.view.visit_entries(None, None, |key, location| {
-                        emit(key, location)?;
-                        Ok(std::ops::ControlFlow::Continue(()))
-                    })
-                },
-                |parent| File::open(parent)?.sync_all(),
-                || {
+
+    for mode in ["copy", "rollover", "managed"] {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        store.put(b"before", b"value").unwrap();
+        let destination = dir.path().join("next");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (read_tx, read_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let new_digest = std::thread::scope(|scope| {
+            let store = &store;
+            let destination = &destination;
+            let checkpoint_thread = scope.spawn(move || {
+                let sync = |parent: &Path| {
                     entered_tx.send(()).unwrap();
                     resume_rx
                         .recv_timeout(Duration::from_secs(10))
                         .map_err(|_| io::Error::other("checkpoint test release timed out"))?;
-                    Ok(())
-                },
-            )
-            .unwrap()
+                    File::open(parent)?.sync_all()
+                };
+                match mode {
+                    "copy" => store.checkpoint_to_with_sync(destination, sync),
+                    "rollover" => store.rollover_to_with_sync(destination, sync),
+                    "managed" => store.rollover_managed_with_hooks(
+                        destination,
+                        sync,
+                        || {
+                            assert!(matches!(
+                                store.state.try_read(),
+                                Err(TryLockError::WouldBlock)
+                            ));
+                            Ok(())
+                        },
+                        crate::checkpoint_store::selection::sync_ancestors,
+                    ),
+                    _ => unreachable!(),
+                }
+                .unwrap()
+            });
+            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(destination.exists());
+            assert!(matches!(
+                store.writers.try_read(),
+                Err(TryLockError::WouldBlock)
+            ));
+            let writer = scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                done_tx.send(store.put(b"after", b"value")).unwrap();
+            });
+            started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            let reader = scope.spawn(move || {
+                read_tx
+                    .send(store.get_many(&[b"before", b"after"]))
+                    .unwrap();
+            });
+            let observed = read_rx.recv_timeout(Duration::from_secs(2));
+            let early = done_rx.recv_timeout(Duration::from_millis(50));
+            resume_tx.send(()).unwrap();
+            let digest = checkpoint_thread.join().unwrap();
+            writer.join().unwrap();
+            reader.join().unwrap();
+            assert_eq!(
+                observed.unwrap().unwrap(),
+                [Some(b"value".to_vec()), None],
+                "{mode}"
+            );
+            assert!(
+                matches!(early, Err(mpsc::RecvTimeoutError::Timeout)),
+                "{mode}"
+            );
+            done_rx
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .unwrap();
+            digest
         });
-        entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        let writer = Arc::clone(&store);
-        let writer_thread = scope.spawn(move || {
-            started_tx.send(()).unwrap();
-            let result = writer.put(b"after", b"value");
-            done_tx.send(result).unwrap();
-        });
-        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        let early = done_rx.recv_timeout(Duration::from_millis(50));
-        resume_tx.send(()).unwrap();
-        let digest = checkpoint_thread.join().unwrap();
-        writer_thread.join().unwrap();
-        assert!(matches!(early, Err(mpsc::RecvTimeoutError::Timeout)));
-        done_rx
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
-        digest
-    });
+        assert_eq!(
+            store.overlay_keys().unwrap(),
+            if mode == "copy" { 2 } else { 1 }
+        );
+        drop(store);
+        let historical =
+            retry_lock(|| crate::CheckpointView::open(&path, &destination, &new_digest)).unwrap();
+        assert_eq!(
+            historical.get(b"before").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+        assert_eq!(historical.get(b"after").unwrap(), None);
+        drop(historical);
+        let reopened = if mode == "managed" {
+            retry_lock(|| CheckpointStore::open_managed(&path)).unwrap()
+        } else {
+            retry_lock(|| CheckpointStore::open(&path, &destination, &new_digest)).unwrap()
+        };
+        assert_eq!(
+            reopened.get(b"after").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+    }
+}
+
+#[test]
+fn manual_rollover_preparation_panic_still_disables_readers() {
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.put(b"before", b"committed").unwrap();
+    let destination = dir.path().join("next");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store.rollover_to_with_sync(&destination, |_| panic!("injected checkpoint sync panic"))
+    }));
+    assert!(result.is_err());
+    assert!(store.get(b"before").is_err());
+    assert!(store.put(b"after", b"value").is_err());
     drop(store);
-    let historical =
-        retry_lock(|| crate::CheckpointView::open(&path, &destination, &new_digest)).unwrap();
+    let recovered = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
     assert_eq!(
-        historical.get(b"before").unwrap().as_deref(),
-        Some(&b"value"[..])
+        recovered.get(b"before").unwrap().as_deref(),
+        Some(&b"committed"[..])
     );
-    assert_eq!(historical.get(b"after").unwrap(), None);
-    drop(historical);
-    let reopened = retry_lock(|| CheckpointStore::open(&path, &destination, &new_digest)).unwrap();
-    assert_eq!(
-        reopened.get(b"after").unwrap().as_deref(),
-        Some(&b"value"[..])
-    );
+    assert_eq!(recovered.get(b"after").unwrap(), None);
 }
 
 #[test]
