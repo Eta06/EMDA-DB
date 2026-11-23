@@ -256,6 +256,17 @@ pub(crate) fn create_streaming_in_private_stage(
     )
 }
 
+pub(crate) fn require_available_destination(destination: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(destination) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "checkpoint destination already exists",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn create_streaming_in_directory(
     log: &Log,
     count: u64,
@@ -393,6 +404,7 @@ fn create_streaming_in_directory(
         log.verify_witness_at(boundary)?;
         #[cfg(test)]
         crate::test_support::pause_bounded_rebuild("checkpoint-verified")?;
+        require_available_destination(destination)?;
         log.sync_validated_boundary(prefix).map_err(|error| {
             io::Error::new(
                 error.kind(),

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject destination conflicts seen by bounded managed checkpoint rebuilds
+  before advancing a pending tail's witness.
+
 - Group consecutive integers into exact ranges when a membership list narrows
   an indexed scalar range. Preserve holes and shared candidate limits.
 

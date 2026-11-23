@@ -263,6 +263,14 @@ maintenance operations remain separate.
   checkpoint validation and tail adoption. This admission check assumes
   cooperating writers and stable source files; it does not bound repeated I/O,
   elapsed time or total memory, and rejection does not certify source health.
+- Bounded full-log and trusted-base rebuilds check for an occupied checkpoint
+  destination under the store lock before replay. With a pending tail they
+  check again after staged verification, immediately before advancing the
+  witness. A conflict detected at either check returns
+  `NotPublished(AlreadyExists)` before tail adoption. These checks include
+  directories and dangling symlinks. Final checkpoint publication remains
+  atomic and no-clobber. A later conflict can still occur after tail adoption,
+  with the existing conservative publication classification.
 - `rebuild_managed_selection_bounded_with_limits` combines whole-log and
   suffix spill limits with separate file-length and block-directory limits
   for the trusted base and replacement. Limit rejection returns

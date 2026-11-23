@@ -656,6 +656,7 @@ impl CheckpointStore {
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
         selection::load(&path)?;
+        crate::checkpoint::require_available_destination(&destination)?;
         let (view, mut replayed) = match base {
             Some((checkpoint, digest)) => {
                 let (view, prefix_hash) = CheckpointView::open_locked_with_recovery_limits(
@@ -1964,6 +1965,70 @@ mod tests {
             )
         } else {
             publish_bounded(&case.path, destination, &case.base, &case.digest)
+        }
+    }
+
+    #[test]
+    fn bounded_rebuild_destination_created_during_replay_leaves_witness_unchanged() {
+        for v2 in [true, false] {
+            for full in [true, false] {
+                let Some(case) = prepare_unacknowledged_tail(v2) else {
+                    break;
+                };
+                let prior = selection::Selection::new(case.base.clone(), case.digest).unwrap();
+                selection::publish(&case.path, &prior, || Ok(()), selection::sync_ancestors)
+                    .unwrap();
+                let destination = case.root().join("occupied");
+                let base = (!full).then_some((case.base.as_path(), &case.digest));
+                let failure = crate::publication_outcome::track_managed_rebuild(|tracker| {
+                    CheckpointStore::rebuild_spilling(
+                        &case.path,
+                        &destination,
+                        base,
+                        small_limits(),
+                        Some(tracker),
+                        &mut BoundedHooks {
+                            before_adopt: &mut || {
+                                fs::write(&destination, b"occupied during replay")
+                            },
+                            sync_checkpoint_ancestors: &mut |_| panic!("checkpoint published"),
+                            before_selection_rename: &mut || panic!("selection published"),
+                            sync_selection_parent: &mut |_| panic!("selection synced"),
+                        },
+                    )
+                })
+                .unwrap_err();
+                assert_eq!(witness_bytes(&case.path), case.rolled_back, "{failure}");
+                assert!(matches!(failure, ManagedRebuildFailure::NotPublished(error)
+                    if error.kind() == io::ErrorKind::AlreadyExists));
+                assert_eq!(fs::read(&destination).unwrap(), b"occupied during replay");
+                assert_eq!(selection::load(&case.path).unwrap(), Some(prior));
+                assert_eq!(
+                    fs::read(case.path.join("records.log")).unwrap(),
+                    case.complete_log
+                );
+                assert_eq!(
+                    fs::read(case.path.join("commit.state")).unwrap(),
+                    case.anchor
+                );
+                assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+                assert_no_staged_markers(&case.path);
+                assert_no_staged_markers(case.root());
+
+                fs::remove_file(&destination).unwrap();
+                let rebuilt = rebuild_spill_adoption_case(&case, &destination, full).unwrap();
+                assert_eq!(
+                    boundary_of(&witness_bytes(&case.path), &case.id),
+                    case.complete_log.len() as u64
+                );
+                let store = retry(|| Store::open(&case.path)).unwrap();
+                let reference = case.root().join("reference");
+                assert_eq!(store.checkpoint_to(&reference).unwrap(), rebuilt);
+                assert_eq!(
+                    fs::read(&destination).unwrap(),
+                    fs::read(reference).unwrap()
+                );
+            }
         }
     }
 

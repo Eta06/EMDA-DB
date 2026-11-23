@@ -108,6 +108,102 @@ fn assert_no_stages(path: &Path) {
 }
 
 #[test]
+fn occupied_bounded_rebuild_destinations_leave_the_pending_tail_unadopted() {
+    for v2 in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let base = root.path().join("base");
+        let reference = root.path().join("reference");
+        let store = open_store(&path, v2);
+        store.put(b"base", b"acknowledged").unwrap();
+        drop(store);
+        let digest = retry(|| CheckpointStore::rebuild_managed_selection(&path, &base)).unwrap();
+        let before = witness_bytes(&path);
+        let selection_path = path.join("checkpoint.selection");
+        let previous_selection = fs::read(&selection_path).unwrap();
+        let base_bytes = fs::read(&base).unwrap();
+        let store = retry(|| Store::open(&path)).unwrap();
+        store.put(b"tail", b"pending").unwrap();
+        let expected_witness = witness_bytes(&path);
+        let expected_digest = store.checkpoint_to(&reference).unwrap();
+        drop(store);
+        restore_witness(&path, &before);
+        let log_path = path.join("records.log");
+        let log = fs::read(&log_path).unwrap();
+        let anchor = fs::read(path.join("commit.state")).unwrap();
+
+        let file = root.path().join("occupied-file");
+        let directory = root.path().join("occupied-directory");
+        let dangling = root.path().join("occupied-symlink");
+        let missing_target = root.path().join("missing-target");
+        fs::write(&file, b"preserve file").unwrap();
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("keep"), b"preserve directory").unwrap();
+        std::os::unix::fs::symlink(&missing_target, &dangling).unwrap();
+        let full_limits = BoundedFullRebuildLimits {
+            max_log_bytes: log.len() as u64,
+            max_operations: 2,
+            max_live_keys: 2,
+            max_live_key_bytes: 8,
+            max_chunk_keys: 1,
+            max_chunk_key_bytes: 4,
+            max_spill_bytes: 4096,
+            max_merge_fan_in: 2,
+        };
+        for destination in [&file, &directory, &dangling] {
+            for full in [true, false] {
+                let result = if full {
+                    CheckpointStore::rebuild_managed_selection_full_bounded(
+                        &path,
+                        destination,
+                        full_limits,
+                    )
+                } else {
+                    bounded_detailed(&path, destination, &base, &digest, 1, 4096, 2)
+                };
+                assert_eq!(
+                    witness_bytes(&path),
+                    before,
+                    "occupied destination adopted the tail: {result:?}"
+                );
+                assert!(
+                    matches!(result, Err(ManagedRebuildFailure::NotPublished(error))
+                    if error.kind() == io::ErrorKind::AlreadyExists)
+                );
+                assert_eq!(fs::read(&selection_path).unwrap(), previous_selection);
+                assert_eq!(fs::read(&log_path).unwrap(), log);
+                assert_eq!(fs::read(path.join("commit.state")).unwrap(), anchor);
+                assert_eq!(fs::read(&base).unwrap(), base_bytes);
+                assert_no_stages(&path);
+                assert_no_stages(root.path());
+            }
+        }
+        assert_eq!(fs::read(&file).unwrap(), b"preserve file");
+        assert_eq!(
+            fs::read(directory.join("keep")).unwrap(),
+            b"preserve directory"
+        );
+        assert_eq!(fs::read_link(&dangling).unwrap(), missing_target);
+        assert!(!missing_target.exists());
+
+        let destination = root.path().join("available");
+        let rebuilt = bounded_detailed(&path, &destination, &base, &digest, 1, 4096, 2).unwrap();
+        assert_eq!(rebuilt, expected_digest);
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            fs::read(&reference).unwrap()
+        );
+        assert_eq!(witness_bytes(&path), expected_witness);
+        let reopened = retry(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"base").unwrap(),
+            Some(b"acknowledged".to_vec())
+        );
+        assert_eq!(reopened.get(b"tail").unwrap(), Some(b"pending".to_vec()));
+    }
+}
+
+#[test]
 fn full_bounded_rebuild_admits_history_before_adopting_a_complete_tail() {
     for v2 in [true, false] {
         let root = tempfile::tempdir().unwrap();
@@ -498,10 +594,8 @@ fn missing_untrusted_and_conflicting_inputs_fail_before_a_new_selection() {
 
     fs::write(&destination, b"keep").unwrap();
     let error = bounded_detailed(&path, &destination, &base, &digest, 1, 1 << 20, 100).unwrap_err();
-    assert!(matches!(
-        error,
-        ManagedRebuildFailure::CheckpointOutcomeUnknown(_)
-    ));
+    assert!(matches!(error, ManagedRebuildFailure::NotPublished(error)
+        if error.kind() == io::ErrorKind::AlreadyExists));
     assert_eq!(fs::read(&destination).unwrap(), b"keep");
     assert!(!path.join("checkpoint.selection").exists());
 }

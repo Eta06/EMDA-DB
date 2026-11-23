@@ -272,6 +272,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   advances. Tests on macOS and Linux ARM64 cover exact limits and preservation
   of the log, old witness and selection on rejection. Process-kill tests cover
   interruption immediately before and after witness advancement.
+- [x] Reject occupied destinations before replay and recheck before advancing
+  a pending tail during bounded full-log or trusted-base rebuild. Tests cover
+  files, directories, dangling symlinks and a name created during replay.
+  They check witness and selection preservation and byte-identical recovery
+  on retry. Final publication still uses atomically enforced no-clobber semantics.
 - [x] Kill a full-log rebuild after staged checkpoint verification, after tail adoption, after checkpoint rename, before selection rename, and after selection rename. Tests check the visible witness and selection, preserve the source log, clean abandoned staging, and compare a fresh retry byte-for-byte with ordinary recovery. These tests cover process termination while the OS is running.
 - [x] Reuse staged checkpoint verification for full-log tail adoption. [Linux ARM64 traces](../benchmarks/results/2026-11-22-full-rebuild-tail-reads/README.md) confirm one complete source read saved on unwitnessed-tail inputs. Injected pre-publication source-read faults check the old witness before adoption, the complete advanced witness afterward, and byte-identical recovery on retry.
 - [x] Extend the [bounded rebuild model](../benchmarks/results/2026-11-22-full-rebuild-model/README.md) to full-log recovery with a missing selected checkpoint, variable-length keys, and complete unwitnessed tails. Exact admission and one-under checks cover source log bytes, operations, historical keys and key bytes, and output file and block limits. The Linux ARM64 sanitizer campaign ran 5,755 executions and macOS ran all 27 deterministic seeds.
