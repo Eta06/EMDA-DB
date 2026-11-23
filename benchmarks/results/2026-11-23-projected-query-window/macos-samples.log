@@ -1,0 +1,16 @@
+scan 1 baseline rss_bytes=117473280 elapsed_us=71290 verified=true
+scan 1 candidate rss_bytes=4849664 elapsed_us=61795 verified=true
+scan 2 candidate rss_bytes=4866048 elapsed_us=54473 verified=true
+scan 2 baseline rss_bytes=117489664 elapsed_us=83097 verified=true
+scan 3 baseline rss_bytes=117489664 elapsed_us=58041 verified=true
+scan 3 candidate rss_bytes=4816896 elapsed_us=44763 verified=true
+scan 4 candidate rss_bytes=4833280 elapsed_us=53932 verified=true
+scan 4 baseline rss_bytes=117440512 elapsed_us=60160 verified=true
+planned 1 baseline rss_bytes=116867072 elapsed_us=137859 verified=true
+planned 1 candidate rss_bytes=4276224 elapsed_us=96679 verified=true
+planned 2 candidate rss_bytes=4259840 elapsed_us=79818 verified=true
+planned 2 baseline rss_bytes=116850688 elapsed_us=108529 verified=true
+planned 3 baseline rss_bytes=116867072 elapsed_us=112937 verified=true
+planned 3 candidate rss_bytes=4276224 elapsed_us=84219 verified=true
+planned 4 candidate rss_bytes=4276224 elapsed_us=80457 verified=true
+planned 4 baseline rss_bytes=116867072 elapsed_us=95010 verified=true

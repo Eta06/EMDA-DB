@@ -421,14 +421,21 @@ fn matches(
     })
 }
 
-fn project(document: &Value, paths: &[Vec<String>]) -> io::Result<Value> {
+fn project(mut document: Value, paths: &[Vec<String>]) -> Value {
     let mut result = Value::Object(Map::new());
     for path in paths {
-        let Some(value) = schema::field(document, path) else {
+        let (field, parents) = path.split_last().expect("validated path");
+        let parent = parents.iter().try_fold(&mut document, |value, component| {
+            value.as_object_mut()?.get_mut(component)
+        });
+        let Some(value) = parent
+            .and_then(Value::as_object_mut)
+            .and_then(|object| object.remove(field))
+        else {
             continue;
         };
         let mut current = &mut result;
-        for component in &path[..path.len() - 1] {
+        for component in parents {
             let object = current.as_object_mut().expect("projection objects");
             current = object
                 .entry(component.clone())
@@ -437,9 +444,9 @@ fn project(document: &Value, paths: &[Vec<String>]) -> io::Result<Value> {
         current
             .as_object_mut()
             .expect("non-overlapping projection paths")
-            .insert(path.last().expect("validated path").clone(), value.clone());
+            .insert(field.clone(), value);
     }
-    Ok(result)
+    result
 }
 
 pub(super) fn validate_query(query: &DocumentQuery) -> io::Result<()> {
@@ -532,6 +539,7 @@ impl<'a> QueryCollector<'a> {
             if self.id_order && self.query.sort.is_none() {
                 if position >= self.query.offset && position - self.query.offset < self.query.limit
                 {
+                    let document = self.result_document(document);
                     self.matched.push(DocumentEntry { id, document });
                 }
                 return Ok(());
@@ -562,6 +570,7 @@ impl<'a> QueryCollector<'a> {
                 }
                 worst.remove();
             }
+            let document = self.result_document(document);
             self.sorted.insert(key, document);
             Ok(())
         })();
@@ -574,11 +583,18 @@ impl<'a> QueryCollector<'a> {
         self.error.is_some()
     }
 
+    fn result_document(&self, document: Value) -> Value {
+        match &self.query.projection {
+            Some(paths) => project(document, paths),
+            None => document,
+        }
+    }
+
     pub(super) fn finish(self) -> io::Result<DocumentQueryResult> {
         if let Some(error) = self.error {
             return Err(error);
         }
-        let mut documents = if !self.id_order || self.query.sort.is_some() {
+        let documents = if !self.id_order || self.query.sort.is_some() {
             self.sorted
                 .into_iter()
                 .skip(self.query.offset)
@@ -588,11 +604,6 @@ impl<'a> QueryCollector<'a> {
         } else {
             self.matched
         };
-        if let Some(paths) = &self.query.projection {
-            for entry in &mut documents {
-                entry.document = project(&entry.document, paths)?;
-            }
-        }
         let plan = QueryPlan {
             scanned: self.scanned,
             matched: self.matched_count,
@@ -711,6 +722,37 @@ mod streaming_tests {
                 .collect::<Vec<_>>(),
             ["id080", "id081", "id082"]
         );
+    }
+
+    #[test]
+    fn ranked_window_keeps_only_selected_fields_including_nested_siblings() {
+        let query = DocumentQuery {
+            sort: Some(DocumentSort {
+                path: vec!["rank".into()],
+                descending: true,
+            }),
+            projection: Some(vec![
+                vec!["nested".into(), "empty".into()],
+                vec!["nested".into(), "value".into()],
+                vec!["nested".into(), "missing".into()],
+            ]),
+            limit: 1,
+            ..Default::default()
+        };
+        validate_query(&query).unwrap();
+        let mut collector = QueryCollector::new(&query, true);
+        collector.push("a".into(), json!({"rank":0, "nested":{"value":0}}));
+        collector.push(
+            "b".into(),
+            json!({
+                "rank":1, "nested":{"empty":null,"value":[1,2],"unused":true}, "payload":[4,5]
+            }),
+        );
+        let expected = json!({"nested":{"empty":null,"value":[1,2]}});
+        assert_eq!(collector.sorted.values().next(), Some(&expected));
+        let rows = collector.finish().unwrap().documents;
+        assert_eq!(rows[0].id, "b");
+        assert_eq!(rows[0].document, expected);
     }
 
     #[test]

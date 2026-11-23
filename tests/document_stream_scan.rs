@@ -1,7 +1,7 @@
 //! Streaming collection scans must preserve filtering and failure semantics.
 use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentSort, Store,
+    DocumentQueryAccess, DocumentSort, IndexDefinition, Store,
 };
 use serde_json::json;
 use std::io::ErrorKind;
@@ -10,25 +10,29 @@ mod support;
 use support::retry_lock;
 
 fn compare_results(db: &DocumentDatabase<'_>) {
-    let result = db
-        .query(
-            "c",
-            &DocumentQuery {
-                filter: DocumentFilter::Equal {
-                    path: vec!["group".into()],
-                    value: json!("yes"),
-                },
-                max_scanned: 100,
-                sort: Some(DocumentSort {
-                    path: vec!["score".into()],
-                    descending: true,
-                }),
-                projection: Some(vec![vec!["score".into()]]),
-                offset: 1,
-                limit: 7,
-            },
-        )
-        .unwrap();
+    let query = DocumentQuery {
+        filter: DocumentFilter::Equal {
+            path: vec!["group".into()],
+            value: json!("yes"),
+        },
+        max_scanned: 100,
+        sort: Some(DocumentSort {
+            path: vec!["score".into()],
+            descending: true,
+        }),
+        projection: Some(vec![vec!["output".into(), "score".into()]]),
+        offset: 1,
+        limit: 7,
+    };
+    let result = db.query("c", &query).unwrap();
+    let planned = db.query_planned("c", &query).unwrap();
+    assert_eq!(
+        planned.access,
+        DocumentQueryAccess::EqualityIndex {
+            index: "group".into()
+        }
+    );
+    assert_eq!(planned.result.documents, result.documents);
     assert_eq!(result.plan.scanned, 70);
     assert_eq!(result.plan.matched, 35);
     assert!(result.plan.sorted);
@@ -42,7 +46,7 @@ fn compare_results(db: &DocumentDatabase<'_>) {
         ["id66", "id64", "id62", "id60", "id58", "id56", "id54"]
     );
     for (row, score) in result.documents.iter().zip([66, 64, 62, 60, 58, 56, 54]) {
-        assert_eq!(row.document, json!({"score": score}));
+        assert_eq!(row.document, json!({"output":{"score": score}}));
     }
     let unsorted = db
         .query(
@@ -82,11 +86,21 @@ fn streaming_scan_preserves_results_across_pages_and_recovery() {
     let db = DocumentDatabase::new(&store);
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
+    db.create_index(
+        "c",
+        IndexDefinition {
+            name: "group".into(),
+            fields: vec![vec!["group".into()]],
+            unique: false,
+            partial: None,
+        },
+    )
+    .unwrap();
     for id in 0..70 {
         db.insert(
             "c",
             &format!("id{id:02}"),
-            &json!({"group": if id % 2 == 0 {"yes"} else {"no"}, "score":id}),
+            &json!({"group": if id % 2 == 0 {"yes"} else {"no"}, "score":id, "output":{"score":id,"unused":true}}),
         )
         .unwrap();
     }

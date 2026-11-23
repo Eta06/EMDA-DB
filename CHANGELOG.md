@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Retain only projected fields in document query windows after evaluating
+  the filter and sort keys on the complete document.
+
 - Bind restore and upgrade witnesses to the verified staged log, reject
   observed staged identity or length changes, and reject nonregular backup
   inputs before opening them.
