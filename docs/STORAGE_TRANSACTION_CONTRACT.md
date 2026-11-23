@@ -270,6 +270,10 @@ maintenance operations remain separate.
   checkpoint validation and tail adoption. This admission check assumes
   cooperating writers and stable source files; it does not bound repeated I/O,
   elapsed time or total memory, and rejection does not certify source health.
+- Bounded full-log and trusted-base rebuilds admit an entire batch's child
+  count before decoding or allocating child updates. On operation-limit
+  rejection, they still stream the outer record and check its checksum.
+  A passing checksum on that path leaves the child records unverified.
 - Bounded full-log and trusted-base rebuilds check for an occupied checkpoint
   destination under the store lock before replay. With a pending tail they
   check again after staged verification, immediately before advancing the

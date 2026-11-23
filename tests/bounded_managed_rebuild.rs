@@ -699,6 +699,8 @@ fn trusted_base_and_output_limits_are_admitted_before_tail_adoption() {
         drop(store);
         let digest = retry(|| CheckpointStore::rebuild_managed_selection(&path, &base)).unwrap();
         let previous_witness = witness_bytes(&path);
+        let log_path = path.join("records.log");
+        let batch_start = fs::metadata(&log_path).unwrap().len() as usize;
         let store = retry(|| Store::open(&path)).unwrap();
         store
             .write_batch(&[
@@ -821,6 +823,54 @@ fn trusted_base_and_output_limits_are_admitted_before_tail_adoption() {
             assert_no_stages(root.path());
         }
 
+        let mut damaged = log.clone();
+        assert_eq!(&damaged[batch_start..batch_start + 4], b"DB02");
+        let child = batch_start
+            + damaged[batch_start..]
+                .windows(4)
+                .position(|magic| magic == b"DB01")
+                .expect("batch contains a child record");
+        damaged[child] ^= 1;
+        let one_operation = BoundedSuffixRebuildLimits {
+            max_operations: 1,
+            ..limits
+        };
+        fs::write(&log_path, &damaged).unwrap();
+        let error = rebuild(one_operation).unwrap_err();
+        assert!(matches!(error, ManagedRebuildFailure::NotPublished(error)
+            if error.kind() == io::ErrorKind::InvalidData
+            && error.to_string() == "record checksum mismatch"));
+
+        // A valid outer checksum brings the operation-limit check ahead of
+        // child decoding. With sufficient budget the broken child is rejected.
+        let trailer = damaged.len() - 4;
+        let checksum = crc32fast::hash(&damaged[batch_start..trailer]);
+        damaged[trailer..].copy_from_slice(&checksum.to_le_bytes());
+        fs::write(&log_path, &damaged).unwrap();
+        let error = rebuild(one_operation).unwrap_err();
+        assert!(
+            matches!(&error, ManagedRebuildFailure::NotPublished(error)
+            if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "rebuild operation limit exceeded"),
+            "{error}"
+        );
+        let error = rebuild(limits).unwrap_err();
+        assert!(matches!(error, ManagedRebuildFailure::NotPublished(error)
+            if error.kind() == io::ErrorKind::InvalidData
+            && error.to_string() == "invalid record header"));
+        assert_eq!(fs::read(&log_path).unwrap(), damaged);
+        assert_eq!(witness_bytes(&path), previous_witness);
+        assert_eq!(fs::read(path.join("commit.state")).unwrap(), anchor);
+        assert_eq!(
+            fs::read(path.join("checkpoint.selection")).unwrap(),
+            selection
+        );
+        assert_eq!(fs::read(&base).unwrap(), base_file);
+        assert!(!destination.exists());
+        assert_no_stages(&path);
+        assert_no_stages(root.path());
+
+        fs::write(&log_path, &log).unwrap();
         assert_eq!(rebuild(limits).unwrap(), expected);
         assert_eq!(
             fs::read(&destination).unwrap(),

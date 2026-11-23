@@ -932,7 +932,7 @@ impl Log {
     ) -> io::Result<(BTreeMap<Vec<u8>, ValueLocation>, usize, usize)> {
         let mut index = BTreeMap::new();
         let (mut bytes, mut peak_count, mut peak_bytes) = (0_usize, 0_usize, 0_usize);
-        self.visit_locations(reader, end, boundary, |key, location| {
+        self.visit_locations(reader, end, boundary, None, |key, location| {
             match location {
                 Some(location) => {
                     if !index.contains_key(&key) {
@@ -985,7 +985,7 @@ impl Log {
             reader = reader.with_digest(hasher);
         }
         let mut live_key_bytes = 0_usize;
-        self.visit_locations(reader, total, boundary, |key, location| {
+        self.visit_locations(reader, total, boundary, None, |key, location| {
             match location {
                 Some(location) => {
                     if max_live_keys
@@ -1069,7 +1069,7 @@ impl Log {
         visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         let reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
-        self.visit_locations(reader, total, boundary, visit)
+        self.visit_locations(reader, total, boundary, None, visit)
     }
 
     /// Return the SHA-256 of the exact bytes parsed and validated by replay.
@@ -1097,8 +1097,20 @@ impl Log {
         digest: &mut Sha256,
         visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.visit_records_with_digest_and_limit(start, end, boundary, digest, None, visit)
+    }
+
+    pub(crate) fn visit_records_with_digest_and_limit(
+        &self,
+        start: u64,
+        end: u64,
+        boundary: u64,
+        digest: &mut Sha256,
+        max_operations: Option<u64>,
+        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+    ) -> io::Result<()> {
         let reader = RecoveryReader::at(self.file.as_ref(), end, start)?.with_digest(digest);
-        self.visit_locations(reader, end, Some(boundary), visit)
+        self.visit_locations(reader, end, Some(boundary), max_operations, visit)
     }
 
     fn visit_locations(
@@ -1106,18 +1118,25 @@ impl Log {
         reader: RecoveryReader<'_>,
         total: u64,
         boundary: Option<u64>,
+        max_operations: Option<u64>,
         mut visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.visit_hashed_records_to::<crc32fast::Hasher>(reader, total, boundary, |key, value| {
-            visit(
-                key,
-                value.map(|value| ValueLocation {
-                    offset: value.offset,
-                    length: value.length,
-                    checksum: value.digest,
-                }),
-            )
-        })
+        self.visit_hashed_records_to::<crc32fast::Hasher>(
+            reader,
+            total,
+            boundary,
+            max_operations,
+            |key, value| {
+                visit(
+                    key,
+                    value.map(|value| ValueLocation {
+                        offset: value.offset,
+                        length: value.length,
+                        checksum: value.digest,
+                    }),
+                )
+            },
+        )
     }
 
     /// Verify a private restored log and compare the SHA-256 of each value
@@ -1135,11 +1154,17 @@ impl Log {
         };
         verify_end()?;
         let reader = RecoveryReader::at(self.file.as_ref(), end, 0)?;
-        self.visit_hashed_records_to::<sha2::Sha256>(reader, end, Some(end), |key, value| {
-            let value =
-                value.ok_or_else(|| record::invalid_data("unexpected restored deletion"))?;
-            visit(&key, value.length, value.digest)
-        })?;
+        self.visit_hashed_records_to::<sha2::Sha256>(
+            reader,
+            end,
+            Some(end),
+            None,
+            |key, value| {
+                let value =
+                    value.ok_or_else(|| record::invalid_data("unexpected restored deletion"))?;
+                visit(&key, value.length, value.digest)
+            },
+        )?;
         verify_end()
     }
 
@@ -1148,8 +1173,20 @@ impl Log {
         mut reader: RecoveryReader<'_>,
         total: u64,
         boundary: Option<u64>,
+        mut remaining_operations: Option<u64>,
         mut visit: impl FnMut(Vec<u8>, Option<StreamValue<D::Output>>) -> io::Result<()>,
     ) -> io::Result<()> {
+        let mut admit = |operations: usize| {
+            if let Some(remaining) = &mut remaining_operations {
+                *remaining = remaining.checked_sub(operations as u64).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "rebuild operation limit exceeded",
+                    )
+                })?;
+            }
+            Ok(())
+        };
         let mut offset = reader.position();
         if let Some(expected_id) = self.log_id.filter(|_| offset == 0) {
             let mut header = [0_u8; LOG_HEADER_SIZE];
@@ -1184,7 +1221,7 @@ impl Log {
                     &header,
                     offset,
                     |_| {},
-                    |_| Ok(()),
+                    &mut admit,
                 )?;
                 for update in updates {
                     visit(update.key, update.location)?;
@@ -1205,6 +1242,7 @@ impl Log {
                 if record_hasher.finalize() != u32::from_le_bytes(checksum) {
                     return Err(record::invalid_data("record checksum mismatch"));
                 }
+                admit(1)?;
                 let location = if header.operation == Operation::Put {
                     Some(StreamValue {
                         offset: offset + HEADER_SIZE as u64 + header.key_len as u64,

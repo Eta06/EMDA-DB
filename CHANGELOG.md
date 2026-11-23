@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Enforce bounded rebuild operation limits before decoding batch children,
+  while checking the enclosing record's checksum.
+
 - Reuse encoded keys and the ordered candidate map while intersecting
   repeated document membership predicates.
 

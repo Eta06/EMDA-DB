@@ -401,8 +401,10 @@ impl CheckpointStore {
     /// merge (2..=32); the output and its offset file use two further
     /// descriptors. Replay can retain closed runs at multiple merge levels,
     /// and all retained runs count toward the spill byte limit.
-    /// `max_operations` bounds the number of suffix child
-    /// operations applied. Exceeding any limit fails before publication.
+    /// `max_operations` bounds the number of suffix operations, counting
+    /// every child in a batch. An over-limit batch's enclosing checksum is
+    /// still verified, but its children are not decoded, allocated or applied.
+    /// Exceeding any limit fails before publication.
     ///
     /// A complete unacknowledged tail is validated, including that the old
     /// witness boundary falls on a record boundary, before the writer advances
@@ -722,11 +724,12 @@ impl CheckpointStore {
         // valid, and it yields them in order. Each child is applied before
         // the next one; their value offsets are not collapsed to the outer
         // record offset.
-        writer.visit_records_with_digest(
+        writer.visit_records_with_digest_and_limit(
             prefix,
             length,
             witness,
             &mut replayed,
+            Some(limits.max_operations),
             |key, location| {
                 spill.push(&key, location, |key| {
                     view.as_ref().map_or(Ok(None), |view| view.location(key))
