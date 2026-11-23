@@ -8,7 +8,7 @@ use crate::record::{self, Operation};
 use crate::retained_base_v2::index::{EntryPart, IndexedBase, OverlayValue, reserve_index_slots};
 use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
-use std::{borrow::Cow, fs::File, io, ops::Range, path::Path};
+use std::{borrow::Cow, cmp::Ordering, fs::File, io, ops::Range, path::Path};
 
 use super::suffix_file::{Changes, ReplayWork, SuffixFile};
 
@@ -232,12 +232,27 @@ impl Overlay {
         let initial = base.metadata();
         let mut encoded_bytes = initial.file_bytes - FRAME_BYTES;
         let keys = self.entries.iter().map(|entry| entry.key.as_slice());
+        let mut touched = keys.clone().enumerate().peekable();
         base.visit_selected_block_lengths(keys, |key, value_len| {
-            if let Ok(position) = find(&self.entries, key) {
-                present[position] = true;
-                encoded_bytes = encoded_bytes
-                    .checked_sub(encoded_entry_bytes(key, value_len))
-                    .ok_or_else(|| record::invalid_data("retained encoded size underflow"))?;
+            // Selected base blocks arrive in key order, so each suffix key
+            // can be discarded as soon as the scan has passed it.
+            while let Some(&(position, candidate)) = touched.peek() {
+                match candidate.cmp(key) {
+                    Ordering::Less => {
+                        touched.next();
+                    }
+                    Ordering::Equal => {
+                        touched.next();
+                        present[position] = true;
+                        encoded_bytes = encoded_bytes
+                            .checked_sub(encoded_entry_bytes(key, value_len))
+                            .ok_or_else(|| {
+                                record::invalid_data("retained encoded size underflow")
+                            })?;
+                        break;
+                    }
+                    Ordering::Greater => break,
+                }
             }
             Ok(())
         })?;

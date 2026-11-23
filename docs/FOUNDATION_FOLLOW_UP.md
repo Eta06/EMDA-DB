@@ -359,6 +359,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   at 524,288 keys on macOS and Linux ARM64. Both passed full-state
   comparisons. Neither reduced rotation CPU on Linux, so both changes
   were dropped.
+- [x] Size retained rotations with an ordered walk over touched keys and base blocks. The [APFS and Linux ARM64 comparisons](../benchmarks/results/2026-11-23-retained-sorted-sizing/README.md) verify clustered and spread updates, preserve full corruption checks, and record lower median rotating-write CPU on the spread workload.
 - [x] Retry interrupted one-byte EOF checks on file-backed authority
   records. The [Linux fault traces](../benchmarks/results/2026-11-23-retained-authority-eof/README.md)
   show eight formerly failed reopen reads recovering, while a returned

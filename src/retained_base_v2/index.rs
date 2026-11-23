@@ -427,8 +427,9 @@ impl IndexedBase {
         Ok(())
     }
 
-    /// Verify the frame and visit blocks that could contain the supplied
-    /// sorted keys. The caller verifies all other blocks before publication.
+    /// Verify the frame and visit all entries in key order in blocks that
+    /// could contain the supplied sorted keys. The caller verifies all
+    /// other blocks before publication.
     pub(crate) fn visit_selected_block_lengths<'a>(
         &self,
         keys: impl Iterator<Item = &'a [u8]>,
