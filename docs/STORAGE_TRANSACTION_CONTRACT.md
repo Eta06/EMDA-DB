@@ -322,6 +322,12 @@ acknowledged after log and witness synchronization. After an uncertain write,
 reopen validates the base, the witness-bound committed suffix prefix and
 every subsequent whole record before adopting a complete tail. The local
 witness shares the ordinary trusted-filesystem and rollback assumptions.
+
+Standalone and managed creation from a detached candidate check its base
+length, framing and trailer and reject provably insufficient base or index
+limits before copying the body into private staging. The preflight only
+rejects imports. Creation still verifies the entire copied base against
+the independently retained binding before publication.
 Creating or opening this generation leaves the previous store separate.
 The [retained format specification](STREAMING_RETAINED_BASE_SPEC.md) records
 the wire format, byte budgets and remaining generation-selection work.

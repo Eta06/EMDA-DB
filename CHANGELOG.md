@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject impossible base limits and mismatched frames before copying the
+  body of a retained candidate into a writable generation.
+
 - Stream managed-rebuild verification of the published checkpoint without
   constructing a temporary lookup index.
 

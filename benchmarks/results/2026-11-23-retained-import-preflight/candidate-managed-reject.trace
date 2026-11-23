@@ -1,0 +1,2 @@
+pread64(5</var/tmp/emda-retained-import-fixture.6ecQwx/candidate/base>, ""..., 112, 0) = 112
+pread64(5</var/tmp/emda-retained-import-fixture.6ecQwx/candidate/base>, ""..., 32, 8388732) = 32

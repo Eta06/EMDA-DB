@@ -126,6 +126,133 @@ impl Fixture {
 }
 
 #[test]
+fn retained_import_checks_base_before_creating_copy() {
+    let f = Fixture::new(LIMITS);
+    let candidate = f.root.path().join("candidate");
+    let source = candidate.join("base");
+    let original = fs::read(&source).unwrap();
+    let output = f.root.path().join("copy");
+    fs::create_dir(&output).unwrap();
+    let mut exact = LIMITS;
+    exact.base.file_bytes = original.len() as u64;
+    exact.base.work_bytes = exact.base.file_bytes + 1;
+    exact.base.entries = 2;
+    exact.base.key_bytes = 2;
+    exact.index.anchor_bytes = 1;
+    for (limits, message) in [
+        (
+            RetainedStoreLimits {
+                base: Limits {
+                    entries: 1,
+                    ..exact.base
+                },
+                ..exact
+            },
+            "invalid totals or budget exceeded",
+        ),
+        (
+            RetainedStoreLimits {
+                base: Limits {
+                    key_bytes: 1,
+                    ..exact.base
+                },
+                ..exact
+            },
+            "invalid totals or budget exceeded",
+        ),
+        (
+            RetainedStoreLimits {
+                index: IndexLimits {
+                    blocks: 0,
+                    ..exact.index
+                },
+                ..exact
+            },
+            "retained base block limit exceeded",
+        ),
+        (
+            RetainedStoreLimits {
+                index: IndexLimits {
+                    anchor_bytes: 0,
+                    ..exact.index
+                },
+                ..exact
+            },
+            "retained base anchor byte limit exceeded",
+        ),
+    ] {
+        let error = copy_base(&candidate, &output, limits, &f.expected, u64::MAX).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), message);
+        assert!(!output.join("base").exists());
+    }
+    let mut changed = original.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    for (bytes, message) in [
+        (
+            &changed[..changed.len() - 1],
+            "retained base length does not match its binding",
+        ),
+        (
+            changed.as_slice(),
+            "retained base trailer does not match its binding",
+        ),
+    ] {
+        fs::write(&source, bytes).unwrap();
+        let error = copy_base(&candidate, &output, exact, &f.expected, u64::MAX).unwrap_err();
+        assert_eq!(error.to_string(), message);
+        assert!(!output.join("base").exists());
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+    fs::write(&source, &original).unwrap();
+    copy_base(
+        &candidate,
+        &output,
+        exact,
+        &f.expected,
+        exact.base.file_bytes,
+    )
+    .unwrap();
+    assert_eq!(fs::read(output.join("base")).unwrap(), original);
+}
+
+#[test]
+fn writable_retained_import_still_checks_the_full_base_body() {
+    let f = Fixture::new(LIMITS);
+    let candidate = f.root.path().join("candidate");
+    let base = candidate.join("base");
+    let mut damaged = fs::read(&base).unwrap();
+    let first_value = crate::retained_base_v2::FRAME_BYTES as usize - 32 + 8 + 1;
+    damaged[first_value] ^= 1;
+    fs::write(&base, &damaged).unwrap();
+    let standalone = f.root.path().join("standalone");
+    let managed = f.root.path().join("managed");
+    for (destination, result) in [
+        (
+            &standalone,
+            RetainedStore::create(&candidate, &standalone, LIMITS, &f.expected),
+        ),
+        (
+            &managed,
+            ManagedRetainedStore::create(&candidate, &managed, LIMITS, &f.expected),
+        ),
+    ] {
+        assert!(
+            matches!(result, Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData)
+        );
+        assert!(!destination.exists());
+    }
+    assert_eq!(fs::read(base).unwrap(), damaged);
+    assert!(fs::read_dir(f.root.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".emda-stage-v1-")
+    }));
+}
+
+#[test]
 fn disk_suffix_reads_authenticate_selected_batch_values() {
     let limits = RetainedStoreLimits {
         suffix: SuffixLimits {

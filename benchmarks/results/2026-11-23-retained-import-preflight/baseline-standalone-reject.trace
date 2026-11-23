@@ -1,0 +1,2 @@
+copy_file_range(5</var/tmp/emda-retained-import-fixture.6ecQwx/candidate/base>, NULL, 6</var/tmp/emda-retained-import-fixture.6ecQwx/.emda-stage-v1-d-9jWTAo0zNVt6PNpX.owner.data/base>, NULL, 8388764, 0) = 8388764
+read(5</var/tmp/emda-retained-import-fixture.6ecQwx/candidate/base>, "", 1) = 0

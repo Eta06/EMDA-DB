@@ -580,7 +580,23 @@ fn copy_base(
     {
         return Err(invalid_input("retained base byte limit exceeded"));
     }
-    let mut base = open_regular(&candidate.join("base"))?.take(size);
+    let base = open_regular(&candidate.join("base"))?;
+    let length = base.metadata()?.len();
+    if length != size {
+        return Err(record::invalid_data(
+            "retained base length does not match its binding",
+        ));
+    }
+    // Reject impossible imports before copying any entries into the stage.
+    // Reopening the staged generation still authenticates the entire base.
+    IndexedBase::preflight(
+        &base,
+        length,
+        limits.base,
+        limits.index,
+        expected.base_binding(),
+    )?;
+    let mut base = base.take(size);
     let mut target = create_file(&dir.join("base"))?;
     let copied = io::copy(&mut base, &mut target)?;
     base.set_limit(1);
