@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::io;
+use std::sync::Mutex;
 
 pub(super) const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_INDEX_BUILD_DOCUMENTS: usize = 256;
@@ -43,12 +44,33 @@ enum BackendTransaction<'a, 'store> {
     HistoricalCheckpoint(&'a CheckpointView),
 }
 
+/// Cumulative logical read limits for one document transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentReadLimits {
+    /// Maximum point requests, scan page requests, and admitted scan entries
+    /// combined. Missing point reads and empty pages still consume one unit.
+    pub max_read_units: usize,
+    /// Maximum logical key and value bytes. Counts each point key, each
+    /// admitted point value, and both key and value for each admitted scan entry.
+    pub max_read_bytes: usize,
+}
+
+struct ReadBudget {
+    remaining: DocumentReadLimits,
+    exhausted: bool,
+}
+
+fn read_limit_exceeded() -> io::Error {
+    key::invalid("document transaction read limit exceeded")
+}
+
 /// A document transaction backed by the same atomic commit as raw key/value
 /// operations. Any failed mutation aborts the whole transaction, even when the
 /// callback handles the error. Callback errors also discard all staged changes.
 pub struct DocumentTransaction<'a, 'store> {
     backend: BackendTransaction<'a, 'store>,
     failed: bool,
+    read_budget: Option<Mutex<ReadBudget>>,
 }
 
 impl<'a, 'store> DocumentTransaction<'a, 'store> {
@@ -57,55 +79,78 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     }
 
     pub(super) fn ordinary(tx: &'a mut Transaction<'store>) -> Self {
-        Self {
-            backend: BackendTransaction::Ordinary(tx),
-            failed: false,
-        }
+        Self::with_backend(BackendTransaction::Ordinary(tx))
     }
 
     pub(super) fn checkpoint(tx: &'a mut CheckpointTransaction<'store>) -> Self {
-        Self {
-            backend: BackendTransaction::Checkpoint(tx),
-            failed: false,
-        }
+        Self::with_backend(BackendTransaction::Checkpoint(tx))
     }
 
     pub(super) fn retained(tx: &'a mut super::retained::RetainedTransaction<'store>) -> Self {
-        Self {
-            backend: BackendTransaction::Retained(tx),
-            failed: false,
-        }
+        Self::with_backend(BackendTransaction::Retained(tx))
     }
 
     pub(super) fn ordinary_snapshot(snapshot: &'a Snapshot<'store>) -> Self {
-        Self {
-            backend: BackendTransaction::OrdinarySnapshot(snapshot),
-            failed: false,
-        }
+        Self::with_backend(BackendTransaction::OrdinarySnapshot(snapshot))
     }
 
     pub(super) fn checkpoint_snapshot(snapshot: &'a CheckpointSnapshot<'store>) -> Self {
-        Self {
-            backend: BackendTransaction::CheckpointSnapshot(snapshot),
-            failed: false,
-        }
+        Self::with_backend(BackendTransaction::CheckpointSnapshot(snapshot))
     }
 
     pub(super) fn historical_checkpoint(view: &'a CheckpointView) -> Self {
+        Self::with_backend(BackendTransaction::HistoricalCheckpoint(view))
+    }
+
+    fn with_backend(backend: BackendTransaction<'a, 'store>) -> Self {
         Self {
-            backend: BackendTransaction::HistoricalCheckpoint(view),
+            backend,
             failed: false,
+            read_budget: None,
         }
     }
 
-    pub(super) fn finish<T>(self, result: io::Result<T>) -> io::Result<T> {
-        match result {
-            Err(error) => Err(error),
-            Ok(_) if self.failed => Err(io::Error::other(
-                "document transaction contains a failed mutation",
-            )),
-            Ok(value) => Ok(value),
+    pub(super) fn limit_reads(&mut self, limits: DocumentReadLimits) {
+        self.read_budget = Some(Mutex::new(ReadBudget {
+            remaining: limits,
+            exhausted: false,
+        }));
+    }
+
+    fn charge_read(&self, units: usize, bytes: usize) -> io::Result<()> {
+        if let Some(budget) = &self.read_budget {
+            let mut budget = budget
+                .lock()
+                .map_err(|_| io::Error::other("document read budget poisoned"))?;
+            if budget.exhausted
+                || units > budget.remaining.max_read_units
+                || bytes > budget.remaining.max_read_bytes
+            {
+                budget.exhausted = true;
+                return Err(read_limit_exceeded());
+            }
+            budget.remaining.max_read_units -= units;
+            budget.remaining.max_read_bytes -= bytes;
         }
+        Ok(())
+    }
+
+    pub(super) fn finish<T>(self, result: io::Result<T>) -> io::Result<T> {
+        let value = result?;
+        if let Some(budget) = self.read_budget {
+            let budget = budget
+                .into_inner()
+                .map_err(|_| io::Error::other("document read budget poisoned"))?;
+            if budget.exhausted {
+                return Err(read_limit_exceeded());
+            }
+        }
+        if self.failed {
+            return Err(io::Error::other(
+                "document transaction contains a failed mutation",
+            ));
+        }
+        Ok(value)
     }
 
     pub(super) fn mutate<T>(
@@ -131,8 +176,13 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     fn read_admitted(
         &self,
         key: &[u8],
-        admit: impl FnMut(usize) -> io::Result<()>,
+        mut admit: impl FnMut(usize) -> io::Result<()>,
     ) -> io::Result<Option<Vec<u8>>> {
+        self.charge_read(1, key.len())?;
+        let admit = |bytes| {
+            admit(bytes)?;
+            self.charge_read(0, bytes)
+        };
         match &self.backend {
             BackendTransaction::Ordinary(tx) => tx.get_admitted(key, admit),
             BackendTransaction::Checkpoint(tx) => tx.get_admitted(key, admit),
@@ -218,9 +268,18 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         after: &[u8],
         before: &[u8],
         limit: usize,
-        admit: impl FnMut(&[u8], usize) -> bool,
+        mut admit: impl FnMut(&[u8], usize) -> bool,
     ) -> io::Result<Vec<Entry>> {
-        match &self.backend {
+        self.charge_read(1, 0)?;
+        let mut budget_error = None;
+        let admit = |key: &[u8], bytes| {
+            if !admit(key, bytes) {
+                return false;
+            }
+            budget_error = self.charge_read(1, key.len() + bytes).err();
+            budget_error.is_none()
+        };
+        let page = match &self.backend {
             BackendTransaction::Ordinary(tx) => {
                 tx.scan_admitted(Some(after), Some(before), limit, admit)
             }
@@ -237,7 +296,8 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             BackendTransaction::HistoricalCheckpoint(view) => {
                 view.scan_admitted(Some(after), Some(before), limit, admit)
             }
-        }
+        }?;
+        budget_error.map_or(Ok(page), Err)
     }
 
     pub(super) fn scan_document_page(

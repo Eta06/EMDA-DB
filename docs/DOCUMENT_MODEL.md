@@ -337,6 +337,19 @@ for group in &report.groups {
 }
 ```
 
+### Cumulative transaction reads
+
+`transaction_with_read_limits` combines the detailed transaction API with
+caller-selected read units and logical byte limits. Each point request and
+each scan page request costs one unit, even if it finds nothing. Each
+admitted scan entry costs another unit. Point keys, admitted point values
+and admitted scan key/value pairs count toward the byte limit. This includes
+repeated reads, staged data, and internal document, metadata and index reads.
+The first over-limit read fails the operation. Even if the callback handles
+the error and returns success, the engine aborts before commit. The limits
+do not measure underlying I/O, validation reads at commit, allocator use
+or elapsed time. Deadlines, cancellation and per-operation bounds still apply.
+
 ## Namespace, integrity and compatibility
 
 The versioned byte prefix `00 65 6d 64 61 2d 64 6f 63 75 6d 65 6e 74 01` is reserved for document metadata, documents and indexes. The document transaction's raw methods reject this prefix. Direct raw `Store`/`CheckpointStore` access and older binaries do not enforce the reservation; applications must not use them to modify document-owned keys. The prefix is **not** a security or tenant-isolation boundary. Invalid or unknown metadata and invalid documents fail when detected, and queries check the entries they return; checksums and these checks do not repair corruption, authenticate data, or guarantee discovery of a missing index entry. In particular, a well-formed but improperly replaced build or schema-migration cursor can skip documents and publish an incomplete index or schema. A later bounded verification or read may detect the inconsistency; publication does not independently revalidate the whole collection.

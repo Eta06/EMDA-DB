@@ -46,7 +46,7 @@ pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery
 pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use snapshot::DocumentSnapshot;
-pub use transaction::DocumentTransaction;
+pub use transaction::{DocumentReadLimits, DocumentTransaction};
 pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES};
 
 use crate::retained_candidate::{AuthorizedRetainedStore, ManagedRetainedStore, RetainedAuthority};
@@ -296,6 +296,25 @@ impl<'a> DocumentDatabase<'a> {
             }
             Backend::Retained(ref store) => retained::run(store, deadline, cancellation, action),
         }
+    }
+
+    /// Runs a detailed transaction with cumulative logical read limits.
+    /// Reads of staged data, documents, metadata, indexes and raw keys all
+    /// count. The first over-limit read returns an error and aborts the
+    /// transaction even if the callback handles it. Logical limits do not
+    /// bound every byte of I/O, elapsed time, or allocation.
+    pub fn transaction_with_read_limits<T>(
+        &self,
+        limits: DocumentReadLimits,
+        mode: DocumentTransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&CancellationToken>,
+        action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> io::Result<T>,
+    ) -> Result<T, TransactionFailure> {
+        self.transaction_detailed(mode, deadline, cancellation, |tx| {
+            tx.limit_reads(limits);
+            action(tx)
+        })
     }
 
     /// Creates an empty collection and persists its schema atomically.

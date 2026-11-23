@@ -191,6 +191,13 @@ maintenance operations remain separate.
 
 ### Isolation, snapshots, and interfaces
 
+`DocumentDatabase::transaction_with_read_limits` can additionally cap
+cumulative logical point and scan reads inside a detailed transaction.
+A limit error aborts staged changes even if the callback returns success.
+Logical bytes are charged before materializing values, subject to the
+backend's normal lookup and block verification. Commit-time validation
+still uses the underlying store's own limits.
+
 `DocumentSnapshot` borrows an ordinary or checkpoint storage snapshot for
 read-only document queries. Separate pages over that same snapshot share
 its captured metadata, documents and indexes. Each underlying read still

@@ -178,7 +178,9 @@ The initial document interface is bounded and experimental. This checklist recor
   intervening document and index changes, checkpoint rollover and
   cancellation. The historical checkpoint path also resumes a saved cursor
   in a new process after writes to the original store. It requires the digest,
-  checkpoint and covered log. Broader request budgets and transaction
-  scalability remain open.
+  checkpoint and covered log. A detailed transaction can cap cumulative
+  logical reads and bytes across indexed pages and point reads. It aborts
+  staged changes even if the callback catches an over-budget error. Total
+  request resource accounting and transaction scalability remain open.
 - [ ] Add an authenticated service and genuine project isolation in the later security/service priority. The raw reserved prefix is not an isolation boundary; uncooperative raw writes can corrupt document metadata or create undetected omissions until bounded verification.
 - [ ] Establish versioned migration, import/export and compatibility policy before a stable release. Neither MongoDB wire/query compatibility nor a downgrade promise exists.

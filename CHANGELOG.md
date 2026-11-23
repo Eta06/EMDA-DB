@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Optionally limit cumulative document transaction reads by logical operation
+  count and bytes. An exceeded limit discards the transaction's staged writes.
+
 - Resume document queries after restart using the same verified historical
   checkpoint and its covered log.
 
