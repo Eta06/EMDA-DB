@@ -107,6 +107,10 @@ The initial document interface is bounded and experimental. This checklist recor
 - [x] Interrupt the append, sync, and witness update of a guarded index
   restart on both writable backends. The [recovery checks](../benchmarks/results/2026-11-23-guarded-index-restart-faults/README.md)
   verify the cursor, seal, and receipt together under V2 and V3 faults.
+- [x] Restart both unfinished jobs and write a raw receipt in one transaction
+  under [V2 append and V3 metadata faults](../benchmarks/results/2026-11-23-guarded-maintenance-restart-faults/README.md).
+  Ordinary and checkpoint recovery agree after faults on both writers, including
+  a torn batch containing the full metadata child and no receipt.
 - [ ] Define freshness and rollback protection for independently managed progress. Guarded advancement authenticates the current parameters and cursor under its key. Replay of a valid state from the same job and arbitrary reserved-namespace mutation remain outside that protection.
 - [ ] Consider durable cursors/snapshots, cancellation, request budgets and more scalable transactions. Page calls outside one transaction can observe intervening writes. Existing budgets are not total memory or project quotas.
 - [ ] Add an authenticated service and genuine project isolation in the later security/service priority. The raw reserved prefix is not an isolation boundary; uncooperative raw writes can corrupt document metadata or create undetected omissions until bounded verification.

@@ -37,34 +37,60 @@ fn v2_fixture() -> (
 }
 
 #[test]
-fn guarded_index_restart_recovers_atomically_with_its_receipt() {
+fn guarded_maintenance_restart_recovers_atomically_with_its_receipt() {
     use crate::document::detailed_fault_model::{
-        guarded_restart, prepare_guarded_restart, verify_guarded_restart_recovery,
+        guarded_restart, guarded_restart_torn_cuts, prepare_guarded_restart,
+        verify_guarded_restart_recovery,
     };
 
-    for (fault, expected) in [
-        (
-            Fault::PartialAppend(0),
-            RecoveryExpectation::Committed(false),
-        ),
-        (Fault::PartialAppend(1), RecoveryExpectation::Torn),
-        (Fault::SyncAfter, RecoveryExpectation::Committed(true)),
-    ] {
+    let key = crate::MaintenanceKey::generate().unwrap();
+    let cuts = {
+        let (_root, path, _, _) = v2_fixture();
+        let store = retry_lock(|| Store::open(&path)).unwrap();
+        guarded_restart_torn_cuts(&DocumentDatabase::new(&store), &path, &key)
+    };
+    let faults = [(
+        Fault::PartialAppend(0),
+        RecoveryExpectation::Committed(false),
+    )]
+    .into_iter()
+    .chain(cuts.map(|cut| (Fault::PartialAppend(cut), RecoveryExpectation::Torn)))
+    .chain([(Fault::SyncAfter, RecoveryExpectation::Committed(true))]);
+    for (fault, expected) in faults {
         let (_root, path, checkpoint, digest) = v2_fixture();
-        let key = crate::MaintenanceKey::generate().unwrap();
         let armed = Arc::new(Mutex::new(None));
         let store = retry_lock(|| open_versioned_fault_store(&path, Arc::clone(&armed))).unwrap();
         let db = DocumentDatabase::new(&store);
         prepare_guarded_restart(&db);
+        let length_before = store.log.len().unwrap();
         *armed.lock().unwrap() = Some(fault);
         let result = guarded_restart(&db, &key);
         assert!(
             matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
             "{result:?}"
         );
+        if let Fault::PartialAppend(cut) = fault {
+            assert_eq!(store.log.len().unwrap(), length_before + cut as u64);
+        }
         drop(store);
         verify_guarded_restart_recovery(&path, &checkpoint, &digest, &key, expected, true);
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guarded_maintenance_restart_recovers_after_v3_witness_faults() {
+    use crate::document::detailed_fault_model::{
+        attach_v3_restart_fault, guarded_restart, guarded_restart_v3_faults,
+        prepare_guarded_restart,
+    };
+
+    guarded_restart_v3_faults(true, |path, _, _, key, fault| {
+        let mut store = retry_lock(|| Store::open(path)).unwrap();
+        prepare_guarded_restart(&DocumentDatabase::new(&store));
+        store.instrument_log_for_test(|log| attach_v3_restart_fault(log, path, fault));
+        guarded_restart(&DocumentDatabase::new(&store), key)
+    });
 }
 
 #[test]

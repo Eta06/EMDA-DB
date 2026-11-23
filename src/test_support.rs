@@ -3,6 +3,9 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+pub(crate) mod v3_metadata;
+
 pub(crate) fn pause_bounded_rebuild(point: &str) -> io::Result<()> {
     use std::io::Write as _;
 

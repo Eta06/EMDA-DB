@@ -6,20 +6,31 @@ use crate::document::detailed_fault_model::{
 use crate::{DocumentDatabase, TransactionFailure};
 
 #[test]
-fn guarded_index_restart_recovers_atomically_with_its_receipt() {
+fn guarded_maintenance_restart_recovers_atomically_with_its_receipt() {
     use crate::document::detailed_fault_model::{
-        guarded_restart, prepare_guarded_restart, verify_guarded_restart_recovery,
+        guarded_restart, guarded_restart_torn_cuts, prepare_guarded_restart,
+        verify_guarded_restart_recovery,
     };
 
-    for (fault, expected) in [
-        (LogFault::Partial(0), RecoveryExpectation::Committed(false)),
-        (LogFault::Partial(1), RecoveryExpectation::Torn),
-        (LogFault::SyncAfter, RecoveryExpectation::Committed(true)),
-    ] {
+    let key = crate::MaintenanceKey::generate().unwrap();
+    let cuts = {
         let (_root, path, checkpoint, digest) = fixture();
-        let key = crate::MaintenanceKey::generate().unwrap();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        guarded_restart_torn_cuts(
+            &DocumentDatabase::with_checkpoint_store(&store),
+            &path,
+            &key,
+        )
+    };
+    let faults = [(LogFault::Partial(0), RecoveryExpectation::Committed(false))]
+        .into_iter()
+        .chain(cuts.map(|cut| (LogFault::Partial(cut), RecoveryExpectation::Torn)))
+        .chain([(LogFault::SyncAfter, RecoveryExpectation::Committed(true))]);
+    for (fault, expected) in faults {
+        let (_root, path, checkpoint, digest) = fixture();
         let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
         prepare_guarded_restart(&DocumentDatabase::with_checkpoint_store(&store));
+        let length_before = store.log.len().unwrap();
         let file = OpenOptions::new()
             .read(true)
             .append(true)
@@ -33,9 +44,28 @@ fn guarded_index_restart_recovers_atomically_with_its_receipt() {
             matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
             "{result:?}"
         );
+        if let LogFault::Partial(cut) = fault {
+            assert_eq!(store.log.len().unwrap(), length_before + cut as u64);
+        }
         drop(store);
         verify_guarded_restart_recovery(&path, &checkpoint, &digest, &key, expected, false);
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guarded_maintenance_restart_recovers_after_v3_witness_faults() {
+    use crate::document::detailed_fault_model::{
+        attach_v3_restart_fault, guarded_restart, guarded_restart_v3_faults,
+        prepare_guarded_restart,
+    };
+
+    guarded_restart_v3_faults(false, |path, checkpoint, digest, key, fault| {
+        let mut store = retry_lock(|| CheckpointStore::open(path, checkpoint, digest)).unwrap();
+        prepare_guarded_restart(&DocumentDatabase::with_checkpoint_store(&store));
+        attach_v3_restart_fault(&mut store.log, path, fault);
+        guarded_restart(&DocumentDatabase::with_checkpoint_store(&store), key)
+    });
 }
 
 #[test]
