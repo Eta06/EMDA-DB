@@ -16,10 +16,10 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
 
 const BATCH: u64 = 128;
-const CHURN: u64 = 4096;
+const DEFAULT_CHURN: u64 = 4096;
+const WIDE_CHURN: u64 = 32_768;
 const STANDARD_KEYS: u64 = 262_144;
 const MAX_KEYS: u64 = 1_048_576;
-const THRESHOLD: NonZeroU64 = NonZeroU64::new(640 * 1024).unwrap();
 const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
     base: Limits {
         file_bytes: 32 << 20,
@@ -46,6 +46,10 @@ enum Backend {
     Ordinary(Box<Store>),
     Retained(Box<Catalog>),
     Sqlite(Connection),
+}
+
+fn threshold(limits: RetainedStoreLimits) -> NonZeroU64 {
+    NonZeroU64::new(limits.suffix.bytes / 6 * 5).expect("benchmark suffix budget is positive")
 }
 
 fn sqlite(path: &Path, create: bool) -> Result<Connection> {
@@ -99,8 +103,12 @@ impl Backend {
             "ordinary" => Ok(Self::Ordinary(Box::new(Store::open(root.join(name))?))),
             "retained" => {
                 let provider = FileRetainedAuthority::open(root.join("authority"))?;
-                let store =
-                    Catalog::open_with_auto_reclaim(root.join(name), limits, provider, THRESHOLD)?;
+                let store = Catalog::open_with_auto_reclaim(
+                    root.join(name),
+                    limits,
+                    provider,
+                    threshold(limits),
+                )?;
                 Ok(Self::Retained(Box::new(store)))
             }
             "sqlite" => Ok(Self::Sqlite(sqlite(&root.join(name), false)?)),
@@ -209,9 +217,10 @@ fn verify(
     mut next_page: impl FnMut(Option<&[u8]>) -> Result<Vec<Entry>>,
     keys: u64,
     epoch: u64,
+    churn: u64,
 ) -> Result<()> {
     let mut expected = (0..keys).filter_map(|id| {
-        let revision = if id < CHURN { epoch } else { 0 };
+        let revision = if id < churn { epoch } else { 0 };
         (!deleted(id, revision)).then(|| (id.to_be_bytes(), value(id, revision)))
     });
     let mut after = None;
@@ -260,6 +269,7 @@ fn run_lifecycle(
     keys: u64,
     epoch: u64,
     authorized: bool,
+    churn: u64,
 ) -> Result<()> {
     let bytes: [u8; 72] = fs::read(root.join("archive-binding"))?
         .try_into()
@@ -270,8 +280,12 @@ fn run_lifecycle(
         witness_digest: bytes[40..].try_into()?,
     };
     let provider = FileRetainedAuthority::open(root.join("authority"))?;
-    let mut catalog =
-        Catalog::open_with_auto_reclaim(root.join("retained"), limits, provider, THRESHOLD)?;
+    let mut catalog = Catalog::open_with_auto_reclaim(
+        root.join("retained"),
+        limits,
+        provider,
+        threshold(limits),
+    )?;
     let backup = root.join("backup");
     let restored = root.join("restored");
     let start = Instant::now();
@@ -326,7 +340,12 @@ fn run_lifecycle(
         println!("restore_ns={}", start.elapsed().as_nanos());
         let mut restored =
             Catalog::open(&restored, limits, FileRetainedAuthority::open(authority)?)?;
-        verify(|after| Ok(restored.scan(after, None, 1024)?), keys, epoch)?;
+        verify(
+            |after| Ok(restored.scan(after, None, 1024)?),
+            keys,
+            epoch,
+            churn,
+        )?;
         assert_eq!(
             FileRetainedAuthority::open(root.join("authority"))?.read()?,
             Some(source_authority)
@@ -335,11 +354,16 @@ fn run_lifecycle(
         ManagedRetainedStore::restore_backup(&backup, &restored, limits, &expected)?;
         println!("restore_ns={}", start.elapsed().as_nanos());
         let restored = ManagedRetainedStore::open(restored, limits)?;
-        verify(|after| Ok(restored.scan(after, None, 1024)?), keys, epoch)?;
+        verify(
+            |after| Ok(restored.scan(after, None, 1024)?),
+            keys,
+            epoch,
+            churn,
+        )?;
     }
     drop(catalog);
     let mut source = Backend::open(root, "retained", limits)?;
-    verify(|after| source.page(after), keys, epoch)?;
+    verify(|after| source.page(after), keys, epoch, churn)?;
     Ok(())
 }
 
@@ -359,14 +383,19 @@ fn authority_state(root: &Path) -> Result<(u64, u64, [u8; 16])> {
 
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
-    let [_, phase, root, name, keys, epoch] = args.as_slice() else {
-        return Err("usage: authorized_recovery_bench <setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|retained|sqlite|both|all> <keys> <epoch>".into());
+    let [_, phase, root, name, keys, epoch, options @ ..] = args.as_slice() else {
+        return Err("usage: authorized_recovery_bench <setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|retained|sqlite|both|all> <keys> <epoch> [--wide-suffix]".into());
+    };
+    let churn = match options {
+        [] => DEFAULT_CHURN,
+        [option] if option == "--wide-suffix" => WIDE_CHURN,
+        _ => return Err("expected at most one --wide-suffix option".into()),
     };
     let root = Path::new(root);
     let keys: u64 = keys.parse()?;
     let epoch: u64 = epoch.parse()?;
-    if !(CHURN..=MAX_KEYS).contains(&keys) || epoch > 1000 {
-        return Err("keys must be 4096–1048576 and epoch must be 0–1000".into());
+    if !(churn..=MAX_KEYS).contains(&keys) || epoch > 1000 {
+        return Err(format!("keys must be {churn}–1048576 and epoch must be 0–1000").into());
     }
     let mut limits = LIMITS;
     if keys > STANDARD_KEYS {
@@ -375,6 +404,17 @@ fn main() -> Result<()> {
             entries: MAX_KEYS,
             key_bytes: MAX_KEYS * 8,
             work_bytes: (128 << 20) + 1,
+        };
+    }
+    if churn == WIDE_CHURN {
+        limits.suffix = SuffixLimits {
+            bytes: 12 << 20,
+            operations: WIDE_CHURN * 4,
+            work: 12_000_000_000,
+        };
+        limits.overlay = OverlayLimits {
+            entries: WIDE_CHURN as usize,
+            key_bytes: WIDE_CHURN as usize * 8,
         };
     }
     match std::env::var("EMDA_BENCH_SUFFIX_WORK") {
@@ -436,17 +476,17 @@ fn main() -> Result<()> {
                     .transpose()?;
                 let start = Instant::now();
                 let cpu_start = cpu_ns();
-                apply(&mut store, CHURN, epoch)?;
+                apply(&mut store, churn, epoch)?;
                 let write_cpu = cpu_ns() - cpu_start;
                 let write_time = start.elapsed().as_nanos();
                 println!(
-                    "mutate_ns={write_time} mutate_cpu_ns={write_cpu} batches={} operations={CHURN}",
-                    CHURN / BATCH
+                    "mutate_ns={write_time} mutate_cpu_ns={write_cpu} batches={} operations={churn}",
+                    churn / BATCH
                 );
                 if let Some((revision, _, _)) = before {
                     let (end, _, _) = authority_state(root)?;
                     let revisions = end
-                        .checked_sub(revision + 2 * (CHURN / BATCH))
+                        .checked_sub(revision + 2 * (churn / BATCH))
                         .ok_or("unexpected authority revision count")?;
                     if revisions % 2 != 0 {
                         return Err("unpaired rotation and reclamation revisions".into());
@@ -456,7 +496,7 @@ fn main() -> Result<()> {
             } else if phase == "verify" {
                 let start = Instant::now();
                 let cpu_start = cpu_ns();
-                verify(|after| store.page(after), keys, epoch)?;
+                verify(|after| store.page(after), keys, epoch, churn)?;
                 let verify_cpu = cpu_ns() - cpu_start;
                 println!(
                     "verify_ns={} verify_cpu_ns={verify_cpu}",
@@ -465,7 +505,7 @@ fn main() -> Result<()> {
             } else {
                 let (id, revision) = (0..keys)
                     .rev()
-                    .map(|id| (id, if id < CHURN { epoch } else { 0 }))
+                    .map(|id| (id, if id < churn { epoch } else { 0 }))
                     .find(|&(id, revision)| !deleted(id, revision))
                     .ok_or("fixture has no probe key")?;
                 if store.get(&id.to_be_bytes())? != value(id, revision) {
@@ -496,11 +536,19 @@ fn main() -> Result<()> {
             }
         }
         "lifecycle" | "authorized-lifecycle" => {
-            run_lifecycle(root, limits, keys, epoch, phase == "authorized-lifecycle")?;
+            run_lifecycle(
+                root,
+                limits,
+                keys,
+                epoch,
+                phase == "authorized-lifecycle",
+                churn,
+            )?;
         }
         _ => return Err("invalid phase".into()),
     }
     println!("suffix_work={}", limits.suffix.work);
+    println!("churn={churn}");
     println!("phase={phase} backend={name} keys={keys} epoch={epoch}");
     Ok(())
 }

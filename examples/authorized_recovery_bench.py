@@ -46,7 +46,7 @@ def command(binary, phase, fixture, backend, keys, epoch):
     return timing + [str(binary), phase, str(fixture), backend, str(keys), str(epoch)]
 
 
-def run(binary, directory, phase, backend, keys, epoch):
+def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False):
     fixture = directory / "fixture"
     excluded = ()
     if phase in {"bind-archive", "lifecycle", "authorized-lifecycle"}:
@@ -63,8 +63,11 @@ def run(binary, directory, phase, backend, keys, epoch):
     initial = allocated_bytes(paths, excluded)
     peak = initial
     samples = 1
+    args = command(binary, phase, fixture, backend, keys, epoch)
+    if wide_suffix:
+        args.append("--wide-suffix")
     with logfile.open("w") as out:
-        child = subprocess.Popen(command(binary, phase, fixture, backend, keys, epoch),
+        child = subprocess.Popen(args,
                                  stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             while child.poll() is None:
@@ -111,11 +114,13 @@ def main():
     parser.add_argument("keys", type=int)
     parser.add_argument("epochs", type=int)
     parser.add_argument("--sqlite", action="store_true", help="include a WAL/FULL SQLite control")
+    parser.add_argument("--wide-suffix", action="store_true", help="run 32,768 mutations per epoch with a 12 MiB suffix budget")
     parser.add_argument("--retire-and-restore", action="store_true", help="verify a local backup, retire the legacy archive, and restore the final state")
     parser.add_argument("--authorized-restore", action="store_true", help="restore using an independently recorded receipt and a fresh authority")
     args = parser.parse_args()
-    if not 4096 <= args.keys <= 1048576 or not 1 <= args.epochs <= 1000:
-        parser.error("keys must be 4096–1048576 and epochs must be 1–1000")
+    min_keys = 32768 if args.wide_suffix else 4096
+    if not min_keys <= args.keys <= 1048576 or not 1 <= args.epochs <= 1000:
+        parser.error(f"keys must be {min_keys}–1048576 and epochs must be 1–1000")
     if args.authorized_restore and not args.retire_and_restore:
         parser.error("--authorized-restore requires --retire-and-restore")
     binary, directory = args.binary.resolve(strict=True), args.new_directory.resolve()
@@ -130,24 +135,29 @@ def main():
         "suffix_work_override": os.environ.get("EMDA_BENCH_SUFFIX_WORK"),
         "retire_and_restore": args.retire_and_restore,
         "authorized_restore": args.authorized_restore,
+        "wide_suffix": args.wide_suffix,
     }
     (directory / "environment.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    run(binary, directory, "setup", "all" if args.sqlite else "both", args.keys, 0)
+    def phase(phase_name, backend, epoch):
+        return run(binary, directory, phase_name, backend, args.keys, epoch,
+                   wide_suffix=args.wide_suffix)
+
+    phase("setup", "all" if args.sqlite else "both", 0)
     if args.retire_and_restore:
-        run(binary, directory, "bind-archive", "retained", args.keys, 0)
-    run(binary, directory, "cutover", "retained", args.keys, 0)
+        phase("bind-archive", "retained", 0)
+    phase("cutover", "retained", 0)
     rotations = 0
     for epoch in range(1, args.epochs + 1):
         for backend in orders[(epoch - 1) % len(orders)]:
-            metrics = run(binary, directory, "mutate", backend, args.keys, epoch)
+            metrics = phase("mutate", backend, epoch)
             rotations += metrics.get("rotations", 0)
-            run(binary, directory, "reopen", backend, args.keys, epoch)
-            run(binary, directory, "verify", backend, args.keys, epoch)
+            phase("reopen", backend, epoch)
+            phase("verify", backend, epoch)
         print(f"{directory.name}: verified {len(backends)} backends at epoch {epoch}", flush=True)
     print(f"rotations={rotations}", flush=True)
     if args.retire_and_restore:
-        phase = "authorized-lifecycle" if args.authorized_restore else "lifecycle"
-        run(binary, directory, phase, "retained", args.keys, args.epochs)
+        phase("authorized-lifecycle" if args.authorized_restore else "lifecycle",
+              "retained", args.epochs)
         print("verified restored and current retained state", flush=True)
 
 

@@ -453,6 +453,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Reject a locked inactive generation or one with unowned contents before advancing the retained authority revision. Verify that a rejected attempt leaves the authority and inactive files intact, and that a clean retry still fences older revisions before retiring the slot.
 - [x] Discard a verified abandoned cutover preparation before or after cutover. The [cleanup regression](../benchmarks/results/2026-11-19-abandoned-cutover-cleanup/README.md) checks the live source after a process kill, refuses registered or selected catalogs, and preserves unknown entries.
 - [ ] Complete the retained-history lifecycle for independently retained backups and measure recovery at deployment scale. Retained reopen verifies the entire admitted base and replays a bounded suffix. Rotation is synchronous. Limits do not bound all allocations or the total disk space across active and retired files. Any path that skips full verification needs a documented corruption model and equivalent validation. Reclamation must preserve captured reads and transactions, recover from interrupted publication, and reject stale generations according to the authority contract.
+  The [million-key larger-suffix comparison](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md)
+  exercises 32,768 mutations per epoch and local authorized restore on macOS
+  and Linux. A Linux reopen trace attributes most read bytes to the base.
   The retained retirement path reports final catalog-sync failures. The
   regression checks that the marker survives a failed payload-removal sync,
   then reopens and verifies the selected state and cleanup retry after either

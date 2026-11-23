@@ -22,6 +22,8 @@ EMDA_BENCH_SUFFIX_WORK=240000000 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/archive-lifecycle" 131072 6 --retire-and-restore
 EMDA_BENCH_SUFFIX_WORK=240000000 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/authorized-restore" 1048576 6 --sqlite --retire-and-restore --authorized-restore
+python3 examples/authorized_recovery_bench.py \
+  target/release/examples/authorized_recovery_bench "$run/wide-suffix" 1048576 6 --sqlite --wide-suffix
 ```
 
 Each run needs a fresh directory and enough space for both fixtures and
@@ -34,6 +36,12 @@ and the optional SQLite database as well. The default suffix budget is
 768 KiB, 8,192 operations, and 1,000,000
 replay-work units. The policy requests rotation at 640 KiB. The optional
 work-budget override must be applied to every phase of the same fixture.
+With `--wide-suffix`, each epoch updates and deletes from the first
+32,768 keys in 256 durable batches. This requires at least 32,768 initial
+keys and uses a 12 MiB suffix limit, a 10 MiB rotation threshold, 131,072
+operations, 12 billion replay-work units, and a 32,768-key overlay.
+Apply the flag to every phase when running the executable directly.
+The runner records the chosen workload in `environment.json`.
 Both the authority directory and the database directories are local. The
 authority directory is separate and on the same filesystem for this
 benchmark.
@@ -56,7 +64,7 @@ after reopening. Preparation and registration are timed separately.
 The allocation samples include the receipt and fresh authority directories.
 
 The runner saves raw phase logs and JSONL measurements. Write latency is
-the time to apply an entire epoch of 32 durable batches, including
+the time to apply an entire epoch of durable batches, including
 synchronous rotation. Reopen duration starts before opening the authority
 and database and ends when the database handle is ready. The time to
 first verified point read includes open. SQLite uses WAL with
@@ -92,5 +100,8 @@ cover local backup, retirement, and restore on macOS APFS and Linux ext4.
 The [million-key authorized restore run](../benchmarks/results/2026-11-23-million-key-authorized-restore/README.md)
 adds Linux virtual-disk ext4 timings and verifies registration under a
 fresh authority on both filesystems.
+The [larger-suffix run](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md)
+compares the two mutation workloads and checks a local authorized restore
+for each on macOS APFS and Linux tmpfs.
 The [authority read comparison](../benchmarks/results/2026-11-22-authority-read-sync/README.md)
 isolates record synchronization using the same fixture on each platform.
