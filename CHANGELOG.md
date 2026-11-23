@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse bounded spill buffers during checkpoint rebuild to reduce allocation
+  churn in disk-backed replay and merges.
+
 - Optionally share one per-store admission limit across direct key-value
   reads and snapshot reads, including checkpoint-backed bulk reads.
 

@@ -300,6 +300,7 @@ impl RunCursor {
     fn find(&mut self, needle: &[u8]) -> io::Result<Find> {
         let mut lo = 0_u64;
         let mut hi = self.count;
+        let mut buffer = [0_u8; MAX_ENTRY_ON_DISK];
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let (key, state) = read_entry(
@@ -309,8 +310,9 @@ impl RunCursor {
                 &self.identity,
                 mid,
                 self.count,
+                &mut buffer,
             )?;
-            match key.as_slice().cmp(needle) {
+            match key.cmp(needle) {
                 Ordering::Equal => return Ok(Find::Found(state)),
                 Ordering::Less => lo = mid + 1,
                 Ordering::Greater => hi = mid,
@@ -355,6 +357,7 @@ impl RunCursor {
             return Err(record::invalid_data("spill run entry offset is not packed"));
         }
         let end = range.end;
+        let mut buffer;
         let (key, state) = if let Some(scan) = &mut self.sequential {
             let span = entry_span(&range, self.table_at)?;
             let bytes = scan
@@ -369,6 +372,7 @@ impl RunCursor {
                 self.count,
             )?
         } else {
+            buffer = [0_u8; MAX_ENTRY_ON_DISK];
             read_entry(
                 &self.file,
                 range,
@@ -376,19 +380,22 @@ impl RunCursor {
                 &self.identity,
                 self.index,
                 self.count,
+                &mut buffer,
             )?
         };
         if self
             .previous
             .as_ref()
-            .is_some_and(|previous| previous.as_slice() >= key.as_slice())
+            .is_some_and(|previous| previous.as_slice() >= key)
         {
             return Err(record::invalid_data("spill run is not strictly ordered"));
         }
-        self.previous = Some(key.clone());
+        let previous = self.previous.get_or_insert_with(Vec::new);
+        previous.clear();
+        previous.extend_from_slice(key);
         self.expected_pos = end;
         self.index += 1;
-        Ok(Some((key, state)))
+        Ok(Some((key.to_vec(), state)))
     }
 
     fn entry_range(&self, index: u64) -> io::Result<Range<u64>> {
@@ -523,19 +530,21 @@ impl RunWriter {
                 tail[13..17].copy_from_slice(&location.checksum.to_le_bytes());
             }
         }
-        let mut body = Vec::with_capacity(2 + key.len() + TAIL_LEN);
-        body.extend_from_slice(&key_len.to_le_bytes());
-        body.extend_from_slice(key);
-        body.extend_from_slice(&tail);
+        let mut buffer = [0_u8; MAX_ENTRY_ON_DISK];
+        let tail_at = 2 + key.len();
+        let body = &mut buffer[..tail_at + TAIL_LEN];
+        body[..2].copy_from_slice(&key_len.to_le_bytes());
+        body[2..tail_at].copy_from_slice(key);
+        body[tail_at..].copy_from_slice(&tail);
         let crc = entry_checksum(
             &self.identity,
             index,
             offset,
             self.expected_count,
             self.table_at,
-            &body,
+            body,
         );
-        self.write_hashed(&body)?;
+        self.write_hashed(body)?;
         self.write_hashed(&crc.to_le_bytes())?;
         if self.count == 0 {
             self.first_key.extend_from_slice(key);
@@ -1198,17 +1207,17 @@ fn entry_checksum(
     hasher.finalize()
 }
 
-fn read_entry(
+fn read_entry<'a>(
     file: &File,
     range: Range<u64>,
     table_at: u64,
     identity: &[u8; 32],
     index: u64,
     count: u64,
-) -> io::Result<(Vec<u8>, Option<ValueLocation>)> {
+    buffer: &'a mut [u8; MAX_ENTRY_ON_DISK],
+) -> io::Result<(&'a [u8], Option<ValueLocation>)> {
     let span = entry_span(&range, table_at)?;
     // Read the complete entry before interpreting its fields.
-    let mut buffer = [0_u8; MAX_ENTRY_ON_DISK];
     file.read_exact_at(&mut buffer[..span], range.start)?;
     decode_entry(
         &buffer[..span],
@@ -1234,14 +1243,14 @@ fn entry_span(range: &Range<u64>, table_at: u64) -> io::Result<usize> {
         .ok_or_else(|| record::invalid_data("invalid spill entry span"))
 }
 
-fn decode_entry(
-    buffer: &[u8],
+fn decode_entry<'a>(
+    buffer: &'a [u8],
     pos: u64,
     table_at: u64,
     identity: &[u8; 32],
     index: u64,
     count: u64,
-) -> io::Result<(Vec<u8>, Option<ValueLocation>)> {
+) -> io::Result<(&'a [u8], Option<ValueLocation>)> {
     let key_len = u16::from_le_bytes([buffer[0], buffer[1]]) as usize;
     if key_len == 0 || key_len > MAX_SPILL_KEY_LEN {
         return Err(record::invalid_data("invalid spill key length"));
@@ -1268,8 +1277,8 @@ fn decode_entry(
     if actual != stored {
         return Err(record::invalid_data("spill entry checksum mismatch"));
     }
-    let key = buffer[2..tag_at].to_vec();
-    record::validate_key(&key)?;
+    let key = &buffer[2..tag_at];
+    record::validate_key(key)?;
     let tail = &buffer[tag_at..body_end];
     let offset = u64::from_le_bytes(tail[1..9].try_into().expect("eight bytes"));
     let length = u32::from_le_bytes(tail[9..13].try_into().expect("four bytes"));
@@ -2361,6 +2370,7 @@ mod tests {
             &[0; 32],
             0,
             1,
+            &mut [0_u8; MAX_ENTRY_ON_DISK],
         ) {
             Ok(_) => panic!("header bytes accepted as a spill entry"),
             Err(error) => error,
@@ -2532,6 +2542,24 @@ mod tests {
             run_len(entries.len() as u64, key_bytes).unwrap()
         );
         (session, directory, path)
+    }
+
+    #[test]
+    fn maximum_key_round_trips_through_spill_lookup_and_scan() {
+        let entries = [(vec![b'a'; record::MAX_KEY], Some(loc(100)))];
+        let (session, _directory, _) = variant_run(&entries);
+        let (key, state) = &entries[0];
+        for buffered in [false, true] {
+            let mut cursor = RunCursor::open(&session.fd, &session.runs[0], buffered).unwrap();
+            let Find::Found(found) = cursor.find(key).unwrap() else {
+                panic!("maximum-length key was not found");
+            };
+            assert_eq!(located(found), located(*state));
+            let (generated_key, generated_state) = cursor.next_entry().unwrap().unwrap();
+            assert_eq!(&generated_key, key);
+            assert_eq!(located(generated_state), located(*state));
+            assert!(cursor.next_entry().unwrap().is_none());
+        }
     }
 
     /// Sites are derived from the finished image so each used entry byte and
