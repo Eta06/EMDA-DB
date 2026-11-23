@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse bounded key buffers across entries in spill merges during
+  checkpoint rebuild.
+
 - Synchronize the restored store's lock file before publishing its directory,
   and run V2 backup, restore, and upgrade interruption checks on macOS.
 

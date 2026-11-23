@@ -322,6 +322,13 @@ impl RunCursor {
     }
 
     fn next_entry(&mut self) -> io::Result<Option<(Vec<u8>, Option<ValueLocation>)>> {
+        self.next_entry_with(|key, state| (key.to_vec(), state))
+    }
+
+    fn next_entry_with<T>(
+        &mut self,
+        take: impl FnOnce(&[u8], Option<ValueLocation>) -> T,
+    ) -> io::Result<Option<T>> {
         if self.index == self.count {
             if self.expected_pos != self.table_at {
                 return Err(record::invalid_data(
@@ -395,7 +402,7 @@ impl RunCursor {
         previous.extend_from_slice(key);
         self.expected_pos = end;
         self.index += 1;
-        Ok(Some((key.to_vec(), state)))
+        Ok(Some(take(key, state)))
     }
 
     fn entry_range(&self, index: u64) -> io::Result<Range<u64>> {
@@ -1071,19 +1078,25 @@ fn merge_walk(
             generation: generations[input],
         });
     }
-    let mut last: Option<Vec<u8>> = None;
+    // A head owns one key buffer. After emission, give its buffer back to
+    // that input, exchanging it with the previous emitted key when needed.
+    let mut last = Vec::new();
     while let Some(head) = heap.pop() {
         let Head {
-            key,
+            mut key,
             state,
             input,
             generation,
         } = head;
-        if last.as_ref() != Some(&key) {
+        if last != key {
             emit(&key, state)?;
-            last = Some(key);
+            std::mem::swap(&mut last, &mut key);
         }
-        if let Some((key, state)) = cursors[input].next_entry()? {
+        if let Some(state) = cursors[input].next_entry_with(|next, state| {
+            key.clear();
+            key.extend_from_slice(next);
+            state
+        })? {
             heap.push(Head {
                 key,
                 state,

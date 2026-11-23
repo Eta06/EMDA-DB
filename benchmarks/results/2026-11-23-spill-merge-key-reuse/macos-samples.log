@@ -1,0 +1,12 @@
+1 baseline calls=134107 requested_bytes=9978585 elapsed_us=946759 verified=true
+1 candidate calls=36441 requested_bytes=9197257 elapsed_us=910330 verified=true
+2 candidate calls=36441 requested_bytes=9197257 elapsed_us=912481 verified=true
+2 baseline calls=134107 requested_bytes=9978585 elapsed_us=920154 verified=true
+3 baseline calls=134107 requested_bytes=9978585 elapsed_us=926950 verified=true
+3 candidate calls=36441 requested_bytes=9197257 elapsed_us=1008355 verified=true
+4 candidate calls=36441 requested_bytes=9197257 elapsed_us=930734 verified=true
+4 baseline calls=134107 requested_bytes=9978585 elapsed_us=936462 verified=true
+5 baseline calls=134107 requested_bytes=9978585 elapsed_us=912115 verified=true
+5 candidate calls=36441 requested_bytes=9197257 elapsed_us=899193 verified=true
+6 candidate calls=36441 requested_bytes=9197257 elapsed_us=908310 verified=true
+6 baseline calls=134107 requested_bytes=9978585 elapsed_us=912720 verified=true
