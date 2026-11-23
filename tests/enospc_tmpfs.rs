@@ -2,7 +2,10 @@
 //! Run only through the documented disposable-container procedure.
 #![cfg(target_os = "linux")]
 
-use database_engine::{CheckpointStore, Store, cleanup_abandoned_staging};
+use database_engine::{
+    BatchOperation, BoundedFullRebuildLimits, CheckpointStore, ManagedRebuildFailure, Store,
+    cleanup_abandoned_staging,
+};
 use rustix::fs::{getxattr, statfs};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -35,6 +38,12 @@ enum CopyOperation {
 enum Exhaustion {
     Bytes,
     Inodes,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Rebuild {
+    Full,
+    Suffix,
 }
 
 fn disposable_root() -> PathBuf {
@@ -350,6 +359,160 @@ fn check_inode_exhausted_initialization(root: &Path) {
     eprintln!("initialization/Inodes: filler={count} failed safely and retry verified");
 }
 
+fn check_bounded_rebuild(root: &Path, format: Format, mode: Rebuild, exhaustion: Exhaustion) {
+    const TAIL_KEYS: u16 = 256;
+    const CHUNK_KEYS: usize = 128;
+    const KEY_BYTES: usize = 1024;
+    const SPILL_BYTES: u64 = 2 * 1024 * 1024;
+
+    let case = tempfile::tempdir_in(root).unwrap();
+    let source = case.path().join("source");
+    let base = case.path().join("base");
+    let reference = case.path().join("reference");
+    let destination = case.path().join("rebuilt");
+    let store = prepare_source(&source, format);
+    drop(store);
+    let base_digest = CheckpointStore::rebuild_managed_selection(&source, &base).unwrap();
+    let prior_witness = witness(&source, format);
+    let keys = (0..TAIL_KEYS)
+        .map(|number| {
+            let mut key = [b'k'; KEY_BYTES];
+            key[..2].copy_from_slice(&number.to_be_bytes());
+            key
+        })
+        .collect::<Vec<_>>();
+    let operations = keys
+        .iter()
+        .map(|key| BatchOperation::Put {
+            key,
+            value: b"tail",
+        })
+        .collect::<Vec<_>>();
+    let store = Store::open(&source).unwrap();
+    store.write_batch(&operations).unwrap();
+    let reference_digest = store.checkpoint_to(&reference).unwrap();
+    drop(store);
+
+    let committed_witness = witness(&source, format);
+    assert_ne!(prior_witness, committed_witness);
+    let log_path = source.join("records.log");
+    let anchor_path = source.join("commit.state");
+    match format {
+        Format::V2 => fs::write(&anchor_path, &prior_witness).unwrap(),
+        Format::V3 => {
+            rustix::fs::setxattr(
+                &log_path,
+                XATTR,
+                &prior_witness,
+                rustix::fs::XattrFlags::REPLACE,
+            )
+            .unwrap();
+        }
+    }
+    let log = fs::read(&log_path).unwrap();
+    let anchor = fs::read(&anchor_path).unwrap();
+    let selection = source.join("checkpoint.selection");
+    let prior_selection = fs::read(&selection).unwrap();
+    let base_bytes = fs::read(&base).unwrap();
+    let source_names = || {
+        fs::read_dir(&source)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let prior_names = source_names();
+    let assert_source_intact = || {
+        assert_eq!(fs::read(&log_path).unwrap(), log);
+        assert_eq!(fs::read(&base).unwrap(), base_bytes);
+        if matches!(format, Format::V3) {
+            assert_eq!(fs::read(&anchor_path).unwrap(), anchor);
+        }
+    };
+    let rebuild = || match mode {
+        Rebuild::Full => CheckpointStore::rebuild_managed_selection_full_bounded(
+            &source,
+            &destination,
+            BoundedFullRebuildLimits {
+                max_log_bytes: log.len() as u64,
+                max_operations: u64::from(TAIL_KEYS) + 1,
+                max_live_keys: usize::from(TAIL_KEYS) + 1,
+                max_live_key_bytes: u64::from(TAIL_KEYS) * KEY_BYTES as u64 + 4,
+                max_chunk_keys: CHUNK_KEYS,
+                max_chunk_key_bytes: CHUNK_KEYS * KEY_BYTES,
+                max_spill_bytes: SPILL_BYTES,
+                max_merge_fan_in: 2,
+            },
+        ),
+        Rebuild::Suffix => CheckpointStore::rebuild_managed_selection_bounded_detailed(
+            &source,
+            &destination,
+            &base,
+            &base_digest,
+            CHUNK_KEYS,
+            CHUNK_KEYS * KEY_BYTES,
+            SPILL_BYTES,
+            2,
+            u64::from(TAIL_KEYS),
+        ),
+    };
+
+    let filler = case.path().join("filler");
+    let inode_filler = case.path().join("inode-filler");
+    let mut inode_files = Vec::new();
+    match exhaustion {
+        Exhaustion::Bytes => {
+            // Give the stage marker space, but less than a spill chunk needs.
+            let page_bytes = statfs(root).unwrap().f_bsize as usize;
+            assert!(page_bytes <= 64 * 1024);
+            let reserve = case.path().join("reserve");
+            fs::write(&reserve, vec![0xa5; 2 * page_bytes]).unwrap();
+            fill_until_enospc(&filler);
+            fs::remove_file(reserve).unwrap();
+            assert_eq!(statfs(root).unwrap().f_bavail, 2);
+        }
+        Exhaustion::Inodes => {
+            // Leave space for the stage directory, marker and one spill file.
+            inode_files = exhaust_inodes(&inode_filler);
+            for _ in 0..3 {
+                fs::remove_file(inode_files.pop().unwrap()).unwrap();
+            }
+            assert_eq!(statfs(root).unwrap().f_ffree, 3);
+        }
+    }
+    match rebuild() {
+        Err(ManagedRebuildFailure::NotPublished(error)) => assert_enospc(&error),
+        other => panic!("unexpected rebuild outcome: {other:?}"),
+    }
+    assert!(!destination.exists());
+    assert_eq!(fs::read(&selection).unwrap(), prior_selection);
+    assert_eq!(witness(&source, format), prior_witness);
+    assert_source_intact();
+    assert_eq!(source_names(), prior_names);
+    match exhaustion {
+        Exhaustion::Bytes => fs::remove_file(filler).unwrap(),
+        Exhaustion::Inodes => release_inodes(&inode_filler, inode_files),
+    }
+    assert_eq!(rebuild().unwrap(), reference_digest);
+    assert_eq!(
+        fs::read(&destination).unwrap(),
+        fs::read(reference).unwrap()
+    );
+    assert_eq!(witness(&source, format), committed_witness);
+    assert_source_intact();
+    assert_eq!(source_names(), prior_names);
+    let reopened = CheckpointStore::open_managed(&source).unwrap();
+    assert_eq!(
+        reopened.get(b"safe").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    for key in keys {
+        assert_eq!(reopened.get(&key).unwrap().as_deref(), Some(&b"tail"[..]));
+    }
+    eprintln!(
+        "bounded rebuild {format:?}/{mode:?}/{exhaustion:?}: rejected without adoption; exact retry verified"
+    );
+}
+
 #[test]
 #[ignore = "requires an exclusively owned, tiny disposable tmpfs; see docs/FOUNDATION_FAILURE_MATRIX.md"]
 fn actual_tmpfs_enospc_preserves_source_and_recovery_evidence() {
@@ -365,6 +528,11 @@ fn actual_tmpfs_enospc_preserves_source_and_recovery_evidence() {
         ] {
             for exhaustion in [Exhaustion::Bytes, Exhaustion::Inodes] {
                 check_copy(&root, format, operation, exhaustion);
+            }
+        }
+        for mode in [Rebuild::Suffix, Rebuild::Full] {
+            for exhaustion in [Exhaustion::Bytes, Exhaustion::Inodes] {
+                check_bounded_rebuild(&root, format, mode, exhaustion);
             }
         }
     }

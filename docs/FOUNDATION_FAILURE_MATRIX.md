@@ -143,3 +143,13 @@ GitHub workflow](../.github/workflows/enospc.yml) runs this check on relevant ch
 requires the isolated filesystem. The test does not establish actual disk
 exhaustion behavior on all filesystems, physical power-loss durability or an
 off-host restore.
+
+The bounded rebuild matrix adds eight cases spanning full-log and trusted-base
+suffix rebuild, V2 and V3 witnesses, and byte and inode exhaustion. Each case
+rolls back the witness for a complete 256-put batch, then leaves enough space
+for the spill stage to start. A Linux ARM64 trace with Rust 1.85.0 confirmed
+four kernel `ENOSPC` errors writing the first spill run and four creating its
+offset sidecar. The rebuild returns `NotPublished`, preserves the old witness
+and selection, and leaves no new source entries. After the filler is removed,
+the retry advances the witness, matches the full-replay checkpoint byte for
+byte, and reads every value after managed reopen.

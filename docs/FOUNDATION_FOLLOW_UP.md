@@ -288,6 +288,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   V2 and V3, and both witness positions. Each failure preserves the log,
   witness, and selection and cleans up staging. Every clean retry matches
   ordinary full-log replay byte for byte.
+- [x] Run [real tmpfs byte and inode exhaustion](FOUNDATION_FAILURE_MATRIX.md#running-the-isolated-enospc-check) inside the bounded-rebuild spill stage. All eight full-log and trusted-base V2/V3 cases preserve the unwitnessed tail, witness, selection and trusted base. Managed reopen after retry matches ordinary replay.
 - [x] Merge runs spanning the same number of chunks during bounded rebuild
   replay. Keep older runs closed until a merge needs them, and charge all
   runs, temporary output, and the sidecar to the existing byte cap.
