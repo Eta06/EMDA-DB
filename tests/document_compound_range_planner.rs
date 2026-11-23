@@ -1350,6 +1350,14 @@ fn membership_prefix_ranges_preserve_partial_and_suffix_requirements() {
             ["a", "b", "c"]
         );
 
+        let mut narrowed = predicates.clone();
+        narrowed.push(membership("tenant", vec![json!("unseen"), json!("t")]));
+        let scan = db.query("c", &query(and(narrowed.clone()), 7)).unwrap();
+        let plan = db.query_planned("c", &query(and(narrowed), 2)).unwrap();
+        assert_eq!(plan.access, membership_range_access(2, 1, true));
+        assert_eq!(plan.result.plan.scanned, 2);
+        assert_eq!(plan.result.documents, scan.documents);
+
         for missing in [4, 5] {
             let mut unsafe_to_plan = predicates.clone();
             unsafe_to_plan.remove(missing);

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Intersect required indexable membership lists on the same field before
+  building single-field and compound index probes.
+
 - Verify the retained base after directory synchronization and check that its
   path still names the verified file before tail adoption or returning a store.
   An independently unauthorized suffix fails before the full base scan.

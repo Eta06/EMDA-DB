@@ -189,6 +189,7 @@ fn required_membership(
     path: &[String],
     accepts: impl Fn(&serde_json::Value) -> bool,
 ) -> Option<Vec<IndexValue>> {
+    let mut intersection: Option<BTreeMap<_, _>> = None;
     for (filter, negated) in required_predicates(required) {
         match (filter, negated) {
             (
@@ -220,13 +221,21 @@ fn required_membership(
                     distinct.entry(encoded).or_insert(value);
                 }
                 if usable && !distinct.is_empty() {
-                    return Some(distinct.into_values().collect());
+                    if let Some(previous) = &intersection {
+                        distinct.retain(|encoded, _| previous.contains_key(encoded));
+                        // Keep an existing bounded access path for disjoint
+                        // lists; the full filter still checks every predicate.
+                        if distinct.is_empty() {
+                            break;
+                        }
+                    }
+                    intersection = Some(distinct);
                 }
             }
             _ => {}
         }
     }
-    None
+    intersection.map(|values| values.into_values().collect())
 }
 
 fn path_implies_presence(field: &[String], actual: bool, path: &[String], exists: bool) -> bool {

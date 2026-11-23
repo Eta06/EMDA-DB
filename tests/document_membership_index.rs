@@ -209,15 +209,77 @@ fn union_uses_partial_index_only_when_its_guard_is_proved() {
 }
 
 #[test]
+fn conjunctive_membership_uses_only_common_index_values() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(false, None)).unwrap();
+        for (id, v) in [
+            ("a", json!(1)),
+            ("b", json!(2)),
+            ("c", json!(2)),
+            ("d", Value::Null),
+            ("e", json!(3)),
+            ("f", json!(false)),
+        ] {
+            db.insert("c", id, &json!({"v":v})).unwrap();
+        }
+        db.insert("c", "missing", &json!({})).unwrap();
+        let first = in_values(vec![json!(1), json!(2), Value::Null, json!(2)]);
+        let second = DocumentFilter::Not(Box::new(DocumentFilter::NotIn {
+            path: vec!["v".into()],
+            values: vec![json!(3), Value::Null, json!(2)],
+        }));
+        let mixed = in_values(vec![json!(2.0), json!(2), Value::Null, json!([2])]);
+        let request = query(DocumentFilter::And(vec![first.clone(), second, mixed]));
+        let scan = db.query("c", &request).unwrap();
+        let limited = DocumentQuery {
+            max_scanned: 3,
+            ..request
+        };
+        let planned = db.query_planned("c", &limited).unwrap();
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::MembershipIndex {
+                index: "v".into(),
+                probes: 2,
+            }
+        );
+        assert_eq!(planned.result.plan.scanned, 3);
+        assert_eq!(planned.result.documents, scan.documents);
+        assert_eq!(planned.result.plan.matched, 3);
+
+        // Disjoint lists keep a usable bounded access path even when a
+        // collection scan would exceed the caller's limit.
+        let disjoint = DocumentQuery {
+            filter: DocumentFilter::And(vec![first, in_values(vec![json!(3), json!(4)])]),
+            max_scanned: 4,
+            ..limited
+        };
+        assert!(db.query("c", &disjoint).is_err());
+        assert!(
+            db.query_planned("c", &disjoint)
+                .unwrap()
+                .result
+                .documents
+                .is_empty()
+        );
+    });
+}
+
+#[test]
 fn union_sees_staged_changes_and_detects_phantoms_for_each_probe() {
     for inserted in [5, 7, 6] {
         on_backends(|db| {
             db.create_collection("c", CollectionSchema::default())
                 .unwrap();
             db.create_index("c", index(false, None)).unwrap();
+            let request = query(DocumentFilter::And(vec![
+                in_values(vec![json!(5), json!(7), json!(6)]),
+                in_values(vec![json!(8), json!(7), json!(5)]),
+            ]));
             db.transaction_with_read_set(|tx| {
                 tx.insert("c", "staged", &json!({"v":5}))?;
-                let request = query(in_values(vec![json!(5), json!(7)]));
                 let planned = tx.query_planned("c", &request)?;
                 assert_eq!(planned.result.documents.len(), 1);
                 assert_eq!(planned.result.documents[0].id, "staged");
@@ -234,8 +296,7 @@ fn union_sees_staged_changes_and_detects_phantoms_for_each_probe() {
                     changed.wait();
                 });
                 let result = db.transaction_with_read_set(|tx| {
-                    let result =
-                        tx.query_planned("c", &query(in_values(vec![json!(5), json!(7)])))?;
+                    let result = tx.query_planned("c", &request)?;
                     assert_eq!(
                         result.access,
                         DocumentQueryAccess::MembershipIndex {
