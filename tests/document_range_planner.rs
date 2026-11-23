@@ -1,7 +1,7 @@
 //! Planned scalar ranges must match complete scans and preserve serializability.
 use database_engine::{
     CheckpointStore, CollectionSchema, Comparison, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue, Store,
+    DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue, PartialFilter, Store,
 };
 use serde_json::{Value, json};
 use std::io::ErrorKind;
@@ -32,6 +32,12 @@ fn equality(name: &str, value: Value) -> DocumentFilter {
     DocumentFilter::Equal {
         path: path(name),
         value,
+    }
+}
+fn starts_with(name: &str, prefix: impl Into<String>) -> DocumentFilter {
+    DocumentFilter::StartsWith {
+        path: path(name),
+        prefix: prefix.into(),
     }
 }
 fn query(filter: DocumentFilter, max_scanned: usize) -> DocumentQuery {
@@ -223,6 +229,207 @@ fn scalar_ranges_match_scans_with_mixed_types_bounds_sort_and_projection() {
             20,
         );
         compare(db, &not_query, DocumentQueryAccess::CollectionScan);
+    });
+}
+
+#[test]
+fn string_prefix_ranges_handle_utf8_nul_and_index_width_boundaries() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("score", false)).unwrap();
+        let widest = format!("{}\u{7f}", "~".repeat(255));
+        let maximal = "\u{10ffff}".repeat(64);
+        for (id, score) in [
+            ("a", json!("cat")),
+            ("b", json!("cat\0")),
+            ("c", json!("cat\0nip")),
+            ("d", json!("cat\u{1}")),
+            ("e", json!("Cat")),
+            ("f", json!("cau")),
+            ("g", json!("\u{d7ff}suffix")),
+            ("h", json!("\u{e000}")),
+            ("i", json!("z\u{10ffff}x")),
+            ("j", json!("{")),
+            ("k", json!(widest)),
+            ("l", json!(format!("{}\u{7f}", "~".repeat(254)))),
+            ("m", json!(maximal)),
+            ("n", json!(null)),
+            ("o", json!(17)),
+            ("p", json!("")),
+        ] {
+            db.insert("c", id, &json!({"score":score})).unwrap();
+        }
+        db.insert("c", "missing", &json!({})).unwrap();
+        for (prefix, expected) in [
+            ("cat", &["a", "b", "c", "d"][..]),
+            ("cat\0", &["b", "c"][..]),
+            ("\u{d7ff}", &["g"][..]),
+            ("z\u{10ffff}", &["i"][..]),
+            (&widest, &["k"][..]),
+            (&maximal, &["m"][..]),
+            (
+                "",
+                &[
+                    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "p",
+                ][..],
+            ),
+            ("unmatched", &[][..]),
+        ] {
+            let request = query(starts_with("score", prefix), 20);
+            compare(db, &request, access("score"));
+            let result = db.query_planned("c", &request).unwrap().result;
+            assert_eq!(result.plan.scanned, expected.len());
+            assert_eq!(
+                result
+                    .documents
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+        let negated = query(DocumentFilter::Not(Box::new(starts_with("score", ""))), 20);
+        compare(db, &negated, DocumentQueryAccess::CollectionScan);
+        let invalid = query(starts_with("score", "x".repeat(257)), 20);
+        assert_eq!(
+            db.query("c", &invalid).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            db.query_planned("c", &invalid).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        // An unreachable prefix still counts toward the shared input cap.
+        let with_budget = |values| {
+            query(
+                DocumentFilter::Or(vec![
+                    DocumentFilter::All,
+                    DocumentFilter::In {
+                        path: path("score"),
+                        values: vec![Value::Null; values],
+                    },
+                    starts_with("score", "c"),
+                ]),
+                20,
+            )
+        };
+        assert_eq!(db.query("c", &with_budget(255)).unwrap().plan.matched, 17);
+        let error = db.query_planned("c", &with_budget(256)).unwrap_err();
+        assert!(error.to_string().contains("filter exceeds the value limit"));
+    });
+}
+
+#[test]
+fn string_prefix_uses_compound_range_only_with_present_trailing_fields() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "pair".into(),
+                fields: vec![path("tenant"), path("profile.name"), path("score")],
+                unique: false,
+                partial: Some(PartialFilter::Exists {
+                    path: path("profile"),
+                    exists: true,
+                }),
+            },
+        )
+        .unwrap();
+        for (id, doc) in [
+            (
+                "a",
+                json!({"tenant":"t","profile":{"name":"prefix-one"},"score":2}),
+            ),
+            (
+                "b",
+                json!({"tenant":"t","profile":{"name":"prefix-omitted"}}),
+            ),
+            (
+                "c",
+                json!({"tenant":"t","profile":{"name":"prelude"},"score":3}),
+            ),
+            (
+                "d",
+                json!({"tenant":"other","profile":{"name":"prefix-other"},"score":4}),
+            ),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        let prefix = starts_with("profile.name", "prefix-");
+        let tenant = equality("tenant", json!("t"));
+        let request = query(DocumentFilter::And(vec![tenant.clone(), prefix.clone()]), 4);
+        compare(db, &request, DocumentQueryAccess::CollectionScan);
+        assert_eq!(db.query("c", &request).unwrap().plan.matched, 2);
+        let indexed = query(
+            DocumentFilter::And(vec![
+                tenant,
+                prefix,
+                DocumentFilter::Exists {
+                    path: path("score"),
+                    exists: true,
+                },
+            ]),
+            4,
+        );
+        let access_path = DocumentQueryAccess::PartialCompoundRangeIndex {
+            index: "pair".into(),
+            equality_fields: 1,
+        };
+        compare(db, &indexed, access_path.clone());
+        let planned = db
+            .query_planned(
+                "c",
+                &DocumentQuery {
+                    max_scanned: 1,
+                    ..indexed
+                },
+            )
+            .unwrap();
+        assert_eq!(planned.access, access_path);
+        assert_eq!(planned.result.plan.scanned, 1);
+        assert_eq!(planned.result.documents[0].id, "a");
+    });
+}
+
+#[test]
+fn string_prefix_index_detects_a_concurrent_phantom_and_rolls_back() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("score", false)).unwrap();
+        let ready = Barrier::new(2);
+        let changed = Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                ready.wait();
+                let inserted = db.insert("c", "entered", &json!({"score":"pre-new"}));
+                changed.wait();
+                inserted.unwrap();
+            });
+            let result = db.transaction_with_read_set(|tx| {
+                let request = query(starts_with("score", "pre-"), 10);
+                let planned = tx.query_planned("c", &request);
+                ready.wait();
+                changed.wait();
+                let planned = planned?;
+                assert_eq!(planned.access, access("score"));
+                assert!(planned.result.documents.is_empty());
+                tx.put_raw(b"prefix-conflict", b"must roll back")
+            });
+            assert_eq!(result.unwrap_err().kind(), ErrorKind::WouldBlock);
+        });
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"prefix-conflict")).unwrap(),
+            None
+        );
+        compare(
+            db,
+            &query(starts_with("score", "pre-"), 10),
+            access("score"),
+        );
     });
 }
 

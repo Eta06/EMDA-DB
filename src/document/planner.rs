@@ -1,7 +1,7 @@
 //! Conservative index selection for bounded queries.
 use super::{
     filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
-    index::{IndexDefinition, IndexValue, PartialFilter},
+    index::{IndexDefinition, IndexValue, MAX_INDEX_STRING_BYTES, PartialFilter},
     key,
     query::{IndexBound, IndexQuery, IndexScanOptions, index_definition},
     transaction::{DocumentTransaction, Metadata},
@@ -304,6 +304,7 @@ fn proves_presence(
             path_implies_presence(field, true, path, exists)
         }
         DocumentFilter::Equal { path: field, .. }
+        | DocumentFilter::StartsWith { path: field, .. }
         | DocumentFilter::In { path: field, .. }
         | DocumentFilter::Compare { path: field, .. }
         | DocumentFilter::ArrayContains { path: field, .. }
@@ -600,6 +601,24 @@ fn tighten(
 
 type EncodedBound = Option<(IndexBound, Vec<u8>)>;
 
+// UTF-8 preserves scalar order. Advance the last scalar that has a
+// representable successor and discard everything after it. If a wider
+// successor would exceed 256 bytes, no indexed string can use it there.
+fn string_prefix_end(prefix: &str) -> Option<String> {
+    for (offset, last) in prefix.char_indices().rev() {
+        let next = u32::from(last) + 1;
+        let next = if next == 0xd800 { 0xe000 } else { next };
+        if let Some(next) =
+            char::from_u32(next).filter(|next| offset + next.len_utf8() <= MAX_INDEX_STRING_BYTES)
+        {
+            let mut end = prefix[..offset].to_owned();
+            end.push(next);
+            return Some(end);
+        }
+    }
+    None
+}
+
 fn tighten_range(
     lower: &mut EncodedBound,
     upper: &mut EncodedBound,
@@ -631,6 +650,18 @@ fn required_range(
                 false,
             ) if field == path => {
                 tighten_range(&mut lower, &mut upper, value, *comparison)?;
+            }
+            (
+                DocumentFilter::StartsWith {
+                    path: field,
+                    prefix,
+                },
+                false,
+            ) if field == path => {
+                tighten(&mut lower, &IndexValue::String(prefix.clone()), true, true)?;
+                if let Some(end) = string_prefix_end(prefix) {
+                    tighten(&mut upper, &IndexValue::String(end), false, false)?;
+                }
             }
             _ => {}
         }

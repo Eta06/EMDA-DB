@@ -6,6 +6,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::io;
 
+pub(super) const MAX_INDEX_STRING_BYTES: usize = 256;
+
 /// Types supported by the initial index encoding. Numbers are signed 64-bit
 /// integers; floating-point and larger unsigned numbers are not indexed.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -91,7 +93,7 @@ impl IndexValue {
                 Self::Integer(expected) => actual.cmp(expected),
                 Self::String(_) => Ordering::Less,
             }),
-            Value::String(actual) if actual.len() <= 256 => Some(match self {
+            Value::String(actual) if actual.len() <= MAX_INDEX_STRING_BYTES => Some(match self {
                 Self::String(expected) => actual.as_bytes().cmp(expected.as_bytes()),
                 Self::Null | Self::Boolean(_) | Self::Integer(_) => Ordering::Greater,
             }),
@@ -107,7 +109,9 @@ impl IndexValue {
                 .as_i64()
                 .map(Self::Integer)
                 .ok_or_else(|| key::invalid("indexed numbers must be signed 64-bit integers")),
-            Value::String(value) if value.len() <= 256 => Ok(Self::String(value.clone())),
+            Value::String(value) if value.len() <= MAX_INDEX_STRING_BYTES => {
+                Ok(Self::String(value.clone()))
+            }
             Value::String(_) => Err(key::invalid("indexed string exceeds 256 bytes")),
             _ => Err(key::invalid(
                 "indexed fields must be null, boolean, integer or string",
@@ -127,7 +131,7 @@ impl IndexValue {
                 out.extend_from_slice(&((*value as u64) ^ (1_u64 << 63)).to_be_bytes());
             }
             Self::String(value) => {
-                if value.len() > 256 {
+                if value.len() > MAX_INDEX_STRING_BYTES {
                     return Err(key::invalid("indexed string exceeds 256 bytes"));
                 }
                 out.push(0x40);

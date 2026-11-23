@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add bounded case-sensitive document string-prefix filters. Required
+  prefixes can use eligible scalar indexes. Exhaustive Rust matches on
+  `DocumentFilter` need a `StartsWith` arm.
+
 - Size disjoint checkpoint spill merges from verified run metadata before
   reading input runs, while retaining full input verification on write.
 

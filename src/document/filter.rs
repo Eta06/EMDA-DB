@@ -1,6 +1,10 @@
 //! Explicitly bounded collection scans, filters, sorting and projection.
 use super::{
-    index::IndexValue, key, query::DocumentEntry, schema, transaction::DocumentTransaction,
+    index::{IndexValue, MAX_INDEX_STRING_BYTES},
+    key,
+    query::DocumentEntry,
+    schema,
+    transaction::DocumentTransaction,
 };
 use serde_json::{Map, Value};
 use std::cmp::{Ordering, Reverse};
@@ -30,6 +34,9 @@ pub enum DocumentFilter {
     Exists { path: Vec<String>, exists: bool },
     /// Compare any JSON value with exact serde_json equality.
     Equal { path: Vec<String>, value: Value },
+    /// Match a string beginning with the given UTF-8 prefix. An empty prefix
+    /// matches every string. The prefix may contain up to 256 bytes.
+    StartsWith { path: Vec<String>, prefix: String },
     /// Match a present path equal to any listed JSON value. Empty never matches.
     In {
         path: Vec<String>,
@@ -195,26 +202,32 @@ impl FilterValueBudget {
         Ok(())
     }
 
+    fn charge_value(&mut self) -> io::Result<()> {
+        if self.values == MAX_FILTER_VALUES {
+            return Err(key::invalid("membership filter exceeds the value limit"));
+        }
+        self.values += 1;
+        Ok(())
+    }
+
+    fn charge_encoded_value(&mut self, value: &impl serde::Serialize) -> io::Result<()> {
+        serde_json::to_writer(self, value).map_err(|_| {
+            key::invalid(
+                "membership filter inputs exceed the encoded byte limit or cannot be encoded",
+            )
+        })
+    }
+
     fn add_values<'a>(&mut self, values: impl IntoIterator<Item = &'a Value>) -> io::Result<()> {
         for value in values {
-            self.values = self
-                .values
-                .checked_add(1)
-                .ok_or_else(|| key::invalid("membership filter exceeds the value limit"))?;
-            if self.values > MAX_FILTER_VALUES {
-                return Err(key::invalid("membership filter exceeds the value limit"));
-            }
+            self.charge_value()?;
             schema::validate_tree(value)?;
-            serde_json::to_writer(&mut *self, value).map_err(|_| {
-                key::invalid(
-                    "membership filter inputs exceed the encoded byte limit or cannot be encoded",
-                )
-            })?;
+            self.charge_encoded_value(value)?;
         }
         Ok(())
     }
 
-    fn equals(&mut self, left: &Value, right: &Value) -> io::Result<bool> {
+    fn charge_comparison(&mut self) -> io::Result<()> {
         self.comparisons = self
             .comparisons
             .checked_add(1)
@@ -222,6 +235,11 @@ impl FilterValueBudget {
         if self.comparisons > MAX_FILTER_COMPARISONS {
             return Err(key::invalid("membership filter comparison limit exceeded"));
         }
+        Ok(())
+    }
+
+    fn equals(&mut self, left: &Value, right: &Value) -> io::Result<bool> {
+        self.charge_comparison()?;
         Ok(left == right)
     }
 
@@ -250,6 +268,14 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
             DocumentFilter::Equal { path, value } => {
                 schema::validate_path(path)?;
                 value_budget.add_values(std::iter::once(value))?;
+            }
+            DocumentFilter::StartsWith { path, prefix } => {
+                schema::validate_path(path)?;
+                if prefix.len() > MAX_INDEX_STRING_BYTES {
+                    return Err(key::invalid("string prefix exceeds 256 bytes"));
+                }
+                value_budget.charge_value()?;
+                value_budget.charge_encoded_value(prefix)?;
             }
             DocumentFilter::In { path, values } | DocumentFilter::NotIn { path, values } => {
                 schema::validate_path(path)?;
@@ -305,6 +331,7 @@ pub(super) fn may_retry_in_id_order(filter: &DocumentFilter) -> bool {
         DocumentFilter::All
         | DocumentFilter::Exists { .. }
         | DocumentFilter::Equal { .. }
+        | DocumentFilter::StartsWith { .. }
         | DocumentFilter::In { .. }
         | DocumentFilter::NotIn { .. }
         | DocumentFilter::ArrayLength { .. }
@@ -351,6 +378,14 @@ fn matches(
             Some(actual) => value_budget.equals(actual, value)?,
             None => false,
         },
+        DocumentFilter::StartsWith { path, prefix } => {
+            if let Some(actual) = schema::field(document, path).and_then(Value::as_str) {
+                value_budget.charge_comparison()?;
+                actual.starts_with(prefix)
+            } else {
+                false
+            }
+        }
         DocumentFilter::In { path, values } => match schema::field(document, path) {
             Some(value) => value_budget.contains(values, value)?,
             None => false,
