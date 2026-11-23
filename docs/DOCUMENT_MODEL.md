@@ -177,10 +177,11 @@ When earlier fields also use membership, the planner applies the same bounds
 before counting complete compound tuples or extending a compound prefix.
 If the narrower prefixes still exceed the 256-probe cap, the existing
 membership-prefix range can remain eligible.
-If the bounded values form one contiguous integer interval, the planner
-can use one inclusive range probe for each preceding membership prefix.
-Lists with gaps remain subject to the existing exact-probe cap and range
-fallback. Indexed disjunctions retain their exact-probe deduplication.
+For bounded integer lists, the planner can use one probe per consecutive
+run for each preceding membership prefix. A run of one value uses an
+exact probe and a longer run uses an inclusive range. Values in the gaps
+consume no candidate budget when the grouped probes fit the 256-probe cap.
+The existing range fallback remains available for larger probe counts.
 The normal candidate budgets and read-set checks apply to the resulting probes.
 When every surviving value is an integer, consecutive values can share an
 inclusive range probe. The planner reports this access as

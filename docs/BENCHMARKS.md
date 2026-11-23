@@ -738,6 +738,11 @@ measures scalar-bound narrowing with multiple equality prefixes. It also
 measures the follow-up that replaces a dense contiguous list with one exact
 range per prefix.
 
+The [compound membership gap study](../benchmarks/results/2026-11-23-compound-membership-gaps/README.md)
+measures two separate integer runs per prefix against the prior planner
+and indexed SQLite. With a wide gap, EMDA reads 136 candidates instead
+of 256 and its median query latency falls 43% on both macOS and Linux.
+
 ### Transaction cancellation overhead
 
 [`transaction_before_after.py`](../scripts/transaction_before_after.py) alternates separately built binaries for the same two-key transaction workload and verifies every run's recovered counters and samples. It rejects dirty source checkouts and identical binaries; callers must build from the declared revisions in isolated Cargo target directories. The [paired cancellation comparison](TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) includes primary and repeat results, VM noise and the limitations of this small in-process workload.

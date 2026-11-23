@@ -255,6 +255,103 @@ fn compound_probe_product_is_bounded_before_allocating() {
 }
 
 #[test]
+fn bounded_compound_membership_skips_gaps_between_integer_runs() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(false, None)).unwrap();
+        for (id, a, b) in [
+            ("first", 0, 0),
+            ("last", 16, 28),
+            ("singleton", 1, 40),
+            ("gap-one", 0, 9),
+            ("gap-two", 16, 29),
+            ("outside-prefix", 17, 20),
+        ] {
+            db.insert("c", id, &json!({"a": a, "b": b})).unwrap();
+        }
+        let filter_for_prefixes = |a| {
+            and(vec![
+                inside("a", a),
+                inside(
+                    "b",
+                    (0..9)
+                        .chain(20..29)
+                        .chain([40])
+                        .map(|value| json!(value))
+                        .collect(),
+                ),
+                DocumentFilter::Compare {
+                    path: path("b"),
+                    comparison: Comparison::Less,
+                    value: IndexValue::Integer(41),
+                },
+            ])
+        };
+        for prefixes in [
+            vec![json!(0), json!(1), json!(16)],
+            (0..17).map(|value| json!(value)).collect(),
+        ] {
+            let probes = 3 * prefixes.len();
+            let request = query(filter_for_prefixes(prefixes));
+            let expected = db.query("c", &request).unwrap();
+            assert_eq!(expected.documents.len(), 3);
+            let planned = db
+                .query_planned(
+                    "c",
+                    &DocumentQuery {
+                        max_scanned: 3,
+                        ..request
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                planned.access,
+                DocumentQueryAccess::CompoundMembershipRangeIndex {
+                    index: "pair".into(),
+                    prefix_fields: 1,
+                    probes,
+                }
+            );
+            assert_eq!(planned.result.plan.scanned, 3);
+            assert_eq!(planned.result.documents, expected.documents);
+        }
+
+        // Sixteen runs (one pair and fifteen singletons) fit at 16
+        // prefixes. A seventeenth prefix needs the broader range plan.
+        for (prefixes, probes, candidates) in [(16, 256, 2), (17, 17, 5)] {
+            let request = query(and(vec![
+                inside("a", (0..prefixes).map(|value| json!(value)).collect()),
+                inside(
+                    "b",
+                    (0..2)
+                        .chain((1..16).map(|run| 3 * run))
+                        .map(|value| json!(value))
+                        .collect(),
+                ),
+                DocumentFilter::Compare {
+                    path: path("b"),
+                    comparison: Comparison::Less,
+                    value: IndexValue::Integer(46),
+                },
+            ]));
+            let expected = db.query("c", &request).unwrap();
+            let planned = db.query_planned("c", &request).unwrap();
+            assert_eq!(
+                planned.access,
+                DocumentQueryAccess::CompoundMembershipRangeIndex {
+                    index: "pair".into(),
+                    prefix_fields: 1,
+                    probes,
+                }
+            );
+            assert_eq!(planned.result.plan.scanned, candidates);
+            assert_eq!(planned.result.documents, expected.documents);
+        }
+    });
+}
+
+#[test]
 fn partial_guard_must_be_proved_for_every_result() {
     on_backends(|db| {
         db.create_collection("c", CollectionSchema::default())

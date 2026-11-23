@@ -389,7 +389,7 @@ enum Selection {
     CompoundMembership(Vec<Vec<IndexValue>>),
     CompoundPrefix(Vec<Vec<IndexValue>>),
     IntegerMembership {
-        equal: Vec<IndexValue>,
+        prefixes: Vec<Vec<IndexValue>>,
         runs: Vec<(i64, i64)>,
     },
     Range {
@@ -423,28 +423,31 @@ impl Selection {
                 None,
             ),
             Self::CompoundMembership(tuples) | Self::CompoundPrefix(tuples) => (tuples, None, None),
-            Self::IntegerMembership { equal, runs } => {
-                return runs
+            Self::IntegerMembership { prefixes, runs } => {
+                let runs = &runs;
+                return prefixes
                     .into_iter()
-                    .map(|(first, last)| {
-                        let mut equal = equal.clone();
-                        let bound = |value| IndexBound {
-                            value: IndexValue::Integer(value),
-                            inclusive: true,
-                        };
-                        let (lower, upper) = if first == last {
-                            equal.push(IndexValue::Integer(first));
-                            (None, None)
-                        } else {
-                            (Some(bound(first)), Some(bound(last)))
-                        };
-                        IndexProbe {
-                            index: &index.name,
-                            unique_equality: index.unique && equal.len() == index.fields.len(),
-                            equal,
-                            lower,
-                            upper,
-                        }
+                    .flat_map(|prefix| {
+                        runs.iter().map(move |&(first, last)| {
+                            let mut equal = prefix.clone();
+                            let bound = |value| IndexBound {
+                                value: IndexValue::Integer(value),
+                                inclusive: true,
+                            };
+                            let (lower, upper) = if first == last {
+                                equal.push(IndexValue::Integer(first));
+                                (None, None)
+                            } else {
+                                (Some(bound(first)), Some(bound(last)))
+                            };
+                            IndexProbe {
+                                index: &index.name,
+                                unique_equality: index.unique && equal.len() == index.fields.len(),
+                                equal,
+                                lower,
+                                upper,
+                            }
+                        })
                     })
                     .collect();
             }
@@ -689,23 +692,6 @@ fn consecutive_integer_runs(values: &[IndexValue]) -> Option<Vec<(i64, i64)>> {
     Some(runs)
 }
 
-// Membership choices are distinct and sorted by index encoding. Integers
-// occupy one contiguous part of that order, so the endpoints and count are
-// enough to prove that a single inclusive range contains exactly this list.
-fn contiguous_integer_bounds(values: &[IndexValue]) -> Option<(IndexBound, IndexBound)> {
-    let [IndexValue::Integer(first), .., IndexValue::Integer(last)] = values else {
-        return None;
-    };
-    if last.checked_sub(*first)? != (values.len() - 1) as i64 {
-        return None;
-    }
-    let bound = |value| IndexBound {
-        value: IndexValue::Integer(value),
-        inclusive: true,
-    };
-    Some((bound(*first), bound(*last)))
-}
-
 fn choose_index<'a>(
     required: &[Predicate<'_>],
     indexes: &'a [IndexDefinition],
@@ -756,7 +742,10 @@ fn choose_index<'a>(
                         None
                     };
                     let selection = if let Some(runs) = runs {
-                        Selection::IntegerMembership { equal, runs }
+                        Selection::IntegerMembership {
+                            prefixes: vec![equal],
+                            runs,
+                        }
                     } else if index.fields.len() == 1 {
                         Selection::Membership(values)
                     } else {
@@ -820,15 +809,14 @@ fn choose_index<'a>(
         }
         let last = choices.len() - 1;
         if allow_integer_runs && choices[..last].iter().any(|values| values.len() > 1) {
-            if let Some((lower, upper)) = contiguous_integer_bounds(&choices[last]) {
+            if let Some(runs) = consecutive_integer_runs(&choices[last]) {
                 if required_range(required, &index.fields[last])?.is_some() {
                     choices.pop();
                     return Ok(Some((
                         index,
-                        Selection::MembershipRange {
+                        Selection::IntegerMembership {
                             prefixes: expand_tuples(choices),
-                            lower: Some(lower),
-                            upper: Some(upper),
+                            runs,
                         },
                     )));
                 }
@@ -844,8 +832,7 @@ fn choose_index<'a>(
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
         for position in 1..index.fields.len() {
-            let Some((mut lower, mut upper)) = compound_bounds(required, &index.fields, position)?
-            else {
+            let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? else {
                 continue;
             };
             if let Some(prefixes) = compound_membership(required, &index.fields[..position])? {
@@ -855,13 +842,17 @@ fn choose_index<'a>(
                     lower.as_ref(),
                     upper.as_ref(),
                 ) {
-                    let contiguous = allow_integer_runs
-                        .then(|| contiguous_integer_bounds(&values))
-                        .flatten();
-                    if let Some((first, last)) = contiguous {
-                        lower = Some(first);
-                        upper = Some(last);
-                    } else if position + 1 < index.fields.len()
+                    if allow_integer_runs {
+                        if let Some(runs) = consecutive_integer_runs(&values)
+                            .filter(|runs| prefixes.len() <= MAX_INDEX_PROBES / runs.len())
+                        {
+                            return Ok(Some((
+                                index,
+                                Selection::IntegerMembership { prefixes, runs },
+                            )));
+                        }
+                    }
+                    if position + 1 < index.fields.len()
                         && prefixes.len() <= MAX_INDEX_PROBES / values.len()
                     {
                         return Ok(Some((
@@ -1276,6 +1267,26 @@ impl DocumentTransaction<'_, '_> {
     }
 }
 
+fn describe_membership_ranges(
+    index: &IndexDefinition,
+    prefix_fields: usize,
+    probes: usize,
+) -> DocumentQueryAccess {
+    if index.partial.is_some() {
+        DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+            index: index.name.clone(),
+            prefix_fields,
+            probes,
+        }
+    } else {
+        DocumentQueryAccess::CompoundMembershipRangeIndex {
+            index: index.name.clone(),
+            prefix_fields,
+            probes,
+        }
+    }
+}
+
 fn describe_selection(index: &IndexDefinition, selection: &Selection) -> DocumentQueryAccess {
     let partial = index.partial.is_some();
     match selection {
@@ -1341,30 +1352,19 @@ fn describe_selection(index: &IndexDefinition, selection: &Selection) -> Documen
             probes: prefixes.len(),
             partial,
         },
-        Selection::IntegerMembership { equal, runs } => {
+        Selection::IntegerMembership { prefixes, runs } if prefixes.len() == 1 => {
             DocumentQueryAccess::IntegerMembershipIndex {
                 index: index.name.clone(),
-                prefix_fields: equal.len(),
+                prefix_fields: prefixes[0].len(),
                 probes: runs.len(),
                 partial,
             }
         }
+        Selection::IntegerMembership { prefixes, runs } => {
+            describe_membership_ranges(index, prefixes[0].len(), prefixes.len() * runs.len())
+        }
         Selection::MembershipRange { prefixes, .. } => {
-            let prefix_fields = prefixes[0].len();
-            let probes = prefixes.len();
-            if partial {
-                DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
-                    index: index.name.clone(),
-                    prefix_fields,
-                    probes,
-                }
-            } else {
-                DocumentQueryAccess::CompoundMembershipRangeIndex {
-                    index: index.name.clone(),
-                    prefix_fields,
-                    probes,
-                }
-            }
+            describe_membership_ranges(index, prefixes[0].len(), prefixes.len())
         }
         Selection::Range { equal, .. } => {
             if partial && index.fields.len() > 1 {

@@ -1500,15 +1500,18 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    for (grouped, tenant, score, conflict) in [
-        (false, "z", 3, true),
-        (false, "z", 4, false),
-        (false, "m", 3, false),
-        (true, "z", 3, true),
-        (true, "z", 4, true),
-        (true, "z", 5, false),
-        (true, "z", 2, false),
-        (true, "m", 3, false),
+    for (runs, tenant, score, conflict) in [
+        (0, "z", 3, true),
+        (0, "z", 4, false),
+        (0, "m", 3, false),
+        (1, "z", 3, true),
+        (1, "z", 4, true),
+        (1, "z", 5, false),
+        (1, "z", 2, false),
+        (1, "m", 3, false),
+        (2, "z", 4, true),
+        (2, "z", 5, false),
+        (2, "z", 6, true),
     ] {
         on_backends(|db| {
             db.create_collection("c", CollectionSchema::default())
@@ -1520,18 +1523,24 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
                 cmp(
                     "score",
                     Comparison::GreaterOrEqual,
-                    IndexValue::Integer(if grouped { 0 } else { 3 }),
+                    IndexValue::Integer(if runs == 0 { 3 } else { 0 }),
                 ),
                 cmp(
                     "score",
                     Comparison::Less,
-                    IndexValue::Integer(if grouped { 6 } else { 4 }),
+                    IndexValue::Integer(if runs == 0 { 4 } else { 8 }),
                 ),
             ];
-            if grouped {
-                filters.push(membership("score", vec![json!(3), json!(4), json!(9)]));
+            if runs > 0 {
+                let mut scores = vec![json!(3), json!(4), json!(9)];
+                if runs == 2 {
+                    scores.push(json!(6));
+                    scores.push(json!(7));
+                }
+                filters.push(membership("score", scores));
             }
             let request = query(and(filters), 4);
+            let access = membership_range_access(1, 2 * runs.max(1), false);
             let (observed, read) = mpsc::channel();
             let (committed, written) = mpsc::channel();
             let result = std::thread::scope(|scope| {
@@ -1543,7 +1552,7 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
                 });
                 let result = db.transaction_with_read_set(|tx| {
                     let plan = tx.query_planned("c", &request)?;
-                    assert_eq!(plan.access, membership_range_access(1, 2, false));
+                    assert_eq!(plan.access, access);
                     assert!(plan.result.documents.is_empty());
                     observed.send(()).unwrap();
                     written.recv_timeout(Duration::from_secs(10)).unwrap()?;
@@ -1565,7 +1574,7 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
                     .unwrap(),
                 (!conflict).then(|| b"committed".to_vec())
             );
-            compare(db, &request, membership_range_access(1, 2, false));
+            compare(db, &request, access);
         });
     }
 }

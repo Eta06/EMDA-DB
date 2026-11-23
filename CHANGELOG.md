@@ -4,8 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
-- Coalesce contiguous integer membership values across compound index
-  prefixes into exact inclusive ranges.
+- Coalesce consecutive runs of integer membership values across compound
+  index prefixes into exact probes that skip gaps within the filter range.
 
 - Apply required scalar bounds before admitting compound membership tuples
   and extending membership prefixes.
