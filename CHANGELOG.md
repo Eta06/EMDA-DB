@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Keep committed reads available while manual and automatic checkpoint
+  rollover publish and synchronize the managed selection.
+
 - Reject checkpoints whose payload cannot fit the configured block directory
   before reading their index bytes. Streaming checkpoint writers reject
   impossible entry counts before creating a stage.

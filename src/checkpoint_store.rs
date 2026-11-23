@@ -811,8 +811,8 @@ impl CheckpointStore {
     }
 
     /// Creates a checkpoint and atomically records its selection before
-    /// allowing more writes. Readers can use the committed view until selection
-    /// publication. Protect the store's selection file as trusted
+    /// allowing more writes. Readers can use the committed view while the
+    /// selection is published and synchronized. Protect the selection file as trusted
     /// metadata. A publication error poisons this instance; reopen it using
     /// the visible managed selection, or recover explicitly if none exists.
     pub fn rollover_managed(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
@@ -924,16 +924,31 @@ impl CheckpointStore {
         let next_view = self.rollover_view(&state, &destination, &digest)?;
         let next = selection::Selection::new(destination, digest)?;
         drop(state);
-        let mut state = self.state.write().map_err(|_| uncertain())?;
         if let Some(tracker) = tracker {
             tracker.begin_selection();
         }
-        if let Err(error) = selection::publish(
-            &self.path,
-            &next,
+        drop(self.publish_managed_view(
+            next_view,
+            next,
             before_selection_rename,
             sync_selection_parent,
-        ) {
+        )?);
+        Ok(digest)
+    }
+
+    // The caller holds the writer gate throughout. Readers can use the old
+    // committed view during synchronization because the log and its indexed
+    // values cannot change. The writer gate also poisons on unwind.
+    fn publish_managed_view(
+        &self,
+        view: RecoveredCheckpointView,
+        next: selection::Selection,
+        before_rename: impl FnOnce() -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<ControlledWriteGuard<'_, State>> {
+        let result = selection::publish(&self.path, &next, before_rename, sync_parent);
+        let mut state = self.state.write().map_err(|_| uncertain())?;
+        if let Err(error) = result {
             state.failed = true;
             return Err(io::Error::new(
                 error.kind(),
@@ -942,10 +957,10 @@ impl CheckpointStore {
                 ),
             ));
         }
-        state.view = next_view;
+        state.view = view;
         state.overlay_key_bytes = 0;
         state.selection = Some(next);
-        Ok(digest)
+        Ok(state)
     }
 
     fn rollover_view(

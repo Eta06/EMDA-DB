@@ -7,12 +7,25 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
         "slot-published",
         "selection-staged",
         "selection-published",
+        "success",
     ] {
         let (_dir, path, store) = managed_fixture(1024, 1, 64);
         store.enable_automatic_checkpoints().unwrap();
         store.put(b"a", b"acknowledged").unwrap();
         let old_selection = fs::read(crate::checkpoint_store::selection::path(&path)).unwrap();
         let old_log = fs::read(path.join("records.log")).unwrap();
+        let assert_committed_read = || {
+            assert!(store.state.try_read().is_ok());
+            assert!(matches!(
+                store.writers.try_write_for(std::time::Duration::ZERO),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            assert_eq!(store.overlay_keys().unwrap(), 1);
+            assert_eq!(
+                store.get(b"a").unwrap().as_deref(),
+                Some(b"acknowledged".as_slice())
+            );
+        };
         let result = store.automatic_rollover_with_hooks(
             store.write().unwrap(),
             || {
@@ -30,10 +43,7 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
                 }
             },
             || {
-                assert!(matches!(
-                    store.state.try_read(),
-                    Err(std::sync::TryLockError::WouldBlock)
-                ));
+                assert_committed_read();
                 if phase == "selection-staged" {
                     Err(io::Error::other("injected before selection rename"))
                 } else {
@@ -41,6 +51,7 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
                 }
             },
             |parent| {
+                assert_committed_read();
                 if phase == "selection-published" {
                     Err(io::Error::other("injected selection sync"))
                 } else {
@@ -48,7 +59,7 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
                 }
             },
         );
-        assert!(result.map(drop).is_err());
+        assert_eq!(result.map(drop).is_ok(), phase == "success");
         let poisoned = store.state.read().unwrap().failed;
         assert_eq!(fs::read(path.join("records.log")).unwrap(), old_log);
         assert_eq!(poisoned, phase.starts_with("selection-"));
@@ -59,9 +70,16 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
                 store.get(b"a").unwrap().as_deref(),
                 Some(&b"acknowledged"[..])
             );
+            assert_eq!(
+                store.overlay_keys().unwrap(),
+                usize::from(phase != "success")
+            );
         }
         let selection = fs::read(crate::checkpoint_store::selection::path(&path)).unwrap();
-        assert_eq!(selection == old_selection, phase != "selection-published");
+        assert_eq!(
+            selection == old_selection,
+            !matches!(phase, "selection-published" | "success")
+        );
         drop(store);
         let reopened = retry_lock(|| {
             CheckpointStore::open_managed_with_resource_limits(&path, 1024, 1, 64, None)

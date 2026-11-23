@@ -523,17 +523,18 @@ fn managed_selection_process_kill_recovers_the_visible_selection() {
 }
 
 #[test]
-fn managed_selection_publication_blocks_writers_until_directory_sync() {
+fn managed_selection_sync_allows_committed_reads_and_blocks_writes() {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
     let (dir, path, checkpoint, digest) = fixture();
     let store =
         Arc::new(retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap());
+    store.put(b"before", b"acknowledged").unwrap();
     let (entered_tx, entered_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
     let (started_tx, started_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
-    std::thread::scope(|scope| {
+    let snapshot = std::thread::scope(|scope| {
         let rolling = Arc::clone(&store);
         let destination = dir.path().join("next");
         let roller = scope.spawn(move || {
@@ -553,6 +554,13 @@ fn managed_selection_publication_blocks_writers_until_directory_sync() {
                 .unwrap()
         });
         entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(store.state.try_read().is_ok());
+        assert_eq!(store.overlay_keys().unwrap(), 1);
+        assert_eq!(
+            store.get(b"before").unwrap().as_deref(),
+            Some(b"acknowledged".as_slice())
+        );
+        let snapshot = store.snapshot().unwrap();
         let writing = Arc::clone(&store);
         let writer = scope.spawn(move || {
             started_tx.send(()).unwrap();
@@ -568,7 +576,14 @@ fn managed_selection_publication_blocks_writers_until_directory_sync() {
             .recv_timeout(Duration::from_secs(10))
             .unwrap()
             .unwrap();
+        snapshot
     });
+    assert_eq!(snapshot.get(b"after").unwrap(), None);
+    assert_eq!(
+        snapshot.get(b"before").unwrap().as_deref(),
+        Some(b"acknowledged".as_slice())
+    );
+    drop(snapshot);
     drop(store);
     let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
     assert_eq!(

@@ -1,5 +1,5 @@
 //! On-demand managed checkpoint rollover using two owned checkpoint slots.
-use super::{CheckpointStore, State, StateWrite, selection, uncertain};
+use super::{CheckpointStore, State, StateWrite, selection};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -381,24 +381,12 @@ impl CheckpointStore {
         let next_view = self.rollover_view(&state, &indexes[next_slot], &digest)?;
         let next = selection::Selection::new(indexes[next_slot].clone(), digest)?;
         drop(state);
-        let mut state = self.state.write().map_err(|_| uncertain())?;
-        if let Err(error) = selection::publish(
-            &self.path,
-            &next,
+        let state = self.publish_managed_view(
+            next_view,
+            next,
             before_selection_rename,
             sync_selection_parent,
-        ) {
-            state.failed = true;
-            return Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "managed selection publication may have occurred; reopen required: {error}"
-                ),
-            ));
-        }
-        state.view = next_view;
-        state.overlay_key_bytes = 0;
-        state.selection = Some(next);
+        )?;
         Ok(StateWrite { state, _writer })
     }
 }
