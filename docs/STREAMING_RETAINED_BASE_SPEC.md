@@ -189,6 +189,11 @@ reject an impossible work budget. Each delete can reduce the minimum live
 count by at most one. Discovery checks this lower bound before adding a
 suffix key to its map. Full validation checks the base digest and charges
 exact live-state work and payload, including intermediate batch states.
+The authenticated final totals determine the exact new log length,
+including its header and one record per live key. Restore checks that
+length and the live-key count and bytes before sorting suffix changes or
+creating the private output. The writer reserves the encoded bytes
+again against the actual new log.
 Each value is authenticated again when read for the private output. Values
 that fit in a write group are read directly into their record buffers and
 checked before the record joins the group. Larger values use the separate

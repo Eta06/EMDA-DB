@@ -1,7 +1,7 @@
 use super::suffix_file::SuffixFile;
 use super::{
-    DetachedReplayLimits, Expected, Limits, ReplayBudget, SuffixExpected, SuffixLimits,
-    charge_suffix_work, check_binding, copy_replay_bytes, invalid, open_suffix,
+    DetachedReplayLimits, Expected, Limits, ReplayBudget, RestoreLimits, SuffixExpected,
+    SuffixLimits, charge_suffix_work, check_binding, copy_replay_bytes, invalid, open_suffix,
     preflight_replay_base, suffix_capacity,
 };
 use crate::retained_base_v2::index::OverlayValue;
@@ -57,6 +57,7 @@ impl RestoreReplay {
             suffix,
             DetachedReplayLimits::from_existing(limits, staging, suffix_limits),
             expected,
+            None,
         )
     }
 
@@ -65,6 +66,7 @@ impl RestoreReplay {
         suffix: &Path,
         limits: DetachedReplayLimits,
         expected: &SuffixExpected,
+        output: Option<RestoreLimits>,
     ) -> io::Result<Self> {
         let DetachedReplayLimits {
             base: limits,
@@ -163,8 +165,27 @@ impl RestoreReplay {
             (budget.entries, budget.keys, budget.payload) = next;
             Ok(())
         })?;
-        let mut changes = Vec::new();
-        changes
+        let mut replay = Self {
+            base,
+            base_len: metadata.file_bytes,
+            suffix,
+            suffix_len: expected.end,
+            expected: expected.candidate.clone(),
+            limits,
+            staging,
+            changes: Vec::new(),
+            size: RestoreSize {
+                entries: budget.entries,
+                keys: budget.keys,
+                payload: budget.payload,
+            },
+        };
+        if let Err(error) = output.map_or(Ok(()), |limits| limits.admit(replay.size)) {
+            replay.check_lengths()?;
+            return Err(error);
+        }
+        replay
+            .changes
             .try_reserve_exact(touched_keys.len())
             .map_err(io::Error::other)?;
         for (key, value) in touched_keys {
@@ -173,24 +194,9 @@ impl RestoreReplay {
                 Some(ReplayValue::SuffixLocation(location)) => Some(location),
                 Some(ReplayValue::BaseLength(_)) => return Err(invalid()),
             };
-            changes.push((key, location));
+            replay.changes.push((key, location));
         }
-        changes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let replay = Self {
-            base,
-            base_len: metadata.file_bytes,
-            suffix,
-            suffix_len: expected.end,
-            expected: expected.candidate.clone(),
-            limits,
-            staging,
-            changes,
-            size: RestoreSize {
-                entries: budget.entries,
-                keys: budget.keys,
-                payload: budget.payload,
-            },
-        };
+        replay.changes.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         replay.check_lengths()?;
         Ok(replay)
     }
@@ -480,7 +486,7 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
         };
         let before = names();
-        let restore = |hook: &dyn Fn(&str) -> io::Result<()>| {
+        let restore_with_output = |output_limits, hook: &dyn Fn(&str) -> io::Result<()>| {
             super::super::restore_with_hooks(
                 &candidate,
                 &suffix,
@@ -489,15 +495,61 @@ mod tests {
                 staging,
                 suffix_limits,
                 &binding,
-                super::super::RestoreLimits {
-                    log_bytes: 4096,
-                    live_keys: 16,
-                    live_key_bytes: 64,
-                },
+                output_limits,
                 crate::directory::sync_existing,
                 hook,
             )
         };
+        let header = crate::witness::LOG_HEADER_SIZE as u64;
+        let exact = RestoreLimits {
+            log_bytes: header
+                + crate::record::encode(crate::record::Operation::Put, b"a", b"base-data")
+                    .unwrap()
+                    .len() as u64
+                + crate::record::encode(crate::record::Operation::Put, b"z", b"suffix-data")
+                    .unwrap()
+                    .len() as u64,
+            live_keys: 2,
+            live_key_bytes: 2,
+        };
+        for (output, message) in [
+            (
+                RestoreLimits {
+                    log_bytes: header - 1,
+                    ..exact
+                },
+                "existing log exceeds configured limit",
+            ),
+            (
+                RestoreLimits {
+                    log_bytes: exact.log_bytes - 1,
+                    ..exact
+                },
+                "configured log size limit would be exceeded",
+            ),
+            (
+                RestoreLimits {
+                    live_keys: 1,
+                    ..exact
+                },
+                "configured live key limit would be exceeded",
+            ),
+            (
+                RestoreLimits {
+                    live_key_bytes: 1,
+                    ..exact
+                },
+                "configured live key byte limit would be exceeded",
+            ),
+        ] {
+            let result = restore_with_output(output, &|_| panic!("restore created a stage"));
+            assert!(matches!(
+                result,
+                Err(PublicationFailure::NotPublished(error)) if error.to_string() == message
+            ));
+            assert_eq!(names(), before);
+        }
+        let restore = |hook: &dyn Fn(&str) -> io::Result<()>| restore_with_output(exact, hook);
         for (file, value, message) in [
             (
                 candidate.join("base"),

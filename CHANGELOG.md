@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject detached restores that exceed the exact output limits before
+  sorting touched keys or creating a staging directory.
+
 - Read grouped restore and compaction values directly into their encoded
   record buffers and check integrity before queuing the record.
 

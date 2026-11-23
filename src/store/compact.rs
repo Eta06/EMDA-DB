@@ -51,11 +51,29 @@ pub(crate) struct RestoreSize {
 }
 
 impl RestoreSize {
-    fn encoded_bytes(self) -> io::Result<u64> {
+    pub(crate) fn encoded_bytes(self) -> io::Result<u64> {
         self.entries
             .checked_mul((record::HEADER_SIZE + record::CHECKSUM_SIZE) as u64)
             .and_then(|overhead| overhead.checked_add(self.payload))
             .ok_or_else(|| io::Error::other("restored log size overflow"))
+    }
+
+    pub(crate) fn admit_live(
+        self,
+        max_keys: Option<usize>,
+        max_key_bytes: Option<usize>,
+    ) -> io::Result<()> {
+        if max_keys.is_some_and(|max| self.entries > max as u64) {
+            return Err(io::Error::other(
+                "configured live key limit would be exceeded",
+            ));
+        }
+        if max_key_bytes.is_some_and(|max| self.keys > max as u64) {
+            return Err(io::Error::other(
+                "configured live key byte limit would be exceeded",
+            ));
+        }
+        Ok(())
     }
 
     fn consume(&mut self, key_len: usize, value_len: usize) -> io::Result<()> {
@@ -183,22 +201,7 @@ impl Store {
         size: RestoreSize,
         write: impl FnOnce(&mut GroupedCopy<'_>) -> io::Result<T>,
     ) -> io::Result<(u64, T)> {
-        if self
-            .max_live_keys
-            .is_some_and(|max| size.entries > max as u64)
-        {
-            return Err(io::Error::other(
-                "configured live key limit would be exceeded",
-            ));
-        }
-        if self
-            .max_live_key_bytes
-            .is_some_and(|max| size.keys > max as u64)
-        {
-            return Err(io::Error::other(
-                "configured live key byte limit would be exceeded",
-            ));
-        }
+        size.admit_live(self.max_live_keys, self.max_live_key_bytes)?;
         let bytes = size.encoded_bytes()?;
         let end = self
             .log

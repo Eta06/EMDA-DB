@@ -501,8 +501,14 @@ pub fn open_exported_suffix_with_limits(
     limits: DetachedReplayLimits,
     expected: &SuffixExpected,
 ) -> io::Result<Vec<crate::Entry>> {
-    RestoreReplay::open_with_limits(directory.as_ref(), suffix_path.as_ref(), limits, expected)?
-        .into_entries()
+    RestoreReplay::open_with_limits(
+        directory.as_ref(),
+        suffix_path.as_ref(),
+        limits,
+        expected,
+        None,
+    )?
+    .into_entries()
 }
 
 fn read_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<Vec<u8>> {
@@ -976,6 +982,25 @@ pub struct RestoreLimits {
     pub live_key_bytes: usize,
 }
 
+impl RestoreLimits {
+    fn admit(self, size: crate::store::RestoreSize) -> io::Result<()> {
+        let header = crate::witness::LOG_HEADER_SIZE as u64;
+        let available = self.log_bytes.checked_sub(header).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "existing log exceeds configured limit",
+            )
+        })?;
+        size.admit_live(Some(self.live_keys), Some(self.live_key_bytes))?;
+        if size.encoded_bytes()? > available {
+            return Err(io::Error::other(
+                "configured log size limit would be exceeded",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Restore a validated candidate and detached suffix into a new directory.
 ///
 /// This creates a new log identity and history. Historical key-count and
@@ -992,6 +1017,8 @@ pub struct RestoreLimits {
 /// one value, and the private output synchronizes in groups of up to 64
 /// records and 4 MiB of encoded data. A larger record is copied in fixed-size
 /// chunks and synchronized after its value digest and length are checked.
+/// Output limits are checked after replay and before sorting touched keys
+/// or creating the stage.
 /// Verification checks the witnessed output against the authenticated
 /// sequence digest in a streaming pass.
 /// Input staging limits still count the logical live payload,
@@ -1119,7 +1146,8 @@ fn restore_using(
                 "destination parent is inside candidate",
             ));
         }
-        let replay = RestoreReplay::open_with_limits(candidate, suffix, limits, expected)?;
+        let replay =
+            RestoreReplay::open_with_limits(candidate, suffix, limits, expected, Some(output))?;
         let mut stage = crate::staging::Stage::directory(parent)?;
         let (end, output_digest) = {
             hook("init")?;

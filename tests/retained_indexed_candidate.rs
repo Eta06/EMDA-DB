@@ -37,9 +37,12 @@ fn candidate(root: &Path, entries: &[(&[u8], &[u8])]) -> Expected {
 }
 
 #[test]
-fn detached_restore_limits_distinct_touched_keys_before_staging() {
+fn detached_restore_enforces_touched_and_output_limits() {
     let root = tempfile::tempdir().unwrap();
-    let store = Store::open(root.path().join("source")).unwrap();
+    let source = root.path().join("source");
+    let store = Store::open(&source).unwrap();
+    let log_len = || fs::metadata(source.join("records.log")).unwrap().len();
+    let header = log_len();
     store.put(b"keep", b"old").unwrap();
     let candidate = root.path().join("candidate");
     let expected = store
@@ -52,7 +55,13 @@ fn detached_restore_limits_distinct_touched_keys_before_staging() {
             BatchOperation::Delete { key: b"ghost" },
         ])
         .unwrap();
+    let before_put = log_len();
     store.put(b"keep", b"new").unwrap();
+    let output = RestoreLimits {
+        log_bytes: header + (log_len() - before_put),
+        live_keys: 1,
+        live_key_bytes: 4,
+    };
     let suffix = root.path().join("suffix");
     let destination = root.path().join("restored");
     let exact = DetachedReplayLimits {
@@ -86,18 +95,14 @@ fn detached_restore_limits_distinct_touched_keys_before_staging() {
             EXPORT_LIMITS,
         )
         .unwrap();
-    let restore = |limits| {
+    let restore = |limits, output| {
         restore_exported_suffix_with_limits(
             &candidate,
             &suffix,
             &destination,
             limits,
             &binding,
-            RestoreLimits {
-                log_bytes: 4096,
-                live_keys: 1,
-                live_key_bytes: 4,
-            },
+            output,
         )
     };
     let open = |limits| open_exported_suffix_with_limits(&candidate, &suffix, limits, &binding);
@@ -129,7 +134,36 @@ fn detached_restore_limits_distinct_touched_keys_before_staging() {
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(error.to_string(), message);
         assert!(matches!(
-            restore(limits),
+            restore(limits, output),
+            Err(PublicationFailure::NotPublished(error)) if error.to_string() == message
+        ));
+        assert_eq!(names(), before);
+    }
+    for (limits, message) in [
+        (
+            RestoreLimits {
+                log_bytes: output.log_bytes - 1,
+                ..output
+            },
+            "configured log size limit would be exceeded",
+        ),
+        (
+            RestoreLimits {
+                live_keys: 0,
+                ..output
+            },
+            "configured live key limit would be exceeded",
+        ),
+        (
+            RestoreLimits {
+                live_key_bytes: 3,
+                ..output
+            },
+            "configured live key byte limit would be exceeded",
+        ),
+    ] {
+        assert!(matches!(
+            restore(exact, limits),
             Err(PublicationFailure::NotPublished(error)) if error.to_string() == message
         ));
         assert_eq!(names(), before);
@@ -146,14 +180,18 @@ fn detached_restore_limits_distinct_touched_keys_before_staging() {
         ..exact
     };
     assert!(matches!(
-        restore(limited),
+        restore(limited, output),
         Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
     ));
     assert_eq!(names(), before);
     fs::write(&suffix, bytes).unwrap();
     let expected_rows = vec![(b"keep".to_vec(), b"new".to_vec())];
     assert_eq!(open(exact).unwrap(), expected_rows);
-    restore(exact).unwrap();
+    restore(exact, output).unwrap();
+    assert_eq!(
+        fs::metadata(destination.join("records.log")).unwrap().len(),
+        output.log_bytes,
+    );
     let restored = Store::open(&destination).unwrap();
     assert_eq!(restored.scan(None, None, 16).unwrap(), expected_rows);
     assert_eq!(store.scan(None, None, 16).unwrap(), expected_rows);

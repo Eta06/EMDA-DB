@@ -410,6 +410,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   restore. Repeated deletes of absent keys consume one entry per distinct
   key, even when the live-set usage stays flat. Limit failures precede
   restore staging and preserve detached suffix digest checking.
+- [x] Check detached restore's exact output log length, live-key count
+  and key bytes after authenticated replay and before sorting or staging.
+  Regressions cover exact limits, one-under limits and an undersized log
+  header. The staged writer still verifies and reserves the output.
 - [x] Allocate recovery scratch on demand up to the admitted input length. A positional test reads and authenticates a 13-byte suffix without reserving a full buffer or reading outside that suffix. In 800 warm-cache opens per variant on macOS ARM64, ordinary median open time was 68 vs 66 µs for a 772-byte log and 461 vs 460.5 µs for a 380,956-byte log. The small-log p95 was 91 vs 94 µs. This comparison measures latency on one host, with no process-memory or latency bound established.
 - [x] Skip per-value index hashing for single puts rejected by the retained suffix operation cap. The [replay regression](../benchmarks/results/2026-11-19-retained-suffix-admission/README.md) checks full record and witness integrity, precedence, and preservation of the committed prefix.
 - [x] Check the bound base length and authority-approved suffix endpoints before retained replay. The [admission tests](../benchmarks/results/2026-11-19-retained-recovery-preflight/README.md) verify early rejection and show that a valid record of the proposed length still needs the exact proposed digest.
