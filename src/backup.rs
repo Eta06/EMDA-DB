@@ -310,13 +310,13 @@ fn restore_with_stage_hooks(
 #[cfg(test)]
 mod publication_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod backup_stage_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod rebuild_stage_tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod witness_interruption_tests;
 
 pub(crate) fn upgrade_legacy(source: &Log, destination: &Path) -> io::Result<()> {
@@ -516,6 +516,8 @@ fn restore_into(
     if info.log_len == 0 {
         empty_hook(EmptyRestorePoint::AfterWitness)?;
     }
+    lock.file.sync_all()?;
+    stage_hook(RebuildPoint::LockSynced)?;
     File::open(destination)?.sync_all()?;
     stage_hook(RebuildPoint::DirectorySynced)?;
     if info.log_len == 0 {

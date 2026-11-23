@@ -2,12 +2,15 @@
 use super::*;
 use crate::Store;
 use crate::test_support::retry_lock;
-use rustix::fs::getxattr;
-use rustix::io::Errno;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
+
+#[cfg(target_os = "linux")]
+pub(super) const SOURCE_V2_CASES: &[bool] = &[false, true];
+#[cfg(not(target_os = "linux"))]
+pub(super) const SOURCE_V2_CASES: &[bool] = &[true];
 
 const POINTS: [witness::CreationPoint; 4] = [
     witness::CreationPoint::FileCreated,
@@ -60,13 +63,21 @@ fn invoke(
     }
 }
 
-fn metadata(path: &Path) -> Option<Vec<u8>> {
+#[cfg(target_os = "linux")]
+pub(super) fn metadata(path: &Path) -> Option<Vec<u8>> {
+    use rustix::fs::getxattr;
+    use rustix::io::Errno;
     let mut bytes = [0_u8; 36];
     match getxattr(path, "user.db.commit.v3", &mut bytes[..]) {
         Ok(length) => Some(bytes[..length].to_vec()),
         Err(Errno::NODATA | Errno::NOTSUP | Errno::NOSYS) => None,
         Err(error) => panic!("read source metadata: {error}"),
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(super) fn metadata(_path: &Path) -> Option<Vec<u8>> {
+    None
 }
 
 pub(super) struct SourceSnapshot {
@@ -213,7 +224,7 @@ fn kill_at(root: &Path, operation: &str, point: witness::CreationPoint) {
 #[test]
 fn killed_witness_creation_never_publishes_partial_restore_or_upgrade() {
     for operation in ["restore", "upgrade"] {
-        for v2 in [false, true] {
+        for &v2 in SOURCE_V2_CASES {
             for point in POINTS {
                 let root = tempfile::tempdir().unwrap();
                 let before = prepare(root.path(), v2);
@@ -233,7 +244,7 @@ fn killed_witness_creation_never_publishes_partial_restore_or_upgrade() {
 #[test]
 fn errors_during_witness_creation_leave_source_and_backup_reusable() {
     for operation in ["restore", "upgrade"] {
-        for v2 in [false, true] {
+        for &v2 in SOURCE_V2_CASES {
             for point in POINTS {
                 let root = tempfile::tempdir().unwrap();
                 let before = prepare(root.path(), v2);

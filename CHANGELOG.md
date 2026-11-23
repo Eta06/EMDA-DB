@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Synchronize the restored store's lock file before publishing its directory,
+  and run V2 backup, restore, and upgrade interruption checks on macOS.
+
 - Check document scan limits and empty index marker values before
   materializing storage range entries.
 

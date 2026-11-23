@@ -1,18 +1,19 @@
 //! Interrupt restore and upgrade while they construct their private log copies.
-use super::witness_interruption_tests::{assert_preserved_and_retry, prepare};
+use super::witness_interruption_tests::{SOURCE_V2_CASES, assert_preserved_and_retry, prepare};
 use super::*;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-const RESTORE_POINTS: [RebuildPoint; 8] = [
+const RESTORE_POINTS: [RebuildPoint; 9] = [
     RebuildPoint::LogCreated,
     RebuildPoint::DataChunk,
     RebuildPoint::DataCopied,
     RebuildPoint::LogSynced,
     RebuildPoint::LogVerified,
     RebuildPoint::WitnessInstalled,
+    RebuildPoint::LockSynced,
     RebuildPoint::DirectorySynced,
     RebuildPoint::LockReleased,
 ];
@@ -138,7 +139,7 @@ fn killed_rebuilds_never_publish_partial_restore_or_upgrade() {
         ("restore", &RESTORE_POINTS[..]),
         ("upgrade", &UPGRADE_POINTS[..]),
     ] {
-        for v2 in [false, true] {
+        for &v2 in SOURCE_V2_CASES {
             for &point in points {
                 let root = tempfile::tempdir().unwrap();
                 let before = prepare(root.path(), v2);
@@ -184,7 +185,7 @@ fn rebuild_errors_leave_source_and_backup_reusable() {
         ("restore", &RESTORE_POINTS[..]),
         ("upgrade", &UPGRADE_POINTS[..]),
     ] {
-        for v2 in [false, true] {
+        for &v2 in SOURCE_V2_CASES {
             for &point in points {
                 let root = tempfile::tempdir().unwrap();
                 let before = prepare(root.path(), v2);

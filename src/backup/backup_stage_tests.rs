@@ -1,9 +1,8 @@
 //! Interrupt backup construction before a verified file is published.
+use super::witness_interruption_tests::{SOURCE_V2_CASES, metadata};
 use super::*;
 use crate::Store;
 use crate::test_support::retry_lock;
-use rustix::fs::getxattr;
-use rustix::io::Errno;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -31,15 +30,6 @@ fn name(point: BackupCreationPoint) -> &'static str {
 
 fn data() -> Vec<u8> {
     vec![0x5a; BUFFER_SIZE * 2 + 17]
-}
-
-fn metadata(path: &Path) -> Option<Vec<u8>> {
-    let mut bytes = [0_u8; 36];
-    match getxattr(path, "user.db.commit.v3", &mut bytes[..]) {
-        Ok(length) => Some(bytes[..length].to_vec()),
-        Err(Errno::NODATA | Errno::NOTSUP | Errno::NOSYS) => None,
-        Err(error) => panic!("read source metadata: {error}"),
-    }
 }
 
 struct SourceSnapshot {
@@ -166,7 +156,7 @@ fn kill_at(root: &Path, point: BackupCreationPoint) {
 
 #[test]
 fn killed_backup_construction_never_publishes_a_partial_file() {
-    for v2 in [false, true] {
+    for &v2 in SOURCE_V2_CASES {
         for point in POINTS {
             let root = tempfile::tempdir().unwrap();
             let before = prepare(root.path(), v2);
@@ -198,7 +188,7 @@ fn killed_backup_construction_never_publishes_a_partial_file() {
 
 #[test]
 fn backup_construction_errors_preserve_source_and_allow_retry() {
-    for v2 in [false, true] {
+    for &v2 in SOURCE_V2_CASES {
         for point in POINTS {
             let root = tempfile::tempdir().unwrap();
             let before = prepare(root.path(), v2);
