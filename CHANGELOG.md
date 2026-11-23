@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound retained catalog quota checks to one directory iterator at a time,
+  so admitted deep catalogs can reopen within a low descriptor limit.
+
 - Coalesce consecutive runs of integer membership values across compound
   index prefixes into exact probes that skip gaps within the filter range.
 

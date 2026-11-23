@@ -413,6 +413,9 @@ and staging files. Place the independent authority and backups outside
 that directory. For a separate catalog the measured tree is its catalog
 directory. Hard links are charged for each directory entry. The walk
 rejects symbolic links and special files and stops at the supplied cap.
+It opens one directory iterator at a time and charges pending directory
+paths against the entry budget. The logical quotas do not cap the
+process memory used by those paths.
 
 The live lock spans admission and mutation. The open checks existing
 usage before adopting a tail or finalizing an authority intent. Appends

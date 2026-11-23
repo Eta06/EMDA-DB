@@ -49,26 +49,26 @@ impl CatalogStorage {
             .entries
             .checked_sub(reserve_entries)
             .ok_or_else(entry_limit)?;
-        let mut pending = vec![fs::read_dir(&self.root)?];
-        while let Some(directory) = pending.last_mut() {
-            let Some(entry) = directory.next() else {
-                pending.pop();
-                continue;
-            };
-            entries = entries.checked_sub(1).ok_or_else(entry_limit)?;
-            let entry = entry?;
-            let meta = entry.metadata()?;
-            if meta.is_file() {
-                bytes = bytes.checked_sub(meta.len()).ok_or_else(byte_limit)?;
-            } else if meta.is_dir() {
-                pending
-                    .try_reserve(1)
-                    .map_err(|_| io::Error::other("catalog storage traversal allocation failed"))?;
-                pending.push(fs::read_dir(entry.path())?);
-            } else {
-                return Err(crate::record::invalid_data(
-                    "unsupported file type in catalog storage",
-                ));
+        // Keep one directory iterator open. Every pending path is charged
+        // against the entry quota before it enters the stack.
+        let mut pending = vec![self.root.clone()];
+        while let Some(path) = pending.pop() {
+            for entry in fs::read_dir(path)? {
+                entries = entries.checked_sub(1).ok_or_else(entry_limit)?;
+                let entry = entry?;
+                let meta = entry.metadata()?;
+                if meta.is_file() {
+                    bytes = bytes.checked_sub(meta.len()).ok_or_else(byte_limit)?;
+                } else if meta.is_dir() {
+                    pending.try_reserve(1).map_err(|_| {
+                        io::Error::other("catalog storage traversal allocation failed")
+                    })?;
+                    pending.push(entry.path());
+                } else {
+                    return Err(crate::record::invalid_data(
+                        "unsupported file type in catalog storage",
+                    ));
+                }
             }
         }
         Ok(CatalogStorageLimits { bytes, entries })

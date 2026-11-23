@@ -257,6 +257,106 @@ fn catalog_storage_caps_appends_and_rejects_oversize_recovery_before_adoption() 
 }
 
 #[test]
+fn catalog_quota_accepts_deep_tree_under_descriptor_limit() {
+    use std::process::Command;
+
+    let f = Fixture::new(LIMITS);
+    let used = catalog_usage(&f.root);
+    let mut deep = f.root.join("quota-fixture");
+    const DEPTH: u64 = 64;
+    for _ in 0..DEPTH {
+        fs::create_dir(&deep).unwrap();
+        deep.push("d");
+    }
+    let payload = deep.parent().unwrap().join("payload");
+    fs::write(&payload, b"data").unwrap();
+    fs::hard_link(&payload, f.root.join("quota-hard-link")).unwrap();
+    let growth = record::encode(Operation::Put, b"b", b"exact")
+        .unwrap()
+        .len() as u64;
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "retained_candidate::writable::managed::tests::catalog_quota_descriptor_limit_child",
+            "--nocapture",
+        ])
+        .env("EMDA_CATALOG_DESCRIPTOR_ROOT", &f.root)
+        .env(
+            "EMDA_CATALOG_DESCRIPTOR_BYTES",
+            (used.bytes + 8 + growth).to_string(),
+        )
+        .env(
+            "EMDA_CATALOG_DESCRIPTOR_ENTRIES",
+            (used.entries + DEPTH + 2).to_string(),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("catalog quota reopen succeeded"));
+    assert_eq!(fs::read(payload).unwrap(), b"data");
+}
+
+#[test]
+fn catalog_quota_descriptor_limit_child() {
+    use rustix::process::{Resource, getrlimit, setrlimit};
+
+    let Some(root) = std::env::var_os("EMDA_CATALOG_DESCRIPTOR_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let limits = CatalogStorageLimits {
+        bytes: std::env::var("EMDA_CATALOG_DESCRIPTOR_BYTES")
+            .unwrap()
+            .parse()
+            .unwrap(),
+        entries: std::env::var("EMDA_CATALOG_DESCRIPTOR_ENTRIES")
+            .unwrap()
+            .parse()
+            .unwrap(),
+    };
+    let mut descriptors = getrlimit(Resource::Nofile);
+    descriptors.current = Some(descriptors.current.unwrap_or(32).min(32));
+    setrlimit(Resource::Nofile, descriptors).unwrap();
+
+    let mut store =
+        ManagedRetainedStore::open_with_storage_limits(&root, LIMITS, limits, None).unwrap();
+    assert_eq!(
+        store.get(b"a", 8).unwrap().as_deref(),
+        Some(b"old".as_slice())
+    );
+    store.put(b"b", b"exact").unwrap();
+    assert!(matches!(
+        store.put(b"c", b"over quota"),
+        Err(MutationFailure::Rejected(error)) if error.to_string() == "catalog byte limit exceeded"
+    ));
+    drop(store);
+    let error = ManagedRetainedStore::open_with_storage_limits(
+        &root,
+        LIMITS,
+        CatalogStorageLimits {
+            entries: limits.entries - 1,
+            ..limits
+        },
+        None,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.to_string(), "catalog entry limit exceeded");
+    let reopened =
+        ManagedRetainedStore::open_with_storage_limits(&root, LIMITS, limits, None).unwrap();
+    assert_eq!(
+        reopened.get(b"b", 8).unwrap().as_deref(),
+        Some(b"exact".as_slice())
+    );
+    println!("catalog quota reopen succeeded");
+}
+
+#[test]
 fn catalog_storage_charges_abandoned_stages_until_cleanup() {
     use crate::staging::Stage;
     let f = Fixture::new(LIMITS);
