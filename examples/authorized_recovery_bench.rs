@@ -254,7 +254,13 @@ fn bind_legacy_archive(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_lifecycle(root: &Path, limits: RetainedStoreLimits, keys: u64, epoch: u64) -> Result<()> {
+fn run_lifecycle(
+    root: &Path,
+    limits: RetainedStoreLimits,
+    keys: u64,
+    epoch: u64,
+    authorized: bool,
+) -> Result<()> {
     let bytes: [u8; 72] = fs::read(root.join("archive-binding"))?
         .try_into()
         .map_err(|_| "invalid saved archive binding length")?;
@@ -281,10 +287,56 @@ fn run_lifecycle(root: &Path, limits: RetainedStoreLimits, keys: u64, epoch: u64
         archive.log_bytes
     );
     let start = Instant::now();
-    ManagedRetainedStore::restore_backup(&backup, &restored, limits, &expected)?;
-    println!("restore_ns={}", start.elapsed().as_nanos());
-    let restored = ManagedRetainedStore::open(restored, limits)?;
-    verify(|after| Ok(restored.scan(after, None, 1024)?), keys, epoch)?;
+    if authorized {
+        let source_authority = FileRetainedAuthority::open(root.join("authority"))?
+            .read()?
+            .ok_or("missing source authority")?;
+        let mut receipt = FileRetainedAuthority::create(root.join("restore-receipt"))?;
+        let prepared = Catalog::prepare_from_backup_recorded(
+            &backup,
+            &restored,
+            limits,
+            None,
+            &expected,
+            |prepared| {
+                if !receipt.compare_and_swap(None, prepared)? {
+                    return Err(io::Error::other("restore receipt already exists"));
+                }
+                Ok(())
+            },
+        )?;
+        println!("restore_prepare_ns={}", start.elapsed().as_nanos());
+        let saved = receipt.read()?.ok_or("missing recorded restore receipt")?;
+        assert_eq!(saved, prepared);
+        assert_ne!(saved.committed.catalog, source_authority.committed.catalog);
+        assert_ne!(
+            saved.committed.generation,
+            source_authority.committed.generation
+        );
+        assert_eq!(saved.committed.suffix_digest, expected.digest);
+        let authority = root.join("restored-authority");
+        let register = Instant::now();
+        drop(Catalog::register_prepared(
+            &restored,
+            limits,
+            FileRetainedAuthority::create(&authority)?,
+            saved,
+        )?);
+        println!("restore_register_ns={}", register.elapsed().as_nanos());
+        println!("restore_ns={}", start.elapsed().as_nanos());
+        let mut restored =
+            Catalog::open(&restored, limits, FileRetainedAuthority::open(authority)?)?;
+        verify(|after| Ok(restored.scan(after, None, 1024)?), keys, epoch)?;
+        assert_eq!(
+            FileRetainedAuthority::open(root.join("authority"))?.read()?,
+            Some(source_authority)
+        );
+    } else {
+        ManagedRetainedStore::restore_backup(&backup, &restored, limits, &expected)?;
+        println!("restore_ns={}", start.elapsed().as_nanos());
+        let restored = ManagedRetainedStore::open(restored, limits)?;
+        verify(|after| Ok(restored.scan(after, None, 1024)?), keys, epoch)?;
+    }
     drop(catalog);
     let mut source = Backend::open(root, "retained", limits)?;
     verify(|after| source.page(after), keys, epoch)?;
@@ -443,7 +495,9 @@ fn main() -> Result<()> {
                 );
             }
         }
-        "lifecycle" => run_lifecycle(root, limits, keys, epoch)?,
+        "lifecycle" | "authorized-lifecycle" => {
+            run_lifecycle(root, limits, keys, epoch, phase == "authorized-lifecycle")?;
+        }
         _ => return Err("invalid phase".into()),
     }
     println!("suffix_work={}", limits.suffix.work);

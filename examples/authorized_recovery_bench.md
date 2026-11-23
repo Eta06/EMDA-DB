@@ -20,6 +20,8 @@ EMDA_BENCH_SUFFIX_WORK=60000000 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/sqlite-control" 131072 6 --sqlite
 EMDA_BENCH_SUFFIX_WORK=240000000 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/archive-lifecycle" 131072 6 --retire-and-restore
+EMDA_BENCH_SUFFIX_WORK=240000000 python3 examples/authorized_recovery_bench.py \
+  target/release/examples/authorized_recovery_bench "$run/authorized-restore" 1048576 6 --sqlite --retire-and-restore --authorized-restore
 ```
 
 Each run needs a fresh directory and enough space for both fixtures and
@@ -45,6 +47,13 @@ compares every restored and source entry with the workload model. The
 lifecycle disk samples include visible sibling stages, the bound source,
 authority, backup and restored store, and exclude the ordinary and
 SQLite controls. Allow space for the backup and restore as well.
+
+Add `--authorized-restore` to save the verified preparation receipt in a
+separate directory before publication, then register the destination with
+a fresh authority. The runner checks catalog and generation identities,
+the saved receipt, unchanged source authority, and every restored entry
+after reopening. Preparation and registration are timed separately.
+The allocation samples include the receipt and fresh authority directories.
 
 The runner saves raw phase logs and JSONL measurements. Write latency is
 the time to apply an entire epoch of 32 durable batches, including
@@ -80,5 +89,8 @@ The [million-key comparison](../benchmarks/results/2026-11-23-million-key-recove
 covers macOS APFS and Linux tmpfs, with a separate rotation I/O trace.
 The [archive lifecycle measurements](../benchmarks/results/2026-11-23-retained-archive-lifecycle/README.md)
 cover local backup, retirement, and restore on macOS APFS and Linux ext4.
+The [million-key authorized restore run](../benchmarks/results/2026-11-23-million-key-authorized-restore/README.md)
+adds Linux virtual-disk ext4 timings and verifies registration under a
+fresh authority on both filesystems.
 The [authority read comparison](../benchmarks/results/2026-11-22-authority-read-sync/README.md)
 isolates record synchronization using the same fixture on each platform.

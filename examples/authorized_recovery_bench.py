@@ -49,7 +49,7 @@ def command(binary, phase, fixture, backend, keys, epoch):
 def run(binary, directory, phase, backend, keys, epoch):
     fixture = directory / "fixture"
     excluded = ()
-    if phase in {"bind-archive", "lifecycle"}:
+    if phase in {"bind-archive", "lifecycle", "authorized-lifecycle"}:
         paths = [fixture]
         excluded = (fixture / "ordinary", fixture / "sqlite")
     elif backend == "retained":
@@ -112,9 +112,12 @@ def main():
     parser.add_argument("epochs", type=int)
     parser.add_argument("--sqlite", action="store_true", help="include a WAL/FULL SQLite control")
     parser.add_argument("--retire-and-restore", action="store_true", help="verify a local backup, retire the legacy archive, and restore the final state")
+    parser.add_argument("--authorized-restore", action="store_true", help="restore using an independently recorded receipt and a fresh authority")
     args = parser.parse_args()
     if not 4096 <= args.keys <= 1048576 or not 1 <= args.epochs <= 1000:
         parser.error("keys must be 4096–1048576 and epochs must be 1–1000")
+    if args.authorized_restore and not args.retire_and_restore:
+        parser.error("--authorized-restore requires --retire-and-restore")
     binary, directory = args.binary.resolve(strict=True), args.new_directory.resolve()
     directory.mkdir()
     backends = ["ordinary", "retained", "sqlite"] if args.sqlite else ["ordinary", "retained"]
@@ -126,6 +129,7 @@ def main():
         "keys": args.keys, "epochs": args.epochs, "backend_orders": orders,
         "suffix_work_override": os.environ.get("EMDA_BENCH_SUFFIX_WORK"),
         "retire_and_restore": args.retire_and_restore,
+        "authorized_restore": args.authorized_restore,
     }
     (directory / "environment.json").write_text(json.dumps(provenance, indent=2) + "\n")
     run(binary, directory, "setup", "all" if args.sqlite else "both", args.keys, 0)
@@ -142,7 +146,8 @@ def main():
         print(f"{directory.name}: verified {len(backends)} backends at epoch {epoch}", flush=True)
     print(f"rotations={rotations}", flush=True)
     if args.retire_and_restore:
-        run(binary, directory, "lifecycle", "retained", args.keys, args.epochs)
+        phase = "authorized-lifecycle" if args.authorized_restore else "lifecycle"
+        run(binary, directory, phase, "retained", args.keys, args.epochs)
         print("verified restored and current retained state", flush=True)
 
 

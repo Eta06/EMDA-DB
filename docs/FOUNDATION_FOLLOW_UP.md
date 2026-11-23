@@ -351,7 +351,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   and Linux ARM64 tmpfs against ordinary replay and SQLite WAL/FULL.
   The [three-engine measurements](../benchmarks/results/2026-11-23-million-key-recovery/README.md)
   check every live key and value, and trace base reads during retained
-  rotation. Linux ext4 timing at this size remains open.
+  rotation. Follow-up [Linux ext4 and macOS APFS runs](../benchmarks/results/2026-11-23-million-key-authorized-restore/README.md)
+  also verify local backup, archive retirement and restore under a fresh
+  authority after four rotations. Both restores match all 1,048,204 final
+  entries and verify the independently recorded preparation receipt.
 - [x] Compare [two retained hashing changes](../benchmarks/results/2026-11-23-retained-hash-trials/README.md)
   at 524,288 keys on macOS and Linux ARM64. Both passed full-state
   comparisons. Neither reduced rotation CPU on Linux, so both changes
