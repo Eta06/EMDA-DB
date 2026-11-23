@@ -744,9 +744,11 @@ fn retained_document_histories_serialize_and_recover_across_reclamation() {
         let mut backend =
             ManagedRetainedStore::open_with_auto_reclaim(&catalog, limits, NonZeroU64::MIN)
                 .unwrap();
-        // A round can otherwise consist entirely of no-op, read, or rejected
-        // transactions. Persist an epoch before the race to force rotation.
+        // The previous window can leave an empty suffix if maintenance
+        // rotates before a rejected transaction. The first put fills that
+        // suffix and the second forces rotation before this window's race.
         let epoch = (iteration as u64).to_le_bytes();
+        backend.put(b"model-epoch", b"start").unwrap();
         backend.put(b"model-epoch", &epoch).unwrap();
         let expected = {
             let db = DocumentDatabase::with_managed_retained_store(&mut backend);
@@ -827,13 +829,21 @@ fn authorized_document_histories_chain_across_rotation_and_reopen() {
         .unwrap()
     };
     let mut backend = open();
-    backend.put(b"model-epoch", b"seed").unwrap();
     let mut generation = prepared.committed.generation;
     let mut expected = INITIAL_STATE;
     let (mut cancelled, mut busy, mut completed, mut claims, mut releases) = (0, 0, 0, 0, 0);
     for window in 0..windows {
         let epoch = (window as u64).to_le_bytes();
+        // A window may begin with an empty suffix, and its scheduled
+        // transactions may all read, abort, or leave the data unchanged.
+        backend.put(b"model-epoch", b"start").unwrap();
         backend.put(b"model-epoch", &epoch).unwrap();
+        let before_race = observer.read().unwrap().unwrap();
+        assert!(before_race.pending.is_none());
+        assert_ne!(
+            before_race.committed.generation, generation,
+            "authorized window={window} epoch writes must force a rotation"
+        );
         {
             let db = DocumentDatabase::with_authorized_retained_store(&mut backend);
             assert_eq!(
