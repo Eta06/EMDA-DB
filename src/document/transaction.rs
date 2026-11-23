@@ -162,6 +162,23 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         }
     }
 
+    pub(super) fn scan_document_page(
+        &self,
+        after: &[u8],
+        before: &[u8],
+        limit: usize,
+    ) -> io::Result<Vec<Entry>> {
+        let mut oversized = false;
+        let page = self.scan_admitted(after, before, limit, |_, len| {
+            oversized = len > MAX_DOCUMENT_BYTES;
+            !oversized
+        })?;
+        if oversized {
+            return Err(invalid_data("stored document exceeds size limit"));
+        }
+        Ok(page)
+    }
+
     /// Reads an unreserved raw key within this document transaction.
     pub fn get_raw(&self, key_value: &[u8]) -> io::Result<Option<Vec<u8>>> {
         key::raw_key(key_value)?;

@@ -9,7 +9,7 @@ testing and an independent off-host restore remain deferred.
 | --- | --- | ---: | --- |
 | 1 | Correctness and foundations | 94% | 108 of 115 local checklist items. Broader fault, concurrency and resource evidence remains open. |
 | 2 | Durable storage and core operations | 93% | 153 of 165 checklist items. Bounded memory, safe log reclamation and deployment-scale recovery still need exit evidence. |
-| 3 | Document model and queries | 93% | 98 of 105 checklist items. Richer operators, broader stress and recovery coverage, and representative comparisons remain open. |
+| 3 | Document model and queries | 93% | 100 of 107 checklist items. Richer operators, broader stress and recovery coverage, and representative comparisons remain open. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
 | 5 | Secure service and project isolation | 10% | One of five milestones has partial evidence from the loopback benchmark adapter. A secure API, project isolation and safe scale-to-zero remain to build. |
 | 6 | Performance and scalability | 60% | The comparative benchmark milestone has evidence. Profiling, durable group commit, hardware acceleration and scheduling each have partial evidence. Full workload and project-level scaling remain open. |
@@ -18,7 +18,7 @@ testing and an independent off-host restore remain deferred.
 
 Steps 1–3 count checked bullets in the [foundation and storage](FOUNDATION_FOLLOW_UP.md)
 and [document](DOCUMENT_FOLLOW_UP.md) checklists, excluding the two explicitly
-deferred drills. Their combined count is 359 of 385. Each item has equal
+deferred drills. Their combined count is 361 of 387. Each item has equal
 weight in that count. Steps 4–8 are estimates from roadmap milestones with
 one point for demonstrated delivery, half a point for a tested subset, and
 zero for design or prerequisites. The projects have different scope and the

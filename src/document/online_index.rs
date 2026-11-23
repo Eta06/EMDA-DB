@@ -343,7 +343,7 @@ impl DocumentTransaction<'_, '_> {
                 Some(id) => key::document(collection, &id)?,
                 None => prefix.clone(),
             };
-            let rows = this.scan(&cursor, &end, limit)?;
+            let rows = this.scan_document_page(&cursor, &end, limit)?;
             if rows.is_empty() {
                 metadata.jobs.remove(position);
                 metadata.indexes.push(definition);

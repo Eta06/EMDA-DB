@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check stored value sizes before reading documents for incremental schema
+  migration and index builds, or reading index entries for collection
+  verification.
+
 - Enforce the 16 MiB related-document lookup budget before reading a
   target document.
 

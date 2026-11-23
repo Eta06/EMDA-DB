@@ -66,23 +66,32 @@ impl DocumentTransaction<'_, '_> {
                 let end = key::end(&prefix);
                 let mut cursor = prefix;
                 loop {
-                    let page = self.scan(&cursor, &end, 128)?;
-                    if page.is_empty() {
-                        break;
-                    }
-                    for (key, value) in page {
-                        seen += 1;
-                        actual_bytes = actual_bytes
-                            .checked_add(key.len())
-                            .and_then(|n| n.checked_add(value.len()))
-                            .ok_or_else(|| key::invalid("verification size overflow"))?;
-                        if seen > MAX_INDEX_KEYS || actual_bytes > MAX_BYTES {
-                            return Err(key::invalid("verification exceeds index-key limits"));
+                    let mut rejected = None;
+                    let page = self.scan_admitted(&cursor, &end, 128, |key, len| {
+                        let total = actual_bytes + key.len() + len;
+                        if seen >= MAX_INDEX_KEYS || total > MAX_BYTES {
+                            rejected = Some(key::invalid("verification exceeds index-key limits"));
+                        } else if expected.get(key).is_none_or(|value| value.len() != len) {
+                            rejected = Some(invalid("unexpected or incorrect index entry"));
+                        } else {
+                            seen += 1;
+                            actual_bytes = total;
+                            return true;
                         }
-                        cursor = key.clone();
+                        false
+                    })?;
+                    let empty = page.is_empty();
+                    for (key, value) in page {
                         if expected.remove(&key).as_deref() != Some(value.as_slice()) {
                             return Err(invalid("unexpected or incorrect index entry"));
                         }
+                        cursor = key;
+                    }
+                    if let Some(error) = rejected {
+                        return Err(error);
+                    }
+                    if empty {
+                        break;
                     }
                 }
             }
