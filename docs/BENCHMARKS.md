@@ -598,6 +598,11 @@ new `--output` path. It alternates the binaries on the same verified fixture,
 checks checkpoint digests and sampled reopened values, and records failures and
 VM telemetry. The baseline revision is supplied by the caller.
 
+The [manual reader latency](../benchmarks/results/2026-11-23-manual-rollover-readers/README.md)
+and [automatic reader latency](../benchmarks/results/2026-11-23-automatic-rollover-readers/README.md)
+studies measure a concurrent point reader on macOS APFS and Linux ext4.
+They report paired results, overall rollover time and verified checkpoint output.
+
 ## Comparators
 
 Start with PostgreSQL, SQLite, and Turso Database on the same machine where their supported operations and safety settings are comparable. Later compare PostgreSQL- and MongoDB-compatible operations, then hosted APIs such as Neon, Cloudflare D1, and MongoDB Atlas as a separate category. An embedded function call is not equivalent to a remote authenticated API request.
