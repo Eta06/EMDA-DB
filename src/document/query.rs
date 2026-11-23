@@ -2,7 +2,7 @@
 use super::{
     index::{self, IndexValue},
     key,
-    transaction::{DocumentTransaction, MAX_DOCUMENT_BYTES, Metadata},
+    transaction::{DocumentTransaction, Metadata},
 };
 use serde_json::Value;
 use std::io;
@@ -269,15 +269,19 @@ impl DocumentTransaction<'_, '_> {
             }
             let id = entry_id(&entry, &index_prefix, definition.fields.len())?;
             let document_key = key::document(collection, id)?;
+            let mut next_document_bytes = document_key_value_bytes;
             let encoded = self
-                .read(&document_key)?
+                .read_document_bytes(&document_key, |len| {
+                    next_document_bytes = document_key_value_bytes
+                        .checked_add(document_key.len())
+                        .and_then(|total| total.checked_add(len))
+                        .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
+                    if scan_byte_limit.is_some_and(|limit| next_document_bytes > limit) {
+                        return Err(key::invalid("document scan exceeds the operation limit"));
+                    }
+                    Ok(())
+                })?
                 .ok_or_else(|| invalid_data("index references a missing document"))?;
-            // Reject corrupt oversized records before applying the page byte
-            // limit. Otherwise a single 16 MiB value plus its ID produces an
-            // empty page and no cursor, silently hiding the corrupt entry.
-            if encoded.len() > MAX_DOCUMENT_BYTES {
-                return Err(invalid_data("stored document exceeds size limit"));
-            }
             let next_used = used
                 .checked_add(id.len())
                 .and_then(|n| n.checked_add(encoded.len()))
@@ -285,13 +289,7 @@ impl DocumentTransaction<'_, '_> {
             if next_used > MAX_QUERY_BYTES {
                 break;
             }
-            document_key_value_bytes = document_key_value_bytes
-                .checked_add(document_key.len())
-                .and_then(|total| total.checked_add(encoded.len()))
-                .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
-            if scan_byte_limit.is_some_and(|limit| document_key_value_bytes > limit) {
-                return Err(key::invalid("document scan exceeds the operation limit"));
-            }
+            document_key_value_bytes = next_document_bytes;
             let document = Self::decode_document(&encoded, &metadata.schema)?;
             let expected = index::keys(collection, definition, &document, id)
                 .map_err(|_| invalid_data("document cannot be represented by its index"))?

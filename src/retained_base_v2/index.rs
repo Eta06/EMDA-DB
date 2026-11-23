@@ -468,6 +468,23 @@ impl IndexedBase {
     pub(crate) fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         crate::record::validate_key(key)?;
         validate_value_budget(max_value_bytes)?;
+        self.get_admitted(key, |len| {
+            if len > max_value_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "value budget exceeded",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        crate::record::validate_key(key)?;
         self.check_length()?;
         let Some(position) = self.preceding_block(key) else {
             return Ok(None);
@@ -487,14 +504,11 @@ impl IndexedBase {
             match candidate.cmp(key) {
                 std::cmp::Ordering::Less => Ok(Selection::Skip),
                 std::cmp::Ordering::Greater => Ok(Selection::Stop),
-                std::cmp::Ordering::Equal if len <= max_value_bytes => {
+                std::cmp::Ordering::Equal => {
+                    admit(len)?;
                     found = true;
                     Ok(Selection::Take)
                 }
-                std::cmp::Ordering::Equal => Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "value budget exceeded",
-                )),
             }
         })?;
         Ok(result.pop().map(|(_, value)| value))

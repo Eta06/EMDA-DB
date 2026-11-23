@@ -529,6 +529,15 @@ impl ManagedRetainedStore {
         self.store.get(key, max_value_bytes)
     }
 
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        self.ensure_selected()?;
+        self.store.get_admitted(key, admit)
+    }
+
     pub fn scan(
         &self,
         after: Option<&[u8]>,

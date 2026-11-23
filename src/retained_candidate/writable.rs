@@ -420,6 +420,20 @@ impl RetainedStore {
         )
     }
 
+    pub(super) fn get_admitted(
+        &self,
+        key: &[u8],
+        admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        self.ensure_healthy()?;
+        self.overlay.get_admitted(
+            &self.base,
+            OverlaySource::Disk(self.suffix_file()),
+            key,
+            admit,
+        )
+    }
+
     fn suffix_file(&self) -> SuffixFile<'_> {
         SuffixFile {
             file: &self.log,

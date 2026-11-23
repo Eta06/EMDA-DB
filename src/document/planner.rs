@@ -1170,14 +1170,14 @@ impl DocumentTransaction<'_, '_> {
                 // filters retry only if needed to report the first error by ID.
                 let mut collector = filter::QueryCollector::new(query, true);
                 for id in candidates.ids {
-                    let encoded =
-                        self.read(&key::document(collection, &id)?)?
-                            .ok_or_else(|| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "index references a missing document",
-                                )
-                            })?;
+                    let encoded = self
+                        .read_document_bytes(&key::document(collection, &id)?, |_| Ok(()))?
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "index references a missing document",
+                            )
+                        })?;
                     collector.push(id, Self::decode_document(&encoded, &metadata.schema)?);
                     if collector.has_failed() {
                         break;

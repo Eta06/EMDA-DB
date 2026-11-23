@@ -61,10 +61,23 @@ impl<A: RetainedAuthority + Send> Backend for AuthorizedRetainedStore<A> {
 
 impl RetainedTransaction<'_> {
     pub(super) fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.get_admitted(key, |_| Ok(()))
+    }
+
+    pub(super) fn get_admitted(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         check_admission(self.deadline, self.cancellation)?;
         match self.staged.get(key) {
-            Some(value) => Ok(value.clone()),
-            None => self.store.get(key, record::MAX_VALUE),
+            Some(value) => {
+                if let Some(value) = value {
+                    admit(value.len())?;
+                }
+                Ok(value.clone())
+            }
+            None => self.store.get_admitted(key, admit),
         }
     }
 

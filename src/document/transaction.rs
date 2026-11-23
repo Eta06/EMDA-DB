@@ -106,6 +106,24 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         }
     }
 
+    pub(super) fn read_document_bytes(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        let admit_document = |len| {
+            if len > MAX_DOCUMENT_BYTES {
+                return Err(invalid_data("stored document exceeds size limit"));
+            }
+            admit(len)
+        };
+        match &self.backend {
+            BackendTransaction::Ordinary(tx) => tx.get_admitted(key, admit_document),
+            BackendTransaction::Checkpoint(tx) => tx.get_admitted(key, admit_document),
+            BackendTransaction::Retained(tx) => tx.get_admitted(key, admit_document),
+        }
+    }
+
     pub(super) fn write(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {
         match &mut self.backend {
             BackendTransaction::Ordinary(tx) => tx.put(key, value),
@@ -270,7 +288,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         id: &str,
         schema: &CollectionSchema,
     ) -> io::Result<Option<Value>> {
-        self.read(&key::document(collection, id)?)?
+        self.read_document_bytes(&key::document(collection, id)?, |_| Ok(()))?
             .map(|bytes| Self::decode_document(&bytes, schema))
             .transpose()
     }

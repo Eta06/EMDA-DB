@@ -150,10 +150,21 @@ impl Transaction<'_> {
 
     /// Reads from staged changes first, then from the initial snapshot.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.get_admitted(key, |_| Ok(()))
+    }
+
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         crate::cancellation::check(self.cancellation.as_ref())?;
         record::validate_key(key)?;
         let snapshot = self.snapshot.read_index()?;
         if let Some(value) = self.staged.get(key) {
+            if let Some(value) = value {
+                admit(value.len())?;
+            }
             return Ok(value.clone());
         }
         if let Some(read_set) = &self.read_set {
@@ -167,6 +178,7 @@ impl Transaction<'_> {
             .get(key)
             .copied()
             .map(|location| {
+                admit(location.length)?;
                 snapshot
                     .log
                     .as_ref()

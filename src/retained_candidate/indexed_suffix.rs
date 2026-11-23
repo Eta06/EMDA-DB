@@ -495,18 +495,32 @@ impl Overlay {
     ) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
         crate::retained_base_v2::validate_value_budget(max_value_bytes)?;
+        self.get_admitted(base, suffix, key, |len| {
+            if len > max_value_bytes {
+                return Err(invalid_overlay("value budget exceeded"));
+            }
+            Ok(())
+        })
+    }
+
+    pub(super) fn get_admitted(
+        &self,
+        base: &IndexedBase,
+        suffix: OverlaySource<'_>,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
+        record::validate_key(key)?;
         let Ok(position) = self
             .entries
             .binary_search_by(|entry| entry.key.as_slice().cmp(key))
         else {
-            return base.get(key, max_value_bytes);
+            return base.get_admitted(key, admit);
         };
         let Some(value) = value_at(suffix, &self.entries[position]) else {
             return Ok(None);
         };
-        if value.len() > max_value_bytes {
-            return Err(invalid_overlay("value budget exceeded"));
-        }
+        admit(value.len())?;
         Ok(Some(value.to_owned_bytes()?))
     }
 

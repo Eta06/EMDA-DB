@@ -102,10 +102,23 @@ impl CheckpointTransaction<'_> {
 
     /// Reads a staged value or a value validated at successful commit.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.get_admitted(key, |_| Ok(()))
+    }
+
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
         let state = self.state()?;
         match self.staged.get(key) {
-            Some(value) => Ok(value.clone()),
+            Some(value) => {
+                if let Some(value) = value {
+                    admit(value.len())?;
+                }
+                Ok(value.clone())
+            }
             None => {
                 let location = state.view.location(key)?;
                 if let Some(read_set) = &self.read_set {
@@ -115,7 +128,10 @@ impl CheckpointTransaction<'_> {
                         .record_point(self.store, key, location, state.log_generation)?;
                 }
                 location
-                    .map(|location| state.view.base.log.read(location))
+                    .map(|location| {
+                        admit(location.length)?;
+                        state.view.base.log.read(location)
+                    })
                     .transpose()
             }
         }

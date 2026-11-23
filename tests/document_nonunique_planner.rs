@@ -4,7 +4,10 @@ use database_engine::{
     DocumentQueryAccess, DocumentSort, IndexDefinition, Store,
 };
 use serde_json::{Value, json};
+use std::fs::OpenOptions;
 use std::io::ErrorKind;
+use std::os::unix::fs::FileExt;
+use std::path::Path;
 use std::sync::Barrier;
 
 mod support;
@@ -288,7 +291,7 @@ fn nonunique_index_empty_range_detects_phantoms_on_both_backends() {
     }
 }
 
-fn byte_limits(db: &DocumentDatabase<'_>, overwrite: impl FnOnce(&[u8], &[u8])) {
+fn byte_limits(db: &DocumentDatabase<'_>, source: &Path, overwrite: impl FnOnce(&[u8], &[u8])) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
     db.create_index(
@@ -344,6 +347,18 @@ fn byte_limits(db: &DocumentDatabase<'_>, overwrite: impl FnOnce(&[u8], &[u8])) 
         db.query_planned("c", &query).unwrap_err().kind(),
         ErrorKind::InvalidInput
     );
+    // Damage the single-byte payload in the last DB01 record without
+    // changing its length. An attempted value read would now fail its CRC.
+    let log = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(source.join("records.log"))
+        .unwrap();
+    let byte_offset = log.metadata().unwrap().len() - 5;
+    let mut original = [0];
+    log.read_exact_at(&mut original, byte_offset).unwrap();
+    assert_eq!(&original, b"!");
+    log.write_all_at(b"?", byte_offset).unwrap();
     let error = db
         .transaction(|tx| {
             tx.put_raw(b"byte-budget-rollback", b"must not commit")?;
@@ -358,10 +373,9 @@ fn byte_limits(db: &DocumentDatabase<'_>, overwrite: impl FnOnce(&[u8], &[u8])) 
         None
     );
     assert!(db.delete("c", "00").unwrap());
-    assert_eq!(
-        db.query_planned("c", &query).unwrap_err().kind(),
-        ErrorKind::InvalidData
-    );
+    let error = db.query_planned("c", &query).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(error.to_string().contains("stored value checksum mismatch"));
 }
 
 #[test]
@@ -378,10 +392,11 @@ fn nonunique_index_preserves_full_scan_byte_budget_on_both_backends() {
                 retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
             byte_limits(
                 &DocumentDatabase::with_checkpoint_store(&store),
+                &source,
                 |key, value| store.put(key, value).unwrap(),
             );
         } else {
-            byte_limits(&DocumentDatabase::new(&store), |key, value| {
+            byte_limits(&DocumentDatabase::new(&store), &source, |key, value| {
                 store.put(key, value).unwrap()
             });
         }
