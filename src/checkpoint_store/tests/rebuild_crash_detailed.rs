@@ -45,7 +45,7 @@ fn detailed_rebuild_crash_child() {
         CheckpointStore::rebuild_managed_using(
             &root.join("store"),
             &root.join("result"),
-            |path| Store::open(path),
+            |path, check| Store::open_with_recovery_checks(path, None, None, None, check),
             |parent| {
                 if stage == "checkpoint-published" {
                     pause_at_boundary()

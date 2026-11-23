@@ -11,8 +11,8 @@ fn fixture_rebuild(
     let digest = CheckpointStore::rebuild_managed_using(
         path,
         destination,
-        |path| {
-            let store = Store::open(path)?;
+        |path, check| {
+            let store = Store::open_with_recovery_checks(path, None, None, None, check)?;
             *lock = Some(store.share_store_lock());
             Ok(store)
         },
@@ -141,11 +141,11 @@ fn detailed_rebuild_classifies_publication_boundaries_and_preserves_recovery() {
                     CheckpointStore::rebuild_managed_using(
                         &path,
                         &destination,
-                        |path| {
+                        |path, check| {
                             crate::test_support::diagnose_lock(
                                 path,
                                 "rebuild classification source",
-                                Store::open(path),
+                                Store::open_with_recovery_checks(path, None, None, None, check),
                             )
                         },
                         |parent| {
@@ -260,7 +260,7 @@ fn detailed_rebuild_public_api_preserves_limits_locks_and_existing_files() {
         fs::write(&existing, b"preserve").unwrap();
         assert!(matches!(
             CheckpointStore::rebuild_managed_selection_detailed(&path, &existing),
-            Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(_))
+            Err(ManagedRebuildFailure::NotPublished(error)) if error.kind() == io::ErrorKind::AlreadyExists
         ));
         assert_eq!(fs::read(&existing).unwrap(), b"preserve");
         CheckpointStore::rebuild_managed_selection_with_limits_detailed(
@@ -298,11 +298,11 @@ fn detailed_rebuild_holds_the_lock_through_success_or_uncertain_selection_sync()
                         CheckpointStore::rebuild_managed_using(
                             path_ref,
                             destination_ref,
-                            |path| {
+                            |path, check| {
                                 crate::test_support::diagnose_lock(
                                     path,
                                     "rebuild lock-hold source",
-                                    Store::open(path),
+                                    Store::open_with_recovery_checks(path, None, None, None, check),
                                 )
                             },
                             super::super::selection::sync_ancestors,
@@ -358,106 +358,5 @@ fn detailed_rebuild_holds_the_lock_through_success_or_uncertain_selection_sync()
                 Some(&b"value"[..])
             );
         }
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn not_published_does_not_claim_full_log_recovery_left_the_source_unchanged() {
-    use rustix::fs::{XattrFlags, fgetxattr, fsetxattr};
-
-    for v2 in [true, false] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("store");
-        if v2 {
-            fs::create_dir(&path).unwrap();
-            fs::write(
-                path.join("records.log"),
-                include_bytes!("../../../tests/fixtures/v2-empty-records.log"),
-            )
-            .unwrap();
-            fs::write(
-                path.join("commit.state"),
-                include_bytes!("../../../tests/fixtures/v2-empty-commit.state"),
-            )
-            .unwrap();
-        }
-        let store = Store::open(&path).unwrap();
-        if !v2
-            && !fs::read(path.join("records.log"))
-                .unwrap()
-                .starts_with(b"EMDALOG3")
-        {
-            continue;
-        }
-        store.put(b"safe", b"acknowledged").unwrap();
-        let log = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path.join("records.log"))
-            .unwrap();
-        let before_witness = if v2 {
-            fs::read(path.join("commit.state")).unwrap()
-        } else {
-            let mut marker = [0; witness::WITNESS_SIZE];
-            assert_eq!(
-                fgetxattr(&log, "user.db.commit.v3", &mut marker[..]).unwrap(),
-                marker.len()
-            );
-            marker.to_vec()
-        };
-        store.put(b"pending", b"complete").unwrap();
-        drop(store);
-        let complete_log = fs::read(path.join("records.log")).unwrap();
-        // Model a complete but unacknowledged tail whose durable witness was
-        // not advanced. This deliberate rollback is only a test fixture.
-        if v2 {
-            let mut witness_file = OpenOptions::new()
-                .write(true)
-                .truncate(true)
-                .open(path.join("commit.state"))
-                .unwrap();
-            witness_file.write_all(&before_witness).unwrap();
-            witness_file.sync_all().unwrap();
-        } else {
-            fsetxattr(
-                &log,
-                "user.db.commit.v3",
-                &before_witness,
-                XattrFlags::REPLACE,
-            )
-            .unwrap();
-            log.sync_all().unwrap();
-        }
-        let selection = super::super::selection::path(&path);
-        fs::write(&selection, b"invalid selection").unwrap();
-        let destination = dir.path().join("never-published");
-        let result = CheckpointStore::rebuild_managed_selection_detailed(&path, &destination);
-        if let Err(ManagedRebuildFailure::NotPublished(error)) = &result {
-            crate::test_support::report_lock_error(&path, "not-published recovery", error);
-        }
-        assert!(
-            matches!(&result, Err(ManagedRebuildFailure::NotPublished(_))),
-            "{result:?}"
-        );
-        assert!(!destination.exists());
-        assert_eq!(fs::read(&selection).unwrap(), b"invalid selection");
-        assert_eq!(fs::read(path.join("records.log")).unwrap(), complete_log);
-        let after_witness = if v2 {
-            fs::read(path.join("commit.state")).unwrap()
-        } else {
-            let mut marker = [0; witness::WITNESS_SIZE];
-            assert_eq!(
-                fgetxattr(&log, "user.db.commit.v3", &mut marker[..]).unwrap(),
-                marker.len()
-            );
-            marker.to_vec()
-        };
-        assert_ne!(after_witness, before_witness, "v2={v2} rebuild={result:?}");
-        let recovered = retry_lock(|| Store::open(&path)).unwrap();
-        assert_eq!(
-            recovered.get(b"pending").unwrap().as_deref(),
-            Some(&b"complete"[..])
-        );
     }
 }

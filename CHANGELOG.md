@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check the destination and existing selection under the source lock before
+  ordinary managed rebuild replay and before adopting a pending tail.
+
 - Reject destination conflicts seen by bounded managed checkpoint rebuilds
   before advancing a pending tail's witness.
 

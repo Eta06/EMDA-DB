@@ -177,7 +177,9 @@ impl CheckpointStore {
             Self::rebuild_managed_using(
                 path.as_ref(),
                 destination.as_ref(),
-                |path| crate::Store::open(path),
+                |path, check| {
+                    crate::Store::open_with_recovery_checks(path, None, None, None, check)
+                },
                 selection::sync_ancestors,
                 || Ok(()),
                 selection::sync_ancestors,
@@ -201,12 +203,13 @@ impl CheckpointStore {
         Self::rebuild_managed_using(
             path.as_ref(),
             destination.as_ref(),
-            |path| {
-                crate::Store::open_with_resource_limits(
+            |path, check| {
+                crate::Store::open_with_recovery_checks(
                     path,
                     max_log_bytes,
                     max_live_keys,
                     max_live_key_bytes,
+                    check,
                 )
             },
             selection::sync_ancestors,
@@ -230,12 +233,13 @@ impl CheckpointStore {
             Self::rebuild_managed_using(
                 path.as_ref(),
                 destination.as_ref(),
-                |path| {
-                    crate::Store::open_with_resource_limits(
+                |path, check| {
+                    crate::Store::open_with_recovery_checks(
                         path,
                         max_log_bytes,
                         max_live_keys,
                         max_live_key_bytes,
+                        check,
                     )
                 },
                 selection::sync_ancestors,
@@ -271,7 +275,7 @@ impl CheckpointStore {
         Self::rebuild_managed_using(
             path,
             destination,
-            |path| crate::Store::open(path),
+            |path, check| crate::Store::open_with_recovery_checks(path, None, None, None, check),
             sync_checkpoint_ancestors,
             before_selection_rename,
             sync_selection_parent,
@@ -282,7 +286,7 @@ impl CheckpointStore {
     pub(super) fn rebuild_managed_using(
         path: &Path,
         destination: &Path,
-        open_store: impl FnOnce(&Path) -> io::Result<crate::Store>,
+        open_store: impl FnOnce(&Path, &dyn Fn() -> io::Result<()>) -> io::Result<crate::Store>,
         sync_checkpoint_ancestors: impl FnOnce(&Path) -> io::Result<()>,
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
@@ -314,7 +318,10 @@ impl CheckpointStore {
             ));
         }
         selection::Selection::new(destination.clone(), [0; 32])?;
-        let store = open_store(&path)?;
+        let store = open_store(&path, &|| {
+            selection::load(&path)?;
+            crate::checkpoint::require_available_destination(&destination)
+        })?;
         // Refuse to overwrite unknown, damaged, symlink or non-file metadata.
         // A valid but stale selection need not have an accessible checkpoint.
         selection::load(&path)?;
@@ -2042,6 +2049,79 @@ mod tests {
         file.read_exact_at(&mut offset, 0).unwrap();
         assert_eq!(u64::from_le_bytes(offset), 28);
         file.write_all_at(&0_u64.to_le_bytes(), 0).unwrap();
+    }
+
+    #[test]
+    fn ordinary_rebuild_rechecks_destination_and_selection_before_tail_adoption() {
+        use std::cell::Cell;
+
+        for v2 in [true, false] {
+            for occupied in [true, false] {
+                let Some(case) = prepare_unacknowledged_tail(v2) else {
+                    break;
+                };
+                let destination = case.root().join("rebuilt");
+                let selection_path = selection::path(&case.path);
+                let conflict = if occupied {
+                    &destination
+                } else {
+                    &selection_path
+                };
+                let checks = Cell::new(0);
+                let failure = crate::publication_outcome::track_managed_rebuild(|tracker| {
+                    CheckpointStore::rebuild_managed_using(
+                        &case.path,
+                        &destination,
+                        |path, check| {
+                            Store::open_with_recovery_checks(path, None, None, None, || {
+                                let previous = checks.replace(checks.get() + 1);
+                                if previous == 1 {
+                                    fs::write(conflict, b"created during replay")?;
+                                }
+                                check()
+                            })
+                        },
+                        |_| panic!("checkpoint published"),
+                        || panic!("selection published"),
+                        |_| panic!("selection synced"),
+                        Some(tracker),
+                    )
+                })
+                .unwrap_err();
+                assert_eq!(checks.get(), 2);
+                assert_eq!(witness_bytes(&case.path), case.rolled_back, "{failure}");
+                let expected = if occupied {
+                    io::ErrorKind::AlreadyExists
+                } else {
+                    io::ErrorKind::InvalidData
+                };
+                assert!(matches!(failure, ManagedRebuildFailure::NotPublished(error)
+                    if error.kind() == expected));
+                assert_eq!(fs::read(conflict).unwrap(), b"created during replay");
+                assert_eq!(
+                    fs::read(case.path.join("records.log")).unwrap(),
+                    case.complete_log
+                );
+                assert_eq!(
+                    fs::read(case.path.join("commit.state")).unwrap(),
+                    case.anchor
+                );
+                assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+                assert_no_staged_markers(case.root());
+
+                fs::remove_file(conflict).unwrap();
+                retry(|| CheckpointStore::rebuild_managed_selection(&case.path, &destination))
+                    .unwrap();
+                assert_eq!(
+                    boundary_of(&witness_bytes(&case.path), &case.id),
+                    case.complete_log.len() as u64
+                );
+                let recovered = retry(|| CheckpointStore::open_managed(&case.path)).unwrap();
+                assert_eq!(recovered.get(b"p").unwrap(), Some(b"two".to_vec()));
+                assert_eq!(recovered.get(b"q").unwrap(), Some(b"batch".to_vec()));
+                assert_eq!(recovered.get(b"safe").unwrap(), None);
+            }
+        }
     }
 
     fn damage_verified_spill_digest(path: &Path) {

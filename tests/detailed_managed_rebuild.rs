@@ -48,7 +48,7 @@ fn external_caller_can_classify_rebuild_failures_and_reopen_the_selection() {
         fs::write(&existing, b"preserve").unwrap();
         assert!(matches!(
             CheckpointStore::rebuild_managed_selection_detailed(&path, &existing),
-            Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(_))
+            Err(ManagedRebuildFailure::NotPublished(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
         ));
         assert_eq!(fs::read(&existing).unwrap(), b"preserve");
         assert_eq!(

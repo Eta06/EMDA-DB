@@ -233,13 +233,33 @@ impl Store {
         max_live_keys: Option<usize>,
         max_live_key_bytes: Option<usize>,
     ) -> io::Result<Self> {
-        let store = Self::open_using(path.as_ref(), |path, initialize| {
-            Log::open_with_recovery_limit(
+        Self::open_with_recovery_checks(
+            path.as_ref(),
+            max_log_bytes,
+            max_live_keys,
+            max_live_key_bytes,
+            || Ok(()),
+        )
+    }
+
+    // Run the check under the store lock before replay and, when needed,
+    // again after validating the pending tail and before changing its witness.
+    pub(crate) fn open_with_recovery_checks(
+        path: &Path,
+        max_log_bytes: Option<u64>,
+        max_live_keys: Option<usize>,
+        max_live_key_bytes: Option<usize>,
+        check: impl Fn() -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let store = Self::open_using(path, |path, initialize| {
+            check()?;
+            Log::open_with_recovery_limit_checked(
                 path,
                 initialize,
                 max_live_keys,
                 max_log_bytes,
                 max_live_key_bytes,
+                check,
             )
         })?;
         Self::set_open_limits(store, max_log_bytes, max_live_keys, max_live_key_bytes)

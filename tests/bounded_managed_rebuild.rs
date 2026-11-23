@@ -108,7 +108,7 @@ fn assert_no_stages(path: &Path) {
 }
 
 #[test]
-fn occupied_bounded_rebuild_destinations_leave_the_pending_tail_unadopted() {
+fn occupied_rebuild_destinations_leave_the_pending_tail_unadopted() {
     for v2 in [true, false] {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("store");
@@ -151,6 +151,22 @@ fn occupied_bounded_rebuild_destinations_leave_the_pending_tail_unadopted() {
             max_merge_fan_in: 2,
         };
         for destination in [&file, &directory, &dangling] {
+            for result in [
+                CheckpointStore::rebuild_managed_selection_detailed(&path, destination),
+                CheckpointStore::rebuild_managed_selection_with_limits_detailed(
+                    &path,
+                    destination,
+                    Some(log.len() as u64),
+                    Some(2),
+                    Some(8),
+                ),
+            ] {
+                assert_eq!(witness_bytes(&path), before, "{result:?}");
+                assert!(
+                    matches!(result, Err(ManagedRebuildFailure::NotPublished(error))
+                    if error.kind() == io::ErrorKind::AlreadyExists)
+                );
+            }
             for full in [true, false] {
                 let result = if full {
                     CheckpointStore::rebuild_managed_selection_full_bounded(
@@ -187,6 +203,16 @@ fn occupied_bounded_rebuild_destinations_leave_the_pending_tail_unadopted() {
         assert!(!missing_target.exists());
 
         let destination = root.path().join("available");
+        fs::write(&selection_path, b"malformed selection").unwrap();
+        let invalid = CheckpointStore::rebuild_managed_selection_detailed(&path, &destination);
+        assert!(
+            matches!(invalid, Err(ManagedRebuildFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData)
+        );
+        assert_eq!(witness_bytes(&path), before);
+        assert_eq!(fs::read(&selection_path).unwrap(), b"malformed selection");
+        assert!(!destination.exists());
+        fs::write(&selection_path, previous_selection).unwrap();
         let rebuilt = bounded_detailed(&path, &destination, &base, &digest, 1, 4096, 2).unwrap();
         assert_eq!(rebuilt, expected_digest);
         assert_eq!(

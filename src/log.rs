@@ -222,15 +222,16 @@ impl Log {
         path: &Path,
         may_initialize: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        Self::open_with_recovery_limit(path, may_initialize, None, None, None)
+        Self::open_with_recovery_limit_checked(path, may_initialize, None, None, None, || Ok(()))
     }
 
-    pub(crate) fn open_with_recovery_limit(
+    pub(crate) fn open_with_recovery_limit_checked(
         path: &Path,
         may_initialize: bool,
         max_live_keys: Option<usize>,
         max_log_bytes: Option<u64>,
         max_live_key_bytes: Option<usize>,
+        before_adoption: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         Self::open_configured(
             path,
@@ -239,7 +240,7 @@ impl Log {
             max_log_bytes,
             max_live_key_bytes,
             None,
-            |_| Ok(()),
+            (|_| Ok(()), before_adoption),
         )
     }
 
@@ -258,7 +259,7 @@ impl Log {
             max_log_bytes,
             None,
             Some((checkpoint, trusted_digest)),
-            |_| Ok(()),
+            (|_| Ok(()), || Ok(())),
         )
     }
 
@@ -268,7 +269,15 @@ impl Log {
         may_initialize: bool,
         hook: impl FnMut(InitializationPoint) -> io::Result<()>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        Self::open_configured(path, may_initialize, None, None, None, None, hook)
+        Self::open_configured(
+            path,
+            may_initialize,
+            None,
+            None,
+            None,
+            None,
+            (hook, || Ok(())),
+        )
     }
 
     fn open_configured(
@@ -278,7 +287,10 @@ impl Log {
         max_log_bytes: Option<u64>,
         max_live_key_bytes: Option<usize>,
         checkpoint: Option<(&Path, &[u8; 32])>,
-        mut initialization_hook: impl FnMut(InitializationPoint) -> io::Result<()>,
+        (mut initialization_hook, before_adoption): (
+            impl FnMut(InitializationPoint) -> io::Result<()>,
+            impl FnOnce() -> io::Result<()>,
+        ),
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log_path = path.join("records.log");
         let witness_exists = witness::exists(path)?;
@@ -388,7 +400,7 @@ impl Log {
             checkpoint,
         )?;
         log.anchor = anchor;
-        log.adopt_replayed_tail(boundary, validated_end)?;
+        log.adopt_replayed_tail(boundary, validated_end, before_adoption)?;
         Ok((log, index))
     }
 
@@ -396,12 +408,14 @@ impl Log {
         &self,
         boundary: Option<u64>,
         validated_end: ReplayedEnd,
+        before_adoption: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<()> {
         if boundary.is_some() {
             if let Some(adoption) = validated_end.adoption {
                 // A complete but unacknowledged tail may survive a crash.
                 // Validate it first, then durably publish the adopted boundary.
                 adoption.verify_current_bytes(self)?;
+                before_adoption()?;
                 self.sync_validated_boundary(validated_end.length)?;
             }
             if self.file.len()? != validated_end.length {
