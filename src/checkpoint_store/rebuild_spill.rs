@@ -101,7 +101,8 @@ pub(super) struct SpillLimits {
     pub(super) max_merge_fan_in: usize,
     pub(super) max_operations: u64,
     pub(super) max_log_bytes: Option<u64>,
-    pub(super) live_limits: Option<(usize, u64)>,
+    pub(super) max_live_keys: Option<usize>,
+    pub(super) max_live_key_bytes: Option<u64>,
     pub(super) base_checkpoint_limits: crate::CheckpointViewLimits,
     pub(super) checkpoint_limits: Option<crate::CheckpointViewLimits>,
 }
@@ -121,7 +122,8 @@ impl SpillLimits {
             max_merge_fan_in,
             max_operations,
             max_log_bytes: None,
-            live_limits: None,
+            max_live_keys: None,
+            max_live_key_bytes: None,
             base_checkpoint_limits: crate::CheckpointViewLimits::default(),
             checkpoint_limits: None,
         };
@@ -689,6 +691,9 @@ impl SpillSession {
                 "checkpoint peak is below its live key count",
             ));
         }
+        if limits.max_live_keys.is_some_and(|max| base_peak > max) {
+            return Err(invalid_input("rebuild historical live key limit exceeded"));
+        }
         Ok(Self {
             fd: Rc::new(FdInner {
                 open: Cell::new(0),
@@ -782,12 +787,18 @@ impl SpillSession {
             .dirty
             .get_mut(key)
             .ok_or_else(|| io::Error::other("suffix chunk lost a key"))?;
-        if let Some((max_keys, max_key_bytes)) = self.limits.live_limits {
+        if state.is_none()
+            && location.is_some()
+            && self
+                .limits
+                .max_live_keys
+                .is_some_and(|max| self.current >= max)
+        {
+            return Err(invalid_input("rebuild historical live key limit exceeded"));
+        }
+        if let Some(max_key_bytes) = self.limits.max_live_key_bytes {
             let key_bytes = key.len() as u64;
             let next_bytes = match (state.is_some(), location.is_some()) {
-                (false, true) if self.current >= max_keys => {
-                    return Err(invalid_input("rebuild historical live key limit exceeded"));
-                }
                 (false, true) => self.live_key_bytes.checked_add(key_bytes),
                 (true, false) => self.live_key_bytes.checked_sub(key_bytes),
                 _ => Some(self.live_key_bytes),

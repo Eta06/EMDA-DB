@@ -108,6 +108,84 @@ fn assert_no_stages(path: &Path) {
 }
 
 #[test]
+fn bounded_suffix_live_key_limit_covers_the_trusted_peak_and_batch_prefixes() {
+    for v2 in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let base = dir.path().join("base");
+        let output = dir.path().join("rebuilt");
+        let store = open_store(&path, v2);
+        store.put(b"a", b"keep").unwrap();
+        store.put(b"old", b"removed from the base").unwrap();
+        store.delete(b"old").unwrap();
+        let digest = store.checkpoint_to(&base).unwrap();
+        let base_bytes = fs::read(&base).unwrap();
+        let prior_witness = witness_bytes(&path);
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"b",
+                    value: b"temporary",
+                },
+                BatchOperation::Put {
+                    key: b"c",
+                    value: b"also temporary",
+                },
+                BatchOperation::Delete { key: b"b" },
+                BatchOperation::Delete { key: b"c" },
+            ])
+            .unwrap();
+        let acknowledged = witness_bytes(&path);
+        drop(store);
+        restore_witness(&path, &prior_witness);
+        let log = fs::read(path.join("records.log")).unwrap();
+        let limits = BoundedSuffixRebuildLimits {
+            max_log_bytes: log.len() as u64,
+            max_operations: 4,
+            max_chunk_keys: 1,
+            max_chunk_key_bytes: 1,
+            max_spill_bytes: 16_384,
+            max_merge_fan_in: 2,
+            base_checkpoint: CheckpointViewLimits::default(),
+            output_checkpoint: CheckpointViewLimits::default(),
+        };
+        let rebuild = |max| {
+            CheckpointStore::rebuild_managed_selection_bounded_with_live_key_limit(
+                &path, &output, &base, &digest, limits, max,
+            )
+        };
+        for max in [1, 2] {
+            assert!(
+                matches!(
+                    rebuild(max),
+                    Err(ManagedRebuildFailure::NotPublished(error))
+                        if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "rebuild historical live key limit exceeded"
+                ),
+                "ceiling {max} must reject an earlier peak"
+            );
+            assert!(!output.exists());
+            assert_eq!(witness_bytes(&path), prior_witness);
+            assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+            assert_eq!(fs::read(&base).unwrap(), base_bytes);
+            assert_no_stages(&path);
+        }
+        let rebuilt = rebuild(3).unwrap();
+        assert_eq!(witness_bytes(&path), acknowledged);
+        let recovered = retry(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(recovered.get(b"a").unwrap().unwrap(), b"keep");
+        assert!(recovered.get(b"b").unwrap().is_none());
+        assert!(recovered.get(b"c").unwrap().is_none());
+        drop(recovered);
+        let full = dir.path().join("full");
+        let baseline = retry(|| Store::open(&path)).unwrap();
+        assert_eq!(baseline.checkpoint_to(full).unwrap(), rebuilt);
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+        assert_eq!(fs::read(&base).unwrap(), base_bytes);
+    }
+}
+
+#[test]
 fn occupied_rebuild_destinations_leave_the_pending_tail_unadopted() {
     for v2 in [true, false] {
         let root = tempfile::tempdir().unwrap();

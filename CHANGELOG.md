@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an optional historical live-key ceiling for bounded checkpoint
+  rebuilds from a trusted checkpoint and its suffix.
+
 - Check retained suffix replay limits before copying a candidate base
   during writable import or backup restore.
 

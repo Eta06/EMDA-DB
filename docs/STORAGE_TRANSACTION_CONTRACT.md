@@ -311,6 +311,12 @@ maintenance operations remain separate.
 - Both writable stores can adjust and inspect their process-local aggregate transaction reservation limit. Admission and reconfiguration share one mutex; a limit above 64 MiB is invalid, while a reduction below current reservations returns `WouldBlock` with no change. A zero limit rejects nonempty staging; checkpoint read-set observations also consume this budget. Reservations are released after commit, failure, cancellation or unwind. Supported blocking and guarded online compaction preserve the setting across handoff, including changes made during the initial online copy; reopening resets it. Direct writes, snapshots, allocation overhead, other stores and total process/project resource use are excluded. The setting is not persistent isolation, an OS resource limit, or a connection quota.
 - Both writable stores also admit at most 64 active transactions per open instance, including FIFO waiters, callbacks and commits. A configurable lower limit and the active count share the transaction-budget mutex. At the limit, admission returns `WouldBlock` before running the callback or submitting a write; lowering the limit below the active count likewise fails without changing it. Zero rejects all new transactions. Admission is released after completion, cancellation, callback error or unwind; it is retained until any started commit has finished. Supported compaction handoffs preserve the configured limit, while reopen resets it. Direct writes, independent snapshots, waiting caller threads and other store instances are excluded. This is not a total-memory, CPU, connection, project or fairness guarantee.
 
+The bounded suffix rebuild variant with a live-key limit checks the
+trusted checkpoint's historical peak and every ordered suffix mutation
+before witness advancement. This includes intermediate DB02 children.
+The limit covers logical live-key count. Historical key-byte limits still
+require full-log replay because the trusted checkpoint has no byte peak.
+
 ## Independently created writable retained generations
 
 `retained_candidate::RetainedStore` publishes a separate generation from an
