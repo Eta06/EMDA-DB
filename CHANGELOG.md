@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Coalesce contiguous integer membership values across compound index
+  prefixes into exact inclusive ranges.
+
 - Apply required scalar bounds before admitting compound membership tuples
   and extending membership prefixes.
 

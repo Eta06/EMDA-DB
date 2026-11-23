@@ -689,6 +689,23 @@ fn consecutive_integer_runs(values: &[IndexValue]) -> Option<Vec<(i64, i64)>> {
     Some(runs)
 }
 
+// Membership choices are distinct and sorted by index encoding. Integers
+// occupy one contiguous part of that order, so the endpoints and count are
+// enough to prove that a single inclusive range contains exactly this list.
+fn contiguous_integer_bounds(values: &[IndexValue]) -> Option<(IndexBound, IndexBound)> {
+    let [IndexValue::Integer(first), .., IndexValue::Integer(last)] = values else {
+        return None;
+    };
+    if last.checked_sub(*first)? != (values.len() - 1) as i64 {
+        return None;
+    }
+    let bound = |value| IndexBound {
+        value: IndexValue::Integer(value),
+        inclusive: true,
+    };
+    Some((bound(*first), bound(*last)))
+}
+
 fn choose_index<'a>(
     required: &[Predicate<'_>],
     indexes: &'a [IndexDefinition],
@@ -795,28 +812,57 @@ fn choose_index<'a>(
         .chain(indexes.iter().filter(|index| !index.unique))
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
-        if let Some(tuples) = compound_membership(required, &index.fields)? {
-            return Ok(Some((index, Selection::CompoundMembership(tuples))));
+        let Some((mut choices, has_membership)) = compound_choices(required, &index.fields)? else {
+            continue;
+        };
+        if !has_membership || choices.len() != index.fields.len() {
+            continue;
         }
+        let last = choices.len() - 1;
+        if allow_integer_runs && choices[..last].iter().any(|values| values.len() > 1) {
+            if let Some((lower, upper)) = contiguous_integer_bounds(&choices[last]) {
+                if required_range(required, &index.fields[last])?.is_some() {
+                    choices.pop();
+                    return Ok(Some((
+                        index,
+                        Selection::MembershipRange {
+                            prefixes: expand_tuples(choices),
+                            lower: Some(lower),
+                            upper: Some(upper),
+                        },
+                    )));
+                }
+            }
+        }
+        return Ok(Some((
+            index,
+            Selection::CompoundMembership(expand_tuples(choices)),
+        )));
     }
     for index in indexes
         .iter()
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
         for position in 1..index.fields.len() {
-            let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? else {
+            let Some((mut lower, mut upper)) = compound_bounds(required, &index.fields, position)?
+            else {
                 continue;
             };
             if let Some(prefixes) = compound_membership(required, &index.fields[..position])? {
-                if position + 1 < index.fields.len() {
-                    let bounded_values = membership_within_bounds(
-                        required,
-                        &index.fields[position],
-                        lower.as_ref(),
-                        upper.as_ref(),
-                    );
-                    if let Some(values) = bounded_values
-                        .filter(|values| prefixes.len() <= MAX_INDEX_PROBES / values.len())
+                if let Some(values) = membership_within_bounds(
+                    required,
+                    &index.fields[position],
+                    lower.as_ref(),
+                    upper.as_ref(),
+                ) {
+                    let contiguous = allow_integer_runs
+                        .then(|| contiguous_integer_bounds(&values))
+                        .flatten();
+                    if let Some((first, last)) = contiguous {
+                        lower = Some(first);
+                        upper = Some(last);
+                    } else if position + 1 < index.fields.len()
+                        && prefixes.len() <= MAX_INDEX_PROBES / values.len()
                     {
                         return Ok(Some((
                             index,

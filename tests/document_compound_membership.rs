@@ -201,11 +201,11 @@ fn compound_probe_product_is_bounded_before_allocating() {
             .unwrap();
         let narrowed = query(and(vec![
             inside("a", values(16)),
-            inside("b", values(17)),
+            inside("b", (0..17).map(|n| json!(2 * n + 1)).collect()),
             DocumentFilter::Compare {
                 path: path("b"),
                 comparison: Comparison::Less,
-                value: IndexValue::Integer(16),
+                value: IndexValue::Integer(33),
             },
         ]));
         let scan = db.query("c", &narrowed).unwrap();
@@ -219,6 +219,36 @@ fn compound_probe_product_is_bounded_before_allocating() {
             )
             .unwrap();
         assert_eq!(plan.access, access(256, false));
+        assert_eq!(plan.result.plan.scanned, 1);
+        assert_eq!(plan.result.documents, scan.documents);
+
+        let contiguous = query(and(vec![
+            inside("a", values(16)),
+            inside("b", values(17)),
+            DocumentFilter::Compare {
+                path: path("b"),
+                comparison: Comparison::Less,
+                value: IndexValue::Integer(16),
+            },
+        ]));
+        let scan = db.query("c", &contiguous).unwrap();
+        let plan = db
+            .query_planned(
+                "c",
+                &DocumentQuery {
+                    max_scanned: 1,
+                    ..contiguous
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            plan.access,
+            DocumentQueryAccess::CompoundMembershipRangeIndex {
+                index: "pair".into(),
+                prefix_fields: 1,
+                probes: 16,
+            }
+        );
         assert_eq!(plan.result.plan.scanned, 1);
         assert_eq!(plan.result.documents, scan.documents);
     });

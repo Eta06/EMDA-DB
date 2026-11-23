@@ -1500,20 +1500,38 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    for (tenant, score, conflict) in [("z", 3, true), ("z", 4, false), ("m", 3, false)] {
+    for (grouped, tenant, score, conflict) in [
+        (false, "z", 3, true),
+        (false, "z", 4, false),
+        (false, "m", 3, false),
+        (true, "z", 3, true),
+        (true, "z", 4, true),
+        (true, "z", 5, false),
+        (true, "z", 2, false),
+        (true, "m", 3, false),
+    ] {
         on_backends(|db| {
             db.create_collection("c", CollectionSchema::default())
                 .unwrap();
             db.create_index("c", index(&["tenant", "score"], None))
                 .unwrap();
-            let request = query(
-                and(vec![
-                    membership("tenant", vec![json!("a"), json!("z")]),
-                    cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(3)),
-                    cmp("score", Comparison::Less, IndexValue::Integer(4)),
-                ]),
-                4,
-            );
+            let mut filters = vec![
+                membership("tenant", vec![json!("a"), json!("z")]),
+                cmp(
+                    "score",
+                    Comparison::GreaterOrEqual,
+                    IndexValue::Integer(if grouped { 0 } else { 3 }),
+                ),
+                cmp(
+                    "score",
+                    Comparison::Less,
+                    IndexValue::Integer(if grouped { 6 } else { 4 }),
+                ),
+            ];
+            if grouped {
+                filters.push(membership("score", vec![json!(3), json!(4), json!(9)]));
+            }
+            let request = query(and(filters), 4);
             let (observed, read) = mpsc::channel();
             let (committed, written) = mpsc::channel();
             let result = std::thread::scope(|scope| {
