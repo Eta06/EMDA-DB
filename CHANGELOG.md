@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Avoid hashing checkpoint entries twice during streaming publication. The
+  complete staged checkpoint and bound source log still pass verification.
+
 - Retry interrupted EOF checks when reading a file-backed retained authority record.
 
 - Assemble the first checkpoint transaction page for a range from the

@@ -30,6 +30,7 @@ pub(crate) struct VerifiedCheckpoint {
     pub(crate) prefix: u64,
     pub(crate) peak: usize,
     pub(crate) log_digest: [u8; 32],
+    count: u64,
 }
 
 pub(crate) struct VerifiedLog {
@@ -298,11 +299,9 @@ fn create_streaming_in_directory(
     check_checkpoint_length(log, prefix)?;
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     let checkpoint_digest: [u8; 32];
-    let entries_digest: [u8; 32];
     {
         let mut out = BufWriter::new(&mut temp);
         let mut digest = Sha256::new();
-        let mut entry_hash = Sha256::new();
         write_checked(&mut out, &mut digest, MAGIC)?;
         write_checked(&mut out, &mut digest, &prefix.to_le_bytes())?;
         write_checked(&mut out, &mut digest, &count.to_le_bytes())?;
@@ -359,7 +358,6 @@ fn create_streaming_in_directory(
             tail[12..].copy_from_slice(&location.checksum.to_le_bytes());
             for part in [&key_len[..], key, &tail[..]] {
                 write_checked(&mut out, &mut digest, part)?;
-                entry_hash.update(part);
             }
             seen = seen
                 .checked_add(1)
@@ -369,14 +367,13 @@ fn create_streaming_in_directory(
         if seen != count {
             return Err(record::invalid_data("checkpoint stream count mismatch"));
         }
-        entries_digest = entry_hash.finalize().into();
         checkpoint_digest = digest.finalize().into();
         out.write_all(&checkpoint_digest)?;
         out.flush()?;
     }
     temp.sync_all()?;
-    let mut verified_entries = Sha256::new();
-    let mut verified_count = 0_u64;
+    // Readback compares the digest of the entire payload with the writer's
+    // digest, including the declared count and every serialized entry.
     let (verified, _) = visit_file(
         &temp,
         log,
@@ -384,20 +381,9 @@ fn create_streaming_in_directory(
         None,
         &checkpoint_digest,
         None,
-        |_, key_len, key, tail, _| {
-            verified_entries.update(key_len);
-            verified_entries.update(key);
-            verified_entries.update(tail);
-            verified_count += 1;
-            Ok(())
-        },
+        |_, _, _, _, _| Ok(()),
     )?;
-    let verified_digest: [u8; 32] = verified_entries.finalize().into();
-    if verified.prefix != prefix
-        || verified.peak as u64 != peak
-        || verified_count != count
-        || verified_digest != entries_digest
-    {
+    if verified.prefix != prefix || verified.peak as u64 != peak || verified.count != count {
         return Err(record::invalid_data(
             "streamed checkpoint verification mismatch",
         ));
@@ -711,6 +697,7 @@ pub(crate) fn visit_index_file(
         prefix,
         peak,
         log_digest: expected_log_digest,
+        count,
     })
 }
 
