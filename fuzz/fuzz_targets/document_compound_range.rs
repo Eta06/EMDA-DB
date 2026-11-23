@@ -54,7 +54,15 @@ fn document(id: u8, byte: u8) -> Value {
         0 => {}
         1 => doc["score"] = Value::Null,
         2 => doc["score"] = json!(false),
-        3 => doc["score"] = json!(i64::from(byte % 5) - 2),
+        3 => {
+            doc["score"] = json!(match byte >> 5 {
+                4 => i64::MIN,
+                5 => i64::MIN + 1,
+                6 => i64::MAX - 1,
+                7 => i64::MAX,
+                _ => i64::from(byte % 5) - 2,
+            })
+        }
         4 => doc["score"] = json!("s"),
         _ => doc["score"] = json!(true),
     }
@@ -146,7 +154,7 @@ fuzz_target!(|data: &[u8]| {
             }
             _ => {}
         }
-        let mode = bytes[0] % 23;
+        let mode = bytes[0] % 25;
         let bound = match bytes[2] % 4 {
             0 => IndexValue::Null,
             1 => IndexValue::Boolean(false),
@@ -178,7 +186,7 @@ fuzz_target!(|data: &[u8]| {
             }
             4 => {
                 filters.push(DocumentFilter::Not(Box::new(exists("suffix", false))));
-                DocumentQueryAccess::CollectionScan
+                access(1, partial)
             }
             5 => {
                 filters = vec![
@@ -377,6 +385,55 @@ fuzz_target!(|data: &[u8]| {
                     },
                 }
             }
+            23 | 24 => {
+                let first = match bytes[2] % 4 {
+                    0 => i64::MIN,
+                    1 => i64::MAX - 4,
+                    _ => i64::from(bytes[3] % 7) - 5,
+                };
+                let upper = if mode == 23 {
+                    Comparison::LessOrEqual
+                } else {
+                    Comparison::Less
+                };
+                filters = vec![
+                    DocumentFilter::In {
+                        path: vec!["tenant".into()],
+                        values: vec![json!("u"), json!("t"), json!("u")],
+                    },
+                    DocumentFilter::In {
+                        path: vec!["score".into()],
+                        values: vec![
+                            json!(first + 4),
+                            json!(first),
+                            json!(first + 1),
+                            json!(first + 3),
+                            json!(first),
+                            Value::Null,
+                        ],
+                    },
+                    compare(
+                        "score",
+                        Comparison::GreaterOrEqual,
+                        IndexValue::Integer(first),
+                    ),
+                    compare("score", upper, IndexValue::Integer(first + 4)),
+                    exists("suffix", true),
+                ];
+                if partial {
+                    DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+                        index: "i".into(),
+                        prefix_fields: 1,
+                        probes: 4,
+                    }
+                } else {
+                    DocumentQueryAccess::CompoundMembershipRangeIndex {
+                        index: "i".into(),
+                        prefix_fields: 1,
+                        probes: 4,
+                    }
+                }
+            }
             _ => unreachable!("range model mode"),
         };
         if partial && mode != 2 {
@@ -396,10 +453,16 @@ fuzz_target!(|data: &[u8]| {
         };
         let scan = store.db().query("c", &query).unwrap();
         let planned = store.db().query_planned("c", &query).unwrap();
-        assert_eq!(planned.access, expected);
+        assert_eq!(
+            planned.access, expected,
+            "mode={mode} checkpoint={checkpoint_mode} partial={partial} query={query:?}"
+        );
         assert_eq!(planned.result.documents, scan.documents);
         assert_eq!(planned.result.plan.matched, scan.plan.matched);
         assert_eq!(planned.result.plan.returned, scan.plan.returned);
         assert_eq!(planned.result.plan.sorted, scan.plan.sorted);
+        if mode >= 23 {
+            assert_eq!(planned.result.plan.scanned, scan.plan.matched);
+        }
     }
 });
