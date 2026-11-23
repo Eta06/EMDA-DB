@@ -30,7 +30,7 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());
     let mut initial = OnlineStore::open(&source).unwrap();
-    initial.enable_direct_read_limit(5).unwrap();
+    initial.enable_direct_and_snapshot_read_limit(5).unwrap();
     let store = Arc::new(initial);
     store
         .with_store(|db| {
@@ -78,12 +78,9 @@ fn handoff_keeps_a_transaction_limit_changed_during_copy() {
             .unwrap(),
         2
     );
-    assert_eq!(
-        store
-            .with_store(|db| Ok(db.direct_read_status().limit))
-            .unwrap(),
-        Some(2)
-    );
+    let reads = store.with_store(|db| Ok(db.direct_read_status())).unwrap();
+    assert_eq!(reads.limit, Some(2));
+    assert!(reads.includes_snapshots);
     let snapshots = store.with_store(|db| db.snapshot_budget_status()).unwrap();
     assert_eq!(
         (

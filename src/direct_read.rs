@@ -20,27 +20,34 @@ pub struct DirectReadStatus {
     pub limit: Option<usize>,
     /// Admitted calls including lock and I/O waiters, or `None` when disabled.
     pub active: Option<usize>,
+    /// Whether public snapshot reads also draw from this limit.
+    pub includes_snapshots: bool,
 }
 
 #[derive(Default)]
-pub(crate) struct DirectReads(Option<AtomicUsize>);
+pub(crate) struct DirectReads {
+    state: Option<AtomicUsize>,
+    includes_snapshots: bool,
+}
 impl DirectReads {
     fn status(&self) -> DirectReadStatus {
-        match &self.0 {
+        match &self.state {
             None => DirectReadStatus {
                 limit: None,
                 active: None,
+                includes_snapshots: false,
             },
             Some(state) => {
                 let state = state.load(Ordering::Acquire);
                 DirectReadStatus {
                     limit: Some((state >> SHIFT) & MASK),
                     active: Some(state & MASK),
+                    includes_snapshots: self.includes_snapshots,
                 }
             }
         }
     }
-    fn enable(&mut self, limit: usize) -> io::Result<()> {
+    fn enable(&mut self, limit: usize, includes_snapshots: bool) -> io::Result<()> {
         if limit > MAX_ACTIVE_DIRECT_READS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -48,8 +55,14 @@ impl DirectReads {
             ));
         }
         // Exclusive access ensures no previous guard or read is still active.
-        self.0 = Some(AtomicUsize::new(limit << SHIFT));
+        self.state = Some(AtomicUsize::new(limit << SHIFT));
+        self.includes_snapshots = includes_snapshots;
         Ok(())
+    }
+    pub(crate) fn copy_configuration_to(&self, destination: &mut Self) {
+        let status = self.status();
+        destination.state = status.limit.map(|limit| AtomicUsize::new(limit << SHIFT));
+        destination.includes_snapshots = status.includes_snapshots;
     }
     fn set_limit(&self, limit: usize) -> io::Result<()> {
         if limit > MAX_ACTIVE_DIRECT_READS {
@@ -58,7 +71,7 @@ impl DirectReads {
                 "direct-read admission limit exceeds hard maximum",
             ));
         }
-        let state = self.0.as_ref().ok_or_else(|| {
+        let state = self.state.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "enable direct-read admission with exclusive store access first",
@@ -81,7 +94,7 @@ impl DirectReads {
         }
     }
     pub(crate) fn acquire(&self) -> io::Result<Option<DirectReadGuard<'_>>> {
-        let Some(state) = &self.0 else {
+        let Some(state) = &self.state else {
             return Ok(None);
         };
         let mut current = state.load(Ordering::Acquire);
@@ -105,6 +118,13 @@ impl DirectReads {
             }
         }
     }
+
+    pub(crate) fn acquire_snapshot(&self) -> io::Result<Option<DirectReadGuard<'_>>> {
+        if self.includes_snapshots {
+            return self.acquire();
+        }
+        Ok(None)
+    }
 }
 pub(crate) struct DirectReadGuard<'a>(&'a AtomicUsize);
 impl Drop for DirectReadGuard<'_> {
@@ -118,8 +138,7 @@ macro_rules! direct_read_api {
     ($store:ty) => {
         impl $store {
             /// Reports the optional independent key-value read admission state.
-            /// Disabled admission does not track reads; transactions, snapshots,
-            /// document calls, maintenance and other stores are always excluded.
+            /// When enabled, counts direct calls and any opted-in snapshot reads.
             pub fn direct_read_status(&self) -> DirectReadStatus {
                 self.direct_reads.status()
             }
@@ -128,7 +147,19 @@ macro_rules! direct_read_api {
             /// active. Zero rejects these calls. The cap resets on reopen, but is
             /// preserved by supported in-process compaction handoffs.
             pub fn enable_direct_read_limit(&mut self, limit: usize) -> io::Result<()> {
-                self.direct_reads.enable(limit)
+                self.direct_reads.enable(limit, false)
+            }
+            /// Enables one shared admission limit for independent key-value
+            /// reads and public snapshot reads on this store. Each call uses
+            /// one slot through completion, including state-lock and I/O waits.
+            /// Saturated calls return `WouldBlock`. Snapshot creation and
+            /// transaction reads continue to use their own budgets.
+            /// Reopening resets admission. In-process compaction preserves it.
+            pub fn enable_direct_and_snapshot_read_limit(
+                &mut self,
+                limit: usize,
+            ) -> io::Result<()> {
+                self.direct_reads.enable(limit, true)
             }
             /// Reconfigures enabled admission; disabled admission must first be
             /// enabled with exclusive access. A reduction below currently active
@@ -157,7 +188,8 @@ mod tests {
             budget.status(),
             DirectReadStatus {
                 limit: None,
-                active: None
+                active: None,
+                includes_snapshots: false,
             }
         );
         assert_eq!(
@@ -171,13 +203,14 @@ mod tests {
             budget.set_limit(1).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
-        budget.enable(1).unwrap();
+        budget.enable(1, false).unwrap();
         let guard = budget.acquire().unwrap();
         assert_eq!(
             budget.status(),
             DirectReadStatus {
                 limit: Some(1),
-                active: Some(1)
+                active: Some(1),
+                includes_snapshots: false,
             }
         );
         assert_eq!(
@@ -205,7 +238,7 @@ mod tests {
     #[test]
     fn simultaneous_acquisitions_never_exceed_the_limit() {
         let mut initial = DirectReads::default();
-        initial.enable(10).unwrap();
+        initial.enable(10, false).unwrap();
         let budget = Arc::new(initial);
         let started = Arc::new(Barrier::new(33));
         let release = Arc::new(Barrier::new(33));
@@ -235,7 +268,8 @@ mod tests {
             budget.status(),
             DirectReadStatus {
                 limit: Some(10),
-                active: Some(0)
+                active: Some(0),
+                includes_snapshots: false,
             }
         );
     }
@@ -243,7 +277,7 @@ mod tests {
     #[test]
     fn packed_counter_does_not_carry_into_limit_at_the_hard_boundary() {
         let mut budget = DirectReads::default();
-        budget.enable(MAX_ACTIVE_DIRECT_READS).unwrap();
+        budget.enable(MAX_ACTIVE_DIRECT_READS, false).unwrap();
         let guards = (0..MAX_ACTIVE_DIRECT_READS)
             .map(|_| budget.acquire().unwrap())
             .collect::<Vec<_>>();
@@ -251,7 +285,8 @@ mod tests {
             budget.status(),
             DirectReadStatus {
                 limit: Some(MAX_ACTIVE_DIRECT_READS),
-                active: Some(MAX_ACTIVE_DIRECT_READS)
+                active: Some(MAX_ACTIVE_DIRECT_READS),
+                includes_snapshots: false,
             }
         );
         assert_eq!(
@@ -265,7 +300,7 @@ mod tests {
     #[test]
     fn concurrent_reconfiguration_never_publishes_an_oversubscribed_state() {
         let mut initial = DirectReads::default();
-        initial.enable(4).unwrap();
+        initial.enable(4, false).unwrap();
         let budget = Arc::new(initial);
         let start = Arc::new(Barrier::new(10));
         let mut workers = Vec::new();

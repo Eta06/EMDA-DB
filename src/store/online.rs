@@ -219,14 +219,25 @@ impl OnlineStore {
     /// Enables direct key-value read admission before sharing this handle.
     /// Exclusive access prevents any earlier untracked callback from running.
     pub fn enable_direct_read_limit(&mut self, limit: usize) -> io::Result<()> {
+        self.store_for_configuration()?
+            .enable_direct_read_limit(limit)
+    }
+
+    /// Enables one shared limit for direct and snapshot reads before sharing
+    /// this handle. In-process compaction preserves the scope and limit.
+    pub fn enable_direct_and_snapshot_read_limit(&mut self, limit: usize) -> io::Result<()> {
+        self.store_for_configuration()?
+            .enable_direct_and_snapshot_read_limit(limit)
+    }
+
+    fn store_for_configuration(&mut self) -> io::Result<&mut Store> {
         let state = self.state.get_mut().map_err(|_| uncertain())?;
         if state.failed {
             return Err(uncertain());
         }
-        let store = Arc::get_mut(&mut state.store).ok_or_else(|| {
+        Arc::get_mut(&mut state.store).ok_or_else(|| {
             io::Error::new(io::ErrorKind::WouldBlock, "online store is still shared")
-        })?;
-        store.enable_direct_read_limit(limit)
+        })
     }
 
     /// Opens with the ordinary store's per-open logical limits.
@@ -654,9 +665,9 @@ impl OnlineStore {
             snapshot_budget.key_byte_limit,
         )?;
         candidate.set_active_direct_write_limit(current.direct_write_status().limit)?;
-        if let Some(limit) = current.direct_read_status().limit {
-            candidate.enable_direct_read_limit(limit)?;
-        }
+        current
+            .direct_reads
+            .copy_configuration_to(&mut candidate.direct_reads);
         let group_limits = current.group_commit_status()?;
         candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
         current._lock_file.verify_identity(&source)?;

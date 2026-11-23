@@ -179,9 +179,8 @@ impl Store {
             snapshot_budget.key_byte_limit,
         )?;
         candidate.set_active_direct_write_limit(self.direct_write_status().limit)?;
-        if let Some(limit) = self.direct_read_status().limit {
-            candidate.enable_direct_read_limit(limit)?;
-        }
+        self.direct_reads
+            .copy_configuration_to(&mut candidate.direct_reads);
         let group_limits = self.group_commit_status()?;
         candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
         self._lock_file.verify_identity(&source)?;

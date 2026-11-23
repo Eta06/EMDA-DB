@@ -411,6 +411,7 @@ impl Snapshot<'_> {
     /// Reads the value selected when this snapshot was created.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
+        let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.read_index()?;
         data.index
             .get(key)
@@ -441,6 +442,7 @@ impl Snapshot<'_> {
                 "scan limit must be between 1 and 1024",
             ));
         }
+        let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.read_index()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());

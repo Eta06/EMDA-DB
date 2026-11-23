@@ -156,9 +156,8 @@ impl CheckpointStore {
             snapshot_budget.key_byte_limit,
         )?;
         candidate.set_active_direct_write_limit(self.direct_write_status().limit)?;
-        if let Some(limit) = self.direct_read_status().limit {
-            candidate.enable_direct_read_limit(limit)?;
-        }
+        self.direct_reads
+            .copy_configuration_to(&mut candidate.direct_reads);
         if original_selection.is_some() {
             // The file's final absolute path is used before exchange. Nobody
             // may use this private candidate until its directory is exchanged.

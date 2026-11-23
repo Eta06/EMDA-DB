@@ -279,6 +279,54 @@ fn direct_read_reservation_rejects_competing_calls_without_blocking_writes() {
 }
 
 #[test]
+fn snapshot_reads_can_share_direct_admission() {
+    let (_root, path, checkpoint, digest) = fixture();
+    let mut store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    store.enable_direct_read_limit(0).unwrap();
+    assert_eq!(
+        store.snapshot().unwrap().get(b"base").unwrap(),
+        Some(b"acknowledged".to_vec())
+    );
+
+    store.enable_direct_and_snapshot_read_limit(1).unwrap();
+    let mut snapshot = store.snapshot().unwrap();
+    store.put(b"base", b"new").unwrap();
+    let guard = store.direct_reads.acquire_snapshot().unwrap();
+    assert!(store.direct_read_status().includes_snapshots);
+    assert_eq!(
+        store.get(b"base").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        snapshot.get(b"base").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        snapshot.get_many(&[b"base"]).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        snapshot.scan(None, None, 1).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    store
+        .transaction(|tx| {
+            assert_eq!(tx.get(b"base")?, Some(b"new".to_vec()));
+            Ok(())
+        })
+        .unwrap();
+    drop(guard);
+    assert_eq!(
+        snapshot.get_many(&[b"base", b"missing"]).unwrap(),
+        vec![Some(b"acknowledged".to_vec()), None]
+    );
+    snapshot.cancel();
+    assert!(snapshot.scan(None, None, 1).is_err());
+    assert_eq!(store.direct_read_status().active, Some(0));
+    assert_eq!(store.get(b"base").unwrap(), Some(b"new".to_vec()));
+}
+
+#[test]
 fn direct_read_admission_counts_checkpoint_state_lock_waiters() {
     use std::sync::Barrier;
     use std::time::{Duration, Instant};

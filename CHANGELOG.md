@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Optionally share one per-store admission limit across direct key-value
+  reads and snapshot reads, including checkpoint-backed bulk reads.
+
 - Reject detached restores that exceed the exact output limits before
   sorting touched keys or creating a staging directory.
 

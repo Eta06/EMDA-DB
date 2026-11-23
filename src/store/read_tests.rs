@@ -385,16 +385,64 @@ fn direct_read_admission_counts_blocked_io_and_does_not_block_writes() {
 }
 
 #[test]
+fn snapshot_reads_can_share_direct_admission() {
+    let root = tempfile::tempdir().unwrap();
+    let mut store = Store::open(root.path()).unwrap();
+    store.put(b"key", b"old").unwrap();
+    store.enable_direct_read_limit(0).unwrap();
+    assert_eq!(
+        store.snapshot(4, 64).unwrap().get(b"key").unwrap(),
+        Some(b"old".to_vec())
+    );
+
+    store.enable_direct_and_snapshot_read_limit(1).unwrap();
+    let mut snapshot = store.snapshot(4, 64).unwrap();
+    store.put(b"key", b"new").unwrap();
+    let guard = store.direct_reads.acquire().unwrap();
+    assert!(store.direct_read_status().includes_snapshots);
+    assert_eq!(
+        snapshot.get(b"key").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        snapshot.scan(None, None, 1).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    store
+        .transaction(|tx| {
+            assert_eq!(tx.get(b"key")?, Some(b"new".to_vec()));
+            Ok(())
+        })
+        .unwrap();
+    drop(guard);
+    assert_eq!(
+        snapshot.scan(None, None, 1).unwrap(),
+        vec![(b"key".to_vec(), b"old".to_vec())]
+    );
+    snapshot.cancel();
+    assert!(snapshot.get(b"key").is_err());
+    assert_eq!(store.direct_read_status().active, Some(0));
+    assert_eq!(store.get(b"key").unwrap(), Some(b"new".to_vec()));
+}
+
+#[test]
 fn failed_read_releases_direct_read_admission() {
     use crate::store::fault_tests::{Fault, open_fault_store};
     let root = tempfile::tempdir().unwrap();
     let fault = Arc::new(Mutex::new(None));
     let mut store = open_fault_store(&root, Arc::clone(&fault)).unwrap();
     store.put(b"key", b"value").unwrap();
-    store.enable_direct_read_limit(1).unwrap();
+    store.enable_direct_and_snapshot_read_limit(1).unwrap();
     *fault.lock().unwrap() = Some(Fault::ShortRead(0));
     assert_eq!(
         store.get(b"key").unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(store.direct_read_status().active, Some(0));
+    let snapshot = store.snapshot(4, 64).unwrap();
+    *fault.lock().unwrap() = Some(Fault::ShortRead(0));
+    assert_eq!(
+        snapshot.get(b"key").unwrap_err().kind(),
         io::ErrorKind::UnexpectedEof
     );
     assert_eq!(store.direct_read_status().active, Some(0));

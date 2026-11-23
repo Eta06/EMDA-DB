@@ -227,6 +227,7 @@ impl CheckpointSnapshot<'_> {
 
     /// Reads one key from the captured state.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.view()?;
         let _healthy = self.store.read()?;
         data.view
@@ -247,6 +248,7 @@ impl CheckpointSnapshot<'_> {
         for key in keys {
             record::validate_key(key)?;
         }
+        let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.view()?;
         let _healthy = self.store.read()?;
         data.view
@@ -262,6 +264,7 @@ impl CheckpointSnapshot<'_> {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        let _admission = self.store.direct_reads.acquire_snapshot()?;
         let data = self.view()?;
         let _healthy = self.store.read()?;
         data.view
