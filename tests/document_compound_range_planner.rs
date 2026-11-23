@@ -164,8 +164,14 @@ fn bounded_membership_replaces_compound_ranges_only_with_complete_coverage() {
                 eq("active", json!(true)),
                 cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(2)),
                 cmp("score", Comparison::LessOrEqual, IndexValue::Integer(5)),
-                membership("score", vec![json!(1), json!(3), json!(5), json!(6)]),
             ];
+            let with_members = |mut filters: Vec<_>, values: &[i64]| {
+                filters.push(membership(
+                    "score",
+                    values.iter().map(|v| json!(v)).collect(),
+                ));
+                and(filters)
+            };
             if trailing {
                 db.insert(
                     "c",
@@ -175,7 +181,7 @@ fn bounded_membership_replaces_compound_ranges_only_with_complete_coverage() {
                 .unwrap();
                 compare(
                     db,
-                    &query(and(filters.clone()), 8),
+                    &query(with_members(filters.clone(), &[1, 3, 5, 6]), 8),
                     DocumentQueryAccess::CollectionScan,
                 );
                 filters.push(exists("region", true));
@@ -194,7 +200,19 @@ fn bounded_membership_replaces_compound_ranges_only_with_complete_coverage() {
                     probes: 2,
                 }
             };
-            let mut request = query(and(filters), 8);
+            let grouped_access = DocumentQueryAccess::IntegerMembershipIndex {
+                index: "compound".into(),
+                prefix_fields: 1,
+                probes: 1,
+                partial: true,
+            };
+            let mut grouped = query(with_members(filters.clone(), &[1, 3, 4, 5, 6]), 8);
+            compare(db, &grouped, grouped_access.clone());
+            grouped.max_scanned = 3;
+            let planned = db.query_planned("c", &grouped).unwrap();
+            assert_eq!(planned.access, grouped_access);
+            assert_eq!(planned.result.plan.scanned, 3);
+            let mut request = query(with_members(filters, &[1, 3, 5, 6]), 8);
             compare(db, &request, expected_access.clone());
             let expected = db.query("c", &request).unwrap().documents;
             request.max_scanned = 2;

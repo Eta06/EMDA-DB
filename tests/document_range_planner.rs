@@ -322,6 +322,103 @@ fn required_membership_narrows_the_typed_range_before_candidate_admission() {
     });
 }
 
+#[test]
+fn integer_membership_runs_keep_gaps_and_signed_endpoints_exact() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("score", true)).unwrap();
+        let values = [i64::MIN, i64::MIN + 1, -1, 0, 1, 4, i64::MAX - 1, i64::MAX];
+        for (id, score) in values.into_iter().chain([2, 3]).enumerate() {
+            db.insert("c", &format!("id-{id:02}"), &json!({"score":score}))
+                .unwrap();
+        }
+        db.insert("c", "string", &json!({"score":"0"})).unwrap();
+        db.insert("c", "null", &json!({"score":null})).unwrap();
+        let mut request = query(
+            DocumentFilter::And(vec![
+                DocumentFilter::In {
+                    path: path("score"),
+                    values: values
+                        .into_iter()
+                        .rev()
+                        .map(|value| json!(value))
+                        .chain([json!(0), json!(null), json!("0")])
+                        .collect(),
+                },
+                range(
+                    "score",
+                    Comparison::GreaterOrEqual,
+                    IndexValue::Integer(i64::MIN),
+                ),
+                range(
+                    "score",
+                    Comparison::LessOrEqual,
+                    IndexValue::Integer(i64::MAX),
+                ),
+            ]),
+            20,
+        );
+        let access = DocumentQueryAccess::IntegerMembershipIndex {
+            index: "score".into(),
+            prefix_fields: 0,
+            probes: 4,
+            partial: false,
+        };
+        compare(db, &request, access.clone());
+        let expected = db.query("c", &request).unwrap().documents;
+        assert_eq!(expected.len(), values.len());
+        request.max_scanned = values.len();
+        let planned = db.query_planned("c", &request).unwrap();
+        assert_eq!(planned.access, access);
+        assert_eq!(planned.result.documents, expected);
+        assert_eq!(planned.result.plan.scanned, values.len());
+        request.max_scanned -= 1;
+        assert_eq!(
+            db.query_planned("c", &request).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+    });
+}
+
+#[test]
+fn overlapping_disjuncts_keep_deduplicated_integer_probes() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("score", false)).unwrap();
+        for score in 1..=3 {
+            db.insert("c", &format!("id-{score}"), &json!({"score":score}))
+                .unwrap();
+        }
+        let alternative = |first, second| {
+            DocumentFilter::And(vec![
+                DocumentFilter::In {
+                    path: path("score"),
+                    values: vec![json!(first), json!(second)],
+                },
+                range("score", Comparison::GreaterOrEqual, IndexValue::Integer(0)),
+            ])
+        };
+        let request = query(
+            DocumentFilter::Or(vec![alternative(1, 2), alternative(2, 3)]),
+            3,
+        );
+        compare(
+            db,
+            &request,
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["score".into()],
+                probes: 3,
+            },
+        );
+        assert_eq!(
+            db.query_planned("c", &request).unwrap().result.plan.scanned,
+            3
+        );
+    });
+}
+
 fn phantom(db: &DocumentDatabase<'_>, inside: bool, membership: bool) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
@@ -350,11 +447,13 @@ fn phantom(db: &DocumentDatabase<'_>, inside: bool, membership: bool) {
             let expected = if membership {
                 filters.push(DocumentFilter::In {
                     path: path("score"),
-                    values: vec![json!(19), json!(25), json!(30)],
+                    values: vec![json!(19), json!(24), json!(25), json!(30)],
                 });
-                DocumentQueryAccess::MembershipIndex {
+                DocumentQueryAccess::IntegerMembershipIndex {
                     index: "score".into(),
+                    prefix_fields: 0,
                     probes: 2,
+                    partial: false,
                 }
             } else {
                 access("score")
@@ -392,7 +491,7 @@ fn planned_range_detects_phantoms_but_allows_unrelated_inserts() {
 }
 
 #[test]
-fn narrowed_range_probes_conflict_only_with_matching_inserts() {
+fn integer_membership_runs_conflict_only_with_matching_inserts() {
     for inside in [false, true] {
         on_backends(|db| phantom(db, inside, true));
     }

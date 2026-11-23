@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Group consecutive integers into exact ranges when a membership list narrows
+  an indexed scalar range. Preserve holes and shared candidate limits.
+
 - Narrow planned document ranges to matching membership values on the same
   field, reducing candidate visits while preserving typed bounds and
   transaction conflict checks.

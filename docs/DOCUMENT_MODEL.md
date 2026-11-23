@@ -167,6 +167,11 @@ discarded. Surviving values become deduplicated equality or compound-prefix
 probes, subject to the same proof of partial-index coverage and trailing-field
 presence as the range. An empty intersection keeps the existing range plan.
 The normal candidate budgets and read-set checks apply to the resulting probes.
+When every surviving value is an integer, consecutive values can share an
+inclusive range probe. The planner reports this access as
+`IntegerMembershipIndex`, with the number of preceding equality fields and
+the number of probes. Holes remain separate, and indexed disjunctions retain
+their existing deduplicated value probes.
 
 A compound index can also answer a required scalar range after a prefix of
 required indexable equality and `In` predicates, with at least one multi-value

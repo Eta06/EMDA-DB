@@ -73,6 +73,14 @@ pub enum DocumentQueryAccess {
         prefix_fields: usize,
         probes: usize,
     },
+    /// Probe consecutive integer ranges and individual values from a required
+    /// membership list intersected with scalar bounds.
+    IntegerMembershipIndex {
+        index: String,
+        prefix_fields: usize,
+        probes: usize,
+        partial: bool,
+    },
     /// Scan a compound index for distinct equality or membership prefixes.
     CompoundPrefixIndex {
         index: String,
@@ -355,6 +363,10 @@ enum Selection {
     Membership(Vec<IndexValue>),
     CompoundMembership(Vec<Vec<IndexValue>>),
     CompoundPrefix(Vec<Vec<IndexValue>>),
+    IntegerMembership {
+        equal: Vec<IndexValue>,
+        runs: Vec<(i64, i64)>,
+    },
     Range {
         equal: Vec<IndexValue>,
         lower: Option<IndexBound>,
@@ -377,7 +389,7 @@ struct IndexProbe<'a> {
 }
 
 impl Selection {
-    fn into_probes(self, index: &IndexDefinition) -> impl Iterator<Item = IndexProbe<'_>> {
+    fn into_probes(self, index: &IndexDefinition) -> Vec<IndexProbe<'_>> {
         let (prefixes, lower, upper) = match self {
             Self::Equality(values) => (vec![values], None, None),
             Self::Membership(values) => (
@@ -386,6 +398,31 @@ impl Selection {
                 None,
             ),
             Self::CompoundMembership(tuples) | Self::CompoundPrefix(tuples) => (tuples, None, None),
+            Self::IntegerMembership { equal, runs } => {
+                return runs
+                    .into_iter()
+                    .map(|(first, last)| {
+                        let mut equal = equal.clone();
+                        let bound = |value| IndexBound {
+                            value: IndexValue::Integer(value),
+                            inclusive: true,
+                        };
+                        let (lower, upper) = if first == last {
+                            equal.push(IndexValue::Integer(first));
+                            (None, None)
+                        } else {
+                            (Some(bound(first)), Some(bound(last)))
+                        };
+                        IndexProbe {
+                            index: &index.name,
+                            unique_equality: index.unique && equal.len() == index.fields.len(),
+                            equal,
+                            lower,
+                            upper,
+                        }
+                    })
+                    .collect();
+            }
             Self::Range {
                 equal,
                 lower,
@@ -398,13 +435,16 @@ impl Selection {
             } => (prefixes, lower, upper),
         };
         let unbounded_unique = index.unique && lower.is_none() && upper.is_none();
-        prefixes.into_iter().map(move |equal| IndexProbe {
-            index: &index.name,
-            unique_equality: unbounded_unique && equal.len() == index.fields.len(),
-            equal,
-            lower: lower.clone(),
-            upper: upper.clone(),
-        })
+        prefixes
+            .into_iter()
+            .map(|equal| IndexProbe {
+                index: &index.name,
+                unique_equality: unbounded_unique && equal.len() == index.fields.len(),
+                equal,
+                lower: lower.clone(),
+                upper: upper.clone(),
+            })
+            .collect()
     }
 }
 
@@ -593,9 +633,32 @@ fn membership_within_bounds(
     })
 }
 
+// Values are distinct and in encoded index order. Consecutive signed
+// integers are adjacent in that order, with no other scalar type in between.
+fn consecutive_integer_runs(values: &[IndexValue]) -> Option<Vec<(i64, i64)>> {
+    if !values.windows(2).any(|pair| {
+        matches!(pair, [IndexValue::Integer(a), IndexValue::Integer(b)]
+            if a.checked_add(1) == Some(*b))
+    }) {
+        return None;
+    }
+    let mut runs: Vec<(i64, i64)> = Vec::new();
+    for value in values {
+        let IndexValue::Integer(value) = *value else {
+            return None;
+        };
+        match runs.last_mut() {
+            Some((_, last)) if last.checked_add(1) == Some(value) => *last = value,
+            _ => runs.push((value, value)),
+        }
+    }
+    Some(runs)
+}
+
 fn choose_index<'a>(
     required: &[Predicate<'_>],
     indexes: &'a [IndexDefinition],
+    allow_integer_runs: bool,
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
     // Prefer a unique exact tuple, then a nonunique one, regardless of range.
     // Complete tuples require equality on every field, so omitted missing
@@ -636,7 +699,14 @@ fn choose_index<'a>(
                 if let Some(values) =
                     membership_within_bounds(required, field, lower.as_ref(), upper.as_ref())
                 {
-                    let selection = if index.fields.len() == 1 {
+                    let runs = if allow_integer_runs {
+                        consecutive_integer_runs(&values)
+                    } else {
+                        None
+                    };
+                    let selection = if let Some(runs) = runs {
+                        Selection::IntegerMembership { equal, runs }
+                    } else if index.fields.len() == 1 {
                         Selection::Membership(values)
                     } else {
                         let prefixes = values
@@ -793,12 +863,14 @@ fn choose_disjunction<'a, 'filter>(
         for branch in branches {
             let branch = (branch, negated);
             context.push(branch);
-            let mut selection = choose_index(context, indexes)?;
+            // Keep exact probes here so common values across branches still
+            // deduplicate before consuming the candidate budget.
+            let mut selection = choose_index(context, indexes, false)?;
             if selection.is_none() && allow_prefix {
                 selection = choose_prefix(context, indexes)?;
             }
             let covered = selection.is_some_and(|(index, selection)| {
-                admit_probes(planned, selection.into_probes(index))
+                admit_probes(planned, selection.into_probes(index).into_iter())
             });
             let covered =
                 covered || choose_disjunction(branch, context, indexes, planned, allow_prefix)?;
@@ -872,17 +944,17 @@ fn choose_literal_disjunctions<'a>(
     }
     let mut required = vec![(filter, false)];
     required.extend(memberships.iter().map(|membership| (membership, false)));
-    choose_index(&required, indexes)
+    choose_index(&required, indexes, true)
 }
 
 fn plan_query<'a>(
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(DocumentQueryAccess, Vec<IndexProbe<'a>>)>> {
-    if let Some((index, selection)) = choose_index(&[(filter, false)], indexes)? {
+    if let Some((index, selection)) = choose_index(&[(filter, false)], indexes, true)? {
         return Ok(Some((
             describe_selection(index, &selection),
-            selection.into_probes(index).collect(),
+            selection.into_probes(index),
         )));
     }
     let mut planned = HashMap::new();
@@ -897,7 +969,7 @@ fn plan_query<'a>(
             if let Some((index, selection)) = selected {
                 return Ok(Some((
                     describe_selection(index, &selection),
-                    selection.into_probes(index).collect(),
+                    selection.into_probes(index),
                 )));
             }
         }
@@ -1173,6 +1245,14 @@ fn describe_selection(index: &IndexDefinition, selection: &Selection) -> Documen
             probes: prefixes.len(),
             partial,
         },
+        Selection::IntegerMembership { equal, runs } => {
+            DocumentQueryAccess::IntegerMembershipIndex {
+                index: index.name.clone(),
+                prefix_fields: equal.len(),
+                probes: runs.len(),
+                partial,
+            }
+        }
         Selection::MembershipRange { prefixes, .. } => {
             let prefix_fields = prefixes[0].len();
             let probes = prefixes.len();
