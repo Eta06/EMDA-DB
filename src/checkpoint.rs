@@ -587,9 +587,12 @@ pub(crate) fn visit_file(
         file,
         log.len()?,
         witness_boundary,
-        max_live_keys,
         trusted_digest,
-        max_file_bytes,
+        IndexAdmission {
+            max_live_keys,
+            max_file_bytes,
+            ..IndexAdmission::default()
+        },
         visit,
     )?;
     let hasher = verify_log_prefix(log, &verified)?;
@@ -604,19 +607,38 @@ pub(crate) fn verify_log_prefix(log: &Log, verified: &VerifiedCheckpoint) -> io:
     Ok(hasher)
 }
 
+pub(crate) fn checked_tail_bytes(length: u64, prefix: u64, limit: u64) -> io::Result<u64> {
+    let tail_bytes = length
+        .checked_sub(prefix)
+        .ok_or_else(|| record::invalid_data("checkpoint is beyond the witnessed boundary"))?;
+    if tail_bytes > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "recovered view suffix byte limit exceeded",
+        ));
+    }
+    Ok(tail_bytes)
+}
+
+#[derive(Default)]
+pub(crate) struct IndexAdmission {
+    pub(crate) max_live_keys: Option<usize>,
+    pub(crate) max_file_bytes: Option<u64>,
+    pub(crate) max_tail_bytes: Option<u64>,
+}
+
 // Verify the independently trusted index file and its declared log binding.
 // Use this only when the caller verifies the actual log range separately.
 pub(crate) fn visit_index_file(
     file: &File,
     log_length: u64,
     witness_boundary: u64,
-    max_live_keys: Option<usize>,
     trusted_digest: &[u8; 32],
-    max_file_bytes: Option<u64>,
+    admission: IndexAdmission,
     mut visit: impl FnMut(u64, &[u8; 2], &[u8], &[u8; 16], ValueLocation) -> io::Result<()>,
 ) -> io::Result<VerifiedCheckpoint> {
     let length = file.metadata()?.len();
-    if max_file_bytes.is_some_and(|max| length > max) {
+    if admission.max_file_bytes.is_some_and(|max| length > max) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "checkpoint exceeds configured file size limit",
@@ -650,7 +672,7 @@ pub(crate) fn visit_index_file(
     }
     let peak = usize::try_from(peak)
         .map_err(|_| record::invalid_data("checkpoint peak does not fit this platform"))?;
-    if max_live_keys.is_some_and(|max| peak > max) {
+    if admission.max_live_keys.is_some_and(|max| peak > max) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "recovery live key limit would be exceeded by checkpoint history",
@@ -667,6 +689,11 @@ pub(crate) fn visit_index_file(
     // Even an empty value needs a fixed entry plus at least one key byte.
     if count > (payload_len - HEADER_BYTES) / (ENTRY_FIXED_BYTES + 1) {
         return Err(record::invalid_data("impossible checkpoint entry count"));
+    }
+    // Use the unverified prefix only for early rejection. Every admitted
+    // checkpoint still goes through entry, digest and log-prefix verification.
+    if let Some(limit) = admission.max_tail_bytes {
+        checked_tail_bytes(log_length, prefix, limit)?;
     }
     let mut consumed = HEADER_BYTES;
     let mut keys = [[0_u8; record::MAX_KEY]; 2];
@@ -810,9 +837,8 @@ mod tests {
             &file,
             boundary,
             boundary,
-            None,
             &digest,
-            None,
+            IndexAdmission::default(),
             |_, _, key, _, _| {
                 if seen == 0 {
                     let mut nested = 0;
@@ -820,9 +846,8 @@ mod tests {
                         &file,
                         boundary,
                         boundary,
-                        None,
                         &digest,
-                        None,
+                        IndexAdmission::default(),
                         |_, _, key, _, _| {
                             assert_eq!(key, keys[nested]);
                             nested += 1;

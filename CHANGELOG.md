@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject oversized recovery suffixes from the checkpoint header before
+  traversing index entries or hashing the covered log.
+
 - Reuse bounded spill buffers during checkpoint rebuild to reduce allocation
   churn in disk-backed replay and merges.
 

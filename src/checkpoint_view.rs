@@ -257,9 +257,12 @@ impl CheckpointView {
             &checkpoint,
             length,
             boundary,
-            None,
             trusted_digest,
-            Some(limits.max_file_bytes),
+            checkpoint::IndexAdmission {
+                max_file_bytes: Some(limits.max_file_bytes),
+                max_tail_bytes,
+                ..Default::default()
+            },
             |offset, key_len, key, tail, _| {
                 let size = key_len.len() + key.len() + tail.len();
                 if current
@@ -310,10 +313,14 @@ impl CheckpointView {
         }
         let length = Self::check_log_limit(&log, max_log_bytes)?;
         if let Some(limit) = max_tail_bytes {
-            Self::checked_tail_bytes(length, verified.prefix, limit)?;
+            checkpoint::checked_tail_bytes(length, verified.prefix, limit)?;
         }
         let covered_log_hash = checkpoint::verify_log_prefix(&log, &verified)?;
-        let has_tail = Self::check_log_limit(&log, max_log_bytes)? > verified.prefix;
+        let length = Self::check_log_limit(&log, max_log_bytes)?;
+        if let Some(limit) = max_tail_bytes {
+            checkpoint::checked_tail_bytes(length, verified.prefix, limit)?;
+        }
+        let has_tail = length > verified.prefix;
         log.release_view_witness()?;
         let view = Self {
             log: Arc::new(log),
@@ -343,19 +350,6 @@ impl CheckpointView {
             ));
         }
         Ok(length)
-    }
-
-    pub(crate) fn checked_tail_bytes(length: u64, prefix: u64, limit: u64) -> io::Result<u64> {
-        let tail_bytes = length
-            .checked_sub(prefix)
-            .ok_or_else(|| record::invalid_data("checkpoint is beyond the witnessed boundary"))?;
-        if tail_bytes > limit {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "recovered view suffix byte limit exceeded",
-            ));
-        }
-        Ok(tail_bytes)
     }
 
     /// Number of live keys in this historical checkpoint.
@@ -418,9 +412,11 @@ impl CheckpointView {
             &self.index.file,
             self.log.len()?,
             self.witnessed_boundary,
-            None,
             &self.trusted_digest,
-            Some(self.limits.max_file_bytes),
+            checkpoint::IndexAdmission {
+                max_file_bytes: Some(self.limits.max_file_bytes),
+                ..Default::default()
+            },
             |_, _, _, _, _| {
                 count += 1;
                 Ok(())

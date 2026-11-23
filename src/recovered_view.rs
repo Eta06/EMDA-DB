@@ -206,7 +206,7 @@ impl RecoveredCheckpointView {
             ));
         }
         let tail_bytes =
-            CheckpointView::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;
+            crate::checkpoint::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;
         let mut overlay = BTreeMap::new();
         let mut key_bytes = 0_usize;
         let visit = |key: Vec<u8>, location| {

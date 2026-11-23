@@ -45,14 +45,24 @@ fn open(
 }
 
 #[test]
-fn oversized_suffix_is_rejected_before_hashing_the_covered_log() {
+fn oversized_suffix_is_rejected_before_verifying_checkpoint_entries_or_log_prefix() {
     let (_dir, path, checkpoint, digest, prefix) = fixture();
     let store = Store::open(&path).unwrap();
     store.put(b"a", b"new").unwrap();
     drop(store);
     let log = path.join("records.log");
     let original = fs::read(&log).unwrap();
-    let witness = fs::read(path.join("commit.state")).unwrap();
+    let read_witness = || {
+        if original.starts_with(b"EMDALOG3") {
+            let file = fs::File::open(&log).unwrap();
+            let mut bytes = [0_u8; 64];
+            let size = rustix::fs::fgetxattr(&file, "user.db.commit.v3", &mut bytes).unwrap();
+            bytes[..size].to_vec()
+        } else {
+            fs::read(path.join("commit.state")).unwrap()
+        }
+    };
+    let witness = read_witness();
     let tail_bytes = original.len() as u64 - prefix;
     let mut damaged = original.clone();
     // Damage the obsolete covered value while leaving the log header, witness,
@@ -100,8 +110,37 @@ fn oversized_suffix_is_rejected_before_hashing_the_covered_log() {
         );
     }
     assert_eq!(fs::read(&log).unwrap(), damaged);
-    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness);
-    fs::write(&log, original).unwrap();
+    assert_eq!(read_witness(), witness);
+    fs::write(&log, &original).unwrap();
+
+    let original_checkpoint = fs::read(&checkpoint).unwrap();
+    let mut damaged_checkpoint = original_checkpoint.clone();
+    // Only the final checksum changes. The declared prefix in the header
+    // can reject the over-limit open before inspecting any entries.
+    *damaged_checkpoint.last_mut().unwrap() ^= 1;
+    fs::write(&checkpoint, &damaged_checkpoint).unwrap();
+    for error in [
+        read_only(tail_bytes - 1).err().unwrap(),
+        writable(tail_bytes - 1).err().unwrap(),
+    ] {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("suffix byte limit exceeded"));
+    }
+    for error in [
+        read_only(tail_bytes).err().unwrap(),
+        writable(tail_bytes).err().unwrap(),
+    ] {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("index checkpoint checksum mismatch")
+        );
+    }
+    assert_eq!(fs::read(&checkpoint).unwrap(), damaged_checkpoint);
+    assert_eq!(fs::read(&log).unwrap(), original);
+    assert_eq!(read_witness(), witness);
+    fs::write(&checkpoint, original_checkpoint).unwrap();
     assert_eq!(
         read_only(tail_bytes).unwrap().get(b"a").unwrap(),
         Some(b"new".to_vec())
