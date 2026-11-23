@@ -340,3 +340,10 @@ path = "fuzz_targets/bounded_rebuild.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "retained_recovery"
+path = "fuzz_targets/retained_recovery.rs"
+test = false
+doc = false
+bench = false

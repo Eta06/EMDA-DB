@@ -1,4 +1,4 @@
-# Roadmap progress on 2026-11-23
+# Roadmap progress on 2026-11-24
 
 The project aim covers all eight [roadmap steps](ROADMAP.md). The current
 validation sequence prioritizes the macOS and Linux baseline, durable
@@ -7,8 +7,8 @@ testing and an independent off-host restore remain deferred.
 
 | Step | Area | Progress | Basis and remaining evidence |
 | --- | --- | ---: | --- |
-| 1 | Correctness and foundations | 95% | 109 of 115 local checklist items. Broader fault and resource evidence remains open. |
-| 2 | Durable storage and core operations | 94% | 159 of 169 checklist items. Bounded writable memory, spill fault validation and safe live-log reclamation remain open. |
+| 1 | Correctness and foundations | 96% | 110 of 115 local checklist items. Broader fault and resource evidence remains open. |
+| 2 | Durable storage and core operations | 95% | 160 of 169 checklist items. Bounded writable memory, retained-history lifecycle and safe live-log reclamation remain open. |
 | 3 | Document model and queries | 94% | 102 of 108 checklist items. Richer operators, durable cursors, independent maintenance freshness and representative comparisons remain open. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
 | 5 | Secure service and project isolation | 10% | One of five milestones has partial evidence from the loopback benchmark adapter. A secure API, project isolation and safe scale-to-zero remain to build. |
@@ -18,7 +18,7 @@ testing and an independent off-host restore remain deferred.
 
 Steps 1–3 count checked bullets in the [foundation and storage](FOUNDATION_FOLLOW_UP.md)
 and [document](DOCUMENT_FOLLOW_UP.md) checklists, excluding the two explicitly
-deferred drills. Their combined count is 370 of 392. Each item has equal
+deferred drills. Their combined count is 372 of 392 (94.9%). Each item has equal
 weight in that count. Steps 4–8 are estimates from roadmap milestones with
 one point for demonstrated delivery, half a point for a tested subset, and
 zero for design or prerequisites. The projects have different scope and the

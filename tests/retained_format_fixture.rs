@@ -1,36 +1,30 @@
 //! Compatibility with frozen bytes from the first standalone retained format.
-use database_engine::retained_base_v2::Limits;
-use database_engine::retained_candidate::{
-    Expected, IndexLimits, OverlayLimits, RetainedStore, RetainedStoreLimits, SuffixLimits,
-};
+use database_engine::retained_candidate::RetainedStore;
 use database_engine::{BatchOperation, Store};
 use std::{fs, io};
 
-const BASE: &[u8] = include_bytes!("fixtures/retained-v1-base");
-const LOG: &[u8] = include_bytes!("fixtures/retained-v1-records.log");
-const WITNESS: &[u8] = include_bytes!("fixtures/retained-v1-commit.state");
-const BINDING: &[u8; 176] = include_bytes!("fixtures/retained-v1-binding.bin");
-const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
-    base: Limits {
-        file_bytes: 4096,
-        entries: 8,
-        key_bytes: 128,
-        work_bytes: 4097,
-    },
-    index: IndexLimits {
-        blocks: 4,
-        anchor_bytes: 128,
-    },
-    suffix: SuffixLimits {
-        bytes: 4096,
-        operations: 16,
-        work: 1024,
-    },
-    overlay: OverlayLimits {
-        entries: 8,
-        key_bytes: 128,
-    },
-};
+#[path = "fixtures/retained_v1.rs"]
+mod fixture;
+use fixture::{BASE, LIMITS, LOG, WITNESS};
+
+#[path = "../fuzz/fuzz_targets/retained_recovery/model.rs"]
+mod model;
+
+#[test]
+fn retained_recovery_corpus_and_known_boundaries() {
+    let corpus =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/retained-recovery-seeds");
+    for entry in fs::read_dir(corpus).unwrap() {
+        model::check(&fs::read(entry.unwrap().path()).unwrap());
+    }
+    for operation in 0..3 {
+        for physical_end in 0..4 {
+            for witness_end in 0..4 {
+                model::check(&[operation, physical_end, 0, witness_end, 0, 0, 0, 42]);
+            }
+        }
+    }
+}
 
 #[test]
 fn retained_v1_fixture_reopens_and_accepts_a_new_atomic_batch() {
@@ -45,11 +39,7 @@ fn retained_v1_fixture_reopens_and_accepts_a_new_atomic_batch() {
     for (name, bytes) in files {
         fs::write(path.join(name), bytes).unwrap();
     }
-    let binding = Expected {
-        header: BINDING[..112].try_into().unwrap(),
-        witness: BINDING[112..144].try_into().unwrap(),
-        base_digest: BINDING[144..].try_into().unwrap(),
-    };
+    let binding = fixture::binding();
     assert_eq!(
         Store::open(path).err().unwrap().kind(),
         io::ErrorKind::InvalidData

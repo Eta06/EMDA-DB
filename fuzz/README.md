@@ -61,3 +61,22 @@ complete unwitnessed tail preserve the old witness and selection on budget
 rejection, then recover at the exact model limits. The checked-in
 `bounded-rebuild-seeds` include one-under tests for operations, log bytes,
 historical keys and key bytes, checkpoint bytes, and the block directory.
+
+The `retained_recovery` target opens a frozen writable retained generation
+with generated suffix records and independently computed witnesses. The
+model checks complete physical and witnessed boundaries, validated tail
+adoption, and exact live rows. It changes the log, base, witness, or supplied
+binding, and exercises truncation of the persisted files. Rejected opens
+must preserve those files. The seeds in `fuzz/retained-recovery-seeds` replay in
+`cargo test --locked --test retained_format_fixture`.
+
+```sh
+corpus=$(mktemp -d)
+cp fuzz/retained-recovery-seeds/* "$corpus/"
+cargo +nightly-2026-11-03 fuzz run --dev --codegen-units 16 retained_recovery \
+  "$corpus" -- -max_total_time=180 -max_len=128 -timeout=10
+```
+
+The model covers a standalone generation on a running filesystem.
+Authority changes, concurrent writers, and synchronization failures
+have separate tests.
