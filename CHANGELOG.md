@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Restore a bound retained backup directly into a fresh authorized catalog.
+  Registration verifies the restored generation before installing its fresh
+  authority record. An uncertain directory publication returns the verified
+  record for reconciliation.
+
 - Check retained generation entry, key-byte, block and anchor limits
   before copying values during ordinary-store import or cutover.
 

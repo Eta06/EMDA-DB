@@ -143,6 +143,99 @@ fn guarded_restart_survives_retained_rotation_and_reopen() {
 }
 
 #[test]
+fn authorized_backup_restores_document_indexes_under_a_fresh_authority() {
+    type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    let original = dir.path().join("original");
+    let original_authority = dir.path().join("original-authority");
+    let initial =
+        Catalog::prepare_from_store(seed(&source), &source, &original, EXPORT, LIMITS).unwrap();
+    let mut store = Catalog::register_prepared(
+        &original,
+        LIMITS,
+        FileRetainedAuthority::create(&original_authority).unwrap(),
+        initial,
+    )
+    .unwrap();
+    {
+        let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+        db.transaction(|tx| {
+            tx.delete("items", "a")?;
+            tx.insert("items", "m", &json!({"n": 3}))?;
+            tx.put_raw(b"receipt", b"snapshot")?;
+            Ok(())
+        })
+        .unwrap();
+    }
+    let backup = dir.path().join("backup");
+    let binding = store.backup_to(&backup).unwrap();
+    let backup_suffix = std::fs::read(backup.join("suffix")).unwrap();
+    DocumentDatabase::with_authorized_retained_store(&mut store)
+        .insert("items", "later", &json!({"n": 4}))
+        .unwrap();
+    let original_record = FileRetainedAuthority::open(&original_authority)
+        .unwrap()
+        .read()
+        .unwrap();
+    let destination = dir.path().join("restored");
+    let restored_authority = dir.path().join("restored-authority");
+    let prepared = Catalog::prepare_from_backup_with_storage_limits(
+        &backup,
+        &destination,
+        LIMITS,
+        database_engine::retained_candidate::CatalogStorageLimits {
+            bytes: 16_384,
+            entries: 8,
+        },
+        &binding,
+    )
+    .unwrap();
+    assert_ne!(prepared.committed.catalog, initial.committed.catalog);
+    assert_ne!(prepared.committed.generation, initial.committed.generation);
+    assert_eq!(prepared.committed.suffix_digest, binding.digest);
+    let mut restored = Catalog::register_prepared(
+        &destination,
+        LIMITS,
+        FileRetainedAuthority::create(&restored_authority).unwrap(),
+        prepared,
+    )
+    .unwrap();
+    assert_eq!(restored.get(b"receipt", 8).unwrap().unwrap(), b"snapshot");
+    {
+        let db = DocumentDatabase::with_authorized_retained_store(&mut restored);
+        let rows = db
+            .query_index("items", "score", &IndexQuery::default())
+            .unwrap()
+            .documents;
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["m", "z"]
+        );
+        assert!(db.insert("items", "duplicate", &json!({"n": 3})).is_err());
+        db.insert("items", "independent", &json!({"n": 20}))
+            .unwrap();
+    }
+    drop(restored);
+    let mut restored = Catalog::open(
+        &destination,
+        LIMITS,
+        FileRetainedAuthority::open(&restored_authority).unwrap(),
+    )
+    .unwrap();
+    let db = DocumentDatabase::with_authorized_retained_store(&mut restored);
+    assert_eq!(db.verify_collection("items").unwrap().documents, 3);
+    assert_eq!(
+        FileRetainedAuthority::open(original_authority)
+            .unwrap()
+            .read()
+            .unwrap(),
+        original_record
+    );
+    assert_eq!(std::fs::read(backup.join("suffix")).unwrap(), backup_suffix);
+}
+
+#[test]
 fn authorized_cutover_preserves_document_transactions_through_reclamation() {
     type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
     let dir = tempfile::tempdir().unwrap();

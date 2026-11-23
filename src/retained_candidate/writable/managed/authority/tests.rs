@@ -131,6 +131,101 @@ impl Fixture {
 }
 
 #[test]
+fn uncertain_backup_restore_keeps_its_verified_registration_record() {
+    type Catalog = AuthorizedRetainedStore<Provider>;
+    let mut fixture = Fixture::prepare();
+    fixture.register();
+    let mut source = fixture.open();
+    source.put(b"suffix", b"acknowledged").unwrap();
+    let original = fixture.provider.read().unwrap();
+    let parent = fixture.root.parent().unwrap();
+    let backup = parent.join("backup");
+    let binding = source.backup_to(&backup).unwrap();
+    let destination = parent.join("restored");
+    let result =
+        Catalog::prepare_from_backup_using(&backup, &destination, LIMITS.into(), &binding, |_| {
+            Err(io::Error::other("injected restored parent sync error"))
+        });
+    let prepared = match result {
+        Err(AuthorizedRestoreFailure::OutcomeUnknown { error, prepared }) => {
+            assert_eq!(error.to_string(), "injected restored parent sync error");
+            *prepared
+        }
+        other => panic!("expected a verified uncertain publication, got {other:?}"),
+    };
+    assert!(Catalog::open(&destination, LIMITS, Provider::default()).is_err());
+    assert!(ManagedRetainedStore::open(&destination, LIMITS).is_err());
+    assert!(
+        Catalog::register_prepared(&destination, LIMITS, fixture.provider.clone(), prepared)
+            .is_err()
+    );
+    assert_eq!(fixture.provider.read().unwrap(), original);
+
+    let mut provider = Provider::default();
+    let mut lost_response = provider.clone();
+    lost_response.fault = Some((0, true));
+    assert!(Catalog::register_prepared(&destination, LIMITS, lost_response, prepared).is_err());
+    assert_eq!(provider.read().unwrap(), Some(prepared));
+    let mut restored =
+        Catalog::register_prepared(&destination, LIMITS, provider.clone(), prepared).unwrap();
+    assert_eq!(
+        restored.get(b"suffix", 12).unwrap().unwrap(),
+        b"acknowledged"
+    );
+    restored.put(b"suffix", b"restored only").unwrap();
+    assert_eq!(source.get(b"suffix", 12).unwrap().unwrap(), b"acknowledged");
+    assert_eq!(fixture.provider.read().unwrap(), original);
+    drop(restored);
+    assert!(Catalog::register_prepared(&destination, LIMITS, provider, prepared).is_err());
+}
+
+#[test]
+fn backup_restore_rejects_bad_inputs_and_conflicts_without_registering() {
+    type Catalog = AuthorizedRetainedStore<Provider>;
+    let mut fixture = Fixture::prepare();
+    fixture.register();
+    let mut source = fixture.open();
+    source.put(b"suffix", b"value").unwrap();
+    let parent = fixture.root.parent().unwrap();
+    let backup = parent.join("backup");
+    let binding = source.backup_to(&backup).unwrap();
+    let destination = parent.join("restored");
+    let mut bad = binding.clone();
+    bad.digest[0] ^= 1;
+    assert!(matches!(
+        Catalog::prepare_from_backup(&backup, &destination, LIMITS, &bad),
+        Err(AuthorizedRestoreFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(matches!(
+        Catalog::prepare_from_backup_with_storage_limits(
+            &backup, &destination, LIMITS, CatalogStorageLimits { bytes: 1, entries: 8 }, &binding
+        ),
+        Err(AuthorizedRestoreFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(!destination.exists());
+    let prepared = Catalog::prepare_from_backup(&backup, &destination, LIMITS, &binding).unwrap();
+    let wrong = match Catalog::prepare_from_backup(&backup, &destination, LIMITS, &binding) {
+        Err(AuthorizedRestoreFailure::OutcomeUnknown { prepared, .. }) => *prepared,
+        other => panic!("expected a no-clobber conflict, got {other:?}"),
+    };
+    let mut provider = Provider::default();
+    assert_ne!(prepared, wrong);
+    assert!(Catalog::register_prepared(&destination, LIMITS, provider.clone(), wrong).is_err());
+    assert_eq!(provider.read().unwrap(), None);
+    let log = Slot::A.path(&destination).join("records.log");
+    let original = fs::read(&log).unwrap();
+    let mut damaged = original.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(&log, damaged).unwrap();
+    assert!(Catalog::register_prepared(&destination, LIMITS, provider.clone(), prepared).is_err());
+    assert_eq!(provider.read().unwrap(), None);
+    fs::write(&log, original).unwrap();
+    let mut registered =
+        Catalog::register_prepared(&destination, LIMITS, provider, prepared).unwrap();
+    assert_eq!(registered.get(b"suffix", 5).unwrap().unwrap(), b"value");
+}
+
+#[test]
 fn catalog_storage_reserves_headroom_for_automatic_authorized_reclamation() {
     use crate::retained_candidate::writable::managed::tests::catalog_usage;
     use crate::staging::Stage;

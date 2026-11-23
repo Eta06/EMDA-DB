@@ -48,7 +48,50 @@ pub struct AuthorityRecord {
     pub pending: Option<AuthorityPoint>,
 }
 
+/// Publication of a fresh authorized backup restore failed.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum AuthorizedRestoreFailure {
+    /// This call did not start publishing its verified destination.
+    NotPublished(io::Error),
+    /// Reconcile the destination against this independently retained record
+    /// with `AuthorizedRetainedStore::register_prepared` before opening it.
+    OutcomeUnknown {
+        error: io::Error,
+        prepared: Box<AuthorityRecord>,
+    },
+}
+
+impl std::fmt::Display for AuthorizedRestoreFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotPublished(error) => {
+                write!(formatter, "restore publication not started: {error}")
+            }
+            Self::OutcomeUnknown { error, .. } => {
+                write!(formatter, "restore publication outcome unknown: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AuthorizedRestoreFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotPublished(error) | Self::OutcomeUnknown { error, .. } => Some(error),
+        }
+    }
+}
+
 impl AuthorityRecord {
+    fn initial(committed: AuthorityPoint) -> Self {
+        Self {
+            revision: 0,
+            committed,
+            pending: None,
+        }
+    }
+
     fn finalized(self, point: AuthorityPoint) -> io::Result<Self> {
         Ok(Self {
             revision: self
@@ -178,11 +221,133 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             AUTHORIZED_MAGIC,
             sync_existing,
         )?;
-        Ok(AuthorityRecord {
-            revision: 0,
-            committed,
-            pending: None,
-        })
+        Ok(AuthorityRecord::initial(committed))
+    }
+
+    /// Restore an independently bound backup as a fresh authorized catalog.
+    /// The source and backup remain unchanged. Use a new destination and a
+    /// fresh independent authority for the restored catalog. The binding
+    /// identifies the snapshot; the caller determines its freshness. The
+    /// backup and its directories must remain trusted and stable.
+    ///
+    /// Retain the resulting record independently, including on an uncertain
+    /// publication. Register it with `Self::register_prepared` before use.
+    pub fn prepare_from_backup(
+        backup: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &SuffixExpected,
+    ) -> Result<AuthorityRecord, AuthorizedRestoreFailure> {
+        Self::prepare_from_backup_using(
+            backup.as_ref(),
+            destination.as_ref(),
+            limits.into(),
+            expected,
+            sync_existing,
+        )
+    }
+
+    /// Prepare a bound backup restore with a persistent catalog quota.
+    pub fn prepare_from_backup_with_storage_limits(
+        backup: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        storage: CatalogStorageLimits,
+        expected: &SuffixExpected,
+    ) -> Result<AuthorityRecord, AuthorizedRestoreFailure> {
+        Self::prepare_from_backup_using(
+            backup.as_ref(),
+            destination.as_ref(),
+            InitialLimits::with_storage(limits, storage),
+            expected,
+            sync_existing,
+        )
+    }
+
+    fn prepare_from_backup_using(
+        backup: &Path,
+        destination: &Path,
+        limits: InitialLimits,
+        expected: &SuffixExpected,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<AuthorityRecord, AuthorizedRestoreFailure> {
+        let mut prepared = None;
+        let result = ManagedRetainedStore::restore_backup_bound(
+            backup,
+            destination,
+            limits,
+            expected,
+            InitialPublication {
+                magic: AUTHORIZED_MAGIC,
+                sync_parent,
+                verified: |point| prepared = Some(Box::new(AuthorityRecord::initial(point))),
+            },
+        );
+        result
+            .map(AuthorityRecord::initial)
+            .map_err(|failure| match failure {
+                PublicationFailure::NotPublished(error) => {
+                    AuthorizedRestoreFailure::NotPublished(error)
+                }
+                PublicationFailure::OutcomeUnknown(error) => {
+                    AuthorizedRestoreFailure::OutcomeUnknown {
+                        error,
+                        prepared: prepared.expect("publication follows verification"),
+                    }
+                }
+            })
+    }
+
+    /// Verify and synchronize a prepared catalog before installing its exact
+    /// initial record in a fresh independent authority. Retain the trusted
+    /// preparation record for retries, including after an uncertain restore
+    /// or an authority error. The same record may already exist if a prior
+    /// registration took effect. A different record is never replaced.
+    /// The destination and provider must remain trusted; this is for a new
+    /// lineage, with the authority outside the measured catalog.
+    pub fn register_prepared(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        mut authority: A,
+        prepared: AuthorityRecord,
+    ) -> io::Result<Self> {
+        if prepared.revision != 0 || prepared.pending.is_some() {
+            return Err(invalid_input(
+                "expected an initial retained authority record",
+            ));
+        }
+        let previous = authority.read()?;
+        if previous.is_some() && previous != Some(prepared) {
+            return Err(record::invalid_data(
+                "retained authority already has a different record",
+            ));
+        }
+        let inner = ManagedRetainedStore::open_role(
+            root.as_ref(),
+            limits,
+            AUTHORIZED_MAGIC,
+            None,
+            |root, catalog| select_authorized(root, catalog, prepared.committed),
+            Some(prepared),
+        )?;
+        // Recheck the provider under the catalog lock, including on a retry.
+        // CAS publishes only the independently bound, synchronized state.
+        if previous.is_none() && !authority.compare_and_swap(None, prepared)? {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "retained authority comparison lost",
+            ));
+        }
+        let mut store = Self {
+            inner,
+            authority,
+            current: prepared,
+            fence: None,
+            auto_reclaim: None,
+            cleanup_pending: false,
+        };
+        store.verify_current()?;
+        Ok(store)
     }
 
     /// Match the fully verified local suffix against the external record.

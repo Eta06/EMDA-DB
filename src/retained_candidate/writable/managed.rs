@@ -42,6 +42,22 @@ struct InitialStorage {
     archives: CatalogStorageLimits,
 }
 
+struct InitialPublication<S, V> {
+    magic: &'static [u8; 8],
+    sync_parent: S,
+    verified: V,
+}
+
+impl<S> InitialPublication<S, fn(AuthorityPoint)> {
+    fn new(magic: &'static [u8; 8], sync_parent: S) -> Self {
+        Self {
+            magic,
+            sync_parent,
+            verified: |_| {},
+        }
+    }
+}
+
 impl From<RetainedStoreLimits> for InitialLimits {
     fn from(generation: RetainedStoreLimits) -> Self {
         Self {
@@ -92,8 +108,8 @@ pub use storage::CatalogStorageLimits;
 use storage::{CatalogStorage, intersect};
 
 pub use authority::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CutoverArchiveBinding,
-    FileRetainedAuthority, RetainedAuthority,
+    AuthorityPoint, AuthorityRecord, AuthorizedRestoreFailure, AuthorizedRetainedStore,
+    CutoverArchiveBinding, FileRetainedAuthority, RetainedAuthority,
 };
 
 #[cfg(test)]
@@ -201,6 +217,28 @@ impl ManagedRetainedStore {
         expected: &Expected,
         suffix: Option<(&Path, &SuffixExpected)>,
     ) -> Result<[u8; 16], PublicationFailure> {
+        Self::create_bound(
+            candidate,
+            destination,
+            limits,
+            expected,
+            suffix,
+            InitialPublication::new(CATALOG_MAGIC, sync_existing),
+        )
+        .map(|point| point.generation)
+    }
+
+    fn create_bound(
+        candidate: &Path,
+        destination: &Path,
+        limits: InitialLimits,
+        expected: &Expected,
+        suffix: Option<(&Path, &SuffixExpected)>,
+        publication: InitialPublication<
+            impl FnOnce(&Path) -> io::Result<()>,
+            impl FnOnce(AuthorityPoint),
+        >,
+    ) -> Result<AuthorityPoint, PublicationFailure> {
         let parent = crate::backup::parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(candidate, parent).map_err(PublicationFailure::NotPublished)?;
@@ -214,8 +252,7 @@ impl ManagedRetainedStore {
             destination,
             parent,
             limits,
-            CATALOG_MAGIC,
-            sync_existing,
+            publication,
             |_, path, max_base_bytes| {
                 let max_base_bytes = max_base_bytes
                     .checked_sub(suffix_bytes)
@@ -224,7 +261,6 @@ impl ManagedRetainedStore {
                 Ok((expected.clone(), suffix))
             },
         )
-        .map(|point| point.generation)
     }
 
     /// Copy an exclusively owned witnessed store into a new managed catalog.
@@ -315,8 +351,7 @@ impl ManagedRetainedStore {
             destination,
             parent,
             limits,
-            catalog_magic,
-            sync_parent,
+            InitialPublication::new(catalog_magic, sync_parent),
             |stage, path, max_base_bytes| {
                 let expected = export_into_generation(
                     &source,
@@ -335,14 +370,21 @@ impl ManagedRetainedStore {
         destination: &Path,
         parent: &Path,
         limits: InitialLimits,
-        catalog_magic: &'static [u8; 8],
-        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        publication: InitialPublication<
+            impl FnOnce(&Path) -> io::Result<()>,
+            impl FnOnce(AuthorityPoint),
+        >,
         prepare: impl FnOnce(
             &crate::staging::Stage,
             &Path,
             u64,
         ) -> io::Result<(Expected, Option<SuffixImport>)>,
     ) -> Result<AuthorityPoint, PublicationFailure> {
+        let InitialPublication {
+            magic: catalog_magic,
+            sync_parent,
+            verified,
+        } = publication;
         crate::publication_outcome::track(|tracker| {
             let max_base_bytes = limits.max_base_bytes()?;
             let mut stage = crate::staging::Stage::directory(parent)?;
@@ -382,6 +424,7 @@ impl ManagedRetainedStore {
                 .room(0, 0)?;
             }
             sync_existing(root)?;
+            verified(point);
             tracker.begin_publication();
             stage.publish(destination)?;
             sync_parent(parent)?;

@@ -199,8 +199,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 &nested,
                 &root,
                 limits,
-                CUTOVER_MAGIC,
-                sync_existing,
+                InitialPublication::new(CUTOVER_MAGIC, sync_existing),
                 |stage, path, max_base_bytes| {
                     let expected = export_into_generation(
                         &source,

@@ -123,15 +123,36 @@ impl ManagedRetainedStore {
         limits: InitialLimits,
         expected: &SuffixExpected,
     ) -> Result<[u8; 16], PublicationFailure> {
+        Self::restore_backup_bound(
+            backup,
+            destination,
+            limits,
+            expected,
+            InitialPublication::new(CATALOG_MAGIC, sync_existing),
+        )
+        .map(|point| point.generation)
+    }
+
+    pub(super) fn restore_backup_bound(
+        backup: &Path,
+        destination: &Path,
+        limits: InitialLimits,
+        expected: &SuffixExpected,
+        publication: InitialPublication<
+            impl FnOnce(&Path) -> io::Result<()>,
+            impl FnOnce(AuthorityPoint),
+        >,
+    ) -> Result<AuthorityPoint, PublicationFailure> {
         let parent = crate::backup::parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(backup, parent).map_err(PublicationFailure::NotPublished)?;
-        Self::create_using(
+        Self::create_bound(
             &backup.join(CANDIDATE),
             destination,
             limits,
             &expected.candidate,
             Some((&backup.join(SUFFIX), expected)),
+            publication,
         )
     }
 }
