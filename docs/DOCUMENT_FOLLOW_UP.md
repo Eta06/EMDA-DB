@@ -84,6 +84,10 @@ The initial document interface is bounded and experimental. This checklist recor
   rechecks the checkpoint. The [paired Linux traces](../benchmarks/results/2026-11-23-checkpoint-transaction-range/README.md)
   count reads for raw-key pages and a planned nonunique document query.
 - [ ] Measure and optimize document workloads with equivalent durability and comparable behavior against SQLite, MongoDB and other suitable alternatives. Publish workload definitions, distributions, concurrency, resource use, failures and noise; do not infer performance from the earlier byte-key baseline.
+  The [current-revision report](../benchmarks/results/2026-11-24-document-current/README.md)
+  extends durable SQLite comparisons to eight concurrent clients and
+  records measured compound-range reads across four engines. Concurrent
+  server-engine document writes and comparable resource attribution remain open.
 - [x] Add resumable incremental index build and drop with atomic progress, bounded per-step work, writer coordination and recovery checks. Unique constraints take effect only after successful publication, and callers schedule and retry steps. The ordinary backend still has transaction snapshot limits; this is not a total-memory or latency guarantee.
 - [x] Reject index-drop cursors that skip surviving keys, including a unique phase with remaining entry keys. Both writable backends test skipped and live cursors and preserve the rejection after reopen. The guard detects inconsistent state and does not repair it or validate build cursors.
 - [x] Add resumable schema validation and publication with durable progress, per-step limits and enforcement of both schemas on concurrent writes. One-shot schema changes and index rebuilds still have small limits; incompatible schemas can require removing documents or cancelling the job.

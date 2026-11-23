@@ -726,6 +726,9 @@ gh workflow run compound-range-smoke.yml --ref main -f comparison_scale=measured
 Measured mode uses four fresh rounds and fifty timed queries per path for the
 100/10, 1,000/10, and 1,000/100 document/match cases. The comparison artifact
 includes the raw timings, plans, result verification, and environment.
+The [current-revision report](../benchmarks/results/2026-11-24-document-current/README.md)
+preserves a successful measured run and extends the separate durable
+document contention comparison against SQLite to eight clients.
 
 [`compound_range_query_bench`](../examples/compound_range_query_bench.rs) compares an equality prefix plus a scalar range on a two-field nonunique index, with complete result and reopen checks. The SQLite expression-index and primary-table paths are explicitly selected; its complete explain plan is recorded. The [external comparison runner](../scripts/compound_range_external_compare.py) adds PostgreSQL JSONB and MongoDB documents using local disposable containers and pinned Python drivers. PostgreSQL disables sequential and ordinary index scans to obtain a checked bitmap path; MongoDB receives an index hint. Rust prototype/SQLite queries are in-process and interleaved, while PostgreSQL/MongoDB use Python drivers over loopback and are measured separately. Treat these differences, setup costs and durability settings as part of the result.
 
