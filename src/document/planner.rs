@@ -181,18 +181,16 @@ fn required_equality(
     }
 }
 
-// Select one required, wholly indexable list. Deduplication uses the exact
-// scalar index encoding so repeated values cannot duplicate rows or work.
-// Non-indexable lists fall back rather than omitting potential matches.
+// Start from a required, wholly indexable list. Once its alternatives cover
+// every possible match, further required lists can prune them even if those
+// lists also contain non-indexable values.
 fn required_membership(
     required: &[Predicate<'_>],
     path: &[String],
     accepts: impl Fn(&serde_json::Value) -> bool,
 ) -> Option<Vec<IndexValue>> {
-    let mut intersection = BTreeMap::<Vec<u8>, (IndexValue, usize)>::new();
-    let mut encoded = Vec::new();
-    for (ordinal, (filter, negated)) in required_predicates(required).enumerate() {
-        match (filter, negated) {
+    let mut lists = required_predicates(required)
+        .filter_map(|(filter, negated)| match (filter, negated) {
             (
                 DocumentFilter::In {
                     path: field,
@@ -206,52 +204,60 @@ fn required_membership(
                     values,
                 },
                 true,
-            ) if field == path && values.len() > 1 => {
-                let seed = intersection.is_empty();
-                let mut usable = true;
-                let mut has_values = false;
-                let mut matched = 0;
-                for value in values.iter().filter(|value| accepts(value)) {
-                    let Ok(value) = IndexValue::from_json(value) else {
-                        usable = false;
-                        break;
-                    };
-                    encoded.clear();
-                    if value.encode(&mut encoded).is_err() {
-                        usable = false;
-                        break;
-                    }
-                    has_values = true;
-                    if seed {
-                        intersection
-                            .entry(std::mem::take(&mut encoded))
-                            .or_insert((value, ordinal));
-                    } else if let Some((_, seen)) = intersection.get_mut(encoded.as_slice()) {
-                        if *seen != ordinal {
-                            *seen = ordinal;
-                            matched += 1;
-                        }
-                    }
-                }
-                if seed {
-                    if !usable {
-                        intersection.clear();
-                    }
-                } else if usable && has_values {
-                    // Preserve a usable access path for disjoint lists. An
-                    // unindexable list can mark entries but never prunes them.
-                    if matched == 0 {
-                        break;
-                    }
-                    if matched < intersection.len() {
-                        intersection.retain(|_, (_, seen)| *seen == ordinal);
-                    }
-                }
+            ) if field == path && values.len() > 1 => Some(values),
+            _ => None,
+        })
+        .enumerate();
+    let mut mixed = Vec::new();
+    let mut intersection = BTreeMap::<Vec<u8>, (IndexValue, usize)>::new();
+    let mut encoded = Vec::new();
+    loop {
+        let (ordinal, values) = lists.next()?;
+        let indexable = values.iter().filter(|value| accepts(value)).all(|value| {
+            let Ok(value) = IndexValue::from_json(value) else {
+                return false;
+            };
+            encoded.clear();
+            if value.encode(&mut encoded).is_err() {
+                return false;
             }
-            _ => {}
+            intersection
+                .entry(std::mem::take(&mut encoded))
+                .or_insert((value, ordinal));
+            true
+        });
+        if indexable && !intersection.is_empty() {
+            break;
+        }
+        intersection.clear();
+        if !indexable {
+            mixed.push((ordinal, values));
         }
     }
-    (!intersection.is_empty()).then(|| intersection.into_values().map(|(value, _)| value).collect())
+    for (ordinal, values) in mixed.into_iter().chain(lists) {
+        let mut matched = 0;
+        for value in values.iter().filter(|value| accepts(value)) {
+            let Ok(value) = IndexValue::from_json(value) else {
+                continue;
+            };
+            encoded.clear();
+            if value.encode(&mut encoded).is_err() {
+                continue;
+            }
+            if let Some((_, seen)) = intersection.get_mut(encoded.as_slice()) {
+                if *seen != ordinal {
+                    *seen = ordinal;
+                    matched += 1;
+                }
+            }
+        }
+        // Keep a usable access path if no alternatives intersect. The full
+        // filter still checks all requirements against each visited row.
+        if matched != 0 && matched < intersection.len() {
+            intersection.retain(|_, (_, seen)| *seen == ordinal);
+        }
+    }
+    Some(intersection.into_values().map(|(value, _)| value).collect())
 }
 
 fn path_implies_presence(field: &[String], actual: bool, path: &[String], exists: bool) -> bool {

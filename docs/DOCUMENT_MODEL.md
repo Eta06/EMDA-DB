@@ -168,16 +168,20 @@ matches on `DocumentFilter` need a new arm for this variant.
 
 The planner can find required scalar predicates inside conjunctions, double negations, and negated disjunctions. It treats `Not(NotIn(...))` as membership and keeps single negations of equality and comparison predicates as residual filters. A required singleton `In` with an indexable value is also an equality for planning, including partial-equality proof. Required comparisons whose tightest lower and upper bounds are both inclusive at the same typed scalar also supply an equality. This can complete an exact tuple or extend a compound prefix so the planner can use later indexed fields. Exclusive endpoints follow the range rules.
 
-For a required multi-value `In` whose values are all indexable, the planner may use a single-field index as a union of exact-value probes. It deduplicates input values by index encoding, combines the existing candidate and original-document-byte limits across all probes, restores ID order, and applies the complete filter before pagination and projection. Probes share the transaction's read-set protections. Equality and range choices retain their earlier priority; a multi-value list does not use this union when any listed value is non-indexable. The 256-value input limit bounds distinct single-field probes; these are not total time or memory guarantees.
+For a required multi-value `In` whose values are all indexable, the planner may use a single-field index as a union of exact-value probes. It deduplicates input values by index encoding, combines the existing candidate and original-document-byte limits across all probes, restores ID order, and applies the complete filter before pagination and projection. Probes share the transaction's read-set protections. Equality and range choices retain their earlier priority. A multi-value list can start this union when all its surviving alternatives are indexable. The 256-value input limit bounds distinct single-field probes; these are not total time or memory guarantees.
 
 After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. A product above that cap or an unconstrained field cannot use this compound union. An implied partial index is eligible under the same guard rules. Full tuples prevent omitted missing fields from producing incomplete results. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes.
 
 When multiple required multi-value membership lists constrain one field,
 the planner intersects their indexable alternatives before building
-single-field, compound-prefix, or complete-tuple probes. A list with a
-non-indexable alternative remains a residual filter unless a required
-scalar bound rules out that alternative. If lists are disjoint, the planner
-keeps the last usable bounded set of probes and applies the complete filter.
+single-field, compound-prefix, or complete-tuple probes. A fully indexable
+required list covers every possible match. Other required lists can narrow
+that set even when they include non-indexable alternatives, regardless of
+the order of the predicates. Without such a starting list, the planner can
+use a mixed list to start membership probes only when required scalar bounds
+exclude all its non-indexable alternatives. If an intersection is empty,
+the planner keeps the preceding bounded set of probes and applies the
+complete filter.
 
 When a required membership list constrains the same field as a planned
 scalar range, the planner can intersect the list with the typed inclusive

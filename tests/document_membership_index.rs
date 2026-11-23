@@ -249,6 +249,49 @@ fn conjunctive_membership_uses_only_common_index_values() {
         assert_eq!(planned.result.documents, scan.documents);
         assert_eq!(planned.result.plan.matched, 3);
 
+        let mixed = in_values(vec![json!(1.0), json!([2]), json!(2), json!(2)]);
+        for predicates in [
+            vec![first.clone(), mixed.clone()],
+            vec![mixed, first.clone()],
+            vec![
+                DocumentFilter::Not(Box::new(DocumentFilter::NotIn {
+                    path: vec!["v".into()],
+                    values: vec![json!(1.0), json!({"other": true}), json!(2)],
+                })),
+                first.clone(),
+            ],
+        ] {
+            let request = query(DocumentFilter::And(predicates));
+            let scan = db.query("c", &request).unwrap();
+            let planned = db
+                .query_planned(
+                    "c",
+                    &DocumentQuery {
+                        max_scanned: 2,
+                        ..request
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                planned.access,
+                DocumentQueryAccess::MembershipIndex {
+                    index: "v".into(),
+                    probes: 1
+                }
+            );
+            assert_eq!(planned.result.plan.scanned, 2);
+            assert_eq!(planned.result.documents, scan.documents);
+            assert_eq!(
+                planned
+                    .result
+                    .documents
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["b", "c"]
+            );
+        }
+
         // Disjoint lists keep a usable bounded access path even when a
         // collection scan would exceed the caller's limit.
         let disjoint = DocumentQuery {
@@ -276,7 +319,7 @@ fn union_sees_staged_changes_and_detects_phantoms_for_each_probe() {
             db.create_index("c", index(false, None)).unwrap();
             let request = query(DocumentFilter::And(vec![
                 in_values(vec![json!(5), json!(7), json!(6)]),
-                in_values(vec![json!(8), json!(7), json!(5)]),
+                in_values(vec![json!(8), json!(7), json!(5), json!([6]), json!(6.0)]),
             ]));
             db.transaction_with_read_set(|tx| {
                 tx.insert("c", "staged", &json!({"v":5}))?;

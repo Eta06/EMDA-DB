@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Narrow indexed membership probes with required mixed-type lists when a
+  separate required list already covers every possible match with scalars.
+
 - Add bounded `DocumentFilter::ArrayAllElementsMatch` for relative
   predicates that every object in an array must satisfy. Empty arrays
   match. Downstream exhaustive Rust matches on `DocumentFilter` need a
