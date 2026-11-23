@@ -3,7 +3,7 @@ use super::{
     filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
     index::{IndexDefinition, IndexValue, PartialFilter},
     key,
-    query::{IndexBound, IndexQuery},
+    query::{IndexBound, IndexQuery, IndexScanOptions, index_definition},
     transaction::{DocumentTransaction, Metadata},
 };
 use std::cmp::Ordering;
@@ -1219,7 +1219,8 @@ impl DocumentTransaction<'_, '_> {
             upper,
             unique_equality,
         } = probe;
-        let mut after = None;
+        let definition = index_definition(metadata, index)?;
+        let mut after: Option<Vec<u8>> = None;
         loop {
             // Probe one entry beyond the candidate limit, never silently
             // returning a prefix. Unique equality probes two to detect a
@@ -1231,16 +1232,19 @@ impl DocumentTransaction<'_, '_> {
             };
             let indexed = self.visit_index_with_metadata(
                 collection,
-                index,
+                definition,
                 &IndexQuery {
                     equal: equal.clone(),
                     lower: lower.clone(),
                     upper: upper.clone(),
-                    after,
+                    after: None,
                     limit,
                 },
                 metadata,
-                Some(filter::MAX_SCAN_BYTES - candidates.bytes),
+                IndexScanOptions {
+                    after: after.as_deref(),
+                    byte_limit: Some(filter::MAX_SCAN_BYTES - candidates.bytes),
+                },
                 |entry| {
                     if candidates.ids.insert(entry.id.clone()) {
                         if let Some(collector) = &mut candidates.collector {

@@ -1,14 +1,18 @@
 //! Bounded indexed document queries with explicit ordering and pagination.
 use super::{
-    index::{self, IndexValue},
+    index::{self, IndexDefinition, IndexValue},
     key,
     transaction::{DocumentTransaction, Metadata},
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::io;
 
 const MAX_QUERY_DOCUMENTS: usize = 256;
 const MAX_QUERY_BYTES: usize = 16 * 1024 * 1024;
+const CURSOR_MAGIC: &[u8; 8] = b"EMDAIC01";
+const CURSOR_HEADER_BYTES: usize = CURSOR_MAGIC.len() + 32;
+const CURSOR_CHECKSUM_BYTES: usize = 4;
 
 /// An inclusive or exclusive bound on the first field after equality fields.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -19,9 +23,48 @@ pub struct IndexBound {
     pub inclusive: bool,
 }
 
-/// An opaque resume position from an earlier indexed page.
+/// An opaque seek position from an earlier indexed page in a named index.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndexCursor(Vec<u8>);
+pub struct IndexCursor {
+    scope: [u8; 32],
+    position: Vec<u8>,
+}
+
+impl IndexCursor {
+    /// Encodes the position for storage between sessions.
+    /// Keep these bytes private if indexed values or document IDs are sensitive.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes =
+            Vec::with_capacity(CURSOR_HEADER_BYTES + self.position.len() + CURSOR_CHECKSUM_BYTES);
+        bytes.extend_from_slice(CURSOR_MAGIC);
+        bytes.extend_from_slice(&self.scope);
+        bytes.extend_from_slice(&self.position);
+        bytes.extend_from_slice(&crc32fast::hash(&bytes).to_le_bytes());
+        bytes
+    }
+
+    /// Decodes a bounded persisted seek position. The checksum detects
+    /// accidental damage. It does not authenticate the position.
+    /// A query checks the position against its current index and bounds.
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
+        let overhead = CURSOR_HEADER_BYTES + CURSOR_CHECKSUM_BYTES;
+        if !(overhead + 1..=overhead + crate::record::MAX_KEY).contains(&bytes.len())
+            || !bytes.starts_with(CURSOR_MAGIC)
+        {
+            return Err(key::invalid("invalid index cursor format or length"));
+        }
+        let (data, checksum) = bytes.split_at(bytes.len() - CURSOR_CHECKSUM_BYTES);
+        if crc32fast::hash(data).to_le_bytes() != checksum {
+            return Err(key::invalid("invalid index cursor checksum"));
+        }
+        Ok(Self {
+            scope: data[CURSOR_MAGIC.len()..CURSOR_HEADER_BYTES]
+                .try_into()
+                .expect("fixed cursor scope length"),
+            position: data[CURSOR_HEADER_BYTES..].to_vec(),
+        })
+    }
+}
 
 /// A bounded scan of a named secondary index.
 #[derive(Clone, Debug)]
@@ -91,9 +134,25 @@ pub struct DocumentPage {
 // The planner needs the original encoded document and key lengths to enforce
 // the collection scan's byte budget without serializing parsed JSON again.
 pub(super) struct IndexScan {
-    pub next: Option<IndexCursor>,
+    pub next: Option<Vec<u8>>,
     pub plan: IndexQueryPlan,
     pub document_key_value_bytes: usize,
+}
+
+pub(super) struct IndexScanOptions<'a> {
+    pub after: Option<&'a [u8]>,
+    pub byte_limit: Option<usize>,
+}
+
+pub(super) fn index_definition<'a>(
+    metadata: &'a Metadata,
+    name: &str,
+) -> io::Result<&'a IndexDefinition> {
+    metadata
+        .indexes
+        .iter()
+        .find(|index| index.name == name)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "index does not exist"))
 }
 
 fn invalid_data(message: &'static str) -> io::Error {
@@ -166,14 +225,39 @@ impl DocumentTransaction<'_, '_> {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
         let metadata = self.metadata(collection)?;
+        let definition = index_definition(&metadata, name)?;
+        let mut scope = Sha256::new();
+        scope.update(CURSOR_MAGIC);
+        scope.update(serde_json::to_vec(&(collection, definition)).map_err(io::Error::other)?);
+        let scope: [u8; 32] = scope.finalize().into();
+        if let Some(cursor) = &query.after {
+            if cursor.scope != scope {
+                return Err(key::invalid(
+                    "cursor belongs to a different index definition",
+                ));
+            }
+            let prefix = key::index(b'I', collection, name)?;
+            entry_id(&cursor.position, &prefix, definition.fields.len())
+                .map_err(|_| key::invalid("cursor contains an invalid index position"))?;
+        }
         let mut documents = Vec::new();
-        let scan =
-            self.visit_index_with_metadata(collection, name, query, &metadata, None, |entry| {
-                documents.push(entry);
-            })?;
+        let scan = self.visit_index_with_metadata(
+            collection,
+            definition,
+            query,
+            &metadata,
+            IndexScanOptions {
+                after: query
+                    .after
+                    .as_ref()
+                    .map(|cursor| cursor.position.as_slice()),
+                byte_limit: None,
+            },
+            |entry| documents.push(entry),
+        )?;
         Ok(DocumentPage {
             documents,
-            next: scan.next,
+            next: scan.next.map(|position| IndexCursor { scope, position }),
             plan: scan.plan,
         })
     }
@@ -183,27 +267,22 @@ impl DocumentTransaction<'_, '_> {
     pub(super) fn visit_index_with_metadata(
         &self,
         collection: &str,
-        name: &str,
+        definition: &IndexDefinition,
         query: &IndexQuery,
         metadata: &Metadata,
-        scan_byte_limit: Option<usize>,
+        options: IndexScanOptions<'_>,
         mut visit: impl FnMut(DocumentEntry),
     ) -> io::Result<IndexScan> {
         if query.limit == 0 || query.limit > MAX_QUERY_DOCUMENTS {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
-        let definition = metadata
-            .indexes
-            .iter()
-            .find(|index| index.name == name)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "index does not exist"))?;
         if query.equal.len() > definition.fields.len()
             || (query.equal.len() == definition.fields.len()
                 && (query.lower.is_some() || query.upper.is_some()))
         {
             return Err(key::invalid("query bounds exceed the index field count"));
         }
-        let index_prefix = key::index(b'I', collection, name)?;
+        let index_prefix = key::index(b'I', collection, &definition.name)?;
         let mut equal_prefix = index_prefix.clone();
         for value in &query.equal {
             value.encode(&mut equal_prefix)?;
@@ -228,16 +307,21 @@ impl DocumentTransaction<'_, '_> {
                 bound
             };
         }
-        if let Some(cursor) = &query.after {
-            if !cursor.0.starts_with(&equal_prefix) || cursor.0 >= before || cursor.0 < after {
+        let after = if let Some(cursor) = options.after {
+            if !cursor.starts_with(&equal_prefix)
+                || cursor >= before.as_slice()
+                || cursor < after.as_slice()
+            {
                 return Err(key::invalid("cursor is outside the query bounds"));
             }
-            after = cursor.0.clone();
-        }
+            cursor
+        } else {
+            after.as_slice()
+        };
         // No stored key can extend a maximum-length prefix. An exclusive
         // lower bound can drop its remaining bytes. An exclusive upper bound
         // must also include a key equal to its truncated prefix.
-        after.truncate(crate::record::MAX_KEY);
+        let after = &after[..after.len().min(crate::record::MAX_KEY)];
         if before.len() > crate::record::MAX_KEY {
             before.truncate(crate::record::MAX_KEY);
             before = key::end(&before);
@@ -250,7 +334,7 @@ impl DocumentTransaction<'_, '_> {
             entries_read,
             returned,
         };
-        if after >= before {
+        if after >= before.as_slice() {
             return Ok(IndexScan {
                 next: None,
                 plan: plan(0, 0),
@@ -258,7 +342,7 @@ impl DocumentTransaction<'_, '_> {
             });
         }
         let mut nonempty_entry = false;
-        let rows = self.scan_admitted(&after, &before, query.limit, |_, len| {
+        let rows = self.scan_admitted(after, &before, query.limit, |_, len| {
             nonempty_entry = len != 0;
             !nonempty_entry
         })?;
@@ -277,7 +361,10 @@ impl DocumentTransaction<'_, '_> {
                         .checked_add(document_key.len())
                         .and_then(|total| total.checked_add(len))
                         .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
-                    if scan_byte_limit.is_some_and(|limit| next_document_bytes > limit) {
+                    if options
+                        .byte_limit
+                        .is_some_and(|limit| next_document_bytes > limit)
+                    {
                         return Err(key::invalid("document scan exceeds the operation limit"));
                     }
                     Ok(())
@@ -311,7 +398,7 @@ impl DocumentTransaction<'_, '_> {
                 document,
             });
             returned += 1;
-            cursor = Some(IndexCursor(entry));
+            cursor = Some(entry);
         }
         if nonempty_entry && returned == entries_read {
             return Err(invalid_data("invalid index entry value"));

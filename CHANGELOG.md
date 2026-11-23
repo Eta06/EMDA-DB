@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Persist named-index seek positions with a versioned cursor encoding.
+  Resumed queries validate the collection, index definition, position and bounds.
+
 - Add detailed inactive-generation retirement outcomes to managed and
   authority-backed retained stores, including for resumed cleanup.
 
