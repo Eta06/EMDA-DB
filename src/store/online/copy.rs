@@ -4,6 +4,7 @@ use crate::log::ValueLocation;
 use crate::store::{Snapshot, Store};
 use crate::{BatchOperation, MAX_ATOMIC_BATCH_BYTES};
 use sha2::Sha256;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io;
 
@@ -59,10 +60,12 @@ pub(super) fn verify_initial(
     let mut bytes = 0_usize;
     let data = snapshot.read_index()?;
     let log = data.log.as_ref().expect("active snapshot retains its log");
-    let visit = |key: Vec<u8>, location| {
+    let visit = |key: Cow<'_, [u8]>, location| {
         match location {
             Some(location) => {
-                if !index.contains_key(&key) {
+                if let Some(existing) = index.get_mut(key.as_ref()) {
+                    *existing = location;
+                } else {
                     if index.len() >= options.max_snapshot_keys {
                         return Err(io::Error::other(
                             "historical key count exceeds compaction limit",
@@ -74,11 +77,11 @@ pub(super) fn verify_initial(
                         .ok_or_else(|| {
                             io::Error::other("historical key bytes exceed compaction limit")
                         })?;
+                    index.insert(key.into_owned(), location);
                 }
-                index.insert(key, location);
             }
             None => {
-                if index.remove(&key).is_some() {
+                if index.remove(key.as_ref()).is_some() {
                     bytes -= key.len();
                 }
             }
@@ -175,7 +178,7 @@ pub(super) fn replay(
             let value = location
                 .map(|location| source.log.read(location))
                 .transpose()?;
-            writer.push(key, value)
+            writer.push(key.into_owned(), value)
         })?;
     writer.flush()
 }

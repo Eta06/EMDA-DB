@@ -141,7 +141,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
     target.visit_records_with_digest(0, boundary, boundary, &mut log_hasher, |key, location| {
         let location =
             location.ok_or_else(|| record::invalid_data("compacted log contains a deletion"))?;
-        if !previous.is_empty() && previous >= key {
+        if !previous.is_empty() && previous.as_slice() >= key.as_ref() {
             return Err(record::invalid_data(
                 "compacted keys are not strictly ordered",
             ));
@@ -151,7 +151,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
         target_count = target_count
             .checked_add(1)
             .ok_or_else(|| io::Error::other("compacted key count overflow"))?;
-        previous = key;
+        key.as_ref().clone_into(&mut previous);
         Ok(())
     })?;
     let target_digest: [u8; 32] = target_hash.finalize().into();

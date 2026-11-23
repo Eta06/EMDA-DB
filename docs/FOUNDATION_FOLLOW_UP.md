@@ -271,6 +271,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   [allocation probe](../benchmarks/results/2026-11-24-checkpoint-overlay-keys/README.md),
   one put with a snapshot pinning 4,096 suffix keys requested 91.8% fewer
   allocator bytes. Overlay map nodes are still copied.
+  Replay now reuses a standalone record's key buffer. The
+  [recovery probe](../benchmarks/results/2026-11-24-replay-key-buffer/README.md)
+  measures ordinary, writable checkpoint and read-only checkpoint opens
+  with repeated and distinct keys. Batch staging and the recovered indexes
+  still contribute to process memory.
 - [x] Apply the suffix-byte cap before traversing checkpoint entries on recovered-view and checkpoint-writer opens. The [Linux ARM64 trace](../benchmarks/results/2026-11-23-checkpoint-suffix-admission/README.md) shows one buffered read for a rejected 65,536-key checkpoint and the same read volume as before at the exact accepted limit. Corruption and witness-preservation checks pass on macOS and Linux.
   At commit, check encoded size before allocating a checkpoint batch. In a
   Linux ext4 probe with a 4 MiB value, blind, conditional and transactional

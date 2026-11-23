@@ -3,6 +3,7 @@ use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits};
 use crate::log::ValueLocation;
 use crate::record;
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
@@ -206,8 +207,8 @@ impl RecoveredCheckpointView {
             crate::checkpoint::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;
         let mut overlay = BTreeMap::<Arc<[u8]>, Option<ValueLocation>>::new();
         let mut key_bytes = 0_usize;
-        let visit = |key: Vec<u8>, location| {
-            if let Some(existing) = overlay.get_mut(key.as_slice()) {
+        let visit = |key: Cow<'_, [u8]>, location| {
+            if let Some(existing) = overlay.get_mut(key.as_ref()) {
                 *existing = location;
                 return Ok(());
             }
@@ -226,7 +227,7 @@ impl RecoveredCheckpointView {
                         "recovered view suffix key byte limit exceeded",
                     )
                 })?;
-            overlay.insert(key.into(), location);
+            overlay.insert(Arc::from(key.as_ref()), location);
             Ok(())
         };
         let start = base.log_boundary();

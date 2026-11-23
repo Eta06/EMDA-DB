@@ -8,6 +8,7 @@ use crate::record::{self, HEADER_SIZE, Header, Operation};
 use crate::recovery::RecoveryReader;
 use crate::witness::{self, LOG_HEADER_SIZE, LogId, Witness};
 use sha2::Sha256;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, IoSlice, Write};
@@ -948,12 +949,14 @@ impl Log {
         boundary: Option<u64>,
         limits: Option<PeakVerificationLimits>,
     ) -> io::Result<(BTreeMap<Vec<u8>, ValueLocation>, usize, usize)> {
-        let mut index = BTreeMap::new();
+        let mut index = BTreeMap::<Vec<u8>, ValueLocation>::new();
         let (mut bytes, mut peak_count, mut peak_bytes) = (0_usize, 0_usize, 0_usize);
         self.visit_locations(reader, end, boundary, None, |key, location| {
             match location {
                 Some(location) => {
-                    if !index.contains_key(&key) {
+                    if let Some(existing) = index.get_mut(key.as_ref()) {
+                        *existing = location;
+                    } else {
                         let next_bytes = verified_key_bytes(bytes, key.len(), limits.is_some())?;
                         if limits.is_some_and(|limit| {
                             index.len() >= limit.max_live_keys
@@ -965,11 +968,11 @@ impl Log {
                             ));
                         }
                         bytes = next_bytes;
+                        index.insert(key.into_owned(), location);
                     }
-                    index.insert(key, location);
                 }
                 None => {
-                    if index.remove(&key).is_some() {
+                    if index.remove(key.as_ref()).is_some() {
                         bytes = bytes.checked_sub(key.len()).ok_or_else(|| {
                             record::invalid_data("replayed live key bytes underflow")
                         })?;
@@ -1006,24 +1009,24 @@ impl Log {
         self.visit_locations(reader, total, boundary, None, |key, location| {
             match location {
                 Some(location) => {
-                    if max_live_keys
-                        .is_some_and(|max| index.len() >= max && !index.contains_key(&key))
-                    {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "recovery live key limit would be exceeded",
-                        ));
-                    }
-                    if let Some(max) = max_live_key_bytes {
-                        if !index.contains_key(&key) {
+                    if let Some(existing) = index.get_mut(key.as_ref()) {
+                        *existing = location;
+                    } else {
+                        if max_live_keys.is_some_and(|max| index.len() >= max) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "recovery live key limit would be exceeded",
+                            ));
+                        }
+                        if let Some(max) = max_live_key_bytes {
                             live_key_bytes =
                                 add_recovery_key_bytes(live_key_bytes, key.len(), max)?;
                         }
+                        index.insert(key.into_owned(), location);
                     }
-                    index.insert(key, location);
                 }
                 None => {
-                    if index.remove(&key).is_some() && max_live_key_bytes.is_some() {
+                    if index.remove(key.as_ref()).is_some() && max_live_key_bytes.is_some() {
                         live_key_bytes -= key.len();
                     }
                 }
@@ -1044,7 +1047,8 @@ impl Log {
     /// Visits fully verified log mutations without materializing record values.
     ///
     /// Payloads are checksummed through `RECOVERY_READ_BUFFER_BYTES` and are
-    /// not retained. A batch keeps each owned child key and value location
+    /// not retained. Single-record keys borrow a reusable scratch buffer.
+    /// A batch keeps each owned child key and value location
     /// until that record's outer checksum, outer key, and nested records have
     /// all been checked, then gives them to `visit` in order. The format
     /// allows at most 1,024 children. `visit` may retain keys; this function
@@ -1055,7 +1059,7 @@ impl Log {
         &self,
         offset: u64,
         boundary: Option<u64>,
-        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+        visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.visit_records_to(offset, self.file.len()?, boundary, visit)
     }
@@ -1068,7 +1072,7 @@ impl Log {
         &self,
         offset: u64,
         end: u64,
-        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+        visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         if self.file.len()? < end {
             return Err(io::Error::new(
@@ -1084,7 +1088,7 @@ impl Log {
         offset: u64,
         total: u64,
         boundary: Option<u64>,
-        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+        visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         let reader = RecoveryReader::at(self.file.as_ref(), total, offset)?;
         self.visit_locations(reader, total, boundary, None, visit)
@@ -1097,7 +1101,7 @@ impl Log {
         start: u64,
         end: u64,
         boundary: u64,
-        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+        visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
         use sha2::Digest;
         let mut digest = Sha256::new();
@@ -1113,7 +1117,7 @@ impl Log {
         end: u64,
         boundary: u64,
         digest: &mut Sha256,
-        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+        visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.visit_records_with_digest_and_limit(start, end, boundary, digest, None, visit)
     }
@@ -1125,7 +1129,7 @@ impl Log {
         boundary: u64,
         digest: &mut Sha256,
         max_operations: Option<u64>,
-        visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+        visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         let reader = RecoveryReader::at(self.file.as_ref(), end, start)?.with_digest(digest);
         self.visit_locations(reader, end, Some(boundary), max_operations, visit)
@@ -1137,7 +1141,7 @@ impl Log {
         total: u64,
         boundary: Option<u64>,
         max_operations: Option<u64>,
-        mut visit: impl FnMut(Vec<u8>, Option<ValueLocation>) -> io::Result<()>,
+        mut visit: impl FnMut(Cow<'_, [u8]>, Option<ValueLocation>) -> io::Result<()>,
     ) -> io::Result<()> {
         self.visit_hashed_records_to::<crc32fast::Hasher>(
             reader,
@@ -1192,7 +1196,7 @@ impl Log {
         total: u64,
         boundary: Option<u64>,
         mut remaining_operations: Option<u64>,
-        mut visit: impl FnMut(Vec<u8>, Option<StreamValue<D::Output>>) -> io::Result<()>,
+        mut visit: impl FnMut(Cow<'_, [u8]>, Option<StreamValue<D::Output>>) -> io::Result<()>,
     ) -> io::Result<()> {
         let mut admit = |operations: usize| {
             if let Some(remaining) = &mut remaining_operations {
@@ -1221,6 +1225,7 @@ impl Log {
             debug_assert_eq!(reader.position(), offset);
         }
         let mut saw_boundary = boundary.is_none_or(|value| value == offset);
+        let mut key_buffer = [0; record::MAX_KEY];
         while offset < total {
             if total - offset < HEADER_SIZE as u64 {
                 return Err(incomplete_record(offset));
@@ -1242,14 +1247,14 @@ impl Log {
                     &mut admit,
                 )?;
                 for update in updates {
-                    visit(update.key, update.location)?;
+                    visit(Cow::Owned(update.key), update.location)?;
                 }
             } else {
-                let mut key = vec![0_u8; header.key_len];
-                reader.read_exact(&mut key)?;
+                let key = &mut key_buffer[..header.key_len];
+                reader.read_exact(key)?;
                 let mut record_hasher = crc32fast::Hasher::new();
                 record_hasher.update(&header_bytes);
-                record_hasher.update(&key);
+                record_hasher.update(key);
                 let mut value_hasher = D::default();
                 reader.read_with(header.value_len, |chunk| {
                     record_hasher.update(chunk);
@@ -1270,7 +1275,7 @@ impl Log {
                 } else {
                     None
                 };
-                visit(key, location)?;
+                visit(Cow::Borrowed(key), location)?;
             }
             offset += record_len;
             debug_assert_eq!(reader.position(), offset);

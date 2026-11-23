@@ -1,0 +1,43 @@
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+arm64
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+
+Baseline dbdb929616c2db8f805e728aa7026f25edd92889
+baseline ordinary keys=16 calls=4116 requested_bytes=4262472
+changed ordinary keys=16 calls=36 requested_bytes=84552
+baseline ordinary keys=16 calls=4116 requested_bytes=4262472
+changed ordinary keys=16 calls=36 requested_bytes=84552
+baseline ordinary keys=16 calls=4116 requested_bytes=4262472
+changed ordinary keys=16 calls=36 requested_bytes=84552
+baseline ordinary keys=4096 calls=4794 requested_bytes=4640456
+changed ordinary keys=4096 calls=4794 requested_bytes=4640456
+baseline ordinary keys=4096 calls=4794 requested_bytes=4640456
+changed ordinary keys=4096 calls=4794 requested_bytes=4640456
+baseline ordinary keys=4096 calls=4794 requested_bytes=4640456
+changed ordinary keys=4096 calls=4794 requested_bytes=4640456
+baseline checkpoint keys=16 calls=4143 requested_bytes=4287967
+changed checkpoint keys=16 calls=47 requested_bytes=93663
+baseline checkpoint keys=16 calls=4143 requested_bytes=4287967
+changed checkpoint keys=16 calls=47 requested_bytes=93663
+baseline checkpoint keys=16 calls=4143 requested_bytes=4287967
+changed checkpoint keys=16 calls=47 requested_bytes=93663
+baseline checkpoint keys=4096 calls=8901 requested_bytes=8909171
+changed checkpoint keys=4096 calls=4805 requested_bytes=4714867
+baseline checkpoint keys=4096 calls=8901 requested_bytes=8909171
+changed checkpoint keys=4096 calls=4805 requested_bytes=4714867
+baseline checkpoint keys=4096 calls=8901 requested_bytes=8909171
+changed checkpoint keys=4096 calls=4805 requested_bytes=4714867
+baseline view keys=16 calls=4131 requested_bytes=4287180
+changed view keys=16 calls=35 requested_bytes=92876
+baseline view keys=16 calls=4131 requested_bytes=4287180
+changed view keys=16 calls=35 requested_bytes=92876
+baseline view keys=16 calls=4131 requested_bytes=4287180
+changed view keys=16 calls=35 requested_bytes=92876
+baseline view keys=4096 calls=8889 requested_bytes=8908356
+changed view keys=4096 calls=4793 requested_bytes=4714052
+baseline view keys=4096 calls=8889 requested_bytes=8908356
+changed view keys=4096 calls=4793 requested_bytes=4714052
+baseline view keys=4096 calls=8889 requested_bytes=8908356
+changed view keys=4096 calls=4793 requested_bytes=4714052

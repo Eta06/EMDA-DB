@@ -555,23 +555,29 @@ fn detached_log_checks_digest_and_records_in_one_bounded_pass() {
 fn put_and_delete_replay_checks_a_value_larger_than_the_read_buffer() {
     let id = [7_u8; 16];
     let value = vec![0x5a_u8; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 100];
+    let wide_key = vec![b'w'; record::MAX_KEY];
     let mut bytes = v2_header(id).to_vec();
-    bytes.extend(record::encode(record::Operation::Put, b"wide", &value).unwrap());
+    bytes.extend(record::encode(record::Operation::Put, &wide_key, &value).unwrap());
     bytes.extend(record::encode(record::Operation::Put, b"next", b"ok").unwrap());
-    bytes.extend(record::encode(record::Operation::Delete, b"wide", b"").unwrap());
+    bytes.extend(record::encode(record::Operation::Delete, &wide_key, b"").unwrap());
     let (reads, log) = replay_log(bytes, Some(id));
     let mut seen = Vec::new();
+    let mut scratch = None;
     log.visit_records(0, None, |key, location| {
-        seen.push((key, location.map(|location| location.checksum)));
+        let Cow::Borrowed(key) = key else {
+            panic!("single-record replay should borrow its scratch buffer");
+        };
+        assert_eq!(key.as_ptr(), *scratch.get_or_insert(key.as_ptr()));
+        seen.push((key.to_vec(), location.map(|location| location.checksum)));
         Ok(())
     })
     .unwrap();
     assert_eq!(
         seen,
         vec![
-            (b"wide".to_vec(), Some(crc32fast::hash(&value))),
+            (wide_key.clone(), Some(crc32fast::hash(&value))),
             (b"next".to_vec(), Some(crc32fast::hash(b"ok"))),
-            (b"wide".to_vec(), None),
+            (wide_key, None),
         ]
     );
     assert_chunked(&reads);
@@ -799,7 +805,7 @@ fn batch_children_are_published_in_order_only_after_validation() {
     let (_, log) = replay_log(bytes.clone(), None);
     let mut seen = Vec::new();
     log.visit_records(0, None, |key, location| {
-        seen.push((key, location.map(|location| location.checksum)));
+        seen.push((key.into_owned(), location.map(|location| location.checksum)));
         Ok(())
     })
     .unwrap();
@@ -818,11 +824,11 @@ fn batch_children_are_published_in_order_only_after_validation() {
     let mut applied = Vec::new();
     let error = log
         .visit_records(0, None, |key, _| {
-            invoked.push(key.clone());
-            if key == b"b" {
+            invoked.push(key.to_vec());
+            if key.as_ref() == b"b" {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "quota"));
             }
-            applied.push(key);
+            applied.push(key.into_owned());
             Ok(())
         })
         .unwrap_err();
@@ -842,7 +848,7 @@ fn batch_children_are_published_in_order_only_after_validation() {
     let mut seen = Vec::new();
     let error = log
         .visit_records(0, None, |key, _| {
-            seen.push(key);
+            seen.push(key.into_owned());
             Ok(())
         })
         .unwrap_err();
@@ -928,7 +934,7 @@ fn batch_short_read_reports_io_before_key_or_nested_validation() {
     let mut seen = Vec::new();
     let error = log
         .visit_records(0, None, |key, _| {
-            seen.push(key);
+            seen.push(key.into_owned());
             Ok(())
         })
         .unwrap_err();
@@ -943,7 +949,7 @@ fn batch_short_read_reports_io_before_key_or_nested_validation() {
     let mut seen = Vec::new();
     let error = log
         .visit_records(0, None, |key, _| {
-            seen.push(key);
+            seen.push(key.into_owned());
             Ok(())
         })
         .unwrap_err();
@@ -992,7 +998,7 @@ fn batch_suffix_boundary_rejects_a_partial_record_without_publishing_children() 
     let mut seen = Vec::new();
     let error = log
         .visit_records(0, None, |key, _| {
-            seen.push(key);
+            seen.push(key.into_owned());
             Ok(())
         })
         .unwrap_err();
@@ -1054,7 +1060,7 @@ fn assert_batch_stops_after_early_on(log: &Log, message: &str) -> io::Error {
     let mut seen = Vec::new();
     let error = log
         .visit_records(0, None, |key, _| {
-            seen.push(key);
+            seen.push(key.into_owned());
             Ok(())
         })
         .unwrap_err();
@@ -1200,7 +1206,7 @@ fn visit_projected_from(
     let mut seen = Vec::new();
     log.visit_records(offset, boundary, |key, location| {
         seen.push((
-            key,
+            key.into_owned(),
             location.map(|location| (location.offset, location.length, location.checksum)),
         ));
         Ok(())

@@ -3060,7 +3060,7 @@ mod tests {
         let mut records = Vec::new();
         let start = if full { 0 } else { witness };
         log.visit_records(start, Some(witness), |key, location| {
-            records.push((key, location));
+            records.push((key.into_owned(), location));
             Ok(())
         })
         .unwrap();

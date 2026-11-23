@@ -1108,7 +1108,7 @@ impl CheckpointStore {
             &mut log_hasher,
             |key, location| {
                 let probe = probes
-                    .get_mut(key.as_slice())
+                    .get_mut(key.as_ref())
                     .ok_or_else(|| record::invalid_data("verified suffix has an unexpected key"))?;
                 match (probe.0, location.is_some()) {
                     (false, true) => {

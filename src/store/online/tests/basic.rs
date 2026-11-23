@@ -151,7 +151,7 @@ fn fixed_log_ranges_exclude_later_appends_and_reject_torn_boundaries() {
     store
         .log
         .visit_synchronized_range(0, first, |key, location| {
-            initial.push((key, location.is_some()));
+            initial.push((key.into_owned(), location.is_some()));
             Ok(())
         })
         .unwrap();
@@ -160,7 +160,7 @@ fn fixed_log_ranges_exclude_later_appends_and_reject_torn_boundaries() {
     store
         .log
         .visit_synchronized_range(first, second, |key, location| {
-            tail.push((key, location.is_some()));
+            tail.push((key.into_owned(), location.is_some()));
             Ok(())
         })
         .unwrap();

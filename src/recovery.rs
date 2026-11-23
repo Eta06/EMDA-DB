@@ -1,7 +1,8 @@
 //! Bounded sequential input for checksummed log recovery.
 //!
 //! Replay hashes each record payload through [`RECOVERY_READ_BUFFER_BYTES`]
-//! and drops the chunk. A put or delete retains its key. A batch retains at
+//! and drops the chunk. A standalone put or delete uses reusable key storage.
+//! A batch retains at
 //! most 1,024 owned child keys and their value locations until the outer
 //! checksum, outer key, and nested records have been checked. Values are not
 //! retained. This buffer is not a bound on the live key index, returned
@@ -37,7 +38,8 @@ impl io::Read for PositionalReader<'_> {
 /// Sequential recovery feeds payloads through a buffer of this size and
 /// discards each chunk after updating checksums. The buffer is allocated
 /// on first use, with at most the bytes remaining in the admitted range.
-/// A put or delete retains its key of up to 1,024 bytes plus this buffer.
+/// A standalone put or delete uses a reusable key buffer of up to 1,024 bytes
+/// alongside this buffer.
 /// A batch retains at most
 /// 1,024 child keys and their locations, not its encoded values. `read_exact`
 /// can still fill a caller-supplied buffer in one read when this buffer is

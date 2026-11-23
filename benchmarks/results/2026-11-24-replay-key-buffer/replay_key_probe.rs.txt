@@ -1,0 +1,107 @@
+use database_engine::{CheckpointStore, RecoveredCheckpointView, Store};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::{fs, path::Path};
+
+struct CountingAllocator;
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+static BYTES: AtomicUsize = AtomicUsize::new(0);
+
+fn count(size: usize) {
+    if COUNTING.load(Relaxed) {
+        CALLS.fetch_add(1, Relaxed);
+        BYTES.fetch_add(size, Relaxed);
+    }
+}
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        count(size);
+        unsafe { System.realloc(pointer, layout, size) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(pointer, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+const WRITES: usize = 4096;
+
+fn key(index: usize) -> [u8; 1024] {
+    let mut key = [b'k'; 1024];
+    key[..8].copy_from_slice(&(index as u64).to_be_bytes());
+    key
+}
+
+fn measured<T>(operation: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+    COUNTING.store(true, Relaxed);
+    let result = operation();
+    COUNTING.store(false, Relaxed);
+    result
+}
+
+fn main() -> std::io::Result<()> {
+    let args: Vec<_> = std::env::args().collect();
+    let root = Path::new(&args[1]);
+    let kind = &args[2];
+    let nkeys = args[3].parse::<usize>().unwrap();
+    let path = root.join("store");
+    let checkpoint = root.join("checkpoint");
+    let digest_file = root.join("digest");
+    if kind == "setup" {
+        fs::create_dir(root)?;
+        let store = Store::open(&path)?;
+        let digest = store.checkpoint_to(&checkpoint)?;
+        for seq in 0..WRITES {
+            store.put(&key(seq % nkeys), &(seq as u64).to_be_bytes())?;
+        }
+        fs::write(digest_file, digest)?;
+        return Ok(());
+    }
+    let digest: [u8; 32] = fs::read(digest_file)?.try_into().unwrap();
+    let verify = |get: &dyn Fn(&[u8]) -> std::io::Result<Option<Vec<u8>>>| -> std::io::Result<()> {
+        for slot in 0..nkeys {
+            let seq = WRITES - nkeys + slot;
+            assert_eq!(
+                get(&key(slot))?.as_deref(),
+                Some((seq as u64).to_be_bytes().as_slice())
+            );
+        }
+        Ok(())
+    };
+    match kind.as_str() {
+        "ordinary" => {
+            let store = measured(|| Store::open(&path))?;
+            verify(&|key| store.get(key))?;
+        }
+        "checkpoint" => {
+            let store = measured(|| CheckpointStore::open(&path, &checkpoint, &digest))?;
+            verify(&|key| store.get(key))?;
+        }
+        "view" => {
+            let view = measured(|| RecoveredCheckpointView::open(&path, &checkpoint, &digest))?;
+            verify(&|key| view.get(key))?;
+        }
+        _ => panic!("unknown mode"),
+    }
+    println!(
+        "{kind} keys={nkeys} calls={} requested_bytes={}",
+        CALLS.load(Relaxed),
+        BYTES.load(Relaxed)
+    );
+    Ok(())
+}

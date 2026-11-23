@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse a fixed key buffer for standalone log records during replay and
+  retain an owned key only when needed by the recovered index.
+
 - Stream IDs from a single exact document-index probe without retaining a
   second copy for deduplication.
 
