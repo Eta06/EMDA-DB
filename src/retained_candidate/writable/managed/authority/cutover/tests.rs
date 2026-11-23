@@ -441,9 +441,68 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     fs::remove_file(&log).unwrap();
     fs::rename(&parked, &log).unwrap();
 
+    let parked_suffix = tmp.path().join("parked-backup-suffix");
+    let result = store.retire_archive_using(
+        &binding,
+        &backup,
+        &expected,
+        |directory| {
+            fs::rename(&suffix, &parked_suffix)?;
+            fs::write(&suffix, &saved)?;
+            sync_existing(directory)
+        },
+        |path| fs::remove_file(path),
+    );
+    assert!(
+        matches!(&result, Err(PublicationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData),
+        "{result:?}"
+    );
+    assert_eq!(fs::read(&log).unwrap(), old_log);
+    assert_eq!(fs::read(&witness).unwrap(), old_witness);
+    assert_eq!(fs::read(&suffix).unwrap(), saved);
+    fs::rename(&parked_suffix, &suffix).unwrap();
+
+    let damaged_suffix = vec![0; saved.len()];
+    let result = store.retire_archive_using(
+        &binding,
+        &backup,
+        &expected,
+        |directory| {
+            fs::write(&suffix, &damaged_suffix)?;
+            sync_existing(directory)
+        },
+        |_| panic!("retirement started after backup corruption"),
+    );
+    assert!(
+        matches!(&result, Err(PublicationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData
+            && error.to_string() == "backup suffix mismatch"),
+        "{result:?}"
+    );
+    assert_eq!(fs::read(&log).unwrap(), old_log);
+    assert_eq!(fs::read(&witness).unwrap(), old_witness);
+    assert_eq!(fs::read(&suffix).unwrap(), damaged_suffix);
+    fs::write(&suffix, &saved).unwrap();
+
+    let result = store.retire_archive_using(
+        &binding,
+        &backup,
+        &expected,
+        |_| Err(io::Error::other("injected backup directory sync failure")),
+        |_| panic!("retirement started after backup sync failure"),
+    );
+    assert!(
+        matches!(result, Err(PublicationFailure::NotPublished(error))
+        if error.to_string() == "injected backup directory sync failure")
+    );
+    assert_eq!(fs::read(&log).unwrap(), old_log);
+    assert_eq!(fs::read(&witness).unwrap(), old_witness);
+    assert_eq!(fs::read(&suffix).unwrap(), saved);
+
     let revision = store.current;
     assert!(matches!(
-        store.retire_archive_using(&binding, &backup, &expected, |path| {
+        store.retire_archive_using(&binding, &backup, &expected, sync_existing, |path| {
             if path.file_name() == Some(ARCHIVE_LOG.as_ref()) {
                 fs::remove_file(path)
             } else {

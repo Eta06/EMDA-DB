@@ -580,11 +580,14 @@ initial retained generation to still exist.
 
 The authorized handle can publish a bound backup of the selected
 generation at an outside path. `retire_cutover_archive` requires a
-backup of its exact current base and suffix, verifies their bytes,
-and synchronizes the backup files and directories before removing
-matching archive names. It also verifies the permanent fence, the
-source root's witness file and the independent selection. The backup
-must remain in trusted, stable directories throughout the operation.
+backup of its exact current base and suffix. Retirement synchronizes the
+opened backup files and their directory ancestry, verifies the exact
+bytes on those descriptors, and confirms that the paths still name the
+verified files before removing matching archive names. It also verifies
+the permanent fence, the source root's witness file and the independent
+selection. The backup must remain in trusted, stable directories throughout
+the operation. Retirement keeps five backup file descriptors open through the
+pre-unlink check.
 Retirement preserves the original-path fence, root witness, active
 generation and authority record. It does not remove independently
 retained ordinary copies or guarantee saved blocks if other links

@@ -1,7 +1,8 @@
 use super::*;
 use crate::SuffixExportFailure;
-use crate::retained_candidate::{check_binding, open_regular};
+use crate::retained_candidate::{check_binding, check_file_names, exact_from, open_regular};
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 
 const CANDIDATE: &str = "candidate";
 const SUFFIX: &str = "suffix";
@@ -142,15 +143,24 @@ pub(super) fn verify_backup(
 ) -> io::Result<()> {
     let candidate = root.join(CANDIDATE);
     check_files(&candidate, &expected.candidate)?;
-    let base = crate::retained_base_v2::validate_buffered(
-        open_regular(&candidate.join("base"))?,
-        limits.base,
-    )?;
+    let base = open_regular(&candidate.join("base"))?;
+    let suffix = open_regular(&root.join(SUFFIX))?;
+    verify_backup_contents(&base, &suffix, limits, expected)
+}
+
+fn verify_backup_contents(
+    base: &fs::File,
+    suffix: &fs::File,
+    limits: RetainedStoreLimits,
+    expected: &SuffixExpected,
+) -> io::Result<()> {
+    if expected.end > limits.suffix.bytes || suffix.metadata()?.len() != expected.end {
+        return Err(record::invalid_data("backup suffix mismatch"));
+    }
+    let base = crate::retained_base_v2::validate_buffered(base, limits.base)?;
     check_binding(&base, &expected.candidate)?;
     let mut hash = Sha256::new();
-    let file = open_regular(&root.join(SUFFIX))?;
-    if expected.end > limits.suffix.bytes
-        || io::copy(&mut file.take(expected.end.saturating_add(1)), &mut hash)? != expected.end
+    if io::copy(&mut suffix.take(expected.end.saturating_add(1)), &mut hash)? != expected.end
         || <[u8; 32]>::from(hash.finalize()) != expected.digest
     {
         return Err(record::invalid_data("backup suffix mismatch"));
@@ -158,11 +168,75 @@ pub(super) fn verify_backup(
     Ok(())
 }
 
-pub(super) fn sync_backup(root: &Path) -> io::Result<()> {
-    let candidate = root.join(CANDIDATE);
-    for name in ["base", "records.log", "witness", "store.lock"] {
-        open_regular(&candidate.join(name))?.sync_all()?;
+pub(super) struct SyncedBackup {
+    paths: [PathBuf; 5],
+    files: [fs::File; 5],
+    lengths: [u64; 5],
+}
+
+impl SyncedBackup {
+    pub(super) fn check_paths(&self) -> io::Result<()> {
+        for ((path, file), &length) in self.paths.iter().zip(&self.files).zip(&self.lengths) {
+            let visible = path.symlink_metadata()?;
+            let pinned = file.metadata()?;
+            if !visible.is_file()
+                || (visible.dev(), visible.ino()) != (pinned.dev(), pinned.ino())
+                || visible.len() != length
+            {
+                return Err(record::invalid_data("backup file path or length changed"));
+            }
+        }
+        Ok(())
     }
-    open_regular(&root.join(SUFFIX))?.sync_all()?;
-    sync_existing(&candidate)
+}
+
+pub(super) fn sync_verified_backup(
+    root: &Path,
+    limits: RetainedStoreLimits,
+    expected: &SuffixExpected,
+    sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<SyncedBackup> {
+    let candidate = root.join(CANDIDATE);
+    check_file_names(&candidate)?;
+    let paths = [
+        candidate.join("base"),
+        candidate.join("records.log"),
+        candidate.join("witness"),
+        candidate.join("store.lock"),
+        root.join(SUFFIX),
+    ];
+    let [base, header, witness, lock, suffix] = &paths;
+    let files = [
+        open_regular(base)?,
+        open_regular(header)?,
+        open_regular(witness)?,
+        open_regular(lock)?,
+        open_regular(suffix)?,
+    ];
+    let lengths = [
+        u64::from_le_bytes(expected.candidate.header[48..56].try_into().unwrap()),
+        expected.candidate.header.len() as u64,
+        expected.candidate.witness.len() as u64,
+        0,
+        expected.end,
+    ];
+    let backup = SyncedBackup {
+        paths,
+        files,
+        lengths,
+    };
+    backup.check_paths()?;
+    for file in &backup.files {
+        file.sync_all()?;
+    }
+    sync_directory(&candidate)?;
+    let [base, header, witness, lock, suffix] = &backup.files;
+    exact_from(lock, 0)?;
+    if exact_from(header, expected.candidate.header.len())? != expected.candidate.header
+        || exact_from(witness, expected.candidate.witness.len())? != expected.candidate.witness
+    {
+        return Err(record::invalid_data("backup candidate binding mismatch"));
+    }
+    verify_backup_contents(base, suffix, limits, expected)?;
+    Ok(backup)
 }

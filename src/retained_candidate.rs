@@ -170,7 +170,10 @@ fn open_regular_rejects_fifo_and_symlink() {
     );
 }
 fn exact(path: &Path, len: usize) -> io::Result<Vec<u8>> {
-    let mut file = open_regular(path)?;
+    exact_from(&open_regular(path)?, len)
+}
+
+fn exact_from(mut file: &fs::File, len: usize) -> io::Result<Vec<u8>> {
     if file.metadata()?.len() != len as u64 {
         return Err(invalid());
     }
@@ -363,7 +366,7 @@ fn load_base(
     Ok((base, staged))
 }
 
-fn check_files(dir: &Path, expected: &Expected) -> io::Result<()> {
+fn check_file_names(dir: &Path) -> io::Result<()> {
     if !fs::symlink_metadata(dir)?.file_type().is_dir() {
         return Err(invalid());
     }
@@ -378,6 +381,11 @@ fn check_files(dir: &Path, expected: &Expected) -> io::Result<()> {
     if names != ["base", "records.log", "store.lock", "witness"].map(std::ffi::OsString::from) {
         return Err(invalid());
     }
+    Ok(())
+}
+
+fn check_files(dir: &Path, expected: &Expected) -> io::Result<()> {
+    check_file_names(dir)?;
     exact(&dir.join("store.lock"), 0)?;
     let header = exact(&dir.join("records.log"), 112)?;
     let witness = exact(&dir.join("witness"), 32)?;

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify synchronized backup descriptors and recheck backup file identities
+  before retiring a retained cutover archive.
+
 - Enforce bounded rebuild operation limits before decoding batch children,
   while checking the enclosing record's checksum.
 

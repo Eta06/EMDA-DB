@@ -285,7 +285,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         backup: impl AsRef<Path>,
         expected: &SuffixExpected,
     ) -> Result<bool, PublicationFailure> {
-        self.retire_archive_using(archive, backup.as_ref(), expected, |path| {
+        self.retire_archive_using(archive, backup.as_ref(), expected, sync_existing, |path| {
             fs::remove_file(path)
         })
     }
@@ -295,6 +295,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         archive: &CutoverArchiveBinding,
         backup: &Path,
         expected: &SuffixExpected,
+        sync_backup_directory: impl FnOnce(&Path) -> io::Result<()>,
         mut remove: impl FnMut(&Path) -> io::Result<()>,
     ) -> Result<bool, PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
@@ -336,9 +337,14 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             self.inner
                 .store
                 .verify_complete(&self.inner.active.slot.path(&root))?;
-            super::backup::verify_backup(backup, self.inner.store.limits, expected)?;
-            super::backup::sync_backup(backup)?;
+            let backup = super::backup::sync_verified_backup(
+                backup,
+                self.inner.store.limits,
+                expected,
+                sync_backup_directory,
+            )?;
             self.verify_current()?;
+            backup.check_paths()?;
             tracker.begin_publication();
             if have_log {
                 remove(&log)?;
