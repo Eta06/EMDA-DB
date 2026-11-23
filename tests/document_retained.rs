@@ -180,6 +180,26 @@ fn authorized_backup_restores_document_indexes_under_a_fresh_authority() {
         .unwrap();
     let destination = dir.path().join("restored");
     let restored_authority = dir.path().join("restored-authority");
+    let operations_exhausted = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            operations: 0,
+            ..LIMITS.suffix
+        },
+        ..LIMITS
+    };
+    assert!(matches!(
+        Catalog::prepare_from_backup_recorded(
+            &backup,
+            &destination,
+            operations_exhausted,
+            None,
+            &binding,
+            |_| panic!("a rejected suffix cannot produce a preparation record"),
+        ),
+        Err(database_engine::retained_candidate::AuthorizedRestoreFailure::NotPublished(error))
+            if error.to_string() == "suffix operation limit exceeded"
+    ));
+    assert!(!destination.exists());
     let mut restore_receipt =
         FileRetainedAuthority::create(dir.path().join("restore-receipt")).unwrap();
     let prepared = Catalog::prepare_from_backup_recorded(

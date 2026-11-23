@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check retained suffix replay limits before copying a candidate base
+  during writable import or backup restore.
+
 - Optionally persist the verified authority record before publishing an
   authorized backup restore, so the caller can reconcile it after interruption.
 

@@ -136,6 +136,7 @@ fn discard(
             (
                 generation_role(CUTOVER_MAGIC, catalog),
                 Some(active.generation),
+                None,
             ),
             |_, end| {
                 if end != 0 {

@@ -1,0 +1,15 @@
+rejected .emda-stage-v1-d-mdVbjpyvZyPLosxo.owner.data
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-mdVbjpyvZyPLosxo.owner.data/store.lock", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 11
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-mdVbjpyvZyPLosxo.owner.data/catalog.id", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 11
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-mdVbjpyvZyPLosxo.owner.data/generation-a/store.lock", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 13
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-mdVbjpyvZyPLosxo.owner.data/generation-a/records.log", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 13
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-mdVbjpyvZyPLosxo.owner.data/generation-a/commit.state", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 6
+admitted .emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data/store.lock", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 13
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data/catalog.id", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 13
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data/generation-a/store.lock", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 14
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data/generation-a/records.log", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 14
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data/generation-a/commit.state", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 6
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data/generation-a/base", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 16
+openat(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data/active.retained", O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC, 0600) = 6
+renameat2(AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/.emda-stage-v1-d-qWqJHq7HZMQNRsAt.owner.data", AT_FDCWD, "/dev/shm/emda-suffix-first.vUHNc6/tmp/.tmpntr5bk/restored", RENAME_NOREPLACE) = 0

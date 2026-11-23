@@ -325,9 +325,10 @@ witness shares the ordinary trusted-filesystem and rollback assumptions.
 
 Standalone and managed creation from a detached candidate check its base
 length, framing and trailer and reject provably insufficient base or index
-limits before copying the body into private staging. The preflight only
-rejects imports. Creation still verifies the entire copied base against
-the independently retained binding before publication.
+limits before copying the body into private staging. The detached suffix
+must pass bounded replay before that copy begins. Creation then verifies
+the entire copied base against the independently retained binding and
+synchronizes the private directory before publication.
 Creating or opening this generation leaves the previous store separate.
 The [retained format specification](STREAMING_RETAINED_BASE_SPEC.md) records
 the wire format, byte budgets and remaining generation-selection work.

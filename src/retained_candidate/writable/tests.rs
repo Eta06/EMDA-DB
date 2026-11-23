@@ -181,7 +181,9 @@ fn retained_import_checks_base_before_creating_copy() {
             "retained base anchor byte limit exceeded",
         ),
     ] {
-        let error = copy_base(&candidate, &output, limits, &f.expected, u64::MAX).unwrap_err();
+        let error = BaseImport::open(&candidate, limits, &f.expected, u64::MAX)
+            .err()
+            .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), message);
         assert!(!output.join("base").exists());
@@ -199,21 +201,120 @@ fn retained_import_checks_base_before_creating_copy() {
         ),
     ] {
         fs::write(&source, bytes).unwrap();
-        let error = copy_base(&candidate, &output, exact, &f.expected, u64::MAX).unwrap_err();
+        let error = BaseImport::open(&candidate, exact, &f.expected, u64::MAX)
+            .err()
+            .unwrap();
         assert_eq!(error.to_string(), message);
         assert!(!output.join("base").exists());
         assert_eq!(fs::read(&source).unwrap(), bytes);
     }
     fs::write(&source, &original).unwrap();
-    copy_base(
-        &candidate,
-        &output,
-        exact,
-        &f.expected,
-        exact.base.file_bytes,
-    )
-    .unwrap();
+    BaseImport::open(&candidate, exact, &f.expected, exact.base.file_bytes)
+        .unwrap()
+        .copy_to(&output.join("base"))
+        .unwrap();
     assert_eq!(fs::read(output.join("base")).unwrap(), original);
+}
+
+#[test]
+fn retained_import_replays_suffix_admission_before_copying_base() {
+    let f = Fixture::new(LIMITS);
+    let parent = f.root.path();
+    let candidate = parent.join("candidate");
+    let base = fs::read(candidate.join("base")).unwrap();
+    let suffix_path = parent.join("suffix");
+    let encoded = record::encode(Operation::Put, b"b", b"retained").unwrap();
+    let exact = RetainedStoreLimits {
+        suffix: SuffixLimits {
+            bytes: encoded.len() as u64,
+            operations: 1,
+            work: 1,
+        },
+        overlay: OverlayLimits {
+            entries: 1,
+            key_bytes: 1,
+        },
+        ..LIMITS
+    };
+    let initialize = |stage: &Path, limits: RetainedStoreLimits, suffix: &[u8]| {
+        fs::write(&suffix_path, suffix).unwrap();
+        let binding = SuffixExpected {
+            candidate: f.expected.clone(),
+            end: suffix.len() as u64,
+            digest: Sha256::digest(suffix).into(),
+        };
+        RetainedStore::initialize(
+            stage,
+            limits,
+            &f.expected,
+            Some(SuffixImport::open(&suffix_path, limits.suffix, &binding).unwrap()),
+            GenerationRole::Standalone,
+            None,
+            Some(BaseImport::open(&candidate, limits, &f.expected, u64::MAX).unwrap()),
+        )
+    };
+    for (limits, message) in [
+        (
+            RetainedStoreLimits {
+                suffix: SuffixLimits {
+                    operations: 0,
+                    ..exact.suffix
+                },
+                ..exact
+            },
+            "suffix operation limit exceeded",
+        ),
+        (
+            RetainedStoreLimits {
+                suffix: SuffixLimits {
+                    work: 0,
+                    ..exact.suffix
+                },
+                ..exact
+            },
+            "suffix work limit exceeded",
+        ),
+        (
+            RetainedStoreLimits {
+                overlay: OverlayLimits {
+                    entries: 0,
+                    ..exact.overlay
+                },
+                ..exact
+            },
+            "overlay entry limit exceeded",
+        ),
+        (
+            RetainedStoreLimits {
+                overlay: OverlayLimits {
+                    key_bytes: 0,
+                    ..exact.overlay
+                },
+                ..exact
+            },
+            "overlay key byte limit exceeded",
+        ),
+    ] {
+        let stage = crate::staging::Stage::directory(parent).unwrap();
+        let error = initialize(stage.path(), limits, &encoded).err().unwrap();
+        assert!(error.to_string().contains(message), "{error}");
+        assert!(!stage.path().join("base").exists());
+        assert_eq!(fs::read(&suffix_path).unwrap(), encoded);
+    }
+    let stage = crate::staging::Stage::directory(parent).unwrap();
+    let mut corrupt = encoded.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    let error = initialize(stage.path(), exact, &corrupt).err().unwrap();
+    assert_eq!(error.to_string(), "record checksum mismatch");
+    assert!(!stage.path().join("base").exists());
+    drop(stage);
+
+    let stage = crate::staging::Stage::directory(parent).unwrap();
+    let store = initialize(stage.path(), exact, &encoded).unwrap();
+    assert_eq!(store.get(b"b", 8).unwrap().unwrap(), b"retained");
+    assert_eq!(store.get(b"a", 4).unwrap().unwrap(), b"base");
+    assert_eq!(fs::read(stage.path().join("base")).unwrap(), base);
+    assert_eq!(fs::read(candidate.join("base")).unwrap(), base);
 }
 
 #[test]

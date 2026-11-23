@@ -432,6 +432,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add a configurable per-open aggregate transaction reservation limit and usage counters for both writable paths. Changes are serialized with reservations, reject reductions below currently held bytes, and survive supported compaction handoffs; reopening resets the limit. Checkpoint read-set observations share this budget. A [26,466-input serial model campaign](../benchmarks/results/2026-11-04-transaction-budget-fuzz.json) and [120 repeated local tests](../benchmarks/results/2026-11-04-transaction-budget-stress.json), including eight-client contention and online-copy reconfiguration, found no issue. Direct writes, snapshots, allocator overhead, total memory and persistent project quotas remain outside its scope.
 - [x] Bound logical bytes and directory entries across a retained catalog's writable operations with an opt-in per-open limit. The [storage admission regression](../benchmarks/results/2026-11-19-retained-catalog-storage/README.md) covers tail-adoption rejection, authority updates, exact rotation headroom, and accounting for archives and abandoned stages.
 - [x] Check retained base framing and provable limits before copying a detached candidate into a writable generation. The [Linux import traces](../benchmarks/results/2026-11-23-retained-import-preflight/README.md) show that block-limit rejection skips the full base transfer on both create paths.
+- [x] Defer the retained base copy until the private suffix has passed
+  bounded replay. Tests cover corrupt suffix bytes and operation, work
+  and overlay rejections without creating the destination base file. A
+  [paired Linux trace](../benchmarks/results/2026-11-23-retained-suffix-first/README.md)
+  confirms this ordering through the public authorized restore API.
 - [x] Bound catalog quota walks to one directory iterator. A 64-level
   catalog failed to reopen under a 32-descriptor process limit on macOS
   and Linux before the fix. It now admits an exact-quota write, rejects

@@ -175,9 +175,9 @@ impl RetainedStore {
             let suffix = suffix
                 .map(|(path, binding)| SuffixImport::open(path, limits.suffix, binding))
                 .transpose()?;
+            let base = BaseImport::open(candidate, limits, expected, u64::MAX)?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let dir = stage.path();
-            copy_base(candidate, dir, limits, expected, u64::MAX)?;
             let verified = Self::initialize(
                 dir,
                 limits,
@@ -185,6 +185,7 @@ impl RetainedStore {
                 suffix,
                 GenerationRole::Standalone,
                 None,
+                Some(base),
             )?;
             let id = verified.generation_id();
             drop(verified);
@@ -203,6 +204,7 @@ impl RetainedStore {
         suffix: Option<SuffixImport>,
         role: GenerationRole,
         storage_limits: Option<CatalogStorageLimits>,
+        base: Option<BaseImport>,
     ) -> io::Result<Self> {
         create_file(&dir.join("store.lock"))?.sync_all()?;
         let mut header = Header::new(expected, limits, role)?;
@@ -220,20 +222,22 @@ impl RetainedStore {
         witness.write_all(&marker(header.bytes(), end, &digest))?;
         witness.sync_all()?;
         drop((log, witness));
-        Self::open_role(
+        let store = Self::open_role(
             dir,
             RecoveryLimits::Exact(limits),
             expected,
-            (role, None),
+            (role, None, base),
             |_, _| Ok(()),
-            |directory, _, actual_end, actual_digest| {
+            |_, _, actual_end, actual_digest| {
                 if (actual_end, actual_digest) != (end, digest) {
                     return Err(record::invalid_data("staged retained suffix changed"));
                 }
-                crate::directory::sync_existing(directory)
+                Ok(())
             },
             || Ok(()),
-        )
+        )?;
+        crate::directory::sync_existing(dir)?;
+        Ok(store)
     }
 
     /// Verify the base, witness and complete bounded suffix under an
@@ -265,7 +269,7 @@ impl RetainedStore {
             dir,
             RecoveryLimits::Exact(limits),
             expected,
-            (GenerationRole::Standalone, None),
+            (GenerationRole::Standalone, None, None),
             |_, _| Ok(()),
             |directory, _, _, _| sync_directory(directory),
             || Ok(()),
@@ -276,7 +280,7 @@ impl RetainedStore {
         dir: &Path,
         limits: RecoveryLimits,
         expected: &Expected,
-        (role, generation): (GenerationRole, Option<[u8; 16]>),
+        (role, generation, imported_base): (GenerationRole, Option<[u8; 16]>, Option<BaseImport>),
         preflight: impl FnOnce(&Header, u64) -> io::Result<()>,
         authorize: impl FnOnce(&Path, &Header, u64, [u8; 32]) -> io::Result<()>,
         check_selection: impl FnOnce() -> io::Result<()>,
@@ -308,28 +312,15 @@ impl RetainedStore {
             return Err(invalid_input("suffix byte limit exceeded"));
         }
         preflight(&header, suffix_len)?;
-        let base = open_regular(&dir.join("base"))?;
-        let base_bytes = base.metadata()?.len();
-        let expected_base_bytes = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
-        if base_bytes != expected_base_bytes {
-            return Err(record::invalid_data(
-                "retained base length does not match its binding",
-            ));
-        }
-        if base_bytes > limits.base.file_bytes
-            || base_bytes
-                .checked_add(1)
-                .is_none_or(|work| work > limits.base.work_bytes)
-        {
-            return Err(record::invalid_data("retained base byte limit exceeded"));
-        }
-        IndexedBase::preflight(
-            &base,
-            base_bytes,
-            limits.base,
-            limits.index,
-            expected.base_binding(),
-        )?;
+        let base_path = dir.join("base");
+        let base = match imported_base {
+            Some(import) => RecoveryBase::Import(import),
+            None => {
+                let file = open_regular(&base_path)?;
+                preflight_base(&file, limits, expected)?;
+                RecoveryBase::Local(file)
+            }
+        };
         let suffix_len = usize::try_from(suffix_len)
             .map_err(|_| invalid_input("suffix length exceeds platform range"))?;
         let committed = usize::try_from(committed).unwrap();
@@ -347,8 +338,14 @@ impl RetainedStore {
         )?;
         let replayed_digest: [u8; 32] = hash.clone().finalize().into();
         authorize(dir, &header, suffix_len as u64, replayed_digest)?;
-        // Validate the full base after directory synchronization. An
-        // unauthorized suffix can fail before paying for this scan.
+        let base = match base {
+            RecoveryBase::Import(import) => {
+                import.copy_to(&base_path)?;
+                open_regular(&base_path)?
+            }
+            RecoveryBase::Local(file) => file,
+        };
+        // A rejected suffix cannot trigger a base copy or full base scan.
         let base = IndexedBase::open(base, limits.base, limits.index)?;
         check_binding(base.metadata(), expected)?;
         lock.verify_identity(dir)?;
@@ -367,7 +364,7 @@ impl RetainedStore {
             verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
         }
         check_selection()?;
-        base.check_path(&dir.join("base"))?;
+        base.check_path(&base_path)?;
         if pending {
             update_witness(&witness, header.bytes(), suffix_len, &hash)?;
         }
@@ -563,50 +560,78 @@ fn create_file(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-fn copy_base(
-    candidate: &Path,
-    dir: &Path,
-    limits: RetainedStoreLimits,
-    expected: &Expected,
-    max_output_bytes: u64,
-) -> io::Result<()> {
+enum RecoveryBase {
+    Local(File),
+    Import(BaseImport),
+}
+
+struct BaseImport {
+    file: File,
+    size: u64,
+}
+
+impl BaseImport {
+    // The frame is checked up front. The private destination will still be
+    // read back completely after copying. Keep the same source file pinned.
+    fn open(
+        candidate: &Path,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        max_output_bytes: u64,
+    ) -> io::Result<Self> {
+        let size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+        if size > max_output_bytes {
+            return Err(invalid_input("catalog byte limit exceeded"));
+        }
+        if size > limits.base.file_bytes
+            || size
+                .checked_add(1)
+                .is_none_or(|n| n > limits.base.work_bytes)
+        {
+            return Err(invalid_input("retained base byte limit exceeded"));
+        }
+        let file = open_regular(&candidate.join("base"))?;
+        preflight_base(&file, limits, expected)?;
+        Ok(Self { file, size })
+    }
+
+    fn copy_to(self, destination: &Path) -> io::Result<()> {
+        let mut base = self.file.take(self.size);
+        let mut target = create_file(destination)?;
+        let copied = io::copy(&mut base, &mut target)?;
+        base.set_limit(1);
+        if copied != self.size || io::copy(&mut base, &mut io::sink())? != 0 {
+            return Err(record::invalid_data(
+                "retained base length changed during copy",
+            ));
+        }
+        target.sync_all()
+    }
+}
+
+fn preflight_base(base: &File, limits: RetainedStoreLimits, expected: &Expected) -> io::Result<()> {
     let size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
-    if size > max_output_bytes {
-        return Err(invalid_input("catalog byte limit exceeded"));
+    if base.metadata()?.len() != size {
+        return Err(record::invalid_data(
+            "retained base length does not match its binding",
+        ));
     }
     if size > limits.base.file_bytes
         || size
             .checked_add(1)
             .is_none_or(|n| n > limits.base.work_bytes)
     {
-        return Err(invalid_input("retained base byte limit exceeded"));
-    }
-    let base = open_regular(&candidate.join("base"))?;
-    let length = base.metadata()?.len();
-    if length != size {
-        return Err(record::invalid_data(
-            "retained base length does not match its binding",
-        ));
+        return Err(record::invalid_data("retained base byte limit exceeded"));
     }
     // Reject impossible imports before copying any entries into the stage.
     // Reopening the staged generation still authenticates the entire base.
     IndexedBase::preflight(
-        &base,
-        length,
+        base,
+        size,
         limits.base,
         limits.index,
         expected.base_binding(),
-    )?;
-    let mut base = base.take(size);
-    let mut target = create_file(&dir.join("base"))?;
-    let copied = io::copy(&mut base, &mut target)?;
-    base.set_limit(1);
-    if copied != size || io::copy(&mut base, &mut io::sink())? != 0 {
-        return Err(record::invalid_data(
-            "retained base length changed during copy",
-        ));
-    }
-    target.sync_all()
+    )
 }
 
 fn random_id() -> io::Result<[u8; 16]> {

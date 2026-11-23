@@ -1,8 +1,7 @@
 use super::{
-    Expected, GenerationRole, Header, OverlaySource, RecoveryLimits, RetainedStore,
-    RetainedStoreLimits, StoreLock, SuffixImport, copy_base, create_file, decode_marker,
-    encode_batch, invalid_input, open_regular, open_regular_with, random_id, read_marker,
-    suffix_end,
+    BaseImport, Expected, GenerationRole, Header, OverlaySource, RecoveryLimits, RetainedStore,
+    RetainedStoreLimits, StoreLock, SuffixImport, create_file, decode_marker, encode_batch,
+    invalid_input, open_regular, open_regular_with, random_id, read_marker, suffix_end,
 };
 use crate::directory::sync_existing;
 use crate::record::{self, Operation};
@@ -46,6 +45,12 @@ struct InitialPublication<S, V> {
     magic: &'static [u8; 8],
     sync_parent: S,
     verified: V,
+}
+
+struct InitialGeneration {
+    expected: Expected,
+    suffix: Option<SuffixImport>,
+    base: Option<BaseImport>,
 }
 
 impl<S> InitialPublication<S, fn(AuthorityPoint) -> io::Result<()>> {
@@ -253,12 +258,17 @@ impl ManagedRetainedStore {
             parent,
             limits,
             publication,
-            |_, path, max_base_bytes| {
+            |_, _, max_base_bytes| {
                 let max_base_bytes = max_base_bytes
                     .checked_sub(suffix_bytes)
                     .ok_or_else(storage::byte_limit)?;
-                copy_base(candidate, path, limits.generation, expected, max_base_bytes)?;
-                Ok((expected.clone(), suffix))
+                let base =
+                    BaseImport::open(candidate, limits.generation, expected, max_base_bytes)?;
+                Ok(InitialGeneration {
+                    expected: expected.clone(),
+                    suffix,
+                    base: Some(base),
+                })
             },
         )
     }
@@ -361,7 +371,11 @@ impl ManagedRetainedStore {
                     limits.generation,
                     max_base_bytes,
                 )?;
-                Ok((expected, None))
+                Ok(InitialGeneration {
+                    expected,
+                    suffix: None,
+                    base: None,
+                })
             },
         )
     }
@@ -374,11 +388,7 @@ impl ManagedRetainedStore {
             impl FnOnce(&Path) -> io::Result<()>,
             impl FnOnce(AuthorityPoint) -> io::Result<()>,
         >,
-        prepare: impl FnOnce(
-            &crate::staging::Stage,
-            &Path,
-            u64,
-        ) -> io::Result<(Expected, Option<SuffixImport>)>,
+        prepare: impl FnOnce(&crate::staging::Stage, &Path, u64) -> io::Result<InitialGeneration>,
     ) -> Result<AuthorityPoint, PublicationFailure> {
         let InitialPublication {
             magic: catalog_magic,
@@ -398,7 +408,11 @@ impl ManagedRetainedStore {
             let slot = Slot::A;
             let path = slot.path(root);
             fs::DirBuilder::new().mode(0o700).create(&path)?;
-            let (expected, suffix) = prepare(&stage, &path, max_base_bytes)?;
+            let InitialGeneration {
+                expected,
+                suffix,
+                base,
+            } = prepare(&stage, &path, max_base_bytes)?;
             let store = RetainedStore::initialize(
                 &path,
                 limits.generation,
@@ -406,6 +420,7 @@ impl ManagedRetainedStore {
                 suffix,
                 generation_role(catalog_magic, catalog),
                 limits.storage.map(|storage| storage.policy),
+                base,
             )?;
             let point = AuthorityPoint::from_store(catalog, &store);
             drop(store);
@@ -496,6 +511,7 @@ impl ManagedRetainedStore {
             (
                 generation_role(catalog_magic, catalog),
                 Some(active.generation),
+                None,
             ),
             |header, end| {
                 if let Some(authority) = authority {
@@ -857,6 +873,7 @@ impl ManagedRetainedStore {
             None,
             generation_role(self.catalog_magic, self.active.catalog),
             persisted_storage,
+            None,
         )?;
         self.store
             .verify_complete(&self.active.slot.path(&self.root))?;

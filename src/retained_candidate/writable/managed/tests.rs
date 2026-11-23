@@ -1475,6 +1475,7 @@ fn successor_open_rejects_a_rechecksummed_staged_base() {
         None,
         generation_role(store.catalog_magic, store.active.catalog),
         None,
+        None,
     )
     .err()
     .expect("the staged base must match the writer's digest");

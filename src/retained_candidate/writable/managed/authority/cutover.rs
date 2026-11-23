@@ -217,7 +217,11 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                         open_regular(&original)?;
                         fs::hard_link(original, stage.path().join(archive))?;
                     }
-                    Ok((expected, None))
+                    Ok(InitialGeneration {
+                        expected,
+                        suffix: None,
+                        base: None,
+                    })
                 },
             )
             .map_err(unpack_publication)?;

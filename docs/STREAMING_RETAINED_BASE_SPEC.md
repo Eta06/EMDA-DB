@@ -269,9 +269,12 @@ the same ordered merge. Backup copies the suffix in bounded chunks
 and checks the staged digest. Rebase streams the suffix to calculate
 historical peaks and verifies the actual bytes it used. Writable import and managed
 backup restore copy the admitted detached suffix from one opened file
-in chunks of at most 1 MiB. The private copy must match the exact endpoint
-and independent digest, then pass ordinary writable replay before
-publication. Recovery cannot adopt an added tail during initialization.
+in chunks of at most 1 MiB. A pinned base descriptor supplies the frame
+checks before copying. The private suffix must match the exact endpoint and
+independent digest, then pass operation, work and overlay admission through
+writable replay before the engine copies the base. The prepared base is
+still authenticated in full, and the private directory is synchronized
+before publication. Recovery cannot adopt an added tail during initialization.
 
 Mutations require exclusive use of the handle.
 Ordered DB02 children are admitted as one atomic append. Preparation
