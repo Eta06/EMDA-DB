@@ -40,6 +40,8 @@ an uncommitted comparison. Record why any sample is ineligible for a
 summary, keeping the original values and logs. A summary table cannot
 replace the raw results. Retain measured CI artifacts in the repository
 before the provider's artifact retention period expires.
+The CI and release smoke workflows upload the attempt records and
+generated sample reports even when a benchmark command fails.
 
 Existing comparisons are linked throughout this page. Start with the
 [ten-engine matrix](LOCAL_COMPARISON_2026_11_03.md), the

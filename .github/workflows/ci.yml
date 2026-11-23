@@ -42,66 +42,76 @@ jobs:
       - name: Benchmark smoke tests
         if: matrix.toolchain == 'stable'
         run: |
-          cargo +stable run --release --locked --example document_bench -- prototype "$RUNNER_TEMP" 5
-          cargo +stable run --release --locked --example document_bench -- sqlite "$RUNNER_TEMP" 5
+          source scripts/benchmarks/record_case.sh
+          record_benchmark document-bench-prototype cargo +stable run --release --locked --example document_bench -- prototype "$RUNNER_TEMP" 5
+          record_benchmark document-bench-sqlite cargo +stable run --release --locked --example document_bench -- sqlite "$RUNNER_TEMP" 5
           cargo +stable build --release --locked --example online_reclaim_bench
           cargo +stable build --release --locked --example nonunique_query_bench
-          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/nonunique_query_bench --output "$RUNNER_TEMP/nonunique-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          record_benchmark nonunique-query-smoke python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/nonunique_query_bench --output "$RUNNER_TEMP/nonunique-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example membership_union_bench
-          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/membership_union_bench --membership --output "$RUNNER_TEMP/membership-union-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          record_benchmark membership-union-smoke python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/membership_union_bench --membership --output "$RUNNER_TEMP/membership-union-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example aggregate_stats_bench
-          python3 scripts/aggregate_stats_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/aggregate_stats_bench --output "$RUNNER_TEMP/aggregate-stats-smoke.json" --documents 16 --rounds 2 --cycles 2
+          record_benchmark aggregate-stats-smoke python3 scripts/aggregate_stats_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/aggregate_stats_bench --output "$RUNNER_TEMP/aggregate-stats-smoke.json" --documents 16 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example range_query_bench
-          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/range_query_bench --index-name docs_number --output "$RUNNER_TEMP/range-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          record_benchmark range-query-smoke python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/range_query_bench --index-name docs_number --output "$RUNNER_TEMP/range-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example compound_query_bench
-          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_query_bench --index-name docs_pair --output "$RUNNER_TEMP/compound-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          record_benchmark compound-query-smoke python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_query_bench --index-name docs_pair --output "$RUNNER_TEMP/compound-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example compound_membership_bench
-          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_membership_bench --index-name docs_pair --compound-membership --output "$RUNNER_TEMP/compound-membership-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          record_benchmark compound-membership-smoke python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_membership_bench --index-name docs_pair --compound-membership --output "$RUNNER_TEMP/compound-membership-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example partial_query_bench
-          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/partial_query_bench --index-name docs_partial --output "$RUNNER_TEMP/partial-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          record_benchmark partial-query-smoke python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/partial_query_bench --index-name docs_partial --output "$RUNNER_TEMP/partial-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example compound_range_query_bench
-          python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_range_query_bench --index-name docs_tenant_number --output "$RUNNER_TEMP/compound-range-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
+          record_benchmark compound-range-query-smoke python3 scripts/nonunique_query_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/compound_range_query_bench --index-name docs_tenant_number --output "$RUNNER_TEMP/compound-range-query-smoke.json" --cases 16:4 --rounds 2 --cycles 2
           cargo +stable build --release --locked --example collection_drop_bench
-          python3 scripts/collection_drop_compare.py --directory "$RUNNER_TEMP" --before-binary target/release/examples/collection_drop_bench --after-binary target/release/examples/collection_drop_bench --output "$RUNNER_TEMP/collection-drop-smoke.json" --sizes 8 --rounds 2
+          record_benchmark collection-drop-smoke python3 scripts/collection_drop_compare.py --directory "$RUNNER_TEMP" --before-binary target/release/examples/collection_drop_bench --after-binary target/release/examples/collection_drop_bench --output "$RUNNER_TEMP/collection-drop-smoke.json" --sizes 8 --rounds 2
           mkdir "$RUNNER_TEMP/drop-format-probe"
-          cargo +stable run --release --locked --example drop_format_compat_probe -- create "$RUNNER_TEMP/drop-format-probe"
-          cargo +stable run --release --locked --example drop_format_compat_probe -- resume "$RUNNER_TEMP/drop-format-probe"
-          python3 scripts/online_reclaim_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/online_reclaim_bench --output "$RUNNER_TEMP/online-reclaim-smoke.json" --keys 16 --rounds 2
-          python3 scripts/document_scale_compare.py --compare-plans --directory "$RUNNER_TEMP" --binary target/release/examples/document_bench --baseline-binary target/release/examples/document_bench --output "$RUNNER_TEMP/document-planner-smoke.json" --sizes 5 --rounds 2 --cycles 3
-          cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example kv_bench -- prototype-key-byte-limit 2 20 16 50 "$RUNNER_TEMP"
-          python3 scripts/key_byte_limit_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/key-byte-limit-smoke.json" --rounds 2 --operations 20 --baseline-binary target/release/examples/kv_bench --baseline-revision HEAD
-          python3 scripts/key_byte_limit_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/log-limit-smoke.json" --rounds 2 --operations 20 --cap log --baseline-binary target/release/examples/kv_bench --baseline-revision HEAD
-          cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP" 4096
-          cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP" 4096
-          cargo +stable run --release --locked --example contention_bench -- prototype 131072 2 2 20 "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example contention_bench -- sqlite 131072 2 2 20 "$RUNNER_TEMP"
+          record_benchmark drop-format-compat-probe-create cargo +stable run --release --locked --example drop_format_compat_probe -- create "$RUNNER_TEMP/drop-format-probe"
+          record_benchmark drop-format-compat-probe-resume cargo +stable run --release --locked --example drop_format_compat_probe -- resume "$RUNNER_TEMP/drop-format-probe"
+          record_benchmark online-reclaim-smoke python3 scripts/online_reclaim_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/online_reclaim_bench --output "$RUNNER_TEMP/online-reclaim-smoke.json" --keys 16 --rounds 2
+          record_benchmark document-planner-smoke python3 scripts/document_scale_compare.py --compare-plans --directory "$RUNNER_TEMP" --binary target/release/examples/document_bench --baseline-binary target/release/examples/document_bench --output "$RUNNER_TEMP/document-planner-smoke.json" --sizes 5 --rounds 2 --cycles 3
+          record_benchmark kv-bench-prototype-64b cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
+          record_benchmark kv-bench-prototype-key-byte-limit-64b cargo +stable run --release --locked --example kv_bench -- prototype-key-byte-limit 2 20 16 50 "$RUNNER_TEMP"
+          record_benchmark key-byte-limit-smoke python3 scripts/key_byte_limit_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/key-byte-limit-smoke.json" --rounds 2 --operations 20 --baseline-binary target/release/examples/kv_bench --baseline-revision HEAD
+          record_benchmark log-limit-smoke python3 scripts/key_byte_limit_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/log-limit-smoke.json" --rounds 2 --operations 20 --cap log --baseline-binary target/release/examples/kv_bench --baseline-revision HEAD
+          record_benchmark kv-bench-sqlite-64b cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP"
+          record_benchmark kv-bench-prototype-4k cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP" 4096
+          record_benchmark kv-bench-sqlite-4k cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP" 4096
+          record_benchmark contention-bench-prototype cargo +stable run --release --locked --example contention_bench -- prototype 131072 2 2 20 "$RUNNER_TEMP"
+          record_benchmark contention-bench-sqlite cargo +stable run --release --locked --example contention_bench -- sqlite 131072 2 2 20 "$RUNNER_TEMP"
           cargo +stable build --release --locked --example network_bench_server
-          python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
-          python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
-          python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 5 --keys 4 --workload crud
-          python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 5 --keys 4 --workload crud
-          python3 scripts/network_compare.py sqlite_python --directory "$RUNNER_TEMP" --clients 2 --operations 5 --keys 4 --workload crud
-          cargo +stable run --release --locked --example restore_drill -- "$RUNNER_TEMP" "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-smoke" 100
-          cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-smoke" 100 3
-          cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-large-smoke" 10 131072
-          cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-large-smoke" 10 3 131072
-          cargo +stable run --release --locked --example checkpoint_bench -- "$RUNNER_TEMP" 32 8 2
+          record_benchmark network-prototype-mixed python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
+          record_benchmark network-sqlite-mixed python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
+          record_benchmark network-prototype-crud python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 5 --keys 4 --workload crud
+          record_benchmark network-sqlite-crud python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 5 --keys 4 --workload crud
+          record_benchmark network-sqlite-python-crud python3 scripts/network_compare.py sqlite_python --directory "$RUNNER_TEMP" --clients 2 --operations 5 --keys 4 --workload crud
+          record_benchmark restore-drill cargo +stable run --release --locked --example restore_drill -- "$RUNNER_TEMP" "$RUNNER_TEMP"
+          record_benchmark recovery-bench-prepare cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-smoke" 100
+          record_benchmark recovery-bench-measure cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-smoke" 100 3
+          record_benchmark recovery-bench-prepare-large cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-large-smoke" 10 131072
+          record_benchmark recovery-bench-measure-large cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-large-smoke" 10 3 131072
+          record_benchmark checkpoint-bench cargo +stable run --release --locked --example checkpoint_bench -- "$RUNNER_TEMP" 32 8 2
           cargo +stable build --release --locked --example index_memory_bench
-          python3 scripts/index_memory_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/index-memory-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
+          record_benchmark index-memory-smoke python3 scripts/index_memory_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/index-memory-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
           cargo +stable build --release --locked --example multi_store_resources
-          python3 scripts/multi_store_resources.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/multi-store-smoke.json" --projects 1,3 --keys 8 --rounds 2
-          python3 scripts/multi_store_pair_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/multi-store-pair-smoke.json" --baseline-binary target/release/examples/multi_store_resources --candidate-binary target/release/examples/multi_store_resources --baseline-source . --candidate-source . --projects 3 --keys 8 --rounds 2
+          record_benchmark multi-store-smoke python3 scripts/multi_store_resources.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/multi-store-smoke.json" --projects 1,3 --keys 8 --rounds 2
+          record_benchmark multi-store-pair-smoke python3 scripts/multi_store_pair_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/multi-store-pair-smoke.json" --baseline-binary target/release/examples/multi_store_resources --candidate-binary target/release/examples/multi_store_resources --baseline-source . --candidate-source . --projects 3 --keys 8 --rounds 2
           cargo +stable build --release --locked --example restart_write_bench
           cargo +stable build --release --locked --example sqlite_restart_write_bench
-          python3 scripts/restart_write_resources.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/restart-write-smoke.json" --keys 32 --key-bytes 8 --tail-keys 4 --workers 2 --writes 8 --epochs 2 --sqlite-binary target/release/examples/sqlite_restart_write_bench --evict-fixture-cache
+          record_benchmark restart-write-smoke python3 scripts/restart_write_resources.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/restart-write-smoke.json" --keys 32 --key-bytes 8 --tail-keys 4 --workers 2 --writes 8 --epochs 2 --sqlite-binary target/release/examples/sqlite_restart_write_bench --evict-fixture-cache
           cargo +stable build --release --locked --example checkpoint_rollover_bench
-          python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
-          python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-managed-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --managed
-          python3 scripts/managed_rollover_before_after.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-managed-pair-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --baseline-binary target/release/examples/checkpoint_rollover_bench --baseline-revision HEAD --binary target/release/examples/checkpoint_rollover_bench --prepare-binary target/release/examples/index_memory_bench
+          record_benchmark checkpoint-rollover-smoke python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
+          record_benchmark checkpoint-managed-rollover-smoke python3 scripts/checkpoint_rollover_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-managed-rollover-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --managed
+          record_benchmark checkpoint-managed-pair-smoke python3 scripts/managed_rollover_before_after.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-managed-pair-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --baseline-binary target/release/examples/checkpoint_rollover_bench --baseline-revision HEAD --binary target/release/examples/checkpoint_rollover_bench --prepare-binary target/release/examples/index_memory_bench
           cargo +stable build --release --locked --example backup_validation_bench
-          python3 scripts/backup_validation_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/backup-validation-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --baseline-binary target/release/examples/backup_validation_bench --baseline-revision HEAD
+          record_benchmark backup-validation-smoke python3 scripts/backup_validation_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/backup-validation-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4 --baseline-binary target/release/examples/backup_validation_bench --baseline-revision HEAD
           cargo +stable build --release --locked --example checkpoint_compaction_bench
-          python3 scripts/checkpoint_compaction_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-compaction-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
+          record_benchmark checkpoint-compaction-smoke python3 scripts/checkpoint_compaction_compare.py --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/checkpoint-compaction-smoke.json" --rounds 2 --keys 32 --key-bytes 8 --tail-keys 4
+      - name: Preserve benchmark smoke attempts
+        if: always() && matrix.toolchain == 'stable'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-benchmark-smoke
+          path: |
+            ${{ runner.temp }}/benchmark-attempts/
+            ${{ runner.temp }}/*-smoke.json
+          if-no-files-found: ignore

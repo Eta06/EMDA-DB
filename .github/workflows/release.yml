@@ -41,20 +41,30 @@ jobs:
       - name: Benchmark smoke tests
         if: matrix.toolchain == 'stable'
         run: |
-          cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP" 4096
-          cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP" 4096
-          cargo +stable run --release --locked --example contention_bench -- prototype 131072 2 2 20 "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example contention_bench -- sqlite 131072 2 2 20 "$RUNNER_TEMP"
+          source scripts/benchmarks/record_case.sh
+          record_benchmark kv-bench-prototype-64b cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
+          record_benchmark kv-bench-sqlite-64b cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP"
+          record_benchmark kv-bench-prototype-4k cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP" 4096
+          record_benchmark kv-bench-sqlite-4k cargo +stable run --release --locked --example kv_bench -- sqlite 2 20 16 50 "$RUNNER_TEMP" 4096
+          record_benchmark contention-bench-prototype cargo +stable run --release --locked --example contention_bench -- prototype 131072 2 2 20 "$RUNNER_TEMP"
+          record_benchmark contention-bench-sqlite cargo +stable run --release --locked --example contention_bench -- sqlite 131072 2 2 20 "$RUNNER_TEMP"
           cargo +stable build --release --locked --example network_bench_server
-          python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
-          python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
-          cargo +stable run --release --locked --example restore_drill -- "$RUNNER_TEMP" "$RUNNER_TEMP"
-          cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-smoke" 100
-          cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-smoke" 100 3
-          cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-large-smoke" 10 131072
-          cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-large-smoke" 10 3 131072
+          record_benchmark network-prototype-mixed python3 scripts/network_compare.py prototype --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
+          record_benchmark network-sqlite-mixed python3 scripts/network_compare.py sqlite --server target/release/examples/network_bench_server --directory "$RUNNER_TEMP" --clients 2 --operations 20 --keys 16
+          record_benchmark restore-drill cargo +stable run --release --locked --example restore_drill -- "$RUNNER_TEMP" "$RUNNER_TEMP"
+          record_benchmark recovery-bench-prepare cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-smoke" 100
+          record_benchmark recovery-bench-measure cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-smoke" 100 3
+          record_benchmark recovery-bench-prepare-large cargo +stable run --release --locked --example recovery_bench -- prepare "$RUNNER_TEMP/recovery-large-smoke" 10 131072
+          record_benchmark recovery-bench-measure-large cargo +stable run --release --locked --example recovery_bench -- measure "$RUNNER_TEMP/recovery-large-smoke" 10 3 131072
+      - name: Preserve benchmark smoke attempts
+        if: always() && matrix.toolchain == 'stable'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-benchmark-smoke
+          path: |
+            ${{ runner.temp }}/benchmark-attempts/
+            ${{ runner.temp }}/*-smoke.json
+          if-no-files-found: ignore
 
   publish:
     name: Publish GitHub release
