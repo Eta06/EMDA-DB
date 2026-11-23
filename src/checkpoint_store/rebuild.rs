@@ -662,7 +662,15 @@ impl CheckpointStore {
         // Malformed selection metadata is rejected before the base is trusted.
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
-        selection::load(&path)?;
+        let initial_selection = selection::load(&path)?;
+        let check_selection = || {
+            if selection::load(&path)? != initial_selection {
+                return Err(crate::record::invalid_data(
+                    "managed checkpoint selection changed during rebuild",
+                ));
+            }
+            Ok(())
+        };
         crate::checkpoint::require_available_destination(&destination)?;
         let (view, mut replayed) = match base {
             Some((checkpoint, digest)) => {
@@ -736,7 +744,10 @@ impl CheckpointStore {
         let verified_log = crate::checkpoint::VerifiedLog::from_replay(length, replayed);
         // Keep the old witness until the staged output has passed its
         // size limits and has been read back against the replay digest.
-        let pending_tail = (length > witness).then_some(witness);
+        let pending_tail = (length > witness).then_some(crate::checkpoint::PendingTail {
+            witness_boundary: witness,
+            check_before_adoption: &check_selection,
+        });
         // The staged checkpoint verifies the whole source against verified_log
         // before publication. Recheck the base index before using its entries.
         if let Some(view) = &view {
@@ -796,6 +807,7 @@ impl CheckpointStore {
         drop(view);
         drop(writer);
         let next = selection::Selection::new(destination, digest)?;
+        check_selection()?;
         if let Some(tracker) = tracker {
             tracker.begin_selection();
         }
@@ -2035,6 +2047,80 @@ mod tests {
                     fs::read(&destination).unwrap(),
                     fs::read(reference).unwrap()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_rebuild_rejects_selection_changed_during_replay_or_checkpoint_sync() {
+        for v2 in [true, false] {
+            for (full, late) in [(true, false), (false, false), (true, true), (false, true)] {
+                let Some(case) = prepare_unacknowledged_tail(v2) else {
+                    break;
+                };
+                let prior = selection::Selection::new(case.base.clone(), case.digest).unwrap();
+                selection::publish(&case.path, &prior, || Ok(()), selection::sync_ancestors)
+                    .unwrap();
+                let changed =
+                    selection::Selection::new(case.root().join("other"), case.digest).unwrap();
+                let replace_selection = || {
+                    selection::publish(&case.path, &changed, || Ok(()), selection::sync_ancestors)
+                };
+                let destination = case.root().join("rebuilt");
+                let base = (!full).then_some((case.base.as_path(), &case.digest));
+                let result = crate::publication_outcome::track_managed_rebuild(|tracker| {
+                    CheckpointStore::rebuild_spilling(
+                        &case.path,
+                        &destination,
+                        base,
+                        small_limits(),
+                        Some(tracker),
+                        &mut BoundedHooks {
+                            before_adopt: &mut || if late { Ok(()) } else { replace_selection() },
+                            sync_checkpoint_ancestors: &mut |parent| {
+                                selection::sync_ancestors(parent)?;
+                                if late { replace_selection() } else { Ok(()) }
+                            },
+                            before_selection_rename: &mut || Ok(()),
+                            sync_selection_parent: &mut selection::sync_ancestors,
+                        },
+                    )
+                });
+                if late {
+                    assert!(
+                        matches!(&result, Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(error))
+                        if error.kind() == io::ErrorKind::InvalidData),
+                        "{result:?}"
+                    );
+                    assert!(destination.is_file());
+                } else {
+                    assert_eq!(witness_bytes(&case.path), case.rolled_back, "{result:?}");
+                    assert!(
+                        matches!(&result, Err(ManagedRebuildFailure::NotPublished(error))
+                        if error.kind() == io::ErrorKind::InvalidData),
+                        "{result:?}"
+                    );
+                    assert!(!destination.exists());
+                    assert_eq!(
+                        fs::read(case.path.join("commit.state")).unwrap(),
+                        case.anchor
+                    );
+                }
+                assert_eq!(selection::load(&case.path).unwrap(), Some(changed));
+                assert_eq!(
+                    fs::read(case.path.join("records.log")).unwrap(),
+                    case.complete_log
+                );
+                assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+                assert_no_staged_markers(&case.path);
+                assert_no_staged_markers(case.root());
+
+                let retry_destination = case.root().join("retry");
+                rebuild_spill_adoption_case(&case, &retry_destination, full).unwrap();
+                let store = retry(|| CheckpointStore::open_managed(&case.path)).unwrap();
+                assert_eq!(store.get(b"p").unwrap(), Some(b"two".to_vec()));
+                assert_eq!(store.get(b"q").unwrap(), Some(b"batch".to_vec()));
+                assert_eq!(store.get(b"safe").unwrap(), None);
             }
         }
     }

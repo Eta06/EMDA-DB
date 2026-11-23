@@ -62,9 +62,13 @@ pub(crate) struct StreamingOptions<'a> {
     pub(crate) limits: Option<CheckpointViewLimits>,
     pub(crate) tracker: Option<&'a crate::publication_outcome::Tracker>,
     pub(crate) verified_log: VerifiedLog,
-    /// The verified old witness boundary, when a locked caller wants to
-    /// adopt a complete replayed tail only after staging succeeds.
-    pub(crate) pending_tail: Option<u64>,
+    pub(crate) pending_tail: Option<PendingTail<'a>>,
+}
+
+/// A complete replayed tail to adopt only after staged checkpoint verification.
+pub(crate) struct PendingTail<'a> {
+    pub(crate) witness_boundary: u64,
+    pub(crate) check_before_adoption: &'a dyn Fn() -> io::Result<()>,
 }
 
 fn hash_log_prefix(log: &Log, length: u64) -> io::Result<Sha256> {
@@ -291,8 +295,8 @@ fn create_streaming_in_directory(
     }
     let limits = options.limits.unwrap_or_default();
     limits.validate()?;
-    if let Some(boundary) = options.pending_tail {
-        log.verify_witness_at(boundary)?;
+    if let Some(tail) = &options.pending_tail {
+        log.verify_witness_at(tail.witness_boundary)?;
     } else {
         log.verify_witness()?;
     }
@@ -400,11 +404,12 @@ fn create_streaming_in_directory(
         ));
     }
     check_checkpoint_length(log, prefix)?;
-    if let Some(boundary) = options.pending_tail {
-        log.verify_witness_at(boundary)?;
+    if let Some(tail) = options.pending_tail {
+        log.verify_witness_at(tail.witness_boundary)?;
         #[cfg(test)]
         crate::test_support::pause_bounded_rebuild("checkpoint-verified")?;
         require_available_destination(destination)?;
+        (tail.check_before_adoption)()?;
         log.sync_validated_boundary(prefix).map_err(|error| {
             io::Error::new(
                 error.kind(),

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject managed checkpoint selection changes observed by bounded rebuild
+  before pending-tail adoption or before selection publication.
+
 - Check the destination and existing selection under the source lock before
   ordinary managed rebuild replay and before adopting a pending tail.
 
