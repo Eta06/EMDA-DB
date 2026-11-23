@@ -273,7 +273,14 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   measures allocations during submission and excludes caller buffers,
   transaction staging, and filesystem cache.
 - [x] Reject a checkpoint payload that exceeds total block capacity before reading its index, while still checking exact entry packing for admitted files. Streaming writers check the minimum space required by the entry count before creating a stage. The [Linux ARM64 trace](../benchmarks/results/2026-11-23-checkpoint-block-admission/README.md) shows zero index reads on three rejected open paths.
-- [ ] Complete validation of the separate offline bounded-spill rebuild from a caller-trusted checkpoint and suffix. The prototype accounts for ordered batch children and intermediate key-count peaks, validates before tail adoption, retains the exclusive lock through publication, and has focused spill and crash tests on macOS and Linux ARM64. It cannot replace full-log rebuild when the base is missing or when historical key-byte limits must be enforced; it does not bound total memory or recovery time, or reclaim the log. Broader fault coverage and independent verification remain open.
+- [x] Validate the offline bounded-spill rebuild from a trusted checkpoint
+  and suffix. The [million-key pending-tail campaign](../benchmarks/results/2026-11-23-million-key-suffix-rebuild/README.md)
+  exercises V2 on APFS and V3 on ext4, including exact output,
+  ordered live-state verification and rejection before adoption on three
+  independent limits. Linux ran rebuild and recovery under a 48 MiB
+  address-space cap. The spill I/O, corruption and process interruption
+  cases below cover separate failure conditions. Use a full-log rebuild
+  when the base is unavailable or when validating historical key-byte peaks.
 - [x] Add a historical live-key ceiling to bounded suffix rebuild. Tests
   reject both an excessive trusted base peak and a transient DB02 peak
   before tail adoption. Header admission rejects the excessive peak before
@@ -285,6 +292,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   It verifies intact entries up to the failure, checks that repeated reads
   reject the damaged entry without advancing, and compares every key and
   location after restoring the original run bytes and reopening the cursor.
+  After the final cursor opens, also replace its bytes with a valid run
+  from a different spill session. Both full-log and trusted-base rebuild
+  tests reject that replacement, truncation, and entry damage, preserve
+  the prior selection, and reproduce the exact checkpoint on retry.
 - [x] Remove temporary key allocations from spill lookups, reuse sequential ordering buffers, and encode spill entries into bounded buffers. A [paired macOS replay](../benchmarks/results/2026-11-23-bounded-rebuild-allocations/README.md) recorded 83% fewer allocation calls. The tests cover maximum-width keys and existing spill corruption rejection. Allocation totals describe churn during a rebuild; peak memory remains a separate measurement.
 - [x] Reuse a key buffer per active spill-merge input and exchange it with the last emitted key. The [paired follow-up](../benchmarks/results/2026-11-23-spill-merge-key-reuse/README.md) recorded a further reduction in allocation calls. Byte-identical checkpoint output and the existing corruption checks passed.
 - [x] Kill full-log and trusted-base suffix rebuilds after an offset

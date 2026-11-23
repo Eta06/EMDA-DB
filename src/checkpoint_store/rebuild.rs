@@ -3054,29 +3054,32 @@ mod tests {
         file.write_all_at(&[0x7f], tag_at).unwrap();
     }
 
-    fn substitute_spill_run(case: &UnacknowledgedSuffix, destination: &Path) {
+    fn substitute_spill_run(case: &UnacknowledgedSuffix, destination: &Path, full: bool) {
         let foreign = tempfile::tempdir().unwrap();
         let (log, witness) = Log::open_checkpoint_view(&case.path).unwrap();
-        let mut suffix = Vec::new();
-        log.visit_records(witness, Some(witness), |key, location| {
-            suffix.push((key, location));
+        let mut records = Vec::new();
+        let start = if full { 0 } else { witness };
+        log.visit_records(start, Some(witness), |key, location| {
+            records.push((key, location));
             Ok(())
         })
         .unwrap();
-        assert_eq!(suffix.len(), 2);
-        assert!(suffix.iter().all(|(_, location)| location.is_some()));
-        let mut spill = SpillSession::create(foreign.path(), small_limits(), 1, 1).unwrap();
-        for ((key, _), (_, location)) in suffix.iter().zip(suffix.iter().rev()) {
+        assert_eq!(records.len(), if full { 3 } else { 2 });
+        assert!(records.iter().all(|(_, location)| location.is_some()));
+        let base_live = usize::from(!full);
+        let mut spill =
+            SpillSession::create(foreign.path(), small_limits(), base_live, base_live).unwrap();
+        for ((key, _), (_, location)) in records.iter().zip(records.iter().rev()) {
             spill.push(key, *location, |_| Ok(None)).unwrap();
         }
         spill.prepare_for_emit().unwrap();
         let files = spill_run_paths(foreign.path());
         assert_eq!(files.len(), 1);
         let alternate = fs::read(&files[0]).unwrap();
-        assert_eq!(
-            alternate.len() as u64,
-            fs::metadata(destination).unwrap().len()
-        );
+        let original = fs::read(destination).unwrap();
+        assert_eq!(alternate.len(), original.len());
+        assert_eq!(alternate[..28], original[..28]);
+        assert_ne!(alternate, original);
         fs::write(destination, alternate).unwrap();
     }
 
@@ -3101,12 +3104,18 @@ mod tests {
             SpillDamage::Key,
             SpillDamage::SubstituteRun,
         ] {
-            // The substitution fixture matches the suffix-only run size.
-            if full && matches!(damage, SpillDamage::SubstituteRun) {
-                continue;
-            }
             let case = unacknowledged_suffix_for_spill();
             let destination = case._directory.path().join(format!("rebuilt-{damage:?}"));
+            let reference = case._directory.path().join("reference");
+            let store = retry(|| Store::open(&case.path)).unwrap();
+            let expected = store.checkpoint_to(&reference).unwrap();
+            drop(store);
+            let adopted = witness_bytes(&case.path);
+            restore_witness(&case.path, &case.witness);
+            let anchor = fs::read(case.path.join("commit.state")).unwrap();
+            let prior = selection::Selection::new(case.base.clone(), case.digest).unwrap();
+            selection::publish(&case.path, &prior, || Ok(()), selection::sync_ancestors).unwrap();
+            let prior_selection = fs::read(selection::path(&case.path)).unwrap();
             let mut saw_finished_run = false;
             let mut checkpoint_synced = false;
             let mut selection_started = false;
@@ -3119,7 +3128,10 @@ mod tests {
                         "{damage:?} published the witness before spill emission"
                     );
                     assert!(!destination.exists(), "{damage:?}");
-                    assert!(!selection::path(&case.path).exists(), "{damage:?}");
+                    assert_eq!(
+                        fs::read(selection::path(&case.path)).unwrap(),
+                        prior_selection
+                    );
                     let runs = spill_run_paths(&case.path);
                     assert_eq!(runs.len(), 1, "{damage:?}: {runs:?}");
                     let bytes = fs::read(&runs[0]).unwrap();
@@ -3140,7 +3152,7 @@ mod tests {
                             let file = OpenOptions::new().write(true).open(&runs[0]).unwrap();
                             file.write_all_at(b"B", 30).unwrap();
                         }
-                        SpillDamage::SubstituteRun => substitute_spill_run(&case, &runs[0]),
+                        SpillDamage::SubstituteRun => substitute_spill_run(&case, &runs[0], full),
                     }
                     Ok(())
                 };
@@ -3197,9 +3209,13 @@ mod tests {
                 (_, other) => panic!("{damage:?}: {other}"),
             }
             assert!(!destination.exists(), "{damage:?}");
-            assert!(!selection::path(&case.path).exists(), "{damage:?}");
+            assert_eq!(
+                fs::read(selection::path(&case.path)).unwrap(),
+                prior_selection
+            );
             assert_eq!(fs::read(case.path.join("records.log")).unwrap(), case.log);
             assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+            assert_eq!(fs::read(case.path.join("commit.state")).unwrap(), anchor);
             assert_eq!(
                 witness_bytes(&case.path),
                 case.witness,
@@ -3207,33 +3223,36 @@ mod tests {
             );
             assert_no_staged_markers(&case.path);
             assert_no_staged_markers(case._directory.path());
-            if matches!(damage, SpillDamage::SubstituteRun) {
-                CheckpointStore::rebuild_managed_selection_bounded(
+            let rebuilt = with_standard_hooks(|hooks| {
+                CheckpointStore::rebuild_spilling(
                     &case.path,
                     &destination,
-                    &case.base,
-                    &case.digest,
-                    1,
-                    4096,
-                    32 << 20,
-                    2,
-                    10_000,
+                    (!full).then_some((case.base.as_path(), &case.digest)),
+                    small_limits(),
+                    None,
+                    hooks,
                 )
-                .unwrap();
-                let recovered = CheckpointStore::open_managed(&case.path).unwrap();
-                assert_eq!(
-                    recovered.get(b"a").unwrap().as_deref(),
-                    Some(b"base".as_slice())
-                );
-                assert_eq!(
-                    recovered.get(b"b").unwrap().as_deref(),
-                    Some(b"one".as_slice())
-                );
-                assert_eq!(
-                    recovered.get(b"c").unwrap().as_deref(),
-                    Some(b"two".as_slice())
-                );
-            }
+            })
+            .unwrap();
+            assert_eq!(rebuilt, expected);
+            assert_eq!(
+                fs::read(&destination).unwrap(),
+                fs::read(reference).unwrap()
+            );
+            assert_eq!(witness_bytes(&case.path), adopted);
+            let recovered = retry(|| CheckpointStore::open_managed(&case.path)).unwrap();
+            assert_eq!(
+                recovered.get(b"a").unwrap().as_deref(),
+                Some(b"base".as_slice())
+            );
+            assert_eq!(
+                recovered.get(b"b").unwrap().as_deref(),
+                Some(b"one".as_slice())
+            );
+            assert_eq!(
+                recovered.get(b"c").unwrap().as_deref(),
+                Some(b"two".as_slice())
+            );
         }
     }
 }
