@@ -94,6 +94,95 @@ fn access(prefix: usize, partial: bool) -> DocumentQueryAccess {
         }
     }
 }
+
+fn check_complete_membership(store: &Backend, bytes: &[u8], partial: bool) {
+    let mode = bytes[0] % 5;
+    let prefixes = match mode {
+        2 => 129,
+        4 => 2,
+        _ => 128,
+    };
+    let tenants = [json!("u"), json!("t")]
+        .into_iter()
+        .chain((2..prefixes).map(|ordinal| json!(format!("extra-{ordinal}"))))
+        .collect();
+    let span = if mode == 4 { 129 } else { 4 };
+    let start = match bytes[2] % 4 {
+        0 => i64::MIN,
+        1 => i64::MAX - span,
+        _ => i64::from(bytes[3] % 9) - span / 2,
+    };
+    let offsets: Vec<_> = match mode {
+        0 => vec![1, 0],
+        3 => vec![4, 2, 0],
+        4 => (0..65).chain(66..=129).rev().collect(),
+        _ => vec![4, 1, 0, 1],
+    };
+    let mut predicates = vec![
+        DocumentFilter::In {
+            path: vec!["tenant".into()],
+            values: tenants,
+        },
+        DocumentFilter::In {
+            path: vec!["score".into()],
+            values: offsets
+                .into_iter()
+                .map(|offset| json!(start + offset))
+                .collect(),
+        },
+    ];
+    if partial {
+        predicates.push(eq("active", json!(true)));
+    }
+    let expected = match (mode, partial) {
+        (0, false) => DocumentQueryAccess::CompoundMembershipIndex {
+            index: "i".into(),
+            fields: 2,
+            probes: 256,
+        },
+        (0, true) => DocumentQueryAccess::PartialCompoundMembershipIndex {
+            index: "i".into(),
+            fields: 2,
+            probes: 256,
+        },
+        (1 | 4, false) => DocumentQueryAccess::CompoundMembershipRangeIndex {
+            index: "i".into(),
+            prefix_fields: 1,
+            probes: 2 * prefixes,
+        },
+        (1 | 4, true) => DocumentQueryAccess::PartialCompoundMembershipRangeIndex {
+            index: "i".into(),
+            prefix_fields: 1,
+            probes: 2 * prefixes,
+        },
+        _ => DocumentQueryAccess::CollectionScan,
+    };
+    let query = DocumentQuery {
+        filter: DocumentFilter::And(predicates),
+        max_scanned: 16,
+        limit: 1 + usize::from(bytes[3] % 5),
+        offset: usize::from(bytes[3] % 3),
+        sort: (bytes[3] & 4 != 0).then(|| DocumentSort {
+            path: vec!["score".into()],
+            descending: bytes[3] & 8 != 0,
+        }),
+        projection: (bytes[3] & 16 != 0).then(|| vec![vec!["id".into()], vec!["tenant".into()]]),
+    };
+    let db = store.db();
+    let scan = db.query("c", &query).unwrap();
+    let planned = db.query_planned("c", &query).unwrap();
+    assert_eq!(
+        planned.access, expected,
+        "complete membership mode={mode} partial={partial}"
+    );
+    assert_eq!(planned.result.documents, scan.documents);
+    assert_eq!(planned.result.plan.matched, scan.plan.matched);
+    assert_eq!(planned.result.plan.returned, scan.plan.returned);
+    if expected != DocumentQueryAccess::CollectionScan {
+        assert_eq!(planned.result.plan.scanned, scan.plan.matched);
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() || data.len() > 96 {
         return;
@@ -106,7 +195,12 @@ fuzz_target!(|data: &[u8]| {
     drop(initial);
     let checkpoint_mode = data[0] & 1 != 0;
     let partial = data[0] & 2 != 0;
+    let complete_membership = data[0] & 4 != 0;
     let mut store = open(&path, &checkpoint, &digest, checkpoint_mode);
+    let mut fields = vec![vec!["tenant".into()], vec!["score".into()]];
+    if !complete_membership {
+        fields.push(vec!["suffix".into()]);
+    }
     store
         .db()
         .create_collection("c", CollectionSchema::default())
@@ -117,11 +211,7 @@ fuzz_target!(|data: &[u8]| {
             "c",
             IndexDefinition {
                 name: "i".into(),
-                fields: vec![
-                    vec!["tenant".into()],
-                    vec!["score".into()],
-                    vec!["suffix".into()],
-                ],
+                fields,
                 unique: false,
                 partial: partial.then(|| PartialFilter::Equals {
                     path: vec!["active".into()],
@@ -153,6 +243,10 @@ fuzz_target!(|data: &[u8]| {
                 store = open(&path, &checkpoint, &digest, checkpoint_mode);
             }
             _ => {}
+        }
+        if complete_membership {
+            check_complete_membership(&store, bytes, partial);
+            continue;
         }
         let mode = bytes[0] % 25;
         let bound = match bytes[2] % 4 {
