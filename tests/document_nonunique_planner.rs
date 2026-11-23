@@ -288,7 +288,7 @@ fn nonunique_index_empty_range_detects_phantoms_on_both_backends() {
     }
 }
 
-fn byte_limits(db: &DocumentDatabase<'_>) {
+fn byte_limits(db: &DocumentDatabase<'_>, overwrite: impl FnOnce(&[u8], &[u8])) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
     db.create_index(
@@ -304,15 +304,19 @@ fn byte_limits(db: &DocumentDatabase<'_>) {
     let overhead = serde_json::to_vec(&json!({"group":"same", "payload":""}))
         .unwrap()
         .len();
-    let payload = "x".repeat(1024 * 1024 - overhead);
+    let last_key = b"\0emda-document\x01D\0\x01c32";
+    let payload = "x".repeat(1024 * 1024 - overhead - last_key.len());
     let document = json!({"group":"same", "payload":payload});
-    assert_eq!(serde_json::to_vec(&document).unwrap().len(), 1024 * 1024);
+    assert_eq!(
+        serde_json::to_vec(&document).unwrap().len() + last_key.len(),
+        1024 * 1024
+    );
     for id in 0..31 {
         db.insert("c", &format!("{id:02}"), &document).unwrap();
     }
     let query = DocumentQuery {
         filter: equal("group", json!("same")),
-        max_scanned: 32,
+        max_scanned: 33,
         limit: 1,
         ..Default::default()
     };
@@ -322,6 +326,16 @@ fn byte_limits(db: &DocumentDatabase<'_>) {
     assert_eq!(planned.result.plan.scanned, 31);
     assert_eq!(planned.result.documents.len(), 1);
     db.insert("c", "31", &document).unwrap();
+    assert_eq!(db.query("c", &query).unwrap().plan.scanned, 32);
+    assert_eq!(
+        db.query_planned("c", &query).unwrap().result.plan.scanned,
+        32
+    );
+
+    db.insert("c", "32", &json!({"group":"same"})).unwrap();
+    // Overwrite just the payload. The planned query must reject this extra
+    // candidate by original size before parsing the malformed JSON.
+    overwrite(last_key, b"!");
     assert_eq!(
         db.query("c", &query).unwrap_err().kind(),
         ErrorKind::InvalidInput
@@ -343,6 +357,11 @@ fn byte_limits(db: &DocumentDatabase<'_>) {
             .unwrap(),
         None
     );
+    assert!(db.delete("c", "00").unwrap());
+    assert_eq!(
+        db.query_planned("c", &query).unwrap_err().kind(),
+        ErrorKind::InvalidData
+    );
 }
 
 #[test]
@@ -357,9 +376,14 @@ fn nonunique_index_preserves_full_scan_byte_budget_on_both_backends() {
             drop(store);
             let store =
                 retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
-            byte_limits(&DocumentDatabase::with_checkpoint_store(&store));
+            byte_limits(
+                &DocumentDatabase::with_checkpoint_store(&store),
+                |key, value| store.put(key, value).unwrap(),
+            );
         } else {
-            byte_limits(&DocumentDatabase::new(&store));
+            byte_limits(&DocumentDatabase::new(&store), |key, value| {
+                store.put(key, value).unwrap()
+            });
         }
     }
 }

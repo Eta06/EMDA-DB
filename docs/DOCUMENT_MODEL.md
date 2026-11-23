@@ -212,6 +212,11 @@ range bounds, including inclusivity, runs once in its first occurrence.
 All branches share one cap of 256 distinct probes and the original
 document and byte budgets. Hits from distinct probes consume budget on
 each visit, even when their ranges overlap.
+Before decoding a candidate, the planner charges its stored document
+key and value against the remaining byte budget. The first candidate
+above the budget returns a limit error before JSON decoding and
+document-to-index comparison. The key and stored value have already been
+read at that point.
 The planner keeps the distinct candidate IDs and streams documents into
 the requested window. Index and candidate budget errors take precedence
 over filter and sort errors. Array-walking filters evaluate once in ID

@@ -167,9 +167,10 @@ impl DocumentTransaction<'_, '_> {
         }
         let metadata = self.metadata(collection)?;
         let mut documents = Vec::new();
-        let scan = self.visit_index_with_metadata(collection, name, query, &metadata, |entry| {
-            documents.push(entry);
-        })?;
+        let scan =
+            self.visit_index_with_metadata(collection, name, query, &metadata, None, |entry| {
+                documents.push(entry);
+            })?;
         Ok(DocumentPage {
             documents,
             next: scan.next,
@@ -178,13 +179,14 @@ impl DocumentTransaction<'_, '_> {
     }
 
     // The visitor's effects must remain private until the page passes all
-    // index checks and its caller admits the returned byte and row totals.
+    // index checks and its caller admits the returned row count.
     pub(super) fn visit_index_with_metadata(
         &self,
         collection: &str,
         name: &str,
         query: &IndexQuery,
         metadata: &Metadata,
+        scan_byte_limit: Option<usize>,
         mut visit: impl FnMut(DocumentEntry),
     ) -> io::Result<IndexScan> {
         if query.limit == 0 || query.limit > MAX_QUERY_DOCUMENTS {
@@ -287,6 +289,9 @@ impl DocumentTransaction<'_, '_> {
                 .checked_add(document_key.len())
                 .and_then(|total| total.checked_add(encoded.len()))
                 .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
+            if scan_byte_limit.is_some_and(|limit| document_key_value_bytes > limit) {
+                return Err(key::invalid("document scan exceeds the operation limit"));
+            }
             let document = Self::decode_document(&encoded, &metadata.schema)?;
             let expected = index::keys(collection, definition, &document, id)
                 .map_err(|_| invalid_data("document cannot be represented by its index"))?

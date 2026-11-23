@@ -1225,6 +1225,7 @@ impl DocumentTransaction<'_, '_> {
                     limit,
                 },
                 metadata,
+                Some(filter::MAX_SCAN_BYTES - candidates.bytes),
                 |entry| {
                     if candidates.ids.insert(entry.id.clone()) {
                         if let Some(collector) = &mut candidates.collector {
@@ -1244,9 +1245,7 @@ impl DocumentTransaction<'_, '_> {
                 .bytes
                 .checked_add(indexed.document_key_value_bytes)
                 .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-            if candidates.bytes > filter::MAX_SCAN_BYTES
-                || returned > max_scanned - candidates.visits
-            {
+            if returned > max_scanned - candidates.visits {
                 return Err(key::invalid("document scan exceeds the operation limit"));
             }
             if returned == 0 {

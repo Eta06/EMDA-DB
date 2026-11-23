@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Enforce the shared planned-query byte limit before decoding the candidate
+  that exceeds it.
+
 - Reject an unwitnessed tail before opening the checkpoint for read-only
   recovery, and reject nonregular files on checkpoint open.
 
