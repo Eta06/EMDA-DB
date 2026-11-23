@@ -244,6 +244,86 @@ fn maintenance_admission(
     assert_eq!(error.to_string(), "unexpected or incorrect index entry");
     put(&key, &correct);
     assert_eq!(db.verify_collection("c").unwrap().index_keys, 4);
+
+    assert_eq!(
+        db.insert("c", "duplicate", &json!({"x":1}))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::AlreadyExists
+    );
+    for (owner, reason) in [
+        (b"".as_slice(), "invalid unique index owner length"),
+        (b"\xff", "invalid unique index owner"),
+    ] {
+        put(&key, owner);
+        let error = db.insert("c", "duplicate", &json!({"x":1})).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), reason);
+    }
+    let oversized_owner = [b'x'; 257];
+    put(&key, &oversized_owner);
+    let (log, offset) = change_last_value_byte(source, b'x');
+    let error = db
+        .transaction(|tx| {
+            tx.put_raw(b"owner-rollback", b"uncommitted")?;
+            tx.insert("c", "duplicate", &json!({"x":1}))?;
+            Ok(())
+        })
+        .unwrap_err();
+    let query_error = db
+        .query_index("c", "i", &IndexQuery::default())
+        .unwrap_err();
+    log.write_all_at(b"x", offset).unwrap();
+    for error in [error, query_error] {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "invalid unique index owner length");
+    }
+    put(&key, &correct);
+    assert_eq!(
+        db.transaction(|tx| tx.get_raw(b"owner-rollback")).unwrap(),
+        None
+    );
+    assert_eq!(db.get("c", "duplicate").unwrap(), None);
+
+    let (entry, value) = scan()
+        .into_iter()
+        .find(|(key, _)| key.starts_with(b"\0emda-document\x01I"))
+        .unwrap();
+    assert!(value.is_empty());
+    put(&entry, b"x");
+    let (log, offset) = change_last_value_byte(source, b'x');
+    let error = db.delete("c", "a").unwrap_err();
+    log.write_all_at(b"x", offset).unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "document index entry is invalid");
+    put(&entry, &value);
+    assert_eq!(db.get("c", "a").unwrap(), Some(json!({"x":1})));
+
+    let mut next = index();
+    next.name = "next".into();
+    db.start_index_build("c", next).unwrap();
+    let longest_id = "ü".repeat(128);
+    assert_eq!(longest_id.len(), 256);
+    db.insert("c", &longest_id, &json!({"x":3})).unwrap();
+    let jobs = db.index_jobs("c").unwrap();
+    let before = scan();
+    let (pending_owner, correct_owner) = before
+        .iter()
+        .find(|(key, _)| key.starts_with(b"\0emda-document\x01U\0\x01c\0\x04next"))
+        .unwrap();
+    assert_eq!(correct_owner, longest_id.as_bytes());
+    put(pending_owner, &oversized_owner);
+    let (log, offset) = change_last_value_byte(source, b'x');
+    let error = db.advance_index_build("c", "next", 3).unwrap_err();
+    log.write_all_at(b"x", offset).unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "invalid unique index owner length");
+    put(pending_owner, correct_owner);
+    assert_eq!(db.index_jobs("c").unwrap(), jobs);
+    assert_eq!(scan(), before);
+    assert_eq!(db.advance_index_build("c", "next", 3).unwrap().processed, 3);
+    assert!(db.advance_index_build("c", "next", 3).unwrap().complete);
+    assert_eq!(db.verify_collection("c").unwrap().index_keys, 12);
 }
 
 #[test]

@@ -60,10 +60,6 @@ impl<A: RetainedAuthority + Send> Backend for AuthorizedRetainedStore<A> {
 }
 
 impl RetainedTransaction<'_> {
-    pub(super) fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        self.get_admitted(key, |_| Ok(()))
-    }
-
     pub(super) fn get_admitted(
         &self,
         key: &[u8],

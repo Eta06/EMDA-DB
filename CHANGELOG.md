@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject malformed document index markers and unique owners before using
+  them in mutations, incremental builds or indexed queries. Check owner
+  length before materializing the value.
+
 - Keep committed reads available while manual and automatic checkpoint
   rollover publish and synchronize the managed selection.
 

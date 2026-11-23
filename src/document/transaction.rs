@@ -99,10 +99,18 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     }
 
     pub(super) fn read(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.read_admitted(key, |_| Ok(()))
+    }
+
+    fn read_admitted(
+        &self,
+        key: &[u8],
+        admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         match &self.backend {
-            BackendTransaction::Ordinary(tx) => tx.get(key),
-            BackendTransaction::Checkpoint(tx) => tx.get(key),
-            BackendTransaction::Retained(tx) => tx.get(key),
+            BackendTransaction::Ordinary(tx) => tx.get_admitted(key, admit),
+            BackendTransaction::Checkpoint(tx) => tx.get_admitted(key, admit),
+            BackendTransaction::Retained(tx) => tx.get_admitted(key, admit),
         }
     }
 
@@ -111,17 +119,39 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         key: &[u8],
         mut admit: impl FnMut(usize) -> io::Result<()>,
     ) -> io::Result<Option<Vec<u8>>> {
-        let admit_document = |len| {
+        self.read_admitted(key, |len| {
             if len > MAX_DOCUMENT_BYTES {
                 return Err(invalid_data("stored document exceeds size limit"));
             }
             admit(len)
-        };
-        match &self.backend {
-            BackendTransaction::Ordinary(tx) => tx.get_admitted(key, admit_document),
-            BackendTransaction::Checkpoint(tx) => tx.get_admitted(key, admit_document),
-            BackendTransaction::Retained(tx) => tx.get_admitted(key, admit_document),
+        })
+    }
+
+    pub(super) fn has_index_entry(&self, key: &[u8]) -> io::Result<bool> {
+        Ok(self
+            .read_admitted(key, |len| {
+                if len != 0 {
+                    return Err(invalid_data("document index entry is invalid"));
+                }
+                Ok(())
+            })?
+            .is_some())
+    }
+
+    pub(super) fn read_unique_owner(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let owner = self.read_admitted(key, |len| {
+            if !(1..=key::MAX_ID_BYTES).contains(&len) {
+                return Err(invalid_data("invalid unique index owner length"));
+            }
+            Ok(())
+        })?;
+        if owner
+            .as_deref()
+            .is_some_and(|bytes| std::str::from_utf8(bytes).is_err())
+        {
+            return Err(invalid_data("invalid unique index owner"));
         }
+        Ok(owner)
     }
 
     pub(super) fn write(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {
@@ -331,15 +361,15 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     }
 
     fn check_old_index(&self, keys: &Keys, id: &str, allow_missing: bool) -> io::Result<bool> {
-        let entry = self.read(&keys.entry)?;
+        let entry = self.has_index_entry(&keys.entry)?;
         let unique = keys
             .unique
             .as_ref()
-            .map(|key| self.read(key))
+            .map(|key| self.read_unique_owner(key))
             .transpose()?
             .flatten();
         match entry {
-            Some(value) if value.is_empty() => {
+            true => {
                 if keys.unique.is_some() && unique.as_deref() != Some(id.as_bytes()) {
                     return Err(invalid_data(
                         "document unique index entry is missing or invalid",
@@ -347,12 +377,11 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 }
                 Ok(true)
             }
-            Some(_) => Err(invalid_data("document index entry is invalid")),
-            None if !allow_missing => Err(invalid_data("document index entry is missing")),
-            None if unique.as_deref() == Some(id.as_bytes()) => {
+            false if !allow_missing => Err(invalid_data("document index entry is missing")),
+            false if unique.as_deref() == Some(id.as_bytes()) => {
                 Err(invalid_data("unique index entry has no document entry"))
             }
-            None => Ok(false),
+            false => Ok(false),
         }
     }
 
@@ -386,13 +415,13 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             }
             if let Some(keys) = &next {
                 let same_entry = previous.as_ref().is_some_and(|old| old.entry == keys.entry);
-                if !same_entry && self.read(&keys.entry)?.is_some() {
+                if !same_entry && self.has_index_entry(&keys.entry)? {
                     return Err(invalid_data("unexpected document index entry"));
                 }
                 if let Some(unique) = &keys.unique {
                     let same_unique =
                         previous.as_ref().and_then(|old| old.unique.as_ref()) == Some(unique);
-                    if !same_unique && self.read(unique)?.is_some() {
+                    if !same_unique && self.read_unique_owner(unique)?.is_some() {
                         return Err(io::Error::new(
                             io::ErrorKind::AlreadyExists,
                             "unique index constraint violated",

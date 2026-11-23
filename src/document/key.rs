@@ -3,7 +3,7 @@ use std::io;
 
 pub(super) const PREFIX: &[u8] = b"\0emda-document\x01";
 const MAX_NAME_BYTES: usize = 128;
-const MAX_ID_BYTES: usize = 256;
+pub(super) const MAX_ID_BYTES: usize = 256;
 
 pub(super) fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)

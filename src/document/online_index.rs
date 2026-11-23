@@ -364,33 +364,29 @@ impl DocumentTransaction<'_, '_> {
                 key::id(id).map_err(|_| invalid_data("invalid document ID"))?;
                 let document = Self::decode_document(bytes, &metadata.schema)?;
                 if let Some(keys) = index::keys(collection, &definition, &document, id)? {
-                    match this.read(&keys.entry)? {
-                        Some(value) if value.is_empty() => {
-                            if let Some(unique) = &keys.unique {
-                                if this.read(unique)?.as_deref() != Some(id.as_bytes()) {
-                                    return Err(invalid_data("invalid pending unique index entry"));
-                                }
+                    if this.has_index_entry(&keys.entry)? {
+                        if let Some(unique) = &keys.unique {
+                            if this.read_unique_owner(unique)?.as_deref() != Some(id.as_bytes()) {
+                                return Err(invalid_data("invalid pending unique index entry"));
                             }
                         }
-                        Some(_) => return Err(invalid_data("invalid pending index entry")),
-                        None => {
-                            if let Some(unique) = &keys.unique {
-                                if let Some(owner) = this.read(unique)? {
-                                    if owner == id.as_bytes() {
-                                        return Err(invalid_data(
-                                            "unique entry has no document index entry",
-                                        ));
-                                    }
-                                    return Err(io::Error::new(
-                                        io::ErrorKind::AlreadyExists,
-                                        "unique index build found a duplicate",
+                    } else {
+                        if let Some(unique) = &keys.unique {
+                            if let Some(owner) = this.read_unique_owner(unique)? {
+                                if owner == id.as_bytes() {
+                                    return Err(invalid_data(
+                                        "unique entry has no document index entry",
                                     ));
                                 }
+                                return Err(io::Error::new(
+                                    io::ErrorKind::AlreadyExists,
+                                    "unique index build found a duplicate",
+                                ));
                             }
-                            this.write(&keys.entry, &[])?;
-                            if let Some(unique) = keys.unique {
-                                this.write(&unique, id.as_bytes())?;
-                            }
+                        }
+                        this.write(&keys.entry, &[])?;
+                        if let Some(unique) = keys.unique {
+                            this.write(&unique, id.as_bytes())?;
                         }
                     }
                 }

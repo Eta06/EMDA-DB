@@ -301,7 +301,7 @@ impl DocumentTransaction<'_, '_> {
                 ));
             }
             if let Some(unique) = expected.unique {
-                if self.read(&unique)?.as_deref() != Some(id.as_bytes()) {
+                if self.read_unique_owner(&unique)?.as_deref() != Some(id.as_bytes()) {
                     return Err(invalid_data("invalid unique index entry"));
                 }
             }
