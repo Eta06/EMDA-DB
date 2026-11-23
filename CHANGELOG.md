@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Group adjacent integers on the last field of a compound membership
+  query before rejecting a plan for exceeding the exact-tuple probe cap.
+
 - Narrow indexed membership probes with required mixed-type lists when a
   separate required list already covers every possible match with scalars.
 

@@ -640,22 +640,36 @@ fn independent_literal_disjunctions_share_the_compound_probe_limit() {
             .unwrap();
         db.insert("items", "outside", &json!({"a":16,"b":16}))
             .unwrap();
-        let choices = |field, count| {
-            DocumentFilter::Or((0..count).map(|value| eq(field, json!(value))).collect())
+        let choices = |field, count, step| {
+            DocumentFilter::Or(
+                (1..=count)
+                    .map(|value| eq(field, json!(value * step - 1)))
+                    .collect(),
+            )
         };
-        for (count, expected) in [
+        for (count, step, expected) in [
             (
                 16,
+                1,
                 DocumentQueryAccess::CompoundMembershipIndex {
                     index: "compound".into(),
                     fields: 2,
                     probes: 256,
                 },
             ),
-            (17, access(&["compound"], 16)),
+            (
+                17,
+                1,
+                DocumentQueryAccess::CompoundMembershipRangeIndex {
+                    index: "compound".into(),
+                    prefix_fields: 1,
+                    probes: 16,
+                },
+            ),
+            (17, 2, access(&["compound"], 16)),
         ] {
             let query = request(
-                DocumentFilter::And(vec![choices("a", 16), choices("b", count)]),
+                DocumentFilter::And(vec![choices("a", 16, 1), choices("b", count, step)]),
                 2,
             );
             let planned = db.query_planned("items", &query).unwrap();

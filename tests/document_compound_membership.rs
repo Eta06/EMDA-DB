@@ -195,7 +195,20 @@ fn compound_probe_product_is_bounded_before_allocating() {
         let exact = query(and(vec![inside("a", values(16)), inside("b", values(16))]));
         compare(db, &exact, access(256, false));
         let above = query(and(vec![inside("a", values(17)), inside("b", values(16))]));
-        compare(db, &above, DocumentQueryAccess::CollectionScan);
+        compare(
+            db,
+            &above,
+            DocumentQueryAccess::CompoundMembershipRangeIndex {
+                index: "pair".into(),
+                prefix_fields: 1,
+                probes: 17,
+            },
+        );
+        let sparse = query(and(vec![
+            inside("a", values(17)),
+            inside("b", (0..16).map(|n| json!(2 * n + 1)).collect()),
+        ]));
+        compare(db, &sparse, DocumentQueryAccess::CollectionScan);
 
         db.insert("c", "outside-membership", &json!({"a": 1, "b": -1}))
             .unwrap();

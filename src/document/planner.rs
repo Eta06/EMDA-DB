@@ -487,20 +487,20 @@ fn compound_membership(
     required: &[Predicate<'_>],
     fields: &[Vec<String>],
 ) -> io::Result<Option<Vec<Vec<IndexValue>>>> {
-    let Some((choices, has_membership)) = compound_choices(required, fields)? else {
-        return Ok(None);
-    };
-    Ok((has_membership && choices.len() == fields.len()).then(|| expand_tuples(choices)))
+    let (choices, has_membership) = compound_choices(required, fields)?;
+    Ok((has_membership
+        && choices.len() == fields.len()
+        && fits_probe_product(&choices, MAX_INDEX_PROBES))
+    .then(|| expand_tuples(choices)))
 }
 
-// Gather the longest constrained prefix. Reject an excessive product before
-// building it. The caller establishes completeness for any omitted fields.
+// Gather factors without expanding them. Callers check the probe product
+// after choosing exact tuples or grouped integer ranges.
 fn compound_choices(
     required: &[Predicate<'_>],
     fields: &[Vec<String>],
-) -> io::Result<Option<(Vec<Vec<IndexValue>>, bool)>> {
+) -> io::Result<(Vec<Vec<IndexValue>>, bool)> {
     let mut choices = Vec::with_capacity(fields.len());
-    let mut probe_count = 1_usize;
     let mut has_membership = false;
     for field in fields {
         let values = if let Some(value) = required_equality(required, field)? {
@@ -516,16 +516,20 @@ fn compound_choices(
             has_membership = true;
             values
         };
-        let Some(count) = probe_count
-            .checked_mul(values.len())
-            .filter(|&count| count <= MAX_INDEX_PROBES)
-        else {
-            return Ok(None);
-        };
-        probe_count = count;
         choices.push(values);
     }
-    Ok(Some((choices, has_membership)))
+    Ok((choices, has_membership))
+}
+
+fn fits_probe_product(choices: &[Vec<IndexValue>], max: usize) -> bool {
+    choices
+        .iter()
+        .try_fold(1_usize, |count, values| {
+            count
+                .checked_mul(values.len())
+                .filter(|&count| count <= max)
+        })
+        .is_some()
 }
 
 // The distinct alternatives within each field yield disjoint prefixes.
@@ -808,16 +812,17 @@ fn choose_index<'a>(
         .chain(indexes.iter().filter(|index| !index.unique))
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
-        let Some((mut choices, has_membership)) = compound_choices(required, &index.fields)? else {
-            continue;
-        };
+        let (mut choices, has_membership) = compound_choices(required, &index.fields)?;
         if !has_membership || choices.len() != index.fields.len() {
             continue;
         }
         let last = choices.len() - 1;
+        let exact_fits = fits_probe_product(&choices, MAX_INDEX_PROBES);
         if allow_integer_runs && choices[..last].iter().any(|values| values.len() > 1) {
-            if let Some(runs) = consecutive_integer_runs(&choices[last]) {
-                if required_range(required, &index.fields[last])?.is_some() {
+            if let Some(runs) = consecutive_integer_runs(&choices[last])
+                .filter(|runs| fits_probe_product(&choices[..last], MAX_INDEX_PROBES / runs.len()))
+            {
+                if !exact_fits || required_range(required, &index.fields[last])?.is_some() {
                     choices.pop();
                     return Ok(Some((
                         index,
@@ -828,6 +833,9 @@ fn choose_index<'a>(
                     )));
                 }
             }
+        }
+        if !exact_fits {
+            continue;
         }
         return Ok(Some((
             index,
@@ -890,19 +898,19 @@ fn choose_prefix<'a>(
         .iter()
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
-        if let Some((choices, _)) = compound_choices(required, &index.fields)? {
-            let prefix_fields = choices.len();
-            if prefix_fields > 0
-                && prefix_fields < index.fields.len()
-                && index.fields[prefix_fields..]
-                    .iter()
-                    .all(|field| required_presence(required, field, true))
-            {
-                return Ok(Some((
-                    index,
-                    Selection::CompoundPrefix(expand_tuples(choices)),
-                )));
-            }
+        let (choices, _) = compound_choices(required, &index.fields)?;
+        let prefix_fields = choices.len();
+        if prefix_fields > 0
+            && prefix_fields < index.fields.len()
+            && fits_probe_product(&choices, MAX_INDEX_PROBES)
+            && index.fields[prefix_fields..]
+                .iter()
+                .all(|field| required_presence(required, field, true))
+        {
+            return Ok(Some((
+                index,
+                Selection::CompoundPrefix(expand_tuples(choices)),
+            )));
         }
     }
     Ok(None)

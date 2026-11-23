@@ -170,7 +170,7 @@ The planner can find required scalar predicates inside conjunctions, double nega
 
 For a required multi-value `In` whose values are all indexable, the planner may use a single-field index as a union of exact-value probes. It deduplicates input values by index encoding, combines the existing candidate and original-document-byte limits across all probes, restores ID order, and applies the complete filter before pagination and projection. Probes share the transaction's read-set protections. Equality and range choices retain their earlier priority. A multi-value list can start this union when all its surviving alternatives are indexable. The 256-value input limit bounds distinct single-field probes; these are not total time or memory guarantees.
 
-After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. A product above that cap or an unconstrained field cannot use this compound union. An implied partial index is eligible under the same guard rules. Full tuples prevent omitted missing fields from producing incomplete results. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes.
+After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. The exact-tuple union requires a product within that cap and a constraint on every indexed field. An implied partial index is eligible under the same guard rules. Full tuples prevent omitted missing fields from producing incomplete results. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes.
 
 When multiple required multi-value membership lists constrain one field,
 the planner intersects their indexable alternatives before building
@@ -199,6 +199,11 @@ exact probe and a longer run uses an inclusive range. Values in the gaps
 consume no candidate budget when the grouped probes fit the 256-probe cap.
 The existing range fallback remains available for larger probe counts.
 The normal candidate budgets and read-set checks apply to the resulting probes.
+A complete compound membership query that exceeds the exact-tuple cap can
+also group consecutive integers on its last field before applying the cap.
+Each group still has a complete preceding equality prefix, and all resulting
+probes share the 256-probe budget. If those probes exceed the cap, the planner
+continues to its other access paths.
 When every surviving value is an integer, consecutive values can share an
 inclusive range probe. The planner reports this access as
 `IntegerMembershipIndex`, with the number of preceding equality fields and

@@ -1496,6 +1496,68 @@ fn membership_range_probe_products_share_the_disjunction_limit() {
 }
 
 #[test]
+fn compound_integer_groups_fit_before_exact_tuple_expansion() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            index(
+                &["tenant", "score"],
+                Some(PartialFilter::Exists {
+                    path: path("active"),
+                    exists: true,
+                }),
+            ),
+        )
+        .unwrap();
+        for (id, tenant, score, active) in [
+            ("first", 0, i64::MIN, true),
+            ("last", 127, i64::MAX, true),
+            ("gap", 0, i64::MIN + 2, true),
+            ("outside", 128, i64::MAX, true),
+            ("inactive", 0, i64::MIN, false),
+        ] {
+            let mut document = json!({"tenant": tenant, "score": score});
+            if active {
+                document["active"] = json!(true);
+            }
+            db.insert("c", id, &document).unwrap();
+        }
+        let filter = |tenants| {
+            and(vec![
+                membership("tenant", (0..tenants).map(|n| json!(n)).collect()),
+                membership(
+                    "score",
+                    vec![json!(i64::MIN), json!(i64::MIN + 1), json!(i64::MAX)],
+                ),
+                exists("active", true),
+            ])
+        };
+        let expected = membership_range_access(1, 256, true);
+        let scan = query(filter(128), 8);
+        compare(db, &scan, expected.clone());
+        let tight = db.query_planned("c", &query(filter(128), 2)).unwrap();
+        assert_eq!(tight.access, expected);
+        assert_eq!(tight.result.plan.scanned, 2);
+        assert_eq!(
+            tight
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "last"]
+        );
+        compare(
+            db,
+            &query(filter(129), 8),
+            DocumentQueryAccess::CollectionScan,
+        );
+    });
+}
+
+#[test]
 fn empty_membership_prefix_ranges_detect_matching_phantoms() {
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1512,35 +1574,59 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
         (2, "z", 4, true),
         (2, "z", 5, false),
         (2, "z", 6, true),
+        (3, "z", 4, true),
+        (3, "z", 5, false),
     ] {
         on_backends(|db| {
             db.create_collection("c", CollectionSchema::default())
                 .unwrap();
             db.create_index("c", index(&["tenant", "score"], None))
                 .unwrap();
-            let mut filters = vec![
-                membership("tenant", vec![json!("a"), json!("z")]),
-                cmp(
-                    "score",
-                    Comparison::GreaterOrEqual,
-                    IndexValue::Integer(if runs == 0 { 3 } else { 0 }),
-                ),
-                cmp(
-                    "score",
-                    Comparison::Less,
-                    IndexValue::Integer(if runs == 0 { 4 } else { 8 }),
-                ),
-            ];
-            if runs > 0 {
-                let mut scores = vec![json!(3), json!(4), json!(9)];
-                if runs == 2 {
-                    scores.push(json!(6));
-                    scores.push(json!(7));
+            let (request, access) = if runs == 3 {
+                let tenants = (0..15)
+                    .map(|n| json!(n))
+                    .chain([json!("a"), json!("z")])
+                    .collect();
+                (
+                    query(
+                        and(vec![
+                            membership("tenant", tenants),
+                            membership(
+                                "score",
+                                (-10..=4).map(|n| json!(n)).chain([json!(6)]).collect(),
+                            ),
+                        ]),
+                        4,
+                    ),
+                    membership_range_access(1, 34, false),
+                )
+            } else {
+                let mut filters = vec![
+                    membership("tenant", vec![json!("a"), json!("z")]),
+                    cmp(
+                        "score",
+                        Comparison::GreaterOrEqual,
+                        IndexValue::Integer(if runs == 0 { 3 } else { 0 }),
+                    ),
+                    cmp(
+                        "score",
+                        Comparison::Less,
+                        IndexValue::Integer(if runs == 0 { 4 } else { 8 }),
+                    ),
+                ];
+                if runs > 0 {
+                    let mut scores = vec![json!(3), json!(4), json!(9)];
+                    if runs == 2 {
+                        scores.push(json!(6));
+                        scores.push(json!(7));
+                    }
+                    filters.push(membership("score", scores));
                 }
-                filters.push(membership("score", scores));
-            }
-            let request = query(and(filters), 4);
-            let access = membership_range_access(1, 2 * runs.max(1), false);
+                (
+                    query(and(filters), 4),
+                    membership_range_access(1, 2 * runs.max(1), false),
+                )
+            };
             let (observed, read) = mpsc::channel();
             let (committed, written) = mpsc::channel();
             let result = std::thread::scope(|scope| {
