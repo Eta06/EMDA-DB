@@ -25,7 +25,25 @@ The initial document interface is bounded and experimental. This checklist recor
 - [x] Run [longer recovery, checkpoint, incremental-index and schema-migration fuzz campaigns](EXTENDED_RECOVERY_FUZZ_2026_11_05.md) on `4a2df54`, including 38,587 generated document-model executions without a finding. These serial runs do not cover concurrent schedules or physical power loss.
 - [x] Exercise 800 [document transaction process-kill races](DOCUMENT_KILL_RACES_2026_11_05.md) across both writer backends and two local filesystems; all recovered acknowledged document/index/raw-key transactions, with the interrupted transaction fully present or absent. This is not physical power-loss validation.
 - [x] Recover exact copies of each interrupted document store independently through the ordinary and checkpoint paths. Copies retain the V2 witness or the V3 anchor and metadata witness. In 400 timed kills on Linux ARM64 ext4 and 200 on macOS, both paths agreed and preserved acknowledged documents, unique indexes and raw receipts. Both advanced the witness in 189 cases with a complete tail. The timed cases did not produce a torn record. Another 24 exact-input cases, derived from the captured document batch, cover clean prefixes, complete acknowledged and unacknowledged tails, and a torn tail that both paths reject without changing the log or witness. Reproduce with `EMDA_DOCUMENT_KILL_REPETITIONS=25 cargo test --locked --test document_kill_races -- --nocapture`. These are process kills on a running OS and explicit file-state checks.
-- [ ] Expand transaction history/model checking and longer interruption/storage-fault campaigns specifically for document/index operations. A [three-minute-per-target model run](../benchmarks/results/2026-11-04-online-document-fuzz.json) exercised 14,802 incremental-index and 16,292 schema-migration inputs without a finding; these serial generated cases do not exhaust concurrent histories or model physical power loss. Targeted V2 partial-log and V3 metadata-failure tests verify that document, unique index and raw-key updates recover together or fail closed; local backup/restore covers both writable backends. Run longer fuzz campaigns and retain any reproducer. A process kill is not a power failure.
+- [x] Expand document and index transaction models and interruption campaigns.
+  The [chained history campaign](../benchmarks/results/2026-11-23-chained-document-histories/README.md)
+  checks 86,016 concurrent calls and 24,576 clean reopens. The
+  [document interruption campaign](../benchmarks/results/2026-11-22-retained-witness-write-crash/README.md)
+  covers 800 timed kills, deterministic torn records and authority boundaries.
+  The [extended Linux campaigns](../benchmarks/results/2026-11-16-linux-arm64-document-fuzz.tar.gz)
+  preserve the generated input corpora for index and schema maintenance.
+
+  The file-authorized model chains seven concurrent calls per window without
+  resetting the state. It checks successful unique claims and releases,
+  the balance index, and the raw mirror against the serial history. Each
+  window forces rotation and checks the separately read authority endpoint,
+  raw epoch, and collection after reopening. The Rust 1.85.0 runs on
+  macOS ARM64 APFS and Linux ARM64 ext4 each checked 512 windows,
+  3,584 calls, and 512 reopens. macOS committed 28 claims and 28
+  releases. Linux committed 34 of each. Reproduce with
+  `EMDA_AUTHORIZED_DOCUMENT_MODEL_WINDOWS=512 cargo test --locked --test document_transaction_model authorized_document_histories -- --nocapture`.
+  This backend admits one transaction at a time and can reject concurrent
+  calls as busy. The file-authorized model samples clean closes and reopens.
 - [x] Run five-minute instrumented Linux ARM64 VM campaigns for incremental index and schema migration. Starting from empty corpora, the runs executed 224,341 and 299,233 inputs respectively without a reported finding; [logs and generated corpora](../benchmarks/results/2026-11-16-linux-arm64-document-fuzz.tar.gz) are retained. The tested `online_index.rs` SHA-256 was `c92bbb26e650a588a13de4fc73257690de69852e1ad6c813f2f152ab3f1cd7ec`, and `schema_migration.rs` was `10e2d341c5e86e3e36ec6e5d5124d39b1400e1ce839db822a71e9615678737ec`. Inputs were limited to 4,096 bytes; these serial model campaigns do not establish concurrent or physical power-loss behavior.
 - [x] Check [grouped integer probes and document maintenance](../benchmarks/results/2026-11-23-document-grouped-range-model/README.md)
   against their models. Linux ARM64 completed 116,226 fuzz executions

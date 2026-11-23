@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 use database_engine::RetainedExportLimits;
 use database_engine::retained_base_v2::Limits;
 use database_engine::retained_candidate::{
-    IndexLimits, ManagedRetainedStore, OverlayLimits, RetainedStoreLimits, SuffixLimits,
+    AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits, ManagedRetainedStore,
+    OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 
 mod support;
@@ -29,6 +30,34 @@ struct State {
 const INITIAL_STATE: State = State {
     amounts: [3, 2],
     claim: None,
+};
+
+const RETAINED_LIMITS: RetainedStoreLimits = RetainedStoreLimits {
+    base: Limits {
+        file_bytes: 65_536,
+        entries: 256,
+        key_bytes: 8_192,
+        work_bytes: 65_537,
+    },
+    index: IndexLimits {
+        blocks: 4,
+        anchor_bytes: 1_024,
+    },
+    suffix: SuffixLimits {
+        bytes: 65_536,
+        operations: 256,
+        work: 65_536,
+    },
+    overlay: OverlayLimits {
+        entries: 256,
+        key_bytes: 8_192,
+    },
+};
+const RETAINED_EXPORT: RetainedExportLimits = RetainedExportLimits {
+    max_log_bytes: 65_536,
+    max_live_keys: 256,
+    max_live_key_bytes: 8_192,
+    max_output_bytes: 65_536,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -694,45 +723,14 @@ fn retained_document_histories_serialize_and_recover_across_reclamation() {
         .map(|value| value.parse::<usize>().unwrap())
         .unwrap_or(48);
     assert!((1..=8192).contains(&histories));
-    let limits = RetainedStoreLimits {
-        base: Limits {
-            file_bytes: 65_536,
-            entries: 256,
-            key_bytes: 8_192,
-            work_bytes: 65_537,
-        },
-        index: IndexLimits {
-            blocks: 4,
-            anchor_bytes: 1_024,
-        },
-        suffix: SuffixLimits {
-            bytes: 65_536,
-            operations: 256,
-            work: 65_536,
-        },
-        overlay: OverlayLimits {
-            entries: 256,
-            key_bytes: 8_192,
-        },
-    };
+    let limits = RETAINED_LIMITS;
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");
     let catalog = root.path().join("catalog");
     let initial = retry_lock(|| Store::open(&source)).unwrap();
     initialize(&DocumentDatabase::new(&initial));
-    ManagedRetainedStore::copy_from_store(
-        initial,
-        &source,
-        &catalog,
-        RetainedExportLimits {
-            max_log_bytes: 65_536,
-            max_live_keys: 256,
-            max_live_key_bytes: 8_192,
-            max_output_bytes: 65_536,
-        },
-        limits,
-    )
-    .unwrap();
+    ManagedRetainedStore::copy_from_store(initial, &source, &catalog, RETAINED_EXPORT, limits)
+        .unwrap();
 
     let mut backend =
         ManagedRetainedStore::open_with_auto_reclaim(&catalog, limits, NonZeroU64::MIN).unwrap();
@@ -793,5 +791,107 @@ fn retained_document_histories_serialize_and_recover_across_reclamation() {
     assert!(cancelled >= histories);
     println!(
         "retained histories={histories} cancelled={cancelled} completed={completed} busy={busy} rotation_histories={rotations}"
+    );
+}
+
+#[test]
+fn authorized_document_histories_chain_across_rotation_and_reopen() {
+    let windows = std::env::var("EMDA_AUTHORIZED_DOCUMENT_MODEL_WINDOWS")
+        .ok()
+        .map(|value| value.parse::<usize>().unwrap())
+        .unwrap_or(48);
+    assert!((1..=4096).contains(&windows));
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let catalog = root.path().join("catalog");
+    let authority = root.path().join("authority");
+    let store = retry_lock(|| Store::open(&source)).unwrap();
+    initialize(&DocumentDatabase::new(&store));
+    let prepared = AuthorizedRetainedStore::<FileRetainedAuthority>::prepare_from_store(
+        store,
+        &source,
+        &catalog,
+        RETAINED_EXPORT,
+        RETAINED_LIMITS,
+    )
+    .unwrap();
+    let mut observer = FileRetainedAuthority::create(&authority).unwrap();
+    assert!(observer.compare_and_swap(None, prepared).unwrap());
+    let open = || {
+        AuthorizedRetainedStore::open_with_auto_reclaim(
+            &catalog,
+            RETAINED_LIMITS,
+            FileRetainedAuthority::open(&authority).unwrap(),
+            NonZeroU64::MIN,
+        )
+        .unwrap()
+    };
+    let mut backend = open();
+    backend.put(b"model-epoch", b"seed").unwrap();
+    let mut generation = prepared.committed.generation;
+    let mut expected = INITIAL_STATE;
+    let (mut cancelled, mut busy, mut completed, mut claims, mut releases) = (0, 0, 0, 0, 0);
+    for window in 0..windows {
+        let epoch = (window as u64).to_le_bytes();
+        backend.put(b"model-epoch", &epoch).unwrap();
+        {
+            let db = DocumentDatabase::with_authorized_retained_store(&mut backend);
+            assert_eq!(
+                read_state(&db),
+                expected,
+                "authorized window={window} start"
+            );
+            let events = record_history(&db, window, true, &CHAINED_OPERATIONS);
+            let observed = read_state(&db);
+            assert!(
+                serializes_from(&expected, &events, &observed),
+                "authorized window={window} initial={expected:?} events={events:?} final={observed:?}"
+            );
+            expected = observed;
+            for event in events {
+                match (event.operation, event.outcome) {
+                    (_, Outcome::Cancelled) => cancelled += 1,
+                    (_, Outcome::Busy) => busy += 1,
+                    (_, Outcome::Duplicate | Outcome::Conflict) => {}
+                    (Operation::Claim(_), Outcome::Claimed) => {
+                        completed += 1;
+                        claims += 1;
+                    }
+                    (Operation::Release, Outcome::Write(before))
+                        if !before.claim_index.is_empty() =>
+                    {
+                        completed += 1;
+                        releases += 1;
+                    }
+                    _ => completed += 1,
+                }
+            }
+        }
+        let committed = observer.read().unwrap().unwrap();
+        assert!(committed.pending.is_none());
+        assert_ne!(committed.committed.generation, generation);
+        generation = committed.committed.generation;
+        drop(backend);
+        backend = open();
+        let reopened = observer.read().unwrap().unwrap();
+        assert!(reopened.pending.is_none());
+        assert_eq!(reopened.committed, committed.committed);
+        assert_eq!(
+            backend.get(b"model-epoch", epoch.len()).unwrap().as_deref(),
+            Some(epoch.as_slice()),
+            "authorized window={window} recovered epoch"
+        );
+        assert_eq!(
+            read_state(&DocumentDatabase::with_authorized_retained_store(
+                &mut backend
+            )),
+            expected,
+            "authorized window={window} recovery"
+        );
+    }
+    assert!(cancelled >= windows);
+    println!(
+        "authorized windows={windows} calls={} reopens={windows} rotation_windows={windows} cancelled={cancelled} busy={busy} completed={completed} claims={claims} releases={releases}",
+        windows * CHAINED_OPERATIONS.len(),
     );
 }
