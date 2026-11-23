@@ -640,7 +640,7 @@ fn find(entries: &[OverlayEntry], key: &[u8]) -> Result<usize, usize> {
     entries.binary_search_by(|entry| entry.key.as_slice().cmp(key))
 }
 
-fn admit_key(
+pub(super) fn admit_key(
     limits: OverlayLimits,
     count: usize,
     key_bytes: usize,

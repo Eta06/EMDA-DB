@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Allow file-backed detached replay and restore to cap distinct suffix keys
+  and their bytes independently of the live data.
+
 - Bound retained catalog quota checks to one directory iterator at a time,
   so admitted deep catalogs can reopen within a low descriptor limit.
 

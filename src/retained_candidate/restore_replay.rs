@@ -1,7 +1,8 @@
 use super::suffix_file::SuffixFile;
 use super::{
-    Expected, Limits, ReplayBudget, SuffixExpected, SuffixLimits, charge_suffix_work,
-    check_binding, copy_replay_bytes, invalid, open_suffix, preflight_replay_base, suffix_capacity,
+    DetachedReplayLimits, Expected, Limits, ReplayBudget, SuffixExpected, SuffixLimits,
+    charge_suffix_work, check_binding, copy_replay_bytes, invalid, open_suffix,
+    preflight_replay_base, suffix_capacity,
 };
 use crate::retained_base_v2::index::OverlayValue;
 use crate::retained_base_v2::{
@@ -51,6 +52,26 @@ impl RestoreReplay {
         suffix_limits: SuffixLimits,
         expected: &SuffixExpected,
     ) -> io::Result<Self> {
+        Self::open_with_limits(
+            candidate,
+            suffix,
+            DetachedReplayLimits::from_existing(limits, staging, suffix_limits),
+            expected,
+        )
+    }
+
+    pub(super) fn open_with_limits(
+        candidate: &Path,
+        suffix: &Path,
+        limits: DetachedReplayLimits,
+        expected: &SuffixExpected,
+    ) -> io::Result<Self> {
+        let DetachedReplayLimits {
+            base: limits,
+            staging,
+            suffix: suffix_limits,
+            touched,
+        } = limits;
         let (suffix, len) = open_suffix(suffix, suffix_limits, expected.end)?;
         let (base, entries) =
             preflight_replay_base(candidate, limits, staging, suffix_limits, expected)?;
@@ -62,7 +83,8 @@ impl RestoreReplay {
         let boundary = Some((len, expected.digest));
         let mut minimum_work = entries;
         let mut minimum_live = usize::try_from(entries).map_err(|_| invalid())?;
-        let mut touched = HashMap::new();
+        let mut touched_keys = HashMap::new();
+        let mut touched_key_bytes = 0;
         // Keep discovered keys private until replay authenticates the suffix.
         let discovery = source.replay::<()>(boundary, suffix_limits.operations, |key, value| {
             // Puts cannot shrink the live set. Each delete can remove at
@@ -71,14 +93,20 @@ impl RestoreReplay {
             if value.is_none() {
                 minimum_live = minimum_live.saturating_sub(1);
             }
-            if !touched.contains_key(key) {
-                touched.try_reserve(1).map_err(io::Error::other)?;
-                touched.insert(copy_replay_bytes(key)?, None);
+            if !touched_keys.contains_key(key) {
+                touched_key_bytes = super::indexed_suffix::admit_key(
+                    touched,
+                    touched_keys.len(),
+                    touched_key_bytes,
+                    key,
+                )?;
+                touched_keys.try_reserve(1).map_err(io::Error::other)?;
+                touched_keys.insert(copy_replay_bytes(key)?, None);
             }
             Ok(())
         });
         if let Err(error) = discovery {
-            drop(touched);
+            drop(touched_keys);
             // A parser or budget error can end discovery before the final
             // boundary. Check the raw binding before reporting that error.
             let mut hash = Sha256::new();
@@ -95,7 +123,7 @@ impl RestoreReplay {
             return Err(invalid());
         }
         let metadata = scan_value_lengths(&base, limits, staging, |key, length| {
-            if let Some(value) = touched.get_mut(key) {
+            if let Some(value) = touched_keys.get_mut(key) {
                 *value = Some(ReplayValue::BaseLength(length));
             }
             Ok(())
@@ -119,7 +147,7 @@ impl RestoreReplay {
             // though only suffix-touched keys are stored during replay.
             let live = usize::try_from(budget.entries).map_err(|_| invalid())?;
             charge_suffix_work(&mut budget.work, budget.work_limit, live)?;
-            let current = touched.get_mut(key).ok_or_else(invalid)?;
+            let current = touched_keys.get_mut(key).ok_or_else(invalid)?;
             let next = budget.changed_live_set(
                 key,
                 current.as_ref().map(ReplayValue::len),
@@ -137,9 +165,9 @@ impl RestoreReplay {
         })?;
         let mut changes = Vec::new();
         changes
-            .try_reserve_exact(touched.len())
+            .try_reserve_exact(touched_keys.len())
             .map_err(io::Error::other)?;
-        for (key, value) in touched {
+        for (key, value) in touched_keys {
             let location = match value {
                 None => None,
                 Some(ReplayValue::SuffixLocation(location)) => Some(location),

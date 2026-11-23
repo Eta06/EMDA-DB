@@ -287,6 +287,15 @@ later passes that need them.
 Offline restore and private suffix-export staging authenticate the suffix
 while discovering touched keys. If discovery returns an error, a raw
 digest check distinguishes changed bytes from a replay error.
+`open_exported_suffix_with_limits` and `restore_exported_suffix_with_limits`
+accept independent ceilings on the number of distinct suffix keys and
+their total key bytes. Discovery charges each key once, even if its last
+mutation is a tombstone or the key was never live. It checks the ceilings
+before adding the key to the map. Restore rejects a limit breach before
+creating a destination stage. The original entry points derive their
+ceilings from the existing suffix byte and operation limits. These are
+logical bounds and exclude map and sort overhead, batch scratch and
+returned values.
 Suffix export uses the independently bound base frame to select the historic
 source boundary, then authenticates the base while comparing its entries
 with the reconstructed source prefix. Comparison results are used only

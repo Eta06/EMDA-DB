@@ -429,6 +429,38 @@ pub struct SuffixLimits {
     pub work: u64,
 }
 
+/// Independent input limits for file-backed detached replay.
+#[derive(Clone, Copy, Debug)]
+pub struct DetachedReplayLimits {
+    pub base: Limits,
+    pub staging: retained_base_v2::StagingLimits,
+    pub suffix: SuffixLimits,
+    /// Caps distinct suffix keys and their logical bytes, including deletes
+    /// of absent keys. Repeated operations on one key share its reservation.
+    /// Map and sort storage, batch metadata and buffers have separate costs.
+    pub touched: OverlayLimits,
+}
+
+impl DetachedReplayLimits {
+    fn from_existing(
+        base: Limits,
+        staging: retained_base_v2::StagingLimits,
+        suffix: SuffixLimits,
+    ) -> Self {
+        // Every stored key consumes one operation and physical suffix bytes.
+        // Derive non-restrictive ceilings for APIs predating explicit limits.
+        Self {
+            base,
+            staging,
+            suffix,
+            touched: OverlayLimits {
+                entries: usize::try_from(suffix.operations.min(suffix.bytes)).unwrap_or(usize::MAX),
+                key_bytes: usize::try_from(suffix.bytes).unwrap_or(usize::MAX),
+            },
+        }
+    }
+}
+
 /// Open a detached exported suffix and privately replay it with its candidate.
 /// The independently retained binding identifies the candidate's source and
 /// captured boundary and the exact suffix endpoint and digest; it is not proof
@@ -459,6 +491,18 @@ pub fn open_exported_suffix(
         expected,
     )?
     .into_entries()
+}
+
+/// Privately replay a detached suffix with an additional touched-key ceiling.
+/// This otherwise has the same contract as [`open_exported_suffix`].
+pub fn open_exported_suffix_with_limits(
+    directory: impl AsRef<Path>,
+    suffix_path: impl AsRef<Path>,
+    limits: DetachedReplayLimits,
+    expected: &SuffixExpected,
+) -> io::Result<Vec<crate::Entry>> {
+    RestoreReplay::open_with_limits(directory.as_ref(), suffix_path.as_ref(), limits, expected)?
+        .into_entries()
 }
 
 fn read_suffix(path: &Path, limits: SuffixLimits, end: u64) -> io::Result<Vec<u8>> {
@@ -968,19 +1012,40 @@ pub fn restore_exported_suffix(
     expected: &SuffixExpected,
     output: RestoreLimits,
 ) -> Result<(), crate::PublicationFailure> {
-    restore_with_sync(
+    restore_exported_suffix_with_limits(
+        candidate,
+        suffix,
+        destination,
+        DetachedReplayLimits::from_existing(limits, staging, suffix_limits),
+        expected,
+        output,
+    )
+}
+
+/// Restore a new store with an independent ceiling on suffix-touched keys.
+/// An exceeded ceiling rejects the restore before creating a stage.
+/// See [`restore_exported_suffix`] for the binding and publication contract.
+pub fn restore_exported_suffix_with_limits(
+    candidate: impl AsRef<Path>,
+    suffix: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    limits: DetachedReplayLimits,
+    expected: &SuffixExpected,
+    output: RestoreLimits,
+) -> Result<(), crate::PublicationFailure> {
+    restore_using(
         candidate.as_ref(),
         suffix.as_ref(),
         destination.as_ref(),
         limits,
-        staging,
-        suffix_limits,
         expected,
         output,
         crate::directory::sync_existing,
+        |_| Ok(()),
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn restore_with_sync(
     candidate: &Path,
@@ -1007,6 +1072,7 @@ pub(crate) fn restore_with_sync(
     )
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn restore_with_hooks(
     candidate: &Path,
@@ -1015,6 +1081,29 @@ pub(crate) fn restore_with_hooks(
     limits: Limits,
     staging: retained_base_v2::StagingLimits,
     suffix_limits: SuffixLimits,
+    expected: &SuffixExpected,
+    output: RestoreLimits,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    hook: impl Fn(&str) -> io::Result<()>,
+) -> Result<(), crate::PublicationFailure> {
+    restore_using(
+        candidate,
+        suffix,
+        destination,
+        DetachedReplayLimits::from_existing(limits, staging, suffix_limits),
+        expected,
+        output,
+        sync_parent,
+        hook,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_using(
+    candidate: &Path,
+    suffix: &Path,
+    destination: &Path,
+    limits: DetachedReplayLimits,
     expected: &SuffixExpected,
     output: RestoreLimits,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
@@ -1030,14 +1119,7 @@ pub(crate) fn restore_with_hooks(
                 "destination parent is inside candidate",
             ));
         }
-        let replay = restore_replay::RestoreReplay::open(
-            candidate,
-            suffix,
-            limits,
-            staging,
-            suffix_limits,
-            expected,
-        )?;
+        let replay = RestoreReplay::open_with_limits(candidate, suffix, limits, expected)?;
         let mut stage = crate::staging::Stage::directory(parent)?;
         let (end, output_digest) = {
             hook("init")?;

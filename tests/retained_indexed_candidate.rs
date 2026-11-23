@@ -1,8 +1,9 @@
 //! Disk-backed access to a fully verified, non-authoritative retained base.
 use database_engine::retained_base_v2::{Limits, StagingLimits};
 use database_engine::retained_candidate::{
-    Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits, RestoreLimits,
-    SuffixExpected, SuffixLimits, open_exported_suffix, restore_exported_suffix,
+    DetachedReplayLimits, Expected, IndexLimits, IndexedCandidate, IndexedSuffix, OverlayLimits,
+    RestoreLimits, SuffixExpected, SuffixLimits, open_exported_suffix,
+    open_exported_suffix_with_limits, restore_exported_suffix, restore_exported_suffix_with_limits,
 };
 use database_engine::{BatchOperation, PublicationFailure, RetainedExportLimits, Store};
 use sha2::{Digest, Sha256};
@@ -33,6 +34,129 @@ fn candidate(root: &Path, entries: &[(&[u8], &[u8])]) -> Expected {
     store
         .build_retained_candidate(root.join("candidate"), [3; 16], [4; 16], EXPORT_LIMITS)
         .unwrap()
+}
+
+#[test]
+fn detached_restore_limits_distinct_touched_keys_before_staging() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path().join("source")).unwrap();
+    store.put(b"keep", b"old").unwrap();
+    let candidate = root.path().join("candidate");
+    let expected = store
+        .build_retained_candidate(&candidate, [3; 16], [4; 16], EXPORT_LIMITS)
+        .unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Delete { key: b"ghost" },
+            BatchOperation::Delete { key: b"other" },
+            BatchOperation::Delete { key: b"ghost" },
+        ])
+        .unwrap();
+    store.put(b"keep", b"new").unwrap();
+    let suffix = root.path().join("suffix");
+    let destination = root.path().join("restored");
+    let exact = DetachedReplayLimits {
+        base: Limits {
+            entries: 1,
+            key_bytes: 4,
+            ..BASE_LIMITS
+        },
+        staging: StagingLimits {
+            value_bytes: 3,
+            staging_bytes: 7,
+        },
+        suffix: SuffixLimits {
+            bytes: 4096,
+            operations: 4,
+            work: 17,
+        },
+        touched: OverlayLimits {
+            entries: 3,
+            key_bytes: 14,
+        },
+    };
+    let binding = store
+        .export_retained_suffix(
+            &candidate,
+            &expected,
+            &suffix,
+            exact.base,
+            exact.staging,
+            exact.suffix,
+            EXPORT_LIMITS,
+        )
+        .unwrap();
+    let restore = |limits| {
+        restore_exported_suffix_with_limits(
+            &candidate,
+            &suffix,
+            &destination,
+            limits,
+            &binding,
+            RestoreLimits {
+                log_bytes: 4096,
+                live_keys: 1,
+                live_key_bytes: 4,
+            },
+        )
+    };
+    let open = |limits| open_exported_suffix_with_limits(&candidate, &suffix, limits, &binding);
+    let names = || {
+        fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before = names();
+    for (touched, message) in [
+        (
+            OverlayLimits {
+                entries: 1,
+                ..exact.touched
+            },
+            "suffix overlay entry limit exceeded",
+        ),
+        (
+            OverlayLimits {
+                key_bytes: 13,
+                ..exact.touched
+            },
+            "suffix overlay key byte limit exceeded",
+        ),
+    ] {
+        let limits = DetachedReplayLimits { touched, ..exact };
+        let error = open(limits).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), message);
+        assert!(matches!(
+            restore(limits),
+            Err(PublicationFailure::NotPublished(error)) if error.to_string() == message
+        ));
+        assert_eq!(names(), before);
+    }
+    let bytes = fs::read(&suffix).unwrap();
+    let mut corrupt = bytes.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    fs::write(&suffix, corrupt).unwrap();
+    let limited = DetachedReplayLimits {
+        touched: OverlayLimits {
+            entries: 1,
+            ..exact.touched
+        },
+        ..exact
+    };
+    assert!(matches!(
+        restore(limited),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert_eq!(names(), before);
+    fs::write(&suffix, bytes).unwrap();
+    let expected_rows = vec![(b"keep".to_vec(), b"new".to_vec())];
+    assert_eq!(open(exact).unwrap(), expected_rows);
+    restore(exact).unwrap();
+    let restored = Store::open(&destination).unwrap();
+    assert_eq!(restored.scan(None, None, 16).unwrap(), expected_rows);
+    assert_eq!(store.scan(None, None, 16).unwrap(), expected_rows);
 }
 
 #[test]
