@@ -1,0 +1,30 @@
+   Compiling database-engine v0.1.0 (/dev/shm/emda-spill-disjoint.3qrnCr)
+    Finished `dev` profile [unoptimized] target(s) in 3.84s
+Linux aarch64
+tmpfs
+EMDALOG3
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+baseline keys=65536 rchar=186884776 syscr=21567 elapsed_us=1472745
+460daf09dfa83364f20f0e68357b14d189964af2f2d18142f08810a7d2d0fa04  /dev/shm/emda-spill-disjoint.3qrnCr/final-disjoint-1-baseline/checkpoint
+changed keys=65536 rchar=130809704 syscr=14395 elapsed_us=1149464
+460daf09dfa83364f20f0e68357b14d189964af2f2d18142f08810a7d2d0fa04  /dev/shm/emda-spill-disjoint.3qrnCr/final-disjoint-1-changed/checkpoint
+changed keys=65536 rchar=130809704 syscr=14395 elapsed_us=1148092
+460daf09dfa83364f20f0e68357b14d189964af2f2d18142f08810a7d2d0fa04  /dev/shm/emda-spill-disjoint.3qrnCr/final-disjoint-2-changed/checkpoint
+baseline keys=65536 rchar=186884776 syscr=21567 elapsed_us=1470360
+460daf09dfa83364f20f0e68357b14d189964af2f2d18142f08810a7d2d0fa04  /dev/shm/emda-spill-disjoint.3qrnCr/final-disjoint-2-baseline/checkpoint
+baseline keys=65536 rchar=186884776 syscr=21567 elapsed_us=1477890
+460daf09dfa83364f20f0e68357b14d189964af2f2d18142f08810a7d2d0fa04  /dev/shm/emda-spill-disjoint.3qrnCr/final-disjoint-3-baseline/checkpoint
+changed keys=65536 rchar=130809704 syscr=14395 elapsed_us=1214979
+460daf09dfa83364f20f0e68357b14d189964af2f2d18142f08810a7d2d0fa04  /dev/shm/emda-spill-disjoint.3qrnCr/final-disjoint-3-changed/checkpoint
+baseline keys=4096 rchar=190020674 syscr=1426912 elapsed_us=1778626
+34179d3880b99fd2e11ab10d5e29f82adb88f1422588c24b251d80bac5dbe7db  /dev/shm/emda-spill-disjoint.3qrnCr/final-overlap-1-baseline/checkpoint
+changed keys=4096 rchar=171324482 syscr=1424416 elapsed_us=1644574
+34179d3880b99fd2e11ab10d5e29f82adb88f1422588c24b251d80bac5dbe7db  /dev/shm/emda-spill-disjoint.3qrnCr/final-overlap-1-changed/checkpoint
+changed keys=4096 rchar=171324482 syscr=1424416 elapsed_us=1640873
+34179d3880b99fd2e11ab10d5e29f82adb88f1422588c24b251d80bac5dbe7db  /dev/shm/emda-spill-disjoint.3qrnCr/final-overlap-2-changed/checkpoint
+baseline keys=4096 rchar=190020674 syscr=1426912 elapsed_us=1756952
+34179d3880b99fd2e11ab10d5e29f82adb88f1422588c24b251d80bac5dbe7db  /dev/shm/emda-spill-disjoint.3qrnCr/final-overlap-2-baseline/checkpoint
+baseline keys=4096 rchar=190020674 syscr=1426912 elapsed_us=1758060
+34179d3880b99fd2e11ab10d5e29f82adb88f1422588c24b251d80bac5dbe7db  /dev/shm/emda-spill-disjoint.3qrnCr/final-overlap-3-baseline/checkpoint
+changed keys=4096 rchar=171324482 syscr=1424416 elapsed_us=1661633
+34179d3880b99fd2e11ab10d5e29f82adb88f1422588c24b251d80bac5dbe7db  /dev/shm/emda-spill-disjoint.3qrnCr/final-overlap-3-changed/checkpoint

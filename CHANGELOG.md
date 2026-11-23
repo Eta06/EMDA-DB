@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Size disjoint checkpoint spill merges from verified run metadata before
+  reading input runs, while retaining full input verification on write.
+
 - Reuse a fixed key buffer for standalone log records during replay and
   retain an owned key only when needed by the recovered index.
 

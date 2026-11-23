@@ -276,6 +276,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   measures ordinary, writable checkpoint and read-only checkpoint opens
   with repeated and distinct keys. Batch staging and the recovered indexes
   still contribute to process memory.
+  [Disjoint spill merge measurements](../benchmarks/results/2026-11-24-disjoint-spill-merge/README.md)
+  show fewer bytes read during offline bounded rebuild when exact merge size
+  can be calculated from run metadata. The temporary byte limit and input
+  verification still apply.
 - [x] Apply the suffix-byte cap before traversing checkpoint entries on recovered-view and checkpoint-writer opens. The [Linux ARM64 trace](../benchmarks/results/2026-11-23-checkpoint-suffix-admission/README.md) shows one buffered read for a rejected 65,536-key checkpoint and the same read volume as before at the exact accepted limit. Corruption and witness-preservation checks pass on macOS and Linux.
   At commit, check encoded size before allocating a checkpoint batch. In a
   Linux ext4 probe with a 4 MiB value, blind, conditional and transactional

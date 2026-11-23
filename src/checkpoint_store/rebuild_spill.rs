@@ -979,6 +979,33 @@ impl SpillSession {
     }
 
     fn plan_merge(&self, runs: &[RunMeta]) -> io::Result<(u64, u64)> {
+        // The verified writer retained each run's inclusive key bounds and
+        // exact size. Disjoint ranges cannot lose entries to deduplication,
+        // so admit the exact merge size without a sizing scan. The write pass
+        // still verifies every input before replacing any of these runs.
+        let mut ordered: Vec<_> = runs.iter().collect();
+        ordered.sort_unstable_by(|left, right| left.first_key.cmp(&right.first_key));
+        if !ordered.is_empty()
+            && ordered
+                .windows(2)
+                .all(|pair| pair[0].last_key < pair[1].first_key)
+        {
+            let mut count = 0_u64;
+            let mut key_bytes = 0_u64;
+            for run in ordered {
+                let bytes = run
+                    .bytes
+                    .checked_sub(run_len(run.entries, 0)?)
+                    .ok_or_else(|| record::invalid_data("invalid spill run size"))?;
+                count = count
+                    .checked_add(run.entries)
+                    .ok_or_else(|| io::Error::other("spill count overflow"))?;
+                key_bytes = key_bytes
+                    .checked_add(bytes)
+                    .ok_or_else(|| io::Error::other("spill size overflow"))?;
+            }
+            return Ok((count, key_bytes));
+        }
         let mut count = 0_u64;
         let mut key_bytes = 0_u64;
         let generations = runs.iter().map(|run| run.id).collect::<Vec<_>>();
@@ -1906,6 +1933,44 @@ mod tests {
         assert!(session.dirty.is_empty());
         assert_eq!(session.runs.len(), 2);
         (session, directory)
+    }
+
+    #[test]
+    fn disjoint_merge_admits_exact_temporary_size_and_rechecks_inputs() {
+        for damage in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut session =
+                SpillSession::create(directory.path(), limits(1, 1 << 20, 100), 0, 0).unwrap();
+            for (key, offset) in [(b"b", 200), (b"a", 100)] {
+                session.push(key, Some(loc(offset)), |_| Ok(None)).unwrap();
+                session.write_dirty().unwrap();
+            }
+            if damage {
+                flip_byte(&session.runs[0].path, HEADER_LEN);
+            }
+            let exact = session.spill_bytes + temporary_bytes(2, 2).unwrap();
+            session.limits.max_spill_bytes = exact - 1;
+            let error = session.prepare_for_emit().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(error.to_string(), "rebuild spill byte limit exceeded");
+            assert_eq!(session.runs.len(), 2);
+
+            session.limits.max_spill_bytes = exact;
+            if damage {
+                assert_eq!(
+                    session.prepare_for_emit().unwrap_err().to_string(),
+                    "spill run checksum mismatch"
+                );
+                assert_eq!(session.runs.len(), 2);
+            } else {
+                let live = emitted(&mut session);
+                assert_eq!(live.get(b"a".as_slice()), Some(&loc(100)));
+                assert_eq!(live.get(b"b".as_slice()), Some(&loc(200)));
+                assert_eq!(live.len(), 2);
+            }
+            drop(session);
+            assert_stage_removed(directory.path());
+        }
     }
 
     #[test]
