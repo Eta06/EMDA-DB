@@ -1870,6 +1870,48 @@ fn admission_is_rechecked_after_automatic_reclamation_before_appending() {
 }
 
 #[test]
+fn retired_removal_sync_errors_are_reported_and_recoverable() {
+    for fail_sync in [3, 4] {
+        let f = Fixture::new(LIMITS);
+        let mut store = f.open();
+        let inactive = store.active.slot.path(&store.root);
+        store.compact().unwrap();
+        let rows = store.scan(None, None, 4).unwrap();
+        let mut syncs = 0;
+        let mut stage = None;
+        let error = store
+            .reclaim_using(|path| {
+                syncs += 1;
+                if syncs == 1 {
+                    stage = Some(path.to_path_buf());
+                }
+                if syncs == fail_sync {
+                    assert_eq!(path, f.root.canonicalize().unwrap());
+                    assert!(!inactive.exists());
+                    assert!(!stage.as_ref().unwrap().exists());
+                    return Err(io::Error::other("injected final retirement sync failure"));
+                }
+                sync_existing(path)
+            })
+            .unwrap_err();
+        assert_eq!(syncs, fail_sync);
+        assert_eq!(error.to_string(), "injected final retirement sync failure");
+        assert_eq!(
+            crate::staging::has_retained_stage(&store.root).unwrap(),
+            fail_sync == 3
+        );
+        assert_eq!(store.scan(None, None, 4).unwrap(), rows);
+        drop(store);
+
+        let mut reopened = f.open();
+        assert_eq!(reopened.reclaim_inactive().unwrap(), fail_sync == 3);
+        assert!(!crate::staging::has_retained_stage(&reopened.root).unwrap());
+        assert_eq!(reopened.scan(None, None, 4).unwrap(), rows);
+        assert!(!inactive.exists());
+    }
+}
+
+#[test]
 fn automatic_reclaim_recycles_both_slots_and_preserves_acknowledged_mutations() {
     let f = Fixture::new(LIMITS);
     let mut store =

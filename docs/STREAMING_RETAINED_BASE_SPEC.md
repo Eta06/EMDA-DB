@@ -413,8 +413,12 @@ can remove abandoned preparation files under its exclusive parent lock.
 It skips published retirement markers. Retry through `reclaim_inactive`
 or reopen with automatic reclamation. A retry verifies
 the selected replacement and its named files before resuming ordered
-removal. A conflicting or unrecognized retirement marker must be resolved
-before rotation. Generic stages left by older releases have no replacement
+removal. Retirement synchronizes the catalog after removing the stage
+payload and again after removing its marker. It reports either sync
+failure. The first failure leaves the marker for a retry. If the second
+sync fails, the marker may reappear after a crash, and cleanup can resume
+without the retired payload. Resolve a conflicting or unrecognized retirement
+marker before rotation. Generic stages left by older releases have no replacement
 binding and retain the earlier cleanup contract. Compaction and reclaim require
 exclusive use of the handle. No public reader or writer can pin the
 inactive slot outside that catalog. The requested successor limits can

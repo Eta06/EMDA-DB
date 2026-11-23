@@ -258,6 +258,21 @@ impl Stage {
         self.preserve_on_drop = false;
     }
 
+    /// Finalize an explicitly removed retained payload. Keep the marker until
+    /// the payload's absence is durable, then synchronize the marker removal.
+    pub(crate) fn finish_retained_removal(
+        &mut self,
+        mut sync_parent: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        debug_assert!(self.preserve_on_drop && matches!(self.kind, Kind::Retained));
+        sync_parent()?;
+        let marker = self.marker.as_mut().expect("owned retained stage");
+        fs::remove_file(marker.path())?;
+        marker.disable_cleanup(true);
+        self.marker.take();
+        sync_parent()
+    }
+
     /// Keep a staged payload and its marker for later explicit inspection or cleanup.
     pub(crate) fn retain_payload(mut self) -> io::Result<()> {
         self.created = false;

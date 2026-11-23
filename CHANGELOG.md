@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Report retained-generation retirement sync errors after removing the stage
+  payload or its ownership marker. Keep the marker until payload removal is
+  durable so a failed sync can be retried.
+
 - Check checkpoint batch quotas and conditional values before encoding.
   Accepted batches use one encoding buffer while readers can use the
   published view.

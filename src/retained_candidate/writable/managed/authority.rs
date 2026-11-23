@@ -620,7 +620,8 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
 
     /// Lock and validate the catalog-owned inactive slot, then fence pending
     /// selection attempts from older revisions before retiring it. A failed
-    /// comparison leaves both slots.
+    /// comparison leaves both slots. Later errors may follow partial or
+    /// complete removal of the inactive slot or its retirement stage.
     pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
         self.verify_current()?;
         let resumed = self.inner.resume_retirement()?;

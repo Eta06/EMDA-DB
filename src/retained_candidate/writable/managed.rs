@@ -898,7 +898,8 @@ impl ManagedRetainedStore {
 
     /// Retire only the catalog-owned inactive slot after verifying and
     /// synchronizing the active selection. Retry this operation to resume
-    /// interrupted retirement of a stage bound to this replacement.
+    /// interrupted retirement of a stage bound to this replacement. Errors
+    /// may follow partial or complete removal of the inactive slot or stage.
     pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
         let resumed = self.resume_retirement()?;
         Ok(self.reclaim_using(sync_existing)? || resumed)
@@ -973,8 +974,7 @@ impl ManagedRetainedStore {
         // Retire the original slot name durably before deleting its contents.
         sync_after_move(&self.root)?;
         crate::staging::remove_retained_stage(stage.path())?;
-        stage.finish_retained_cleanup();
-        Ok(())
+        stage.finish_retained_removal(|| sync_after_move(&self.root))
     }
 
     fn reclaim_room(&self) -> io::Result<()> {
