@@ -910,6 +910,61 @@ fn recovery_rechecks_suffix_bytes_before_advancing_witness() {
 }
 
 #[test]
+fn recovery_verifies_the_base_after_directory_sync() {
+    for pending in [true, false] {
+        for replace_path in [false, true] {
+            let f = Fixture::new(LIMITS);
+            let base_path = f.path.join("base");
+            let base = fs::read(&base_path).unwrap();
+            let witness = fs::read(f.witness()).unwrap();
+            let original_path = f.path.join("original-base");
+            let mut changed = base.clone();
+            let last_body_byte = changed.len() - 33;
+            changed[last_body_byte] ^= 1;
+            if pending {
+                f.append_unacknowledged(&record::encode(Operation::Put, b"tail", b"new").unwrap());
+            }
+            let log = fs::read(f.log()).unwrap();
+
+            let result = RetainedStore::open_using(&f.path, LIMITS, &f.expected, |path| {
+                if replace_path {
+                    fs::rename(&base_path, &original_path)?;
+                    fs::write(&base_path, &base)?;
+                } else {
+                    fs::write(&base_path, &changed)?;
+                }
+                crate::directory::sync_existing(path)
+            });
+            let error = result.err().expect("changed base was accepted");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            let expected = if replace_path {
+                "retained base path or length changed"
+            } else {
+                "digest mismatch"
+            };
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(fs::read(f.witness()).unwrap(), witness);
+            assert_eq!(fs::read(f.log()).unwrap(), log);
+            if replace_path {
+                assert_eq!(fs::read(&base_path).unwrap(), base);
+                fs::rename(original_path, &base_path).unwrap();
+            } else {
+                assert_eq!(fs::read(&base_path).unwrap(), changed);
+                fs::write(&base_path, &base).unwrap();
+            }
+
+            let reopened = f.open(LIMITS).unwrap();
+            assert_eq!(reopened.get(b"a", 4).unwrap(), Some(b"base".to_vec()));
+            assert_eq!(
+                reopened.get(b"tail", 3).unwrap(),
+                pending.then(|| b"new".to_vec())
+            );
+            assert_eq!(fs::read(f.witness()).unwrap() != witness, pending);
+        }
+    }
+}
+
+#[test]
 fn uncertain_creation_leaves_a_complete_candidate_for_inspection() {
     let f = Fixture::new(LIMITS);
     let candidate = f.root.path().join("candidate");

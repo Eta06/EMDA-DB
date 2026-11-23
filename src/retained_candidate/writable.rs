@@ -223,8 +223,7 @@ impl RetainedStore {
             dir,
             RecoveryLimits::Exact(limits),
             expected,
-            role,
-            None,
+            (role, None),
             |_, _| Ok(()),
             |directory, _, actual_end, actual_digest| {
                 if (actual_end, actual_digest) != (end, digest) {
@@ -232,6 +231,7 @@ impl RetainedStore {
                 }
                 crate::directory::sync_existing(directory)
             },
+            || Ok(()),
         )
     }
 
@@ -264,10 +264,10 @@ impl RetainedStore {
             dir,
             RecoveryLimits::Exact(limits),
             expected,
-            GenerationRole::Standalone,
-            None,
+            (GenerationRole::Standalone, None),
             |_, _| Ok(()),
             |directory, _, _, _| sync_directory(directory),
+            || Ok(()),
         )
     }
 
@@ -275,10 +275,10 @@ impl RetainedStore {
         dir: &Path,
         limits: RecoveryLimits,
         expected: &Expected,
-        role: GenerationRole,
-        generation: Option<[u8; 16]>,
+        (role, generation): (GenerationRole, Option<[u8; 16]>),
         preflight: impl FnOnce(&Header, u64) -> io::Result<()>,
         authorize: impl FnOnce(&Path, &Header, u64, [u8; 32]) -> io::Result<()>,
+        check_selection: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<Self> {
         if !dir.symlink_metadata()?.file_type().is_dir() {
             return Err(record::invalid_data("invalid retained store directory"));
@@ -344,13 +344,16 @@ impl RetainedStore {
             limits.suffix,
             limits.overlay,
         )?;
-        let base = IndexedBase::open(base, limits.base, limits.index)?;
-        check_binding(base.metadata(), expected)?;
         let replayed_digest: [u8; 32] = hash.clone().finalize().into();
         authorize(dir, &header, suffix_len as u64, replayed_digest)?;
+        // Validate the full base after directory synchronization. An
+        // unauthorized suffix can fail before paying for this scan.
+        let base = IndexedBase::open(base, limits.base, limits.index)?;
+        check_binding(base.metadata(), expected)?;
         lock.verify_identity(dir)?;
         verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
-        if committed < suffix_len {
+        let pending = committed < suffix_len;
+        if pending {
             log.sync_data()?;
             // Bind the witness update to the bytes used to build the overlay.
             let mut observed = Sha256::new();
@@ -361,6 +364,10 @@ impl RetainedStore {
                 ));
             }
             verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
+        }
+        check_selection()?;
+        base.check_path(&dir.join("base"))?;
+        if pending {
             update_witness(&witness, header.bytes(), suffix_len, &hash)?;
         }
         Ok(Self {

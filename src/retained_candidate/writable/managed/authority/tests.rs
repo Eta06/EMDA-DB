@@ -436,6 +436,13 @@ fn recovery_admits_only_authorized_ends_and_authenticates_the_accepted_length() 
         authority.pending.unwrap().suffix_end,
         authority.committed.suffix_end + proposed.len() as u64
     );
+    // Keep the base frame intact while making a full base scan fail. An
+    // unauthorized end or digest should be rejected before that scan.
+    let base_path = slot.join("base");
+    let base = fs::read(&base_path).unwrap();
+    let mut corrupt_base = base.clone();
+    corrupt_base[base.len() - 33] ^= 1;
+    fs::write(&base_path, &corrupt_base).unwrap();
     for (tail, message) in [
         (
             &proposed[..proposed.len() - 1],
@@ -456,10 +463,18 @@ fn recovery_admits_only_authorized_ends_and_authenticates_the_accepted_length() 
         assert_eq!(error.to_string(), message);
         assert_eq!(fs::read(&path).unwrap(), log);
         assert_eq!(fs::read(&witness_path).unwrap(), witness);
+        assert_eq!(fs::read(&base_path).unwrap(), corrupt_base);
         assert_eq!(f.provider.read().unwrap(), Some(authority));
     }
 
-    fs::write(&path, [prefix, proposed].concat()).unwrap();
+    fs::write(&path, [&prefix[..], &proposed].concat()).unwrap();
+    let error = AuthorizedRetainedStore::open(&f.root, LIMITS, f.provider.clone())
+        .err()
+        .expect("a permitted suffix cannot authorize a damaged base");
+    assert_eq!(error.to_string(), "digest mismatch");
+    assert_eq!(fs::read(&witness_path).unwrap(), witness);
+    assert_eq!(f.provider.read().unwrap(), Some(authority));
+    fs::write(&base_path, base).unwrap();
     let mut reopened = f.open();
     assert_eq!(
         reopened.get(b"earlier", 12).unwrap().as_deref(),

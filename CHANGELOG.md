@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify the retained base after directory synchronization and check that its
+  path still names the verified file before tail adoption or returning a store.
+  An independently unauthorized suffix fails before the full base scan.
+
 - Reject managed checkpoint selection changes observed by ordinary and
   bounded rebuilds before pending-tail adoption or selection publication.
 

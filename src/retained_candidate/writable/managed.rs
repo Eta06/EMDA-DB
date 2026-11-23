@@ -450,8 +450,10 @@ impl ManagedRetainedStore {
             &path,
             RecoveryLimits::Ceiling(ceiling),
             &active.expected,
-            generation_role(catalog_magic, catalog),
-            Some(active.generation),
+            (
+                generation_role(catalog_magic, catalog),
+                Some(active.generation),
+            ),
             |header, end| {
                 if let Some(authority) = authority {
                     authority.check_end(end)?;
@@ -470,7 +472,9 @@ impl ManagedRetainedStore {
                 if let Some(authority) = authority {
                     authority.check(AuthorityPoint::new(catalog, header, end, digest))?;
                 }
-                sync_existing(directory)?;
+                sync_existing(directory)
+            },
+            || {
                 lock.verify_identity(&root)?;
                 verify_active(&root, &active, catalog_magic)
             },
