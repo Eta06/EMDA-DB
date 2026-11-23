@@ -1206,7 +1206,8 @@ mod tests {
             std::os::unix::fs::symlink(&out, &link).unwrap();
             assert!(matches!(
                 restore(&link, &binding, output_limits),
-                Err(crate::PublicationFailure::OutcomeUnknown(_))
+                Err(crate::PublicationFailure::NotPublished(error))
+                    if error.kind() == io::ErrorKind::AlreadyExists
             ));
             assert_eq!(std::fs::read_link(&link).unwrap(), out);
         }
@@ -1214,16 +1215,44 @@ mod tests {
         std::fs::write(&existing_file, b"keep").unwrap();
         assert!(matches!(
             restore(&existing_file, &binding, output_limits),
-            Err(crate::PublicationFailure::OutcomeUnknown(_))
+            Err(crate::PublicationFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::AlreadyExists
         ));
         assert_eq!(std::fs::read(&existing_file).unwrap(), b"keep");
         let existing_dir = root.path().join("existing-dir");
         std::fs::create_dir(&existing_dir).unwrap();
         assert!(matches!(
             restore(&existing_dir, &binding, output_limits),
-            Err(crate::PublicationFailure::OutcomeUnknown(_))
+            Err(crate::PublicationFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::AlreadyExists
         ));
         assert_eq!(std::fs::read_dir(&existing_dir).unwrap().count(), 0);
+        let dangling = root.path().join("dangling-link");
+        std::os::unix::fs::symlink(root.path().join("absent"), &dangling).unwrap();
+        let mut wrong = binding.clone();
+        wrong.digest[0] ^= 1;
+        assert!(matches!(
+            restore(&dangling, &wrong, output_limits),
+            Err(crate::PublicationFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::AlreadyExists
+        ));
+        assert!(
+            std::fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let late = root.path().join("late-destination");
+        assert!(matches!(
+            crate::retained_candidate::restore_with_hooks(
+                &candidate, &out, &late, base_limits, staging, suffix, &binding,
+                output_limits, crate::directory::sync_existing,
+                |at| if at == "rename" { std::fs::write(&late, b"keep") } else { Ok(()) },
+            ),
+            Err(crate::PublicationFailure::OutcomeUnknown(error))
+                if error.kind() == io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(std::fs::read(&late).unwrap(), b"keep");
         let race = root.path().join("race");
         std::thread::scope(|scope| {
             let a = scope.spawn(|| restore(&race, &binding, output_limits));
@@ -1235,7 +1264,9 @@ mod tests {
                     .iter()
                     .filter(|result| matches!(
                         result,
-                        Err(crate::PublicationFailure::OutcomeUnknown(_))
+                        Err(crate::PublicationFailure::OutcomeUnknown(error)
+                            | crate::PublicationFailure::NotPublished(error))
+                            if error.kind() == io::ErrorKind::AlreadyExists
                     ))
                     .count(),
                 1

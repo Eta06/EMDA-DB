@@ -589,7 +589,7 @@ fn preflight_replay_base(
     staging: retained_base_v2::StagingLimits,
     suffix_limits: SuffixLimits,
     expected: &SuffixExpected,
-) -> io::Result<(fs::File, u64)> {
+) -> io::Result<(fs::File, retained_base_v2::BaseHeader)> {
     let (file, frame) = preflight_bound_base(directory, limits, &expected.candidate)?;
     let mut minimum_work = frame.entries;
     if minimum_work > suffix_limits.work {
@@ -602,7 +602,7 @@ fn preflight_replay_base(
         charge_suffix_work(&mut minimum_work, suffix_limits.work, entries)?;
     }
     frame.admit_staging(staging)?;
-    Ok((file, frame.entries))
+    Ok((file, frame))
 }
 
 fn check_suffix_binding(
@@ -1017,8 +1017,10 @@ impl RestoreLimits {
 /// one value, and the private output synchronizes in groups of up to 64
 /// records and 4 MiB of encoded data. A larger record is copied in fixed-size
 /// chunks and synchronized after its value digest and length are checked.
-/// Output limits are checked after replay and before sorting touched keys
-/// or creating the stage.
+/// Output limits are checked before sorting touched keys or creating the
+/// stage. With an empty suffix, the base frame can reject an insufficient
+/// output limit before the base body is read. Admitted data still undergoes
+/// full binding verification.
 /// Verification checks the witnessed output against the authenticated
 /// sequence digest in a streaming pass.
 /// Input staging limits still count the logical live payload,
@@ -1028,6 +1030,8 @@ impl RestoreLimits {
 /// witness, a live switch or reclamation, or anti-rollback protection.
 /// The destination must not exist. A publication outcome error requires
 /// inspection before retrying. Source files are not modified.
+/// A destination found occupied before replay or staging returns
+/// `NotPublished(AlreadyExists)`. Final publication remains no-clobber.
 #[allow(clippy::too_many_arguments)]
 pub fn restore_exported_suffix(
     candidate: impl AsRef<Path>,
@@ -1146,8 +1150,10 @@ fn restore_using(
                 "destination parent is inside candidate",
             ));
         }
+        require_restore_destination(destination)?;
         let replay =
             RestoreReplay::open_with_limits(candidate, suffix, limits, expected, Some(output))?;
+        require_restore_destination(destination)?;
         let mut stage = crate::staging::Stage::directory(parent)?;
         let (end, output_digest) = {
             hook("init")?;
@@ -1186,4 +1192,15 @@ fn restore_using(
         stage.publication_synchronized();
         Ok(())
     })
+}
+
+fn require_restore_destination(destination: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "restore destination already exists",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }

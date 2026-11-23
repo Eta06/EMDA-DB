@@ -75,7 +75,7 @@ impl RestoreReplay {
             touched,
         } = limits;
         let (suffix, len) = open_suffix(suffix, suffix_limits, expected.end)?;
-        let (base, entries) =
+        let (base, frame) =
             preflight_replay_base(candidate, limits, staging, suffix_limits, expected)?;
         let source = SuffixFile {
             file: &suffix,
@@ -83,8 +83,8 @@ impl RestoreReplay {
             len,
         };
         let boundary = Some((len, expected.digest));
-        let mut minimum_work = entries;
-        let mut minimum_live = usize::try_from(entries).map_err(|_| invalid())?;
+        let mut minimum_work = frame.entries;
+        let mut minimum_live = usize::try_from(frame.entries).map_err(|_| invalid())?;
         let mut touched_keys = HashMap::new();
         let mut touched_key_bytes = 0;
         // Keep discovered keys private until replay authenticates the suffix.
@@ -123,6 +123,13 @@ impl RestoreReplay {
         // Successful discovery already checked the digest at the exact end.
         if suffix.metadata()?.len() != expected.end {
             return Err(invalid());
+        }
+        if let Some(output) = output.filter(|_| len == 0) {
+            output.admit(RestoreSize {
+                entries: frame.entries,
+                keys: frame.key_bytes,
+                payload: frame.payload_bytes(),
+            })?;
         }
         let metadata = scan_value_lengths(&base, limits, staging, |key, length| {
             if let Some(value) = touched_keys.get_mut(key) {

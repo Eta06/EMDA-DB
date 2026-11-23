@@ -37,6 +37,119 @@ fn candidate(root: &Path, entries: &[(&[u8], &[u8])]) -> Expected {
 }
 
 #[test]
+fn empty_suffix_restore_rejects_output_limits_before_validating_the_body() {
+    let root = tempfile::tempdir().unwrap();
+    let expected = candidate(root.path(), &[(b"key", b"base-data")]);
+    let candidate = root.path().join("candidate");
+    let suffix = root.path().join("suffix");
+    let output = root.path().join("restored");
+    fs::write(&suffix, []).unwrap();
+    let binding = SuffixExpected {
+        candidate: expected,
+        end: 0,
+        digest: Sha256::digest([]).into(),
+    };
+    let limits = Limits {
+        file_bytes: 4096,
+        entries: 1,
+        key_bytes: 3,
+        work_bytes: 4097,
+    };
+    let staging = StagingLimits {
+        value_bytes: 9,
+        staging_bytes: 12,
+    };
+    let suffix_limits = SuffixLimits {
+        bytes: 0,
+        operations: 0,
+        work: 1,
+    };
+    let exact = RestoreLimits {
+        log_bytes: fs::metadata(root.path().join("source/records.log"))
+            .unwrap()
+            .len(),
+        live_keys: 1,
+        live_key_bytes: 3,
+    };
+    let run = |output_limits, binding| {
+        restore_exported_suffix(
+            &candidate,
+            &suffix,
+            &output,
+            limits,
+            staging,
+            suffix_limits,
+            binding,
+            output_limits,
+        )
+    };
+    let base = candidate.join("base");
+    let original = fs::read(&base).unwrap();
+    let mut damaged = original.clone();
+    let value = damaged
+        .windows(9)
+        .position(|bytes| bytes == b"base-data")
+        .unwrap();
+    damaged[value] ^= 1;
+    fs::write(&base, &damaged).unwrap();
+    for (output_limits, message) in [
+        (
+            RestoreLimits {
+                log_bytes: exact.log_bytes - 1,
+                ..exact
+            },
+            "configured log size limit would be exceeded",
+        ),
+        (
+            RestoreLimits {
+                live_keys: 0,
+                ..exact
+            },
+            "configured live key limit would be exceeded",
+        ),
+        (
+            RestoreLimits {
+                live_key_bytes: 2,
+                ..exact
+            },
+            "configured live key byte limit would be exceeded",
+        ),
+    ] {
+        assert!(matches!(
+            run(output_limits, &binding),
+            Err(PublicationFailure::NotPublished(error)) if error.to_string() == message
+        ));
+        assert!(!output.exists());
+    }
+    assert!(matches!(
+        run(exact, &binding),
+        Err(PublicationFailure::NotPublished(error)) if error.to_string().contains("digest mismatch")
+    ));
+    assert!(!output.exists());
+    let mut wrong = binding.clone();
+    wrong.digest[0] ^= 1;
+    fs::write(&output, b"keep").unwrap();
+    assert!(matches!(
+        run(exact, &wrong),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == io::ErrorKind::AlreadyExists
+    ));
+    assert_eq!(fs::read(&output).unwrap(), b"keep");
+    fs::remove_file(&output).unwrap();
+    fs::write(&base, &original).unwrap();
+    run(exact, &binding).unwrap();
+    let restored = Store::open(&output).unwrap();
+    assert_eq!(
+        restored.get(b"key").unwrap().as_deref(),
+        Some(b"base-data".as_slice())
+    );
+    assert_eq!(
+        fs::metadata(output.join("records.log")).unwrap().len(),
+        exact.log_bytes
+    );
+    assert_eq!(fs::read(base).unwrap(), original);
+}
+
+#[test]
 fn detached_restore_enforces_touched_and_output_limits() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");

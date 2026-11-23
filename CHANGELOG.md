@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Admit detached restore destinations before replay and staging. Reject
+  undersized output limits from the base frame when the suffix is empty.
+
 - Reject impossible base limits and mismatched frames before copying the
   body of a retained candidate into a writable generation.
 

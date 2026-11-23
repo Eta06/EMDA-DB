@@ -194,6 +194,12 @@ including its header and one record per live key. Restore checks that
 length and the live-key count and bytes before sorting suffix changes or
 creating the private output. The writer reserves the encoded bytes
 again against the actual new log.
+When the suffix is empty, the base frame can reject insufficient output
+limits before the restore reads the base body. Admitted inputs still undergo
+full authentication and exact admission. Restore checks destination availability before replay and again
+before staging. An occupied file, directory or symlink at either check
+returns `NotPublished(AlreadyExists)`. Atomic no-clobber publication
+handles later conflicts under the existing conservative outcome rules.
 Each value is authenticated again when read for the private output. Values
 that fit in a write group are read directly into their record buffers and
 checked before the record joins the group. Larger values use the separate

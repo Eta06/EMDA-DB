@@ -313,7 +313,7 @@ pub(crate) struct BaseHeader {
     base_id: [u8; 16],
     pub(crate) boundary: u64,
     pub(crate) entries: u64,
-    key_bytes: u64,
+    pub(crate) key_bytes: u64,
     peak_entries: u64,
     peak_key_bytes: u64,
     encoded: u64,
@@ -321,8 +321,12 @@ pub(crate) struct BaseHeader {
 }
 
 impl BaseHeader {
+    pub(crate) fn payload_bytes(&self) -> u64 {
+        self.encoded - 8 * self.entries
+    }
+
     pub(crate) fn admit_staging(&self, limits: StagingLimits) -> io::Result<()> {
-        let payload = self.encoded - 8 * self.entries;
+        let payload = self.payload_bytes();
         let values = payload - self.key_bytes;
         if payload > limits.staging_bytes
             || values > self.entries.saturating_mul(limits.value_bytes as u64)
