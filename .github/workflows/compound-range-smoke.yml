@@ -1,7 +1,16 @@
 name: Compound range cross-engine smoke
+run-name: Compound range cross-engine ${{ inputs.comparison_scale || 'smoke' }}
 
 "on":
   workflow_dispatch:
+    inputs:
+      comparison_scale:
+        description: Comparison workload
+        type: choice
+        default: smoke
+        options:
+          - smoke
+          - measured
   push:
     branches: [main]
     paths:
@@ -69,25 +78,31 @@ jobs:
           docker tag mongo@sha256:b9924c330a8bbc5800fe9c69f04a84e221eca7b28fd049a0354147d9908fa142 mongo:8.0
           docker pull redis@sha256:99ffb973380cc2f47bca06bd094f7f8c7138a0879a63cb8939896a22b7a65bba
           docker tag redis@sha256:99ffb973380cc2f47bca06bd094f7f8c7138a0879a63cb8939896a22b7a65bba redis:8.2-bookworm
-      - name: Build and run verified comparison smoke
+      - name: Build and run verified compound range comparison
+        env:
+          COMPARISON_SCALE: ${{ inputs.comparison_scale || 'smoke' }}
         run: |
           cargo +stable build --release --locked --example compound_range_query_bench
           cpu_pair="$(python3 -c 'import os; c=sorted(os.sched_getaffinity(0)); assert len(c) >= 2; print(c[0], c[1])')"
           read -r driver_cpu server_cpu <<< "$cpu_pair"
+          workload=(--cases 16:4 --rounds 2 --cycles 2)
+          if [[ "$COMPARISON_SCALE" == measured ]]; then
+            workload=(--cases 100:10,1000:10,1000:100 --rounds 4 --cycles 50)
+          fi
           "$RUNNER_TEMP/benchmark-venv/bin/python" scripts/compound_range_external_compare.py \
             --directory "$RUNNER_TEMP" --binary target/release/examples/compound_range_query_bench \
-            --output "$RUNNER_TEMP/compound-range-smoke.json" --cases 16:4 --rounds 2 --cycles 2 \
+            --output "$RUNNER_TEMP/compound-range-$COMPARISON_SCALE.json" "${workload[@]}" \
             --driver-cpus "$driver_cpu" --server-cpus "$server_cpu"
           cargo +stable build --release --locked --example network_bench_server --example index_memory_bench --example sqlite_restart_write_bench
           "$RUNNER_TEMP/benchmark-venv/bin/python" scripts/large_crash_compare.py \
             --directory "$RUNNER_TEMP" --output "$RUNNER_TEMP/large-crash-smoke.json" \
             --keys 128 --client-cpus "$driver_cpu" --server-cpus "$server_cpu"
-      - name: Preserve smoke report
+      - name: Preserve comparison report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: compound-range-cross-engine-smoke
+          name: compound-range-cross-engine-${{ inputs.comparison_scale || 'smoke' }}
           path: |
-            ${{ runner.temp }}/compound-range-smoke.json
+            ${{ runner.temp }}/compound-range-*.json
             ${{ runner.temp }}/large-crash-smoke.json
           if-no-files-found: ignore
