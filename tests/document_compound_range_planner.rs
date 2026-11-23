@@ -125,6 +125,113 @@ fn on_backends(exercise: impl Fn(&DocumentDatabase<'_>)) {
 }
 
 #[test]
+fn bounded_membership_replaces_compound_ranges_only_with_complete_coverage() {
+    for trailing in [false, true] {
+        on_backends(|db| {
+            db.create_collection("c", CollectionSchema::default())
+                .unwrap();
+            let fields: &[&str] = if trailing {
+                &["tenant", "score", "region"]
+            } else {
+                &["tenant", "score"]
+            };
+            db.create_index(
+                "c",
+                index(
+                    fields,
+                    Some(PartialFilter::Equals {
+                        path: path("active"),
+                        value: IndexValue::Boolean(true),
+                    }),
+                ),
+            )
+            .unwrap();
+            for (id, score, active) in [
+                ("first", 3, true),
+                ("last", 5, true),
+                ("distraction", 4, true),
+                ("inactive", 3, false),
+            ] {
+                db.insert(
+                    "c",
+                    id,
+                    &json!({"tenant":"t","score":score,"region":"west","active":active}),
+                )
+                .unwrap();
+            }
+            let mut filters = vec![
+                eq("tenant", json!("t")),
+                eq("active", json!(true)),
+                cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(2)),
+                cmp("score", Comparison::LessOrEqual, IndexValue::Integer(5)),
+                membership("score", vec![json!(1), json!(3), json!(5), json!(6)]),
+            ];
+            if trailing {
+                db.insert(
+                    "c",
+                    "missing",
+                    &json!({"tenant":"t","score":3,"active":true}),
+                )
+                .unwrap();
+                compare(
+                    db,
+                    &query(and(filters.clone()), 8),
+                    DocumentQueryAccess::CollectionScan,
+                );
+                filters.push(exists("region", true));
+            }
+            let expected_access = if trailing {
+                DocumentQueryAccess::CompoundPrefixIndex {
+                    index: "compound".into(),
+                    prefix_fields: 2,
+                    probes: 2,
+                    partial: true,
+                }
+            } else {
+                DocumentQueryAccess::PartialCompoundMembershipIndex {
+                    index: "compound".into(),
+                    fields: 2,
+                    probes: 2,
+                }
+            };
+            let mut request = query(and(filters), 8);
+            compare(db, &request, expected_access.clone());
+            let expected = db.query("c", &request).unwrap().documents;
+            request.max_scanned = 2;
+            let planned = db.query_planned("c", &request).unwrap();
+            assert_eq!(planned.access, expected_access);
+            assert_eq!(planned.result.documents, expected);
+            assert_eq!(planned.result.plan.scanned, 2);
+
+            db.transaction_with_read_set(|tx| {
+                assert!(tx.delete("c", "first")?);
+                tx.replace(
+                    "c",
+                    "distraction",
+                    &json!({"tenant":"t","score":5,"region":"east","active":true}),
+                    false,
+                )?;
+                let planned = tx.query_planned("c", &request)?;
+                assert_eq!(planned.access, expected_access);
+                assert_eq!(
+                    planned
+                        .result
+                        .documents
+                        .iter()
+                        .map(|r| r.id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["distraction", "last"]
+                );
+                Ok(())
+            })
+            .unwrap();
+            request.max_scanned = 8;
+            compare(db, &request, expected_access);
+        });
+    }
+}
+
+#[test]
 fn encoded_compound_bounds_beyond_the_storage_key_limit_match_the_scan() {
     on_backends(|db| {
         let tenant = "\0".repeat(256);

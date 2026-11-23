@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Narrow planned document ranges to matching membership values on the same
+  field, reducing candidate visits while preserving typed bounds and
+  transaction conflict checks.
+
 - Keep committed reads available during checkpoint preparation for automatic
   rollover, including the optional background worker. Selection publication
   still excludes readers, and any triggering write follows the durable handoff.

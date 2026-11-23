@@ -272,7 +272,57 @@ fn unique_index_range_reads_all_pages_in_id_order_and_obeys_candidate_limits() {
     });
 }
 
-fn phantom(db: &DocumentDatabase<'_>, inside: bool) {
+#[test]
+fn required_membership_narrows_the_typed_range_before_candidate_admission() {
+    on_backends(|db| {
+        prepare_mixed(db);
+        let mut request = query(
+            DocumentFilter::And(vec![
+                DocumentFilter::Not(Box::new(DocumentFilter::NotIn {
+                    path: path("score"),
+                    values: vec![
+                        json!(0),
+                        json!(5),
+                        json!(5),
+                        json!(false),
+                        json!(5.0),
+                        json!([]),
+                        json!("a\u{0}z"),
+                        json!("z"),
+                    ],
+                })),
+                range("score", Comparison::Greater, IndexValue::Integer(0)),
+                range("score", Comparison::Less, IndexValue::String("z".into())),
+            ]),
+            20,
+        );
+        let access = DocumentQueryAccess::MembershipIndex {
+            index: "score".into(),
+            probes: 2,
+        };
+        compare(db, &request, access.clone());
+        let expected = db.query("c", &request).unwrap().documents;
+        assert_eq!(
+            expected
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "f", "k"]
+        );
+        request.max_scanned = 3;
+        let planned = db.query_planned("c", &request).unwrap();
+        assert_eq!(planned.access, access);
+        assert_eq!(planned.result.documents, expected);
+        assert_eq!(planned.result.plan.scanned, 3);
+        request.max_scanned = 2;
+        assert_eq!(
+            db.query_planned("c", &request).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+    });
+}
+
+fn phantom(db: &DocumentDatabase<'_>, inside: bool, membership: bool) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
     db.create_index("c", index("score", false)).unwrap();
@@ -281,23 +331,40 @@ fn phantom(db: &DocumentDatabase<'_>, inside: bool) {
     std::thread::scope(|scope| {
         let writer = scope.spawn(|| {
             entered.wait();
-            db.insert("c", "new", &json!({"score":if inside { 25 } else { 100 }}))
-                .unwrap();
+            let score = if inside {
+                25
+            } else if membership {
+                26
+            } else {
+                100
+            };
+            let result = db.insert("c", "new", &json!({"score":score}));
             changed.wait();
+            result.unwrap();
         });
         let result = db.transaction_with_read_set(|tx| {
-            let request = query(
-                DocumentFilter::And(vec![
-                    range("score", Comparison::GreaterOrEqual, IndexValue::Integer(20)),
-                    range("score", Comparison::LessOrEqual, IndexValue::Integer(30)),
-                ]),
-                10,
-            );
-            let planned = tx.query_planned("c", &request)?;
-            assert_eq!(planned.access, access("score"));
-            assert!(planned.result.documents.is_empty());
+            let mut filters = vec![
+                range("score", Comparison::GreaterOrEqual, IndexValue::Integer(20)),
+                range("score", Comparison::LessOrEqual, IndexValue::Integer(30)),
+            ];
+            let expected = if membership {
+                filters.push(DocumentFilter::In {
+                    path: path("score"),
+                    values: vec![json!(19), json!(25), json!(30)],
+                });
+                DocumentQueryAccess::MembershipIndex {
+                    index: "score".into(),
+                    probes: 2,
+                }
+            } else {
+                access("score")
+            };
+            let planned = tx.query_planned("c", &query(DocumentFilter::And(filters), 10));
             entered.wait();
             changed.wait();
+            let planned = planned?;
+            assert_eq!(planned.access, expected);
+            assert!(planned.result.documents.is_empty());
             tx.put_raw(b"range-result", b"committed")?;
             Ok(())
         });
@@ -320,7 +387,14 @@ fn phantom(db: &DocumentDatabase<'_>, inside: bool) {
 #[test]
 fn planned_range_detects_phantoms_but_allows_unrelated_inserts() {
     for inside in [false, true] {
-        on_backends(|db| phantom(db, inside));
+        on_backends(|db| phantom(db, inside, false));
+    }
+}
+
+#[test]
+fn narrowed_range_probes_conflict_only_with_matching_inserts() {
+    for inside in [false, true] {
+        on_backends(|db| phantom(db, inside, true));
     }
 }
 

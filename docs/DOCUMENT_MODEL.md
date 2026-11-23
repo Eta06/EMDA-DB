@@ -160,6 +160,14 @@ For a required multi-value `In` whose values are all indexable, the planner may 
 
 After those existing choices, the planner can also probe a compound index when every indexed field has a required indexable equality or `In` predicate. It forms the Cartesian product of distinct values, up to 256 complete tuples. A product above that cap or an unconstrained field cannot use this compound union. An implied partial index is eligible under the same guard rules. Full tuples prevent omitted missing fields from producing incomplete results. Candidate and byte budgets, transaction dependencies and final filtering remain shared across probes.
 
+When a required membership list constrains the same field as a planned
+scalar range, the planner can intersect the list with the typed inclusive
+and exclusive bounds. Values that cannot satisfy a scalar comparison are
+discarded. Surviving values become deduplicated equality or compound-prefix
+probes, subject to the same proof of partial-index coverage and trailing-field
+presence as the range. An empty intersection keeps the existing range plan.
+The normal candidate budgets and read-set checks apply to the resulting probes.
+
 A compound index can also answer a required scalar range after a prefix of
 required indexable equality and `In` predicates, with at least one multi-value
 `In` in that prefix. The planner builds at most 256 distinct prefixes and

@@ -176,7 +176,11 @@ fn required_equality(
 // Select one required, wholly indexable list. Deduplication uses the exact
 // scalar index encoding so repeated values cannot duplicate rows or work.
 // Non-indexable lists fall back rather than omitting potential matches.
-fn required_membership(required: &[Predicate<'_>], path: &[String]) -> Option<Vec<IndexValue>> {
+fn required_membership(
+    required: &[Predicate<'_>],
+    path: &[String],
+    accepts: impl Fn(&serde_json::Value) -> bool,
+) -> Option<Vec<IndexValue>> {
     for (filter, negated) in required_predicates(required) {
         match (filter, negated) {
             (
@@ -195,7 +199,7 @@ fn required_membership(required: &[Predicate<'_>], path: &[String]) -> Option<Ve
             ) if field == path && values.len() > 1 => {
                 let mut distinct = BTreeMap::new();
                 let mut usable = true;
-                for value in values {
+                for value in values.iter().filter(|value| accepts(value)) {
                     let Ok(value) = IndexValue::from_json(value) else {
                         usable = false;
                         break;
@@ -207,7 +211,7 @@ fn required_membership(required: &[Predicate<'_>], path: &[String]) -> Option<Ve
                     }
                     distinct.entry(encoded).or_insert(value);
                 }
-                if usable {
+                if usable && !distinct.is_empty() {
                     return Some(distinct.into_values().collect());
                 }
             }
@@ -426,7 +430,7 @@ fn compound_choices(
     for field in fields {
         let values = if let Some(value) = required_equality(required, field)? {
             vec![value]
-        } else if let Some(values) = required_membership(required, field) {
+        } else if let Some(values) = required_membership(required, field, |_| true) {
             has_membership = true;
             values
         } else {
@@ -570,6 +574,25 @@ fn compound_bounds(
     }
 }
 
+fn membership_within_bounds(
+    required: &[Predicate<'_>],
+    field: &[String],
+    lower: Option<&IndexBound>,
+    upper: Option<&IndexBound>,
+) -> Option<Vec<IndexValue>> {
+    required_membership(required, field, |actual| {
+        lower.is_none_or(|bound| {
+            bound.value.compare_json(actual).is_some_and(|order| {
+                order == Ordering::Greater || (bound.inclusive && order == Ordering::Equal)
+            })
+        }) && upper.is_none_or(|bound| {
+            bound.value.compare_json(actual).is_some_and(|order| {
+                order == Ordering::Less || (bound.inclusive && order == Ordering::Equal)
+            })
+        })
+    })
+}
+
 fn choose_index<'a>(
     required: &[Predicate<'_>],
     indexes: &'a [IndexDefinition],
@@ -607,6 +630,31 @@ fn choose_index<'a>(
                 continue;
             }
             if let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? {
+                // The range and membership are both required. Exact probes of
+                // the surviving values can skip all other rows in the range.
+                // compound_bounds already proved presence of trailing fields.
+                if let Some(values) =
+                    membership_within_bounds(required, field, lower.as_ref(), upper.as_ref())
+                {
+                    let selection = if index.fields.len() == 1 {
+                        Selection::Membership(values)
+                    } else {
+                        let prefixes = values
+                            .into_iter()
+                            .map(|value| {
+                                let mut prefix = equal.clone();
+                                prefix.push(value);
+                                prefix
+                            })
+                            .collect();
+                        if position + 1 == index.fields.len() {
+                            Selection::CompoundMembership(prefixes)
+                        } else {
+                            Selection::CompoundPrefix(prefixes)
+                        }
+                    };
+                    return Ok(Some((index, selection)));
+                }
                 return Ok(Some((
                     index,
                     Selection::Range {
@@ -629,7 +677,7 @@ fn choose_index<'a>(
         .chain(indexes.iter().filter(|index| !index.unique))
         .filter(|index| index.fields.len() == 1 && eligible(index, required))
         .find_map(|index| {
-            required_membership(required, &index.fields[0])
+            required_membership(required, &index.fields[0], |_| true)
                 .map(|values| (index, Selection::Membership(values)))
         })
     {
