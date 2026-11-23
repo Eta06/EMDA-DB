@@ -104,6 +104,118 @@ pub(crate) enum RecoveryExpectation {
     Torn,
 }
 
+const COLLECTION_ARCHIVE: &[u8] = br#"{
+    "version":1,
+    "schema":{"fields":[{"path":["x"],"field_type":"Integer","required":true,"nullable":false}]},
+    "indexes":[{"name":"score","fields":[["x"]],"unique":true,
+        "partial":{"Exists":{"path":["active"],"exists":true}}}],
+    "documents":[{"id":"a","document":{"active":true,"x":1}},{"id":"b","document":{"x":1}}]
+}"#;
+const IMPORT_RECEIPT: &[u8] = b"archive-import-receipt";
+
+pub(crate) fn import_archive(db: &DocumentDatabase<'_>) -> Result<(), TransactionFailure> {
+    db.transaction_detailed(
+        crate::DocumentTransactionMode::Conservative,
+        None,
+        None,
+        |tx| {
+            tx.import_collection("copied", COLLECTION_ARCHIVE)?;
+            tx.put_raw(IMPORT_RECEIPT, b"imported")
+        },
+    )
+}
+
+pub(crate) fn import_archive_cuts(
+    db: &DocumentDatabase<'_>,
+    path: &Path,
+) -> [(usize, RecoveryExpectation); 5] {
+    use crate::record::{CHECKSUM_SIZE, HEADER_SIZE, Header, Operation, batch};
+    let path = path.join("records.log");
+    let before = std::fs::metadata(&path).unwrap().len() as usize;
+    import_archive(db).unwrap();
+    let log = std::fs::read(path).unwrap();
+    let appended = &log[before..];
+    let header = Header::parse(appended[..HEADER_SIZE].try_into().unwrap()).unwrap();
+    assert!(header.operation == Operation::Batch);
+    assert_eq!(header.record_len() as usize, appended.len());
+    let payload_at = HEADER_SIZE + header.key_len;
+    let entries =
+        batch::decode_payload(&appended[payload_at..payload_at + header.value_len]).unwrap();
+    let metadata = entries
+        .iter()
+        .find(|entry| entry.key == b"\0emda-document\x01M\0\x06copied")
+        .unwrap();
+    let metadata_end = payload_at + metadata.value_offset + metadata.value_len + CHECKSUM_SIZE;
+    assert!(metadata_end < appended.len() - 1);
+    [
+        (0, RecoveryExpectation::Committed(false)),
+        (1, RecoveryExpectation::Torn),
+        (metadata_end, RecoveryExpectation::Torn),
+        (appended.len() - 1, RecoveryExpectation::Torn),
+        (appended.len(), RecoveryExpectation::Committed(true)),
+    ]
+}
+
+pub(crate) fn verify_archive_recovery(
+    path: &Path,
+    checkpoint: &Path,
+    digest: &[u8; 32],
+    expected: RecoveryExpectation,
+    checkpoint_first: bool,
+) {
+    use crate::{CheckpointStore, Store, test_support::retry_lock};
+    use std::{fs, io};
+    let log = path.join("records.log");
+    let witness = path.join("commit.state");
+    let before_log = fs::read(&log).unwrap();
+    let before_witness = fs::read(&witness).unwrap();
+    let check = |db: &DocumentDatabase<'_>| {
+        let RecoveryExpectation::Committed(committed) = expected else {
+            panic!("torn collection import reopened");
+        };
+        let receipt = db.transaction(|tx| tx.get_raw(IMPORT_RECEIPT)).unwrap();
+        assert_eq!(
+            receipt.as_deref(),
+            committed.then_some(b"imported".as_slice())
+        );
+        let exported = db.export_collection("copied");
+        if committed {
+            let exported: serde_json::Value = serde_json::from_slice(&exported.unwrap()).unwrap();
+            assert_eq!(
+                exported,
+                serde_json::from_slice::<serde_json::Value>(COLLECTION_ARCHIVE).unwrap()
+            );
+            let integrity = db.verify_collection("copied").unwrap();
+            assert_eq!((integrity.documents, integrity.index_keys), (2, 2));
+            let page = db
+                .query_index("copied", "score", &IndexQuery::default())
+                .unwrap();
+            assert_eq!(page.documents.len(), 1);
+            assert_eq!(page.documents[0].id, "a");
+        } else {
+            assert_eq!(exported.unwrap_err().kind(), io::ErrorKind::NotFound);
+        }
+    };
+    for checkpoint_mode in [checkpoint_first, !checkpoint_first] {
+        let result = if checkpoint_mode {
+            retry_lock(|| CheckpointStore::open(path, checkpoint, digest))
+                .map(|store| check(&DocumentDatabase::with_checkpoint_store(&store)))
+        } else {
+            retry_lock(|| Store::open(path)).map(|store| check(&DocumentDatabase::new(&store)))
+        };
+        if matches!(expected, RecoveryExpectation::Torn) {
+            assert!(matches!(
+                result.unwrap_err().kind(),
+                io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
+            ));
+            assert_eq!(fs::read(&witness).unwrap(), before_witness);
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(fs::read(&log).unwrap(), before_log);
+    }
+}
+
 const RESTART_RECEIPT: &[u8] = b"restart-receipt";
 
 fn restart_index() -> IndexDefinition {
@@ -176,7 +288,7 @@ pub(crate) fn guarded_restart_torn_cuts(
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn attach_v3_restart_fault(
+pub(crate) fn attach_v3_commit_fault(
     log: &mut crate::log::Log,
     path: &Path,
     fault: crate::test_support::v3_metadata::Fault,
@@ -205,10 +317,35 @@ pub(crate) fn guarded_restart_v3_faults(
         crate::test_support::v3_metadata::Fault,
     ) -> Result<(), TransactionFailure>,
 ) {
+    let key = crate::MaintenanceKey::generate().unwrap();
+    v3_commit_faults(
+        |path, checkpoint, digest, fault| run(path, checkpoint, digest, &key, fault),
+        |path, checkpoint, digest| {
+            verify_guarded_restart_recovery(
+                path,
+                checkpoint,
+                digest,
+                &key,
+                RecoveryExpectation::Committed(true),
+                checkpoint_first,
+            );
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn v3_commit_faults(
+    run: impl Fn(
+        &Path,
+        &Path,
+        &[u8; 32],
+        crate::test_support::v3_metadata::Fault,
+    ) -> Result<(), TransactionFailure>,
+    verify: impl Fn(&Path, &Path, &[u8; 32]),
+) {
     use crate::test_support::v3_metadata::Fault;
     use std::fs;
 
-    let key = crate::MaintenanceKey::generate().unwrap();
     for fault in [
         Fault::WriteBefore,
         Fault::WriteAfter,
@@ -229,21 +366,14 @@ pub(crate) fn guarded_restart_v3_faults(
         let digest = store.checkpoint_to(&checkpoint).unwrap();
         drop(store);
 
-        let result = run(&path, &checkpoint, &digest, &key, fault);
+        let result = run(&path, &checkpoint, &digest, fault);
         assert!(
             matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
             "{fault:?}: {result:?}"
         );
-        verify_guarded_restart_recovery(
-            &path,
-            &checkpoint,
-            &digest,
-            &key,
-            RecoveryExpectation::Committed(true),
-            checkpoint_first,
-        );
+        verify(&path, &checkpoint, &digest);
         assert_eq!(fs::read(&anchor_path).unwrap(), anchor);
-        println!("V3 {fault:?}: recovered both guarded jobs and receipt");
+        println!("V3 {fault:?}: recovered verified document transaction");
     }
 }
 

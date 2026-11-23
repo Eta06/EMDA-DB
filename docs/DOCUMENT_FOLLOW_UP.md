@@ -203,3 +203,7 @@ The initial document interface is bounded and experimental. This checklist recor
   moves a bounded logical collection through an atomic import. Fixed-format
   and cross-backend tests cover unsupported input, schema and index
   enforcement, reopening, and rollback after rejected imports.
+  The [import recovery regression](../src/document/detailed_fault_model.rs)
+  injects V2 append cuts and V3 witness failures. It verifies the schema,
+  documents, rebuilt indexes and a raw transaction receipt together through
+  both ordinary and checkpoint reopen paths.

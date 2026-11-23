@@ -6,6 +6,69 @@ use crate::document::detailed_fault_model::{
 use crate::{DocumentDatabase, TransactionFailure};
 
 #[test]
+fn collection_archive_import_recovers_as_one_batch_under_v2_faults() {
+    use crate::document::detailed_fault_model::{
+        import_archive, import_archive_cuts, verify_archive_recovery,
+    };
+    let cuts = {
+        let (_root, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        import_archive_cuts(&DocumentDatabase::with_checkpoint_store(&store), &path)
+    };
+    let faults = cuts
+        .into_iter()
+        .map(|(cut, expected)| (LogFault::Partial(cut), expected))
+        .chain([(LogFault::SyncAfter, RecoveryExpectation::Committed(true))]);
+    for (fault, expected) in faults {
+        let (_root, path, checkpoint, digest) = fixture();
+        let mut store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let before = store.log.len().unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        store
+            .log
+            .replace_io_for_test(Box::new(FaultLog { file, fault }));
+        let result = import_archive(&DocumentDatabase::with_checkpoint_store(&store));
+        assert!(
+            matches!(result, Err(TransactionFailure::OutcomeUnknown(_))),
+            "{result:?}"
+        );
+        if let LogFault::Partial(cut) = fault {
+            assert_eq!(store.log.len().unwrap(), before + cut as u64);
+        }
+        drop(store);
+        verify_archive_recovery(&path, &checkpoint, &digest, expected, false);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn collection_archive_import_recovers_as_one_batch_under_v3_witness_faults() {
+    use crate::document::detailed_fault_model::{
+        attach_v3_commit_fault, import_archive, v3_commit_faults, verify_archive_recovery,
+    };
+    v3_commit_faults(
+        |path, checkpoint, digest, fault| {
+            let mut store = retry_lock(|| CheckpointStore::open(path, checkpoint, digest)).unwrap();
+            attach_v3_commit_fault(&mut store.log, path, fault);
+            import_archive(&DocumentDatabase::with_checkpoint_store(&store))
+        },
+        |path, checkpoint, digest| {
+            verify_archive_recovery(
+                path,
+                checkpoint,
+                digest,
+                RecoveryExpectation::Committed(true),
+                false,
+            );
+        },
+    );
+}
+
+#[test]
 fn guarded_maintenance_restart_recovers_atomically_with_its_receipt() {
     use crate::document::detailed_fault_model::{
         guarded_restart, guarded_restart_torn_cuts, prepare_guarded_restart,
@@ -56,14 +119,13 @@ fn guarded_maintenance_restart_recovers_atomically_with_its_receipt() {
 #[test]
 fn guarded_maintenance_restart_recovers_after_v3_witness_faults() {
     use crate::document::detailed_fault_model::{
-        attach_v3_restart_fault, guarded_restart, guarded_restart_v3_faults,
-        prepare_guarded_restart,
+        attach_v3_commit_fault, guarded_restart, guarded_restart_v3_faults, prepare_guarded_restart,
     };
 
     guarded_restart_v3_faults(false, |path, checkpoint, digest, key, fault| {
         let mut store = retry_lock(|| CheckpointStore::open(path, checkpoint, digest)).unwrap();
         prepare_guarded_restart(&DocumentDatabase::with_checkpoint_store(&store));
-        attach_v3_restart_fault(&mut store.log, path, fault);
+        attach_v3_commit_fault(&mut store.log, path, fault);
         guarded_restart(&DocumentDatabase::with_checkpoint_store(&store), key)
     });
 }
