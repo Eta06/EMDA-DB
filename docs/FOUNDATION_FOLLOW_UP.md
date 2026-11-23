@@ -277,6 +277,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   at those boundaries on macOS V2 and Linux V2/V3. Both bounded rebuild APIs
   reject the damage before tail adoption, preserve the existing selection,
   and produce a checkpoint matching ordinary full-log replay on retry.
+  A separate [Linux ext4 spill I/O campaign](../benchmarks/results/2026-11-23-current-bounded-spill-eio/README.md)
+  injects single `EIO` failures at 5,096 call sites across both rebuild paths,
+  V2 and V3, and both witness positions. Each failure preserves the log,
+  witness, and selection and cleans up staging. Every clean retry matches
+  ordinary full-log replay byte for byte.
 - [x] Merge runs spanning the same number of chunks during bounded rebuild
   replay. Keep older runs closed until a merge needs them, and charge all
   runs, temporary output, and the sidecar to the existing byte cap.
