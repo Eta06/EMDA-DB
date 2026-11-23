@@ -231,10 +231,11 @@ fn manual_checkpoint_publication_allows_readers_and_excludes_writers() {
                         destination,
                         sync,
                         || {
-                            assert!(matches!(
-                                store.state.try_read(),
-                                Err(TryLockError::WouldBlock)
-                            ));
+                            assert!(store.state.try_read().is_ok());
+                            assert_eq!(
+                                store.get_many(&[b"before", b"after"])?,
+                                [Some(b"value".to_vec()), None]
+                            );
                             Ok(())
                         },
                         crate::checkpoint_store::selection::sync_ancestors,
