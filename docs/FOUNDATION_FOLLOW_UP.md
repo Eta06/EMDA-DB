@@ -263,6 +263,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   hashing the covered log. The regression still detects a damaged prefix
   when the peak fits, and an exact-limit rebuild matches full replay.
 - [ ] Complete fault validation of the fix for a reproduced spill-integrity defect before using or releasing the bounded rebuild: modifying a valid spill key after the run checksum was verified could publish a checkpoint with the wrong key. The private spill format now checks each entry at use in lookups and emission. The regression, full macOS and Linux ARM64 suites, and 132 individual byte flips after cursor open passed. The rebuild regression also corrupts a merged entry behind an intact trailer and checks that random lookup rejects it before witness advancement or publication, then retries to the exact full-replay checkpoint. Broader fault validation remains open. CRC and SHA checks detect accidental damage, not adversarial forgery.
+  The buffered scan regression changes a value location across the first
+  8 KiB payload boundary and a table slot after the first 8 KiB of offsets.
+  It verifies intact entries up to the failure, checks that repeated reads
+  reject the damaged entry without advancing, and compares every key and
+  location after restoring the original run bytes and reopening the cursor.
 - [x] Remove temporary key allocations from spill lookups, reuse sequential ordering buffers, and encode spill entries into bounded buffers. A [paired macOS replay](../benchmarks/results/2026-11-23-bounded-rebuild-allocations/README.md) recorded 83% fewer allocation calls. The tests cover maximum-width keys and existing spill corruption rejection. Allocation totals describe churn during a rebuild; peak memory remains a separate measurement.
 - [x] Reuse a key buffer per active spill-merge input and exchange it with the last emitted key. The [paired follow-up](../benchmarks/results/2026-11-23-spill-merge-key-reuse/README.md) recorded a further reduction in allocation calls. Byte-identical checkpoint output and the existing corruption checks passed.
 - [x] Kill full-log and trusted-base suffix rebuilds after an offset

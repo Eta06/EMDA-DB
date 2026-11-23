@@ -1822,6 +1822,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn buffered_scan_rejects_corruption_at_payload_and_offset_refills() {
+        let key_len = 4;
+        let stride = ENTRY_OVERHEAD + key_len;
+        let buffer_len = IO_BUFFER as u64;
+        let first_offset_after_buffer = buffer_len / OFFSET_LEN;
+        let count = first_offset_after_buffer + 2;
+        let straddling_entry = buffer_len / stride;
+        let changed_location =
+            HEADER_LEN + (straddling_entry + 1) * stride - ENTRY_CRC_LEN as u64 - 1;
+        assert!(changed_location >= HEADER_LEN + buffer_len);
+        assert!(HEADER_LEN + straddling_entry * stride < HEADER_LEN + buffer_len);
+
+        for corrupt_offsets in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let fd = Rc::new(FdInner {
+                open: Cell::new(0),
+                peak: Cell::new(0),
+                limit: 2,
+            });
+            let mut writer =
+                RunWriter::create(directory.path(), 1, &fd, count, count * key_len).unwrap();
+            for index in 0..count {
+                writer
+                    .write_entry(&(index as u32).to_be_bytes(), Some(loc(100 + index)))
+                    .unwrap();
+            }
+            let run = writer.finish().unwrap();
+            let mut cursor = RunCursor::open(&fd, &run, true).unwrap();
+            let assert_entry = |cursor: &mut RunCursor, index: u64| {
+                let (key, state) = cursor.next_entry().unwrap().unwrap();
+                assert_eq!(key, (index as u32).to_be_bytes());
+                assert_eq!(located(state), located(Some(loc(100 + index))));
+            };
+            assert_entry(&mut cursor, 0);
+
+            let rejected_index = if corrupt_offsets {
+                let previous_start = HEADER_LEN + (first_offset_after_buffer - 1) * stride;
+                write_offset_slot(&run.path, first_offset_after_buffer, previous_start);
+                first_offset_after_buffer - 1
+            } else {
+                xor_byte(&run.path, changed_location, 1);
+                straddling_entry
+            };
+            for index in 1..rejected_index {
+                assert_entry(&mut cursor, index);
+            }
+            for _ in 0..2 {
+                let error = must_read_err(cursor.next_entry());
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                if corrupt_offsets {
+                    assert_eq!(error.to_string(), "invalid spill entry span");
+                } else {
+                    assert_entry_checksum(&error);
+                }
+                assert_eq!(cursor.index, rejected_index);
+            }
+            drop(cursor);
+            if corrupt_offsets {
+                let start = HEADER_LEN + first_offset_after_buffer * stride;
+                write_offset_slot(&run.path, first_offset_after_buffer, start);
+            } else {
+                xor_byte(&run.path, changed_location, 1);
+            }
+            let mut retry = RunCursor::open(&fd, &run, true).unwrap();
+            for index in 0..count {
+                assert_entry(&mut retry, index);
+            }
+            assert!(retry.next_entry().unwrap().is_none());
+        }
+    }
+
     /// Two finished runs, not yet merged. Chunk limit is 1 key and 1024 key
     /// bytes, with a 1 MiB spill budget, fan-in 2, and 100 operations.
     fn two_finished_runs() -> (SpillSession, tempfile::TempDir) {
