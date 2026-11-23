@@ -114,6 +114,15 @@ pub(super) fn load(store: &Path) -> io::Result<Option<Selection>> {
     Selection::decode(&bytes).map(Some)
 }
 
+pub(super) fn require_unchanged(store: &Path, expected: &Option<Selection>) -> io::Result<()> {
+    if &load(store)? != expected {
+        return Err(crate::record::invalid_data(
+            "managed checkpoint selection changed during rebuild",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn synchronize(store: &Path) -> io::Result<()> {
     synchronize_with(store, File::sync_all, sync_ancestors)
 }

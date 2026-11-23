@@ -3,6 +3,7 @@ use super::rebuild_spill::{SpillLimits, SpillSession};
 use super::{CheckpointStore, CheckpointView, selection};
 use crate::log::Log;
 use sha2::Sha256;
+use std::cell::OnceCell;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::ops::ControlFlow;
@@ -318,13 +319,22 @@ impl CheckpointStore {
             ));
         }
         selection::Selection::new(destination.clone(), [0; 32])?;
+        let initial_selection = OnceCell::new();
         let store = open_store(&path, &|| {
-            selection::load(&path)?;
+            if let Some(expected) = initial_selection.get() {
+                selection::require_unchanged(&path, expected)?;
+            } else {
+                // The first check runs after acquiring the exclusive store lock.
+                initial_selection
+                    .set(selection::load(&path)?)
+                    .expect("first check captures the initial selection");
+            }
             crate::checkpoint::require_available_destination(&destination)
         })?;
-        // Refuse to overwrite unknown, damaged, symlink or non-file metadata.
-        // A valid but stale selection need not have an accessible checkpoint.
-        selection::load(&path)?;
+        let expected = initial_selection
+            .get()
+            .expect("managed rebuild open checks the initial selection");
+        selection::require_unchanged(&path, expected)?;
         let digest = if let Some(tracker) = tracker {
             match store.checkpoint_to_detailed_with_sync(&destination, sync_checkpoint_ancestors) {
                 Ok(digest) => {
@@ -355,6 +365,7 @@ impl CheckpointStore {
         }
         drop(view);
         let next = selection::Selection::new(destination, digest)?;
+        selection::require_unchanged(&path, expected)?;
         if let Some(tracker) = tracker {
             tracker.begin_selection();
         }
@@ -663,14 +674,7 @@ impl CheckpointStore {
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
         let initial_selection = selection::load(&path)?;
-        let check_selection = || {
-            if selection::load(&path)? != initial_selection {
-                return Err(crate::record::invalid_data(
-                    "managed checkpoint selection changed during rebuild",
-                ));
-            }
-            Ok(())
-        };
+        let check_selection = || selection::require_unchanged(&path, &initial_selection);
         crate::checkpoint::require_available_destination(&destination)?;
         let (view, mut replayed) = match base {
             Some((checkpoint, digest)) => {
@@ -2202,6 +2206,94 @@ mod tests {
                     boundary_of(&witness_bytes(&case.path), &case.id),
                     case.complete_log.len() as u64
                 );
+                let recovered = retry(|| CheckpointStore::open_managed(&case.path)).unwrap();
+                assert_eq!(recovered.get(b"p").unwrap(), Some(b"two".to_vec()));
+                assert_eq!(recovered.get(b"q").unwrap(), Some(b"batch".to_vec()));
+                assert_eq!(recovered.get(b"safe").unwrap(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_rebuild_preserves_a_replacement_selection() {
+        use std::cell::Cell;
+
+        for v2 in [true, false] {
+            for late in [false, true] {
+                let Some(case) = prepare_unacknowledged_tail(v2) else {
+                    break;
+                };
+                let prior = selection::Selection::new(case.base.clone(), case.digest).unwrap();
+                selection::publish(&case.path, &prior, || Ok(()), selection::sync_ancestors)
+                    .unwrap();
+                let other = case.root().join("other");
+                fs::copy(&case.base, &other).unwrap();
+                let changed = selection::Selection::new(other, case.digest).unwrap();
+                let replace = || {
+                    selection::publish(&case.path, &changed, || Ok(()), selection::sync_ancestors)
+                };
+                let destination = case.root().join("rebuilt");
+                let checks = Cell::new(0);
+                let result = crate::publication_outcome::track_managed_rebuild(|tracker| {
+                    CheckpointStore::rebuild_managed_using(
+                        &case.path,
+                        &destination,
+                        |path, check| {
+                            Store::open_with_recovery_checks(path, None, None, None, || {
+                                let previous = checks.replace(checks.get() + 1);
+                                if previous == 1 && !late {
+                                    replace()?;
+                                }
+                                check()
+                            })
+                        },
+                        |parent| {
+                            selection::sync_ancestors(parent)?;
+                            if late {
+                                replace()?;
+                            }
+                            Ok(())
+                        },
+                        || Ok(()),
+                        selection::sync_ancestors,
+                        Some(tracker),
+                    )
+                });
+                assert_eq!(checks.get(), 2);
+                if late {
+                    assert!(
+                        matches!(&result, Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(error))
+                        if error.kind() == io::ErrorKind::InvalidData),
+                        "{result:?}"
+                    );
+                    assert!(destination.is_file());
+                } else {
+                    assert_eq!(witness_bytes(&case.path), case.rolled_back, "{result:?}");
+                    assert!(
+                        matches!(&result, Err(ManagedRebuildFailure::NotPublished(error))
+                        if error.kind() == io::ErrorKind::InvalidData),
+                        "{result:?}"
+                    );
+                    assert!(!destination.exists());
+                    assert_eq!(
+                        fs::read(case.path.join("commit.state")).unwrap(),
+                        case.anchor
+                    );
+                }
+                assert_eq!(selection::load(&case.path).unwrap(), Some(changed));
+                assert_eq!(
+                    fs::read(case.path.join("records.log")).unwrap(),
+                    case.complete_log
+                );
+                assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+                assert_no_staged_markers(&case.path);
+                assert_no_staged_markers(case.root());
+
+                let retry_destination = case.root().join("retry");
+                retry(|| {
+                    CheckpointStore::rebuild_managed_selection(&case.path, &retry_destination)
+                })
+                .unwrap();
                 let recovered = retry(|| CheckpointStore::open_managed(&case.path)).unwrap();
                 assert_eq!(recovered.get(b"p").unwrap(), Some(b"two".to_vec()));
                 assert_eq!(recovered.get(b"q").unwrap(), Some(b"batch".to_vec()));

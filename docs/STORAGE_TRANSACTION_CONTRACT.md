@@ -278,12 +278,12 @@ maintenance operations remain separate.
   directories and dangling symlinks. Final checkpoint publication remains
   atomic and no-clobber. A later conflict can still occur after tail adoption,
   with the existing conservative publication classification.
-- Bounded full-log and trusted-base rebuilds also recheck the initial
+- Ordinary, bounded full-log and trusted-base rebuilds recheck the initial
   selection under the store lock just before pending-tail adoption and again
   before starting selection publication. Malformed, added, removed or
   changed selections observed at these checks are preserved. Detection before
   adoption returns `NotPublished` without advancing the witness. Detection
-  after checkpoint publication returns `CheckpointOutcomeUnknown`; the
+  after checkpoint publication returns `CheckpointOutcomeUnknown`. The
   checkpoint may exist and the tail may already have been adopted. These
   checks assume cooperating writers and a trusted store directory.
 - `rebuild_managed_selection_bounded_with_limits` combines whole-log and
