@@ -257,16 +257,17 @@ impl DocumentTransaction<'_, '_> {
                 document_key_value_bytes: 0,
             });
         }
-        let rows = self.scan(&after, &before, query.limit)?;
+        let mut nonempty_entry = false;
+        let rows = self.scan_admitted(&after, &before, query.limit, |_, len| {
+            nonempty_entry = len != 0;
+            !nonempty_entry
+        })?;
         let entries_read = rows.len();
         let mut returned = 0;
         let mut used = 0_usize;
         let mut document_key_value_bytes = 0_usize;
         let mut cursor = None;
-        for (entry, value) in rows {
-            if !value.is_empty() {
-                return Err(invalid_data("invalid index entry value"));
-            }
+        for (entry, _) in rows {
             let id = entry_id(&entry, &index_prefix, definition.fields.len())?;
             let document_key = key::document(collection, id)?;
             let mut next_document_bytes = document_key_value_bytes;
@@ -311,6 +312,9 @@ impl DocumentTransaction<'_, '_> {
             });
             returned += 1;
             cursor = Some(IndexCursor(entry));
+        }
+        if nonempty_entry && returned == entries_read {
+            return Err(invalid_data("invalid index entry value"));
         }
         Ok(IndexScan {
             next: cursor,

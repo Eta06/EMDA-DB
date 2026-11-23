@@ -532,7 +532,14 @@ impl Overlay {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<crate::Entry>> {
-        self.scan_with(base, suffix, (after, before), limit, std::iter::empty())
+        self.scan_with(
+            base,
+            suffix,
+            (after, before),
+            limit,
+            std::iter::empty(),
+            |_, _| true,
+        )
     }
 
     pub(super) fn scan_with<'a>(
@@ -542,6 +549,7 @@ impl Overlay {
         (after, before): (Option<&[u8]>, Option<&[u8]>),
         limit: usize,
         staged: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+        admit: impl FnMut(&[u8], usize) -> bool,
     ) -> io::Result<Vec<crate::Entry>> {
         let start = self
             .entries
@@ -563,7 +571,7 @@ impl Overlay {
             (_, Some(_)) => staged.next(),
             _ => overlay.next(),
         });
-        base.scan_merged(after, before, limit, changes)
+        base.scan_merged(after, before, limit, changes, admit)
     }
 }
 

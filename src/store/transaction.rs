@@ -208,6 +208,16 @@ impl Transaction<'_> {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        self.scan_admitted(after, before, limit, |_, _| true)
+    }
+
+    pub(crate) fn scan_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        mut admit: impl FnMut(&[u8], usize) -> bool,
+    ) -> io::Result<Vec<Entry>> {
         crate::cancellation::check(self.cancellation.as_ref())?;
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
@@ -252,6 +262,9 @@ impl Transaction<'_> {
                 if bytes + size > MAX_SCAN_BYTES {
                     break;
                 }
+                if !admit(key, location.length) {
+                    break;
+                }
                 let value = snapshot
                     .log
                     .as_ref()
@@ -267,6 +280,9 @@ impl Transaction<'_> {
                 if let Some(value) = value {
                     let size = key.len() + value.len();
                     if bytes + size > MAX_SCAN_BYTES {
+                        break;
+                    }
+                    if !admit(key, value.len()) {
                         break;
                     }
                     bytes += size;

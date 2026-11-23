@@ -107,7 +107,13 @@ impl RetainedTransaction<'_> {
         Ok(())
     }
 
-    pub(super) fn scan(&self, after: &[u8], before: &[u8], limit: usize) -> io::Result<Vec<Entry>> {
+    pub(super) fn scan_admitted(
+        &self,
+        after: &[u8],
+        before: &[u8],
+        limit: usize,
+        admit: impl FnMut(&[u8], usize) -> bool,
+    ) -> io::Result<Vec<Entry>> {
         check_admission(self.deadline, self.cancellation)?;
         let staged = (after < before)
             .then(|| {
@@ -117,7 +123,8 @@ impl RetainedTransaction<'_> {
             .into_iter()
             .flatten()
             .map(|(key, value)| (key.as_slice(), value.as_deref()));
-        self.store.scan_with_staged(after, before, limit, staged)
+        self.store
+            .scan_with_staged(after, before, limit, staged, admit)
     }
 }
 

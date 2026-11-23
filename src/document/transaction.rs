@@ -141,10 +141,24 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     }
 
     pub(super) fn scan(&self, after: &[u8], before: &[u8], limit: usize) -> io::Result<Vec<Entry>> {
+        self.scan_admitted(after, before, limit, |_, _| true)
+    }
+
+    pub(super) fn scan_admitted(
+        &self,
+        after: &[u8],
+        before: &[u8],
+        limit: usize,
+        admit: impl FnMut(&[u8], usize) -> bool,
+    ) -> io::Result<Vec<Entry>> {
         match &self.backend {
-            BackendTransaction::Ordinary(tx) => tx.scan(Some(after), Some(before), limit),
-            BackendTransaction::Checkpoint(tx) => tx.scan(Some(after), Some(before), limit),
-            BackendTransaction::Retained(tx) => tx.scan(after, before, limit),
+            BackendTransaction::Ordinary(tx) => {
+                tx.scan_admitted(Some(after), Some(before), limit, admit)
+            }
+            BackendTransaction::Checkpoint(tx) => {
+                tx.scan_admitted(Some(after), Some(before), limit, admit)
+            }
+            BackendTransaction::Retained(tx) => tx.scan_admitted(after, before, limit, admit),
         }
     }
 
@@ -535,18 +549,23 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         let mut count = 0_usize;
         let mut bytes = 0_usize;
         loop {
-            let page = self.scan(&cursor, &end, 32)?;
-            if page.is_empty() {
-                break;
-            }
-            for (key, value) in page {
-                bytes = bytes
-                    .checked_add(key.len())
-                    .and_then(|n| n.checked_add(value.len()))
-                    .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-                if count >= max || bytes > max_bytes {
-                    return Err(key::invalid("document scan exceeds the operation limit"));
+            let mut rejected = None;
+            let page = self.scan_admitted(&cursor, &end, 32, |key, len| {
+                let total = bytes + key.len() + len;
+                if count >= max || total > max_bytes {
+                    rejected = Some(key::invalid("document scan exceeds the operation limit"));
+                    return false;
                 }
+                if len > MAX_DOCUMENT_BYTES {
+                    rejected = Some(invalid_data("stored document exceeds size limit"));
+                    return false;
+                }
+                count += 1;
+                bytes = total;
+                true
+            })?;
+            let empty = page.is_empty();
+            for (key, value) in page {
                 let id = std::str::from_utf8(
                     key.strip_prefix(prefix.as_slice())
                         .ok_or_else(|| invalid_data("invalid document key"))?,
@@ -554,8 +573,13 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 .map_err(|_| invalid_data("invalid document ID"))?;
                 key::id(id).map_err(|_| invalid_data("invalid document ID"))?;
                 visit(id.to_owned(), Self::decode_document(&value, schema)?);
-                count += 1;
                 cursor = key;
+            }
+            if let Some(error) = rejected {
+                return Err(error);
+            }
+            if empty {
+                break;
             }
         }
         Ok(())

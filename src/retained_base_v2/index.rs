@@ -520,7 +520,7 @@ impl IndexedBase {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
-        self.scan_merged(after, before, limit, std::iter::empty())
+        self.scan_merged(after, before, limit, std::iter::empty(), |_, _| true)
     }
 
     // The overlay supplies sorted distinct keys already restricted to the
@@ -531,6 +531,7 @@ impl IndexedBase {
         before: Option<&[u8]>,
         limit: usize,
         overlay: impl Iterator<Item = (&'a [u8], Option<OverlayValue<'a>>)>,
+        admit: impl FnMut(&[u8], usize) -> bool,
     ) -> io::Result<Vec<Entry>> {
         for key in [after, before].into_iter().flatten() {
             crate::record::validate_key(key)?;
@@ -551,6 +552,7 @@ impl IndexedBase {
             bytes: 0,
             limit,
             exhausted: false,
+            admit,
         };
         let mut overlay = overlay.peekable();
         for block in &self.blocks[start..] {
@@ -716,16 +718,17 @@ impl BlockValue<'_, '_> {
     }
 }
 
-struct PageBudget {
+struct PageBudget<A> {
     bytes: usize,
     limit: usize,
     exhausted: bool,
+    admit: A,
 }
 
-impl PageBudget {
+impl<A: FnMut(&[u8], usize) -> bool> PageBudget<A> {
     fn admit(&mut self, count: usize, key: &[u8], value_len: usize) -> bool {
         let bytes = self.bytes + key.len() + value_len;
-        if count == self.limit || bytes > MAX_SCAN_BYTES {
+        if count == self.limit || bytes > MAX_SCAN_BYTES || !(self.admit)(key, value_len) {
             self.exhausted = true;
             return false;
         }

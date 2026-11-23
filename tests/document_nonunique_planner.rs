@@ -359,6 +359,13 @@ fn byte_limits(db: &DocumentDatabase<'_>, source: &Path, overwrite: impl FnOnce(
     log.read_exact_at(&mut original, byte_offset).unwrap();
     assert_eq!(&original, b"!");
     log.write_all_at(b"?", byte_offset).unwrap();
+    let error = db.query("c", &query).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert!(
+        error
+            .to_string()
+            .contains("document scan exceeds the operation limit")
+    );
     let error = db
         .transaction(|tx| {
             tx.put_raw(b"byte-budget-rollback", b"must not commit")?;
@@ -374,6 +381,9 @@ fn byte_limits(db: &DocumentDatabase<'_>, source: &Path, overwrite: impl FnOnce(
     );
     assert!(db.delete("c", "00").unwrap());
     let error = db.query_planned("c", &query).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(error.to_string().contains("stored value checksum mismatch"));
+    let error = db.query("c", &query).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidData);
     assert!(error.to_string().contains("stored value checksum mismatch"));
 }

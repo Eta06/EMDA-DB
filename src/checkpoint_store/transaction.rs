@@ -156,6 +156,16 @@ impl CheckpointTransaction<'_> {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        self.scan_admitted(after, before, limit, |_, _| true)
+    }
+
+    pub(crate) fn scan_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        admit: impl FnMut(&[u8], usize) -> bool,
+    ) -> io::Result<Vec<Entry>> {
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
         }
@@ -179,6 +189,7 @@ impl CheckpointTransaction<'_> {
             entries: Vec::new(),
             bytes: 0,
             limit,
+            admit,
         };
         let mut stopped = false;
         let merge = |key: &[u8], location| {
@@ -284,20 +295,21 @@ impl CheckpointTransaction<'_> {
     }
 }
 
-struct ScanPage<'a> {
+struct ScanPage<'a, A> {
     log: &'a Log,
     entries: Vec<Entry>,
     bytes: usize,
     limit: usize,
+    admit: A,
 }
 
-impl ScanPage<'_> {
+impl<A: FnMut(&[u8], usize) -> bool> ScanPage<'_, A> {
     fn has_room(&self, key: &[u8], value_len: usize) -> bool {
         self.entries.len() < self.limit && self.bytes + key.len() + value_len <= MAX_SCAN_BYTES
     }
 
     fn push_value(&mut self, key: &[u8], value: &[u8]) -> bool {
-        if !self.has_room(key, value.len()) {
+        if !self.has_room(key, value.len()) || !(self.admit)(key, value.len()) {
             return false;
         }
         self.bytes += key.len() + value.len();
@@ -306,7 +318,7 @@ impl ScanPage<'_> {
     }
 
     fn push_location(&mut self, key: &[u8], location: ValueLocation) -> io::Result<bool> {
-        if !self.has_room(key, location.length) {
+        if !self.has_room(key, location.length) || !(self.admit)(key, location.length) {
             return Ok(false);
         }
         let value = self.log.read(location)?;

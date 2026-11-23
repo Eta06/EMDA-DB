@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check document scan limits and empty index marker values before
+  materializing storage range entries.
+
 - Check stored document sizes and planned-query byte admission before
   materializing candidate values.
 

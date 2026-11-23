@@ -577,6 +577,7 @@ impl ManagedRetainedStore {
         before: &[u8],
         limit: usize,
         staged: impl Iterator<Item = (&'a [u8], Option<&'a [u8]>)>,
+        admit: impl FnMut(&[u8], usize) -> bool,
     ) -> io::Result<Vec<Entry>> {
         self.ensure_selected()?;
         self.store.overlay.scan_with(
@@ -585,6 +586,7 @@ impl ManagedRetainedStore {
             (Some(after), Some(before)),
             limit,
             staged,
+            admit,
         )
     }
 
