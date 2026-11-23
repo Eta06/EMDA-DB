@@ -142,10 +142,14 @@ fn uncertain_backup_restore_keeps_its_verified_registration_record() {
     let backup = parent.join("backup");
     let binding = source.backup_to(&backup).unwrap();
     let destination = parent.join("restored");
-    let result =
-        Catalog::prepare_from_backup_using(&backup, &destination, LIMITS.into(), &binding, |_| {
-            Err(io::Error::other("injected restored parent sync error"))
-        });
+    let result = Catalog::prepare_from_backup_using(
+        &backup,
+        &destination,
+        LIMITS.into(),
+        &binding,
+        |_| Err(io::Error::other("injected restored parent sync error")),
+        |_| Ok(()),
+    );
     let prepared = match result {
         Err(AuthorizedRestoreFailure::OutcomeUnknown { error, prepared }) => {
             assert_eq!(error.to_string(), "injected restored parent sync error");
@@ -202,6 +206,25 @@ fn backup_restore_rejects_bad_inputs_and_conflicts_without_registering() {
         ),
         Err(AuthorizedRestoreFailure::NotPublished(error)) if error.kind() == io::ErrorKind::InvalidInput
     ));
+    assert!(!destination.exists());
+    let mut recorded = None;
+    let result = Catalog::prepare_from_backup_recorded(
+        &backup,
+        &destination,
+        LIMITS,
+        None,
+        &binding,
+        |prepared| {
+            recorded = Some(prepared);
+            Err(io::Error::other("injected receipt persistence failure"))
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(AuthorizedRestoreFailure::NotPublished(error))
+            if error.to_string() == "injected receipt persistence failure"
+    ));
+    assert!(recorded.is_some());
     assert!(!destination.exists());
     let prepared = Catalog::prepare_from_backup(&backup, &destination, LIMITS, &binding).unwrap();
     let wrong = match Catalog::prepare_from_backup(&backup, &destination, LIMITS, &binding) {

@@ -140,7 +140,7 @@ impl ManagedRetainedStore {
         expected: &SuffixExpected,
         publication: InitialPublication<
             impl FnOnce(&Path) -> io::Result<()>,
-            impl FnOnce(AuthorityPoint),
+            impl FnOnce(AuthorityPoint) -> io::Result<()>,
         >,
     ) -> Result<AuthorityPoint, PublicationFailure> {
         let parent = crate::backup::parent_directory(destination)

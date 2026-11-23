@@ -100,7 +100,8 @@ fn document_commit_crash_child() {
 }
 
 fn kill_at(root: &Path, authority: &Path, boundary: &str) {
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             "retained_candidate::writable::managed::authority::tests::crash::document_commit_crash_child",
@@ -108,10 +109,12 @@ fn kill_at(root: &Path, authority: &Path, boundary: &str) {
         ])
         .env("EMDA_DOCUMENT_CRASH_CATALOG", root)
         .env("EMDA_DOCUMENT_CRASH_AUTHORITY", authority)
-        .env("EMDA_DOCUMENT_CRASH_BOUNDARY", boundary)
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .env("EMDA_DOCUMENT_CRASH_BOUNDARY", boundary);
+    kill_paused(&mut command, boundary);
+}
+
+fn kill_paused(command: &mut Command, boundary: &str) {
+    let mut child = command.stdout(Stdio::piped()).spawn().unwrap();
     let stdout = BufReader::new(child.stdout.take().unwrap());
     let (seen, notification) = mpsc::channel();
     let reader = std::thread::spawn(move || {
@@ -132,6 +135,112 @@ fn kill_at(root: &Path, authority: &Path, boundary: &str) {
         std::os::unix::process::ExitStatusExt::signal(&status),
         Some(9)
     );
+}
+
+#[test]
+fn recorded_restore_crash_child() {
+    type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
+    let Some(root) = std::env::var_os("EMDA_RESTORE_CRASH_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let boundary = std::env::var("EMDA_RESTORE_CRASH_BOUNDARY").unwrap();
+    let provider = FileRetainedAuthority::open(root.join("source-authority")).unwrap();
+    let mut source = Catalog::open(root.join("authorized"), LIMITS, provider).unwrap();
+    let backup = root.join("backup");
+    let binding = source.backup_to(&backup).unwrap();
+    drop(source);
+    let mut receipt = FileRetainedAuthority::create(root.join("restore-receipt")).unwrap();
+    Catalog::prepare_from_backup_using(
+        &backup,
+        &root.join("restored"),
+        LIMITS.into(),
+        &binding,
+        |parent| {
+            if boundary == "after-rename" {
+                pause()?;
+            }
+            sync_existing(parent)
+        },
+        |prepared| {
+            assert!(receipt.compare_and_swap(None, prepared)?);
+            if boundary == "before-rename" {
+                pause()?;
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    panic!("restore should pause before replying");
+}
+
+#[test]
+fn recorded_backup_restore_survives_process_kills_around_publication() {
+    type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
+    for boundary in ["before-rename", "after-rename"] {
+        let fixture = Fixture::prepare();
+        let root = fixture._tmp.path();
+        let source_authority = root.join("source-authority");
+        let mut provider = FileRetainedAuthority::create(&source_authority).unwrap();
+        assert!(provider.compare_and_swap(None, fixture.initial).unwrap());
+        let mut source = Catalog::open(
+            &fixture.root,
+            LIMITS,
+            FileRetainedAuthority::open(&source_authority).unwrap(),
+        )
+        .unwrap();
+        source.put(b"receipt", b"committed").unwrap();
+        let committed = provider.read().unwrap().unwrap();
+        let catalog_log = Slot::A.path(&fixture.root).join("records.log");
+        let original_log = fs::read(&catalog_log).unwrap();
+        drop(source);
+
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "retained_candidate::writable::managed::authority::tests::crash::recorded_restore_crash_child",
+                "--nocapture",
+            ])
+            .env("EMDA_RESTORE_CRASH_ROOT", root)
+            .env("EMDA_RESTORE_CRASH_BOUNDARY", boundary);
+        kill_paused(&mut command, boundary);
+
+        let prepared = FileRetainedAuthority::open(root.join("restore-receipt"))
+            .unwrap()
+            .read()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prepared.committed.suffix_digest,
+            committed.committed.suffix_digest
+        );
+        assert_ne!(prepared.committed.catalog, committed.committed.catalog);
+        let destination = root.join("restored");
+        let fresh = root.join("fresh-authority");
+        let authority = FileRetainedAuthority::create(&fresh).unwrap();
+        let registered = Catalog::register_prepared(&destination, LIMITS, authority, prepared);
+        if boundary == "before-rename" {
+            assert!(matches!(registered, Err(error) if error.kind() == io::ErrorKind::NotFound));
+            assert_eq!(
+                FileRetainedAuthority::open(&fresh).unwrap().read().unwrap(),
+                None
+            );
+            assert!(!destination.exists());
+        } else {
+            let mut restored = registered.unwrap();
+            assert_eq!(restored.get(b"base", 8).unwrap().unwrap(), b"imported");
+            assert_eq!(restored.get(b"receipt", 9).unwrap().unwrap(), b"committed");
+            assert_eq!(
+                FileRetainedAuthority::open(&fresh).unwrap().read().unwrap(),
+                Some(prepared)
+            );
+        }
+        crate::cleanup_abandoned_staging(root).unwrap();
+        assert_eq!(destination.exists(), boundary == "after-rename");
+        assert_eq!(provider.read().unwrap(), Some(committed));
+        assert_eq!(fs::read(&catalog_log).unwrap(), original_log);
+    }
 }
 
 #[test]

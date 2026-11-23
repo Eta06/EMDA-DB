@@ -244,6 +244,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             limits.into(),
             expected,
             sync_existing,
+            |_| Ok(()),
         )
     }
 
@@ -261,6 +262,39 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             InitialLimits::with_storage(limits, storage),
             expected,
             sync_existing,
+            |_| Ok(()),
+        )
+    }
+
+    /// Prepare a bound restore and durably record its verified initial
+    /// authority record before attempting destination publication.
+    ///
+    /// `record_prepared` runs after the private generation has been verified
+    /// and synchronized. It must persist the record independently of the
+    /// destination and return success only after that record is durable.
+    /// Keep this receipt separate from the authority used to open the
+    /// catalog. If the callback fails, the catalog is left unpublished.
+    /// A saved receipt can outlive a failed or interrupted publication.
+    /// Reconcile it with the exact destination using `Self::register_prepared`.
+    pub fn prepare_from_backup_recorded(
+        backup: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        storage: Option<CatalogStorageLimits>,
+        expected: &SuffixExpected,
+        record_prepared: impl FnOnce(AuthorityRecord) -> io::Result<()>,
+    ) -> Result<AuthorityRecord, AuthorizedRestoreFailure> {
+        let limits = match storage {
+            Some(storage) => InitialLimits::with_storage(limits, storage),
+            None => limits.into(),
+        };
+        Self::prepare_from_backup_using(
+            backup.as_ref(),
+            destination.as_ref(),
+            limits,
+            expected,
+            sync_existing,
+            record_prepared,
         )
     }
 
@@ -270,6 +304,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         limits: InitialLimits,
         expected: &SuffixExpected,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        record_prepared: impl FnOnce(AuthorityRecord) -> io::Result<()>,
     ) -> Result<AuthorityRecord, AuthorizedRestoreFailure> {
         let mut prepared = None;
         let result = ManagedRetainedStore::restore_backup_bound(
@@ -280,7 +315,12 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             InitialPublication {
                 magic: AUTHORIZED_MAGIC,
                 sync_parent,
-                verified: |point| prepared = Some(Box::new(AuthorityRecord::initial(point))),
+                verified: |point| {
+                    let initial = AuthorityRecord::initial(point);
+                    record_prepared(initial)?;
+                    prepared = Some(Box::new(initial));
+                    Ok(())
+                },
             },
         );
         result

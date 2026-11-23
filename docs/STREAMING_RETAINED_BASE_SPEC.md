@@ -623,11 +623,20 @@ record after a lost provider response. Missing, mismatched or damaged
 destinations and different authority records cannot be registered by
 this path.
 
+Use `prepare_from_backup_recorded` to close the interval between publishing
+the destination and receiving the record. Its callback runs after staged
+verification and synchronization and before the no-clobber rename. Persist
+the supplied record as a separate receipt and return success only after
+the receipt is durable. Use a fresh authority for registration. If the
+callback fails, publication does not begin. After interruption, the receipt
+can exist with an absent destination. `register_prepared` checks the exact
+visible catalog before advancing its authority, including after an
+interrupted rename or directory sync.
+
 This restores a selected snapshot into a new lineage. Keep the original
 authority and choose the recovery point independently. The backup binding
 identifies exact bytes and does not establish freshness. A failed restore
-can leave a stage, and a crash before the caller saves the record can leave
-an unregistered catalog. Prepare a new restore at another absent
+can leave a private stage. Prepare a new restore at another absent
 destination if the independently held record was lost.
 
 `retire_cutover_archive` requires a

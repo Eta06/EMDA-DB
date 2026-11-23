@@ -48,12 +48,12 @@ struct InitialPublication<S, V> {
     verified: V,
 }
 
-impl<S> InitialPublication<S, fn(AuthorityPoint)> {
+impl<S> InitialPublication<S, fn(AuthorityPoint) -> io::Result<()>> {
     fn new(magic: &'static [u8; 8], sync_parent: S) -> Self {
         Self {
             magic,
             sync_parent,
-            verified: |_| {},
+            verified: |_| Ok(()),
         }
     }
 }
@@ -236,7 +236,7 @@ impl ManagedRetainedStore {
         suffix: Option<(&Path, &SuffixExpected)>,
         publication: InitialPublication<
             impl FnOnce(&Path) -> io::Result<()>,
-            impl FnOnce(AuthorityPoint),
+            impl FnOnce(AuthorityPoint) -> io::Result<()>,
         >,
     ) -> Result<AuthorityPoint, PublicationFailure> {
         let parent = crate::backup::parent_directory(destination)
@@ -372,7 +372,7 @@ impl ManagedRetainedStore {
         limits: InitialLimits,
         publication: InitialPublication<
             impl FnOnce(&Path) -> io::Result<()>,
-            impl FnOnce(AuthorityPoint),
+            impl FnOnce(AuthorityPoint) -> io::Result<()>,
         >,
         prepare: impl FnOnce(
             &crate::staging::Stage,
@@ -424,7 +424,7 @@ impl ManagedRetainedStore {
                 .room(0, 0)?;
             }
             sync_existing(root)?;
-            verified(point);
+            verified(point)?;
             tracker.begin_publication();
             stage.publish(destination)?;
             sync_parent(parent)?;

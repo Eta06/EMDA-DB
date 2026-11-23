@@ -362,6 +362,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   uncertain parent sync, a lost registration response, and document index
   and raw-key recovery through the new authority. This exercises a local
   restore. Independent off-host restore remains deferred.
+- [x] Record the prepared restore independently before publishing its
+  directory. Process-kill tests exercise both sides of the rename, with
+  absent destination rejection, exact reconciled registration and
+  preserved source authority and log. These tests exercise a running OS.
 - [x] Inject [102 returned Linux filesystem errors](../benchmarks/results/2026-11-23-retained-archive-eio/README.md) during archive retirement, covering each observed sync and unlink ordinal with V2 and V3 source fixtures. Verify the selected store and an independently bound local restore before each clean retirement retry.
 - [x] Discard a verified abandoned cutover preparation before or after cutover. The [cleanup regression](../benchmarks/results/2026-11-19-abandoned-cutover-cleanup/README.md) checks the live source after a process kill, refuses registered or selected catalogs, and preserves unknown entries.
 - [ ] Complete the retained-history lifecycle for independently retained backups and measure recovery at deployment scale. Retained reopen verifies the entire admitted base and replays a bounded suffix. Rotation is synchronous. Limits do not bound all allocations or the total disk space across active and retired files. Any path that skips full verification needs a documented corruption model and equivalent validation. Reclamation must preserve captured reads and transactions, recover from interrupted publication, and reject stale generations according to the authority contract.

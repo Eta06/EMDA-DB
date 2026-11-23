@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Optionally persist the verified authority record before publishing an
+  authorized backup restore, so the caller can reconcile it after interruption.
+
 - Restore a bound retained backup directly into a fresh authorized catalog.
   Registration verifies the restored generation before installing its fresh
   authority record. An uncertain directory publication returns the verified

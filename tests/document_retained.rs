@@ -180,20 +180,28 @@ fn authorized_backup_restores_document_indexes_under_a_fresh_authority() {
         .unwrap();
     let destination = dir.path().join("restored");
     let restored_authority = dir.path().join("restored-authority");
-    let prepared = Catalog::prepare_from_backup_with_storage_limits(
+    let mut restore_receipt =
+        FileRetainedAuthority::create(dir.path().join("restore-receipt")).unwrap();
+    let prepared = Catalog::prepare_from_backup_recorded(
         &backup,
         &destination,
         LIMITS,
-        database_engine::retained_candidate::CatalogStorageLimits {
+        Some(database_engine::retained_candidate::CatalogStorageLimits {
             bytes: 16_384,
             entries: 8,
-        },
+        }),
         &binding,
+        |prepared| {
+            assert!(!destination.exists());
+            assert!(restore_receipt.compare_and_swap(None, prepared)?);
+            Ok(())
+        },
     )
     .unwrap();
     assert_ne!(prepared.committed.catalog, initial.committed.catalog);
     assert_ne!(prepared.committed.generation, initial.committed.generation);
     assert_eq!(prepared.committed.suffix_digest, binding.digest);
+    assert_eq!(restore_receipt.read().unwrap(), Some(prepared));
     let mut restored = Catalog::register_prepared(
         &destination,
         LIMITS,
