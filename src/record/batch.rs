@@ -1,7 +1,7 @@
 //! Versioned, checksummed atomic-batch payloads inside one DB02 record.
 use super::{
-    CHECKSUM_SIZE, HEADER_SIZE, Header, MAX_VALUE, Operation, encode, invalid_data, validate,
-    verify,
+    CHECKSUM_SIZE, HEADER_SIZE, Header, MAX_VALUE, Operation, append_record, encode_header,
+    encoding_buffer, invalid_data, validate, verify,
 };
 use std::io;
 
@@ -38,6 +38,29 @@ pub(crate) struct Decoded<'a> {
 }
 
 pub(crate) fn encode_payload(operations: &[BatchOperation<'_>]) -> io::Result<Vec<u8>> {
+    let length = payload_length(operations)?;
+    let mut payload = Vec::with_capacity(length);
+    append_payload(&mut payload, operations)?;
+    Ok(payload)
+}
+
+pub(crate) fn encode_record_admitted(
+    operations: &[BatchOperation<'_>],
+    admit: impl FnOnce(usize) -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
+    let payload = payload_length(operations)?;
+    let length = HEADER_SIZE + 1 + payload + CHECKSUM_SIZE;
+    admit(length)?;
+    let mut result = encoding_buffer(length)?;
+    let header = encode_header(Operation::Batch, &[0], payload)?;
+    result.extend_from_slice(&header);
+    result.push(0);
+    append_payload(&mut result, operations)?;
+    result.extend_from_slice(&crc32fast::hash(&result).to_le_bytes());
+    Ok(result)
+}
+
+fn payload_length(operations: &[BatchOperation<'_>]) -> io::Result<usize> {
     if operations.is_empty() || operations.len() > MAX_ATOMIC_BATCH_OPERATIONS {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -58,13 +81,17 @@ pub(crate) fn encode_payload(operations: &[BatchOperation<'_>]) -> io::Result<Ve
             ));
         }
     }
-    let mut result = Vec::with_capacity(total);
+    Ok(total)
+}
+
+fn append_payload(result: &mut Vec<u8>, operations: &[BatchOperation<'_>]) -> io::Result<()> {
     result.extend_from_slice(&(operations.len() as u32).to_le_bytes());
     for &operation in operations {
         let (kind, key, value) = operation.fields();
-        result.extend_from_slice(&encode(kind, key, value)?);
+        let header = encode_header(kind, key, value.len())?;
+        append_record(result, &header, key, value);
     }
-    Ok(result)
+    Ok(())
 }
 
 pub(crate) fn payload_count(payload: &[u8]) -> io::Result<usize> {

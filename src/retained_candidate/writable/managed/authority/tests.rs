@@ -1,4 +1,5 @@
 use super::*;
+use crate::record::Operation;
 use crate::retained_base_v2::Limits;
 use crate::retained_candidate::writable::decode_marker;
 use crate::retained_candidate::{IndexLimits, OverlayLimits, SuffixLimits};

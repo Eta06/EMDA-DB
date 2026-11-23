@@ -324,8 +324,10 @@ require full-log replay because the trusted checkpoint has no byte peak.
 `retained_candidate::RetainedStore` publishes a separate generation from an
 independently bound retained base and optional detached suffix. It uses an
 exclusive store lock, persists its recovery limits, and synchronizes the
-opened directory ancestry before accepting mutations. Records and atomic
-batches are admitted under those same limits before append. A write is
+opened directory ancestry before accepting mutations. The writer checks
+the physical byte and operation limits before allocating the encoded
+mutation. Automatic rotation checks against an empty suffix first, then
+checks the selected suffix and overlay before append. A write is
 acknowledged after log and witness synchronization. After an uncertain write,
 reopen validates the base, the witness-bound committed suffix prefix and
 every subsequent whole record before adopting a complete tail. The local

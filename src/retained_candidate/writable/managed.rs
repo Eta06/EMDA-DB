@@ -1,10 +1,10 @@
 use super::{
-    BaseImport, Expected, GenerationRole, Header, OverlaySource, RecoveryLimits, RetainedStore,
-    RetainedStoreLimits, StoreLock, SuffixImport, create_file, decode_marker, encode_batch,
+    Append, BaseImport, Expected, GenerationRole, Header, OverlaySource, RecoveryLimits,
+    RetainedStore, RetainedStoreLimits, StoreLock, SuffixImport, create_file, decode_marker,
     invalid_input, open_regular, open_regular_with, random_id, read_marker, suffix_end,
 };
 use crate::directory::sync_existing;
-use crate::record::{self, Operation};
+use crate::record;
 use crate::retained_candidate::{SuffixCapacity, SuffixExpected, check_files, exact};
 use crate::{
     BatchOperation, Entry, MutationFailure, PublicationFailure, RetainedExportLimits, Store,
@@ -608,18 +608,18 @@ impl ManagedRetainedStore {
     }
 
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
-        self.write(|| record::encode(Operation::Put, key, value))
+        self.write(Append::Put(key, value))
     }
 
     pub fn delete(&mut self, key: &[u8]) -> Result<(), MutationFailure> {
-        self.write(|| record::encode(Operation::Delete, key, &[]))
+        self.write(Append::Delete(key))
     }
 
     pub fn write_batch(
         &mut self,
         operations: &[BatchOperation<'_>],
     ) -> Result<(), MutationFailure> {
-        self.write(|| encode_batch(operations))
+        self.write(Append::Batch(operations))
     }
 
     pub(crate) fn write_batch_checking(
@@ -627,7 +627,7 @@ impl ManagedRetainedStore {
         operations: &[BatchOperation<'_>],
         admit: impl Fn() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
-        self.write_checking(|| encode_batch(operations), admit)
+        self.write_checking(Append::Batch(operations), admit)
     }
 
     pub(crate) fn scan_with_staged<'a>(
@@ -649,21 +649,20 @@ impl ManagedRetainedStore {
         )
     }
 
-    fn write(
-        &mut self,
-        encode: impl FnOnce() -> io::Result<Vec<u8>>,
-    ) -> Result<(), MutationFailure> {
-        self.write_checking(encode, || Ok(()))
+    fn write(&mut self, append: Append<'_>) -> Result<(), MutationFailure> {
+        self.write_checking(append, || Ok(()))
     }
 
     fn write_checking(
         &mut self,
-        encode: impl FnOnce() -> io::Result<Vec<u8>>,
+        append: Append<'_>,
         admit: impl Fn() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         admit().map_err(MutationFailure::Rejected)?;
         self.prepare_write()?;
-        let bytes = encode().map_err(MutationFailure::Rejected)?;
+        let bytes = self
+            .store
+            .encode_append(append, self.auto_reclaim.is_some())?;
         let Some(threshold) = self.auto_reclaim else {
             return self.append(&bytes, admit);
         };

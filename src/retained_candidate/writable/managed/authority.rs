@@ -537,18 +537,18 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     }
 
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
-        self.write(record::encode(Operation::Put, key, value))
+        self.write(Append::Put(key, value))
     }
 
     pub fn delete(&mut self, key: &[u8]) -> Result<(), MutationFailure> {
-        self.write(record::encode(Operation::Delete, key, &[]))
+        self.write(Append::Delete(key))
     }
 
     pub fn write_batch(
         &mut self,
         operations: &[BatchOperation<'_>],
     ) -> Result<(), MutationFailure> {
-        self.write(encode_batch(operations))
+        self.write(Append::Batch(operations))
     }
 
     pub(crate) fn checked_document_reader(&mut self) -> io::Result<&ManagedRetainedStore> {
@@ -562,7 +562,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         admit: impl Fn() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         admit().map_err(MutationFailure::Rejected)?;
-        self.write_checking(encode_batch(operations), admit)
+        self.write_checking(Append::Batch(operations), admit)
     }
 
     /// Compact into the inactive slot and select it with one authority CAS.
@@ -636,16 +636,19 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         Ok(true)
     }
 
-    fn write(&mut self, encoded: io::Result<Vec<u8>>) -> Result<(), MutationFailure> {
-        self.write_checking(encoded, || Ok(()))
+    fn write(&mut self, append: Append<'_>) -> Result<(), MutationFailure> {
+        self.write_checking(append, || Ok(()))
     }
 
     fn write_checking(
         &mut self,
-        encoded: io::Result<Vec<u8>>,
+        append: Append<'_>,
         admit: impl Fn() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
-        let encoded = encoded.map_err(MutationFailure::Rejected)?;
+        let encoded = self
+            .inner
+            .store
+            .encode_append(append, self.auto_reclaim.is_some())?;
         self.verify_current().map_err(MutationFailure::Rejected)?;
         let Some(threshold) = self.auto_reclaim else {
             return self.append(&encoded, admit);

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check retained suffix byte and operation limits before encoding a mutation.
+  Encode accepted retained batches in one buffer.
+
 - Check that the inactive generation is available and catalog-owned before
   advancing the retained authority revision for reclamation.
 

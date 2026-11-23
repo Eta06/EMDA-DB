@@ -102,11 +102,39 @@ pub(crate) fn encode_header(
 pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<Vec<u8>> {
     let header = encode_header(operation, key, value.len())?;
     let mut record = Vec::with_capacity(HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE);
-    record.extend_from_slice(&header);
-    record.extend_from_slice(key);
-    record.extend_from_slice(value);
-    record.extend_from_slice(&crc32fast::hash(&record).to_le_bytes());
+    append_record(&mut record, &header, key, value);
     Ok(record)
+}
+
+fn append_record(output: &mut Vec<u8>, header: &[u8; HEADER_SIZE], key: &[u8], value: &[u8]) {
+    let start = output.len();
+    output.extend_from_slice(header);
+    output.extend_from_slice(key);
+    output.extend_from_slice(value);
+    output.extend_from_slice(&crc32fast::hash(&output[start..]).to_le_bytes());
+}
+
+pub(crate) fn encode_admitted(
+    operation: Operation,
+    key: &[u8],
+    value: &[u8],
+    admit: impl FnOnce(usize) -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
+    validate(operation, key, value)?;
+    let length = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
+    admit(length)?;
+    let mut result = encoding_buffer(length)?;
+    let header = encode_header(operation, key, value.len())?;
+    append_record(&mut result, &header, key, value);
+    Ok(result)
+}
+
+fn encoding_buffer(length: usize) -> io::Result<Vec<u8>> {
+    let mut result = Vec::new();
+    result.try_reserve_exact(length).map_err(|_| {
+        io::Error::new(io::ErrorKind::OutOfMemory, "cannot allocate encoded record")
+    })?;
+    Ok(result)
 }
 
 pub(crate) fn verify(header: &[u8; HEADER_SIZE], payload: &[u8], expected: u32) -> io::Result<()> {

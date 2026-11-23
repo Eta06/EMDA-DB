@@ -77,6 +77,69 @@ struct Fixture {
     expected: Expected,
 }
 
+#[test]
+fn retained_batch_encoding_obeys_remaining_suffix_limits() {
+    let first = record::encode(Operation::Put, b"b", b"first").unwrap();
+    let operations = [
+        BatchOperation::Delete { key: b"b" },
+        BatchOperation::Put {
+            key: b"c",
+            value: b"second",
+        },
+    ];
+    let mut payload = 2_u32.to_le_bytes().to_vec();
+    for operation in operations {
+        let (kind, key, value) = operation.fields();
+        payload.extend_from_slice(&record::encode(kind, key, value).unwrap());
+    }
+    let batch = record::encode(Operation::Batch, &[0], &payload).unwrap();
+    let required_bytes = (first.len() + batch.len()) as u64;
+    for (bytes, operation_limit, rejection) in [
+        (required_bytes - 1, 3, Some("suffix byte limit exceeded")),
+        (required_bytes, 2, Some("suffix operation limit exceeded")),
+        (required_bytes, 3, None),
+    ] {
+        let limits = RetainedStoreLimits {
+            suffix: SuffixLimits {
+                bytes,
+                operations: operation_limit,
+                ..LIMITS.suffix
+            },
+            ..LIMITS
+        };
+        let f = Fixture::new(limits);
+        let mut store = f.open(limits).unwrap();
+        store.put(b"b", b"first").unwrap();
+        let before = fs::read(f.log()).unwrap();
+        let witness = fs::read(f.witness()).unwrap();
+        let result = store.write_batch(&operations);
+        if let Some(message) = rejection {
+            assert!(matches!(
+                result,
+                Err(MutationFailure::Rejected(error))
+                    if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message
+            ));
+            assert_eq!(fs::read(f.log()).unwrap(), before);
+            assert_eq!(fs::read(f.witness()).unwrap(), witness);
+        } else {
+            result.unwrap();
+            let log = fs::read(f.log()).unwrap();
+            assert_eq!(&log[..before.len()], before.as_slice());
+            assert_eq!(&log[before.len()..], batch.as_slice());
+        }
+        drop(store);
+        let reopened = f.open(limits).unwrap();
+        assert_eq!(
+            reopened.get(b"b", 16).unwrap().as_deref(),
+            rejection.map(|_| b"first".as_slice())
+        );
+        assert_eq!(
+            reopened.get(b"c", 16).unwrap().as_deref(),
+            rejection.is_none().then_some(b"second".as_slice())
+        );
+    }
+}
+
 impl Fixture {
     fn new(limits: RetainedStoreLimits) -> Self {
         let root = tempfile::tempdir().unwrap();
@@ -772,21 +835,12 @@ fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
                 value: b"batch",
             },
         ];
-        let result = store.write(
-            || {
-                record::encode(
-                    Operation::Batch,
-                    &[0],
-                    &record::batch::encode_payload(&operations)?,
-                )
-            },
-            |observed| {
-                if observed == point {
-                    return Err(io::Error::other("injected write interruption"));
-                }
-                Ok(())
-            },
-        );
+        let result = store.write(Append::Batch(&operations), |observed| {
+            if observed == point {
+                return Err(io::Error::other("injected write interruption"));
+            }
+            Ok(())
+        });
         assert!(matches!(result, Err(MutationFailure::OutcomeUnknown(_))));
         assert!(store.get(b"safe", 16).is_err());
         assert!(store.scan(None, None, 3).is_err());
@@ -1073,18 +1127,15 @@ fn torn_witness_prevents_adopting_a_complete_tail() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open(LIMITS).unwrap();
     store.put(b"key", b"old").unwrap();
-    let result = store.write(
-        || record::encode(Operation::Put, b"key", b"new"),
-        |point| {
-            if point == CommitPoint::LogSynced {
-                let file = OpenOptions::new().write(true).open(f.witness())?;
-                file.write_all_at(&[0; 16], 0)?;
-                file.sync_data()?;
-                return Err(io::Error::other("injected torn witness"));
-            }
-            Ok(())
-        },
-    );
+    let result = store.write(Append::Put(b"key", b"new"), |point| {
+        if point == CommitPoint::LogSynced {
+            let file = OpenOptions::new().write(true).open(f.witness())?;
+            file.write_all_at(&[0; 16], 0)?;
+            file.sync_data()?;
+            return Err(io::Error::other("injected torn witness"));
+        }
+        Ok(())
+    });
     assert!(matches!(result, Err(MutationFailure::OutcomeUnknown(_))));
     assert!(store.get(b"key", 3).is_err());
     drop(store);
@@ -1255,25 +1306,16 @@ fn retained_store_crash_child() {
             value: b"batch",
         },
     ];
-    let result = store.write(
-        || {
-            record::encode(
-                Operation::Batch,
-                &[0],
-                &record::batch::encode_payload(&operations)?,
-            )
-        },
-        |observed| {
-            if observed == point {
-                println!("retained commit boundary");
-                io::stdout().flush()?;
-                loop {
-                    std::thread::park();
-                }
+    let result = store.write(Append::Batch(&operations), |observed| {
+        if observed == point {
+            println!("retained commit boundary");
+            io::stdout().flush()?;
+            loop {
+                std::thread::park();
             }
-            Ok(())
-        },
-    );
+        }
+        Ok(())
+    });
     panic!("child did not stop at the selected boundary: {result:?}");
 }
 

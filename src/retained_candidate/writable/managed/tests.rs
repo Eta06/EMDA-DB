@@ -1,5 +1,7 @@
 use super::*;
+use crate::record::Operation;
 use crate::retained_base_v2::Limits;
+use crate::retained_candidate::writable::encode_batch;
 use crate::retained_candidate::{IndexLimits, OverlayLimits, SuffixLimits};
 use crate::{RetainedExportLimits, Store};
 use std::fs::OpenOptions;

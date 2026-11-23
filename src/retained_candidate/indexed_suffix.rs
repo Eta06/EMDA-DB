@@ -204,6 +204,10 @@ impl IndexedSuffix {
 }
 
 impl Overlay {
+    pub(super) fn operations(&self) -> u64 {
+        self.operations
+    }
+
     pub(super) fn visit_merged(
         &self,
         base: &IndexedBase,

@@ -277,7 +277,12 @@ still authenticated in full, and the private directory is synchronized
 before publication. Recovery cannot adopt an added tail during initialization.
 
 Mutations require exclusive use of the handle.
-Ordered DB02 children are admitted as one atomic append. Preparation
+The encoder checks physical suffix bytes and ordered operation count before
+allocating an encoded put, delete, or batch. With automatic rotation, the
+precheck uses the limits of an empty suffix. The actual append still checks
+the selected suffix, overlay and replay work. Accepted DB02 batches encode
+their children and outer checksum directly into one fallibly reserved
+buffer. Preparation
 accounts for every child in replay order and reserves overlay growth
 and changed keys before the append. Commit appends the
 complete record, synchronizes the log, updates and synchronizes the

@@ -441,18 +441,18 @@ impl RetainedStore {
     }
 
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<(), MutationFailure> {
-        self.write(|| record::encode(Operation::Put, key, value), |_| Ok(()))
+        self.write(Append::Put(key, value), |_| Ok(()))
     }
 
     pub fn delete(&mut self, key: &[u8]) -> Result<(), MutationFailure> {
-        self.write(|| record::encode(Operation::Delete, key, &[]), |_| Ok(()))
+        self.write(Append::Delete(key), |_| Ok(()))
     }
 
     pub fn write_batch(
         &mut self,
         operations: &[BatchOperation<'_>],
     ) -> Result<(), MutationFailure> {
-        self.write(|| encode_batch(operations), |_| Ok(()))
+        self.write(Append::Batch(operations), |_| Ok(()))
     }
 
     fn ensure_healthy(&self) -> io::Result<()> {
@@ -466,12 +466,39 @@ impl RetainedStore {
 
     fn write(
         &mut self,
-        encode: impl FnOnce() -> io::Result<Vec<u8>>,
+        append: Append<'_>,
         hook: impl FnMut(CommitPoint) -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         self.ensure_healthy().map_err(MutationFailure::Rejected)?;
-        let encoded = encode().map_err(MutationFailure::Rejected)?;
+        let encoded = self.encode_append(append, false)?;
         self.write_encoded(&encoded, |_, _| Ok(()), hook)
+    }
+
+    fn encode_append(
+        &self,
+        append: Append<'_>,
+        may_rotate: bool,
+    ) -> Result<Vec<u8>, MutationFailure> {
+        // Automatic maintenance can replace the suffix. It still cannot
+        // admit work that would exceed the limits of an empty generation.
+        let (bytes, operations) = if may_rotate {
+            (0, 0)
+        } else {
+            (self.suffix_len, self.overlay.operations())
+        };
+        let admit = |length| {
+            suffix_end(bytes, length, self.limits)?;
+            if append.operations() > self.limits.suffix.operations.saturating_sub(operations) {
+                return Err(suffix_capacity("suffix operation limit exceeded"));
+            }
+            Ok(())
+        };
+        let encoded = match append {
+            Append::Put(key, value) => record::encode_admitted(Operation::Put, key, value, admit),
+            Append::Delete(key) => record::encode_admitted(Operation::Delete, key, &[], admit),
+            Append::Batch(operations) => record::batch::encode_record_admitted(operations, admit),
+        };
+        encoded.map_err(MutationFailure::Rejected)
     }
 
     fn write_encoded(
@@ -535,6 +562,23 @@ fn suffix_end(current: usize, incoming: usize, limits: RetainedStoreLimits) -> i
         .ok_or_else(|| suffix_capacity("suffix byte limit exceeded"))
 }
 
+#[derive(Clone, Copy)]
+enum Append<'a> {
+    Put(&'a [u8], &'a [u8]),
+    Delete(&'a [u8]),
+    Batch(&'a [BatchOperation<'a>]),
+}
+
+impl Append<'_> {
+    fn operations(self) -> u64 {
+        match self {
+            Self::Put(..) | Self::Delete(..) => 1,
+            Self::Batch(operations) => operations.len() as u64,
+        }
+    }
+}
+
+#[cfg(test)]
 fn encode_batch(operations: &[BatchOperation<'_>]) -> io::Result<Vec<u8>> {
     record::encode(
         Operation::Batch,
