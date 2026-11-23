@@ -12,8 +12,8 @@ use std::{
 };
 
 enum Backend {
-    Ordinary(Store),
-    Checkpoint(CheckpointStore),
+    Ordinary(Box<Store>),
+    Checkpoint(Box<CheckpointStore>),
 }
 impl Backend {
     fn db(&self) -> DocumentDatabase<'_> {
@@ -65,11 +65,15 @@ fn main() -> io::Result<()> {
     }
     let mode = args[2].as_str();
     let store = match mode {
-        "ordinary" => Backend::Ordinary(store),
+        "ordinary" => Backend::Ordinary(Box::new(store)),
         "checkpoint" => {
             let digest = store.checkpoint_to(&checkpoint)?;
             drop(store);
-            Backend::Checkpoint(CheckpointStore::open(&path, &checkpoint, &digest)?)
+            Backend::Checkpoint(Box::new(CheckpointStore::open(
+                &path,
+                &checkpoint,
+                &digest,
+            )?))
         }
         _ => return Err(io::Error::other("unknown mode")),
     };
