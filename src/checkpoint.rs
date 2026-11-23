@@ -1,6 +1,6 @@
 //! Explicit, verified index checkpoints. The log remains the source of truth.
 use crate::backup;
-use crate::checkpoint_view::CheckpointViewLimits;
+use crate::checkpoint_view::{CheckpointViewLimits, MAX_CHECKPOINT_VIEW_BLOCK_BYTES};
 use crate::log::{Log, ValueLocation};
 use crate::record;
 use crate::recovery::PositionalReader;
@@ -14,6 +14,7 @@ const MAGIC: &[u8; 8] = b"EMDAIDX1";
 const HEADER_BYTES: u64 = 68;
 const DIGEST_BYTES: u64 = 32;
 const ENTRY_FIXED_BYTES: u64 = 18;
+const MIN_ENTRY_BYTES: u64 = ENTRY_FIXED_BYTES + 1;
 const CHUNK: usize = 64 * 1024;
 // Bump this when a checkpoint can cover a log record version that an older
 // checkpoint reader does not understand. Unknown versions must fail closed.
@@ -301,11 +302,18 @@ fn create_streaming_in_directory(
         log.verify_witness()?;
     }
     let mut checkpoint_bytes = HEADER_BYTES + DIGEST_BYTES;
-    if checkpoint_bytes > limits.max_file_bytes {
+    if limits
+        .max_file_bytes
+        .checked_sub(checkpoint_bytes)
+        .is_none_or(|room| count > room / MIN_ENTRY_BYTES)
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "checkpoint exceeds configured file size limit",
         ));
+    }
+    if count > view_block_capacity(limits.max_blocks) / MIN_ENTRY_BYTES {
+        return Err(block_limit_error());
     }
     let VerifiedLog {
         length: prefix,
@@ -346,19 +354,13 @@ fn create_streaming_in_directory(
                     "checkpoint exceeds configured file size limit",
                 ));
             }
-            if block_bytes != 0
-                && block_bytes + entry_bytes
-                    > crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCK_BYTES
-            {
+            if block_bytes != 0 && block_bytes + entry_bytes > MAX_CHECKPOINT_VIEW_BLOCK_BYTES {
                 block_bytes = 0;
             }
             if block_bytes == 0 {
                 blocks += 1;
                 if blocks > limits.max_blocks {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "checkpoint has too many view blocks",
-                    ));
+                    return Err(block_limit_error());
                 }
             }
             block_bytes += entry_bytes;
@@ -568,18 +570,14 @@ pub(crate) fn verify_published_rebuild(
         digest,
         IndexAdmission {
             max_file_bytes: Some(limits.max_file_bytes),
+            max_view_blocks: Some(limits.max_blocks),
             ..IndexAdmission::default()
         },
         |_, _, key, _, _| {
             let size = ENTRY_FIXED_BYTES as usize + key.len();
             if size > block_room {
-                blocks_left = blocks_left.checked_sub(1).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "checkpoint has too many view blocks",
-                    )
-                })?;
-                block_room = crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCK_BYTES;
+                blocks_left = blocks_left.checked_sub(1).ok_or_else(block_limit_error)?;
+                block_room = MAX_CHECKPOINT_VIEW_BLOCK_BYTES;
             }
             block_room -= size;
             Ok(())
@@ -684,6 +682,19 @@ pub(crate) struct IndexAdmission {
     pub(crate) max_live_keys: Option<usize>,
     pub(crate) max_file_bytes: Option<u64>,
     pub(crate) max_tail_bytes: Option<u64>,
+    pub(crate) max_view_blocks: Option<usize>,
+}
+
+fn view_block_capacity(max_blocks: usize) -> u64 {
+    // View limits have already been validated against the supported maximum.
+    max_blocks as u64 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES as u64
+}
+
+pub(crate) fn block_limit_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "checkpoint has too many view blocks",
+    )
 }
 
 // Verify the independently trusted index file and its declared log binding.
@@ -707,6 +718,14 @@ pub(crate) fn visit_index_file(
         return Err(record::invalid_data("incomplete index checkpoint"));
     }
     let payload_len = length - DIGEST_BYTES;
+    // A block can hold at most this many bytes. Packed entries can still
+    // require extra blocks, so the visitor checks the actual layout.
+    if admission
+        .max_view_blocks
+        .is_some_and(|max| payload_len - HEADER_BYTES > view_block_capacity(max))
+    {
+        return Err(block_limit_error());
+    }
     let mut reader = BufReader::new(PositionalReader::new(file, 0));
     let mut digest = Sha256::new();
     let mut header = [0_u8; HEADER_BYTES as usize];
@@ -746,7 +765,7 @@ pub(crate) fn visit_index_file(
         ));
     }
     // Even an empty value needs a fixed entry plus at least one key byte.
-    if count > (payload_len - HEADER_BYTES) / (ENTRY_FIXED_BYTES + 1) {
+    if count > (payload_len - HEADER_BYTES) / MIN_ENTRY_BYTES {
         return Err(record::invalid_data("impossible checkpoint entry count"));
     }
     // Use the unverified prefix only for early rejection. Every admitted
@@ -841,6 +860,82 @@ mod tests {
         loop {
             std::thread::park();
         }
+    }
+
+    #[test]
+    fn streaming_checkpoint_rejects_impossible_count_before_visiting_entries() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let destination = root.path().join("checkpoint");
+        let store = Store::open(&path).unwrap();
+        store.put(b"a", b"value").unwrap();
+        drop(store);
+        let (log, index) = Log::open(&path, false).unwrap();
+        let length = log.len().unwrap();
+        for (limits, reason) in [
+            (
+                CheckpointViewLimits {
+                    max_file_bytes: HEADER_BYTES + DIGEST_BYTES + MIN_ENTRY_BYTES - 1,
+                    ..Default::default()
+                },
+                "checkpoint exceeds configured file size limit",
+            ),
+            (
+                CheckpointViewLimits {
+                    max_blocks: 0,
+                    ..Default::default()
+                },
+                "checkpoint has too many view blocks",
+            ),
+        ] {
+            let error = create_streaming_tracked(
+                &log,
+                1,
+                1,
+                &destination,
+                |_| panic!("rejected writer visited entries"),
+                |_| panic!("rejected writer attempted publication"),
+                StreamingOptions {
+                    limits: Some(limits),
+                    tracker: None,
+                    verified_log: VerifiedLog::from_replay(
+                        length,
+                        hash_log_prefix(&log, length).unwrap(),
+                    ),
+                    pending_tail: None,
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(error.to_string(), reason);
+            assert!(!destination.exists());
+        }
+        let digest = create_streaming_tracked(
+            &log,
+            1,
+            1,
+            &destination,
+            |emit| emit(b"a", index[b"a".as_slice()]),
+            crate::directory::sync_existing,
+            StreamingOptions {
+                limits: Some(CheckpointViewLimits {
+                    max_file_bytes: HEADER_BYTES + DIGEST_BYTES + MIN_ENTRY_BYTES,
+                    max_blocks: 1,
+                }),
+                tracker: None,
+                verified_log: VerifiedLog::from_replay(
+                    length,
+                    hash_log_prefix(&log, length).unwrap(),
+                ),
+                pending_tail: None,
+            },
+        )
+        .unwrap();
+        let view = crate::CheckpointView::open(&path, &destination, &digest).unwrap();
+        assert_eq!(
+            view.get(b"a").unwrap().as_deref(),
+            Some(b"value".as_slice())
+        );
     }
 
     #[test]

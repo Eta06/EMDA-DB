@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject checkpoints whose payload cannot fit the configured block directory
+  before reading their index bytes. Streaming checkpoint writers reject
+  impossible entry counts before creating a stage.
+
 - Check stored value sizes before reading documents for incremental schema
   migration and index builds, or reading index entries for collection
   verification.

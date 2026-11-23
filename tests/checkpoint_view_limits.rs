@@ -1,7 +1,8 @@
 //! Per-open checkpoint view admission must never change recovered data.
 use database_engine::{
     CheckpointStore, CheckpointStoreLimits, CheckpointView, CheckpointViewLimits,
-    MAX_CHECKPOINT_VIEW_BLOCKS, MAX_CHECKPOINT_VIEW_FILE_BYTES, Store,
+    MAX_CHECKPOINT_VIEW_BLOCK_BYTES, MAX_CHECKPOINT_VIEW_BLOCKS, MAX_CHECKPOINT_VIEW_FILE_BYTES,
+    RecoveredCheckpointView, RecoveredViewLimits, Store,
 };
 use std::fs;
 use std::io::ErrorKind;
@@ -84,6 +85,127 @@ fn empty_checkpoint_can_use_zero_block_directory_capacity() {
         .unwrap();
     assert_eq!(view.len(), 0);
     assert_eq!(view.block_count(), 0);
+}
+
+#[test]
+fn oversized_block_payload_is_rejected_before_parsing_on_all_opens() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("index");
+    let store = Store::open(&path).unwrap();
+    // 31 maximum-width keys and one 448-byte key occupy exactly one block.
+    for number in 0..31 {
+        store
+            .put(format!("{number:02}{}", "x".repeat(1022)).as_bytes(), b"v")
+            .unwrap();
+    }
+    let final_key = format!("31{}", "x".repeat(446));
+    store.put(final_key.as_bytes(), b"last").unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let original = fs::read(&checkpoint).unwrap();
+    assert_eq!(original.len(), MAX_CHECKPOINT_VIEW_BLOCK_BYTES + 100);
+    let limits = CheckpointViewLimits {
+        max_blocks: 1,
+        ..Default::default()
+    };
+    let open = || CheckpointView::open_with_limits(&path, &checkpoint, &digest, limits);
+    let view = retry_lock(open).unwrap();
+    assert_eq!(view.block_count(), 1);
+    assert_eq!(
+        view.get(final_key.as_bytes()).unwrap().as_deref(),
+        Some(b"last".as_slice())
+    );
+    drop(view);
+
+    let mut damaged = original.clone();
+    damaged[0] ^= 1;
+    damaged.push(0);
+    fs::write(&checkpoint, &damaged).unwrap();
+    let source_before = fs::read(path.join("records.log")).unwrap();
+    let witness_before = fs::read(path.join("commit.state")).unwrap();
+    for error in [
+        retry_lock(open).err().unwrap(),
+        retry_lock(|| {
+            RecoveredCheckpointView::open_with_options(
+                &path,
+                &checkpoint,
+                &digest,
+                RecoveredViewLimits {
+                    checkpoint_view: limits,
+                    ..Default::default()
+                },
+            )
+        })
+        .err()
+        .unwrap(),
+        retry_lock(|| {
+            CheckpointStore::open_with_options(
+                &path,
+                &checkpoint,
+                &digest,
+                CheckpointStoreLimits {
+                    checkpoint_view: limits,
+                    ..Default::default()
+                },
+            )
+        })
+        .err()
+        .unwrap(),
+    ] {
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "checkpoint has too many view blocks");
+    }
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), source_before);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness_before);
+    damaged.pop();
+    fs::write(&checkpoint, damaged).unwrap();
+    let error = retry_lock(open).err().unwrap();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "unknown index checkpoint version");
+    fs::write(&checkpoint, original).unwrap();
+    assert_eq!(retry_lock(open).unwrap().len(), 32);
+}
+
+#[test]
+fn block_admission_still_checks_packing_when_payload_fits() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("index");
+    let store = Store::open(&path).unwrap();
+    // Two blocks can hold 62 of these keys. The extra key cannot fit
+    // in the room left in either block, even though total bytes fit.
+    for number in 0..62 {
+        store
+            .put(format!("{number:02}{}", "x".repeat(1022)).as_bytes(), b"v")
+            .unwrap();
+    }
+    store
+        .put(format!("62{}", "x".repeat(480)).as_bytes(), b"last")
+        .unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    assert!(
+        fs::metadata(&checkpoint).unwrap().len()
+            < (2 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES) as u64 + 100
+    );
+    let open = |max_blocks| {
+        retry_lock(|| {
+            CheckpointView::open_with_limits(
+                &path,
+                &checkpoint,
+                &digest,
+                CheckpointViewLimits {
+                    max_blocks,
+                    ..Default::default()
+                },
+            )
+        })
+    };
+    let error = open(2).err().unwrap();
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(error.to_string(), "checkpoint has too many view blocks");
+    assert_eq!(open(3).unwrap().block_count(), 3);
 }
 
 #[test]

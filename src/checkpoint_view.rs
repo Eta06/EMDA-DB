@@ -261,6 +261,7 @@ impl CheckpointView {
                 max_live_keys,
                 max_file_bytes: Some(limits.max_file_bytes),
                 max_tail_bytes,
+                max_view_blocks: Some(limits.max_blocks),
             },
             |offset, key_len, key, tail, _| {
                 let size = key_len.len() + key.len() + tail.len();
@@ -272,10 +273,7 @@ impl CheckpointView {
                 }
                 if current.is_none() {
                     if blocks.len() >= limits.max_blocks {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "checkpoint has too many view blocks",
-                        ));
+                        return Err(checkpoint::block_limit_error());
                     }
                     let mut first_key_prefix = [0; KEY_PREFIX_BYTES];
                     let prefix_len = key.len().min(KEY_PREFIX_BYTES);
@@ -414,6 +412,7 @@ impl CheckpointView {
             &self.trusted_digest,
             checkpoint::IndexAdmission {
                 max_file_bytes: Some(self.limits.max_file_bytes),
+                max_view_blocks: Some(self.limits.max_blocks),
                 ..Default::default()
             },
             |_, _, _, _, _| {
