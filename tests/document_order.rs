@@ -1,10 +1,13 @@
 use database_engine::{
-    CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentSnapshot, IndexBound, IndexCursor, IndexDefinition, IndexQuery, IndexValue, Store,
+    CheckpointStore, CheckpointView, CollectionSchema, DocumentDatabase, DocumentFilter,
+    DocumentQuery, DocumentSnapshot, IndexBound, IndexCursor, IndexDefinition, IndexQuery,
+    IndexValue, Store,
 };
 use serde_json::{Value, json};
 use std::cmp::Ordering;
+use std::fs;
 use std::io;
+use std::process::Command;
 
 mod support;
 use support::retry_lock;
@@ -294,6 +297,120 @@ fn document_snapshot_pages_keep_the_captured_rows_across_writes_and_rollover() {
             assert!(DocumentSnapshot::new(&snapshot).get("c", "first").is_err());
         }
     }
+}
+
+#[test]
+fn historical_document_checkpoint_child() {
+    let Some(root) = std::env::var_os("EMDA_HISTORICAL_DOCUMENT_CHECKPOINT_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let path = root.join("store");
+    let checkpoint = root.join("historical");
+    let digest: [u8; 32] = fs::read(root.join("trusted-checkpoint-digest"))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let cursor = IndexCursor::from_bytes(&fs::read(root.join("cursor")).unwrap()).unwrap();
+    let mut wrong_digest = digest;
+    wrong_digest[0] ^= 1;
+    assert!(matches!(
+        retry_lock(|| CheckpointView::open(&path, &checkpoint, &wrong_digest)),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData
+    ));
+    let checkpoint = retry_lock(|| CheckpointView::open(&path, &checkpoint, &digest)).unwrap();
+    assert!(checkpoint.has_log_tail());
+    assert!(matches!(Store::open(&path), Err(error) if error.kind() == io::ErrorKind::WouldBlock));
+    let documents = DocumentSnapshot::with_checkpoint_view(&checkpoint);
+    let page = documents
+        .query_index(
+            "c",
+            "score",
+            &IndexQuery {
+                after: Some(cursor),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(page.documents.len(), 1);
+    assert_eq!(page.documents[0].id, "second");
+    assert_eq!(page.documents[0].document, json!({"score": 2}));
+    assert_eq!(documents.get("c", "new").unwrap(), None);
+    assert_eq!(
+        documents
+            .query("c", &DocumentQuery::default())
+            .unwrap()
+            .documents
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn historical_document_checkpoint_resumes_persisted_cursor_in_a_new_process() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint_path = root.path().join("historical");
+    let store = Store::open(&path).unwrap();
+    let db = DocumentDatabase::new(&store);
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index(
+        "c",
+        IndexDefinition {
+            name: "score".into(),
+            fields: vec![vec!["score".into()]],
+            unique: true,
+            partial: None,
+        },
+    )
+    .unwrap();
+    db.insert("c", "first", &json!({"score": 1})).unwrap();
+    db.insert("c", "second", &json!({"score": 2})).unwrap();
+    let digest = store.checkpoint_to(&checkpoint_path).unwrap();
+    drop(store);
+    {
+        let checkpoint =
+            retry_lock(|| CheckpointView::open(&path, &checkpoint_path, &digest)).unwrap();
+        let documents = DocumentSnapshot::with_checkpoint_view(&checkpoint);
+        let page = documents
+            .query_index(
+                "c",
+                "score",
+                &IndexQuery {
+                    limit: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(page.documents[0].id, "first");
+        fs::write(root.path().join("cursor"), page.next.unwrap().to_bytes()).unwrap();
+        fs::write(root.path().join("trusted-checkpoint-digest"), digest).unwrap();
+    }
+    {
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint_path, &digest)).unwrap();
+        let db = DocumentDatabase::with_checkpoint_store(&store);
+        db.delete("c", "second").unwrap();
+        db.insert("c", "new", &json!({"score": 3})).unwrap();
+        db.drop_index("c", "score").unwrap();
+    }
+    let log = fs::read(path.join("records.log")).unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "historical_document_checkpoint_child"])
+        .env("EMDA_HISTORICAL_DOCUMENT_CHECKPOINT_ROOT", root.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("test historical_document_checkpoint_child ... ok")
+    );
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
 }
 
 #[test]

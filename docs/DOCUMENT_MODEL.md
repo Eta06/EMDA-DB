@@ -165,9 +165,19 @@ Point reads, collection scans, planned queries and named-index pages read
 the captured documents and index definitions. Keep using the same snapshot
 for every page, including after checkpoint rollover. The underlying storage
 snapshot's admission limits, deadline, cancellation and reaping rules
-apply. Each query also enforces its usual document limits. The snapshot
-is process-local. Once released, a saved cursor can seek in a later view,
-but it cannot restore the old view.
+apply. Each query also enforces its usual document limits. These two
+storage snapshots live in the current process.
+
+To resume the same historical view after restart, use `checkpoint_to`
+on the ordinary or checkpoint store. Preserve the checkpoint and its
+original covered log, plus the checkpoint digest and any cursor in trusted
+caller storage. Close the writer, reopen `CheckpointView` with that digest,
+and borrow it with `DocumentSnapshot::with_checkpoint_view`. Later log
+records are outside the view. An open historical view holds a shared
+store lock and excludes cooperating writers. Keep the original covered
+bytes available through any compaction or reclamation. The checkpoint
+contains locations into that log, so keep both files. The caller chooses
+the historical checkpoint when resuming a cursor.
 
 `query` performs a **complete bounded collection scan**, with existence/equality/typed-scalar comparisons, boolean composition, optional scalar sorting, projection, offset and limit. It fails rather than returning a silently truncated answer if its explicit scan limit (at most 1,024 documents) or 32 MiB scan budget is exceeded. The result includes actual scanned, matched, sorted and returned counts; this is a collection-scan plan, not an automatic cost-based optimizer. Sort accepts the same scalar types as indexes; missing sorts before null in ascending order, and IDs break ties in ascending order. Projection paths cannot overlap. Filtering and ranking use the full document. The window retains only the projected fields when a projection is requested. The scan validates every bounded document while filtering. It applies row, byte and stored-document size limits before materializing each payload. An over-limit row can therefore be rejected before checking its payload checksum. Already admitted documents retain their validation order. Retained scans may read the rest of a touched block to authenticate it. For unsorted queries it retains only the requested matching window. For sorted queries it checks every matching sort value and keeps at most the best `offset + limit` ranked entries. Scan or stored-document errors retain precedence over an earlier filtering or sort error. These bounds are not total-memory limits.
 

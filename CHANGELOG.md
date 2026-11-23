@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Resume document queries after restart using the same verified historical
+  checkpoint and its covered log.
+
 - Query captured ordinary and checkpoint storage snapshots through
   `DocumentSnapshot`. Pages use the captured documents and indexes across
   intervening writes and checkpoint rollover.

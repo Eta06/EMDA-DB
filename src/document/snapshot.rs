@@ -2,13 +2,13 @@ use super::{
     DocumentPage, DocumentQuery, DocumentQueryResult, DocumentTransaction, IndexQuery,
     PlannedDocumentQueryResult,
 };
-use crate::{CheckpointSnapshot, Snapshot};
+use crate::{CheckpointSnapshot, CheckpointView, Snapshot};
 use serde_json::Value;
 use std::io;
 
-/// Read-only document queries over an already captured storage snapshot.
-/// All pages use its captured documents and indexes. The caller keeps the
-/// underlying snapshot alive and controls its limits, deadline, and cancellation.
+/// Read-only queries over an already captured storage snapshot or a verified
+/// historical checkpoint. All pages use its captured documents and indexes.
+/// The caller keeps the underlying view alive and controls its limits.
 pub struct DocumentSnapshot<'a> {
     view: DocumentTransaction<'a, 'a>,
 }
@@ -25,6 +25,15 @@ impl<'a> DocumentSnapshot<'a> {
     pub fn with_checkpoint_snapshot(snapshot: &'a CheckpointSnapshot<'a>) -> Self {
         Self {
             view: DocumentTransaction::checkpoint_snapshot(snapshot),
+        }
+    }
+
+    /// Borrows a verified historical checkpoint. Reopening the same checkpoint
+    /// with its independently trusted digest and original covered log preserves
+    /// the view across processes. Later log records are outside the view.
+    pub fn with_checkpoint_view(view: &'a CheckpointView) -> Self {
+        Self {
+            view: DocumentTransaction::historical_checkpoint(view),
         }
     }
 

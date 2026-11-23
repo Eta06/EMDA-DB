@@ -196,6 +196,10 @@ read-only document queries. Separate pages over that same snapshot share
 its captured metadata, documents and indexes. Each underlying read still
 checks the snapshot's admission, deadline and store health. The wrapper
 does not acquire another snapshot or persist the captured view.
+It can also borrow a separately opened historical `CheckpointView`.
+That path uses the independently trusted checkpoint digest and the covered
+log prefix. It holds a shared store lock and excludes later records from
+the document view.
 
 - A validated read-only checkpoint view retains its log and checkpoint file
   descriptors and captured witnessed boundary, but releases validation-only

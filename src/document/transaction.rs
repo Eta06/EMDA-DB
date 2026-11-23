@@ -6,7 +6,9 @@ use super::{
     schema::CollectionSchema,
     schema_migration::SchemaJob,
 };
-use crate::{CheckpointSnapshot, CheckpointTransaction, Entry, Snapshot, Transaction};
+use crate::{
+    CheckpointSnapshot, CheckpointTransaction, CheckpointView, Entry, Snapshot, Transaction,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -38,6 +40,7 @@ enum BackendTransaction<'a, 'store> {
     Retained(&'a mut super::retained::RetainedTransaction<'store>),
     OrdinarySnapshot(&'a Snapshot<'store>),
     CheckpointSnapshot(&'a CheckpointSnapshot<'store>),
+    HistoricalCheckpoint(&'a CheckpointView),
 }
 
 /// A document transaction backed by the same atomic commit as raw key/value
@@ -88,6 +91,13 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         }
     }
 
+    pub(super) fn historical_checkpoint(view: &'a CheckpointView) -> Self {
+        Self {
+            backend: BackendTransaction::HistoricalCheckpoint(view),
+            failed: false,
+        }
+    }
+
     pub(super) fn finish<T>(self, result: io::Result<T>) -> io::Result<T> {
         match result {
             Err(error) => Err(error),
@@ -129,6 +139,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             BackendTransaction::Retained(tx) => tx.get_admitted(key, admit),
             BackendTransaction::OrdinarySnapshot(snapshot) => snapshot.get_admitted(key, admit),
             BackendTransaction::CheckpointSnapshot(snapshot) => snapshot.get_admitted(key, admit),
+            BackendTransaction::HistoricalCheckpoint(view) => view.get_admitted(key, admit),
         }
     }
 
@@ -177,7 +188,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             BackendTransaction::Ordinary(tx) => tx.put(key, value),
             BackendTransaction::Checkpoint(tx) => tx.put(key, value),
             BackendTransaction::Retained(tx) => tx.stage(crate::BatchOperation::Put { key, value }),
-            BackendTransaction::OrdinarySnapshot(_) | BackendTransaction::CheckpointSnapshot(_) => {
+            BackendTransaction::OrdinarySnapshot(_)
+            | BackendTransaction::CheckpointSnapshot(_)
+            | BackendTransaction::HistoricalCheckpoint(_) => {
                 Err(key::invalid("document snapshot is read-only"))
             }
         }
@@ -188,7 +201,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             BackendTransaction::Ordinary(tx) => tx.delete(key),
             BackendTransaction::Checkpoint(tx) => tx.delete(key),
             BackendTransaction::Retained(tx) => tx.stage(crate::BatchOperation::Delete { key }),
-            BackendTransaction::OrdinarySnapshot(_) | BackendTransaction::CheckpointSnapshot(_) => {
+            BackendTransaction::OrdinarySnapshot(_)
+            | BackendTransaction::CheckpointSnapshot(_)
+            | BackendTransaction::HistoricalCheckpoint(_) => {
                 Err(key::invalid("document snapshot is read-only"))
             }
         }
@@ -218,6 +233,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             }
             BackendTransaction::CheckpointSnapshot(snapshot) => {
                 snapshot.scan_admitted(Some(after), Some(before), limit, admit)
+            }
+            BackendTransaction::HistoricalCheckpoint(view) => {
+                view.scan_admitted(Some(after), Some(before), limit, admit)
             }
         }
     }

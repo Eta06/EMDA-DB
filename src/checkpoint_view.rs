@@ -452,9 +452,20 @@ impl CheckpointView {
 
     /// Reads one key from the historical checkpoint.
     pub fn get(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        self.get_admitted(key, |_| Ok(()))
+    }
+
+    pub(crate) fn get_admitted(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+    ) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
         self.location(key)?
-            .map(|location| self.log.read(location))
+            .map(|location| {
+                admit(location.length)?;
+                self.log.read(location)
+            })
             .transpose()
     }
 
@@ -478,6 +489,16 @@ impl CheckpointView {
         before: Option<&[u8]>,
         limit: usize,
     ) -> io::Result<Vec<Entry>> {
+        self.scan_admitted(after, before, limit, |_, _| true)
+    }
+
+    pub(crate) fn scan_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        mut admit: impl FnMut(&[u8], usize) -> bool,
+    ) -> io::Result<Vec<Entry>> {
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
         }
@@ -493,10 +514,14 @@ impl CheckpointView {
         let mut result = Vec::new();
         let mut size = 0_usize;
         self.visit_entries(after, before, |key, location| {
-            if result.len() == limit || size + key.len() + location.length > MAX_SCAN_BYTES {
+            let bytes = key.len() + location.length;
+            if result.len() == limit
+                || size + bytes > MAX_SCAN_BYTES
+                || !admit(key, location.length)
+            {
                 return Ok(ControlFlow::Break(()));
             }
-            size += key.len() + location.length;
+            size += bytes;
             result.push((key.to_vec(), self.log.read(location)?));
             Ok(ControlFlow::Continue(()))
         })?;
