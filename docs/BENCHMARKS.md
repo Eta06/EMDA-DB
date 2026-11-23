@@ -2,6 +2,31 @@
 
 A local comparison harness covers ten engines and six byte-key workloads; no general competitive performance claim has been established. The goal is to improve latency, throughput, scalability, and resource efficiency. **No performance optimization is accepted if it violates the durability, isolation, or recovery guarantees in force.** See the [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md). No database can be assumed fastest at every operation or workload.
 
+## macOS small-write comparison with SQLite
+
+The [36 raw runs](../benchmarks/results/2026-11-23-macos-kv-sqlite.json)
+compare EMDA V2 at revision `c13e03f` with bundled SQLite 3.49.1 on one
+Apple M6, macOS 27.0, APFS, and Rust 1.85.0. The release `kv_bench` binary ran
+each backend six times per workload, alternating backend order within
+each pair. Fixtures began with 250 keys and 64-byte values. EMDA used
+its normal witnessed acknowledgement path. SQLite used WAL and
+`synchronous=FULL` with SQLite's default `fullfsync` setting. The
+checks after the timer verified sampled contents after reopening.
+
+| Workload | EMDA ops/s, median (range) | SQLite ops/s, median (range) | EMDA / SQLite write p99, median |
+| --- | ---: | ---: | ---: |
+| One client, 600 operations, 50% writes | 428 (423–439) | 58,636 (39,061–64,140) | 6.99 / 0.16 ms |
+| Four clients, 400 operations each, 50% writes | 823 (802–849) | 28,370 (27,602–30,712) | 13.21 / 0.14 ms |
+| Four clients, 300 writes each | 408 (388–435) | 21,074 (10,665–22,557) | 15.03 / 0.15 ms |
+
+SQLite led in every run for throughput and write p99. The sync
+implementations and durability guarantees differ. The run used one
+development host without a quiet-window control, with correctness builds
+running during part of the campaign. It measures small, warmed,
+closed-loop workloads. CPU, memory, sync syscall timings and cold restart
+are outside this run. The Linux V3 and multi-engine results below use
+different fixtures and environments.
+
 ## Bounded managed suffix rebuild read volume
 
 A paired Linux ARM64 test compared the verified prefix hash reuse with

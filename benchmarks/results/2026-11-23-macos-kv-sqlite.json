@@ -1,0 +1,596 @@
+{
+  "revision": "c13e03f4169946f6d901e20d73adf171d3382a85",
+  "rustc": "rustc 1.85.0 (4d91de4e4 2025-02-17)",
+  "platform": "macOS-27.0-arm64-arm-64bit",
+  "cpu": "Apple M6",
+  "binary_sha256": "bcadf825d06f3c50d7e445c422cdbf5fcbd6e97d30fe7416f716086a84cb1f43",
+  "runs": [
+    {
+      "workload": "single_mixed",
+      "backend": "prototype",
+      "round": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=1417.9 ops_per_sec=423.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=3.2 p95_us=11.5 p99_us=30.1 p99_9_us=75.5 max_us=75.5\nwrite: count=288 p50_us=4987.9 p95_us=6199.0 p99_us=6978.3 p99_9_us=9886.7 max_us=9886.7\nclient=0 elapsed_ms=1417.8 reads=312 writes=288 max_read_ms=0.075 max_write_ms=9.887\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "sqlite",
+      "round": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=15.4 ops_per_sec=39060.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=1.4 p95_us=2.0 p99_us=2.7 p99_9_us=8.8 max_us=8.8\nwrite: count=288 p50_us=32.8 p95_us=141.2 p99_us=324.5 p99_9_us=408.2 max_us=408.2\nclient=0 elapsed_ms=15.3 reads=312 writes=288 max_read_ms=0.009 max_write_ms=0.408\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "sqlite",
+      "round": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=10.8 ops_per_sec=55613.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=1.2 p95_us=2.0 p99_us=2.4 p99_9_us=5.9 max_us=5.9\nwrite: count=288 p50_us=29.6 p95_us=53.4 p99_us=254.6 p99_9_us=297.6 max_us=297.6\nclient=0 elapsed_ms=10.7 reads=312 writes=288 max_read_ms=0.006 max_write_ms=0.298\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "prototype",
+      "round": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=1384.9 ops_per_sec=433.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=3.1 p95_us=12.2 p99_us=16.8 p99_9_us=42.2 max_us=42.2\nwrite: count=288 p50_us=4980.5 p95_us=5988.0 p99_us=9069.4 p99_9_us=13477.4 max_us=13477.4\nclient=0 elapsed_ms=1384.8 reads=312 writes=288 max_read_ms=0.042 max_write_ms=13.477\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "prototype",
+      "round": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=1367.0 ops_per_sec=438.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=3.6 p95_us=12.4 p99_us=17.4 p99_9_us=38.3 max_us=38.3\nwrite: count=288 p50_us=4974.5 p95_us=5975.9 p99_us=6054.5 p99_9_us=6999.9 max_us=6999.9\nclient=0 elapsed_ms=1366.8 reads=312 writes=288 max_read_ms=0.038 max_write_ms=7.000\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "sqlite",
+      "round": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=9.6 ops_per_sec=62671.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=1.2 p95_us=2.1 p99_us=3.3 p99_9_us=9.8 max_us=9.8\nwrite: count=288 p50_us=29.0 p95_us=42.5 p99_us=102.6 p99_9_us=131.5 max_us=131.5\nclient=0 elapsed_ms=9.5 reads=312 writes=288 max_read_ms=0.010 max_write_ms=0.132\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "sqlite",
+      "round": 4,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=11.3 ops_per_sec=53142.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=1.5 p95_us=2.2 p99_us=4.8 p99_9_us=10.3 max_us=10.3\nwrite: count=288 p50_us=29.2 p95_us=69.6 p99_us=226.7 p99_9_us=303.6 max_us=303.6\nclient=0 elapsed_ms=11.2 reads=312 writes=288 max_read_ms=0.010 max_write_ms=0.304\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "prototype",
+      "round": 4,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=1406.9 ops_per_sec=426.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=3.2 p95_us=11.6 p99_us=17.9 p99_9_us=30.3 max_us=30.3\nwrite: count=288 p50_us=4985.6 p95_us=6018.4 p99_us=6956.7 p99_9_us=9018.1 max_us=9018.1\nclient=0 elapsed_ms=1406.8 reads=312 writes=288 max_read_ms=0.030 max_write_ms=9.018\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "prototype",
+      "round": 5,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=1417.8 ops_per_sec=423.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=3.5 p95_us=11.4 p99_us=15.2 p99_9_us=34.3 max_us=34.3\nwrite: count=288 p50_us=4983.2 p95_us=6039.2 p99_us=7922.9 p99_9_us=11085.0 max_us=11085.0\nclient=0 elapsed_ms=1417.7 reads=312 writes=288 max_read_ms=0.034 max_write_ms=11.085\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "sqlite",
+      "round": 5,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=9.4 ops_per_sec=64140.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=1.1 p95_us=2.0 p99_us=2.7 p99_9_us=3.0 max_us=3.0\nwrite: count=288 p50_us=29.7 p95_us=39.4 p99_us=71.1 p99_9_us=118.9 max_us=118.9\nclient=0 elapsed_ms=9.2 reads=312 writes=288 max_read_ms=0.003 max_write_ms=0.119\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "sqlite",
+      "round": 6,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=9.7 ops_per_sec=61658.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=1.5 p95_us=2.0 p99_us=3.2 p99_9_us=5.2 max_us=5.2\nwrite: count=288 p50_us=29.4 p95_us=45.3 p99_us=94.9 p99_9_us=148.8 max_us=148.8\nclient=0 elapsed_ms=9.7 reads=312 writes=288 max_read_ms=0.005 max_write_ms=0.149\nverified_reopen=true\n"
+    },
+    {
+      "workload": "single_mixed",
+      "backend": "prototype",
+      "round": 6,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "1",
+        "600",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=1 keys=250 value_bytes=64 write_percent=50 completed=600 elapsed_ms=1394.0 ops_per_sec=430.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=312 p50_us=3.1 p95_us=11.6 p99_us=14.8 p99_9_us=55.8 max_us=55.8\nwrite: count=288 p50_us=4978.4 p95_us=6017.6 p99_us=7010.9 p99_9_us=15281.7 max_us=15281.7\nclient=0 elapsed_ms=1393.8 reads=312 writes=288 max_read_ms=0.056 max_write_ms=15.282\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "prototype",
+      "round": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=1885.8 ops_per_sec=848.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=2.9 p95_us=13.1 p99_us=48.6 p99_9_us=121.1 max_us=121.1\nwrite: count=822 p50_us=9045.3 p95_us=11271.8 p99_us=13241.9 p99_9_us=15014.8 max_us=15014.8\nclient=0 elapsed_ms=1769.7 reads=208 writes=192 max_read_ms=0.081 max_write_ms=14.986\nclient=1 elapsed_ms=1815.6 reads=198 writes=202 max_read_ms=0.079 max_write_ms=14.505\nclient=2 elapsed_ms=1820.6 reads=200 writes=200 max_read_ms=0.054 max_write_ms=15.015\nclient=3 elapsed_ms=1885.7 reads=172 writes=228 max_read_ms=0.121 max_write_ms=14.486\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "sqlite",
+      "round": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=56.7 ops_per_sec=28195.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=1.5 p95_us=1.9 p99_us=3.9 p99_9_us=70.2 max_us=70.2\nwrite: count=822 p50_us=29.6 p95_us=41.7 p99_us=63.0 p99_9_us=49846.7 max_us=49846.7\nclient=0 elapsed_ms=18.3 reads=208 writes=192 max_read_ms=0.009 max_write_ms=12.267\nclient=1 elapsed_ms=56.7 reads=198 writes=202 max_read_ms=0.068 max_write_ms=49.847\nclient=2 elapsed_ms=33.9 reads=200 writes=200 max_read_ms=0.070 max_write_ms=27.218\nclient=3 elapsed_ms=7.1 reads=172 writes=228 max_read_ms=0.005 max_write_ms=0.178\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "sqlite",
+      "round": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=56.1 ops_per_sec=28544.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=1.6 p95_us=2.3 p99_us=11.3 p99_9_us=100.7 max_us=100.7\nwrite: count=822 p50_us=31.3 p95_us=150.0 p99_us=313.3 p99_9_us=47693.7 max_us=47693.7\nclient=0 elapsed_ms=56.0 reads=208 writes=192 max_read_ms=0.007 max_write_ms=47.694\nclient=1 elapsed_ms=41.1 reads=198 writes=202 max_read_ms=0.101 max_write_ms=27.163\nclient=2 elapsed_ms=22.1 reads=200 writes=200 max_read_ms=0.095 max_write_ms=12.136\nclient=3 elapsed_ms=8.8 reads=172 writes=228 max_read_ms=0.010 max_write_ms=0.412\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "prototype",
+      "round": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=1918.8 ops_per_sec=833.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=3.8 p95_us=22.0 p99_us=91.2 p99_9_us=1174.0 max_us=1174.0\nwrite: count=822 p50_us=8989.8 p95_us=11415.4 p99_us=15930.9 p99_9_us=19198.5 max_us=19198.5\nclient=0 elapsed_ms=1741.6 reads=208 writes=192 max_read_ms=1.174 max_write_ms=15.956\nclient=1 elapsed_ms=1799.8 reads=198 writes=202 max_read_ms=0.878 max_write_ms=19.126\nclient=2 elapsed_ms=1803.6 reads=200 writes=200 max_read_ms=0.239 max_write_ms=19.199\nclient=3 elapsed_ms=1918.7 reads=172 writes=228 max_read_ms=0.315 max_write_ms=18.417\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "prototype",
+      "round": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=1984.9 ops_per_sec=806.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=3.9 p95_us=14.3 p99_us=45.9 p99_9_us=79.8 max_us=79.8\nwrite: count=822 p50_us=9309.0 p95_us=12050.9 p99_us=13014.5 p99_9_us=16762.6 max_us=16762.6\nclient=0 elapsed_ms=1852.8 reads=208 writes=192 max_read_ms=0.080 max_write_ms=16.750\nclient=1 elapsed_ms=1914.9 reads=198 writes=202 max_read_ms=0.049 max_write_ms=16.676\nclient=2 elapsed_ms=1877.8 reads=200 writes=200 max_read_ms=0.080 max_write_ms=15.843\nclient=3 elapsed_ms=1984.8 reads=172 writes=228 max_read_ms=0.053 max_write_ms=16.763\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "sqlite",
+      "round": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=58.0 ops_per_sec=27601.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=1.6 p95_us=2.0 p99_us=8.4 p99_9_us=124.5 max_us=124.5\nwrite: count=822 p50_us=31.4 p95_us=71.0 p99_us=246.0 p99_9_us=49679.1 max_us=49679.1\nclient=0 elapsed_ms=16.8 reads=208 writes=192 max_read_ms=0.009 max_write_ms=9.900\nclient=1 elapsed_ms=31.4 reads=198 writes=202 max_read_ms=0.125 max_write_ms=21.077\nclient=2 elapsed_ms=8.7 reads=200 writes=200 max_read_ms=0.061 max_write_ms=1.695\nclient=3 elapsed_ms=57.9 reads=172 writes=228 max_read_ms=0.009 max_write_ms=49.679\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "sqlite",
+      "round": 4,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=54.8 ops_per_sec=29174.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=1.6 p95_us=2.7 p99_us=9.7 p99_9_us=738.6 max_us=738.6\nwrite: count=822 p50_us=30.5 p95_us=67.4 p99_us=153.8 p99_9_us=47822.0 max_us=47822.0\nclient=0 elapsed_ms=18.0 reads=208 writes=192 max_read_ms=0.026 max_write_ms=10.007\nclient=1 elapsed_ms=33.3 reads=198 writes=202 max_read_ms=0.043 max_write_ms=25.141\nclient=2 elapsed_ms=54.7 reads=200 writes=200 max_read_ms=0.054 max_write_ms=47.822\nclient=3 elapsed_ms=8.0 reads=172 writes=228 max_read_ms=0.739 max_write_ms=0.169\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "prototype",
+      "round": 4,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=1995.7 ops_per_sec=801.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=4.4 p95_us=22.2 p99_us=58.6 p99_9_us=309.2 max_us=309.2\nwrite: count=822 p50_us=9636.9 p95_us=11915.0 p99_us=12941.7 p99_9_us=13669.2 max_us=13669.2\nclient=0 elapsed_ms=1774.6 reads=208 writes=192 max_read_ms=0.051 max_write_ms=13.669\nclient=1 elapsed_ms=1853.6 reads=198 writes=202 max_read_ms=0.061 max_write_ms=13.023\nclient=2 elapsed_ms=1803.6 reads=200 writes=200 max_read_ms=0.110 max_write_ms=13.036\nclient=3 elapsed_ms=1995.6 reads=172 writes=228 max_read_ms=0.309 max_write_ms=13.055\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "prototype",
+      "round": 5,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=1894.0 ops_per_sec=844.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=3.4 p95_us=14.1 p99_us=41.1 p99_9_us=103.0 max_us=103.0\nwrite: count=822 p50_us=8983.0 p95_us=11936.8 p99_us=13169.2 p99_9_us=16799.5 max_us=16799.5\nclient=0 elapsed_ms=1722.8 reads=208 writes=192 max_read_ms=0.103 max_write_ms=16.343\nclient=1 elapsed_ms=1754.8 reads=198 writes=202 max_read_ms=0.074 max_write_ms=16.314\nclient=2 elapsed_ms=1803.8 reads=200 writes=200 max_read_ms=0.080 max_write_ms=16.345\nclient=3 elapsed_ms=1893.9 reads=172 writes=228 max_read_ms=0.095 max_write_ms=16.799\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "sqlite",
+      "round": 5,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=52.1 ops_per_sec=30711.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=1.6 p95_us=2.0 p99_us=4.7 p99_9_us=73.8 max_us=73.8\nwrite: count=822 p50_us=29.7 p95_us=43.9 p99_us=130.7 p99_9_us=45473.6 max_us=45473.6\nclient=0 elapsed_ms=52.0 reads=208 writes=192 max_read_ms=0.007 max_write_ms=45.474\nclient=1 elapsed_ms=11.1 reads=198 writes=202 max_read_ms=0.042 max_write_ms=4.679\nclient=2 elapsed_ms=31.2 reads=200 writes=200 max_read_ms=0.074 max_write_ms=24.592\nclient=3 elapsed_ms=19.9 reads=172 writes=228 max_read_ms=0.024 max_write_ms=12.164\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "sqlite",
+      "round": 6,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=57.0 ops_per_sec=28058.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=1.6 p95_us=2.1 p99_us=6.3 p99_9_us=67.0 max_us=67.0\nwrite: count=822 p50_us=30.4 p95_us=46.1 p99_us=84.8 p99_9_us=49688.0 max_us=49688.0\nclient=0 elapsed_ms=33.5 reads=208 writes=192 max_read_ms=0.007 max_write_ms=26.788\nclient=1 elapsed_ms=56.9 reads=198 writes=202 max_read_ms=0.067 max_write_ms=49.688\nclient=2 elapsed_ms=18.5 reads=200 writes=200 max_read_ms=0.050 max_write_ms=12.035\nclient=3 elapsed_ms=7.4 reads=172 writes=228 max_read_ms=0.006 max_write_ms=0.154\nverified_reopen=true\n"
+    },
+    {
+      "workload": "concurrent_mixed",
+      "backend": "prototype",
+      "round": 6,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "400",
+        "250",
+        "50",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=50 completed=1600 elapsed_ms=1971.8 ops_per_sec=811.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=778 p50_us=3.6 p95_us=19.7 p99_us=50.3 p99_9_us=165.4 max_us=165.4\nwrite: count=822 p50_us=9075.4 p95_us=11133.4 p99_us=13873.4 p99_9_us=18989.0 max_us=18989.0\nclient=0 elapsed_ms=1777.8 reads=208 writes=192 max_read_ms=0.093 max_write_ms=15.933\nclient=1 elapsed_ms=1840.7 reads=198 writes=202 max_read_ms=0.071 max_write_ms=15.915\nclient=2 elapsed_ms=1821.7 reads=200 writes=200 max_read_ms=0.165 max_write_ms=18.989\nclient=3 elapsed_ms=1971.7 reads=172 writes=228 max_read_ms=0.039 max_write_ms=15.943\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "prototype",
+      "round": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=2761.9 ops_per_sec=434.5\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=9155.3 p95_us=11989.3 p99_us=13906.8 p99_9_us=15727.6 max_us=15751.8\nclient=0 elapsed_ms=2605.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=14.996\nclient=1 elapsed_ms=2761.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=15.728\nclient=2 elapsed_ms=2659.7 reads=0 writes=300 max_read_ms=0.000 max_write_ms=15.724\nclient=3 elapsed_ms=2734.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=15.752\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "sqlite",
+      "round": 1,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=53.2 ops_per_sec=22557.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=30.1 p95_us=43.5 p99_us=94.8 p99_9_us=27283.0 max_us=44742.1\nclient=0 elapsed_ms=36.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=27.283\nclient=1 elapsed_ms=10.6 reads=0 writes=300 max_read_ms=0.000 max_write_ms=0.185\nclient=2 elapsed_ms=21.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=11.767\nclient=3 elapsed_ms=53.2 reads=0 writes=300 max_read_ms=0.000 max_write_ms=44.742\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "sqlite",
+      "round": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=53.9 ops_per_sec=22277.3\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=29.2 p95_us=48.2 p99_us=162.8 p99_9_us=25248.5 max_us=44068.4\nclient=0 elapsed_ms=53.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=44.068\nclient=1 elapsed_ms=9.7 reads=0 writes=300 max_read_ms=0.000 max_write_ms=0.163\nclient=2 elapsed_ms=36.1 reads=0 writes=300 max_read_ms=0.000 max_write_ms=25.248\nclient=3 elapsed_ms=19.4 reads=0 writes=300 max_read_ms=0.000 max_write_ms=9.811\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "prototype",
+      "round": 2,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=2920.9 ops_per_sec=410.8\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=10122.2 p95_us=13006.4 p99_us=14990.5 p99_9_us=21342.4 max_us=23733.1\nclient=0 elapsed_ms=2908.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=23.733\nclient=1 elapsed_ms=2914.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=16.167\nclient=2 elapsed_ms=2787.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=15.982\nclient=3 elapsed_ms=2920.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=21.342\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "prototype",
+      "round": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=2969.9 ops_per_sec=404.1\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=10042.7 p95_us=13111.9 p99_us=18326.4 p99_9_us=36729.2 max_us=36734.5\nclient=0 elapsed_ms=2934.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=36.729\nclient=1 elapsed_ms=2969.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=33.309\nclient=2 elapsed_ms=2800.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=36.719\nclient=3 elapsed_ms=2857.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=36.734\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "sqlite",
+      "round": 3,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=86.6 ops_per_sec=13849.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=28.3 p95_us=53.0 p99_us=158.3 p99_9_us=42195.7 max_us=78902.5\nclient=0 elapsed_ms=34.6 reads=0 writes=300 max_read_ms=0.000 max_write_ms=25.438\nclient=1 elapsed_ms=51.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=42.196\nclient=2 elapsed_ms=17.6 reads=0 writes=300 max_read_ms=0.000 max_write_ms=4.733\nclient=3 elapsed_ms=86.6 reads=0 writes=300 max_read_ms=0.000 max_write_ms=78.902\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "sqlite",
+      "round": 4,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=112.5 ops_per_sec=10664.9\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=35.3 p95_us=210.1 p99_us=444.5 p99_9_us=72902.8 max_us=102455.5\nclient=0 elapsed_ms=112.4 reads=0 writes=300 max_read_ms=0.000 max_write_ms=102.456\nclient=1 elapsed_ms=83.0 reads=0 writes=300 max_read_ms=0.000 max_write_ms=72.903\nclient=2 elapsed_ms=35.3 reads=0 writes=300 max_read_ms=0.000 max_write_ms=1.329\nclient=3 elapsed_ms=68.6 reads=0 writes=300 max_read_ms=0.000 max_write_ms=44.223\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "prototype",
+      "round": 4,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=3094.9 ops_per_sec=387.7\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=10920.6 p95_us=13960.9 p99_us=15963.0 p99_9_us=19985.9 max_us=20005.2\nclient=0 elapsed_ms=2983.7 reads=0 writes=300 max_read_ms=0.000 max_write_ms=20.005\nclient=1 elapsed_ms=3030.3 reads=0 writes=300 max_read_ms=0.000 max_write_ms=19.794\nclient=2 elapsed_ms=2948.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=19.770\nclient=3 elapsed_ms=3094.7 reads=0 writes=300 max_read_ms=0.000 max_write_ms=19.986\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "prototype",
+      "round": 5,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=3056.8 ops_per_sec=392.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=10860.8 p95_us=13071.2 p99_us=15062.0 p99_9_us=18022.4 max_us=18033.6\nclient=0 elapsed_ms=2763.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=18.014\nclient=1 elapsed_ms=2959.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=16.085\nclient=2 elapsed_ms=3056.7 reads=0 writes=300 max_read_ms=0.000 max_write_ms=18.034\nclient=3 elapsed_ms=2937.8 reads=0 writes=300 max_read_ms=0.000 max_write_ms=18.022\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "sqlite",
+      "round": 5,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=56.7 ops_per_sec=21172.6\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=31.3 p95_us=48.5 p99_us=144.5 p99_9_us=27252.5 max_us=46395.8\nclient=0 elapsed_ms=10.5 reads=0 writes=300 max_read_ms=0.000 max_write_ms=0.170\nclient=1 elapsed_ms=22.4 reads=0 writes=300 max_read_ms=0.000 max_write_ms=12.174\nclient=2 elapsed_ms=56.6 reads=0 writes=300 max_read_ms=0.000 max_write_ms=46.396\nclient=3 elapsed_ms=37.6 reads=0 writes=300 max_read_ms=0.000 max_write_ms=27.253\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "sqlite",
+      "round": 6,
+      "command": [
+        "target/release/examples/kv_bench",
+        "sqlite",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=sqlite clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=57.2 ops_per_sec=20975.4\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=33.2 p95_us=57.2 p99_us=145.7 p99_9_us=27035.8 max_us=47914.0\nclient=0 elapsed_ms=24.0 reads=0 writes=300 max_read_ms=0.000 max_write_ms=12.026\nclient=1 elapsed_ms=38.4 reads=0 writes=300 max_read_ms=0.000 max_write_ms=27.036\nclient=2 elapsed_ms=11.3 reads=0 writes=300 max_read_ms=0.000 max_write_ms=0.190\nclient=3 elapsed_ms=57.1 reads=0 writes=300 max_read_ms=0.000 max_write_ms=47.914\nverified_reopen=true\n"
+    },
+    {
+      "workload": "write_only",
+      "backend": "prototype",
+      "round": 6,
+      "command": [
+        "target/release/examples/kv_bench",
+        "prototype",
+        "4",
+        "300",
+        "250",
+        "100",
+        "target/current-sqlite.tgHGXT",
+        "64"
+      ],
+      "stdout": "backend=prototype clients=4 keys=250 value_bytes=64 write_percent=100 completed=1200 elapsed_ms=2841.9 ops_per_sec=422.2\nmode=closed-loop seed=per-client-fixed warmup=up-to-100-reads durability=sync-before-ack sqlite=WAL-FULL sqlite_version=3.49.1 debug_assertions=false\nread: count=0\nwrite: count=1200 p50_us=10039.1 p95_us=12515.6 p99_us=13379.6 p99_9_us=14887.3 max_us=14904.1\nclient=0 elapsed_ms=2819.9 reads=0 writes=300 max_read_ms=0.000 max_write_ms=14.904\nclient=1 elapsed_ms=2778.9 reads=0 writes=300 max_read_ms=0.000 max_write_ms=14.034\nclient=2 elapsed_ms=2796.0 reads=0 writes=300 max_read_ms=0.000 max_write_ms=14.887\nclient=3 elapsed_ms=2841.9 reads=0 writes=300 max_read_ms=0.000 max_write_ms=14.880\nverified_reopen=true\n"
+    }
+  ],
+  "filesystem": "APFS",
+  "build_command": [
+    "cargo",
+    "+1.85.0",
+    "build",
+    "--release",
+    "--locked",
+    "--example",
+    "kv_bench"
+  ],
+  "path_note": "Commands are relative to repository root. A fresh directory under target held transient data."
+}
