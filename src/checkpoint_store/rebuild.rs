@@ -687,7 +687,7 @@ impl CheckpointStore {
                     lock_file.clone(),
                     limits.base_checkpoint_limits,
                     limits.max_log_bytes,
-                    None,
+                    crate::checkpoint_view::TailAdmission::Unrestricted,
                 )?;
                 (Some(view), prefix_hash)
             }

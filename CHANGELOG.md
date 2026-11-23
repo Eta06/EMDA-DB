@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject an unwitnessed tail before opening the checkpoint for read-only
+  recovery, and reject nonregular files on checkpoint open.
+
 - Reject oversized recovery suffixes from the checkpoint header before
   traversing index entries or hashing the covered log.
 

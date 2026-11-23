@@ -540,8 +540,27 @@ pub(crate) fn load(
     max_live_keys: Option<usize>,
     trusted_digest: &[u8; 32],
 ) -> io::Result<Loaded> {
-    let file = File::open(path)?;
+    let file = open_index_file(path)?;
     load_file(&file, log, witness_boundary, max_live_keys, trusted_digest)
+}
+
+pub(crate) fn open_index_file(path: &Path) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags, open};
+    let invalid = || record::invalid_data("checkpoint is not a regular file");
+    // Preserve symlinks to regular files. Reject known special files before
+    // opening, and use nonblocking open in case a FIFO replaces the target.
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(invalid());
+    }
+    let file = File::from(open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?);
+    if !file.metadata()?.is_file() {
+        return Err(invalid());
+    }
+    Ok(file)
 }
 
 fn load_file(
@@ -618,6 +637,15 @@ pub(crate) fn checked_tail_bytes(length: u64, prefix: u64, limit: u64) -> io::Re
         ));
     }
     Ok(tail_bytes)
+}
+
+pub(crate) fn check_witnessed_length(length: u64, boundary: u64) -> io::Result<()> {
+    if length != boundary {
+        return Err(record::invalid_data(
+            "log has an unacknowledged tail; open a writable store to recover it first",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Default)]

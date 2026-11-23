@@ -128,6 +128,12 @@ struct CheckpointIndex {
     blocks: Vec<Block>,
 }
 
+pub(crate) enum TailAdmission {
+    Unrestricted,
+    Bounded(u64),
+    Witnessed(u64),
+}
+
 impl CheckpointView {
     /// Opens a historical view without materializing the full key index.
     pub fn open(
@@ -173,7 +179,7 @@ impl CheckpointView {
             trusted_digest,
             limits,
             max_log_bytes,
-            None,
+            TailAdmission::Unrestricted,
         )
     }
 
@@ -183,7 +189,7 @@ impl CheckpointView {
         trusted_digest: &[u8; 32],
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
-        max_tail_bytes: Option<u64>,
+        tail: TailAdmission,
     ) -> io::Result<Self> {
         limits.validate()?;
         let lock_file = File::open(path.join("store.lock"))?;
@@ -197,7 +203,7 @@ impl CheckpointView {
             lock_file,
             limits,
             max_log_bytes,
-            max_tail_bytes,
+            tail,
         )
         .map(|(view, _)| view)
     }
@@ -232,7 +238,7 @@ impl CheckpointView {
             lock_file,
             limits,
             None,
-            None,
+            TailAdmission::Unrestricted,
         )
         .map(|(view, _)| view)
     }
@@ -244,12 +250,20 @@ impl CheckpointView {
         lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
-        max_tail_bytes: Option<u64>,
+        tail: TailAdmission,
     ) -> io::Result<(Self, Sha256)> {
         limits.validate()?;
         let (mut log, boundary) = Log::open_checkpoint_view(path)?;
         let length = Self::check_log_limit(&log, max_log_bytes)?;
-        let checkpoint = File::open(checkpoint)?;
+        let max_tail_bytes = match tail {
+            TailAdmission::Unrestricted => None,
+            TailAdmission::Bounded(limit) => Some(limit),
+            TailAdmission::Witnessed(limit) => {
+                checkpoint::check_witnessed_length(length, boundary)?;
+                Some(limit)
+            }
+        };
+        let checkpoint = checkpoint::open_index_file(checkpoint)?;
         let mut blocks = Vec::new();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;

@@ -101,11 +101,10 @@ impl RecoveredCheckpointView {
     }
 
     /// Opens with suffix, checkpoint and optional whole-log admission limits.
-    /// The whole-log cap is checked before checkpoint validation. The suffix
-    /// byte cap is checked against the verified checkpoint boundary before
-    /// hashing its covered log. Rejection by a cap leaves log verification
-    /// incomplete. Limits must be reapplied on reopen and do not bound total
-    /// time or memory.
+    /// The whole-log cap and witnessed length are checked before opening the
+    /// checkpoint. The suffix byte cap can reject from its declared boundary
+    /// before entry traversal. An admitted open verifies the checkpoint and
+    /// log. Limits must be reapplied on reopen and bound logical resources.
     pub fn open_with_options(
         path: impl AsRef<Path>,
         checkpoint: impl AsRef<Path>,
@@ -123,7 +122,7 @@ impl RecoveredCheckpointView {
             trusted_digest,
             limits.checkpoint_view,
             limits.max_log_bytes,
-            Some(limits.max_tail_bytes),
+            crate::checkpoint_view::TailAdmission::Witnessed(limits.max_tail_bytes),
         )?;
         Self::from_base_mode(
             base,
@@ -200,10 +199,8 @@ impl RecoveredCheckpointView {
         Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let boundary = base.witnessed_boundary;
         let length = CheckpointView::check_log_limit(&base.log, max_log_bytes)?;
-        if length < boundary || (!allow_unacknowledged && length != boundary) {
-            return Err(record::invalid_data(
-                "log has an unacknowledged tail; open a writable store to recover it first",
-            ));
+        if !allow_unacknowledged || length < boundary {
+            crate::checkpoint::check_witnessed_length(length, boundary)?;
         }
         let tail_bytes =
             crate::checkpoint::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;

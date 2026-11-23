@@ -1,6 +1,6 @@
 use database_engine::{
-    CheckpointView, CheckpointViewLimits, MAX_RECOVERED_VIEW_TAIL_KEYS, RecoveredCheckpointView,
-    RecoveredViewLimits, Store,
+    CheckpointStore, CheckpointView, CheckpointViewLimits, MAX_RECOVERED_VIEW_TAIL_KEYS,
+    RecoveredCheckpointView, RecoveredViewLimits, Store,
 };
 use std::fs;
 use std::io::{self, Write};
@@ -241,18 +241,79 @@ fn log_cap_includes_unacknowledged_bytes_and_never_adopts_a_partial_tail() {
     assert_eq!(historical.get(b"a").unwrap().as_deref(), Some(&b"base"[..]));
     assert!(historical.has_log_tail());
     drop(historical);
-    let result = RecoveredCheckpointView::open_with_options(
-        &path,
-        &checkpoint,
-        &digest,
-        RecoveredViewLimits {
-            max_log_bytes: Some(bytes.len() as u64),
-            ..Default::default()
-        },
-    );
-    assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidData));
+    for index in [&checkpoint, &directory.path().join("missing-checkpoint")] {
+        let error = RecoveredCheckpointView::open_with_options(
+            &path,
+            index,
+            &digest,
+            RecoveredViewLimits {
+                max_log_bytes: Some(bytes.len() as u64),
+                ..Default::default()
+            },
+        )
+        .err()
+        .expect("read-only recovery must reject the pending tail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("log has an unacknowledged tail"));
+    }
     assert_eq!(fs::read(&log).unwrap(), bytes);
     assert!(Store::open(&path).is_err());
+}
+
+#[test]
+fn checkpoint_opens_reject_nonregular_inputs_but_accept_regular_symlink_targets() {
+    use std::os::unix::fs::symlink;
+    use std::process::Command;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("source");
+    let checkpoint = directory.path().join("checkpoint");
+    let fifo = directory.path().join("fifo");
+    let alias = directory.path().join("alias");
+    let store = Store::open(&path).unwrap();
+    store.put(b"a", b"base").unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    assert!(
+        Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    symlink(&checkpoint, &alias).unwrap();
+
+    for error in [
+        CheckpointView::open(&path, &fifo, &digest).err().unwrap(),
+        RecoveredCheckpointView::open(&path, &fifo, &digest)
+            .err()
+            .unwrap(),
+        CheckpointStore::open(&path, &fifo, &digest).err().unwrap(),
+        Store::open_with_checkpoint(&path, &fifo, &digest)
+            .err()
+            .unwrap(),
+    ] {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            error
+                .to_string()
+                .contains("checkpoint is not a regular file")
+        );
+    }
+    assert_eq!(
+        CheckpointView::open(&path, &alias, &digest)
+            .unwrap()
+            .get(b"a")
+            .unwrap(),
+        Some(b"base".to_vec())
+    );
+    assert_eq!(
+        Store::open_with_checkpoint(&path, &alias, &digest)
+            .unwrap()
+            .get(b"a")
+            .unwrap(),
+        Some(b"base".to_vec())
+    );
 }
 
 #[test]
