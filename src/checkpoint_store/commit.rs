@@ -1,7 +1,24 @@
 //! Admission, durable append and publication for checkpoint-backed writes.
 use super::*;
 use crate::log::{AppendRecord, BatchUpdate, prepare_batch};
+use crate::record::batch::BatchLayout;
 use std::collections::BTreeSet;
+
+#[derive(Clone, Copy)]
+pub(super) enum Mutation<'a> {
+    Single(Operation, &'a [u8], &'a [u8]),
+    Batch(BatchLayout<'a>),
+}
+
+impl<'a> Mutation<'a> {
+    fn keys(self) -> impl Iterator<Item = &'a [u8]> {
+        let (key, batch) = match self {
+            Self::Single(_, key, _) => (Some(key), &[][..]),
+            Self::Batch(batch) => (None, batch.operations()),
+        };
+        key.into_iter().chain(batch.iter().map(|op| op.fields().1))
+    }
+}
 
 // Readers may hold the old published view during an append. Publish a
 // failure even on unwind before another writer can take the gate.
@@ -24,18 +41,12 @@ impl CheckpointStore {
     pub(super) fn commit<'a>(
         &'a self,
         state: StateWrite<'a>,
-        operation: Operation,
-        key: &[u8],
-        value: &[u8],
-        touched: &[&[u8]],
+        mutation: Mutation<'_>,
         tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
         match self.commit_until(
             state,
-            operation,
-            key,
-            value,
-            touched,
+            mutation,
             crate::cancellation::CommitControl {
                 tracker,
                 ..Default::default()
@@ -52,10 +63,7 @@ impl CheckpointStore {
     pub(super) fn commit_until<'a>(
         &'a self,
         mut state: StateWrite<'a>,
-        operation: Operation,
-        key: &[u8],
-        value: &[u8],
-        touched: &[&[u8]],
+        mutation: Mutation<'_>,
         control: crate::cancellation::CommitControl<'_>,
     ) -> Result<(), crate::TimedTransactionError> {
         let crate::cancellation::CommitControl {
@@ -69,7 +77,11 @@ impl CheckpointStore {
             .generation
             .checked_add(1)
             .ok_or_else(|| io::Error::other("checkpoint transaction generation exhausted"))?;
-        let length = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
+        let (operation, key, value_len) = match mutation {
+            Mutation::Single(operation, key, value) => (operation, key, value.len()),
+            Mutation::Batch(batch) => (Operation::Batch, &[0][..], batch.payload_len()),
+        };
+        let length = HEADER_SIZE + key.len() + value_len + CHECKSUM_SIZE;
         let next_log = state
             .view
             .base
@@ -80,28 +92,35 @@ impl CheckpointStore {
         if self.max_log_bytes.is_some_and(|max| next_log > max) {
             return Err(io::Error::other("configured log byte limit would be exceeded").into());
         }
-        let admission = self.admit_suffix(&state, length, touched);
+        let admission = self.admit_suffix(&state, length, mutation.keys());
         let (next_tail, new_key_bytes) = match admission {
             Ok(admitted) => admitted,
             Err(_)
                 if state.automatic
                     && state.view.tail_bytes > 0
-                    && self.fits_empty_suffix(length, touched) =>
+                    && self.fits_empty_suffix(length, mutation.keys()) =>
             {
                 state = self.automatic_rollover(state)?;
-                self.admit_suffix(&state, length, touched)?
+                self.admit_suffix(&state, length, mutation.keys())?
             }
             Err(error) => return Err(error.into()),
         };
-        // Prepare all input before append. Once append starts, even a failed
-        // verification or panic leaves the instance unusable until recovery.
-        let encoded = record::encode(operation, key, value)?;
         let owned_key = (operation != Operation::Batch).then(|| key.to_vec());
         // A snapshot can pin this overlay. Detach before submission, keeping
         // the same entries until the append and its witness are synchronized.
         let next_overlay = (Arc::strong_count(&state.view.overlay) > 1)
             .then(|| Arc::new(state.view.overlay.as_ref().clone()));
-        // Maintenance and detaching a shared overlay can take time.
+        let StateWrite { state, _writer } = state;
+        // Keep the writer gate but let readers use the published view while
+        // we encode the admitted mutation.
+        drop(state);
+        let encoded = match mutation {
+            Mutation::Single(operation, key, value) => record::encode(operation, key, value)?,
+            Mutation::Batch(batch) => batch.encode()?,
+        };
+        let value_start = HEADER_SIZE + key.len();
+        let value = &encoded[value_start..value_start + value_len];
+        // Maintenance, detaching a shared overlay and encoding can take time.
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err(crate::TimedTransactionError::DeadlineExceeded);
         }
@@ -111,12 +130,10 @@ impl CheckpointStore {
         if let Some(tracker) = tracker {
             tracker.commit();
         }
-        let StateWrite { state, _writer } = state;
         let mut pending = PendingAppend {
             failed: &self.append_failed,
             published: false,
         };
-        drop(state);
         let location = self
             .log
             .append_batch_unsynced(std::iter::once(AppendRecord {
@@ -154,11 +171,11 @@ impl CheckpointStore {
         Ok(())
     }
 
-    fn admit_suffix(
+    fn admit_suffix<'a>(
         &self,
         state: &State,
         length: usize,
-        touched: &[&[u8]],
+        touched: impl Iterator<Item = &'a [u8]>,
     ) -> io::Result<(u64, usize)> {
         let next_tail = state
             .view
@@ -167,8 +184,6 @@ impl CheckpointStore {
             .filter(|total| *total <= self.max_tail_bytes)
             .ok_or_else(|| io::Error::other("checkpoint suffix byte limit would be exceeded"))?;
         let new_keys = touched
-            .iter()
-            .copied()
             .filter(|key| !state.view.overlay.contains_key(*key))
             .collect::<BTreeSet<_>>();
         if state.view.overlay.len() + new_keys.len() > self.max_tail_keys {
@@ -188,11 +203,15 @@ impl CheckpointStore {
         Ok((next_tail, new_key_bytes))
     }
 
-    fn fits_empty_suffix(&self, length: usize, touched: &[&[u8]]) -> bool {
+    fn fits_empty_suffix<'a>(
+        &self,
+        length: usize,
+        touched: impl Iterator<Item = &'a [u8]>,
+    ) -> bool {
         if length as u64 > self.max_tail_bytes {
             return false;
         }
-        let keys = touched.iter().copied().collect::<BTreeSet<_>>();
+        let keys = touched.collect::<BTreeSet<_>>();
         if keys.len() > self.max_tail_keys {
             return false;
         }

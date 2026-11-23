@@ -48,16 +48,43 @@ pub(crate) fn encode_record_admitted(
     operations: &[BatchOperation<'_>],
     admit: impl FnOnce(usize) -> io::Result<()>,
 ) -> io::Result<Vec<u8>> {
-    let payload = payload_length(operations)?;
-    let length = HEADER_SIZE + 1 + payload + CHECKSUM_SIZE;
-    admit(length)?;
-    let mut result = encoding_buffer(length)?;
-    let header = encode_header(Operation::Batch, &[0], payload)?;
-    result.extend_from_slice(&header);
-    result.push(0);
-    append_payload(&mut result, operations)?;
-    result.extend_from_slice(&crc32fast::hash(&result).to_le_bytes());
-    Ok(result)
+    let batch = BatchLayout::new(operations)?;
+    admit(HEADER_SIZE + 1 + batch.payload_len + CHECKSUM_SIZE)?;
+    batch.encode()
+}
+
+/// A validated batch whose encoded size is known without copying values.
+#[derive(Clone, Copy)]
+pub(crate) struct BatchLayout<'a> {
+    operations: &'a [BatchOperation<'a>],
+    payload_len: usize,
+}
+
+impl<'a> BatchLayout<'a> {
+    pub(crate) fn new(operations: &'a [BatchOperation<'a>]) -> io::Result<Self> {
+        Ok(Self {
+            operations,
+            payload_len: payload_length(operations)?,
+        })
+    }
+
+    pub(crate) fn operations(self) -> &'a [BatchOperation<'a>] {
+        self.operations
+    }
+
+    pub(crate) fn payload_len(self) -> usize {
+        self.payload_len
+    }
+
+    pub(crate) fn encode(self) -> io::Result<Vec<u8>> {
+        let mut result = encoding_buffer(HEADER_SIZE + 1 + self.payload_len + CHECKSUM_SIZE)?;
+        let header = encode_header(Operation::Batch, &[0], self.payload_len)?;
+        result.extend_from_slice(&header);
+        result.push(0);
+        append_payload(&mut result, self.operations)?;
+        result.extend_from_slice(&crc32fast::hash(&result).to_le_bytes());
+        Ok(result)
+    }
 }
 
 fn payload_length(operations: &[BatchOperation<'_>]) -> io::Result<usize> {

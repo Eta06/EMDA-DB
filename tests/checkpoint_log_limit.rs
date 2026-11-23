@@ -1,6 +1,7 @@
 use database_engine::{
-    CheckpointStore, MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
-    MAX_RECOVERED_VIEW_TAIL_KEYS, RecoveredCheckpointView, RecoveredViewLimits, Store,
+    BatchOperation, CheckpointStore, MAX_RECOVERED_VIEW_TAIL_BYTES,
+    MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS, RecoveredCheckpointView,
+    RecoveredViewLimits, Store,
 };
 use std::fs;
 use std::io;
@@ -218,7 +219,6 @@ fn concurrent_writers_cannot_oversubscribe_the_log_limit() {
 
 #[test]
 fn conditional_batch_mismatch_needs_no_log_space() {
-    use database_engine::BatchOperation;
     let (_dir, path, checkpoint, digest, initial) = fixture();
     let store = open(&path, &checkpoint, &digest, initial).unwrap();
     let before = fs::read(path.join("records.log")).unwrap();
@@ -238,4 +238,77 @@ fn conditional_batch_mismatch_needs_no_log_space() {
     );
     assert_eq!(fs::read(path.join("records.log")).unwrap(), before);
     assert_eq!(store.get(b"a").unwrap().as_deref(), Some(&b"old"[..]));
+}
+
+#[test]
+fn checkpoint_batch_writers_respect_exact_log_and_suffix_bounds() {
+    let operations = [
+        BatchOperation::Delete { key: b"a" },
+        BatchOperation::Put {
+            key: b"b",
+            value: b"new",
+        },
+    ];
+    // Outer record framing, one batch selector, count, and two DB01 records.
+    let batch_bytes = 21 + 1 + 4 + (21 + 1) + (21 + 1 + 3);
+    for write in ["blind", "conditional", "transaction"] {
+        for (suffix_bytes, log_bytes, rejection) in [
+            (
+                batch_bytes,
+                batch_bytes - 1,
+                Some("configured log byte limit"),
+            ),
+            (
+                batch_bytes - 1,
+                batch_bytes,
+                Some("checkpoint suffix byte limit"),
+            ),
+            (batch_bytes, batch_bytes, None),
+        ] {
+            let (_dir, path, checkpoint, digest, initial) = fixture();
+            let open = || {
+                CheckpointStore::open_with_resource_limits(
+                    &path,
+                    &checkpoint,
+                    &digest,
+                    suffix_bytes,
+                    MAX_RECOVERED_VIEW_TAIL_KEYS,
+                    MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
+                    Some(initial + log_bytes),
+                )
+                .unwrap()
+            };
+            let store = open();
+            let log = path.join("records.log");
+            let before = fs::read(&log).unwrap();
+            let result = match write {
+                "blind" => store.write_batch(&operations),
+                "conditional" => store
+                    .compare_exchange_batch(&[(b"a", Some(b"old"))], &operations)
+                    .map(|matched| assert!(matched)),
+                "transaction" => store.transaction(|tx| {
+                    tx.delete(b"a")?;
+                    tx.put(b"b", b"new")
+                }),
+                _ => unreachable!(),
+            };
+            if let Some(reason) = rejection {
+                assert!(result.unwrap_err().to_string().contains(reason), "{write}");
+                assert_eq!(fs::read(&log).unwrap(), before);
+            } else {
+                result.unwrap();
+                assert_eq!(fs::metadata(&log).unwrap().len(), initial + batch_bytes);
+            }
+            drop(store);
+            let reopened = open();
+            assert_eq!(
+                reopened.get(b"a").unwrap().as_deref(),
+                rejection.map(|_| b"old".as_slice()),
+            );
+            assert_eq!(
+                reopened.get(b"b").unwrap().as_deref(),
+                rejection.is_none().then_some(b"new".as_slice()),
+            );
+        }
+    }
 }

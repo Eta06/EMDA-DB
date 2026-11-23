@@ -256,6 +256,13 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Enforce recovered-view and writable checkpoint suffix-byte limits after verifying the checkpoint file and before reading its covered log. The [Linux ext4 traces](../benchmarks/results/2026-11-22-checkpoint-suffix-admission/README.md) confirm that over-limit opens skip the covered-data read. At the exact limit both APIs still detect prefix corruption and recover the expected suffix after the original bytes are restored.
 - [ ] Complete the live disk-backed index and bounded memory/cache management. Suffixes exceeding the selected caps need a newer checkpoint or ordinary recovery, and all accepted checkpoint openings hash the complete covered log prefix. Overlay limits are not total process-memory limits.
 - [x] Apply the suffix-byte cap before traversing checkpoint entries on recovered-view and checkpoint-writer opens. The [Linux ARM64 trace](../benchmarks/results/2026-11-23-checkpoint-suffix-admission/README.md) shows one buffered read for a rejected 65,536-key checkpoint and the same read volume as before at the exact accepted limit. Corruption and witness-preservation checks pass on macOS and Linux.
+  At commit, check encoded size before allocating a checkpoint batch. In a
+  Linux ext4 probe with a 4 MiB value, blind, conditional and transactional
+  log-quota rejections and a condition mismatch each went from one allocation
+  request of at least 1 MiB to zero. Accepted batches went from two requests
+  to one. Reopens verified the expected state in every case. The probe
+  measures allocations during submission and excludes caller buffers,
+  transaction staging, and filesystem cache.
 - [x] Reject a checkpoint payload that exceeds total block capacity before reading its index, while still checking exact entry packing for admitted files. Streaming writers check the minimum space required by the entry count before creating a stage. The [Linux ARM64 trace](../benchmarks/results/2026-11-23-checkpoint-block-admission/README.md) shows zero index reads on three rejected open paths.
 - [ ] Complete validation of the separate offline bounded-spill rebuild from a caller-trusted checkpoint and suffix. The prototype accounts for ordered batch children and intermediate key-count peaks, validates before tail adoption, retains the exclusive lock through publication, and has focused spill and crash tests on macOS and Linux ARM64. It cannot replace full-log rebuild when the base is missing or when historical key-byte limits must be enforced; it does not bound total memory or recovery time, or reclaim the log. Broader fault coverage and independent verification remain open.
 - [x] Add a historical live-key ceiling to bounded suffix rebuild. Tests

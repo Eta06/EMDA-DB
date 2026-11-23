@@ -615,21 +615,14 @@ impl CheckpointStore {
                 None => BatchOperation::Delete { key },
             })
             .collect::<Vec<_>>();
-        let payload = encode_payload(&operations)?;
+        let batch = BatchLayout::new(&operations)?;
         let state = self.write_until(deadline, cancellation)?;
         validate(&state)?;
-        let keys = operations
-            .iter()
-            .map(|operation| operation.fields().1)
-            .collect::<Vec<_>>();
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         self.commit_until(
             state,
-            Operation::Batch,
-            &[0],
-            &payload,
-            &keys,
+            Mutation::Batch(batch),
             crate::cancellation::CommitControl {
                 deadline,
                 cancellation,

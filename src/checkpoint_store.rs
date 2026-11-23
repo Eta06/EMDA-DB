@@ -4,7 +4,9 @@ use crate::controlled_lock::{
     ControlledRwLock, ReadGuard as ControlledReadGuard, WriteGuard as ControlledWriteGuard,
 };
 use crate::log::{GenerationId, Log};
-use crate::record::batch::{BatchOperation, encode_payload};
+#[cfg(test)]
+use crate::record::batch::encode_payload;
+use crate::record::batch::{BatchLayout, BatchOperation};
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 use crate::recovered_view::{
     MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,
@@ -21,6 +23,7 @@ use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 mod automatic;
 mod commit;
+use commit::Mutation;
 mod compact_exchange;
 mod read_set;
 mod rebuild;
@@ -1174,7 +1177,7 @@ impl CheckpointStore {
         record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
         let state = self.write()?;
-        self.commit(state, operation, key, value, &[key], tracker)
+        self.commit(state, Mutation::Single(operation, key, value), tracker)
     }
 
     /// Conditionally replaces or deletes one key atomically against all writes.
@@ -1218,7 +1221,7 @@ impl CheckpointStore {
         if state.view.get(key)?.as_deref() != expected {
             return Ok(false);
         }
-        self.commit(state, operation, key, value, &[key], tracker)?;
+        self.commit(state, Mutation::Single(operation, key, value), tracker)?;
         Ok(true)
     }
 
@@ -1263,10 +1266,7 @@ impl CheckpointStore {
         })?;
         self.commit(
             state,
-            Operation::Put,
-            key,
-            &next.to_le_bytes(),
-            &[key],
+            Mutation::Single(Operation::Put, key, &next.to_le_bytes()),
             tracker,
         )?;
         Ok(next)
@@ -1295,12 +1295,8 @@ impl CheckpointStore {
     ) -> io::Result<()> {
         let _admission = self.direct_writes.acquire()?;
         let state = self.write()?;
-        let payload = encode_payload(operations)?;
-        let keys = operations
-            .iter()
-            .map(|operation| operation.fields().1)
-            .collect::<Vec<_>>();
-        self.commit(state, Operation::Batch, &[0], &payload, &keys, tracker)
+        let batch = BatchLayout::new(operations)?;
+        self.commit(state, Mutation::Batch(batch), tracker)
     }
 
     /// Atomically applies a blind batch if all point-value conditions match.
@@ -1357,17 +1353,13 @@ impl CheckpointStore {
         }
         let _admission = self.direct_writes.acquire()?;
         let state = self.write()?;
-        let payload = encode_payload(operations)?;
+        let batch = BatchLayout::new(operations)?;
         for (key, expected) in conditions {
             if state.view.get(key)?.as_deref() != *expected {
                 return Ok(false);
             }
         }
-        let keys = operations
-            .iter()
-            .map(|operation| operation.fields().1)
-            .collect::<Vec<_>>();
-        self.commit(state, Operation::Batch, &[0], &payload, &keys, tracker)?;
+        self.commit(state, Mutation::Batch(batch), tracker)?;
         Ok(true)
     }
 }
