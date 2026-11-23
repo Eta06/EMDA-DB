@@ -774,6 +774,18 @@ impl OnlineStore {
         state.failed = false;
         drop(state);
         drop(snapshot);
+        // The retired store can now be used only by captured snapshots and
+        // reclamation. Those paths use captured roots or file descriptors.
+        // Release the live root outside the callback admission lock.
+        let retired_index = {
+            let mut inner = current
+                .inner
+                .write()
+                .unwrap_or_else(|poison| poison.into_inner());
+            inner.index_key_bytes = 0;
+            std::mem::take(&mut inner.index)
+        };
+        drop(retired_index);
         let report = OnlineCompactionReport {
             initial_log_bytes: initial,
             final_log_bytes: final_boundary,

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Release the retired live index after online handoff while captured
+  snapshots retain their own index roots.
+
 - Capture owned, read-only online-store snapshots that remain readable
   across a synchronized handoff and retired-log reclamation. Snapshot
   reservations share one budget across generations.

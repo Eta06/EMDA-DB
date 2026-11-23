@@ -275,10 +275,12 @@ the document view.
   reservation and old store ownership. A live view retains the old advisory
   lock and can hold disk blocks after a successful Linux reclamation unlinks
   the old directory. A named previous copy stays locked while a view owns it.
+  After a synchronized handoff, the retired store releases its last live
+  index root. Each view continues holding the index root it captured.
   Ordinary callbacks, compaction's private views and owned online views share
   one snapshot budget across all generations of an open online store. A full
   budget can prevent another compaction from taking its private snapshot.
-  This is a logical snapshot budget. It excludes full owner indexes, disk
+  This is a logical snapshot budget. It excludes the current live index, disk
   blocks, other stores and elapsed time. Owned online snapshots have no
   deadline. Their admission and health checks apply to the captured store.
 - `OnlineStore::start_reclamation_worker` opts into periodic or explicitly requested checks of the same reclaim operation. It permits one worker per handle, checks a synchronized log boundary and configured minimum length, and after its own successful handoff waits for configured growth from the boundary observed afterward on the same store identity. A manually replaced store resets that baseline; another operation can also change the store between observation and compaction. The thresholds are scheduling hints, not hard limits. If the maintenance lock is held before compaction begins, the worker records a `busy_checks` deferral and retries only on a later scheduled or requested check. This case is identified separately from a generic `WouldBlock` I/O error; other failures stop the worker and retain the underlying operation’s uncertain-outcome rules. It reports known successful handoffs and cleanup status separately. Panic is reported as requiring inspection and reopening. It holds a store reference and waits for an in-flight check when stopped or dropped; callbacks must not wait for the worker. The worker is not persistent, does not automatically retry uncertain failures or clean leftovers, and cannot guarantee a storage, memory, recovery-time or pause bound.

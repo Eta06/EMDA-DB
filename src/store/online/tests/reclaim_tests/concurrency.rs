@@ -7,7 +7,15 @@ fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
     let store = Arc::new(OnlineStore::open(&source).unwrap());
     insert_history(&store);
     let mut snapshot = store.snapshot(2, 64).unwrap();
-    let retired_owner = Arc::downgrade(&store.state.read().unwrap().store);
+    store
+        .with_store(|db| db.put(b"overwritten", b"newest"))
+        .unwrap();
+    let (retired_owner, retired_live_index) = {
+        let state = store.state.read().unwrap();
+        let index = state.store.inner.read().unwrap();
+        (Arc::downgrade(&state.store), Arc::downgrade(&index.index))
+    };
+    assert!(retired_live_index.upgrade().is_some());
     let (ready_tx, ready_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
     let worker_store = Arc::clone(&store);
@@ -28,6 +36,7 @@ fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
         )
     });
     ready_rx.recv_timeout(WAIT).unwrap();
+    assert!(retired_live_index.upgrade().is_none());
     assert_eq!(
         snapshot.as_snapshot().unwrap().get(b"overwritten").unwrap(),
         Some(b"39".to_vec())
@@ -62,7 +71,7 @@ fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
     replacement.put(b"new", b"independent").unwrap();
     drop(replacement);
     resume_tx.send(()).unwrap();
-    assert_eq!(callback.unwrap().unwrap(), Some(b"39".to_vec()));
+    assert_eq!(callback.unwrap().unwrap(), Some(b"newest".to_vec()));
     assert!(matches!(
         write_before_cleanup,
         Err(mpsc::RecvTimeoutError::Timeout)
