@@ -1804,7 +1804,8 @@ fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
                 sync_existing(path)
             })
             .unwrap_err();
-        assert_eq!(error.to_string(), "after move");
+        assert!(matches!(error, StagingCleanupFailure::OutcomeUnknown(cause)
+            if cause.to_string() == "after move"));
         let retired = retired.unwrap();
         assert!(retired.join("commit.state").is_file());
         assert_eq!(store.scan(None, None, 4).unwrap(), before);
@@ -1895,7 +1896,8 @@ fn retired_removal_sync_errors_are_reported_and_recoverable() {
             })
             .unwrap_err();
         assert_eq!(syncs, fail_sync);
-        assert_eq!(error.to_string(), "injected final retirement sync failure");
+        assert!(matches!(error, StagingCleanupFailure::OutcomeUnknown(cause)
+            if cause.to_string() == "injected final retirement sync failure"));
         assert_eq!(
             crate::staging::has_retained_stage(&store.root).unwrap(),
             fail_sync == 3
@@ -1909,6 +1911,40 @@ fn retired_removal_sync_errors_are_reported_and_recoverable() {
         assert_eq!(reopened.scan(None, None, 4).unwrap(), rows);
         assert!(!inactive.exists());
     }
+}
+
+#[test]
+fn detailed_reclamation_includes_removal_during_a_resumed_cleanup() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.compact().unwrap();
+    let rows = store.scan(None, None, 4).unwrap();
+    let mut retired = None;
+    assert!(matches!(
+        store.reclaim_using(|path| {
+            retired = Some(path.join("retired"));
+            Err(io::Error::other("retirement move interrupted"))
+        }),
+        Err(StagingCleanupFailure::OutcomeUnknown(_))
+    ));
+    let retired = retired.unwrap();
+    let foreign = crate::staging::Stage::retained_directory(&store.root, &[0; 16]).unwrap();
+    let foreign_path = foreign.path().to_path_buf();
+    foreign.retain_payload().unwrap();
+
+    assert!(matches!(
+        store.reclaim_inactive_detailed(),
+        Err(StagingCleanupFailure::OutcomeUnknown(error))
+            if error.kind() == io::ErrorKind::WouldBlock
+    ));
+    assert!(!retired.exists());
+    assert!(foreign_path.is_dir());
+    assert!(matches!(
+        store.reclaim_inactive_detailed(),
+        Err(StagingCleanupFailure::NotStarted(error))
+            if error.kind() == io::ErrorKind::WouldBlock
+    ));
+    assert_eq!(store.scan(None, None, 4).unwrap(), rows);
 }
 
 #[test]

@@ -212,6 +212,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   refine safe classifications where further boundaries can be proven.
   Existing error types are unchanged and unknown outcomes cannot be retried
   solely from error kind.
+  Managed and authority-backed retained stores classify removal attempts
+  through `reclaim_inactive_detailed`, including removals during resumed
+  cleanup. The classification is separate from authority fence uncertainty.
 - [x] Add opt-in generic staging-cleanup outcomes distinguishing calls that
   began no removals from failures after removal may have started. The result
   does not certify directory durability, cleanup, source health or a backup.

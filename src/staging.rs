@@ -421,8 +421,9 @@ pub struct StagingCleanup {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum StagingCleanupFailure {
-    /// This call began no payload or ownership-marker removal. Synchronization
-    /// or other non-removal effects may still have occurred.
+    /// This call attempted no removal from its cleanup targets. Synchronization
+    /// or other effects, including disposal of newly created preparation
+    /// files, may still have occurred.
     NotStarted(io::Error),
     /// This call may have removed a payload, marker, or part of a directory.
     /// Inspect the trusted directory before deciding how to resume cleanup.
@@ -430,6 +431,19 @@ pub enum StagingCleanupFailure {
 }
 
 impl StagingCleanupFailure {
+    pub(crate) fn track_removal<T>(
+        remove: impl FnOnce(&mut bool) -> io::Result<T>,
+    ) -> Result<T, Self> {
+        let mut removal_started = false;
+        remove(&mut removal_started).map_err(|error| {
+            if removal_started {
+                Self::OutcomeUnknown(error)
+            } else {
+                Self::NotStarted(error)
+            }
+        })
+    }
+
     pub(crate) fn into_io_error(self) -> io::Error {
         match self {
             Self::NotStarted(error) | Self::OutcomeUnknown(error) => error,
@@ -533,24 +547,18 @@ fn cleanup_selected_detailed(
     sync_parent: impl FnOnce(&File) -> io::Result<()>,
     mut before_remove: impl FnMut() -> io::Result<()>,
 ) -> Result<StagingCleanup, StagingCleanupFailure> {
-    let mut removal_started = false;
-    cleanup_selected_with_syncs(
-        parent,
-        replacement,
-        sync_payload_removal,
-        sync_parent,
-        || {
-            before_remove()?;
-            removal_started = true;
-            Ok(())
-        },
-    )
-    .map_err(|error| {
-        if removal_started {
-            StagingCleanupFailure::OutcomeUnknown(error)
-        } else {
-            StagingCleanupFailure::NotStarted(error)
-        }
+    StagingCleanupFailure::track_removal(|removal_started| {
+        cleanup_selected_with_syncs(
+            parent,
+            replacement,
+            sync_payload_removal,
+            sync_parent,
+            || {
+                before_remove()?;
+                *removal_started = true;
+                Ok(())
+            },
+        )
     })
 }
 
@@ -589,13 +597,20 @@ pub(crate) fn cleanup_retained(
     parent: &Path,
     replacement_id: &[u8; 16],
     verify: impl FnOnce() -> io::Result<()>,
+    mut before_remove: impl FnMut(),
 ) -> io::Result<StagingCleanup> {
     let mut verify = Some(verify);
     cleanup_selected_with_sync(
         parent,
         Some((Kind::Retained, replacement_id)),
         File::sync_all,
-        || verify.take().map_or(Ok(()), |verify| verify()),
+        || {
+            if let Some(verify) = verify.take() {
+                verify()?;
+            }
+            before_remove();
+            Ok(())
+        },
     )
 }
 

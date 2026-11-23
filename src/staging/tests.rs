@@ -419,12 +419,15 @@ fn check_retired_stage_interruption(kind: Kind, selected: RetiredRemovalPoint) {
     );
     drop(lock);
     let report = if kind == Kind::Retained {
-        let wrong = cleanup_retained(directory.path(), &[8; 16], || {
-            panic!("unmatched generation")
-        })
+        let wrong = cleanup_retained(
+            directory.path(),
+            &[8; 16],
+            || panic!("unmatched generation"),
+            || panic!("unmatched generation removed"),
+        )
         .unwrap();
         assert_eq!(wrong.removed_markers, 0);
-        cleanup_retained(directory.path(), &id, || Ok(())).unwrap()
+        cleanup_retained(directory.path(), &id, || Ok(()), || {}).unwrap()
     } else {
         retry_fixture_retired_cleanup(directory.path(), &id, 0).unwrap()
     };

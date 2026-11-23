@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add detailed inactive-generation retirement outcomes to managed and
+  authority-backed retained stores, including for resumed cleanup.
+
 - Report retained-generation retirement sync errors after removing the stage
   payload or its ownership marker. Keep the marker until payload removal is
   durable so a failed sync can be retried.

@@ -623,18 +623,30 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     /// comparison leaves both slots. Later errors may follow partial or
     /// complete removal of the inactive slot or its retirement stage.
     pub fn reclaim_inactive(&mut self) -> io::Result<bool> {
-        self.verify_current()?;
-        let resumed = self.inner.resume_retirement()?;
-        let Some((inactive, retired_lock)) = self.inner.lock_inactive_for_retirement()? else {
-            return Ok(resumed);
-        };
-        let fence = self.current.finalized(self.current.committed)?;
-        self.inner.uncertain = true;
-        self.advance(fence)?;
-        self.inner.uncertain = false;
-        self.inner
-            .reclaim_locked(&inactive, retired_lock, sync_existing)?;
-        Ok(true)
+        self.reclaim_inactive_detailed()
+            .map_err(StagingCleanupFailure::into_io_error)
+    }
+
+    /// Retire an inactive generation with the removal attempt classified.
+    /// Moving the inactive slot counts as removal of its catalog name.
+    /// The classification includes any stage cleanup resumed by this call.
+    /// An error can leave the authority fence uncertain even if no removal
+    /// started. Reopen if the handle reports an uncertain selection.
+    pub fn reclaim_inactive_detailed(&mut self) -> Result<bool, StagingCleanupFailure> {
+        StagingCleanupFailure::track_removal(|removal_started| {
+            self.verify_current()?;
+            let resumed = self.inner.resume_retirement(removal_started)?;
+            let Some((inactive, retired_lock)) = self.inner.lock_inactive_for_retirement()? else {
+                return Ok(resumed);
+            };
+            let fence = self.current.finalized(self.current.committed)?;
+            self.inner.uncertain = true;
+            self.advance(fence)?;
+            self.inner.uncertain = false;
+            self.inner
+                .reclaim_locked(&inactive, retired_lock, removal_started, sync_existing)?;
+            Ok(true)
+        })
     }
 
     fn write(&mut self, append: Append<'_>) -> Result<(), MutationFailure> {

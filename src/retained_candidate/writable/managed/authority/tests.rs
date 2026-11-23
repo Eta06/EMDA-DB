@@ -965,7 +965,10 @@ fn reclamation_fence_failure_keeps_the_inactive_generation() {
     let mut store = f.open();
     store.compact().unwrap();
     store.authority.fault = Some((2, true));
-    assert!(store.reclaim_inactive().is_err());
+    assert!(matches!(
+        store.reclaim_inactive_detailed(),
+        Err(StagingCleanupFailure::NotStarted(_))
+    ));
     assert!(Slot::A.path(&f.root).exists());
     assert!(store.get(b"base", 8).is_err());
     drop(store);
