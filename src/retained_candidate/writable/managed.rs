@@ -984,7 +984,7 @@ fn export_into_generation(
         .min(max_base_bytes)
         .min(limits.base.work_bytes.saturating_sub(1));
     let name = std::ffi::OsStr::new("base");
-    let base = source.write_retained_base_in_stage(stage, name, random_id()?, export)?;
+    let base = source.write_retained_base_in_stage(stage, name, random_id()?, export, limits)?;
     let expected = crate::retained_candidate::binding(&base, random_id()?)?;
     fs::rename(stage.child_path(name)?, path.join(name))?;
     Ok(expected)

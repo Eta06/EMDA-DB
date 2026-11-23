@@ -1,5 +1,7 @@
 //! Non-authoritative, non-destructive retained-base export.
 use super::*;
+use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes, index::BlockLayout};
+use crate::retained_candidate::RetainedStoreLimits;
 use sha2::{Digest, Sha256};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -448,11 +450,13 @@ impl Store {
         name: &std::ffi::OsStr,
         base_id: [u8; 16],
         limits: RetainedExportLimits,
+        generation: RetainedStoreLimits,
     ) -> io::Result<crate::retained_base_v2::Validated> {
         let destination = stage.child_path(name)?;
         self.write_retained_base_using(
             base_id,
             limits,
+            Some(generation),
             |_| Ok(()),
             || {
                 let file = std::fs::OpenOptions::new()
@@ -497,7 +501,7 @@ impl Store {
         hook: impl FnMut(&str) -> io::Result<()>,
     ) -> Result<crate::retained_base_v2::Validated, crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.write_retained_base_using(base_id, limits, hook, || {
+            self.write_retained_base_using(base_id, limits, None, hook, || {
                 let parent = match owned_parent {
                     Some(parent) => parent,
                     None => backup::parent_directory(destination)?,
@@ -518,6 +522,7 @@ impl Store {
         &self,
         base_id: [u8; 16],
         limits: RetainedExportLimits,
+        generation: Option<RetainedStoreLimits>,
         mut hook: impl FnMut(&str) -> io::Result<()>,
         open_output: impl FnOnce() -> io::Result<(File, F)>,
     ) -> io::Result<crate::retained_base_v2::Validated> {
@@ -551,11 +556,18 @@ impl Store {
         )?;
         hook("after_replay")?;
         let boundary = self.log.len()?;
+        let entries = inner.index.len() as u64;
+        if generation.is_some_and(|target| entries > target.base.entries) {
+            return Err(crate::record::invalid_data(
+                "retained base entry limit exceeded",
+            ));
+        }
+        let mut layout = generation.map(|target| BlockLayout::new(target.index));
         let mut encoded = 0u64;
         let mut key_bytes = 0u64;
         for (key, location) in inner.index.iter() {
             crate::record::validate_key(key)?;
-            if location.length > 16 * 1024 * 1024 {
+            if location.length > crate::record::MAX_VALUE {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "value too large",
@@ -564,14 +576,21 @@ impl Store {
             key_bytes = key_bytes
                 .checked_add(key.len() as u64)
                 .ok_or_else(|| io::Error::other("key bytes overflow"))?;
-            encoded = encoded
-                .checked_add(8)
-                .and_then(|n| n.checked_add(key.len() as u64))
-                .and_then(|n| n.checked_add(location.length as u64))
+            let end = encoded
+                .checked_add(encoded_entry_bytes(key, location.length))
                 .ok_or_else(|| io::Error::other("output overflow"))?;
+            if let Some(layout) = &mut layout {
+                layout.admit(encoded, end, key.len())?;
+            }
+            encoded = end;
+        }
+        if generation.is_some_and(|target| key_bytes > target.base.key_bytes) {
+            return Err(crate::record::invalid_data(
+                "retained base key byte limit exceeded",
+            ));
         }
         let size = encoded
-            .checked_add(144)
+            .checked_add(FRAME_BYTES)
             .ok_or_else(|| io::Error::other("output overflow"))?;
         if size > limits.max_output_bytes || size == u64::MAX {
             return Err(io::Error::new(
@@ -584,7 +603,7 @@ impl Store {
             base_id,
             [
                 boundary,
-                inner.index.len() as u64,
+                entries,
                 key_bytes,
                 peak as u64,
                 peak_bytes as u64,
@@ -2930,6 +2949,103 @@ mod tests {
             }),
             Err(crate::retained_candidate::Failure::NotPublished(_))
         ));
+    }
+
+    #[test]
+    fn managed_export_checks_the_output_layout_before_creating_the_base() {
+        use crate::retained_candidate::{
+            IndexLimits, ManagedRetainedStore, OverlayLimits, SuffixLimits,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let store = Store::open(&source).unwrap();
+        let value = vec![5; 128 * 1024];
+        store.put(b"first", &value).unwrap();
+        store.put(b"second", b"short").unwrap();
+        let log = std::fs::read(source.join("records.log")).unwrap();
+        let witness = std::fs::read(source.join("commit.state")).unwrap();
+        let exact = RetainedStoreLimits {
+            base: crate::retained_base_v2::Limits {
+                file_bytes: limits().max_output_bytes,
+                entries: 2,
+                key_bytes: 11,
+                work_bytes: limits().max_output_bytes + 1,
+            },
+            index: IndexLimits {
+                blocks: 2,
+                anchor_bytes: 11,
+            },
+            suffix: SuffixLimits {
+                bytes: 0,
+                operations: 0,
+                work: 0,
+            },
+            overlay: OverlayLimits {
+                entries: 0,
+                key_bytes: 0,
+            },
+        };
+        let stage = crate::staging::Stage::directory(root.path()).unwrap();
+        let name = std::ffi::OsStr::new("base");
+        for (generation, message) in [
+            (
+                RetainedStoreLimits {
+                    index: IndexLimits {
+                        blocks: 1,
+                        ..exact.index
+                    },
+                    ..exact
+                },
+                "retained base block limit exceeded",
+            ),
+            (
+                RetainedStoreLimits {
+                    index: IndexLimits {
+                        anchor_bytes: 10,
+                        ..exact.index
+                    },
+                    ..exact
+                },
+                "retained base anchor byte limit exceeded",
+            ),
+            (
+                RetainedStoreLimits {
+                    base: crate::retained_base_v2::Limits {
+                        entries: 1,
+                        ..exact.base
+                    },
+                    ..exact
+                },
+                "retained base entry limit exceeded",
+            ),
+            (
+                RetainedStoreLimits {
+                    base: crate::retained_base_v2::Limits {
+                        key_bytes: 10,
+                        ..exact.base
+                    },
+                    ..exact
+                },
+                "retained base key byte limit exceeded",
+            ),
+        ] {
+            let error = store
+                .write_retained_base_in_stage(&stage, name, [1; 16], limits(), generation)
+                .unwrap_err();
+            assert_eq!(error.to_string(), message);
+            assert!(!stage.path().join(name).exists());
+        }
+        drop(stage);
+        let destination = root.path().join("managed");
+        let id =
+            ManagedRetainedStore::copy_from_store(store, &source, &destination, limits(), exact)
+                .unwrap();
+        let reopened = ManagedRetainedStore::open(&destination, exact).unwrap();
+        assert_eq!(reopened.generation_id().unwrap(), id);
+        assert_eq!(reopened.get(b"first", value.len()).unwrap(), Some(value));
+        assert_eq!(reopened.get(b"second", 5).unwrap().unwrap(), b"short");
+        assert_eq!(std::fs::read(source.join("records.log")).unwrap(), log);
+        assert_eq!(std::fs::read(source.join("commit.state")).unwrap(), witness);
     }
 
     #[test]

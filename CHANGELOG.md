@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check retained generation entry, key-byte, block and anchor limits
+  before copying values during ordinary-store import or cutover.
+
 - Reject infeasible retained-generation index limits before writing a
   successor base. Compaction also checks the actual block layout while
   streaming entries, before copying the value of a disallowed block.

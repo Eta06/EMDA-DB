@@ -351,6 +351,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   streams entries and keeps full successor readback before selection.
   Tests cover impossible limits, a first key that exceeds the anchor
   allowance despite feasible totals, and exact limits on reopen.
+- [x] Check the full block layout and live-key budgets during export sizing
+  for retained import and cutover. Rejections leave the private stage
+  without a base file. The exact-budget test reopens the verified import
+  and checks the original log and witness bytes.
 - [x] Allow explicit retirement of the ordinary cutover archive after verifying the authority-selected state, matching independently retained archive fingerprints, and synchronizing a verified backup of the selected generation. The [retirement regression](../benchmarks/results/2026-11-19-cutover-archive-retirement/README.md) checks stale and damaged backups, archive substitution, and retry after the first unlink.
 - [x] Measure local verified backup, legacy archive retirement and restore after repeated automatic rotation on macOS APFS and Linux ext4. The [lifecycle runs](../benchmarks/results/2026-11-23-retained-archive-lifecycle/README.md) compare every live entry in the restored and authority-selected stores with the workload model and record sampled staging allocation.
 - [x] Inject [102 returned Linux filesystem errors](../benchmarks/results/2026-11-23-retained-archive-eio/README.md) during archive retirement, covering each observed sync and unlink ordinal with V2 and V3 source fixtures. Verify the selected store and an independently bound local restore before each clean retirement retry.
