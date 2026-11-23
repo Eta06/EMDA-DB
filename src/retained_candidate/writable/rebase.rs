@@ -1,10 +1,10 @@
 use super::{
-    Expected, OverlaySource, RetainedStore, create_file, invalid_input, marker, random_id,
-    verify_files,
+    Expected, OverlaySource, RetainedStore, RetainedStoreLimits, create_file, invalid_input,
+    marker, random_id, verify_files,
 };
 use crate::record;
-use crate::retained_base_v2::index::EntryPart;
-use crate::retained_base_v2::{FRAME_BYTES, Limits, encode_header, encoded_entry_bytes};
+use crate::retained_base_v2::index::{BlockLayout, EntryPart, IndexedBase};
+use crate::retained_base_v2::{FRAME_BYTES, encode_header, encoded_entry_bytes};
 use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufWriter, Write},
@@ -52,10 +52,17 @@ impl RetainedStore {
     pub(super) fn write_rebased_base(
         &self,
         destination: &Path,
-        limits: Limits,
+        limits: RetainedStoreLimits,
         max_base_bytes: u64,
     ) -> io::Result<Expected> {
         self.ensure_healthy()?;
+        let space = limits
+            .base
+            .file_bytes
+            .min(max_base_bytes)
+            .min(limits.base.work_bytes.saturating_sub(1))
+            .checked_sub(FRAME_BYTES)
+            .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
         let suffix_digest = self.hash.clone().finalize().into();
         self.verify_boundary(&suffix_digest)?;
         // The history sweep authenticates the frame, the base blocks that
@@ -67,21 +74,16 @@ impl RetainedStore {
             self.limits.suffix,
             suffix_digest,
         )?;
-        if peaks.entries > limits.entries || peaks.key_bytes > limits.key_bytes {
+        if peaks.entries > limits.base.entries || peaks.key_bytes > limits.base.key_bytes {
             return Err(invalid_input(
                 "compacted base exceeds entry or key byte limit",
             ));
         }
-        let space = limits
-            .file_bytes
-            .min(max_base_bytes)
-            .min(limits.work_bytes.saturating_sub(1))
-            .checked_sub(FRAME_BYTES)
-            .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
         let encoded = peaks.encoded_bytes;
         if encoded > space {
             return Err(invalid_input("compacted base byte limit exceeded"));
         }
+        IndexedBase::admit_totals(peaks.entries, peaks.key_bytes, encoded, limits.index)?;
         let source = self.generation_id();
         let base = random_id()?;
         let boundary = self.header.len as u64 + self.suffix_len as u64;
@@ -103,6 +105,7 @@ impl RetainedStore {
         file.write_all(&header)?;
         digest.update(header);
         let mut remaining = encoded;
+        let mut layout = BlockLayout::new(limits.index);
         {
             let mut write = |bytes: &[u8]| -> io::Result<()> {
                 file.write_all(bytes)?;
@@ -114,11 +117,13 @@ impl RetainedStore {
                 OverlaySource::Disk(self.suffix_file()),
                 |part| match part {
                     EntryPart::Header { key, value_len } => {
+                        let start = encoded - remaining;
                         remaining = remaining
                             .checked_sub(encoded_entry_bytes(key, value_len))
                             .ok_or_else(|| {
                                 record::invalid_data("compacted base grew during export")
                             })?;
+                        layout.admit(start, encoded - remaining, key.len())?;
                         write(&(key.len() as u32).to_le_bytes())?;
                         write(&(value_len as u32).to_le_bytes())?;
                         write(key)

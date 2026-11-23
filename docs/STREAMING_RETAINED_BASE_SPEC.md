@@ -382,8 +382,10 @@ suffix-touched keys, and the entire witnessed suffix while reconstructing
 historical peaks. It sizes the successor from the original encoded size,
 authenticated lengths of replaced or deleted entries, and live suffix
 locations. The sparse index identifies which blocks the sizing pass needs.
-It checks the successor file and verification byte limits before writing the
-merge to a private file through fixed-size buffers. The writer authenticates
+It checks the successor file and verification byte limits and lower bounds
+on block count and anchor bytes before creating the private base file.
+During the merge, it admits each block before writing the entry that would
+start it. The writer streams values through fixed-size buffers and authenticates
 all base blocks, including values shadowed by replacements or deletes. The
 successor opens its synced base once to authenticate it against the writer's
 digest and construct its sparse index. Rotation then rechecks the complete

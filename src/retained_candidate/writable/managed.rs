@@ -804,11 +804,9 @@ impl ManagedRetainedStore {
                 )
             })?;
         let mut stage = Stage::directory(&self.root)?;
-        let expected = self.store.write_rebased_base(
-            &stage.path().join("base"),
-            limits.base,
-            max_base_bytes,
-        )?;
+        let expected =
+            self.store
+                .write_rebased_base(&stage.path().join("base"), limits, max_base_bytes)?;
         let next = RetainedStore::initialize(
             stage.path(),
             limits,

@@ -28,6 +28,43 @@ pub struct IndexLimits {
     pub anchor_bytes: usize,
 }
 
+pub(crate) struct BlockLayout {
+    limits: IndexLimits,
+    start: Option<u64>,
+    blocks: usize,
+    anchor_bytes: usize,
+}
+
+impl BlockLayout {
+    pub(crate) fn new(limits: IndexLimits) -> Self {
+        Self {
+            limits,
+            start: None,
+            blocks: 0,
+            anchor_bytes: 0,
+        }
+    }
+
+    // Return whether the entry starts a new block.
+    pub(crate) fn admit(&mut self, start: u64, end: u64, key_len: usize) -> io::Result<bool> {
+        if self.start.is_some_and(|block| end - block <= BLOCK_BYTES) {
+            return Ok(false);
+        }
+        let anchor_bytes = self
+            .anchor_bytes
+            .checked_add(key_len)
+            .filter(|&sum| sum <= self.limits.anchor_bytes)
+            .ok_or_else(|| invalid("retained base anchor byte limit exceeded"))?;
+        if self.blocks >= self.limits.blocks {
+            return Err(invalid("retained base block limit exceeded"));
+        }
+        self.start = Some(start);
+        self.blocks += 1;
+        self.anchor_bytes = anchor_bytes;
+        Ok(true)
+    }
+}
+
 struct Block {
     first_key: Vec<u8>,
     start: u64,
@@ -36,9 +73,8 @@ struct Block {
 }
 
 pub(super) struct Builder {
-    limits: IndexLimits,
+    layout: BlockLayout,
     blocks: Vec<Block>,
-    anchor_bytes: usize,
     hash: Sha256,
 }
 
@@ -51,27 +87,18 @@ impl Builder {
         lengths: &[u8; 8],
     ) -> io::Result<()> {
         let end = add(start, bytes)?;
-        if self
-            .blocks
-            .last()
-            .is_none_or(|block| end - block.start > BLOCK_BYTES)
-        {
+        if self.layout.admit(start, end, key.len())? {
             self.finish_block();
-            self.anchor_bytes = self
-                .anchor_bytes
-                .checked_add(key.len())
-                .filter(|&sum| sum <= self.limits.anchor_bytes)
-                .ok_or_else(|| invalid("retained base anchor byte limit exceeded"))?;
-            if self.blocks.len() >= self.limits.blocks {
-                return Err(invalid("retained base block limit exceeded"));
-            }
             let mut first_key = Vec::new();
             first_key.try_reserve_exact(key.len()).map_err(allocation)?;
             first_key.extend_from_slice(key);
             reserve_index_slots(
                 &mut self.blocks,
                 1,
-                self.limits.blocks.min(self.limits.anchor_bytes),
+                self.layout
+                    .limits
+                    .blocks
+                    .min(self.layout.limits.anchor_bytes),
             )?;
             self.blocks.push(Block {
                 first_key,
@@ -116,9 +143,8 @@ fn retained_block_directory_reserves_within_block_and_anchor_limits() {
         },
     ] {
         let mut builder = Builder {
-            limits,
+            layout: BlockLayout::new(limits),
             blocks: Vec::new(),
-            anchor_bytes: 0,
             hash: Sha256::new(),
         };
         let bytes = BLOCK_BYTES + 1;
@@ -288,27 +314,46 @@ impl IndexedBase {
         expected: Expected,
     ) -> io::Result<()> {
         let header = preflight_file(file, length, limits, expected)?;
+        Self::admit_totals(
+            header.entries,
+            header.key_bytes,
+            header.encoded,
+            index_limits,
+        )
+    }
+
+    // These are lower bounds. The actual keys and values determine the layout.
+    pub(crate) fn admit_totals(
+        entries: u64,
+        key_bytes: u64,
+        encoded: u64,
+        index_limits: IndexLimits,
+    ) -> io::Result<()> {
         // Even a block holding one oversized entry contains at most
         // BLOCK_BYTES of lengths and keys. Every block has a nonempty anchor.
-        let framing_bytes = header.entries * 8 + header.key_bytes;
-        let value_bytes = header.encoded - framing_bytes;
+        let framing_bytes = add(
+            entries
+                .checked_mul(8)
+                .ok_or_else(|| invalid("invalid base totals"))?,
+            key_bytes,
+        )?;
+        let value_bytes = encoded
+            .checked_sub(framing_bytes)
+            .ok_or_else(|| invalid("invalid base totals"))?;
         let largest_entry = 8
-            + header.key_bytes.min(MAX_KEY_BYTES as u64)
+            + key_bytes.min(MAX_KEY_BYTES as u64)
             + value_bytes.min(crate::record::MAX_VALUE as u64);
         let minimum_blocks = framing_bytes
             .div_ceil(BLOCK_BYTES)
-            .max(header.encoded.div_ceil(BLOCK_BYTES.max(largest_entry)));
+            .max(encoded.div_ceil(BLOCK_BYTES.max(largest_entry)));
         if minimum_blocks > index_limits.blocks as u64 {
             return Err(invalid("retained base block limit exceeded"));
         }
         // Each block has one anchor. Any remaining keys can account for at
         // most MAX_KEY_BYTES each, so the rest belong to anchors.
-        let non_anchors = header.entries.saturating_sub(minimum_blocks);
-        let minimum_anchor_bytes = minimum_blocks.max(
-            header
-                .key_bytes
-                .saturating_sub(non_anchors.saturating_mul(MAX_KEY_BYTES as u64)),
-        );
+        let non_anchors = entries.saturating_sub(minimum_blocks);
+        let minimum_anchor_bytes = minimum_blocks
+            .max(key_bytes.saturating_sub(non_anchors.saturating_mul(MAX_KEY_BYTES as u64)));
         if minimum_anchor_bytes > index_limits.anchor_bytes as u64 {
             return Err(invalid("retained base anchor byte limit exceeded"));
         }
@@ -317,9 +362,8 @@ impl IndexedBase {
 
     pub(crate) fn open(file: File, limits: Limits, index_limits: IndexLimits) -> io::Result<Self> {
         let mut builder = Builder {
-            limits: index_limits,
+            layout: BlockLayout::new(index_limits),
             blocks: Vec::new(),
-            anchor_bytes: 0,
             hash: Sha256::new(),
         };
         let metadata = scan_buffered(&file, limits, Some(&mut builder))?;

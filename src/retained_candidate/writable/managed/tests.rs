@@ -1455,7 +1455,7 @@ fn successor_open_rejects_a_rechecksummed_staged_base() {
     let path = stage.path().join("base");
     let expected = store
         .store
-        .write_rebased_base(&path, LIMITS.base, u64::MAX)
+        .write_rebased_base(&path, LIMITS, u64::MAX)
         .unwrap();
     let mut bytes = fs::read(&path).unwrap();
     let trailer = bytes.len() - 32;
@@ -1492,6 +1492,59 @@ fn successor_open_rejects_a_rechecksummed_staged_base() {
 }
 
 #[test]
+fn rebase_admits_the_successor_index_before_writing_disallowed_blocks() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    let path = f.tmp.path().join("rebased");
+    let selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let with_index = |blocks, anchor_bytes| RetainedStoreLimits {
+        index: IndexLimits {
+            blocks,
+            anchor_bytes,
+        },
+        ..LIMITS
+    };
+
+    let error = store
+        .store
+        .write_rebased_base(&path, with_index(0, 64), u64::MAX)
+        .unwrap_err();
+    assert_eq!(error.to_string(), "retained base block limit exceeded");
+    assert!(!path.exists());
+
+    // A single anchor is possible within the lower bound of one byte,
+    // but the first key of the merged state is longer than that.
+    let anchor = b"0-new";
+    store.put(anchor, &[b'n'; 512]).unwrap();
+    let state = store.scan(None, None, 32).unwrap();
+    let error = store
+        .store
+        .write_rebased_base(&path, with_index(1, anchor.len() - 1), u64::MAX)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "retained base anchor byte limit exceeded"
+    );
+    assert!(fs::metadata(&path).unwrap().len() < crate::retained_base_v2::FRAME_BYTES);
+    assert!(matches!(
+        store.compact_with_limits(with_index(1, anchor.len() - 1)),
+        Err(PublicationFailure::NotPublished(error))
+            if error.to_string() == "retained base anchor byte limit exceeded"
+    ));
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
+    assert_eq!(fs::read_dir(&f.root).unwrap().count(), 4);
+    assert_eq!(store.scan(None, None, 32).unwrap(), state);
+
+    let successor = store
+        .compact_with_limits(with_index(1, anchor.len()))
+        .unwrap();
+    drop(store);
+    let reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), successor);
+    assert_eq!(reopened.scan(None, None, 32).unwrap(), state);
+}
+
+#[test]
 fn rebase_sizes_an_empty_successor_at_the_frame_limit() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();
@@ -1503,6 +1556,10 @@ fn rebase_sizes_an_empty_successor_at_the_frame_limit() {
             file_bytes: frame_bytes,
             work_bytes: frame_bytes + 1,
             ..LIMITS.base
+        },
+        index: IndexLimits {
+            blocks: 0,
+            anchor_bytes: 0,
         },
         ..LIMITS
     };

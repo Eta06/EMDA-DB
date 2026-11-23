@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject infeasible retained-generation index limits before writing a
+  successor base. Compaction also checks the actual block layout while
+  streaming entries, before copying the value of a disallowed block.
+
 - Group adjacent integers on the last field of a compound membership
   query before rejecting a plan for exceeding the exact-tuple probe cap.
 
