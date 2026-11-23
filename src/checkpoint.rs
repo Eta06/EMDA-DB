@@ -548,6 +548,52 @@ pub(crate) fn open_index_file(path: &Path) -> io::Result<File> {
     crate::directory::open_regular_readonly(path, "checkpoint is not a regular file")
 }
 
+/// Recheck the published checkpoint and source while the rebuild holds the
+/// store lock. The selector does not need a lookup index for this pass.
+pub(crate) fn verify_published_rebuild(
+    store: &Path,
+    checkpoint: &Path,
+    digest: &[u8; 32],
+    limits: crate::CheckpointViewLimits,
+) -> io::Result<()> {
+    limits.validate()?;
+    let (log, boundary) = Log::open_checkpoint_view(store)?;
+    let file = open_index_file(checkpoint)?;
+    let mut blocks_left = limits.max_blocks;
+    let mut block_room = 0;
+    let verified = visit_index_file(
+        &file,
+        log.len()?,
+        boundary,
+        digest,
+        IndexAdmission {
+            max_file_bytes: Some(limits.max_file_bytes),
+            ..IndexAdmission::default()
+        },
+        |_, _, key, _, _| {
+            let size = ENTRY_FIXED_BYTES as usize + key.len();
+            if size > block_room {
+                blocks_left = blocks_left.checked_sub(1).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "checkpoint has too many view blocks",
+                    )
+                })?;
+                block_room = crate::checkpoint_view::MAX_CHECKPOINT_VIEW_BLOCK_BYTES;
+            }
+            block_room -= size;
+            Ok(())
+        },
+    )?;
+    verify_log_prefix(&log, &verified)?;
+    if log.len()? != verified.prefix {
+        return Err(record::invalid_data(
+            "rebuilt checkpoint has an unexpected suffix",
+        ));
+    }
+    log.verify_witness_at(verified.prefix)
+}
+
 fn load_file(
     file: &File,
     log: &Log,

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream managed-rebuild verification of the published checkpoint without
+  constructing a temporary lookup index.
+
 - Publish ordinary retired-store ownership markers only after they are
   complete and synchronized. Generic staging cleanup can remove abandoned
   marker preparations without touching retired data.

@@ -209,21 +209,6 @@ impl CheckpointView {
     }
 
     // The caller owns a shared or exclusive lock for the entire view lifetime.
-    pub(crate) fn open_locked(
-        path: &Path,
-        checkpoint: &Path,
-        trusted_digest: &[u8; 32],
-        lock_file: crate::store_lock::StoreLock,
-    ) -> io::Result<Self> {
-        Self::open_locked_with_limits(
-            path,
-            checkpoint,
-            trusted_digest,
-            lock_file,
-            CheckpointViewLimits::default(),
-        )
-    }
-
     pub(crate) fn open_locked_with_limits(
         path: &Path,
         checkpoint: &Path,

@@ -1,0 +1,8 @@
+baseline-05 calls=1349 requested_bytes=234656 elapsed_us=60462 keys=131072 verified=true
+candidate05 calls=717 requested_bytes=157888 elapsed_us=45800 keys=131072 verified=true
+candidate06 calls=717 requested_bytes=157888 elapsed_us=41750 keys=131072 verified=true
+baseline-06 calls=1349 requested_bytes=234656 elapsed_us=43695 keys=131072 verified=true
+baseline-07 calls=1349 requested_bytes=234656 elapsed_us=43369 keys=131072 verified=true
+candidate07 calls=717 requested_bytes=157888 elapsed_us=43907 keys=131072 verified=true
+candidate08 calls=717 requested_bytes=157888 elapsed_us=42171 keys=131072 verified=true
+baseline-08 calls=1349 requested_bytes=234656 elapsed_us=47719 keys=131072 verified=true

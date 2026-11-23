@@ -350,20 +350,7 @@ impl CheckpointStore {
         } else {
             store.checkpoint_to_with_sync(&destination, sync_checkpoint_ancestors)?
         };
-        let lock = store.share_store_lock();
-        let view =
-            CheckpointView::open_locked(&path, &destination, &digest, lock).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("checkpoint was published but managed verification failed: {error}"),
-                )
-            })?;
-        if view.has_log_tail() {
-            return Err(crate::record::invalid_data(
-                "rebuilt checkpoint has an unexpected suffix",
-            ));
-        }
-        drop(view);
+        verify_before_selection(&path, &destination, &digest, Default::default())?;
         let next = selection::Selection::new(destination, digest)?;
         selection::require_unchanged(&path, expected)?;
         if let Some(tracker) = tracker {
@@ -791,26 +778,12 @@ impl CheckpointStore {
             },
         )?;
         drop(spill);
-        let published_lock = lock_file.clone();
-        let published = CheckpointView::open_locked_with_limits(
+        verify_before_selection(
             &path,
             &destination,
             &digest,
-            published_lock,
             limits.checkpoint_limits.unwrap_or_default(),
-        )
-        .map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("checkpoint was published but managed verification failed: {error}"),
-            )
-        })?;
-        if published.has_log_tail() {
-            return Err(crate::record::invalid_data(
-                "rebuilt checkpoint has an unexpected suffix",
-            ));
-        }
-        drop(published);
+        )?;
         drop(view);
         drop(writer);
         let next = selection::Selection::new(destination, digest)?;
@@ -835,6 +808,22 @@ impl CheckpointStore {
         drop(lock_file);
         Ok(digest)
     }
+}
+
+fn verify_before_selection(
+    store: &Path,
+    checkpoint: &Path,
+    digest: &[u8; 32],
+    limits: crate::CheckpointViewLimits,
+) -> io::Result<()> {
+    crate::checkpoint::verify_published_rebuild(store, checkpoint, digest, limits).map_err(
+        |error| {
+            io::Error::new(
+                error.kind(),
+                format!("checkpoint was published but managed verification failed: {error}"),
+            )
+        },
+    )
 }
 
 fn emit_merged(
@@ -2054,6 +2043,85 @@ mod tests {
                     fs::read(&destination).unwrap(),
                     fs::read(reference).unwrap()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_rebuild_rechecks_published_checkpoint_and_log_before_selection() {
+        for full in [false, true] {
+            for (damage, message) in [
+                ("checkpoint", "index checkpoint checksum mismatch"),
+                ("covered log", "checkpoint does not match log prefix"),
+                ("log suffix", "rebuilt checkpoint has an unexpected suffix"),
+                (
+                    "witness",
+                    "checkpoint boundary is outside the witnessed log",
+                ),
+            ] {
+                let case = prepare_unacknowledged_tail(true).unwrap();
+                let prior = selection::Selection::new(case.base.clone(), case.digest).unwrap();
+                selection::publish(&case.path, &prior, || Ok(()), selection::sync_ancestors)
+                    .unwrap();
+                let destination = case.root().join("rebuilt");
+                let log = case.path.join("records.log");
+                let base = (!full).then_some((case.base.as_path(), &case.digest));
+                let failure = track_managed_rebuild(|tracker| {
+                    CheckpointStore::rebuild_spilling(
+                        &case.path,
+                        &destination,
+                        base,
+                        small_limits(),
+                        Some(tracker),
+                        &mut BoundedHooks {
+                            before_adopt: &mut || Ok(()),
+                            sync_checkpoint_ancestors: &mut |parent| {
+                                selection::sync_ancestors(parent)?;
+                                match damage {
+                                    "checkpoint" | "covered log" => {
+                                        let file = if damage == "checkpoint" {
+                                            &destination
+                                        } else {
+                                            &log
+                                        };
+                                        let mut bytes = fs::read(file)?;
+                                        *bytes.last_mut().unwrap() ^= 1;
+                                        fs::write(file, bytes)?;
+                                    }
+                                    "log suffix" => {
+                                        OpenOptions::new()
+                                            .append(true)
+                                            .open(&log)?
+                                            .write_all(b"x")?;
+                                    }
+                                    "witness" => restore_witness(&case.path, &case.rolled_back),
+                                    _ => unreachable!(),
+                                }
+                                Ok(())
+                            },
+                            before_selection_rename: &mut || panic!("selection attempted"),
+                            sync_selection_parent: &mut selection::sync_ancestors,
+                        },
+                    )
+                })
+                .unwrap_err();
+                assert!(
+                    matches!(&failure, ManagedRebuildFailure::CheckpointOutcomeUnknown(error)
+                        if error.kind() == io::ErrorKind::InvalidData
+                            && error.to_string().contains(message)),
+                    "{damage}: {failure:?}"
+                );
+                assert!(destination.is_file());
+                assert_eq!(selection::load(&case.path).unwrap(), Some(prior));
+                if matches!(damage, "covered log" | "log suffix") {
+                    fs::write(&log, &case.complete_log).unwrap();
+                }
+                let retry_destination = case.root().join("retry");
+                rebuild_spill_adoption_case(&case, &retry_destination, full).unwrap();
+                let store = retry(|| CheckpointStore::open_managed(&case.path)).unwrap();
+                assert_eq!(store.get(b"p").unwrap(), Some(b"two".to_vec()));
+                assert_eq!(store.get(b"q").unwrap(), Some(b"batch".to_vec()));
+                assert_eq!(store.get(b"safe").unwrap(), None);
             }
         }
     }
