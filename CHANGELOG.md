@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a Linux memory-ceiling check for retained writable recovery. It
+  exercises rotation, fresh-process reopen and full state verification,
+  and retains the raw benchmark results.
+
 - Bound cumulative source-log reads before a full-log or trusted-base
   managed checkpoint rebuild adopts a tail or publishes a checkpoint.
 

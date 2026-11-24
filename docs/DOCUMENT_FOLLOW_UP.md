@@ -2,6 +2,12 @@
 
 The initial document interface is bounded and experimental. This checklist records remaining work; it does not waive the [foundation and storage follow-up](FOUNDATION_FOLLOW_UP.md), physical power-loss test, or independent off-host restore drill.
 
+The [local Step 3 release checks](../benchmarks/results/2026-11-24-document-local-release-checks/README.md)
+record recent CRUD, query, concurrency and recovery results on macOS and
+Linux. They link the raw cross-engine benchmark cases and the repeated
+contention comparison. The broader query and request-budget items below
+remain open.
+
 - [x] Add a versioned JSON collection namespace and explicit schema, missing/null and typed-value semantics.
 - [x] Add atomic CRUD, upsert, conditional updates, bounded bulk writes, and transactions that can also access unreserved raw keys. Test failure rollback, unique constraints, concurrent writers and acknowledged process termination on both writable backends.
 - [x] Add bounded single/compound, unique and partial indexes, indexed equality/range pages, complete collection scans, filtering, scalar sorting and projection. Atomically maintain index and document entries; detect and rebuild damaged declared indexes within small-collection limits.

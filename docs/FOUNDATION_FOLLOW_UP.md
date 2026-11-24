@@ -3,6 +3,20 @@
 This is the handoff for work remaining from roadmap priorities 0 and 1. It is a checklist, not a statement that the prototype is production-ready. Update it when work is completed, and link the relevant implementation and evidence.
 The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evidence and its limits to the storage contract.
 
+## Verified local release evidence
+
+- **Step 1.** The published [macOS and Linux checks](../benchmarks/results/2026-11-24-source-reservation-hosted-smoke/README.md)
+  and [filesystem fault runs](../benchmarks/results/2026-11-24-source-log-read-reservation/README.md)
+  cover the current storage baseline. The [cross-volume drill](../benchmarks/results/2026-11-24-macos-cross-volume-restore/README.md)
+  restored and verified the snapshot with the original store moved aside.
+  The failure matrix names the exercised fault model. Broader fault coverage
+  and representative workload measurement remain open below.
+- **Step 2.** The [Linux writable recovery gate](../benchmarks/results/2026-11-24-retained-linux-memory-ceiling/README.md)
+  passed all capped mutation, reopen and verification phases, including a
+  retained rotation. The gate starts with 262,144 keys and limits each retained
+  worker to 48 MiB of virtual address space. Project-wide quotas, broader
+  reclamation and bounded recovery on the other storage paths remain open.
+
 ## Deferred to later Codex sessions
 
 - [ ] Physical power-loss validation on explicitly identified disposable hardware. Define the filesystem, storage device and failure procedure; check acknowledged writes, metadata witness behavior, recovery and preserved evidence. A process kill is not a physical power failure. Do not perform destructive testing on a production server.
