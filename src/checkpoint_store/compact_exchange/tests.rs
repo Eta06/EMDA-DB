@@ -91,8 +91,10 @@ fn managed_auto_setting_survives_handoff_reopen_and_new_rollover() {
     let previous = root.path().join("previous");
     let cp = fixture(root.path(), true, true);
     cp.set_transaction_staging_limit(0).unwrap();
+    cp.set_automatic_checkpoint_slot_protection(true).unwrap();
     let (cp, _digest) = cp.compact_and_replace_detailed(&previous).unwrap();
     assert_eq!(cp.transaction_budget_status().unwrap().limit_bytes, 0);
+    assert!(cp.read().unwrap().protect_pinned_automatic_slots);
     assert!(cp.automatic_checkpoints_enabled().unwrap());
     assert_eq!(cp.overlay_keys().unwrap(), 0);
     verify_store(&previous);
@@ -111,6 +113,7 @@ fn managed_auto_setting_survives_handoff_reopen_and_new_rollover() {
     })
     .unwrap();
     assert!(cp.automatic_checkpoints_enabled().unwrap());
+    assert!(!cp.read().unwrap().protect_pinned_automatic_slots);
     assert_eq!(
         cp.transaction_budget_status().unwrap().limit_bytes,
         crate::MAX_TRANSACTION_STAGED_TOTAL_BYTES

@@ -187,8 +187,17 @@ impl CheckpointStore {
         if !state.automatic || state.view.tail_bytes < minimum_suffix_bytes {
             return Ok(false);
         }
-        self.automatic_rollover(state)?;
-        Ok(true)
+        match self.automatic_rollover(state) {
+            Ok(_) => Ok(true),
+            Err(error)
+                if error
+                    .get_ref()
+                    .is_some_and(|cause| cause.is::<super::automatic::PinnedSlot>()) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

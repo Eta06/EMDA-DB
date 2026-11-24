@@ -18,6 +18,21 @@ pub(super) fn root(store: &Path) -> PathBuf {
     store.join(DIRECTORY)
 }
 
+pub(super) fn indexes(root: &Path) -> [PathBuf; 2] {
+    SLOTS.map(|slot| root.join(slot).join(INDEX))
+}
+
+#[derive(Debug)]
+pub(super) struct PinnedSlot;
+
+impl std::fmt::Display for PinnedSlot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("inactive automatic checkpoint slot is still pinned")
+    }
+}
+
+impl std::error::Error for PinnedSlot {}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -144,6 +159,20 @@ pub(super) fn publish_configuration(
 }
 
 impl CheckpointStore {
+    /// Controls whether automatic rollover may unlink a slot pinned by a
+    /// captured view from this open store. Disabled by default and on reopen.
+    ///
+    /// When enabled, a rollover needing a pinned slot returns `WouldBlock`
+    /// before changing the slot, selection, or log. The checkpoint worker
+    /// skips that rollover and can try again on its next check. Drop or cancel
+    /// the snapshot, or finish the transaction holding the view, to free it.
+    /// This setting affects future slot reuse. It does not recover space from
+    /// already unlinked files or impose a byte quota on the log or checkpoints.
+    pub fn set_automatic_checkpoint_slot_protection(&self, enabled: bool) -> io::Result<()> {
+        self.write()?.protect_pinned_automatic_slots = enabled;
+        Ok(())
+    }
+
     /// Enables persistent, on-demand checkpoint rollover when a write would
     /// exceed a suffix limit. A managed selection must already exist. Two
     /// engine-owned slots are reused; existing snapshots retain their open
@@ -333,13 +362,22 @@ impl CheckpointStore {
             .expect("managed selection")
             .checkpoint;
         let root = root(&self.path);
-        let indexes = SLOTS.map(|slot| root.join(slot).join(INDEX));
+        let indexes = indexes(&root);
         if selected.starts_with(&root) && selected != &indexes[0] && selected != &indexes[1] {
             return Err(invalid(
                 "managed selection points to an unknown automatic checkpoint",
             ));
         }
         let next_slot = usize::from(selected == &indexes[0]);
+        // Captured readers can only clone the current view. Once an inactive
+        // slot's last owner goes away, it cannot acquire a new owner here.
+        if state.protect_pinned_automatic_slots
+            && state.automatic_slot_pins[next_slot]
+                .as_ref()
+                .is_some_and(crate::checkpoint_view::CheckpointPin::is_live)
+        {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, PinnedSlot));
+        }
         let destination = root.join(SLOTS[next_slot]);
         // Keep the writer gate across preparation and publication. The old
         // selection and its open files remain usable while the slot is built.
@@ -379,15 +417,17 @@ impl CheckpointStore {
         })?;
         stage.publication_synchronized();
         let next_view = self.rollover_view(&state, &indexes[next_slot], &digest)?;
+        let pin = next_view.base.checkpoint_pin();
         let next = selection::Selection::new(indexes[next_slot].clone(), digest)?;
         drop(state);
-        let state = self.publish_managed_view(
+        let mut state = self.publish_managed_view(
             next_view,
             next,
             before_selection_rename,
             sync_selection_parent,
             &Default::default(),
         )?;
+        state.automatic_slot_pins[next_slot] = Some(pin);
         Ok(StateWrite { state, _writer })
     }
 }

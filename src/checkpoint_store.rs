@@ -49,6 +49,8 @@ struct State {
     failed: bool,
     selection: Option<selection::Selection>,
     automatic: bool,
+    automatic_slot_pins: [Option<crate::checkpoint_view::CheckpointPin>; 2],
+    protect_pinned_automatic_slots: bool,
 }
 
 // Dropping the state guard can let readers use the published view. The
@@ -492,6 +494,13 @@ impl CheckpointStore {
         }
         let overlay_key_bytes = view.overlay.keys().map(|key| key.len()).sum();
         let log_generation = log.id().map(GenerationId);
+        let automatic_slot_pins = match &selection {
+            Some(selected) if automatic_config.is_some() => {
+                automatic::indexes(&automatic::root(&path))
+                    .map(|index| (selected.checkpoint == index).then(|| view.base.checkpoint_pin()))
+            }
+            _ => [None, None],
+        };
         Ok(Self {
             log,
             state: ControlledRwLock::new(State {
@@ -502,6 +511,8 @@ impl CheckpointStore {
                 failed: false,
                 selection,
                 automatic,
+                automatic_slot_pins,
+                protect_pinned_automatic_slots: false,
             }),
             writers: ControlledRwLock::new(()),
             append_failed: AtomicBool::new(false),

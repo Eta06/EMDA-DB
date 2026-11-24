@@ -9,7 +9,7 @@ use std::io;
 use std::ops::ControlFlow;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// Maximum number of index blocks retained in one checkpoint view.
 pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 131_072;
@@ -157,6 +157,14 @@ struct CheckpointIndex {
     file: File,
     blocks: Vec<Block>,
     landmarks: Vec<u16>,
+}
+
+pub(crate) struct CheckpointPin(Weak<CheckpointIndex>);
+
+impl CheckpointPin {
+    pub(crate) fn is_live(&self) -> bool {
+        self.0.strong_count() != 0
+    }
 }
 
 impl CheckpointIndex {
@@ -488,6 +496,10 @@ impl CheckpointView {
 
     pub(crate) fn historical_peak(&self) -> usize {
         self.peak
+    }
+
+    pub(crate) fn checkpoint_pin(&self) -> CheckpointPin {
+        CheckpointPin(Arc::downgrade(&self.index))
     }
 
     // Share ownership of the exclusive lock through a view handoff.

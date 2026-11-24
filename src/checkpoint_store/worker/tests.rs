@@ -90,6 +90,36 @@ fn periodic_checks_run_and_stopping_releases_the_worker_lease() {
 }
 
 #[test]
+fn pinned_automatic_slot_defers_worker_without_stopping_it() {
+    let (_root, _path, store) = fixture();
+    store
+        .set_automatic_checkpoint_slot_protection(true)
+        .unwrap();
+    store.put(b"a", b"one").unwrap();
+    assert!(store.background_checkpoint(1).unwrap());
+    let snapshot = store.snapshot().unwrap();
+    store.put(b"b", b"two").unwrap();
+    assert!(store.background_checkpoint(1).unwrap());
+    store.put(b"c", b"three").unwrap();
+
+    let worker = store
+        .start_checkpoint_worker(Duration::from_secs(3600), 1)
+        .unwrap();
+    worker.request_check().unwrap();
+    let status = wait_for(&worker, |status| status.checks == 1);
+    assert!(!status.stopped);
+    assert!(status.last_error.is_none());
+    assert_eq!(status.checkpoints, 0);
+    assert_eq!(snapshot.get(b"b").unwrap(), None);
+    drop(snapshot);
+    worker.request_check().unwrap();
+    let status = wait_for(&worker, |status| status.checks == 2);
+    assert_eq!(status.checkpoints, 1);
+    assert_eq!(store.get(b"c").unwrap().as_deref(), Some(&b"three"[..]));
+    worker.stop().unwrap();
+}
+
+#[test]
 fn invalid_configuration_and_disabled_automatic_checkpoints_are_rejected() {
     let (_root, _path, store) = fixture();
     for (interval, threshold) in [

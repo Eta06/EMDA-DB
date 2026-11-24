@@ -120,6 +120,7 @@ impl CheckpointStore {
         let state = self.read()?;
         let original_selection = state.selection.clone();
         let enabled = state.automatic;
+        let protect_pinned_slots = state.protect_pinned_automatic_slots;
         let original_lock = state.view.base.share_store_lock()?;
         original_lock.verify_identity(&source)?;
         if selection::load(&source)? != original_selection {
@@ -158,6 +159,7 @@ impl CheckpointStore {
             snapshot_budget.key_byte_limit,
         )?;
         candidate.set_active_direct_write_limit(self.direct_write_status().limit)?;
+        candidate.set_automatic_checkpoint_slot_protection(protect_pinned_slots)?;
         self.direct_reads
             .copy_configuration_to(&mut candidate.direct_reads);
         if original_selection.is_some() {

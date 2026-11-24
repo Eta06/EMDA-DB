@@ -41,6 +41,50 @@ fn automatic_rollover_reuses_two_slots_and_preserves_live_snapshots_and_recovery
 }
 
 #[test]
+fn automatic_slot_protection_preserves_pinned_slot_and_rejects_before_append() {
+    let (dir, path, store) = managed_fixture(1024, 1, 64);
+    store.enable_automatic_checkpoints().unwrap();
+    store.put(b"a", b"one").unwrap();
+    store.put(b"b", b"two").unwrap();
+    drop(store);
+
+    // Open with slot 0 already selected, then leave it via a manual rollover.
+    let store =
+        retry_lock(|| CheckpointStore::open_managed_with_resource_limits(&path, 1024, 1, 64, None))
+            .unwrap();
+    let snapshot = store.snapshot().unwrap();
+    store.rollover_managed(dir.path().join("manual")).unwrap();
+    store
+        .set_automatic_checkpoint_slot_protection(true)
+        .unwrap();
+    store.put(b"c", b"three").unwrap();
+
+    let root = crate::checkpoint_store::automatic::root(&path);
+    let [slot, _] = crate::checkpoint_store::automatic::indexes(&root);
+    let files = [
+        path.join("records.log"),
+        crate::checkpoint_store::selection::path(&path),
+        slot,
+    ];
+    let before = files.each_ref().map(|file| fs::read(file).unwrap());
+    let result = store.put_detailed(b"d", b"four");
+    assert!(matches!(
+        result,
+        Err(crate::MutationFailure::Rejected(error)) if error.kind() == io::ErrorKind::WouldBlock
+    ));
+    assert_eq!(files.each_ref().map(|file| fs::read(file).unwrap()), before);
+    assert_eq!(store.get(b"d").unwrap(), None);
+    assert_eq!(snapshot.get(b"b").unwrap().as_deref(), Some(&b"two"[..]));
+    assert_eq!(snapshot.get(b"c").unwrap(), None);
+
+    drop(snapshot);
+    store.put(b"d", b"four").unwrap();
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+    assert_eq!(reopened.get(b"d").unwrap().as_deref(), Some(&b"four"[..]));
+}
+
+#[test]
 fn automatic_rollover_handles_suffix_byte_and_key_byte_limits() {
     for (max_tail, max_key_bytes, first, second) in [
         (60, 64, b"a".as_slice(), b"a".as_slice()),
