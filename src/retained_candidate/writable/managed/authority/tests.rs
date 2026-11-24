@@ -875,6 +875,58 @@ fn competing_copies_can_acknowledge_only_one_append() {
 }
 
 #[test]
+fn automatic_maintenance_scan_limit_rejects_before_retirement_fence_and_append() {
+    use crate::retained_base_v2::FRAME_BYTES;
+
+    for short in [false, true] {
+        let mut f = Fixture::prepare();
+        f.register();
+        let mut store = f.open();
+        store.put(b"base", b"verified").unwrap();
+        let prior = f.provider.read().unwrap().unwrap();
+        let base = store.inner.store.base.metadata().file_bytes;
+        let suffix = store.inner.store.suffix_len as u64;
+        let rotation = 2 * base + 2 * (base - FRAME_BYTES) + 2 * suffix + 8;
+        store
+            .enable_auto_reclaim_with_scan_limit(
+                NonZeroU64::MIN,
+                rotation + base - u64::from(short),
+            )
+            .unwrap();
+        let result = store.delete(b"base");
+        if short {
+            assert!(matches!(
+                result,
+                Err(MutationFailure::Rejected(error))
+                    if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "retained reclamation scan byte limit exceeded"
+            ));
+            let selected = f.provider.read().unwrap().unwrap();
+            assert_ne!(selected.committed.generation, prior.committed.generation);
+            assert_eq!(selected.revision, prior.revision + 1);
+            assert_eq!(selected.committed.suffix_end, 0);
+            assert!(selected.pending.is_none());
+            assert!(Slot::A.path(&f.root).exists());
+            assert_eq!(
+                store.get(b"base", 8).unwrap().as_deref(),
+                Some(&b"verified"[..])
+            );
+            // A fresh call can pay for the pending retirement and then append.
+            store.delete(b"base").unwrap();
+        } else {
+            result.unwrap();
+        }
+        let selected = f.provider.read().unwrap().unwrap();
+        assert_eq!(selected.revision, prior.revision + 4);
+        assert!(selected.committed.suffix_end > 0 && selected.pending.is_none());
+        assert!(!Slot::A.path(&f.root).exists());
+        assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
+        drop(store);
+        assert_eq!(f.open().get(b"base", 8).unwrap(), None);
+    }
+}
+
+#[test]
 fn rotation_scan_limit_preserves_authority_on_rejection() {
     use crate::retained_base_v2::FRAME_BYTES;
 
@@ -1071,7 +1123,7 @@ fn detailed_rotation_reports_successor_sync_failure_before_authority_advance() {
     let mut store = f.open();
     store.put(b"ack", b"kept").unwrap();
     let prior = store.current;
-    let result = store.compact_detailed_using(LIMITS, None, None, |root| {
+    let result = store.compact_detailed_using(LIMITS, None, &mut None, |root| {
         assert!(Slot::B.path(root).is_dir());
         assert_eq!(*f.provider.record.lock().unwrap(), Some(prior));
         Err(io::Error::other("successor sync"))
@@ -1274,8 +1326,9 @@ fn confirmed_fence_and_uncertain_removal_resume_after_restart() {
     store.put(b"ack", b"keep").unwrap();
     store.compact().unwrap();
     let before = f.provider.read().unwrap().unwrap();
-    let error =
-        store.reclaim_inactive_using(None, |_| Err(io::Error::other("injected retirement sync")));
+    let error = store.reclaim_inactive_using(&mut None, |_| {
+        Err(io::Error::other("injected retirement sync"))
+    });
     assert!(matches!(
         error,
         Err(AuthorizedReclamationFailure {

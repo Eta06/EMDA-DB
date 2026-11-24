@@ -203,7 +203,7 @@ pub struct AuthorizedRetainedStore<A> {
     authority: A,
     current: AuthorityRecord,
     fence: Option<cutover::Fence>,
-    auto_reclaim: Option<NonZeroU64>,
+    auto_reclaim: Option<AutoReclaim>,
     cleanup_pending: bool,
 }
 
@@ -514,9 +514,8 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             (Some(storage_limits), None),
             RetainedStore::sync_recovered_commit,
         )?;
-        if suffix_threshold.is_some() {
-            store.finish_maintenance()?;
-            store.auto_reclaim = suffix_threshold;
+        if let Some(threshold) = suffix_threshold {
+            store.configure_auto_reclaim(threshold, None)?;
         }
         Ok(store)
     }
@@ -589,9 +588,33 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         suffix_threshold: NonZeroU64,
     ) -> io::Result<Self> {
         let mut store = Self::open(root, limits, authority)?;
-        store.finish_maintenance()?;
-        store.auto_reclaim = Some(suffix_threshold);
+        store.configure_auto_reclaim(suffix_threshold, None)?;
         Ok(store)
+    }
+
+    /// Enable bounded automatic maintenance with the same per-call ceiling
+    /// as [`ManagedRetainedStore::enable_auto_reclaim_with_scan_limit`].
+    /// An uncertain authority update still requires reopening the handle.
+    pub fn enable_auto_reclaim_with_scan_limit(
+        &mut self,
+        suffix_threshold: NonZeroU64,
+        max_scan_bytes: u64,
+    ) -> io::Result<()> {
+        self.configure_auto_reclaim(suffix_threshold, Some(max_scan_bytes))
+    }
+
+    fn configure_auto_reclaim(
+        &mut self,
+        threshold: NonZeroU64,
+        max_scan_bytes: Option<u64>,
+    ) -> io::Result<()> {
+        let mut remaining = max_scan_bytes;
+        self.finish_maintenance(&mut remaining)?;
+        self.auto_reclaim = Some(AutoReclaim {
+            threshold,
+            max_scan_bytes,
+        });
+        Ok(())
     }
 
     /// Back up the exact generation checked against the independent authority.
@@ -682,7 +705,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
-        self.compact_detailed_using(limits, None, None, sync_existing)
+        self.compact_detailed_using(limits, None, &mut None, sync_existing)
     }
 
     /// Compact under the logical read budget of
@@ -695,7 +718,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         self.compact_detailed_using(
             self.inner.store.limits,
             None,
-            Some(max_scan_bytes),
+            &mut Some(max_scan_bytes),
             sync_existing,
         )
     }
@@ -717,14 +740,19 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         limits: CatalogStorageLimits,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
-        self.compact_detailed_using(self.inner.store.limits, Some(limits), None, sync_existing)
+        self.compact_detailed_using(
+            self.inner.store.limits,
+            Some(limits),
+            &mut None,
+            sync_existing,
+        )
     }
 
     fn compact_detailed_using(
         &mut self,
         limits: RetainedStoreLimits,
         persisted_storage: Option<CatalogStorageLimits>,
-        max_scan_bytes: Option<u64>,
+        remaining: &mut Option<u64>,
         sync_successor: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
         crate::publication_outcome::track_retained_rotation(|tracker| {
@@ -734,7 +762,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 limits,
                 self.auto_reclaim.is_some(),
                 persisted_storage,
-                max_scan_bytes,
+                remaining,
                 &tracker.checkpoint,
                 sync_successor,
             )?;
@@ -778,7 +806,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     /// fence is submitted. Inspect uncertain removal and reopen after an
     /// unconfirmed fence before deciding whether to retry.
     pub fn reclaim_inactive_with_outcome(&mut self) -> Result<bool, AuthorizedReclamationFailure> {
-        self.reclaim_inactive_using(None, sync_existing)
+        self.reclaim_inactive_using(&mut None, sync_existing)
     }
 
     /// Reclaims under the inclusive logical scan ceiling of
@@ -789,25 +817,24 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         max_scan_bytes: u64,
     ) -> Result<bool, AuthorizedReclamationFailure> {
-        self.reclaim_inactive_using(Some(max_scan_bytes), sync_existing)
+        self.reclaim_inactive_using(&mut Some(max_scan_bytes), sync_existing)
     }
 
     fn reclaim_inactive_using(
         &mut self,
-        max_scan_bytes: Option<u64>,
+        remaining: &mut Option<u64>,
         sync_retirement: impl FnMut(&Path) -> io::Result<()>,
     ) -> Result<bool, AuthorizedReclamationFailure> {
         use ReclamationFenceOutcome::{Confirmed, NotAttempted, Unconfirmed};
 
         let mut outcome = NotAttempted;
-        let mut budget = RetirementScanBudget(max_scan_bytes);
         StagingCleanupFailure::track_removal(|removal_started| {
             self.verify_current()?;
-            let resumed = self.inner.resume_retirement(&mut budget, removal_started)?;
+            let resumed = self.inner.resume_retirement(remaining, removal_started)?;
             let Some((inactive, retired_lock)) = self.inner.lock_inactive_for_retirement()? else {
                 return Ok(resumed);
             };
-            budget.charge(&self.inner.store)?;
+            charge_retirement_scan(remaining, &self.inner.store)?;
             let fence = self.current.finalized(self.current.committed)?;
             outcome = Unconfirmed;
             self.inner.uncertain = true;
@@ -838,12 +865,16 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             .store
             .encode_append(append, self.auto_reclaim.is_some())?;
         self.verify_current().map_err(MutationFailure::Rejected)?;
-        let Some(threshold) = self.auto_reclaim else {
+        let Some(AutoReclaim {
+            threshold,
+            max_scan_bytes: mut remaining,
+        }) = self.auto_reclaim
+        else {
             return self.append(&encoded, admit);
         };
         if self.cleanup_pending {
             admit().map_err(MutationFailure::Rejected)?;
-            self.finish_maintenance()
+            self.finish_maintenance(&mut remaining)
                 .map_err(MutationFailure::Rejected)?;
         }
         let suffix_len = self.inner.store.suffix_len as u64;
@@ -862,29 +893,32 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         }
         admit().map_err(MutationFailure::Rejected)?;
         check_empty_suffix(&encoded, self.inner.store.limits).map_err(MutationFailure::Rejected)?;
-        self.finish_maintenance()
+        self.finish_maintenance(&mut remaining)
             .map_err(MutationFailure::Rejected)?;
         admit().map_err(MutationFailure::Rejected)?;
-        self.compact().map_err(|error| {
-            MutationFailure::Rejected(io::Error::new(
-                match &error {
-                    PublicationFailure::NotPublished(cause)
-                    | PublicationFailure::OutcomeUnknown(cause) => cause.kind(),
-                },
-                error,
-            ))
-        })?;
-        self.finish_maintenance()
+        self.compact_detailed_using(self.inner.store.limits, None, &mut remaining, sync_existing)
+            .map_err(RetainedRotationFailure::into_selection_failure)
+            .map_err(|error| {
+                MutationFailure::Rejected(io::Error::new(
+                    match &error {
+                        PublicationFailure::NotPublished(cause)
+                        | PublicationFailure::OutcomeUnknown(cause) => cause.kind(),
+                    },
+                    error,
+                ))
+            })?;
+        self.finish_maintenance(&mut remaining)
             .map_err(MutationFailure::Rejected)?;
         self.append(&encoded, admit)
     }
 
-    fn finish_maintenance(&mut self) -> io::Result<()> {
+    fn finish_maintenance(&mut self, remaining: &mut Option<u64>) -> io::Result<()> {
         self.cleanup_pending = true;
         self.verify_current()?;
         sync_existing(&self.inner.root)?;
         crate::cleanup_abandoned_staging(&self.inner.root)?;
-        self.reclaim_inactive()?;
+        self.reclaim_inactive_using(remaining, sync_existing)
+            .map_err(|error| error.cleanup.into_io_error())?;
         self.cleanup_pending = false;
         Ok(())
     }

@@ -1493,7 +1493,7 @@ fn successor_open_rejects_a_rechecksummed_staged_base() {
     let path = stage.path().join("base");
     let expected = store
         .store
-        .write_rebased_base(&path, LIMITS, u64::MAX, None)
+        .write_rebased_base(&path, LIMITS, u64::MAX, &mut None)
         .unwrap();
     let mut bytes = fs::read(&path).unwrap();
     let trailer = bytes.len() - 32;
@@ -1546,7 +1546,7 @@ fn rebase_admits_the_successor_index_before_writing_disallowed_blocks() {
 
     let error = store
         .store
-        .write_rebased_base(&path, with_index(0, 64), u64::MAX, None)
+        .write_rebased_base(&path, with_index(0, 64), u64::MAX, &mut None)
         .unwrap_err();
     assert_eq!(error.to_string(), "retained base block limit exceeded");
     assert!(!path.exists());
@@ -1558,7 +1558,7 @@ fn rebase_admits_the_successor_index_before_writing_disallowed_blocks() {
     let state = store.scan(None, None, 32).unwrap();
     let error = store
         .store
-        .write_rebased_base(&path, with_index(1, anchor.len() - 1), u64::MAX, None)
+        .write_rebased_base(&path, with_index(1, anchor.len() - 1), u64::MAX, &mut None)
         .unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -1666,6 +1666,108 @@ fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
 }
 
 #[test]
+fn automatic_maintenance_scan_limit_is_shared_and_resets_per_mutation() {
+    use crate::retained_base_v2::FRAME_BYTES;
+
+    for short in [false, true] {
+        let f = Fixture::new(LIMITS);
+        let mut store = f.open();
+        store.put(b"a", b"new").unwrap();
+        let original = store.generation_id().unwrap();
+        let base = store.store.base.metadata().file_bytes;
+        let suffix = store.store.suffix_len as u64;
+        // Equal-sized replacement at an existing key in a one-block base.
+        let rotation = 2 * base + 2 * (base - FRAME_BYTES) + 2 * suffix + 3;
+        store
+            .enable_auto_reclaim_with_scan_limit(
+                NonZeroU64::MIN,
+                rotation + base - u64::from(short),
+            )
+            .unwrap();
+        let result = store.put(b"a", b"yes");
+        let successor = store.generation_id().unwrap();
+        assert_ne!(successor, original);
+        let retired = Slot::A.path(&f.root);
+        if short {
+            assert!(matches!(
+                result,
+                Err(MutationFailure::Rejected(error))
+                    if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "retained reclamation scan byte limit exceeded"
+            ));
+            assert_eq!(store.get(b"a", 4).unwrap().as_deref(), Some(&b"new"[..]));
+            assert_eq!(store.store.suffix_len, 0);
+            assert!(retired.exists());
+            // Reopen after the rejected write and verify that enabling the
+            // policy also checks its cleanup budget before touching the slot.
+            drop(store);
+            store = f.open();
+            assert_eq!(store.generation_id().unwrap(), successor);
+            let error = store
+                .enable_auto_reclaim_with_scan_limit(NonZeroU64::MIN, base - 1)
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(retired.exists());
+            store
+                .enable_auto_reclaim_with_scan_limit(NonZeroU64::MIN, base)
+                .unwrap();
+            store.put(b"a", b"yes").unwrap();
+        } else {
+            result.unwrap();
+            // This triggers another equal-cost rotation with a fresh budget.
+            store.put(b"a", b"yes").unwrap();
+            assert_ne!(store.generation_id().unwrap(), successor);
+        }
+        assert!(!store.active.slot.other().path(&f.root).exists());
+        assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
+        drop(store);
+        assert_eq!(f.open().get(b"a", 4).unwrap().as_deref(), Some(&b"yes"[..]));
+    }
+}
+
+#[test]
+fn automatic_maintenance_scan_limit_charges_cleanup_before_rotation() {
+    use crate::retained_base_v2::FRAME_BYTES;
+
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    let base = store.store.base.metadata().file_bytes;
+    let suffix = store
+        .store
+        .encode_append(Append::Put(b"a", b"new"), false)
+        .unwrap()
+        .len() as u64;
+    let rotation = 2 * base + 2 * (base - FRAME_BYTES) + 2 * suffix + 3;
+    store
+        .enable_auto_reclaim_with_scan_limit(NonZeroU64::MIN, rotation + base)
+        .unwrap();
+    // A manual rotation leaves the prior slot for the next maintenance pass.
+    let selected = store.compact().unwrap();
+    store.put(b"a", b"new").unwrap();
+    assert_eq!(store.store.suffix_len as u64, suffix);
+    let retired = Slot::A.path(&f.root);
+    assert!(retired.exists());
+    let current = Slot::B.path(&f.root);
+    let log = fs::read(current.join("records.log")).unwrap();
+    let witness = fs::read(current.join("commit.state")).unwrap();
+    assert!(matches!(
+        store.put(b"a", b"yes"),
+        Err(MutationFailure::Rejected(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string().contains("retained rotation scan byte limit exceeded")
+    ));
+    assert!(!retired.exists());
+    assert_eq!(store.generation_id().unwrap(), selected);
+    assert_eq!(fs::read(current.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(current.join("commit.state")).unwrap(), witness);
+    store.put(b"a", b"yes").unwrap();
+    assert_ne!(store.generation_id().unwrap(), selected);
+    assert!(!current.exists());
+    drop(store);
+    assert_eq!(f.open().get(b"a", 4).unwrap().as_deref(), Some(&b"yes"[..]));
+}
+
+#[test]
 fn rotation_scan_limit_counts_touched_blocks_suffix_values_and_successor() {
     use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
 
@@ -1758,7 +1860,7 @@ fn detailed_rotation_reports_successor_sync_failure_before_selection() {
     let result = store.compact_detailed_using(
         LIMITS,
         None,
-        None,
+        &mut None,
         || panic!("selection must not start"),
         |root| {
             assert!(Slot::B.path(root).is_dir());
@@ -1800,7 +1902,7 @@ fn selection_failure_before_rename_leaves_only_old_slot_authorized() {
     let result = store.compact_detailed_using(
         LIMITS,
         None,
-        None,
+        &mut None,
         || Err(io::Error::other("before selection")),
         sync_existing,
         sync_existing,
@@ -1831,7 +1933,7 @@ fn selection_sync_failure_blocks_writes_and_reclaim_until_reopen() {
     let result = store.compact_detailed_using(
         LIMITS,
         None,
-        None,
+        &mut None,
         || Ok(()),
         sync_existing,
         |_| Err(io::Error::other("selection sync")),
@@ -1973,7 +2075,7 @@ fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
         let root = f.root.canonicalize().unwrap();
         let mut retired = None;
         let error = store
-            .reclaim_using(None, |path| {
+            .reclaim_using(&mut None, |path| {
                 if path != root {
                     retired = Some(path.join("retired"));
                 }
@@ -2063,7 +2165,7 @@ fn retired_removal_sync_errors_are_reported_and_recoverable() {
         let mut syncs = 0;
         let mut stage = None;
         let error = store
-            .reclaim_using(None, |path| {
+            .reclaim_using(&mut None, |path| {
                 syncs += 1;
                 if syncs == 1 {
                     stage = Some(path.to_path_buf());
@@ -2103,7 +2205,7 @@ fn detailed_reclamation_includes_removal_during_a_resumed_cleanup() {
     let rows = store.scan(None, None, 4).unwrap();
     let mut retired = None;
     assert!(matches!(
-        store.reclaim_using(None, |path| {
+        store.reclaim_using(&mut None, |path| {
             retired = Some(path.join("retired"));
             Err(io::Error::other("retirement move interrupted"))
         }),
@@ -2374,7 +2476,7 @@ fn managed_cutover_crash_child() {
     let mut store = ManagedRetainedStore::open(root, LIMITS).unwrap();
     if point == "retire" {
         store.compact().unwrap();
-        let result = store.reclaim_using(None, |_| pause());
+        let result = store.reclaim_using(&mut None, |_| pause());
         panic!("managed reclamation did not stop at the boundary: {result:?}");
     }
     let result = store.compact_using(

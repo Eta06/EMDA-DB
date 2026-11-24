@@ -470,7 +470,7 @@ removal are skipped. A new authority fence is submitted only after its
 verification has been admitted. A call that already cleaned an older stage
 reports that removal attempt even if the next budget charge fails.
 Metadata and framing checks, the EOF probe and physical I/O retries have
-separate costs. Automatic reclamation uses its existing unbudgeted path.
+separate costs.
 
 Resolve a conflicting or unrecognized retirement
 marker before rotation. Generic stages left by older releases have no replacement
@@ -506,6 +506,19 @@ manual `compact_with_limits` before automatic maintenance can proceed.
 The threshold is a maintenance trigger. A single record in an empty suffix
 can exceed it while staying within the persisted limits. Maintenance runs
 on the caller's write path and temporarily uses both slots.
+
+To bound automatic maintenance, call
+`enable_auto_reclaim_with_scan_limit` on a recovered managed or authorized
+handle. This first runs cleanup under the supplied ceiling, then installs
+the policy for that handle. Each mutation gets a fresh ceiling shared by
+all retirement verifications and the rotation it triggers. The logical
+charges are the same as for the explicit operations above. A budget
+rejection can follow a completed generation switch or an earlier cleanup,
+but it occurs before the requested mutation is appended. A later call
+can spend its own ceiling to finish pending cleanup. The ceiling applies
+to the maintenance scans. Initial recovery, appends, metadata, and generic
+staging cleanup have separate costs. The existing automatic open methods
+continue to install maintenance without a scan ceiling.
 
 ### Whole-catalog storage admission
 

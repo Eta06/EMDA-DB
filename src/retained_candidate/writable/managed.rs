@@ -29,21 +29,24 @@ const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 const ACTIVE_BYTES: usize = 256;
 
-struct RetirementScanBudget(Option<u64>);
-
-impl RetirementScanBudget {
-    fn charge(&mut self, store: &RetainedStore) -> io::Result<()> {
-        if let Some(remaining) = &mut self.0 {
-            *remaining = remaining
-                .checked_sub(store.base.metadata().file_bytes)
-                .and_then(|bytes| bytes.checked_sub(store.suffix_len as u64))
-                .ok_or_else(|| invalid_input("retained reclamation scan byte limit exceeded"))?;
-        }
-        Ok(())
-    }
-}
 const CATALOG_BYTES: usize = 56;
 const RETIREMENT_STAGE_ENTRIES: u64 = 2;
+
+#[derive(Clone, Copy)]
+struct AutoReclaim {
+    threshold: NonZeroU64,
+    max_scan_bytes: Option<u64>,
+}
+
+fn charge_retirement_scan(remaining: &mut Option<u64>, store: &RetainedStore) -> io::Result<()> {
+    if let Some(remaining) = remaining {
+        *remaining = remaining
+            .checked_sub(store.base.metadata().file_bytes)
+            .and_then(|bytes| bytes.checked_sub(store.suffix_len as u64))
+            .ok_or_else(|| invalid_input("retained reclamation scan byte limit exceeded"))?;
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy)]
 struct InitialLimits {
@@ -153,7 +156,7 @@ pub struct ManagedRetainedStore {
     active: Active,
     catalog_magic: &'static [u8; 8],
     uncertain: bool,
-    auto_reclaim: Option<NonZeroU64>,
+    auto_reclaim: Option<AutoReclaim>,
     cleanup_pending: bool,
     storage: Option<CatalogStorage>,
     requested_storage: Option<CatalogStorageLimits>,
@@ -546,9 +549,8 @@ impl ManagedRetainedStore {
             Active::load,
             None,
         )?;
-        if suffix_threshold.is_some() {
-            store.finish_maintenance()?;
-            store.auto_reclaim = suffix_threshold;
+        if let Some(threshold) = suffix_threshold {
+            store.configure_auto_reclaim(threshold, None)?;
         }
         Ok(store)
     }
@@ -631,9 +633,41 @@ impl ManagedRetainedStore {
         suffix_threshold: NonZeroU64,
     ) -> io::Result<Self> {
         let mut store = Self::open(root, ceiling)?;
-        store.finish_maintenance()?;
-        store.auto_reclaim = Some(suffix_threshold);
+        store.configure_auto_reclaim(suffix_threshold, None)?;
         Ok(store)
+    }
+
+    /// Enable synchronous automatic reclamation on this recovered handle.
+    /// Immediately run pending cleanup under the given maintenance scan
+    /// ceiling. Each subsequent mutation gets a fresh inclusive ceiling
+    /// shared across all retirement verification and rotation in that call.
+    /// The logical charges match the explicit bounded rotation and reclamation
+    /// methods. Opening/recovering the handle, append validation, metadata
+    /// and staging cleanup work, and writes have separate costs.
+    ///
+    /// If cleanup fails, the existing policy stays in effect. Cleanup or
+    /// rotation can already have published when a call runs out of budget.
+    /// A mutation rejected during maintenance has not attempted its append.
+    pub fn enable_auto_reclaim_with_scan_limit(
+        &mut self,
+        suffix_threshold: NonZeroU64,
+        max_scan_bytes: u64,
+    ) -> io::Result<()> {
+        self.configure_auto_reclaim(suffix_threshold, Some(max_scan_bytes))
+    }
+
+    fn configure_auto_reclaim(
+        &mut self,
+        threshold: NonZeroU64,
+        max_scan_bytes: Option<u64>,
+    ) -> io::Result<()> {
+        let mut remaining = max_scan_bytes;
+        self.finish_maintenance(&mut remaining)?;
+        self.auto_reclaim = Some(AutoReclaim {
+            threshold,
+            max_scan_bytes,
+        });
+        Ok(())
     }
 
     pub fn generation_id(&self) -> io::Result<[u8; 16]> {
@@ -727,11 +761,15 @@ impl ManagedRetainedStore {
         let bytes = self
             .store
             .encode_append(append, self.auto_reclaim.is_some())?;
-        let Some(threshold) = self.auto_reclaim else {
+        let Some(AutoReclaim {
+            threshold,
+            max_scan_bytes: mut remaining,
+        }) = self.auto_reclaim
+        else {
             return self.append(&bytes, admit);
         };
         if self.cleanup_pending {
-            self.finish_maintenance()
+            self.finish_maintenance(&mut remaining)
                 .map_err(MutationFailure::Rejected)?;
         }
         let suffix_len = self.store.suffix_len as u64;
@@ -748,7 +786,7 @@ impl ManagedRetainedStore {
             }
         }
         admit().map_err(MutationFailure::Rejected)?;
-        self.compact_for_write(&bytes)?;
+        self.compact_for_write(&bytes, &mut remaining)?;
         self.prepare_write()?;
         self.append(&bytes, admit)
     }
@@ -788,11 +826,24 @@ impl ManagedRetainedStore {
         })
     }
 
-    fn compact_for_write(&mut self, bytes: &[u8]) -> Result<(), MutationFailure> {
+    fn compact_for_write(
+        &mut self,
+        bytes: &[u8],
+        remaining: &mut Option<u64>,
+    ) -> Result<(), MutationFailure> {
         check_empty_suffix(bytes, self.store.limits).map_err(MutationFailure::Rejected)?;
-        self.finish_maintenance()
+        self.finish_maintenance(remaining)
             .map_err(MutationFailure::Rejected)?;
-        self.compact().map_err(|error| {
+        self.compact_detailed_using(
+            self.store.limits,
+            None,
+            remaining,
+            || Ok(()),
+            sync_existing,
+            sync_existing,
+        )
+        .map_err(RetainedRotationFailure::into_selection_failure)
+        .map_err(|error| {
             let kind = match &error {
                 PublicationFailure::NotPublished(cause)
                 | PublicationFailure::OutcomeUnknown(cause) => cause.kind(),
@@ -800,15 +851,17 @@ impl ManagedRetainedStore {
             MutationFailure::Rejected(io::Error::new(kind, error))
         })?;
         self.cleanup_pending = true;
-        self.finish_maintenance().map_err(MutationFailure::Rejected)
+        self.finish_maintenance(remaining)
+            .map_err(MutationFailure::Rejected)
     }
 
-    fn finish_maintenance(&mut self) -> io::Result<()> {
+    fn finish_maintenance(&mut self, remaining: &mut Option<u64>) -> io::Result<()> {
         self.cleanup_pending = true;
         self.verify_selection()?;
         sync_existing(&self.root)?;
         crate::cleanup_abandoned_staging(&self.root)?;
-        self.reclaim_inactive()?;
+        self.reclaim_using(remaining, sync_existing)
+            .map_err(StagingCleanupFailure::into_io_error)?;
         self.cleanup_pending = false;
         Ok(())
     }
@@ -844,7 +897,14 @@ impl ManagedRetainedStore {
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
-        self.compact_detailed_using(limits, None, None, || Ok(()), sync_existing, sync_existing)
+        self.compact_detailed_using(
+            limits,
+            None,
+            &mut None,
+            || Ok(()),
+            sync_existing,
+            sync_existing,
+        )
     }
 
     /// Compact under an inclusive logical read budget while using the active
@@ -860,7 +920,7 @@ impl ManagedRetainedStore {
         self.compact_detailed_using(
             self.store.limits,
             None,
-            Some(max_scan_bytes),
+            &mut Some(max_scan_bytes),
             || Ok(()),
             sync_existing,
             sync_existing,
@@ -887,7 +947,7 @@ impl ManagedRetainedStore {
         self.compact_detailed_using(
             self.store.limits,
             Some(limits),
-            None,
+            &mut None,
             || Ok(()),
             sync_existing,
             sync_existing,
@@ -914,7 +974,7 @@ impl ManagedRetainedStore {
         self.compact_detailed_using(
             limits,
             persisted_storage,
-            None,
+            &mut None,
             before_select,
             sync_existing,
             sync_selection,
@@ -926,7 +986,7 @@ impl ManagedRetainedStore {
         &mut self,
         limits: RetainedStoreLimits,
         persisted_storage: Option<CatalogStorageLimits>,
-        max_scan_bytes: Option<u64>,
+        remaining: &mut Option<u64>,
         before_select: impl FnOnce() -> io::Result<()>,
         sync_successor: impl FnOnce(&Path) -> io::Result<()>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
@@ -937,7 +997,7 @@ impl ManagedRetainedStore {
                 limits,
                 self.auto_reclaim.is_some(),
                 persisted_storage,
-                max_scan_bytes,
+                remaining,
                 &tracker.checkpoint,
                 sync_successor,
             )?;
@@ -966,7 +1026,7 @@ impl ManagedRetainedStore {
         limits: RetainedStoreLimits,
         reclaim_after: bool,
         persisted_storage: Option<CatalogStorageLimits>,
-        max_scan_bytes: Option<u64>,
+        remaining: &mut Option<u64>,
         tracker: &crate::publication_outcome::Tracker,
         sync_successor: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<(Active, RetainedStore, Option<CatalogStorage>)> {
@@ -1031,7 +1091,7 @@ impl ManagedRetainedStore {
             &stage.path().join("base"),
             limits,
             max_base_bytes,
-            max_scan_bytes,
+            remaining,
         )?;
         let next = RetainedStore::initialize(
             stage.path(),
@@ -1078,7 +1138,7 @@ impl ManagedRetainedStore {
     /// Moving the inactive slot counts as removal of its catalog name.
     /// The classification includes any stage cleanup resumed by this call.
     pub fn reclaim_inactive_detailed(&mut self) -> Result<bool, StagingCleanupFailure> {
-        self.reclaim_using(None, sync_existing)
+        self.reclaim_using(&mut None, sync_existing)
     }
 
     /// Reclaims under an inclusive logical active-generation read ceiling.
@@ -1090,12 +1150,12 @@ impl ManagedRetainedStore {
         &mut self,
         max_scan_bytes: u64,
     ) -> Result<bool, StagingCleanupFailure> {
-        self.reclaim_using(Some(max_scan_bytes), sync_existing)
+        self.reclaim_using(&mut Some(max_scan_bytes), sync_existing)
     }
 
     fn resume_retirement(
         &self,
-        budget: &mut RetirementScanBudget,
+        remaining: &mut Option<u64>,
         removal_started: &mut bool,
     ) -> io::Result<bool> {
         if !crate::staging::has_retained_stage(&self.root)? {
@@ -1106,7 +1166,7 @@ impl ManagedRetainedStore {
             &self.active.generation,
             || {
                 self.verify_selection()?;
-                budget.charge(&self.store)?;
+                charge_retirement_scan(remaining, &self.store)?;
                 self.store
                     .verify_complete(&self.active.slot.path(&self.root))
             },
@@ -1123,16 +1183,15 @@ impl ManagedRetainedStore {
 
     fn reclaim_using(
         &mut self,
-        max_scan_bytes: Option<u64>,
+        remaining: &mut Option<u64>,
         sync_retirement: impl FnMut(&Path) -> io::Result<()>,
     ) -> Result<bool, StagingCleanupFailure> {
-        let mut budget = RetirementScanBudget(max_scan_bytes);
         StagingCleanupFailure::track_removal(|removal_started| {
-            let resumed = self.resume_retirement(&mut budget, removal_started)?;
+            let resumed = self.resume_retirement(remaining, removal_started)?;
             let Some((inactive, retired_lock)) = self.lock_inactive_for_retirement()? else {
                 return Ok(resumed);
             };
-            budget.charge(&self.store)?;
+            charge_retirement_scan(remaining, &self.store)?;
             self.reclaim_locked(&inactive, retired_lock, removal_started, sync_retirement)?;
             Ok(true)
         })

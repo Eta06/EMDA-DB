@@ -54,7 +54,7 @@ impl RetainedStore {
         destination: &Path,
         limits: RetainedStoreLimits,
         max_base_bytes: u64,
-        mut max_scan_bytes: Option<u64>,
+        scan_remaining: &mut Option<u64>,
     ) -> io::Result<Expected> {
         self.ensure_healthy()?;
         let space = limits
@@ -65,7 +65,7 @@ impl RetainedStore {
             .checked_sub(FRAME_BYTES)
             .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
         let mut charge = |bytes| {
-            if let Some(remaining) = &mut max_scan_bytes {
+            if let Some(remaining) = scan_remaining {
                 *remaining = remaining
                     .checked_sub(bytes)
                     .ok_or_else(|| invalid_input("retained rotation scan byte limit exceeded"))?;
