@@ -1,44 +1,20 @@
 //! Verified, non-overwriting compaction to a separate store.
 use super::*;
-use crate::log::AppendRecord;
+use crate::log::PrivateCopyLog;
 use crate::retained_base_v2::index::OverlayValue;
 
 pub(super) const MAX_COPY_RECORDS: usize = 64;
 pub(super) const MAX_COPY_BYTES: usize = 4 * 1024 * 1024;
 const LARGE_RESTORE_BUFFER_BYTES: usize = 1024 * 1024;
 
-struct CopyRecord {
-    encoded: Vec<u8>,
-    key_len: usize,
-    value_len: usize,
-    checksum: u32,
-}
-
-fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
-    if records.is_empty() {
-        return Ok(());
-    }
-    target.append_batch_unsynced(records.iter().map(|entry| AppendRecord {
-        encoded: &entry.encoded,
-        key_len: entry.key_len,
-        value_len: entry.value_len,
-        checksum: entry.checksum,
-    }))?;
-    target.sync_data()?;
-    records.clear();
-    Ok(())
-}
-
 fn copy_live_records(
     source: &Log,
     index: &BTreeMap<Vec<u8>, ValueLocation>,
     target: &Log,
 ) -> io::Result<()> {
-    let mut copy = GroupedCopy::new(target, None);
+    let mut copy = GroupedCopy::new(target, None)?;
     for (key, &location) in index {
-        copy.put(key, location.length, |value| {
-            source.read_into(location, value)
-        })?;
+        copy.put_log_value(key, source, location, |_| {})?;
     }
     copy.finish()
 }
@@ -90,20 +66,27 @@ impl RestoreSize {
 }
 
 pub(crate) struct GroupedCopy<'a> {
-    target: &'a Log,
-    records: Vec<CopyRecord>,
+    target: PrivateCopyLog<'a>,
+    records: Vec<Vec<u8>>,
     bytes: usize,
     remaining: Option<RestoreSize>,
 }
 
 impl<'a> GroupedCopy<'a> {
-    pub(super) fn new(target: &'a Log, remaining: Option<RestoreSize>) -> Self {
-        Self {
-            target,
+    pub(super) fn new(target: &'a Log, remaining: Option<RestoreSize>) -> io::Result<Self> {
+        Ok(Self {
+            target: target.private_copy()?,
             records: Vec::with_capacity(MAX_COPY_RECORDS),
             bytes: 0,
             remaining,
-        }
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.target.append_group(&self.records)?;
+        self.records.clear();
+        self.bytes = 0;
+        Ok(())
     }
 
     fn put(
@@ -121,8 +104,7 @@ impl<'a> GroupedCopy<'a> {
         if !self.records.is_empty()
             && (self.records.len() == MAX_COPY_RECORDS || self.bytes + length > MAX_COPY_BYTES)
         {
-            flush_copy(self.target, &mut self.records)?;
-            self.bytes = 0;
+            self.flush()?;
         }
         let mut encoded = Vec::new();
         encoded
@@ -135,21 +117,15 @@ impl<'a> GroupedCopy<'a> {
         // Authenticate the value in its final buffer before admitting the record.
         let value = &mut encoded[value_start..];
         read(value)?;
-        let checksum = crc32fast::hash(value);
         let record_checksum = crc32fast::hash(&encoded);
         encoded.extend_from_slice(&record_checksum.to_le_bytes());
         self.bytes += length;
-        self.records.push(CopyRecord {
-            encoded,
-            key_len: key.len(),
-            value_len,
-            checksum,
-        });
+        self.records.push(encoded);
         Ok(())
     }
 
-    /// Small values share grouped synchronization. A record that cannot fit
-    /// in a group uses the fixed-size authenticated reader and its own sync.
+    /// Small records are written in bounded groups. Larger values use the
+    /// fixed-size authenticated reader. Both share the final witness update.
     pub(crate) fn put_retained(
         &mut self,
         key: &[u8],
@@ -206,8 +182,7 @@ impl<'a> GroupedCopy<'a> {
         if let Some(remaining) = &mut self.remaining {
             remaining.consume(key.len(), value_len)?;
         }
-        flush_copy(self.target, &mut self.records)?;
-        self.bytes = 0;
+        self.flush()?;
         let mut scratch = Vec::new();
         scratch
             .try_reserve_exact(LARGE_RESTORE_BUFFER_BYTES)
@@ -215,7 +190,7 @@ impl<'a> GroupedCopy<'a> {
         scratch.resize(LARGE_RESTORE_BUFFER_BYTES, 0);
         before_value()?;
         self.target
-            .append_private_put(key, value_len, |append| produce(&mut scratch, append))
+            .append_put(key, value_len, |append| produce(&mut scratch, append))
     }
 
     pub(super) fn finish(mut self) -> io::Result<()> {
@@ -227,7 +202,8 @@ impl<'a> GroupedCopy<'a> {
                 "restored output shorter than admitted size",
             ));
         }
-        flush_copy(self.target, &mut self.records)
+        self.flush()?;
+        self.target.finish()
     }
 }
 
@@ -253,7 +229,7 @@ impl Store {
                 .as_ref()
                 .map(|quota| quota.reserve(bytes))
                 .transpose()?;
-            let mut copy = GroupedCopy::new(&self.log, Some(size));
+            let mut copy = GroupedCopy::new(&self.log, Some(size))?;
             let result = write(&mut copy)?;
             copy.finish()?;
             result
@@ -369,8 +345,8 @@ impl Store {
         let mut staging = crate::staging::Stage::directory(parent)?;
         let target = Store::open(staging.path())?;
         // This store is private to the staging directory. Copy the existing
-        // DB01 records in bounded groups and synchronize each group; the target
-        // index is rebuilt and checked by reopening before publication.
+        // DB01 records in bounded groups and synchronize the complete copy.
+        // Reopening rebuilds and checks the target index before publication.
         copy(&self.log, &inner.index, &target.log)?;
         target.close_private_store()?;
         // Reopen to exercise durable recovery, validate every record, and
@@ -507,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn grouped_copy_syncs_bounded_db01_records_and_reopens() {
+    fn grouped_copy_syncs_once_and_reopens_with_all_db01_records() {
         let dir = tempfile::tempdir().unwrap();
         let source = Store::open(dir.path().join("source")).unwrap();
         let keys = (0..130_u16).map(u16::to_be_bytes).collect::<Vec<_>>();
@@ -523,7 +499,7 @@ mod tests {
             copy_live_records(&source.log, &inner.index, &target).unwrap();
         }
         assert_eq!(appends.load(Ordering::SeqCst), 130);
-        assert_eq!(syncs.load(Ordering::SeqCst), 3);
+        assert_eq!(syncs.load(Ordering::SeqCst), 1);
         drop(target);
         let bytes = std::fs::read(&path).unwrap();
         let mut offset = 0;
@@ -546,7 +522,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("records.log");
         let (log, appends, syncs) = target_log(&path, Fault::None);
-        let mut copy = GroupedCopy::new(&log, None);
+        let mut copy = GroupedCopy::new(&log, None).unwrap();
         copy.put_retained(b"a", OverlayValue::Inline(b""), || Ok(()))
             .unwrap();
         let source_path = root.path().join("source");
@@ -599,14 +575,12 @@ mod tests {
             let stage = crate::staging::Stage::directory(root.path()).unwrap();
             let target = Store::open(stage.path()).unwrap();
             let initial = target.log.len().unwrap();
-            let mut copy = GroupedCopy::new(&target.log, None);
+            let mut copy = GroupedCopy::new(&target.log, None).unwrap();
             copy.put(b"a", 1, |value| {
                 value[0] = 42;
                 Ok(())
             })
             .unwrap();
-            let witnessed =
-                initial + record::encode(Operation::Put, b"a", &[42]).unwrap().len() as u64;
             let error = copy
                 .put_retained(
                     b"b",
@@ -628,12 +602,12 @@ mod tests {
                 }
             );
             let (log, boundary) = Log::open_checkpoint_view(stage.path()).unwrap();
-            assert_eq!(boundary, witnessed);
-            assert!(log.len().unwrap() > witnessed + MAX_COPY_BYTES as u64 / 2);
+            assert_eq!(boundary, initial);
+            assert!(log.len().unwrap() > initial + MAX_COPY_BYTES as u64 / 2);
             assert!(log.visit_records(0, Some(boundary), |_, _| Ok(())).is_err());
+            assert!(copy.finish().is_err());
             let stage_path = stage.path().to_owned();
             drop(log);
-            drop(copy);
             drop(target);
             drop(stage);
             assert!(!stage_path.exists());
@@ -736,28 +710,46 @@ mod tests {
         let value = vec![3; 3 * 1024 * 1024];
         source.put(b"a", &value).unwrap();
         source.put(b"b", &value).unwrap();
-        let (target, _, syncs) = target_log(&dir.path().join("target.log"), Fault::None);
+        let (target, appends, syncs) = target_log(&dir.path().join("target.log"), Fault::None);
         let inner = source.read().unwrap();
-        copy_live_records(&source.log, &inner.index, &target).unwrap();
-        assert_eq!(syncs.load(Ordering::SeqCst), 2);
+        let mut copy = GroupedCopy::new(&target, None).unwrap();
+        for (key, &location) in inner.index.iter() {
+            copy.put_log_value(key, &source.log, location, |_| {})
+                .unwrap();
+        }
+        assert_eq!(appends.load(Ordering::SeqCst), 1);
+        assert_eq!(syncs.load(Ordering::SeqCst), 0);
+        copy.finish().unwrap();
+        assert_eq!(appends.load(Ordering::SeqCst), 2);
+        assert_eq!(syncs.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn copy_propagates_partial_append_and_sync_failure_without_touching_source() {
-        for (index, fault) in [Fault::Append(2), Fault::Sync(1)].into_iter().enumerate() {
+        for (fault, expected_appends, expected_syncs, message) in [
+            (Fault::Append(66), 66, 0, "injected partial append"),
+            (Fault::Sync(1), 130, 1, "injected sync failure"),
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("source");
             let source = Store::open(&path).unwrap();
-            source.put(b"a", b"one").unwrap();
-            source.put(b"b", b"two").unwrap();
+            let keys = (0..130_u16).map(u16::to_be_bytes).collect::<Vec<_>>();
+            let operations = keys
+                .iter()
+                .map(|key| crate::BatchOperation::Put { key, value: b"v" })
+                .collect::<Vec<_>>();
+            source.write_batch(&operations).unwrap();
             let before = std::fs::read(path.join("records.log")).unwrap();
-            let (target, _, _) = target_log(&dir.path().join(format!("target-{index}.log")), fault);
+            let (target, appends, syncs) = target_log(&dir.path().join("target.log"), fault);
             {
                 let inner = source.read().unwrap();
-                assert!(copy_live_records(&source.log, &inner.index, &target).is_err());
+                let error = copy_live_records(&source.log, &inner.index, &target).unwrap_err();
+                assert_eq!(error.to_string(), message);
             }
+            assert_eq!(appends.load(Ordering::SeqCst), expected_appends);
+            assert_eq!(syncs.load(Ordering::SeqCst), expected_syncs);
             assert_eq!(std::fs::read(path.join("records.log")).unwrap(), before);
-            assert_eq!(source.get(b"a").unwrap().as_deref(), Some(&b"one"[..]));
+            assert_eq!(source.get(&keys[129]).unwrap().as_deref(), Some(&b"v"[..]));
         }
     }
 

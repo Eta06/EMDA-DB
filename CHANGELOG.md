@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Synchronize complete private compaction and retained restore copies once
+  after writing their bounded groups, before output verification and publication.
+
 - Enable verified blocking compaction, online handoff and retired-log
   reclamation on macOS APFS using atomic directory exchange.
 

@@ -93,7 +93,7 @@ fn copy_live(
     target: &Log,
     options: &mut CheckpointCopyOptions,
 ) -> io::Result<(u64, [u8; 32])> {
-    let mut copy = GroupedCopy::new(target, None);
+    let mut copy = GroupedCopy::new(target, None)?;
     let mut count = 0_u64;
     let mut hash = Sha256::new();
     view.visit_entries(None, None, |key, location| {

@@ -126,6 +126,95 @@ pub(crate) struct Log {
     anchor: Option<Witness>,
 }
 
+/// Appends to an exclusively owned staging log. The stage must be discarded
+/// on error and fully verified after synchronization, before publication.
+pub(crate) struct PrivateCopyLog<'a> {
+    log: &'a Log,
+    initial: u64,
+    end: u64,
+}
+
+impl PrivateCopyLog<'_> {
+    fn check_end(&self) -> io::Result<()> {
+        if self.log.len()? != self.end {
+            return Err(record::invalid_data("private copy log length changed"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn append_group(&mut self, records: &[Vec<u8>]) -> io::Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.check_end()?;
+        let mut end = self.end;
+        let mut buffers = Vec::with_capacity(records.len());
+        for record in records {
+            end = end
+                .checked_add(record.len() as u64)
+                .ok_or_else(offset_overflow)?;
+            buffers.push(IoSlice::new(record));
+        }
+        self.log.file.append_vectored(&mut buffers)?;
+        self.end = end;
+        Ok(())
+    }
+
+    /// Stream and checksum an ordinary record. The producer must authenticate
+    /// the entire value and propagate append errors before returning success.
+    pub(crate) fn append_put(
+        &mut self,
+        key: &[u8],
+        value_len: usize,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let header = record::encode_header(Operation::Put, key, value_len)?;
+        self.check_end()?;
+        let size = HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE;
+        let end = self
+            .end
+            .checked_add(size as u64)
+            .ok_or_else(offset_overflow)?;
+        let mut checksum = crc32fast::Hasher::new();
+        checksum.update(&header);
+        checksum.update(key);
+        self.log
+            .file
+            .append_vectored(&mut [IoSlice::new(&header), IoSlice::new(key)])?;
+        let mut remaining = value_len;
+        produce(&mut |bytes| {
+            remaining = remaining
+                .checked_sub(bytes.len())
+                .ok_or_else(|| record::invalid_data("stream exceeded declared value length"))?;
+            checksum.update(bytes);
+            self.log.file.append_all(bytes)
+        })?;
+        if remaining != 0 {
+            return Err(record::invalid_data(
+                "stream ended before declared value length",
+            ));
+        }
+        self.log
+            .file
+            .append_all(&checksum.finalize().to_le_bytes())?;
+        self.end = end;
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> io::Result<()> {
+        self.check_end()?;
+        if self.end == self.initial {
+            return Ok(());
+        }
+        self.log.verify_witness_at(self.initial)?;
+        self.log.sync_validated_boundary(self.end)
+    }
+}
+
+fn offset_overflow() -> io::Error {
+    io::Error::other("log offset overflow")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InitializationPoint {
     LogCreated,
@@ -803,42 +892,13 @@ impl Log {
         self.file.append_all(encoded)
     }
 
-    /// Appends one ordinary record to an exclusively owned private stage.
-    /// The producer must propagate append errors and authenticate the complete
-    /// value before returning success.
-    /// If any step fails, discard the stage. Partial bytes may be present.
-    pub(crate) fn append_private_put(
-        &self,
-        key: &[u8],
-        value_len: usize,
-        produce: impl FnOnce(&mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let header = record::encode_header(Operation::Put, key, value_len)?;
-        let offset = self.checked_append_offset()?;
-        let size = HEADER_SIZE + key.len() + value_len + record::CHECKSUM_SIZE;
-        let end = offset
-            .checked_add(size as u64)
-            .ok_or_else(|| io::Error::other("log offset overflow"))?;
-        let mut checksum = crc32fast::Hasher::new();
-        checksum.update(&header);
-        checksum.update(key);
-        self.file
-            .append_vectored(&mut [IoSlice::new(&header), IoSlice::new(key)])?;
-        let mut remaining = value_len;
-        produce(&mut |bytes| {
-            remaining = remaining
-                .checked_sub(bytes.len())
-                .ok_or_else(|| record::invalid_data("stream exceeded declared value length"))?;
-            checksum.update(bytes);
-            self.file.append_all(bytes)
-        })?;
-        if remaining != 0 {
-            return Err(record::invalid_data(
-                "stream ended before declared value length",
-            ));
-        }
-        self.file.append_all(&checksum.finalize().to_le_bytes())?;
-        self.sync_validated_boundary(end)
+    pub(crate) fn private_copy(&self) -> io::Result<PrivateCopyLog<'_>> {
+        let initial = self.checked_append_offset()?;
+        Ok(PrivateCopyLog {
+            log: self,
+            initial,
+            end: initial,
+        })
     }
 
     pub(crate) fn sync_data(&self) -> io::Result<()> {
