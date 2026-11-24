@@ -11,11 +11,13 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   restored and verified the snapshot with the original store moved aside.
   The failure matrix names the exercised fault model. Broader fault coverage
   and representative workload measurement remain open below.
-- **Step 2.** The [Linux writable recovery gate](../benchmarks/results/2026-11-24-retained-linux-memory-ceiling/README.md)
-  passed all capped mutation, reopen and verification phases, including a
-  retained rotation. The gate starts with 262,144 keys and limits each retained
-  worker to 48 MiB of virtual address space. Project-wide quotas, broader
-  reclamation and bounded recovery on the other storage paths remain open.
+- **Step 2.** The [million-key recovery gate](../benchmarks/results/2026-11-24-million-key-four-writers/README.md)
+  passed on macOS and Linux with four writers and complete ordered
+  verification after each epoch. Linux checkpoint and retained workers
+  completed 24 mutation, reopen and verification phases under a 48 MiB
+  process address-space ceiling, including checkpoint rollovers and a
+  retained rotation. Setup and control workers ran uncapped. Project-wide
+  quotas, broader reclamation and recovery work remain open.
 
 ## Deferred to later Codex sessions
 

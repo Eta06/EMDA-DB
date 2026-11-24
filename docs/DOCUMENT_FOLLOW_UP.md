@@ -195,6 +195,10 @@ remain open.
 - [x] Add bounded relationship lookups by a complete unique index tuple.
   Tests cover typed and partial targets, exact response limits, staged
   changes, missing-owner conflicts, and retained restore and reopen.
+- [x] Share nested JSON equality work limits across update conditions,
+  array add-unique, and array remove. The [budget regressions](../tests/document_equality_budget.rs)
+  exercise exact and exceeded limits on ordinary and checkpoint stores,
+  including rollback of a staged raw write when an update exceeds its budget.
 - [ ] Design richer schema types and validation, comparison/update/aggregation operators, array and multikey behavior, broader compound index unions, relationships, diagnostics, statistics and a cost-based planner; define compatibility and limits before implementation. Existing lookups use an ID or a complete unique tuple, aggregation is limited, and unplanned or ineligible collection queries require a complete bounded scan.
   [String prefix filters](DOCUMENT_MODEL.md) use bounded UTF-8 operands
   and can use scalar ranges. Tests compare indexed and scan results for
