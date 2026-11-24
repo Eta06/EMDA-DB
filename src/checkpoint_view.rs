@@ -178,12 +178,15 @@ impl CheckpointIndex {
 }
 
 pub(crate) enum TailAdmission {
-    Unrestricted,
+    Historical(Option<u64>),
     Writable {
         max_tail_bytes: u64,
         recovery_scan: checkpoint::RecoveryScanLimits,
     },
-    Witnessed(u64),
+    Witnessed {
+        max_tail_bytes: u64,
+        max_total_scan_bytes: Option<u64>,
+    },
 }
 
 /// The checkpoint index has been authenticated, but the covered log has
@@ -275,13 +278,53 @@ impl CheckpointView {
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
     ) -> io::Result<Self> {
-        Self::prepare_shared(
+        Self::open_using(
             path.as_ref(),
             checkpoint.as_ref(),
             trusted_digest,
             limits,
             max_log_bytes,
-            TailAdmission::Unrestricted,
+            None,
+        )
+    }
+
+    /// Bound the combined logical scan of the checkpoint and its covered log
+    /// prefix. The optional whole-log length cap applies separately. An
+    /// oversized scan is rejected before traversing index entries. Metadata,
+    /// header probes, physical I/O retries and later reads are separate.
+    pub fn open_with_total_recovery_scan_limit(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointViewLimits,
+        max_log_bytes: Option<u64>,
+        max_total_scan_bytes: u64,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            max_log_bytes,
+            Some(max_total_scan_bytes),
+        )
+    }
+
+    fn open_using(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointViewLimits,
+        max_log_bytes: Option<u64>,
+        max_total_scan_bytes: Option<u64>,
+    ) -> io::Result<Self> {
+        Self::prepare_shared(
+            path,
+            checkpoint,
+            trusted_digest,
+            limits,
+            max_log_bytes,
+            TailAdmission::Historical(max_total_scan_bytes),
         )?
         .verify()
         .map(|(view, _)| view)
@@ -326,7 +369,7 @@ impl CheckpointView {
             lock_file,
             limits,
             (None, None),
-            TailAdmission::Unrestricted,
+            TailAdmission::Historical(None),
         )?
         .verify()
         .map(|(view, _)| view)
@@ -365,14 +408,30 @@ impl CheckpointView {
         let (mut log, boundary) = Log::open_checkpoint_view(path)?;
         let length = Self::check_log_limit(&log, max_log_bytes)?;
         let (max_tail_bytes, recovery_scan) = match tail {
-            TailAdmission::Unrestricted => (None, checkpoint::RecoveryScanLimits::default()),
+            TailAdmission::Historical(total_bytes) => (
+                None,
+                checkpoint::RecoveryScanLimits {
+                    total_bytes,
+                    prefix_only: true,
+                    ..Default::default()
+                },
+            ),
             TailAdmission::Writable {
                 max_tail_bytes,
                 recovery_scan,
             } => (Some(max_tail_bytes), recovery_scan),
-            TailAdmission::Witnessed(limit) => {
+            TailAdmission::Witnessed {
+                max_tail_bytes,
+                max_total_scan_bytes,
+            } => {
                 checkpoint::check_witnessed_length(length, boundary)?;
-                (Some(limit), checkpoint::RecoveryScanLimits::default())
+                (
+                    Some(max_tail_bytes),
+                    checkpoint::RecoveryScanLimits {
+                        total_bytes: max_total_scan_bytes,
+                        ..Default::default()
+                    },
+                )
             }
         };
         let checkpoint = checkpoint::open_index_file(checkpoint)?;
@@ -451,7 +510,7 @@ impl CheckpointView {
         if let Some(limit) = max_tail_bytes {
             checkpoint::checked_tail_bytes(length, verified.prefix, limit)?;
         }
-        if matches!(tail, TailAdmission::Witnessed(_)) || length < boundary {
+        if matches!(tail, TailAdmission::Witnessed { .. }) || length < boundary {
             checkpoint::check_witnessed_length(length, boundary)?;
         }
         recovery_scan.admit(length, verified.prefix, boundary, verified.file_bytes)?;

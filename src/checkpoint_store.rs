@@ -637,6 +637,7 @@ impl CheckpointStore {
                 recovery_scan: crate::checkpoint::RecoveryScanLimits {
                     log_bytes: recovery.max_log_scan_bytes,
                     total_bytes: max_total_scan_bytes,
+                    prefix_only: false,
                 },
             },
         )?;

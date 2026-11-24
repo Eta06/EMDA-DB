@@ -1,7 +1,8 @@
 use database_engine::{
     BatchOperation, CheckpointRecoveryLimits, CheckpointStore, CheckpointStoreLimits,
-    MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,
-    RecoveredCheckpointView, RecoveredViewLimits, RecoveryOpenFailure, Store,
+    CheckpointView, CheckpointViewLimits, MAX_RECOVERED_VIEW_TAIL_BYTES,
+    MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS, RecoveredCheckpointView,
+    RecoveredViewLimits, RecoveryOpenFailure, Store,
 };
 use std::fs;
 use std::io;
@@ -70,6 +71,116 @@ fn recovery_scan_limit_counts_the_confirming_suffix_pass_only_for_pending_tails(
 #[test]
 fn combined_checkpoint_recovery_scan_limit_counts_checkpoint_and_pending_confirmation() {
     exercise_recovery_scan_limits(true);
+}
+
+#[test]
+fn readonly_combined_scan_ceiling_charges_only_the_viewed_log_range() {
+    for force_v2 in [true, false] {
+        let (_dir, path, checkpoint, digest, prefix) = fixture_with_format(force_v2);
+        let store = Store::open(&path).unwrap();
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"a",
+                    value: b"new",
+                },
+                BatchOperation::Put {
+                    key: b"b",
+                    value: b"tail",
+                },
+            ])
+            .unwrap();
+        drop(store);
+
+        let log_path = path.join("records.log");
+        let log = fs::read(&log_path).unwrap();
+        let witness_path = path.join("commit.state");
+        let witness = fs::read(&witness_path).unwrap();
+        let index = fs::read(&checkpoint).unwrap();
+        let end = log.len() as u64;
+        let historical_bytes = index.len() as u64 + prefix;
+        let recovered_bytes = index.len() as u64 + end;
+        assert!(historical_bytes < recovered_bytes);
+
+        let historical = |max| {
+            CheckpointView::open_with_total_recovery_scan_limit(
+                &path,
+                &checkpoint,
+                &digest,
+                CheckpointViewLimits::default(),
+                Some(end),
+                max,
+            )
+        };
+        let recovered = |max, operations| {
+            RecoveredCheckpointView::open_with_total_recovery_scan_limit(
+                &path,
+                &checkpoint,
+                &digest,
+                RecoveredViewLimits::default(),
+                operations,
+                max,
+            )
+        };
+        // A bad trailer distinguishes admission from index authentication.
+        let mut damaged = index.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        fs::write(&checkpoint, &damaged).unwrap();
+        for error in [
+            historical(historical_bytes - 1).err().unwrap(),
+            recovered(recovered_bytes - 1, Some(2)).err().unwrap(),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "checkpoint total recovery scan byte limit exceeded"
+            );
+        }
+        for error in [
+            historical(historical_bytes).err().unwrap(),
+            recovered(recovered_bytes, Some(2)).err().unwrap(),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), "index checkpoint checksum mismatch");
+        }
+        assert_eq!(fs::read(&checkpoint).unwrap(), damaged);
+        fs::write(&checkpoint, index).unwrap();
+
+        let view = historical(historical_bytes).unwrap();
+        assert_eq!(view.get(b"a").unwrap().as_deref(), Some(b"old".as_slice()));
+        assert_eq!(view.get(b"b").unwrap(), None);
+        let view = recovered(recovered_bytes, Some(2)).unwrap();
+        assert_eq!(view.get(b"a").unwrap().as_deref(), Some(b"new".as_slice()));
+        assert_eq!(view.get(b"b").unwrap().as_deref(), Some(b"tail".as_slice()));
+        assert_operation_limit(recovered(recovered_bytes, Some(1)));
+        drop(view);
+
+        let mut damaged_tail = log.clone();
+        *damaged_tail.last_mut().unwrap() ^= 1;
+        fs::write(&log_path, &damaged_tail).unwrap();
+        assert!(historical(historical_bytes).is_ok());
+        assert_eq!(
+            recovered(recovered_bytes, Some(2)).err().unwrap().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(fs::read(&log_path).unwrap(), damaged_tail);
+        fs::write(&log_path, &log).unwrap();
+
+        let mut damaged_prefix = log.clone();
+        damaged_prefix[prefix as usize - 1] ^= 1;
+        fs::write(&log_path, &damaged_prefix).unwrap();
+        for error in [
+            historical(historical_bytes).err().unwrap(),
+            recovered(recovered_bytes, Some(2)).err().unwrap(),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(error.to_string(), "checkpoint does not match log prefix");
+        }
+        assert_eq!(fs::read(&log_path).unwrap(), damaged_prefix);
+        fs::write(&log_path, &log).unwrap();
+        assert_eq!(fs::read(log_path).unwrap(), log);
+        assert_eq!(fs::read(witness_path).unwrap(), witness);
+    }
 }
 
 fn exercise_recovery_scan_limits(combined: bool) {

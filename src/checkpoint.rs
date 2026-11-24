@@ -689,6 +689,7 @@ pub(crate) fn checked_tail_bytes(length: u64, prefix: u64, limit: u64) -> io::Re
 pub(crate) struct RecoveryScanLimits {
     pub(crate) log_bytes: Option<u64>,
     pub(crate) total_bytes: Option<u64>,
+    pub(crate) prefix_only: bool,
 }
 
 impl RecoveryScanLimits {
@@ -714,7 +715,9 @@ impl RecoveryScanLimits {
         witnessed_boundary: u64,
         checkpoint: u64,
     ) -> io::Result<()> {
-        let log = if length > witnessed_boundary {
+        let log = if self.prefix_only {
+            Some(prefix)
+        } else if length > witnessed_boundary {
             length.checked_add(length - prefix)
         } else {
             Some(length)
@@ -851,10 +854,16 @@ pub(crate) fn visit_index_file(
     if let Some(budget) = admission.read_budget {
         budget.charge(length)?;
     }
-    // Reject a total ceiling that cannot fit even one pass over both files.
-    admission
-        .recovery_scan
-        .admit_total(length, Some(log_length))?;
+    // A historical view hashes only its declared prefix. Its size is
+    // checked after reading the header, before visiting any entries.
+    admission.recovery_scan.admit_total(
+        length,
+        Some(if admission.recovery_scan.prefix_only {
+            0
+        } else {
+            log_length
+        }),
+    )?;
     let mut reader = BufReader::new(PositionalReader::new(file, 0).take(length));
     let mut digest = Sha256::new();
     let mut header = [0_u8; HEADER_BYTES as usize];

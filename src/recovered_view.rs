@@ -137,6 +137,7 @@ impl RecoveredCheckpointView {
             trusted_digest,
             limits,
             None,
+            None,
         )
     }
 
@@ -156,6 +157,30 @@ impl RecoveredCheckpointView {
             trusted_digest,
             limits,
             Some(max_tail_operations),
+            None,
+        )
+    }
+
+    /// Bound the combined logical checkpoint scan, log prefix verification
+    /// and witnessed suffix replay. Admission precedes traversal of the
+    /// checkpoint entries. An optional suffix operation cap counts batch
+    /// children separately. Metadata, framing probes, physical I/O retries
+    /// and later reads are outside the scan ceiling.
+    pub fn open_with_total_recovery_scan_limit(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: RecoveredViewLimits,
+        max_tail_operations: Option<u64>,
+        max_total_scan_bytes: u64,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            path.as_ref(),
+            checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            max_tail_operations,
+            Some(max_total_scan_bytes),
         )
     }
 
@@ -165,6 +190,7 @@ impl RecoveredCheckpointView {
         trusted_digest: &[u8; 32],
         limits: RecoveredViewLimits,
         max_tail_operations: Option<u64>,
+        max_total_scan_bytes: Option<u64>,
     ) -> io::Result<Self> {
         Self::validate_limits(
             limits.max_tail_bytes,
@@ -177,7 +203,10 @@ impl RecoveredCheckpointView {
             trusted_digest,
             limits.checkpoint_view,
             limits.max_log_bytes,
-            crate::checkpoint_view::TailAdmission::Witnessed(limits.max_tail_bytes),
+            crate::checkpoint_view::TailAdmission::Witnessed {
+                max_tail_bytes: limits.max_tail_bytes,
+                max_total_scan_bytes,
+            },
         )?;
         let suffix = Self::replay_prepared(
             &prepared,

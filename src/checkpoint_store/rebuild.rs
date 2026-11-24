@@ -941,7 +941,7 @@ impl CheckpointStore {
                         limits.max_base_checkpoint_read_bytes,
                     ),
                     (limits.max_log_bytes, limits.max_live_keys),
-                    crate::checkpoint_view::TailAdmission::Unrestricted,
+                    crate::checkpoint_view::TailAdmission::Historical(None),
                 )?;
                 require_admitted_log_length(admitted_log_length, prepared.suffix().1.end)?;
                 let base_key_bytes = prepared.live_key_bytes();
