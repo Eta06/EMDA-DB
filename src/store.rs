@@ -718,7 +718,7 @@ impl Store {
         &self,
         destination: impl AsRef<Path>,
     ) -> Result<(), crate::PublicationFailure> {
-        self.backup_detailed_with_limit(destination.as_ref(), None)
+        self.backup_with_limits_detailed(destination, crate::FullLogBackupLimits::default())
     }
 
     /// Creates a full-log backup with a byte ceiling on the complete backup
@@ -731,17 +731,25 @@ impl Store {
         destination: impl AsRef<Path>,
         max_file_bytes: u64,
     ) -> Result<(), crate::PublicationFailure> {
-        self.backup_detailed_with_limit(destination.as_ref(), Some(max_file_bytes))
+        self.backup_with_limits_detailed(
+            destination,
+            crate::FullLogBackupLimits {
+                max_file_bytes: Some(max_file_bytes),
+                ..Default::default()
+            },
+        )
     }
 
-    fn backup_detailed_with_limit(
+    /// Creates a verified backup with independent file and scan ceilings.
+    /// Budget rejection returns `NotPublished(InvalidInput)` before staging.
+    pub fn backup_with_limits_detailed(
         &self,
-        destination: &Path,
-        max_file_bytes: Option<u64>,
+        destination: impl AsRef<Path>,
+        limits: crate::FullLogBackupLimits,
     ) -> Result<(), crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.backup_using(destination, |log, destination| {
-                backup::create_tracked(log, destination, max_file_bytes, tracker)
+            self.backup_using(destination.as_ref(), |log, destination| {
+                backup::create_tracked(log, destination, limits, tracker)
             })
         })
     }
@@ -873,9 +881,11 @@ impl Store {
         source: impl AsRef<Path>,
         destination: impl AsRef<Path>,
     ) -> Result<(), crate::PublicationFailure> {
-        crate::publication_outcome::track(|tracker| {
-            backup::restore_tracked(source.as_ref(), destination.as_ref(), None, tracker)
-        })
+        Self::restore_with_limits_detailed(
+            source,
+            destination,
+            crate::FullLogRestoreLimits::default(),
+        )
     }
 
     /// Restores into a new directory with a byte ceiling on the resulting
@@ -892,13 +902,27 @@ impl Store {
         destination: impl AsRef<Path>,
         max_log_bytes: u64,
     ) -> Result<(), crate::PublicationFailure> {
+        Self::restore_with_limits_detailed(
+            source,
+            destination,
+            crate::FullLogRestoreLimits {
+                max_log_bytes: Some(max_log_bytes),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Restores with independent output-log and scan ceilings. Reads the
+    /// backup envelope before admission, then charges both passes over its
+    /// payload and one pass over the staged output. Over-budget calls return
+    /// `NotPublished(InvalidInput)` before verifying records or staging.
+    pub fn restore_with_limits_detailed(
+        source: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: crate::FullLogRestoreLimits,
+    ) -> Result<(), crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            backup::restore_tracked(
-                source.as_ref(),
-                destination.as_ref(),
-                Some(max_log_bytes),
-                tracker,
-            )
+            backup::restore_tracked(source.as_ref(), destination.as_ref(), limits, tracker)
         })
     }
 

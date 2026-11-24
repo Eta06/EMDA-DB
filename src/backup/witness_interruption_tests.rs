@@ -42,7 +42,7 @@ fn invoke(
 ) -> io::Result<()> {
     match operation {
         "restore" => restore_with_witness_hooks(
-            (&root.join("backup"), None),
+            (&root.join("backup"), FullLogRestoreLimits::default()),
             &root.join("result"),
             |_| Ok(()),
             || Ok(()),

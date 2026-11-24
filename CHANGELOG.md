@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound full-log backup and restore reads independently of output size.
+  Empty legacy restore verifies the exact generated header before installing
+  its witness.
+
 - Bound source-log reads for explicit checkpoint creation and rollover with
   opt-in per-call limits and structured publication failures.
 

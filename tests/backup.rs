@@ -1,4 +1,6 @@
-use database_engine::{CheckpointStore, PublicationFailure, Store};
+use database_engine::{
+    CheckpointStore, FullLogBackupLimits, FullLogRestoreLimits, PublicationFailure, Store,
+};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -72,6 +74,18 @@ fn backup_file_limit_includes_the_envelope_before_staging_on_both_backends() {
         };
         let log = fs::read(source.join("records.log")).unwrap();
         let limit = log.len() as u64 + 56;
+        let scan = 2 * log.len() as u64;
+        let backup_with_limits = |scan| {
+            let limits = FullLogBackupLimits {
+                max_file_bytes: Some(limit),
+                max_log_scan_bytes: Some(scan),
+            };
+            match (&ordinary, &checkpoint_store) {
+                (Some(store), _) => store.backup_with_limits_detailed(&target, limits),
+                (_, Some(store)) => store.backup_with_limits_detailed(&target, limits),
+                _ => unreachable!(),
+            }
+        };
         let entries = fs::read_dir(dir.path()).unwrap().count();
 
         // A stage would need a shared lock on this directory.
@@ -87,15 +101,22 @@ fn backup_file_limit_includes_the_envelope_before_staging_on_both_backends() {
             assert!(!target.exists());
             assert_eq!(fs::read_dir(dir.path()).unwrap().count(), entries);
         }
+        assert!(
+            matches!(backup_with_limits(scan - 1), Err(PublicationFailure::NotPublished(error))
+            if error.kind() == std::io::ErrorKind::InvalidInput
+                && error.to_string() == "full-log backup or restore exceeds configured scan byte limit")
+        );
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), entries);
         fs2::FileExt::unlock(&parent).unwrap();
 
-        backup(limit).unwrap();
+        backup_with_limits(scan).unwrap();
         let bytes = fs::read(&target).unwrap();
         assert_eq!(bytes.len() as u64, limit);
         let destination = dir.path().join("restored");
         Store::restore_with_log_limit_detailed(&target, &destination, log.len() as u64).unwrap();
         assert_eq!(fs::read(destination.join("records.log")).unwrap(), log);
-        let conflict = backup(limit);
+        let conflict = backup_with_limits(scan);
         assert!(
             matches!(conflict, Err(PublicationFailure::OutcomeUnknown(ref error))
                 if error.kind() == std::io::ErrorKind::AlreadyExists),
@@ -145,7 +166,16 @@ fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {
         let bytes = fs::read(&backup).unwrap();
         let log = fs::read(source.join("records.log")).unwrap();
         let limit = log.len() as u64;
+        let scan = 3 * limit;
         let destination = dir.path().join("restored");
+        let limits = FullLogRestoreLimits {
+            max_log_bytes: Some(limit),
+            max_log_scan_bytes: Some(scan),
+        };
+        let mut corrupt = bytes.clone();
+        corrupt[8] ^= 1;
+        let damaged = dir.path().join("damaged");
+        fs::write(&damaged, &corrupt).unwrap();
 
         // Holding the staging parent lock would block a publication stage.
         // The smaller limit must take precedence without touching that lock.
@@ -161,9 +191,25 @@ fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {
             "{format}: {result:?}"
         );
         assert!(!destination.exists());
+        let short = FullLogRestoreLimits {
+            max_log_scan_bytes: Some(scan - 1),
+            ..limits
+        };
+        assert!(matches!(
+            Store::restore_with_limits_detailed(&damaged, &destination, short),
+            Err(PublicationFailure::NotPublished(error))
+                if error.kind() == std::io::ErrorKind::InvalidInput
+                    && error.to_string() == "full-log backup or restore exceeds configured scan byte limit"
+        ));
+        assert!(!destination.exists());
         drop(parent);
 
-        Store::restore_with_log_limit_detailed(&backup, &destination, limit).unwrap();
+        assert!(matches!(
+            Store::restore_with_limits_detailed(&damaged, &destination, limits),
+            Err(PublicationFailure::NotPublished(error)) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+        assert!(!destination.exists());
+        Store::restore_with_limits_detailed(&backup, &destination, limits).unwrap();
         assert_eq!(fs::read(destination.join("records.log")).unwrap(), log);
         assert_eq!(
             Store::open(&destination)
@@ -173,7 +219,7 @@ fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {
                 .as_deref(),
             Some(b"persisted".as_slice())
         );
-        let conflict = Store::restore_with_log_limit_detailed(&backup, &destination, limit);
+        let conflict = Store::restore_with_limits_detailed(&backup, &destination, limits);
         assert!(
             matches!(
                 conflict,
@@ -185,6 +231,7 @@ fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {
         assert_eq!(fs::read(destination.join("records.log")).unwrap(), log);
         assert_eq!(fs::read(source.join("records.log")).unwrap(), log);
         assert_eq!(fs::read(&backup).unwrap(), bytes);
+        assert_eq!(fs::read(&damaged).unwrap(), corrupt);
     }
 }
 
@@ -210,7 +257,25 @@ fn restore_log_limit_includes_the_header_synthesized_for_empty_legacy_backups() 
         );
         assert!(!destination.exists());
     }
-    Store::restore_with_log_limit_detailed(&backup, &destination, 28).unwrap();
+    let limits = FullLogRestoreLimits {
+        max_log_bytes: Some(28),
+        max_log_scan_bytes: Some(27),
+    };
+    assert!(
+        matches!(Store::restore_with_limits_detailed(&backup, &destination, limits),
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == std::io::ErrorKind::InvalidInput
+            && error.to_string() == "full-log backup or restore exceeds configured scan byte limit")
+    );
+    assert!(!destination.exists());
+    Store::restore_with_limits_detailed(
+        &backup,
+        &destination,
+        FullLogRestoreLimits {
+            max_log_scan_bytes: Some(28),
+            ..limits
+        },
+    )
+    .unwrap();
     assert_eq!(
         fs::metadata(destination.join("records.log")).unwrap().len(),
         28

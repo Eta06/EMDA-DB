@@ -94,20 +94,29 @@ fn publication_crash_child() {
     let result = match mode.as_str() {
         "backup-staged" => {
             let (log, _) = Log::open(&source, false).unwrap();
-            create_with_hooks(&log, &backup, None, |_| Ok(()), pause_at_boundary)
+            create_with_hooks(
+                &log,
+                &backup,
+                FullLogBackupLimits::default(),
+                |_| Ok(()),
+                pause_at_boundary,
+            )
         }
         "backup-published" => {
             let (log, _) = Log::open(&source, false).unwrap();
             create_with_sync(&log, &backup, |_| pause_at_boundary())
         }
-        "restore-staged" => {
-            restore_with_hooks((&backup, None), &restored, |_| Ok(()), pause_at_boundary)
-        }
+        "restore-staged" => restore_with_hooks(
+            (&backup, FullLogRestoreLimits::default()),
+            &restored,
+            |_| Ok(()),
+            pause_at_boundary,
+        ),
         "restore-published" => restore_with_sync(&backup, &restored, |_| pause_at_boundary()),
         mode if empty_restore_point(mode).is_some() => {
             let requested = empty_restore_point(mode).unwrap();
             restore_with_empty_hooks(
-                (&backup, None),
+                (&backup, FullLogRestoreLimits::default()),
                 &restored,
                 |_| Ok(()),
                 || Ok(()),
@@ -305,7 +314,7 @@ fn empty_legacy_restore_fails_before_publication_at_each_new_boundary() {
         let bytes = empty_legacy_backup();
         std::fs::write(&backup, &bytes).unwrap();
         let result = restore_with_empty_hooks(
-            (&backup, None),
+            (&backup, FullLogRestoreLimits::default()),
             &restored,
             |_| Ok(()),
             || Ok(()),
@@ -324,6 +333,60 @@ fn empty_legacy_restore_fails_before_publication_at_each_new_boundary() {
         let copy = crate::test_support::retry_lock(|| Store::open(&restored)).unwrap();
         copy.transaction(|tx| tx.put(b"key", b"value")).unwrap();
     }
+}
+
+#[test]
+fn empty_legacy_restore_rejects_a_different_valid_header_after_sync() {
+    let directory = tempfile::tempdir().unwrap();
+    let backup = directory.path().join("backup");
+    let restored = directory.path().join("restored");
+    let bytes = empty_legacy_backup();
+    std::fs::write(&backup, &bytes).unwrap();
+    let limits = FullLogRestoreLimits {
+        max_log_bytes: Some(witness::LOG_HEADER_SIZE as u64),
+        max_log_scan_bytes: Some(witness::LOG_HEADER_SIZE as u64),
+    };
+    let result = crate::publication_outcome::track(|tracker| {
+        restore_with_empty_hooks(
+            (&backup, limits),
+            &restored,
+            crate::directory::sync_existing,
+            || {
+                tracker.begin_publication();
+                Ok(())
+            },
+            |point| {
+                if point == EmptyRestorePoint::AfterHeaderSync {
+                    let stage = std::fs::read_dir(directory.path())?
+                        .map(|entry| entry.unwrap().path())
+                        .find(|path| path.is_dir())
+                        .expect("restore staging directory");
+                    let log = stage.join("records.log");
+                    let replacement = witness::new_header()?;
+                    assert_ne!(std::fs::read(&log)?, replacement);
+                    let file = OpenOptions::new().write(true).open(log)?;
+                    file.write_all_at(&replacement, 0)?;
+                    file.sync_all()?;
+                }
+                Ok(())
+            },
+        )
+    });
+    assert!(
+        matches!(result, Err(crate::PublicationFailure::NotPublished(error))
+        if error.kind() == io::ErrorKind::InvalidData
+            && error.to_string() == "verified log checksum or length mismatch")
+    );
+    assert!(!restored.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), bytes);
+    Store::restore_with_limits_detailed(&backup, &restored, limits).unwrap();
+    assert_eq!(
+        crate::test_support::retry_lock(|| Store::open(&restored))
+            .unwrap()
+            .get(b"key")
+            .unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -522,7 +585,10 @@ fn structured_backup_failures_distinguish_before_and_after_publication() {
         create_with_stage_hooks(
             &log,
             &backup,
-            Some(log.len().unwrap() + HEADER_SIZE + FOOTER_SIZE),
+            FullLogBackupLimits {
+                max_file_bytes: Some(log.len().unwrap() + HEADER_SIZE + FOOTER_SIZE),
+                max_log_scan_bytes: Some(2 * log.len().unwrap()),
+            },
             crate::directory::sync_existing,
             || {
                 tracker.begin_publication();
@@ -546,7 +612,10 @@ fn structured_backup_failures_distinguish_before_and_after_publication() {
         create_with_hooks(
             &log,
             &backup,
-            Some(log.len().unwrap() + HEADER_SIZE + FOOTER_SIZE),
+            FullLogBackupLimits {
+                max_file_bytes: Some(log.len().unwrap() + HEADER_SIZE + FOOTER_SIZE),
+                max_log_scan_bytes: Some(2 * log.len().unwrap()),
+            },
             |_| Err(io::Error::other("injected directory sync")),
             || {
                 tracker.begin_publication();
@@ -585,7 +654,7 @@ fn backup_rejects_a_self_consistent_substitution_after_stage_sync() {
         create_with_stage_hooks(
             &log,
             &destination,
-            None,
+            FullLogBackupLimits::default(),
             crate::directory::sync_existing,
             || {
                 tracker.begin_publication();
@@ -607,7 +676,7 @@ fn backup_rejects_a_self_consistent_substitution_after_stage_sync() {
                         HEADER_SIZE + alternate.len() as u64 + 16,
                     )?;
                     file.sync_all()?;
-                    assert!(validate(&file, None).is_ok());
+                    verify_payload(&file, &read_frame(&file).unwrap()).unwrap();
                 }
                 Ok(())
             },
@@ -642,7 +711,13 @@ fn structured_restore_failures_distinguish_before_and_after_publication() {
     let log_bytes = std::fs::metadata(source.join("records.log")).unwrap().len();
     let before = crate::publication_outcome::track(|tracker| {
         restore_with_stage_hooks(
-            (&backup, Some(log_bytes)),
+            (
+                &backup,
+                FullLogRestoreLimits {
+                    max_log_bytes: Some(log_bytes),
+                    max_log_scan_bytes: Some(3 * log_bytes),
+                },
+            ),
             &restored,
             crate::directory::sync_existing,
             || {
@@ -667,7 +742,13 @@ fn structured_restore_failures_distinguish_before_and_after_publication() {
     assert!(!restored.exists());
     let after = crate::publication_outcome::track(|tracker| {
         restore_with_hooks(
-            (&backup, Some(log_bytes)),
+            (
+                &backup,
+                FullLogRestoreLimits {
+                    max_log_bytes: Some(log_bytes),
+                    max_log_scan_bytes: Some(3 * log_bytes),
+                },
+            ),
             &restored,
             |_| Err(io::Error::other("injected directory sync")),
             || {

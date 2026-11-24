@@ -84,6 +84,19 @@ records or creating a stage. Admitted backups still undergo full source and
 staged verification. The limit excludes the backup envelope, witness, lock,
 filesystem overhead and other process resources.
 
+Both stores accept `FullLogBackupLimits` through
+`backup_with_limits_detailed`. The logical scan ceiling charges one pass
+over the log to copy it and one to verify the staged backup against the
+copied digest. `Store::restore_with_limits_detailed` accepts
+`FullLogRestoreLimits` and charges two passes over the backup payload
+plus one over the staged output log. For an empty legacy backup, those
+input passes charge zero and staged verification charges the witnessed
+header length. The header must match the exact bytes generated for that
+restore before witness installation. Scan and output-size limits can be
+used together. Admission precedes payload reads and staging. Envelope,
+framing and metadata probes, physical retries, and writes have separate
+costs.
+
 Both writable stores also provide `checkpoint_to_detailed` for an independent
 checkpoint copy. It returns the same publication classifications, and its
 successful result is a digest the caller must retain in separately trusted

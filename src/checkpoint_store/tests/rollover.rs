@@ -434,7 +434,7 @@ fn checkpoint_backup_blocks_writes_but_allows_readers() {
                     crate::backup::create_with_hooks(
                         log,
                         destination,
-                        None,
+                        crate::FullLogBackupLimits::default(),
                         |parent| File::open(parent)?.sync_all(),
                         || {
                             entered_tx.send(()).unwrap();

@@ -35,6 +35,7 @@ mod transaction_conflict;
 mod transaction_outcome;
 mod witness;
 
+pub use backup::{FullLogBackupLimits, FullLogRestoreLimits};
 pub use cancellation::{CancellationToken, ControlledTransactionError};
 pub use checkpoint_store::{
     BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixAdmission,

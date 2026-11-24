@@ -7,7 +7,7 @@ testing and an independent off-host restore remain deferred.
 
 | Step | Area | Progress | Basis and remaining evidence |
 | --- | --- | ---: | --- |
-| 1 | Correctness and foundations | 96% | 111 of 116 local checklist items. Broader fault and resource evidence remains open. |
+| 1 | Correctness and foundations | 96% | 112 of 117 local checklist items. Full-log backup and restore now have scan ceilings. Broader fault and resource evidence remains open. |
 | 2 | Durable storage and core operations | 95% | 174 of 183 checklist items. Bounded writable memory, retained-history lifecycle and safe live-log reclamation remain open. |
 | 3 | Document model and queries | 97% | 112 of 115 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators, transaction scalability, isolation and comparable server-engine measurements remain open. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
@@ -18,7 +18,7 @@ testing and an independent off-host restore remain deferred.
 
 Steps 1–3 count checked bullets in the [foundation and storage](FOUNDATION_FOLLOW_UP.md)
 and [document](DOCUMENT_FOLLOW_UP.md) checklists, excluding the two explicitly
-deferred drills. Their combined count is 397 of 414 (95.9%). Each item has equal
+deferred drills. Their combined count is 398 of 415 (95.9%). Each item has equal
 weight in that count. Steps 4–8 are estimates from roadmap milestones with
 one point for demonstrated delivery, half a point for a tested subset, and
 zero for design or prerequisites. The projects have different scope and the

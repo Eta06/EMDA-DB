@@ -16,6 +16,30 @@ const HEADER_SIZE: u64 = 8;
 const FOOTER_SIZE: u64 = 48;
 const BUFFER_SIZE: usize = 64 * 1024;
 
+/// Inclusive limits for a full-log backup.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FullLogBackupLimits {
+    /// Maximum final backup length, including the backup envelope.
+    pub max_file_bytes: Option<u64>,
+    /// Maximum logical log bytes read across copying and staged verification.
+    /// Each pass charges the entire existing log. Framing and metadata probes,
+    /// physical retries, and writes have separate costs.
+    pub max_log_scan_bytes: Option<u64>,
+}
+
+/// Inclusive limits for restoring a full-log backup.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FullLogRestoreLimits {
+    /// Maximum final log length. Includes the generated header when restoring
+    /// an empty legacy backup.
+    pub max_log_bytes: Option<u64>,
+    /// Maximum logical log bytes read across verifying the input, copying it,
+    /// and verifying the staged output. Framing and metadata probes, physical
+    /// retries, and writes have separate costs.
+    pub max_log_scan_bytes: Option<u64>,
+}
+
+#[derive(PartialEq, Eq)]
 struct BackupInfo {
     log_len: u64,
     digest: [u8; 32],
@@ -65,13 +89,13 @@ pub(crate) fn create(log: &Log, destination: &Path) -> io::Result<()> {
 pub(crate) fn create_tracked(
     log: &Log,
     destination: &Path,
-    max_file_bytes: Option<u64>,
+    limits: FullLogBackupLimits,
     tracker: &crate::publication_outcome::Tracker,
 ) -> io::Result<()> {
     create_with_hooks(
         log,
         destination,
-        max_file_bytes,
+        limits,
         crate::directory::sync_existing,
         || {
             tracker.begin_publication();
@@ -85,20 +109,26 @@ fn create_with_sync(
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    create_with_hooks(log, destination, None, sync_parent, || Ok(()))
+    create_with_hooks(
+        log,
+        destination,
+        FullLogBackupLimits::default(),
+        sync_parent,
+        || Ok(()),
+    )
 }
 
 pub(crate) fn create_with_hooks(
     log: &Log,
     destination: &Path,
-    max_file_bytes: Option<u64>,
+    limits: FullLogBackupLimits,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
     create_with_stage_hooks(
         log,
         destination,
-        max_file_bytes,
+        limits,
         sync_parent,
         before_publish,
         |_| Ok(()),
@@ -118,14 +148,14 @@ enum BackupCreationPoint {
 fn create_with_stage_hooks(
     log: &Log,
     destination: &Path,
-    max_file_bytes: Option<u64>,
+    limits: FullLogBackupLimits,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
     mut hook: impl FnMut(BackupCreationPoint) -> io::Result<()>,
 ) -> io::Result<()> {
     log.verify_witness()?;
     let log_len = log.len()?;
-    if let Some(limit) = max_file_bytes {
+    if let Some(limit) = limits.max_file_bytes {
         let file_bytes = HEADER_SIZE
             .checked_add(log_len)
             .and_then(|bytes| bytes.checked_add(FOOTER_SIZE));
@@ -136,6 +166,7 @@ fn create_with_stage_hooks(
             ));
         }
     }
+    check_scan_limit(log_len.checked_mul(2), limits.max_log_scan_bytes)?;
     let parent = parent_directory(destination)?;
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     temp.write_all(HEADER)?;
@@ -153,12 +184,13 @@ fn create_with_stage_hooks(
     hook(BackupCreationPoint::FooterWritten)?;
     temp.sync_all()?;
     hook(BackupCreationPoint::FileSynced)?;
-    let verified = validate(&temp, None)?;
-    if verified.log_len != log_len || verified.digest != digest {
+    let expected = BackupInfo { log_len, digest };
+    if read_frame(&temp)? != expected {
         return Err(record::invalid_data(
             "staged backup differs from the copied log",
         ));
     }
+    verify_payload(&temp, &expected)?;
     hook(BackupCreationPoint::Verified)?;
     before_publish()?;
     // The temp file is on the destination filesystem. Publish only a complete,
@@ -181,11 +213,11 @@ pub(crate) fn restore(source: &Path, destination: &Path) -> io::Result<()> {
 pub(crate) fn restore_tracked(
     source: &Path,
     destination: &Path,
-    max_log_bytes: Option<u64>,
+    limits: FullLogRestoreLimits,
     tracker: &crate::publication_outcome::Tracker,
 ) -> io::Result<()> {
     restore_with_hooks(
-        (source, max_log_bytes),
+        (source, limits),
         destination,
         crate::directory::sync_existing,
         || {
@@ -200,11 +232,16 @@ fn restore_with_sync(
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    restore_with_hooks((source, None), destination, sync_parent, || Ok(()))
+    restore_with_hooks(
+        (source, FullLogRestoreLimits::default()),
+        destination,
+        sync_parent,
+        || Ok(()),
+    )
 }
 
 fn restore_with_hooks(
-    source: (&Path, Option<u64>),
+    source: (&Path, FullLogRestoreLimits),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -223,7 +260,7 @@ enum EmptyRestorePoint {
 }
 
 fn restore_with_empty_hooks(
-    source: (&Path, Option<u64>),
+    source: (&Path, FullLogRestoreLimits),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -240,7 +277,7 @@ fn restore_with_empty_hooks(
 }
 
 fn restore_with_witness_hooks(
-    source: (&Path, Option<u64>),
+    source: (&Path, FullLogRestoreLimits),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -274,7 +311,7 @@ enum RebuildPoint {
 }
 
 fn restore_with_stage_hooks(
-    (source, max_log_bytes): (&Path, Option<u64>),
+    (source, limits): (&Path, FullLogRestoreLimits),
     destination: &Path,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
@@ -283,7 +320,28 @@ fn restore_with_stage_hooks(
     mut stage_hook: impl FnMut(RebuildPoint) -> io::Result<()>,
 ) -> io::Result<()> {
     let backup = crate::directory::open_regular_readonly(source, "backup is not a regular file")?;
-    let info = validate(&backup, max_log_bytes)?;
+    let info = read_frame(&backup)?;
+    let restored_log_len = if info.log_len == 0 {
+        witness::LOG_HEADER_SIZE as u64
+    } else {
+        info.log_len
+    };
+    if limits
+        .max_log_bytes
+        .is_some_and(|limit| restored_log_len > limit)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "restored log exceeds configured byte limit",
+        ));
+    }
+    check_scan_limit(
+        info.log_len
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(restored_log_len)),
+        limits.max_log_scan_bytes,
+    )?;
+    verify_payload(&backup, &info)?;
     let parent = parent_directory(destination)?;
     // Build and verify a complete store in a private staging directory. Publish
     // it atomically without replacing a pre-existing destination.
@@ -504,23 +562,22 @@ fn restore_into(
     // A validated zero-byte legacy backup has no witness. Restore it as an
     // empty witnessed store so normal open cannot confuse it with an
     // interrupted initialization or silently weaken later acknowledgements.
-    let (log, verified_length) = if info.log_len == 0 {
+    let (verified_length, expected_digest) = if info.log_len == 0 {
         if log.metadata()?.len() != 0 {
             return Err(record::invalid_data("restored empty log changed length"));
         }
-        initialize_empty_restored_log(&mut log, empty_hook, metadata_witness::initialize)?;
+        let header =
+            initialize_empty_restored_log(&mut log, empty_hook, metadata_witness::initialize)?;
         (
-            Log::verify_io(Box::new(Arc::new(log)))?,
             witness::LOG_HEADER_SIZE as u64,
+            Sha256::digest(header).into(),
         )
     } else {
-        // Read the synced target back and verify the same bytes against both
-        // the backup digest and every record checksum.
-        (
-            Log::verify_io_digest(Box::new(Arc::new(log)), info.log_len, &info.digest)?,
-            info.log_len,
-        )
+        (info.log_len, info.digest)
     };
+    // Read the synced target back against its exact length, digest and record
+    // checksums before installing a witness.
+    let log = Log::verify_io_digest(Box::new(Arc::new(log)), verified_length, &expected_digest)?;
     stage_hook(RebuildPoint::LogVerified)?;
     log.install_restore_witness_with_hook(destination, verified_length, witness_hook)?;
     stage_hook(RebuildPoint::WitnessInstalled)?;
@@ -544,7 +601,7 @@ fn initialize_empty_restored_log(
     log: &mut File,
     hook: &mut impl FnMut(EmptyRestorePoint) -> io::Result<()>,
     initialize_metadata: impl FnOnce(&File, &witness::LogId, u64) -> io::Result<bool>,
-) -> io::Result<()> {
+) -> io::Result<[u8; witness::LOG_HEADER_SIZE]> {
     let mut header = witness::new_header()?;
     let id = witness::parse_header(&header)?;
     hook(EmptyRestorePoint::BeforeMetadata)?;
@@ -555,10 +612,21 @@ fn initialize_empty_restored_log(
     log.write_all(&header)?;
     hook(EmptyRestorePoint::AfterHeaderWrite)?;
     log.sync_all()?;
-    hook(EmptyRestorePoint::AfterHeaderSync)
+    hook(EmptyRestorePoint::AfterHeaderSync)?;
+    Ok(header)
 }
 
-fn validate(file: &File, max_log_bytes: Option<u64>) -> io::Result<BackupInfo> {
+fn check_scan_limit(bytes: Option<u64>, limit: Option<u64>) -> io::Result<()> {
+    if limit.is_some_and(|limit| bytes.is_none_or(|bytes| bytes > limit)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "full-log backup or restore exceeds configured scan byte limit",
+        ));
+    }
+    Ok(())
+}
+
+fn read_frame(file: &File) -> io::Result<BackupInfo> {
     let total = file.metadata()?.len();
     if total < HEADER_SIZE + FOOTER_SIZE {
         return Err(record::invalid_data("backup is incomplete"));
@@ -581,29 +649,23 @@ fn validate(file: &File, max_log_bytes: Option<u64>) -> io::Result<BackupInfo> {
     {
         return Err(record::invalid_data("backup length mismatch"));
     }
-    let restored_log_len = if log_len == 0 {
-        witness::LOG_HEADER_SIZE as u64
-    } else {
-        log_len
-    };
-    if max_log_bytes.is_some_and(|limit| restored_log_len > limit) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "restored log exceeds configured byte limit",
-        ));
-    }
     let digest: [u8; 32] = footer[16..].try_into().expect("fixed digest field");
+    Ok(BackupInfo { log_len, digest })
+}
+
+fn verify_payload(file: &File, info: &BackupInfo) -> io::Result<()> {
+    let BackupInfo { log_len, digest } = *info;
     let reader = BackupLog {
         file: file.try_clone()?,
         log_len,
     };
     Log::verify_io_digest(Box::new(reader), log_len, &digest)?;
-    if file.metadata()?.len() != total {
+    if file.metadata()?.len() != HEADER_SIZE + log_len + FOOTER_SIZE {
         return Err(record::invalid_data(
             "backup length changed during verification",
         ));
     }
-    Ok(BackupInfo { log_len, digest })
+    Ok(())
 }
 
 /// A read-only view of the log inside a backup; recovery verifies each record.

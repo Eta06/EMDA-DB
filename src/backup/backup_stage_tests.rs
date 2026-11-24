@@ -71,7 +71,7 @@ fn invoke(root: &Path, hook: impl FnMut(BackupCreationPoint) -> io::Result<()>) 
     create_with_stage_hooks(
         &source,
         &root.join("backup"),
-        None,
+        FullLogBackupLimits::default(),
         |_| Ok(()),
         || Ok(()),
         hook,

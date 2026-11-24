@@ -820,7 +820,7 @@ impl CheckpointStore {
         &self,
         destination: impl AsRef<Path>,
     ) -> Result<(), crate::PublicationFailure> {
-        self.backup_detailed_with_limit(destination.as_ref(), None)
+        self.backup_with_limits_detailed(destination, crate::FullLogBackupLimits::default())
     }
 
     /// Creates a full-log backup with a byte ceiling on the complete backup
@@ -833,17 +833,25 @@ impl CheckpointStore {
         destination: impl AsRef<Path>,
         max_file_bytes: u64,
     ) -> Result<(), crate::PublicationFailure> {
-        self.backup_detailed_with_limit(destination.as_ref(), Some(max_file_bytes))
+        self.backup_with_limits_detailed(
+            destination,
+            crate::FullLogBackupLimits {
+                max_file_bytes: Some(max_file_bytes),
+                ..Default::default()
+            },
+        )
     }
 
-    fn backup_detailed_with_limit(
+    /// Creates a verified full-log backup with the independent ceilings of
+    /// [`Store::backup_with_limits_detailed`](crate::Store::backup_with_limits_detailed).
+    pub fn backup_with_limits_detailed(
         &self,
-        destination: &Path,
-        max_file_bytes: Option<u64>,
+        destination: impl AsRef<Path>,
+        limits: crate::FullLogBackupLimits,
     ) -> Result<(), crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.backup_using(destination, |log, destination| {
-                crate::backup::create_tracked(log, destination, max_file_bytes, tracker)
+            self.backup_using(destination.as_ref(), |log, destination| {
+                crate::backup::create_tracked(log, destination, limits, tracker)
             })
         })
     }
