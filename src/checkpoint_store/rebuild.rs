@@ -3060,6 +3060,7 @@ mod tests {
                 }
             }
         }
+        runs.sort_unstable();
         runs
     }
 
@@ -3101,8 +3102,12 @@ mod tests {
         }
         spill.prepare_for_emit().unwrap();
         let files = spill_run_paths(foreign.path());
-        assert_eq!(files.len(), 1);
-        let alternate = fs::read(&files[0]).unwrap();
+        assert_eq!(files.len(), 2);
+        let alternate = files
+            .iter()
+            .find(|path| path.file_name() == destination.file_name())
+            .unwrap();
+        let alternate = fs::read(alternate).unwrap();
         let original = fs::read(destination).unwrap();
         assert_eq!(alternate.len(), original.len());
         assert_eq!(alternate[..28], original[..28]);
@@ -3160,7 +3165,7 @@ mod tests {
                         prior_selection
                     );
                     let runs = spill_run_paths(&case.path);
-                    assert_eq!(runs.len(), 1, "{damage:?}: {runs:?}");
+                    assert_eq!(runs.len(), 2, "{damage:?}: {runs:?}");
                     let bytes = fs::read(&runs[0]).unwrap();
                     assert!(bytes.starts_with(b"EMDASP01"), "{damage:?}");
                     assert!(bytes.len() > 60, "{damage:?}");
@@ -3219,19 +3224,14 @@ mod tests {
                 (SpillDamage::Truncate, ManagedRebuildFailure::NotPublished(error)) => {
                     assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof, "{error}");
                 }
-                (SpillDamage::EntryTag, ManagedRebuildFailure::NotPublished(error)) => {
-                    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
-                    assert!(
-                        error.to_string().contains("unknown spill entry tag"),
-                        "{error}"
-                    );
-                }
                 (
-                    SpillDamage::Key | SpillDamage::SubstituteRun,
+                    SpillDamage::EntryTag | SpillDamage::Key | SpillDamage::SubstituteRun,
                     ManagedRebuildFailure::NotPublished(error),
                 ) => {
                     assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error}");
-                    assert_eq!(error.to_string(), "spill entry checksum mismatch");
+                    // The merge has prefetched the first entry. Exhaustion
+                    // still rehashes the file before anything can publish.
+                    assert_eq!(error.to_string(), "spill run checksum mismatch");
                 }
                 (_, other) => panic!("{damage:?}: {other}"),
             }

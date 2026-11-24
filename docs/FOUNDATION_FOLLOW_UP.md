@@ -307,6 +307,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   show fewer bytes read during offline bounded rebuild when exact merge size
   can be calculated from run metadata. The temporary byte limit and input
   verification still apply.
+  Bounded full-log and trusted-base rebuilds stream the final fan-in into
+  the checkpoint writer. Exact-budget tests omit the final output run
+  and sidecar and preserve the witness on one-under rejection. Corruption
+  tests alter prefetched spill entries before emission and verify that
+  the rebuild preserves the prior selection and pending witness.
   The checkpoint writer and recovered view also accept a per-open suffix
   mutation ceiling. It counts repeated writes, tombstones, and each batch
   child. The writer applies the same ceiling before append and retains it

@@ -1078,6 +1078,80 @@ fn complete_unacknowledged_suffix_is_adopted_and_a_torn_suffix_is_not() {
 }
 
 #[test]
+fn final_spill_merge_fits_without_a_second_materialized_copy() {
+    for v2 in [true, false] {
+        for full in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let base = root.path().join("base");
+            let destination = root.path().join("rebuilt");
+            let reference = root.path().join("reference");
+            let store = open_store(&path, v2);
+            store.put(b"a", b"acknowledged").unwrap();
+            let base_digest = store.checkpoint_to(&base).unwrap();
+            let witness = witness_bytes(&path);
+            store.put(b"b", b"one").unwrap();
+            store.put(b"c", b"two").unwrap();
+            let expected = store.checkpoint_to(&reference).unwrap();
+            drop(store);
+            restore_witness(&path, &witness);
+            let log = fs::read(path.join("records.log")).unwrap();
+            #[cfg(target_os = "linux")]
+            assert_eq!(&log[..8], if v2 { b"EMDALOG2" } else { b"EMDALOG3" });
+
+            // A one-key run occupies 92 bytes plus an 8-byte temporary
+            // sidecar. Full replay first merges two such runs into a
+            // 124-byte run with a 16-byte sidecar.
+            let exact = if full { 2 * 92 + 124 + 16 } else { 2 * 92 + 8 };
+            let rebuild = |max_spill_bytes| {
+                if full {
+                    CheckpointStore::rebuild_managed_selection_full_bounded(
+                        &path,
+                        &destination,
+                        BoundedFullRebuildLimits {
+                            max_log_bytes: log.len() as u64,
+                            max_operations: 3,
+                            max_live_keys: 3,
+                            max_live_key_bytes: 3,
+                            max_chunk_keys: 1,
+                            max_chunk_key_bytes: 1,
+                            max_spill_bytes,
+                            max_merge_fan_in: 2,
+                        },
+                    )
+                } else {
+                    bounded_detailed(
+                        &path,
+                        &destination,
+                        &base,
+                        &base_digest,
+                        1,
+                        max_spill_bytes,
+                        2,
+                    )
+                }
+            };
+            let error = rebuild(exact - 1).unwrap_err();
+            assert!(matches!(error, ManagedRebuildFailure::NotPublished(error)
+                if error.kind() == io::ErrorKind::InvalidInput
+                    && error.to_string() == "rebuild spill byte limit exceeded"));
+            assert_eq!(witness_bytes(&path), witness);
+            assert!(!destination.exists());
+            assert!(!path.join("checkpoint.selection").exists());
+            assert_eq!(rebuild(exact).unwrap(), expected);
+            assert_eq!(
+                fs::read(&destination).unwrap(),
+                fs::read(&reference).unwrap()
+            );
+            assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+            assert_ne!(witness_bytes(&path), witness);
+            assert_no_stages(&path);
+            assert_no_stages(root.path());
+        }
+    }
+}
+
+#[test]
 fn torn_tail_after_complete_record_preserves_existing_selection_and_can_retry() {
     for v2 in [true, false] {
         check_torn_tail(v2, false);

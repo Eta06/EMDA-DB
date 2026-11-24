@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream the final bounded checkpoint spill merge into checkpoint staging,
+  removing the temporary output run and offset sidecar.
+
 - Stream scalar indexed statistics in probe order on success and stop
   querying an index range after a fully consumed short page.
 

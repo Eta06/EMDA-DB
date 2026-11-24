@@ -378,6 +378,10 @@ the document view.
   count before decoding or allocating child updates. On operation-limit
   rejection, they still stream the outer record and check its checksum.
   A passing checksum on that path leaves the child records unverified.
+- Bounded rebuilds stream the final spill merge into the staged checkpoint
+  once the remaining runs fit the merge fan-in. Each input is verified on
+  open, checked per entry and rehashed at exhaustion. Intermediate merges
+  still charge their output file and offset sidecar against the spill cap.
 - Bounded full-log and trusted-base rebuilds check for an occupied checkpoint
   destination under the store lock before replay. With a pending tail they
   check again after staged verification, immediately before advancing the
