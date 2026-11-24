@@ -1885,7 +1885,7 @@ fn retired_move_error_leaves_owned_stage_for_later_cleanup() {
         let root = f.root.canonicalize().unwrap();
         let mut retired = None;
         let error = store
-            .reclaim_using(|path| {
+            .reclaim_using(None, |path| {
                 if path != root {
                     retired = Some(path.join("retired"));
                 }
@@ -1975,7 +1975,7 @@ fn retired_removal_sync_errors_are_reported_and_recoverable() {
         let mut syncs = 0;
         let mut stage = None;
         let error = store
-            .reclaim_using(|path| {
+            .reclaim_using(None, |path| {
                 syncs += 1;
                 if syncs == 1 {
                     stage = Some(path.to_path_buf());
@@ -2015,7 +2015,7 @@ fn detailed_reclamation_includes_removal_during_a_resumed_cleanup() {
     let rows = store.scan(None, None, 4).unwrap();
     let mut retired = None;
     assert!(matches!(
-        store.reclaim_using(|path| {
+        store.reclaim_using(None, |path| {
             retired = Some(path.join("retired"));
             Err(io::Error::other("retirement move interrupted"))
         }),
@@ -2039,6 +2039,61 @@ fn detailed_reclamation_includes_removal_during_a_resumed_cleanup() {
             if error.kind() == io::ErrorKind::WouldBlock
     ));
     assert_eq!(store.scan(None, None, 4).unwrap(), rows);
+}
+
+#[test]
+fn reclamation_budget_counts_resumed_cleanup_and_new_retirement() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.compact().unwrap();
+    store.put(b"later", b"acknowledged").unwrap();
+    let inactive = store.active.slot.other().path(&store.root);
+    let previous_log = fs::read(inactive.join("records.log")).unwrap();
+    let previous_witness = fs::read(inactive.join("commit.state")).unwrap();
+    let active = store.active.slot.path(&store.root);
+    let active_log = fs::read(active.join("records.log")).unwrap();
+    let selection = fs::read(store.root.join(ACTIVE_FILE)).unwrap();
+    let cost = store.store.base.metadata().file_bytes + store.store.suffix_len as u64;
+
+    // A kill before moving the old slot can leave an empty owned stage.
+    let mut stage =
+        crate::staging::Stage::retained_directory(&store.root, &store.active.generation).unwrap();
+    stage.preserve_payload_on_drop();
+    drop(stage);
+
+    assert!(matches!(
+        store.reclaim_inactive_with_scan_limit(cost - 1),
+        Err(StagingCleanupFailure::NotStarted(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "retained reclamation scan byte limit exceeded"
+    ));
+    assert!(crate::staging::has_retained_stage(&store.root).unwrap());
+    assert!(matches!(
+        store.reclaim_inactive_with_scan_limit(cost),
+        Err(StagingCleanupFailure::OutcomeUnknown(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "retained reclamation scan byte limit exceeded"
+    ));
+    assert!(!crate::staging::has_retained_stage(&store.root).unwrap());
+    assert_eq!(
+        fs::read(inactive.join("records.log")).unwrap(),
+        previous_log
+    );
+    assert_eq!(
+        fs::read(inactive.join("commit.state")).unwrap(),
+        previous_witness
+    );
+
+    assert!(store.reclaim_inactive_with_scan_limit(cost).unwrap());
+    assert!(!inactive.exists());
+    assert!(!store.reclaim_inactive_with_scan_limit(0).unwrap());
+    assert_eq!(fs::read(active.join("records.log")).unwrap(), active_log);
+    assert_eq!(fs::read(store.root.join(ACTIVE_FILE)).unwrap(), selection);
+    drop(store);
+    assert_eq!(
+        f.open().get(b"later", 12).unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
 }
 
 #[test]
@@ -2231,7 +2286,7 @@ fn managed_cutover_crash_child() {
     let mut store = ManagedRetainedStore::open(root, LIMITS).unwrap();
     if point == "retire" {
         store.compact().unwrap();
-        let result = store.reclaim_using(|_| pause());
+        let result = store.reclaim_using(None, |_| pause());
         panic!("managed reclamation did not stop at the boundary: {result:?}");
     }
     let result = store.compact_using(

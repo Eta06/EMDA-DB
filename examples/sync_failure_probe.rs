@@ -863,11 +863,11 @@ const RETAINED_FIXTURE_LIMITS: RetainedStoreLimits = RetainedStoreLimits {
     },
 };
 
-fn authorized_reclamation_probe(root: &Path, operation: &str) -> ProbeResult<()> {
+fn authorized_reclamation_probe(root: &Path, operation: &str, cap: Option<u64>) -> ProbeResult<()> {
     let limits = RETAINED_FIXTURE_LIMITS;
     let authority = root.join("authority");
     let catalog = root.join("catalog");
-    if operation == "setup" {
+    if matches!(operation, "setup" | "setup-capped") {
         let source = root.join("source");
         let store = Store::open(&source)?;
         store.put(b"safe", b"acknowledged")?;
@@ -889,7 +889,14 @@ fn authorized_reclamation_probe(root: &Path, operation: &str) -> ProbeResult<()>
         }
         let mut store = AuthorizedRetainedStore::open(&catalog, limits, provider)?;
         store.compact()?;
-        println!("{}", json!({"status":"ready"}));
+        if operation == "setup-capped" {
+            let log = catalog.join("generation-b/records.log");
+            let header = std::fs::metadata(log)?.len();
+            store.put(b"later", b"acknowledged")?;
+            println!("{}", json!({"status":"ready","header_bytes":header}));
+        } else {
+            println!("{}", json!({"status":"ready"}));
+        }
         return Ok(());
     }
     let mut provider = FileRetainedAuthority::open(&authority)?;
@@ -900,7 +907,11 @@ fn authorized_reclamation_probe(root: &Path, operation: &str) -> ProbeResult<()>
     let mut store = AuthorizedRetainedStore::open(&catalog, limits, provider)?;
     match operation {
         "attempt" => {
-            let outcome = match store.reclaim_inactive_with_outcome() {
+            let result = match cap {
+                Some(cap) => store.reclaim_inactive_with_scan_limit(cap),
+                None => store.reclaim_inactive_with_outcome(),
+            };
+            let outcome = match result {
                 Ok(removed) => json!({"status":"success","removed":removed}),
                 Err(error) => {
                     let fence = match error.fence {
@@ -914,9 +925,14 @@ fn authorized_reclamation_probe(root: &Path, operation: &str) -> ProbeResult<()>
                         StagingCleanupFailure::OutcomeUnknown(error) => ("unknown", error),
                         _ => return Err("unknown cleanup outcome".into()),
                     };
-                    let blocked = store.get(b"safe", 16).is_err();
-                    json!({"status":"error","fence":fence,"cleanup":cleanup,
-                           "errno":error.raw_os_error(),"blocked":blocked})
+                    if cap.is_some() {
+                        json!({"status":"error","fence":fence,"cleanup":cleanup,
+                               "kind":format!("{:?}",error.kind()),"message":error.to_string()})
+                    } else {
+                        let blocked = store.get(b"safe", 16).is_err();
+                        json!({"status":"error","fence":fence,"cleanup":cleanup,
+                               "errno":error.raw_os_error(),"blocked":blocked})
+                    }
                 }
             };
             println!("{outcome}");
@@ -1103,7 +1119,10 @@ fn main() -> ProbeResult<()> {
         }
         [command, root] if command == "verify-retained-scan" => attempt_retained_scan(Path::new(root), None),
         [command, root, operation] if command == "archive-retirement" => archive_retirement_probe(Path::new(root), operation),
-        [command, root, operation] if command == "authorized-reclamation" => authorized_reclamation_probe(Path::new(root), operation),
+        [command, root, operation] if command == "authorized-reclamation" => authorized_reclamation_probe(Path::new(root), operation, None),
+        [command, root, operation, cap] if command == "authorized-reclamation" && operation == "attempt" => {
+            authorized_reclamation_probe(Path::new(root), operation, Some(cap.parse()?))
+        }
         [command, root, operation] if command == "authority" => authority_probe(Path::new(root), operation),
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "setup-legacy" => setup_legacy(Path::new(root), operation),

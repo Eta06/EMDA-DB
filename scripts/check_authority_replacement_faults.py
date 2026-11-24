@@ -114,6 +114,65 @@ def check_reclamation(binary, parent):
                                   recovered_revision=revision, trace=trace)), flush=True)
 
 
+def check_reclamation_scan_limit(binary, parent):
+    operation = "authorized-reclamation"
+    with tempfile.TemporaryDirectory(prefix="authority-reclaim-scan-", dir=parent) as directory:
+        root = Path(directory).resolve()
+        prepared = probe(binary, root, "setup-capped", operation)
+        assert prepared["status"] == "ready"
+        header = prepared["header_bytes"]
+        catalog = root / "catalog"
+        active = catalog / "generation-b"
+        inactive = catalog / "generation-a"
+        base, log = active / "base", active / "records.log"
+        witness = active / "commit.state"
+        contents = {path: path.read_bytes() for path in (base, log, witness)}
+        retired = {path: path.read_bytes() for path in inactive.iterdir()}
+        authority = root / "authority/authority.record"
+        current = authority.read_bytes()
+        revision = probe(binary, root, "inspect", operation)["revision"]
+        base_bytes = len(contents[base])
+        suffix_bytes = len(contents[log]) - header
+        assert suffix_bytes > 0
+        cost = base_bytes + suffix_bytes
+        frame_reads = 112 + 32
+        for accepted in (False, True):
+            cap = cost - int(not accepted)
+            trace = root / "trace.log"
+            outcome = json.loads(subprocess.check_output(
+                ["strace", "-qq", "-y", "-o", trace, "-e", "trace=read,pread64",
+                 binary, operation, root, "attempt", str(cap)], text=True, timeout=30))
+            lines = trace.read_text().splitlines()
+            base_pread = 0
+            suffix_pread = 0
+            for line in lines:
+                if line.startswith("pread64(") and (f"<{base}>" in line or f"<{log}>" in line):
+                    match = re.search(r", (\d+)\)\s+= (\d+)$", line)
+                    assert match, line
+                    offset, count = map(int, match.groups())
+                    if f"<{base}>" in line:
+                        base_pread += count
+                    elif offset >= header:
+                        suffix_pread += count
+            assert base_pread == frame_reads + (base_bytes if accepted else 0), lines
+            assert suffix_pread == suffix_bytes * (2 if accepted else 1), lines
+            if accepted:
+                assert outcome == {"status": "success", "removed": True}, outcome
+                assert not inactive.exists()
+                assert probe(binary, root, "inspect", operation)["revision"] == revision + 1
+            else:
+                assert outcome == {"status": "error", "fence": "not_attempted",
+                                   "cleanup": "not_started", "kind": "InvalidInput",
+                                   "message": "retained reclamation scan byte limit exceeded"}, outcome
+                assert authority.read_bytes() == current
+                assert all(path.read_bytes() == data for path, data in retired.items())
+            assert all(path.read_bytes() == data for path, data in contents.items())
+            print(json.dumps(dict(point="reclamation scan limit", cap=cap, outcome=outcome,
+                                  base_bytes=base_bytes, suffix_bytes=suffix_bytes,
+                                  base_pread=base_pread, suffix_pread=suffix_pread,
+                                  trace=lines)), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -149,6 +208,7 @@ def main():
             print(json.dumps(dict(point=point, injection=inject, outcome=outcome,
                                   published=published, trace=trace)), flush=True)
     check_reclamation(binary, args.directory)
+    check_reclamation_scan_limit(binary, args.directory)
 
 
 if __name__ == "__main__":

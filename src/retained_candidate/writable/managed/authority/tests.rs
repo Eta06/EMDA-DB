@@ -1152,7 +1152,18 @@ fn reclamation_rejects_unavailable_inactive_slot_before_advancing_authority() {
     assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
 
     fs::remove_file(unknown).unwrap();
-    assert!(store.reclaim_inactive().unwrap());
+    let cost = store.inner.store.base.metadata().file_bytes + store.inner.store.suffix_len as u64;
+    assert!(matches!(
+        store.reclaim_inactive_with_scan_limit(cost - 1),
+        Err(AuthorizedReclamationFailure {
+            fence: ReclamationFenceOutcome::NotAttempted,
+            cleanup: StagingCleanupFailure::NotStarted(error),
+        }) if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "retained reclamation scan byte limit exceeded"
+    ));
+    assert_eq!(f.provider.read().unwrap(), Some(before));
+    assert_eq!(fs::read(inactive.join("commit.state")).unwrap(), witness);
+    assert!(store.reclaim_inactive_with_scan_limit(cost).unwrap());
     assert_eq!(
         f.provider.read().unwrap(),
         Some(before.finalized(before.committed).unwrap())
@@ -1224,7 +1235,8 @@ fn confirmed_fence_and_uncertain_removal_resume_after_restart() {
     store.put(b"ack", b"keep").unwrap();
     store.compact().unwrap();
     let before = f.provider.read().unwrap().unwrap();
-    let error = store.reclaim_inactive_using(|_| Err(io::Error::other("injected retirement sync")));
+    let error =
+        store.reclaim_inactive_using(None, |_| Err(io::Error::other("injected retirement sync")));
     assert!(matches!(
         error,
         Err(AuthorizedReclamationFailure {
@@ -1240,7 +1252,18 @@ fn confirmed_fence_and_uncertain_removal_resume_after_restart() {
 
     let mut reopened = f.open();
     assert_eq!(reopened.get(b"ack", 4).unwrap().unwrap(), b"keep");
-    assert!(reopened.reclaim_inactive_with_outcome().unwrap());
+    let cost =
+        reopened.inner.store.base.metadata().file_bytes + reopened.inner.store.suffix_len as u64;
+    assert!(matches!(
+        reopened.reclaim_inactive_with_scan_limit(cost - 1),
+        Err(AuthorizedReclamationFailure {
+            fence: ReclamationFenceOutcome::NotAttempted,
+            cleanup: StagingCleanupFailure::NotStarted(error),
+        }) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(crate::staging::has_retained_stage(&f.root).unwrap());
+    assert_eq!(f.provider.read().unwrap(), Some(fence));
+    assert!(reopened.reclaim_inactive_with_scan_limit(cost).unwrap());
     assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
     assert_eq!(f.provider.read().unwrap(), Some(fence));
     assert!(!reopened.reclaim_inactive_with_outcome().unwrap());

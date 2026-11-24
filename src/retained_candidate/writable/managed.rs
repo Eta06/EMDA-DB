@@ -28,6 +28,20 @@ const CUTOVER_MAGIC: &[u8; 8] = b"EMDACT03";
 const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 const ACTIVE_BYTES: usize = 256;
+
+struct RetirementScanBudget(Option<u64>);
+
+impl RetirementScanBudget {
+    fn charge(&mut self, store: &RetainedStore) -> io::Result<()> {
+        if let Some(remaining) = &mut self.0 {
+            *remaining = remaining
+                .checked_sub(store.base.metadata().file_bytes)
+                .and_then(|bytes| bytes.checked_sub(store.suffix_len as u64))
+                .ok_or_else(|| invalid_input("retained reclamation scan byte limit exceeded"))?;
+        }
+        Ok(())
+    }
+}
 const CATALOG_BYTES: usize = 56;
 const RETIREMENT_STAGE_ENTRIES: u64 = 2;
 
@@ -1036,10 +1050,26 @@ impl ManagedRetainedStore {
     /// Moving the inactive slot counts as removal of its catalog name.
     /// The classification includes any stage cleanup resumed by this call.
     pub fn reclaim_inactive_detailed(&mut self) -> Result<bool, StagingCleanupFailure> {
-        self.reclaim_using(sync_existing)
+        self.reclaim_using(None, sync_existing)
     }
 
-    fn resume_retirement(&self, removal_started: &mut bool) -> io::Result<bool> {
+    /// Reclaims under an inclusive logical active-generation read ceiling.
+    /// Each verification charges the complete encoded base and suffix.
+    /// This includes a verification to resume interrupted retirement and,
+    /// if necessary, a separate verification to retire the inactive slot.
+    /// Framing probes, physical retries and metadata I/O have separate costs.
+    pub fn reclaim_inactive_with_scan_limit(
+        &mut self,
+        max_scan_bytes: u64,
+    ) -> Result<bool, StagingCleanupFailure> {
+        self.reclaim_using(Some(max_scan_bytes), sync_existing)
+    }
+
+    fn resume_retirement(
+        &self,
+        budget: &mut RetirementScanBudget,
+        removal_started: &mut bool,
+    ) -> io::Result<bool> {
         if !crate::staging::has_retained_stage(&self.root)? {
             return Ok(false);
         }
@@ -1048,6 +1078,7 @@ impl ManagedRetainedStore {
             &self.active.generation,
             || {
                 self.verify_selection()?;
+                budget.charge(&self.store)?;
                 self.store
                     .verify_complete(&self.active.slot.path(&self.root))
             },
@@ -1064,13 +1095,16 @@ impl ManagedRetainedStore {
 
     fn reclaim_using(
         &mut self,
+        max_scan_bytes: Option<u64>,
         sync_retirement: impl FnMut(&Path) -> io::Result<()>,
     ) -> Result<bool, StagingCleanupFailure> {
+        let mut budget = RetirementScanBudget(max_scan_bytes);
         StagingCleanupFailure::track_removal(|removal_started| {
-            let resumed = self.resume_retirement(removal_started)?;
+            let resumed = self.resume_retirement(&mut budget, removal_started)?;
             let Some((inactive, retired_lock)) = self.lock_inactive_for_retirement()? else {
                 return Ok(resumed);
             };
+            budget.charge(&self.store)?;
             self.reclaim_locked(&inactive, retired_lock, removal_started, sync_retirement)?;
             Ok(true)
         })

@@ -761,22 +761,36 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     /// fence is submitted. Inspect uncertain removal and reopen after an
     /// unconfirmed fence before deciding whether to retry.
     pub fn reclaim_inactive_with_outcome(&mut self) -> Result<bool, AuthorizedReclamationFailure> {
-        self.reclaim_inactive_using(sync_existing)
+        self.reclaim_inactive_using(None, sync_existing)
+    }
+
+    /// Reclaims under the inclusive logical scan ceiling of
+    /// [`ManagedRetainedStore::reclaim_inactive_with_scan_limit`]. The
+    /// verification needed for a new retirement must fit before advancing
+    /// the authority fence. An earlier stage can have been cleaned up first.
+    pub fn reclaim_inactive_with_scan_limit(
+        &mut self,
+        max_scan_bytes: u64,
+    ) -> Result<bool, AuthorizedReclamationFailure> {
+        self.reclaim_inactive_using(Some(max_scan_bytes), sync_existing)
     }
 
     fn reclaim_inactive_using(
         &mut self,
+        max_scan_bytes: Option<u64>,
         sync_retirement: impl FnMut(&Path) -> io::Result<()>,
     ) -> Result<bool, AuthorizedReclamationFailure> {
         use ReclamationFenceOutcome::{Confirmed, NotAttempted, Unconfirmed};
 
         let mut outcome = NotAttempted;
+        let mut budget = RetirementScanBudget(max_scan_bytes);
         StagingCleanupFailure::track_removal(|removal_started| {
             self.verify_current()?;
-            let resumed = self.inner.resume_retirement(removal_started)?;
+            let resumed = self.inner.resume_retirement(&mut budget, removal_started)?;
             let Some((inactive, retired_lock)) = self.inner.lock_inactive_for_retirement()? else {
                 return Ok(resumed);
             };
+            budget.charge(&self.inner.store)?;
             let fence = self.current.finalized(self.current.committed)?;
             outcome = Unconfirmed;
             self.inner.uncertain = true;

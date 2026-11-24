@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound the active-generation verification reads used by retained retirement.
+
 - Add a combined base and suffix scan limit for writable retained recovery.
 
 - Bound the nested values and text bytes examined by document equality and

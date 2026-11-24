@@ -459,6 +459,19 @@ A confirmed fence can accompany either a pre-removal validation error or
 uncertain removal. Cleanup resumed from an earlier call can start before
 a new fence is attempted. The original reclamation methods retain their
 removal-only classification.
+
+Managed and authority-backed handles offer
+`reclaim_inactive_with_scan_limit` for explicit retirement. Each active
+generation verification charges the full encoded base plus live suffix
+length against an inclusive per-call budget. This includes verification
+before resuming a stage and a separate charge if there is also an inactive
+slot to retire. When a charge does not fit, that verification and its
+removal are skipped. A new authority fence is submitted only after its
+verification has been admitted. A call that already cleaned an older stage
+reports that removal attempt even if the next budget charge fails.
+Metadata and framing checks, the EOF probe and physical I/O retries have
+separate costs. Automatic reclamation uses its existing unbudgeted path.
+
 Resolve a conflicting or unrecognized retirement
 marker before rotation. Generic stages left by older releases have no replacement
 binding and retain the earlier cleanup contract. Compaction and reclaim require
