@@ -418,7 +418,7 @@ fn compaction_handoff_preserves_checkpoint_view_limits() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn over_limit_compaction_candidate_does_not_replace_the_source() {
+fn over_limit_compaction_candidate_is_not_published() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");
     let checkpoint = root.path().join("index");
@@ -438,22 +438,20 @@ fn over_limit_compaction_candidate_does_not_replace_the_source() {
             .unwrap();
     store.put(b"new", b"acknowledged").unwrap();
     let before = fs::read(path.join("records.log")).unwrap();
+    let witness = fs::read(path.join("commit.state")).unwrap();
     let previous = root.path().join("previous");
-    let error = store
-        .compact_and_replace(&previous)
-        .err()
-        .expect("candidate must exceed its cap");
-    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert!(matches!(
+        store.compact_and_replace_detailed(&previous),
+        Err(database_engine::HandoffFailure::NotPublished(error))
+            if error.kind() == ErrorKind::InvalidInput
+                && error.to_string() == "checkpoint exceeds configured file size limit"
+    ));
     assert_eq!(fs::read(path.join("records.log")).unwrap(), before);
-    assert!(previous.exists());
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness);
+    assert!(!previous.exists());
     let original = retry_lock(|| Store::open(&path)).unwrap();
     assert_eq!(
         original.get(b"new").unwrap().as_deref(),
-        Some(&b"acknowledged"[..])
-    );
-    let candidate = retry_lock(|| Store::open(&previous)).unwrap();
-    assert_eq!(
-        candidate.get(b"new").unwrap().as_deref(),
         Some(&b"acknowledged"[..])
     );
 }
