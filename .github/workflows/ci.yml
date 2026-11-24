@@ -3,6 +3,9 @@ name: CI
 "on":
   push:
     branches: [main]
+    # Archiving completed runs must not queue another benchmark run.
+    paths-ignore:
+      - "benchmarks/results/**"
   pull_request:
 
 permissions:
