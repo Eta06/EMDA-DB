@@ -47,12 +47,12 @@ def command(binary, phase, fixture, backend, keys, epoch):
 
 
 def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False,
-        retained_address_space_bytes=None):
+        address_space=None):
     fixture = directory / "fixture"
     excluded = ()
     if phase in {"bind-archive", "lifecycle", "authorized-lifecycle"}:
         paths = [fixture]
-        excluded = (fixture / "ordinary", fixture / "sqlite")
+        excluded = (fixture / "ordinary", fixture / "sqlite", fixture / "checkpoint")
     elif backend == "retained":
         paths = [fixture / backend, fixture / "authority"]
     elif phase == "setup":
@@ -67,9 +67,6 @@ def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False,
     args = command(binary, phase, fixture, backend, keys, epoch)
     if wide_suffix:
         args.append("--wide-suffix")
-    address_space = (retained_address_space_bytes
-                     if backend == "retained" and phase in {"mutate", "reopen", "verify"}
-                     else None)
     if address_space is not None:
         args = ["prlimit", f"--as={address_space}:{address_space}", "--", *args]
     with logfile.open("w") as out:
@@ -123,6 +120,10 @@ def main():
     parser.add_argument("keys", type=int)
     parser.add_argument("epochs", type=int)
     parser.add_argument("--sqlite", action="store_true", help="include a WAL/FULL SQLite control")
+    parser.add_argument("--checkpoint", action="store_true",
+                        help="include a writable checkpoint store with automatic rollover")
+    parser.add_argument("--checkpoint-address-space-mib", type=int,
+                        help="Linux hard address-space ceiling for checkpoint mutate, reopen and verify phases")
     parser.add_argument("--retained-address-space-mib", type=int,
                         help="Linux hard address-space ceiling for retained mutate, reopen and verify phases")
     parser.add_argument("--wide-suffix", action="store_true", help="run 32,768 mutations per epoch with a 12 MiB suffix budget")
@@ -134,15 +135,23 @@ def main():
         parser.error(f"keys must be {min_keys}–1048576 and epochs must be 1–1000")
     if args.authorized_restore and not args.retire_and_restore:
         parser.error("--authorized-restore requires --retire-and-restore")
-    address_space = None
-    if args.retained_address_space_mib is not None:
-        if sys.platform != "linux" or args.retained_address_space_mib <= 0:
-            parser.error("--retained-address-space-mib requires Linux and a positive limit")
-        address_space = args.retained_address_space_mib * 1024**2
+    if args.checkpoint_address_space_mib is not None and not args.checkpoint:
+        parser.error("--checkpoint-address-space-mib requires --checkpoint")
+    address_spaces = {}
+    for backend, mib in (("retained", args.retained_address_space_mib),
+                         ("checkpoint", args.checkpoint_address_space_mib)):
+        if mib is not None:
+            if sys.platform != "linux" or mib <= 0:
+                parser.error(f"--{backend}-address-space-mib requires Linux and a positive limit")
+            address_spaces[backend] = mib * 1024**2
     binary, directory = args.binary.resolve(strict=True), args.new_directory.resolve()
     directory.mkdir()
     backends = ["ordinary", "retained", "sqlite"] if args.sqlite else ["ordinary", "retained"]
-    orders = tuple(permutations(backends))
+    if args.checkpoint:
+        backends.insert(1, "checkpoint")
+        orders = tuple(backends[i:] + backends[:i] for i in range(len(backends)))
+    else:
+        orders = tuple(permutations(backends))
     provenance = {
         "platform": platform.platform(), "binary": str(binary),
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -152,14 +161,19 @@ def main():
         "retire_and_restore": args.retire_and_restore,
         "authorized_restore": args.authorized_restore,
         "wide_suffix": args.wide_suffix,
-        "retained_address_space_limit_bytes": address_space,
+        "retained_address_space_limit_bytes": address_spaces.get("retained"),
+        "checkpoint_address_space_limit_bytes": address_spaces.get("checkpoint"),
     }
     (directory / "environment.json").write_text(json.dumps(provenance, indent=2) + "\n")
     def phase(phase_name, backend, epoch):
+        address_space = (address_spaces.get(backend)
+                         if phase_name in {"mutate", "reopen", "verify"} else None)
         return run(binary, directory, phase_name, backend, args.keys, epoch,
-                   wide_suffix=args.wide_suffix, retained_address_space_bytes=address_space)
+                   wide_suffix=args.wide_suffix, address_space=address_space)
 
     phase("setup", "all" if args.sqlite else "both", 0)
+    if args.checkpoint:
+        phase("checkpoint-setup", "checkpoint", 0)
     if args.retire_and_restore:
         phase("bind-archive", "retained", 0)
     phase("cutover", "retained", 0)

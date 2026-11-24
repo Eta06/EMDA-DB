@@ -1,6 +1,6 @@
-//! Phase runner for full-log, authority-backed, and SQLite recovery.
+//! Phase runner for full-log, checkpoint, authority-backed, and SQLite recovery.
 use database_engine::{
-    BatchOperation, Entry, RetainedExportLimits, Store,
+    BatchOperation, CheckpointStore, CheckpointStoreLimits, Entry, RetainedExportLimits, Store,
     retained_base_v2::Limits,
     retained_candidate::{
         AuthorizedRetainedStore, CutoverArchiveBinding, FileRetainedAuthority, IndexLimits,
@@ -44,6 +44,7 @@ const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
 
 enum Backend {
     Ordinary(Box<Store>),
+    Checkpoint(Box<CheckpointStore>),
     Retained(Box<Catalog>),
     Sqlite(Connection),
 }
@@ -101,6 +102,9 @@ impl Backend {
     fn open(root: &Path, name: &str, limits: RetainedStoreLimits) -> Result<Self> {
         match name {
             "ordinary" => Ok(Self::Ordinary(Box::new(Store::open(root.join(name))?))),
+            "checkpoint" => Ok(Self::Checkpoint(Box::new(open_checkpoint(
+                &root.join(name),
+            )?))),
             "retained" => {
                 let provider = FileRetainedAuthority::open(root.join("authority"))?;
                 let store = Catalog::open_with_auto_reclaim(
@@ -119,6 +123,7 @@ impl Backend {
     fn write(&mut self, operations: &[BatchOperation<'_>]) -> Result<()> {
         match self {
             Self::Ordinary(store) => store.write_batch(operations)?,
+            Self::Checkpoint(store) => store.write_batch(operations)?,
             Self::Retained(store) => store.write_batch(operations)?,
             Self::Sqlite(connection) => {
                 let transaction = connection.transaction()?;
@@ -147,6 +152,7 @@ impl Backend {
     fn get(&mut self, key: &[u8]) -> Result<Vec<u8>> {
         Ok(match self {
             Self::Ordinary(store) => store.get(key)?.ok_or("missing probe key")?,
+            Self::Checkpoint(store) => store.get(key)?.ok_or("missing probe key")?,
             Self::Retained(store) => store.get(key, 96)?.ok_or("missing probe key")?,
             Self::Sqlite(connection) => {
                 connection.query_row("SELECT value,crc FROM kv WHERE key=?1", [key], |row| {
@@ -159,6 +165,7 @@ impl Backend {
     fn page(&mut self, after: Option<&[u8]>) -> Result<Vec<Entry>> {
         match self {
             Self::Ordinary(store) => Ok(store.scan(after, None, 1024)?),
+            Self::Checkpoint(store) => Ok(store.scan(after, None, 1024)?),
             Self::Retained(store) => Ok(store.scan(after, None, 1024)?),
             Self::Sqlite(connection) => {
                 let mut query = connection.prepare_cached(
@@ -171,6 +178,24 @@ impl Backend {
             }
         }
     }
+}
+
+fn open_checkpoint(path: &Path) -> io::Result<CheckpointStore> {
+    CheckpointStore::open_managed_with_options(
+        path,
+        CheckpointStoreLimits {
+            max_tail_bytes: 2 << 20,
+            ..CheckpointStoreLimits::default()
+        },
+    )
+}
+
+fn checkpoint_lengths(root: &Path, store: &CheckpointStore) -> Result<(u64, u64)> {
+    let length = fs::metadata(root.join("checkpoint/records.log"))?.len();
+    let boundary = length
+        .checked_sub(store.tail_bytes()?)
+        .ok_or("checkpoint suffix exceeds its log")?;
+    Ok((length, boundary))
 }
 
 fn value(key: u64, epoch: u64) -> [u8; 96] {
@@ -384,7 +409,7 @@ fn authority_state(root: &Path) -> Result<(u64, u64, [u8; 16])> {
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let [_, phase, root, name, keys, epoch, options @ ..] = args.as_slice() else {
-        return Err("usage: authorized_recovery_bench <setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|retained|sqlite|both|all> <keys> <epoch> [--wide-suffix]".into());
+        return Err("usage: authorized_recovery_bench <setup|checkpoint-setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|checkpoint|retained|sqlite|both|all> <keys> <epoch> [--wide-suffix]".into());
     };
     let churn = match options {
         [] => DEFAULT_CHURN,
@@ -438,6 +463,14 @@ fn main() -> Result<()> {
                 apply(&mut store, keys, 0)?;
             }
         }
+        "checkpoint-setup" if name == "checkpoint" => {
+            let path = root.join(name);
+            let mut store = Backend::Ordinary(Box::new(Store::open(&path)?));
+            apply(&mut store, keys, 0)?;
+            drop(store);
+            CheckpointStore::rebuild_managed_selection(&path, path.join("initial.index"))?;
+            open_checkpoint(&path)?.enable_automatic_checkpoints()?;
+        }
         "bind-archive" => bind_legacy_archive(root)?,
         "cutover" => {
             let path = root.join("retained");
@@ -474,6 +507,10 @@ fn main() -> Result<()> {
                 let before = (name == "retained")
                     .then(|| authority_state(root))
                     .transpose()?;
+                let checkpoint_before = match &store {
+                    Backend::Checkpoint(store) => Some(checkpoint_lengths(root, store)?.1),
+                    _ => None,
+                };
                 let start = Instant::now();
                 let cpu_start = cpu_ns();
                 apply(&mut store, churn, epoch)?;
@@ -492,6 +529,10 @@ fn main() -> Result<()> {
                         return Err("unpaired rotation and reclamation revisions".into());
                     }
                     println!("rotations={}", revisions / 2);
+                }
+                if let (Some(before), Backend::Checkpoint(store)) = (checkpoint_before, &store) {
+                    let (_, after) = checkpoint_lengths(root, store)?;
+                    println!("checkpoint_advanced={}", u8::from(after > before));
                 }
             } else if phase == "verify" {
                 let start = Instant::now();
@@ -525,6 +566,12 @@ fn main() -> Result<()> {
                 println!(
                     "log_bytes={}",
                     fs::metadata(root.join("ordinary/records.log"))?.len()
+                );
+            } else if let Backend::Checkpoint(store) = &store {
+                let (length, boundary) = checkpoint_lengths(root, store)?;
+                println!(
+                    "log_bytes={length} checkpoint_boundary={boundary} suffix_bytes={}",
+                    length - boundary
                 );
             } else {
                 let wal = root.join("sqlite/kv.db-wal");

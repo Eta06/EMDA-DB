@@ -26,17 +26,22 @@ python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/wide-suffix" 1048576 6 --sqlite --wide-suffix
 # Linux with util-linux prlimit
 python3 examples/authorized_recovery_bench.py \
-  target/release/examples/authorized_recovery_bench "$run/memory-ceiling" 262144 4 --sqlite --wide-suffix --retained-address-space-mib 48
+  target/release/examples/authorized_recovery_bench "$run/memory-ceiling" 262144 4 \
+  --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48
 ```
 
-The Linux ceiling applies a hard and soft `RLIMIT_AS` to each fresh retained
-worker that opens the writable catalog, mutates it, rotates it, or verifies
-its live state. Each phase records the limit and process peak RSS. Fixture
+`--checkpoint` adds a writable managed checkpoint store with automatic
+rollover and a 2 MiB suffix byte limit. It rotates the starting backend
+across epochs and records the covered log boundary so rollover can be
+verified. Checkpoint reopen verifies the covered log, including old records.
+
+The Linux ceilings apply hard and soft `RLIMIT_AS` to the selected retained
+and checkpoint workers during mutation, fresh-process reopen and full-state
+verification. Each phase records its limit and process peak RSS. Fixture
 creation, initial cutover, optional backup and restore phases, and the
-ordinary and SQLite controls run uncapped. The ceiling covers one worker's
-virtual address space. Allocation failure can terminate the worker, so apply
-the ceiling to a dedicated process. Aggregate memory use and filesystem
-caches have separate costs.
+ordinary and SQLite controls run uncapped. A ceiling covers one worker's
+virtual address space. Allocation failure can terminate the worker.
+Aggregate memory use and filesystem caches have separate costs.
 
 Each run needs a fresh directory and enough space for both fixtures and
 the two retained generations that coexist during rotation. Run builds

@@ -122,45 +122,46 @@ jobs:
           if-no-files-found: ignore
 
   retained-memory-ceiling:
-    name: Retained writable recovery / Linux memory ceiling
+    name: Writable recovery / Linux memory ceiling
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
-      - name: Verify retained writes and recovery under a 48 MiB address-space limit
+      - name: Verify retained and checkpoint recovery under a 48 MiB address-space limit
         run: |
           source scripts/benchmarks/record_case.sh
           cargo +stable build --release --locked --example authorized_recovery_bench
           status=0
-          record_benchmark retained-memory-ceiling python3 examples/authorized_recovery_bench.py target/release/examples/authorized_recovery_bench "$RUNNER_TEMP/retained-memory-workload" 262144 4 --sqlite --wide-suffix --retained-address-space-mib 48 || status=$?
-          if [[ -d "$RUNNER_TEMP/retained-memory-workload" ]]; then
-            find "$RUNNER_TEMP/retained-memory-workload" -maxdepth 1 -type f -exec cp {} "$RUNNER_TEMP/benchmark-attempts/retained-memory-ceiling/" \;
+          record_benchmark writable-recovery-memory-ceiling python3 examples/authorized_recovery_bench.py target/release/examples/authorized_recovery_bench "$RUNNER_TEMP/writable-memory-workload" 262144 4 --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 || status=$?
+          if [[ -d "$RUNNER_TEMP/writable-memory-workload" ]]; then
+            find "$RUNNER_TEMP/writable-memory-workload" -maxdepth 1 -type f -exec cp {} "$RUNNER_TEMP/benchmark-attempts/writable-recovery-memory-ceiling/" \;
           fi
           if [[ "$status" != 0 ]]; then
             exit "$status"
           fi
-          python3 - "$RUNNER_TEMP/retained-memory-workload/measurements.jsonl" <<'PY'
+          python3 - "$RUNNER_TEMP/writable-memory-workload/measurements.jsonl" <<'PY'
           import json
           import sys
           from pathlib import Path
 
           phases = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
-          expected = {(epoch, phase) for epoch in range(1, 5)
+          expected = {(backend, epoch, phase) for backend in ("checkpoint", "retained")
+                      for epoch in range(1, 5)
                       for phase in ("mutate", "reopen", "verify")}
           capped = [phase for phase in phases if phase["address_space_limit_bytes"] is not None]
           if (len(capped) != len(expected)
-                  or {(phase["epoch"], phase["phase"]) for phase in capped} != expected
-                  or any(phase["backend"] != "retained"
-                         or phase["address_space_limit_bytes"] != 48 * 1024**2 for phase in capped)
-                  or sum(phase.get("rotations", 0) for phase in capped) == 0):
-              raise SystemExit("Expected capped retained phases and at least one retained rotation")
+                  or {(phase["backend"], phase["epoch"], phase["phase"]) for phase in capped} != expected
+                  or any(phase["address_space_limit_bytes"] != 48 * 1024**2 for phase in capped)
+                  or sum(phase.get("rotations", 0) for phase in capped) == 0
+                  or sum(phase.get("checkpoint_advanced", 0) for phase in capped) == 0):
+              raise SystemExit("Expected capped retained rotation and checkpoint rollover")
           PY
       - name: Preserve the workload attempt
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: retained-memory-ceiling
-          path: ${{ runner.temp }}/benchmark-attempts/retained-memory-ceiling/
+          name: writable-recovery-memory-ceiling
+          path: ${{ runner.temp }}/benchmark-attempts/writable-recovery-memory-ceiling/
           if-no-files-found: ignore

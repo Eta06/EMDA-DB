@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Exercise writable checkpoint rollover and fresh-process recovery alongside
+  retained recovery under the Linux memory ceiling.
+
 - Reject oversized bounded checkpoint rebuilds before the final spill merge,
   using the exact encoded size of the replayed live keys.
 
