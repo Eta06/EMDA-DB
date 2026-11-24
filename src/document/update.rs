@@ -2,7 +2,9 @@
 mod array;
 mod input;
 mod scalar;
-use super::{index::IndexValue, key, schema, transaction::DocumentTransaction};
+use super::{
+    equality::EqualityWork, index::IndexValue, key, schema, transaction::DocumentTransaction,
+};
 pub use input::MAX_DOCUMENT_UPDATE_INPUT_BYTES;
 use serde_json::{Map, Value};
 use std::io;
@@ -83,7 +85,16 @@ fn parent_mut<'a>(
         .ok_or_else(|| key::invalid("update path traverses a non-object"))
 }
 
-fn apply(document: &mut Value, updates: &[DocumentUpdate]) -> io::Result<()> {
+fn equals(work: &mut EqualityWork, left: &Value, right: &Value) -> io::Result<bool> {
+    work.equals(left, right)
+        .map_err(|error| error.into_io_error("update equality text byte limit exceeded"))
+}
+
+fn apply(
+    document: &mut Value,
+    updates: &[DocumentUpdate],
+    equality: &mut EqualityWork,
+) -> io::Result<()> {
     let mut array_work = 0;
     for update in updates {
         match update {
@@ -122,7 +133,7 @@ fn apply(document: &mut Value, updates: &[DocumentUpdate]) -> io::Result<()> {
             | DocumentUpdate::ArrayTruncate { .. }
             | DocumentUpdate::ArrayReverse { .. }
             | DocumentUpdate::ArrayKeepLast { .. } => {
-                array::apply(document, update, &mut array_work)?
+                array::apply(document, update, &mut array_work, equality)?
             }
         }
     }
@@ -133,6 +144,8 @@ impl DocumentTransaction<'_, '_> {
     /// Conditionally applies ordered updates. All conditions must match. If
     /// `upsert` is true a missing ID starts as an empty object; otherwise it
     /// returns false. A false condition causes no write and returns false.
+    /// Conditions and array equality operators share limits on nested value
+    /// comparisons and text bytes. Exceeding either limit rejects the update.
     pub fn update_if(
         &mut self,
         collection: &str,
@@ -198,12 +211,19 @@ impl DocumentTransaction<'_, '_> {
             else {
                 return Ok(false);
             };
-            if conditions.iter().any(|condition| {
-                schema::field(&document, &condition.path) != condition.expected.as_ref()
-            }) {
-                return Ok(false);
+            let mut equality = EqualityWork::default();
+            for condition in conditions {
+                let actual = schema::field(&document, &condition.path);
+                let matches = match (actual, condition.expected.as_ref()) {
+                    (Some(left), Some(right)) => equals(&mut equality, left, right)?,
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !matches {
+                    return Ok(false);
+                }
             }
-            apply(&mut document, updates)?;
+            apply(&mut document, updates, &mut equality)?;
             this.set(collection, id, &document, false, upsert)?;
             Ok(true)
         })

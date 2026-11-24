@@ -1,5 +1,6 @@
 //! Explicitly bounded collection scans, filters, sorting and projection.
 use super::{
+    equality::EqualityWork,
     index::{IndexValue, MAX_INDEX_STRING_BYTES},
     key,
     query::DocumentEntry,
@@ -17,8 +18,6 @@ const MAX_FILTER_NODES: usize = 128;
 const MAX_FILTER_VALUES: usize = 256;
 const MAX_FILTER_INPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FILTER_COMPARISONS: usize = 1_000_000;
-const MAX_FILTER_NESTED_COMPARISONS: usize = 1_000_000;
-const MAX_FILTER_EQUALITY_TEXT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_FILTER_ARRAY_ELEMENT_VISITS: usize = 1_000_000;
 
 /// A filter evaluated against object paths. Missing never equals null. Paths
@@ -191,8 +190,7 @@ struct FilterValueBudget {
     values: usize,
     bytes: usize,
     comparisons: usize,
-    nested_comparisons: usize,
-    equality_text_bytes: usize,
+    equality: EqualityWork,
     array_element_visits: usize,
 }
 
@@ -264,62 +262,9 @@ impl FilterValueBudget {
 
     fn equals(&mut self, left: &Value, right: &Value) -> io::Result<bool> {
         self.charge_comparison()?;
-        self.equal_json(left, right)
-    }
-
-    fn charge_equality_text(&mut self, bytes: usize) -> io::Result<()> {
-        if bytes > MAX_FILTER_EQUALITY_TEXT_BYTES - self.equality_text_bytes {
-            return Err(key::invalid("filter equality text byte limit exceeded"));
-        }
-        self.equality_text_bytes += bytes;
-        Ok(())
-    }
-
-    fn equal_child(&mut self, left: &Value, right: &Value) -> io::Result<bool> {
-        if self.nested_comparisons == MAX_FILTER_NESTED_COMPARISONS {
-            return Err(key::invalid("nested equality comparison limit exceeded"));
-        }
-        self.nested_comparisons += 1;
-        self.equal_json(left, right)
-    }
-
-    fn equal_json(&mut self, left: &Value, right: &Value) -> io::Result<bool> {
-        match (left, right) {
-            (Value::String(left), Value::String(right)) => {
-                if left.len() != right.len() {
-                    return Ok(false);
-                }
-                self.charge_equality_text(left.len())?;
-                Ok(left == right)
-            }
-            (Value::Array(left), Value::Array(right)) => {
-                if left.len() != right.len() {
-                    return Ok(false);
-                }
-                for (left, right) in left.iter().zip(right) {
-                    if !self.equal_child(left, right)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            (Value::Object(left), Value::Object(right)) => {
-                if left.len() != right.len() {
-                    return Ok(false);
-                }
-                for (key, left) in left {
-                    self.charge_equality_text(key.len())?;
-                    let Some(right) = right.get(key) else {
-                        return Ok(false);
-                    };
-                    if !self.equal_child(left, right)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            _ => Ok(left == right),
-        }
+        self.equality
+            .equals(left, right)
+            .map_err(|error| error.into_io_error("filter equality text byte limit exceeded"))
     }
 
     fn contains(&mut self, array: &[Value], value: &Value) -> io::Result<bool> {
@@ -905,7 +850,7 @@ mod streaming_tests {
     use serde_json::json;
 
     #[test]
-    fn bounded_equality_matches_serde_for_nested_values_and_charges_object_keys() {
+    fn bounded_equality_matches_serde_for_nested_values() {
         let values = [
             json!({"a": {"z": [0, 1.0, null]}, "b": "text"}),
             json!({"a": {"z": [0, 1, null]}, "b": "text"}),
@@ -919,16 +864,6 @@ mod streaming_tests {
                 assert_eq!(budget.equals(left, right).unwrap(), left == right);
             }
         }
-        let mut budget = FilterValueBudget {
-            equality_text_bytes: MAX_FILTER_EQUALITY_TEXT_BYTES - 3,
-            ..Default::default()
-        };
-        let value = json!({"key": 0});
-        assert!(budget.equals(&value, &value).unwrap());
-        assert_eq!(
-            budget.equals(&value, &value).unwrap_err().to_string(),
-            "filter equality text byte limit exceeded"
-        );
     }
 
     #[test]

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound nested JSON equality work across document update conditions and array
+  add-unique and remove operators.
+
 - Add a shared per-mutation read budget for automatic retained rotation and
   retirement, with the same ceiling available for cleanup when enabling the
   policy on a recovered handle.

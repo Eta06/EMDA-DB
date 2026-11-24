@@ -1,11 +1,10 @@
 //! Bounded ordered array mutations on an isolated in-memory document value.
-use super::{DocumentUpdate, parent_mut};
-use crate::document::key;
+use super::{DocumentUpdate, equals, parent_mut};
+use crate::document::{equality::EqualityWork, key};
 use serde_json::{Map, Value};
 use std::io;
 
-// Logical work, not a wall-time or total-memory bound. Equality comparisons
-// may inspect complex nested values, and each transaction has other work.
+// Array entries visited or moved. Nested equality work is counted separately.
 const MAX_ARRAY_ENTRIES_EXAMINED: usize = 1_000_000;
 pub(super) fn validate_inputs(
     updates: &[DocumentUpdate],
@@ -56,6 +55,7 @@ pub(super) fn apply(
     document: &mut Value,
     update: &DocumentUpdate,
     work: &mut usize,
+    equality: &mut EqualityWork,
 ) -> io::Result<()> {
     match update {
         DocumentUpdate::ArrayPush { path, value } => {
@@ -65,14 +65,26 @@ pub(super) fn apply(
         DocumentUpdate::ArrayAddUnique { path, value } => {
             let values = array(document, path, true)?.expect("created array");
             reserve_work(work, values.len())?;
-            if !values.contains(value) {
-                values.push(value.clone());
+            for item in values.iter() {
+                if equals(equality, item, value)? {
+                    return Ok(());
+                }
             }
+            values.push(value.clone());
         }
         DocumentUpdate::ArrayRemove { path, value } => {
             if let Some(values) = array(document, path, false)? {
                 reserve_work(work, values.len())?;
-                values.retain(|item| item != value);
+                // Compact the survivors in order without allocating a second array.
+                // The caller discards the private document if equality fails.
+                let mut kept = 0;
+                for index in 0..values.len() {
+                    if !equals(equality, &values[index], value)? {
+                        values.swap(kept, index);
+                        kept += 1;
+                    }
+                }
+                values.truncate(kept);
             }
         }
         DocumentUpdate::ArrayPop { path, first } => {

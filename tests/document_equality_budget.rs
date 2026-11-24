@@ -1,7 +1,8 @@
-//! Equality inputs and work share the document filter's resource budgets.
+//! Queries and updates bound their exact JSON equality work.
 use database_engine::{
     AggregateRequest, AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase,
-    DocumentFilter, DocumentQuery, DocumentQueryAccess, IndexDefinition, Store,
+    DocumentFilter, DocumentQuery, DocumentQueryAccess, DocumentUpdate, FieldCondition,
+    IndexDefinition, Store,
 };
 use serde_json::{Value, json};
 use std::io::ErrorKind;
@@ -287,5 +288,89 @@ fn repeated_string_equality_stops_at_the_shared_text_limit() {
         );
         assert_eq!(db.get("c", "overflow").unwrap(), None);
         assert_eq!(db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(), None);
+    });
+}
+
+#[test]
+fn conditional_update_shares_nested_work_with_array_operators() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        let item = json!(vec![0; 15_625]);
+        let original = json!({"expected": item, "items": [item]});
+        db.insert("c", "a", &original).unwrap();
+
+        let conditions = vec![
+            FieldCondition {
+                path: path("expected"),
+                expected: Some(item.clone()),
+            };
+            63
+        ];
+        let add = DocumentUpdate::ArrayAddUnique {
+            path: path("items"),
+            value: item,
+        };
+        // 63 matching preconditions plus one matching array element visit
+        // exactly 1,000,000 child values.
+        assert!(
+            db.update_if("c", "a", &conditions, std::slice::from_ref(&add), false)
+                .unwrap()
+        );
+        let error = db
+            .transaction(|tx| {
+                tx.put_raw(b"rollback", b"value")?;
+                tx.update_if(
+                    "c",
+                    "a",
+                    &conditions,
+                    &[
+                        DocumentUpdate::Set {
+                            path: path("changed"),
+                            value: json!(true),
+                        },
+                        add.clone(),
+                        add.clone(),
+                    ],
+                    false,
+                )
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "nested equality comparison limit exceeded"
+        );
+        assert_eq!(db.get("c", "a").unwrap(), Some(original));
+        assert_eq!(db.transaction(|tx| tx.get_raw(b"rollback")).unwrap(), None);
+    });
+}
+
+#[test]
+fn repeated_array_removal_shares_the_text_comparison_limit() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        let item = "x".repeat(32 * 1024);
+        let original = json!({"items": vec![item.clone(); 31]});
+        db.insert("c", "a", &original).unwrap();
+        let mut near_match = item;
+        near_match.pop();
+        near_match.push('y');
+        let remove = DocumentUpdate::ArrayRemove {
+            path: path("items"),
+            value: json!(near_match),
+        };
+        // 66 passes spend just under 64 MiB of logical text comparisons.
+        let mut removals = vec![remove.clone(); 66];
+        assert!(db.update_if("c", "a", &[], &removals, false).unwrap());
+        removals.push(remove);
+        let error = db.update_if("c", "a", &[], &removals, false).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "update equality text byte limit exceeded"
+        );
+        assert_eq!(db.get("c", "a").unwrap(), Some(original));
     });
 }

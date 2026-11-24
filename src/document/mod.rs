@@ -3,6 +3,7 @@ mod aggregate;
 mod aggregate_stats;
 mod bulk;
 mod detailed_mutations;
+mod equality;
 mod filter;
 mod index;
 mod integrity;
