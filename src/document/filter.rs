@@ -709,6 +709,10 @@ impl<'a, F: FnMut(&Value) -> io::Result<()>> FilteredVisitor<'a, F> {
         }
     }
 
+    pub(super) fn has_failed(&self) -> bool {
+        self.filter_error.is_some() || self.callback_error.is_some()
+    }
+
     pub(super) fn finish(self, scanned: usize) -> io::Result<QueryPlan> {
         if let Some(error) = self.filter_error.or(self.callback_error) {
             return Err(error);

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream scalar indexed statistics in probe order on success and stop
+  querying an index range after a fully consumed short page.
+
 - Add opt-in index-assisted grouped integer statistics with candidate
   bounds, deduplication, and transaction range validation.
 

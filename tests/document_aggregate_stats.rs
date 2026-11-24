@@ -1,6 +1,7 @@
 use database_engine::{
     AggregateRequest, AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase,
-    DocumentFilter, DocumentQueryAccess, IndexDefinition, IndexValue, Store,
+    DocumentFilter, DocumentQueryAccess, DocumentReadLimits, DocumentTransactionMode,
+    IndexDefinition, IndexValue, Store, TransactionFailure,
 };
 use serde_json::json;
 use std::{io::ErrorKind, sync::Barrier};
@@ -581,6 +582,96 @@ fn planned_statistics_deduplicate_disjuncts_and_enforce_candidate_limits() {
             error.to_string(),
             "document scan exceeds the operation limit"
         );
+    });
+}
+
+#[test]
+fn scalar_membership_statistics_fit_without_candidate_rereads_or_empty_followup_pages() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("x")).unwrap();
+        db.insert("c", "a", &json!({"x":2, "n":4})).unwrap();
+        db.insert("c", "b", &json!({"x":1, "n":7})).unwrap();
+        let request = AggregateStatsRequest {
+            filter: DocumentFilter::In {
+                path: path("x"),
+                values: vec![json!(1), json!(2)],
+            },
+            ..request()
+        };
+        let run = |max_read_units| {
+            db.transaction_with_read_limits(
+                DocumentReadLimits {
+                    max_read_units,
+                    max_read_bytes: usize::MAX,
+                },
+                DocumentTransactionMode::ReadSet,
+                None,
+                None,
+                |tx| tx.aggregate_stats_planned("c", &request),
+            )
+        };
+        // One metadata read, then a page, row and document for each probe.
+        let planned = run(7).unwrap();
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::MembershipIndex {
+                index: "x".into(),
+                probes: 2
+            }
+        );
+        assert_eq!(planned.result.groups[0].fields[0].sum, 11);
+        assert!(matches!(run(6), Err(TransactionFailure::Callback(error))
+            if error.to_string() == "document transaction read limit exceeded"));
+    });
+}
+
+#[test]
+fn unordered_scalar_statistics_report_the_first_aggregate_error_by_document_id() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("x")).unwrap();
+        db.insert("c", "a", &json!({"x":2, "group":[], "n":4}))
+            .unwrap();
+        db.insert("c", "b", &json!({"x":1, "n":"invalid number"}))
+            .unwrap();
+        let request = AggregateStatsRequest {
+            filter: DocumentFilter::In {
+                path: path("x"),
+                values: vec![json!(1), json!(2)],
+            },
+            ..request()
+        };
+        let scan = db.aggregate_stats("c", &request).unwrap_err();
+        let planned = db.aggregate_stats_planned("c", &request).unwrap_err();
+        assert_eq!(scan.to_string(), planned.to_string());
+        assert_ne!(
+            planned.to_string(),
+            "aggregate statistics require signed 64-bit integers"
+        );
+    });
+}
+
+#[test]
+fn planned_statistics_continue_when_a_short_index_page_hits_the_document_byte_cap() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("x")).unwrap();
+        let doc = json!({"x":1, "n":2, "data":"a".repeat(900_000)});
+        for id in 0..20 {
+            db.insert("c", &format!("{id:02}"), &doc).unwrap();
+        }
+        let request = AggregateStatsRequest {
+            filter: equal("x", 1),
+            ..request()
+        };
+        let planned = db.aggregate_stats_planned("c", &request).unwrap();
+        assert_eq!(planned.result, db.aggregate_stats("c", &request).unwrap());
+        assert_eq!(planned.result.groups[0].count, 20);
+        assert_eq!(planned.result.groups[0].fields[0].sum, 40);
     });
 }
 

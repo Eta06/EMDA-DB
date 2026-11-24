@@ -17,10 +17,14 @@ fn prototype(
 ) -> Result<Vec<Group>, Box<dyn Error>> {
     let result = if planned {
         let planned = db.aggregate_stats_planned("c", request)?;
-        assert_eq!(
-            planned.access,
-            DocumentQueryAccess::EqualityIndex { index: "g".into() }
-        );
+        match (&request.filter, planned.access) {
+            (DocumentFilter::Equal { .. }, DocumentQueryAccess::EqualityIndex { index })
+            | (
+                DocumentFilter::In { .. },
+                DocumentQueryAccess::MembershipIndex { index, probes: 2 },
+            ) if index == "g" => {}
+            _ => panic!("unexpected aggregate access path"),
+        }
         planned.result
     } else {
         db.aggregate_stats("c", request)?
@@ -70,15 +74,17 @@ fn sqlite(statement: &mut rusqlite::Statement<'_>) -> Result<Vec<Group>, Box<dyn
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().collect::<Vec<_>>();
-    let selective = match args.get(4).map(String::as_str) {
-        None if args.len() == 4 => false,
-        Some("selective") if args.len() == 5 => true,
+    let selection = match args.get(4).map(String::as_str) {
+        None if args.len() == 4 => None,
+        Some(mode @ ("selective" | "membership")) if args.len() == 5 => Some(mode),
         _ => {
             return Err(
-                "usage: aggregate_stats_bench DIRECTORY DOCUMENTS CYCLES [selective]".into(),
+                "usage: aggregate_stats_bench DIRECTORY DOCUMENTS CYCLES [selective|membership]"
+                    .into(),
             );
         }
     };
+    let selective = selection.is_some();
     let documents = args[2].parse::<usize>()?;
     let cycles = args[3].parse::<usize>()?;
     if !(1..=256).contains(&documents) || cycles == 0 || cycles > 100_000 {
@@ -120,19 +126,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let store = Store::open(&path)?;
     let db = DocumentDatabase::new(&store);
     let request = AggregateStatsRequest {
-        filter: if selective {
-            DocumentFilter::Equal {
+        filter: match selection {
+            Some("membership") => DocumentFilter::In {
+                path: vec!["g".into()],
+                values: vec![json!("g00"), json!("g01")],
+            },
+            Some(_) => DocumentFilter::Equal {
                 path: vec!["g".into()],
                 value: json!("g00"),
-            }
-        } else {
-            DocumentFilter::All
+            },
+            None => DocumentFilter::All,
         },
         group_by: Some(vec!["g".into()]),
         fields: vec![vec!["n".into()], vec!["m".into()]],
         max_scanned: 256,
     };
-    let restriction = if selective { " WHERE g='g00'" } else { "" };
+    let restriction = match selection {
+        Some("membership") => " WHERE g IN ('g00', 'g01')",
+        Some(_) => " WHERE g='g00'",
+        None => "",
+    };
     let query = format!(
         "SELECT g,COUNT(*),COUNT(n),COALESCE(SUM(n),0),MIN(n),MAX(n),COUNT(m),COALESCE(SUM(m),0),MIN(m),MAX(m) FROM docs{restriction} GROUP BY g ORDER BY g"
     );
@@ -143,10 +156,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .join("; ");
     let mut statement = connection.prepare(&query)?;
     let expected = sqlite(&mut statement)?;
-    let matched = if selective {
-        documents.div_ceil(8)
-    } else {
-        documents
+    let matched = match selection {
+        Some("membership") => documents.div_ceil(8) + (documents - 1).div_ceil(8),
+        Some(_) => documents.div_ceil(8),
+        None => documents,
     };
     assert_eq!(
         expected.iter().map(|group| group.1).sum::<i64>(),
@@ -181,7 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let journal: String = connection.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
     let synchronous: i64 = connection.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
     let version: String = connection.query_row("SELECT sqlite_version()", [], |r| r.get(0))?;
-    let output: Value = json!({"documents":documents,"cycles":cycles,"selective":selective,"matched":matched,"prototype_reopen_verified":true,"sqlite_journal":journal,"sqlite_synchronous":synchronous,"sqlite_version":version,"sqlite_query_plan":plan,"groups":expected.len(),"samples_ns":samples});
+    let output: Value = json!({"documents":documents,"cycles":cycles,"selective":selective,"membership":selection==Some("membership"),"matched":matched,"prototype_reopen_verified":true,"sqlite_journal":journal,"sqlite_synchronous":synchronous,"sqlite_version":version,"sqlite_query_plan":plan,"groups":expected.len(),"samples_ns":samples});
     println!("{}", serde_json::to_string(&output)?);
     Ok(())
 }

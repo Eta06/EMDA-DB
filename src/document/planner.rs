@@ -1280,21 +1280,27 @@ impl DocumentTransaction<'_, '_> {
         Ok(PlannedDocumentQueryResult { result, access })
     }
 
-    pub(super) fn visit_planned_documents(
+    pub(super) fn visit_planned_documents<T: Default>(
         &self,
         collection: &str,
         predicate: &DocumentFilter,
         max_scanned: usize,
-        visit: impl FnMut(&Value) -> io::Result<()>,
-    ) -> io::Result<(QueryPlan, DocumentQueryAccess)> {
+        visit: impl Fn(&mut T, &Value) -> io::Result<()>,
+    ) -> io::Result<(QueryPlan, DocumentQueryAccess, T)> {
         filter::validate_filter(predicate)?;
         let metadata = self.metadata(collection)?;
+        let mut state = T::default();
         let Some((access, probes)) = plan_query(predicate, &metadata.indexes)? else {
-            let plan = self.visit_filtered_documents(collection, predicate, max_scanned, visit)?;
-            return Ok((plan, DocumentQueryAccess::CollectionScan));
+            let plan =
+                self.visit_filtered_documents(collection, predicate, max_scanned, |doc| {
+                    visit(&mut state, doc)
+                })?;
+            return Ok((plan, DocumentQueryAccess::CollectionScan, state));
         };
-        let mut ids = (!in_id_order(&probes, &metadata)).then(BTreeSet::new);
-        let mut visitor = filter::FilteredVisitor::new(predicate, visit);
+        let id_order = in_id_order(&probes, &metadata);
+        let stream = id_order || filter::may_retry_in_id_order(predicate);
+        let mut ids = (!id_order).then(BTreeSet::new);
+        let mut visitor = filter::FilteredVisitor::new(predicate, |doc| visit(&mut state, doc));
         let mut budget = CandidateBudget::default();
         for probe in probes {
             self.collect_index_candidates(
@@ -1304,22 +1310,24 @@ impl DocumentTransaction<'_, '_> {
                 max_scanned,
                 &mut budget,
                 |entry| {
-                    if let Some(ids) = &mut ids {
-                        ids.insert(entry.id);
-                    } else {
+                    let first = ids.as_mut().is_none_or(|ids| ids.insert(entry.id));
+                    if first && stream {
                         visitor.push(&entry.document);
                     }
                 },
             )?;
         }
-        if let Some(ids) = ids {
-            // Preserve collection-order filter budgets and error precedence.
-            // Retain IDs only, then read each distinct candidate in order.
-            for id in ids {
-                visitor.push(&self.read_index_candidate(collection, &metadata, &id)?);
-            }
+        if id_order || (stream && !visitor.has_failed()) {
+            return Ok((visitor.finish(budget.visits)?, access, state));
         }
-        Ok((visitor.finish(budget.visits)?, access))
+        // Array walks must consume the filter budget in ID order. For
+        // other filters, replay only on error to preserve error ordering.
+        state = T::default();
+        let mut visitor = filter::FilteredVisitor::new(predicate, |doc| visit(&mut state, doc));
+        for id in ids.expect("unordered probes retain candidate IDs") {
+            visitor.push(&self.read_index_candidate(collection, &metadata, &id)?);
+        }
+        Ok((visitor.finish(budget.visits)?, access, state))
     }
 
     fn read_index_candidate(
@@ -1401,7 +1409,10 @@ impl DocumentTransaction<'_, '_> {
                 break;
             }
             budget.visits += returned;
-            if unique_equality {
+            // Return counts can be smaller than the rows scanned when the
+            // document response limit ends the page early. Only an
+            // entirely consumed, short index page proves exhaustion.
+            if unique_equality || (returned == indexed.plan.entries_read && returned < limit) {
                 break;
             }
             after = Some(indexed.next.ok_or_else(|| {

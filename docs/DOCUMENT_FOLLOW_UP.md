@@ -191,6 +191,11 @@ The initial document interface is bounded and experimental. This checklist recor
   planner. Tests compare scan and indexed results, deduplicate overlapping
   probes, retain filter error precedence, and verify staged writes and
   conflicts from empty index ranges on both writable backends.
+- [x] Eliminate a follow-up scan on a fully consumed short index page and
+  avoid rereading candidates for successful scalar indexed statistics.
+  The read-budget regression admits a two-value membership query at seven
+  units. Other tests verify continuation on byte-limited pages and
+  document-ID order for aggregate errors.
 - [x] Add opt-in authenticated progress for incremental index builds and schema migrations. Guarded advancement uses a separately retained per-job key, fails on a substituted cursor or definition, and preserves bounded steps and deletion of the cursor document. The [trust model](DOCUMENT_MODEL.md#guarded-progress-for-index-builds-and-schema-migrations) describes key custody, cancellation and compatibility.
 - [x] Migrate unfinished unguarded builds and schema jobs with an atomic guarded restart. It checks the caller's expected definition, discards unchecked cursor progress, and resumes from the beginning while keeping valid pending index entries. Tests cover rollback, a competing old step, reopen, and the rescan of a document before the former frontier on ordinary and checkpoint stores. The managed retained path also checks that both restarts and a raw receipt commit together across rotation and reopen. All 14 selected document integration tests passed on macOS and Linux ARM64 ext4.
 - [x] Interrupt the append, sync, and witness update of a guarded index

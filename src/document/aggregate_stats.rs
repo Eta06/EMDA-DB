@@ -109,8 +109,9 @@ impl DocumentTransaction<'_, '_> {
 
     /// Computes the same statistics using qualifying index probes or a
     /// complete scan. The candidate limit counts repeated index hits.
-    /// Unordered probes revisit distinct candidates by ID for filter
-    /// evaluation. Like a planned query, this assumes maintained indexes.
+    /// Array-walking filters and unordered probes that encounter errors
+    /// evaluate distinct candidates in ID order. Like a planned query,
+    /// this assumes maintained indexes.
     pub fn aggregate_stats_planned(
         &self,
         collection: &str,
@@ -145,8 +146,7 @@ impl DocumentTransaction<'_, '_> {
         if let Some(path) = &request.group_by {
             schema::validate_path(path)?;
         }
-        let mut groups = BTreeMap::<Vec<u8>, AggregateStatsGroup>::new();
-        let visit = |document: &Value| {
+        let visit = |groups: &mut BTreeMap<Vec<u8>, AggregateStatsGroup>, document: &Value| {
             let value = request
                 .group_by
                 .as_ref()
@@ -181,16 +181,17 @@ impl DocumentTransaction<'_, '_> {
             }
             Ok(())
         };
-        let (plan, access) = if planned {
+        let (plan, access, mut groups) = if planned {
             self.visit_planned_documents(collection, &request.filter, request.max_scanned, visit)?
         } else {
+            let mut groups = BTreeMap::new();
             let plan = self.visit_filtered_documents(
                 collection,
                 &request.filter,
                 request.max_scanned,
-                visit,
+                |document| visit(&mut groups, document),
             )?;
-            (plan, DocumentQueryAccess::CollectionScan)
+            (plan, DocumentQueryAccess::CollectionScan, groups)
         };
         if request.group_by.is_none() && groups.is_empty() {
             groups.insert(Vec::new(), new_group(None, request.fields.len()));

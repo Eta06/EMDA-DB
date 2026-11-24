@@ -17,13 +17,15 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def validate(result, documents, cycles, selective=False):
-    expected_groups = 1 if selective else min(8, documents)
+def validate(result, documents, cycles, selective=False, membership=False):
+    expected_groups = min(2 if membership else 1 if selective else 8, documents)
     expected_sqlite = "SEARCH docs USING INDEX docs_g" if selective else "SCAN docs"
+    matched = (documents + 7) // 8 + ((documents + 6) // 8 if membership else 0)
     if (result.get("documents") != documents or result.get("cycles") != cycles
             or result.get("prototype_reopen_verified") is not True or result.get("groups") != expected_groups
             or result.get("selective", False) != selective
-            or (selective and result.get("matched") != (documents + 7) // 8)
+            or result.get("membership", False) != membership
+            or (selective and result.get("matched") != matched)
             or result.get("sqlite_journal") != "wal" or result.get("sqlite_synchronous") != 2
             or expected_sqlite not in result.get("sqlite_query_plan", "")
             or not result.get("sqlite_version")):
@@ -43,8 +45,11 @@ def main():
     parser.add_argument("--documents", default="64,256")
     parser.add_argument("--rounds", type=int, default=4)
     parser.add_argument("--cycles", type=int, default=30)
-    parser.add_argument("--selective", action="store_true", help="compare equality-indexed grouped statistics")
+    layout = parser.add_mutually_exclusive_group()
+    layout.add_argument("--selective", action="store_true", help="compare equality-indexed grouped statistics")
+    layout.add_argument("--membership", action="store_true", help="compare two groups selected by membership")
     args = parser.parse_args()
+    selective = args.selective or args.membership
     try:
         cases = [int(value) for value in args.documents.split(",")]
     except ValueError:
@@ -67,12 +72,13 @@ def main():
         "benchmark_cpu": benchmark_cpu, "driver_cpu": driver_cpu,
         "filesystem": json.loads(subprocess.check_output(["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
         "scope": ("Single-client in-process grouped count, sum, minimum and maximum of two signed integer fields. "
-                  + ("One of eight groups is selected. Compare EMDA full scan, EMDA index probes, and SQLite indexed GROUP BY. "
-                     if args.selective else "Both engines perform full scans. ")
+                  + ("One or two of eight groups are selected. Compare EMDA full scan, EMDA index probes, and SQLite indexed GROUP BY. "
+                     if selective else "Both engines perform full scans. ")
                   + "SQLite uses normalized columns and a prepared statement. EMDA reads JSON documents in a transaction. "
                     "Every timed query is checked against the other engine. Execution order rotates after five warmups. "
                     "Setup and reopening are outside timers."),
-        "selective": args.selective,
+        "selective": selective,
+        "membership": args.membership,
         "cases": cases, "rounds": args.rounds, "cycles": args.cycles, "runs": [], "failures": [],
     }
     output = Path(args.output)
@@ -92,8 +98,8 @@ def main():
                 before = snapshot()
                 try:
                     command = ["taskset", "-c", str(benchmark_cpu), args.binary, args.directory, str(documents), str(args.cycles)]
-                    if args.selective:
-                        command.append("selective")
+                    if selective:
+                        command.append("membership" if args.membership else "selective")
                     entry["command"] = command
                     completed = subprocess.run(command, capture_output=True, text=True, timeout=300)
                     entry["exit_code"] = completed.returncode
@@ -102,7 +108,7 @@ def main():
                     if completed.returncode:
                         raise RuntimeError(f"benchmark exited {completed.returncode}: {completed.stderr[-4096:]}")
                     result = json.loads(completed.stdout)
-                    validate(result, documents, args.cycles, args.selective)
+                    validate(result, documents, args.cycles, selective, args.membership)
                     entry["measurement"] = result
                 finally:
                     entry["noise"] = difference(before, snapshot())
@@ -118,7 +124,7 @@ def main():
     for documents in cases:
         runs = [run for run in report["runs"] if run["documents"] == documents]
         variants = {}
-        for name in ("prototype", "planned", "sqlite") if args.selective else ("prototype", "sqlite"):
+        for name in ("prototype", "planned", "sqlite") if selective else ("prototype", "sqlite"):
             medians = [statistics.median(run["measurement"]["samples_ns"][name]) / 1000 for run in runs]
             variants[name] = {"median_of_round_medians_us": statistics.median(medians), "round_median_min_us": min(medians), "round_median_max_us": max(medians)}
         report["summary"].append({"documents": documents, "variants": variants})

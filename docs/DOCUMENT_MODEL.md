@@ -365,12 +365,14 @@ The indexed path relies on the declared index being intact. It validates each en
 qualifying index plan and reports the chosen access path. It falls back to a
 complete scan when no index qualifies. The 256-document ceiling counts
 index visits, including overlapping probes. Each matching document
-contributes once. A single equality tuple streams rows in ID order. For a
-range or union the engine keeps candidate IDs and revisits each distinct
-document in ID order, preserving the filter budget and error order. The
-revisit can read up to the admitted candidate bytes again. The planner
-assumes maintained indexes and evaluates the filter on candidates. It
-shares the transaction's range validation, including empty probes.
+contributes once. A single equality tuple streams rows in ID order.
+Other plans retain candidate IDs to deduplicate matches. Filters without
+array walks can aggregate in probe order on success. An array walk or a
+probe-order evaluation error triggers a pass in ID order to preserve the
+filter budget and error order. That pass can read up to the admitted
+candidate bytes again. The planner assumes maintained indexes and
+evaluates the filter on candidates. It shares the transaction's range
+validation, including empty probes.
 
 For example, with an open `DocumentDatabase` named `db`:
 
