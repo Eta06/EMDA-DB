@@ -1756,6 +1756,60 @@ fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
 }
 
 #[test]
+fn bounded_startup_admits_tail_adoption_and_retirement_together() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.compact().unwrap();
+    let base = store.store.base.metadata().file_bytes;
+    let slot = store.active.slot.path(&f.root);
+    let retired = store.active.slot.other().path(&f.root);
+    drop(store);
+
+    let witness = slot.join("commit.state");
+    let before = fs::read(&witness).unwrap();
+    let log = slot.join("records.log");
+    let record = record::encode(Operation::Put, b"pending", b"value").unwrap();
+    let mut file = OpenOptions::new().append(true).open(&log).unwrap();
+    file.write_all(&record).unwrap();
+    file.sync_all().unwrap();
+    let tail = fs::read(&log).unwrap();
+    let selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let exact = 2 * base + 3 * record.len() as u64;
+    let open = |bytes| {
+        ManagedRetainedStore::open_with_bounded_startup(
+            &f.root,
+            LIMITS,
+            RetainedStartupLimits {
+                max_startup_scan_bytes: bytes,
+                max_maintenance_scan_bytes: 0,
+                suffix_threshold: NonZeroU64::MIN,
+                storage_limits: None,
+            },
+        )
+    };
+    assert!(matches!(
+        open(exact - 1),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "retained startup scan byte limit exceeded"
+    ));
+    assert_eq!(fs::read(&witness).unwrap(), before);
+    assert_eq!(fs::read(&log).unwrap(), tail);
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
+    assert!(retired.exists());
+
+    let mut reopened = open(exact).unwrap();
+    assert_ne!(fs::read(&witness).unwrap(), before);
+    assert!(!retired.exists());
+    assert_eq!(reopened.get(b"pending", 8).unwrap().unwrap(), b"value");
+    assert!(matches!(
+        reopened.put(b"other", b"absent"),
+        Err(MutationFailure::Rejected(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert_eq!(fs::read(&log).unwrap(), tail);
+    assert_eq!(reopened.get(b"other", 8).unwrap(), None);
+}
+
+#[test]
 fn automatic_maintenance_scan_limit_is_shared_and_resets_per_mutation() {
     use crate::retained_base_v2::FRAME_BYTES;
 

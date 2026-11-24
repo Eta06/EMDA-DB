@@ -853,6 +853,62 @@ fn recovery_adopts_an_exact_proposed_tail_before_finalizing_a_pending_intent() {
 }
 
 #[test]
+fn authorized_bounded_startup_precedes_pending_authority_resolution() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.compact().unwrap();
+    let base = store.inner.store.base.metadata().file_bytes;
+    let witness = Slot::B.path(&f.root).join("commit.state");
+    let before = fs::read(&witness).unwrap();
+    store.authority.fault = Some((store.current.revision + 2, false));
+    assert!(matches!(
+        store.put(b"pending", b"proposed"),
+        Err(MutationFailure::OutcomeUnknown(_))
+    ));
+    drop(store);
+    let advanced = fs::read(&witness).unwrap();
+    assert_ne!(before, advanced);
+    fs::write(&witness, &before).unwrap();
+
+    let pending = f.provider.read().unwrap().unwrap();
+    let proposed = pending.pending.unwrap();
+    let exact = 2 * base + 3 * proposed.suffix_end;
+    let provider = f.provider.clone();
+    let open = |bytes| {
+        AuthorizedRetainedStore::open_with_bounded_startup(
+            &f.root,
+            LIMITS,
+            provider.clone(),
+            RetainedStartupLimits {
+                max_startup_scan_bytes: bytes,
+                max_maintenance_scan_bytes: 0,
+                suffix_threshold: NonZeroU64::MIN,
+                storage_limits: None,
+            },
+        )
+    };
+    assert!(matches!(
+        open(exact - 1),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "retained startup scan byte limit exceeded"
+    ));
+    assert_eq!(fs::read(&witness).unwrap(), before);
+    assert_eq!(f.provider.read().unwrap(), Some(pending));
+    assert!(Slot::A.path(&f.root).exists());
+
+    let mut recovered = open(exact).unwrap();
+    assert_eq!(recovered.get(b"pending", 8).unwrap().unwrap(), b"proposed");
+    assert_eq!(fs::read(&witness).unwrap(), advanced);
+    assert!(!Slot::A.path(&f.root).exists());
+    let resolved = pending.finalized(proposed).unwrap();
+    assert_eq!(
+        f.provider.read().unwrap(),
+        Some(resolved.finalized(proposed).unwrap())
+    );
+}
+
+#[test]
 fn pending_recovery_requires_local_sync_even_with_an_advanced_witness() {
     let mut f = Fixture::prepare();
     f.register();
@@ -878,6 +934,7 @@ fn pending_recovery_requires_local_sync_even_with_an_advanced_witness() {
         LIMITS,
         f.provider.clone(),
         (None, None),
+        None,
         |store| {
             assert_eq!(
                 AuthorityPoint::from_store(proposed.catalog, store),
@@ -1429,12 +1486,32 @@ fn confirmed_fence_and_uncertain_removal_resume_after_restart() {
     assert_eq!(f.provider.read().unwrap(), Some(fence));
     assert!(!Slot::A.path(&f.root).exists());
     assert!(crate::staging::has_retained_stage(&f.root).unwrap());
+    let cost = store.inner.store.base.metadata().file_bytes + store.inner.store.suffix_len as u64;
     drop(store);
 
+    let provider = f.provider.clone();
+    let open = |bytes| {
+        AuthorizedRetainedStore::open_with_bounded_startup(
+            &f.root,
+            LIMITS,
+            provider.clone(),
+            RetainedStartupLimits {
+                max_startup_scan_bytes: bytes,
+                max_maintenance_scan_bytes: 0,
+                suffix_threshold: NonZeroU64::MIN,
+                storage_limits: None,
+            },
+        )
+    };
+    assert!(matches!(
+        open(2 * cost - 1),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "retained startup scan byte limit exceeded"
+    ));
+    assert!(crate::staging::has_retained_stage(&f.root).unwrap());
+    assert_eq!(f.provider.read().unwrap(), Some(fence));
     let mut reopened = f.open();
     assert_eq!(reopened.get(b"ack", 4).unwrap().unwrap(), b"keep");
-    let cost =
-        reopened.inner.store.base.metadata().file_bytes + reopened.inner.store.suffix_len as u64;
     assert!(matches!(
         reopened.reclaim_inactive_with_scan_limit(cost - 1),
         Err(AuthorizedReclamationFailure {
@@ -1444,7 +1521,8 @@ fn confirmed_fence_and_uncertain_removal_resume_after_restart() {
     ));
     assert!(crate::staging::has_retained_stage(&f.root).unwrap());
     assert_eq!(f.provider.read().unwrap(), Some(fence));
-    assert!(reopened.reclaim_inactive_with_scan_limit(cost).unwrap());
+    drop(reopened);
+    let mut reopened = open(2 * cost).unwrap();
     assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
     assert_eq!(f.provider.read().unwrap(), Some(fence));
     assert!(!reopened.reclaim_inactive_with_outcome().unwrap());

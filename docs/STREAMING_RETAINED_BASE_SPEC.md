@@ -520,6 +520,18 @@ to the maintenance scans. Initial recovery, appends, metadata, and generic
 staging cleanup have separate costs. The existing automatic open methods
 continue to install maintenance without a scan ceiling.
 
+`open_with_bounded_startup` on either handle admits recovery and startup
+retirement under one inclusive logical read ceiling. Recovery charges the
+encoded base and suffix, with a second suffix pass for local witness
+adoption. If an inactive slot or retained retirement markers are present,
+admission reserves one full active-generation verification pass for each
+condition. Admission precedes replay, local witness adoption, authority
+resolution, and cleanup. The reservation also applies when an entry later
+fails retirement validation. Once admitted, recovery can finish before a
+subsequent cleanup error. Each later mutation has a separate ceiling for
+rotation and retirement. Metadata, framing probes, physical retries, and
+writes have separate costs.
+
 ### Whole-catalog storage admission
 
 `open_with_storage_limits` on the managed and authorized handles sets

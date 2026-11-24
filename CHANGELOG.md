@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound retained recovery and startup retirement under one logical scan
+  ceiling, with a separate per-mutation maintenance budget.
+
 - Verify format upgrades in one staged record pass, binding the new header
   and copied record digest. Add independent output-size and scan ceilings.
 

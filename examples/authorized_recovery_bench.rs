@@ -4,7 +4,8 @@ use database_engine::{
     retained_base_v2::Limits,
     retained_candidate::{
         AuthorizedRetainedStore, CutoverArchiveBinding, FileRetainedAuthority, IndexLimits,
-        ManagedRetainedStore, OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
+        ManagedRetainedStore, OverlayLimits, RetainedAuthority, RetainedStartupLimits,
+        RetainedStoreLimits, SuffixLimits,
     },
 };
 use rusqlite::{Connection, OpenFlags, config::DbConfig, params};
@@ -51,6 +52,19 @@ enum Backend {
 
 fn threshold(limits: RetainedStoreLimits) -> NonZeroU64 {
     NonZeroU64::new(limits.suffix.bytes / 6 * 5).expect("benchmark suffix budget is positive")
+}
+
+fn startup_limits(limits: RetainedStoreLimits) -> RetainedStartupLimits {
+    let base = limits.base.file_bytes;
+    let suffix = limits.suffix.bytes;
+    RetainedStartupLimits {
+        // A pending tail adds one suffix pass. Startup retirement can add
+        // two passes over the active base and suffix.
+        max_startup_scan_bytes: 3 * base + 4 * suffix,
+        max_maintenance_scan_bytes: 8 * (base + suffix),
+        suffix_threshold: threshold(limits),
+        storage_limits: None,
+    }
 }
 
 fn sqlite(path: &Path, create: bool) -> Result<Connection> {
@@ -107,11 +121,11 @@ impl Backend {
             )?))),
             "retained" => {
                 let provider = FileRetainedAuthority::open(root.join("authority"))?;
-                let store = Catalog::open_with_auto_reclaim(
+                let store = Catalog::open_with_bounded_startup(
                     root.join(name),
                     limits,
                     provider,
-                    threshold(limits),
+                    startup_limits(limits),
                 )?;
                 Ok(Self::Retained(Box::new(store)))
             }
@@ -392,11 +406,11 @@ fn run_lifecycle(
         .try_fold(0, u64::checked_add)
         .ok_or("archive scan limit overflow")?;
     let provider = FileRetainedAuthority::open(root.join("authority"))?;
-    let mut catalog = Catalog::open_with_auto_reclaim(
+    let mut catalog = Catalog::open_with_bounded_startup(
         root.join("retained"),
         limits,
         provider,
-        threshold(limits),
+        startup_limits(limits),
     )?;
     let backup = root.join("backup");
     let restored = root.join("restored");
@@ -636,6 +650,13 @@ fn main() -> Result<()> {
                 "open_ns={} open_cpu_ns={open_cpu}",
                 start.elapsed().as_nanos()
             );
+            if name == "retained" {
+                let startup = startup_limits(limits);
+                println!(
+                    "startup_scan_limit_bytes={} maintenance_scan_limit_bytes={}",
+                    startup.max_startup_scan_bytes, startup.max_maintenance_scan_bytes,
+                );
+            }
             if phase == "mutate" {
                 let before = (name == "retained")
                     .then(|| authority_state(root))

@@ -34,7 +34,7 @@ pub use managed::{
     AuthorityPoint, AuthorityRecord, AuthorizedReclamationFailure, AuthorizedRestoreFailure,
     AuthorizedRetainedStore, CatalogStorageLimits, CutoverArchiveBinding,
     CutoverArchiveRetirementFailure, CutoverArchiveRetirementStep, FileRetainedAuthority,
-    ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority,
+    ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedStartupLimits,
 };
 mod rebase;
 
@@ -91,7 +91,7 @@ enum RecoveryScanLimit {
 }
 
 impl RecoveryScanLimit {
-    fn admit(self, base: u64, suffix: u64, pending: bool) -> io::Result<()> {
+    fn remaining(self, base: u64, suffix: u64, pending: bool) -> io::Result<u64> {
         let (base, limit, message) = match self {
             Self::Suffix(limit) => (
                 0,
@@ -106,8 +106,7 @@ impl RecoveryScanLimit {
         suffix
             .checked_add(confirmation)
             .and_then(|scans| scans.checked_add(base))
-            .filter(|&scans| scans <= limit)
-            .map(|_| ())
+            .and_then(|scans| limit.checked_sub(scans))
             .ok_or_else(|| invalid_input(message))
     }
 }
@@ -256,7 +255,7 @@ impl RetainedStore {
             (RecoveryLimits::Exact(limits), None),
             expected,
             (role, None, base),
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
             |_, _, actual_end, actual_digest| {
                 if (actual_end, actual_digest) != (end, digest) {
                     return Err(record::invalid_data("staged retained suffix changed"));
@@ -340,7 +339,7 @@ impl RetainedStore {
             (RecoveryLimits::Exact(limits), scan_limit),
             expected,
             (GenerationRole::Standalone, None, None),
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
             |directory, _, _, _| sync_directory(directory),
             || Ok(()),
         )
@@ -351,7 +350,7 @@ impl RetainedStore {
         (limits, scan_limit): (RecoveryLimits, Option<RecoveryScanLimit>),
         expected: &Expected,
         (role, generation, imported_base): (GenerationRole, Option<[u8; 16]>, Option<BaseImport>),
-        preflight: impl FnOnce(&Header, u64) -> io::Result<()>,
+        preflight: impl FnOnce(&Header, u64, bool) -> io::Result<()>,
         authorize: impl FnOnce(&Path, &Header, u64, [u8; 32]) -> io::Result<()>,
         check_selection: impl FnOnce() -> io::Result<()>,
     ) -> io::Result<Self> {
@@ -383,9 +382,9 @@ impl RetainedStore {
         }
         let pending = committed < suffix_len;
         if let Some(limit) = scan_limit {
-            limit.admit(expected.base_bytes(), suffix_len, pending)?;
+            limit.remaining(expected.base_bytes(), suffix_len, pending)?;
         }
-        preflight(&header, suffix_len)?;
+        preflight(&header, suffix_len, pending)?;
         let base_path = dir.join("base");
         let base = match imported_base {
             Some(import) => RecoveryBase::Import(import),

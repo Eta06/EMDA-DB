@@ -8,7 +8,7 @@ testing and an independent off-host restore remain deferred.
 | Step | Area | Progress | Basis and remaining evidence |
 | --- | --- | ---: | --- |
 | 1 | Correctness and foundations | 96% | 113 of 118 local checklist items. Full-log backup, restore, and format upgrade have scan ceilings. Broader fault and resource evidence remains open. |
-| 2 | Durable storage and core operations | 95% | 174 of 183 checklist items. Bounded writable memory, retained-history lifecycle and safe live-log reclamation remain open. |
+| 2 | Durable storage and core operations | 95% | 174 of 183 checklist items. Retained recovery and startup retirement share a scan ceiling. Broader writable-memory and reclamation evidence remains open. |
 | 3 | Document model and queries | 97% | 112 of 115 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators, transaction scalability, isolation and comparable server-engine measurements remain open. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
 | 5 | Secure service and project isolation | 10% | One of five milestones has partial evidence from the loopback benchmark adapter. A secure API, project isolation and safe scale-to-zero remain to build. |

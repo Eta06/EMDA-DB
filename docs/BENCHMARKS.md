@@ -71,6 +71,11 @@ and authorized retained mutation, reopen and verification phases. The
 ordinary and SQLite controls run without that ceiling. See the
 [CI command and assertions](../.github/workflows/ci.yml).
 
+The retained phases open with a 432 MiB logical startup scan ceiling and
+a 1,120 MiB logical per-mutation maintenance ceiling. The gate checks
+both settings alongside the kernel address-space limits. Each phase
+preserves its actual elapsed time and RSS in the raw results.
+
 ## macOS small-write comparison with SQLite
 
 The [36 raw runs](../benchmarks/results/2026-11-23-macos-kv-sqlite.json)

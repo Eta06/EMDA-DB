@@ -21,8 +21,8 @@ pub use writable::{
     AuthorityPoint, AuthorityRecord, AuthorizedReclamationFailure, AuthorizedRestoreFailure,
     AuthorizedRetainedStore, CatalogStorageLimits, CutoverArchiveBinding,
     CutoverArchiveRetirementFailure, CutoverArchiveRetirementStep, FileRetainedAuthority,
-    ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedStore,
-    RetainedStoreLimits,
+    ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedStartupLimits,
+    RetainedStore, RetainedStoreLimits,
 };
 
 /// An independently retained copy of the exact candidate header and witness.

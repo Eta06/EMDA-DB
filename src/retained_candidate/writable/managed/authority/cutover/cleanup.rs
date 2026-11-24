@@ -138,7 +138,7 @@ fn discard(
                 Some(active.generation),
                 None,
             ),
-            |_, end| {
+            |_, end, _| {
                 if end != 0 {
                     return Err(record::invalid_data("cutover preparation has been written"));
                 }

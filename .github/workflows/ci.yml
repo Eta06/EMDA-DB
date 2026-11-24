@@ -181,6 +181,11 @@ jobs:
               live = keys - ((operations - 1 + epoch) // 11 - (epoch - 1) // 11)
               if phase == "verify" and row["verified_entries"] != live:
                   raise SystemExit(f"Incomplete ordered verification: {row}")
+              if backend == "retained" and phase in ("mutate", "reopen", "verify"):
+                  if (row.get("startup_scan_limit_bytes"), row.get("maintenance_scan_limit_bytes")) != (
+                      432 * 1024**2, 1120 * 1024**2
+                  ):
+                      raise SystemExit(f"Expected bounded retained startup and maintenance: {row}")
               if phase == "authorized-lifecycle":
                   if row["restored_verified_entries"] != live or row["source_verified_entries"] != live:
                       raise SystemExit("Expected complete restored and source verification under the ceiling")

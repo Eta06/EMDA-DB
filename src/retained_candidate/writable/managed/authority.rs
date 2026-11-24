@@ -465,6 +465,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             (None, scan_limit),
             |root, catalog| select_authorized(root, catalog, prepared.committed),
             Some(prepared),
+            None,
         )?;
         // Recheck the provider under the catalog lock, including on a retry.
         // CAS publishes only the independently bound, synchronized state.
@@ -499,6 +500,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             limits,
             authority,
             (None, None),
+            None,
             RetainedStore::sync_recovered_commit,
         )
     }
@@ -523,6 +525,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 storage_limits,
                 Some(RecoveryScanLimit::Suffix(max_suffix_scan_bytes)),
             ),
+            None,
             RetainedStore::sync_recovered_commit,
         )
     }
@@ -546,6 +549,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 storage_limits,
                 Some(RecoveryScanLimit::BaseAndSuffix(max_scan_bytes)),
             ),
+            None,
             RetainedStore::sync_recovered_commit,
         )
     }
@@ -566,10 +570,11 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             limits,
             authority,
             (Some(storage_limits), None),
+            None,
             RetainedStore::sync_recovered_commit,
         )?;
         if let Some(threshold) = suffix_threshold {
-            store.configure_auto_reclaim(threshold, None)?;
+            store.configure_auto_reclaim(threshold, None, None)?;
         }
         Ok(store)
     }
@@ -579,6 +584,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         limits: RetainedStoreLimits,
         mut authority: A,
         recovery_admission: (Option<CatalogStorageLimits>, Option<RecoveryScanLimit>),
+        startup_remaining: Option<&mut u64>,
         sync_recovered_commit: impl FnOnce(&RetainedStore) -> io::Result<()>,
     ) -> io::Result<Self> {
         let current = authority
@@ -606,6 +612,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             recovery_admission,
             |root, catalog| select_authorized(root, catalog, current.committed),
             Some(current),
+            startup_remaining,
         )?;
         let mut this = Self {
             inner,
@@ -642,7 +649,35 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         suffix_threshold: NonZeroU64,
     ) -> io::Result<Self> {
         let mut store = Self::open(root, limits, authority)?;
-        store.configure_auto_reclaim(suffix_threshold, None)?;
+        store.configure_auto_reclaim(suffix_threshold, None, None)?;
+        Ok(store)
+    }
+
+    /// Reopen with the combined recovery and startup retirement budget of
+    /// [`ManagedRetainedStore::open_with_bounded_startup`]. Budget refusal
+    /// during admission precedes local witness adoption and any resolution
+    /// or retirement fence in the independent authority. Once admitted,
+    /// recovery can complete before a later retirement I/O error.
+    pub fn open_with_bounded_startup(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        authority: A,
+        startup: RetainedStartupLimits,
+    ) -> io::Result<Self> {
+        let mut remaining = startup.max_startup_scan_bytes;
+        let mut store = Self::open_using(
+            root.as_ref(),
+            limits,
+            authority,
+            (startup.storage_limits, None),
+            Some(&mut remaining),
+            RetainedStore::sync_recovered_commit,
+        )?;
+        store.configure_auto_reclaim(
+            startup.suffix_threshold,
+            Some(startup.max_maintenance_scan_bytes),
+            Some(remaining),
+        )?;
         Ok(store)
     }
 
@@ -654,15 +689,16 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         suffix_threshold: NonZeroU64,
         max_scan_bytes: u64,
     ) -> io::Result<()> {
-        self.configure_auto_reclaim(suffix_threshold, Some(max_scan_bytes))
+        self.configure_auto_reclaim(suffix_threshold, Some(max_scan_bytes), None)
     }
 
     fn configure_auto_reclaim(
         &mut self,
         threshold: NonZeroU64,
         max_scan_bytes: Option<u64>,
+        startup_remaining: Option<u64>,
     ) -> io::Result<()> {
-        let mut remaining = max_scan_bytes;
+        let mut remaining = startup_remaining.or(max_scan_bytes);
         self.finish_maintenance(&mut remaining)?;
         self.auto_reclaim = Some(AutoReclaim {
             threshold,

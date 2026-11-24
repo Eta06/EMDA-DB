@@ -342,6 +342,7 @@ fn process_kills_recover_document_indexes_and_raw_receipt_together() {
                 CRASH_LIMITS,
                 FileRetainedAuthority::open(&authority_path).unwrap(),
                 (None, None),
+                None,
                 |store| {
                     assert_eq!(
                         AuthorityPoint::from_store(proposed.catalog, store),

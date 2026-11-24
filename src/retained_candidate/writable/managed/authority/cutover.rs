@@ -342,6 +342,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             (None, scan_limit),
             |root, catalog| select_authorized(root, catalog, initial.committed),
             Some(initial),
+            None,
         )?;
         fence.verify()?;
         Ok(initial)

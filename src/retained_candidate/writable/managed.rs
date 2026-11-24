@@ -38,6 +38,47 @@ struct AutoReclaim {
     max_scan_bytes: Option<u64>,
 }
 
+/// Scan and storage admission for reopening with automatic reclamation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetainedStartupLimits {
+    /// Combined logical reads for recovery and startup retirement.
+    pub max_startup_scan_bytes: u64,
+    /// Fresh per-mutation budget for rotation and retirement after open.
+    pub max_maintenance_scan_bytes: u64,
+    /// Rotate before writes exceed this suffix threshold.
+    pub suffix_threshold: NonZeroU64,
+    /// Optional catalog ceiling, intersected with the persisted limits.
+    pub storage_limits: Option<CatalogStorageLimits>,
+}
+
+fn admit_startup_retirement(
+    root: &Path,
+    active: &Active,
+    suffix: u64,
+    pending: bool,
+    remaining: &mut u64,
+) -> io::Result<()> {
+    let base = active.expected.base_bytes();
+    let recovery_remaining =
+        RecoveryScanLimit::BaseAndSuffix(*remaining).remaining(base, suffix, pending)?;
+    let inactive_exists = match fs::symlink_metadata(active.slot.other().path(root)) {
+        Ok(_) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
+    let passes = u64::from(inactive_exists) + u64::from(crate::staging::has_retained_stage(root)?);
+    if base
+        .checked_add(suffix)
+        .and_then(|bytes| bytes.checked_mul(passes))
+        .is_none_or(|bytes| bytes > recovery_remaining)
+    {
+        return Err(invalid_input("retained startup scan byte limit exceeded"));
+    }
+    // Cleanup charges actual passes against the remaining startup budget.
+    *remaining = recovery_remaining;
+    Ok(())
+}
+
 fn charge_retirement_scan(remaining: &mut Option<u64>, store: &RetainedStore) -> io::Result<()> {
     if let Some(remaining) = remaining {
         *remaining = remaining
@@ -492,6 +533,7 @@ impl ManagedRetainedStore {
             (None, None),
             Active::load,
             None,
+            None,
         )
     }
 
@@ -515,6 +557,7 @@ impl ManagedRetainedStore {
             ),
             Active::load,
             None,
+            None,
         )
     }
 
@@ -537,6 +580,7 @@ impl ManagedRetainedStore {
             ),
             Active::load,
             None,
+            None,
         )
     }
 
@@ -558,9 +602,10 @@ impl ManagedRetainedStore {
             (Some(storage_limits), None),
             Active::load,
             None,
+            None,
         )?;
         if let Some(threshold) = suffix_threshold {
-            store.configure_auto_reclaim(threshold, None)?;
+            store.configure_auto_reclaim(threshold, None, None)?;
         }
         Ok(store)
     }
@@ -572,6 +617,7 @@ impl ManagedRetainedStore {
         (requested_storage, scan_limit): (Option<CatalogStorageLimits>, Option<RecoveryScanLimit>),
         select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
         authority: Option<AuthorityRecord>,
+        startup_remaining: Option<&mut u64>,
     ) -> io::Result<Self> {
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
@@ -580,6 +626,11 @@ impl ManagedRetainedStore {
         let catalog = read_catalog(&root, catalog_magic)?;
         let active = select(&root, catalog)?;
         let path = active.slot.path(&root);
+        debug_assert!(startup_remaining.is_none() || scan_limit.is_none());
+        let scan_limit = startup_remaining
+            .as_deref()
+            .map(|limit| RecoveryScanLimit::BaseAndSuffix(*limit))
+            .or(scan_limit);
         let store = RetainedStore::open_role(
             &path,
             (RecoveryLimits::Ceiling(ceiling), scan_limit),
@@ -589,7 +640,7 @@ impl ManagedRetainedStore {
                 Some(active.generation),
                 None,
             ),
-            |header, end| {
+            |header, end, pending| {
                 if let Some(authority) = authority {
                     authority.check_end(end)?;
                 }
@@ -600,6 +651,9 @@ impl ManagedRetainedStore {
                 );
                 if let Some(storage) = &storage {
                     storage.room(0, 0)?;
+                }
+                if let Some(remaining) = startup_remaining {
+                    admit_startup_retirement(&root, &active, end, pending, remaining)?;
                 }
                 Ok(())
             },
@@ -643,7 +697,36 @@ impl ManagedRetainedStore {
         suffix_threshold: NonZeroU64,
     ) -> io::Result<Self> {
         let mut store = Self::open(root, ceiling)?;
-        store.configure_auto_reclaim(suffix_threshold, None)?;
+        store.configure_auto_reclaim(suffix_threshold, None, None)?;
+        Ok(store)
+    }
+
+    /// Reopen with one inclusive scan budget for both recovery and startup
+    /// retirement. Before replay or adoption, reserve one retirement pass
+    /// for an inactive slot and one if retained retirement markers exist.
+    /// Framing, metadata, retries and writes have separate costs. After
+    /// admission, witness adoption may precede a retirement I/O error.
+    /// After open, each mutation uses the separate maintenance budget.
+    pub fn open_with_bounded_startup(
+        root: impl AsRef<Path>,
+        ceiling: RetainedStoreLimits,
+        limits: RetainedStartupLimits,
+    ) -> io::Result<Self> {
+        let mut remaining = limits.max_startup_scan_bytes;
+        let mut store = Self::open_role(
+            root.as_ref(),
+            ceiling,
+            CATALOG_MAGIC,
+            (limits.storage_limits, None),
+            Active::load,
+            None,
+            Some(&mut remaining),
+        )?;
+        store.configure_auto_reclaim(
+            limits.suffix_threshold,
+            Some(limits.max_maintenance_scan_bytes),
+            Some(remaining),
+        )?;
         Ok(store)
     }
 
@@ -663,15 +746,16 @@ impl ManagedRetainedStore {
         suffix_threshold: NonZeroU64,
         max_scan_bytes: u64,
     ) -> io::Result<()> {
-        self.configure_auto_reclaim(suffix_threshold, Some(max_scan_bytes))
+        self.configure_auto_reclaim(suffix_threshold, Some(max_scan_bytes), None)
     }
 
     fn configure_auto_reclaim(
         &mut self,
         threshold: NonZeroU64,
         max_scan_bytes: Option<u64>,
+        startup_remaining: Option<u64>,
     ) -> io::Result<()> {
-        let mut remaining = max_scan_bytes;
+        let mut remaining = startup_remaining.or(max_scan_bytes);
         self.finish_maintenance(&mut remaining)?;
         self.auto_reclaim = Some(AutoReclaim {
             threshold,
