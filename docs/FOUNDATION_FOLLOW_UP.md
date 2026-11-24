@@ -546,6 +546,17 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   checkpoint reopen, prior-selection and snapshot preservation, and
   refusal before publication. An admitted copy still rejects an obsolete
   record changed after replay reads its original bytes.
+  `OnlineCheckpointStore` now provides the checkpoint-backed online case.
+  It compacts managed stores while callbacks continue and catches up
+  acknowledged writes. It publishes a verified replacement with its own
+  checkpoint and managed selection, and can then reclaim the previous
+  generation. The [macOS APFS and hosted Linux evidence](../benchmarks/results/2026-11-24-online-checkpoint-reclaim/README.md)
+  covers concurrent writes with an open snapshot, injected and process-kill
+  interruptions at publication and retirement boundaries, and resumable
+  cleanup. It also records released old-log space and writer latency at
+  handoff. The final pause includes a full live-set comparison and a full
+  source-log read, so it grows with the store. Recovery still verifies the
+  full covered prefix, and there is no scheduled worker for this store type.
 - [x] Implement opt-in authority-backed retained cutover with a witnessed base and suffix, original-path older-reader rejection for the tested binaries and authority-checked selection. The [format specification](STREAMING_RETAINED_BASE_SPEC.md) defines the supported protocol and trust assumptions. The [buffered cutover campaign](../benchmarks/results/2026-11-19-buffered-retained-export/README.md) verified the complete base and exercised kernel failures before the original-path fence on Linux V2 and V3.
 - [x] Screen successor block and anchor limits against the rebased totals
   before creating the base file. Rotation checks the actual layout as it
@@ -688,6 +699,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   postpone compaction.
   The [paired macOS read comparison](../benchmarks/results/2026-11-24-online-read-admission/README.md)
   records the counter's steady-state throughput and its variability.
+  Checkpoint-backed online stores follow the same rule: owned
+  `OnlineCheckpointSnapshot` views keep their generation's descriptors, so
+  reclamation unlinks the old names at handoff and the disk space returns
+  when the last view is dropped. The measured release matched the retired
+  log length on APFS and Linux. No byte limit caps space pinned this way.
 - [x] Add per-open ordinary-store group-commit byte/record reservation limits and status, including live reconfiguration, rejection before submission and preservation across supported handoffs. [Fault, stress and performance evidence](GROUP_COMMIT_LIMITS_2026_11_05.md) records limitations and mixed measurements. These logical caps do not bound caller threads, other locks, checkpoint-store writes, process memory or project resources.
 - [x] Add per-open direct-write admission on both writable backends, including lock waiters, atomic reconfiguration, failure/unwind release and compaction-handoff preservation. [Measurements and limitations](DIRECT_WRITE_ADMISSION_2026_11_05.md) document workload variability; transactions use separate limits and this is not a project quota.
 - [x] Add an opt-in per-open active-call limit for independent key-value `get`, `get_many` and `scan` on both writable stores, enabled before sharing, including waiters, atomic reconfiguration and handoff preservation. An [earlier always-on prototype](../benchmarks/results/2026-11-05-direct-read-fuzz.json) was exercised by three finite model runs with 45,094 generated inputs without a finding. The [opt-in version](DIRECT_READ_ADMISSION_2026_11_05.md) has separate stress, model and paired performance evidence, including observed regressions. Transactions, snapshots, document APIs, maintenance, other stores and total resources remain outside this counter.
