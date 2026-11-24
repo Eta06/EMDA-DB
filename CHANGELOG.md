@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reserve capacity before encoding ordinary blind and transactional batches
+  into one DB02 record buffer.
+
 - Keep checkpoint readers available during final read-set validation of
   writing transactions. The writer gate stays held through commit.
 

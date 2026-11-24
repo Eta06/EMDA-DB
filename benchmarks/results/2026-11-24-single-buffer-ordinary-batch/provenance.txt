@@ -1,0 +1,255 @@
+Darwin 27.0.0 arm64
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+binary: rustc
+commit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688
+commit-date: 2025-02-17
+host: aarch64-apple-darwin
+release: 1.85.0
+LLVM version: 19.1.7
+
+Baseline: fecc81bce02e320be99fcaee48e84cc17c481443
+diff --git a/src/record/batch.rs b/src/record/batch.rs
+index d5f2201..83c8b59 100644
+--- a/src/record/batch.rs
++++ b/src/record/batch.rs
+@@ -39,0 +40 @@ pub(crate) struct Decoded<'a> {
++#[cfg(test)]
+@@ -52 +53 @@ pub(crate) fn encode_record_admitted(
+-    admit(HEADER_SIZE + 1 + batch.payload_len + CHECKSUM_SIZE)?;
++    admit(batch.encoded_len())?;
+@@ -78,0 +80,4 @@ impl<'a> BatchLayout<'a> {
++    pub(crate) fn encoded_len(self) -> usize {
++        HEADER_SIZE + 1 + self.payload_len + CHECKSUM_SIZE
++    }
++
+@@ -80 +85 @@ impl<'a> BatchLayout<'a> {
+-        let mut result = encoding_buffer(HEADER_SIZE + 1 + self.payload_len + CHECKSUM_SIZE)?;
++        let mut result = encoding_buffer(self.encoded_len())?;
+diff --git a/src/store/atomic_batch.rs b/src/store/atomic_batch.rs
+index a7aedfa..d147b83 100644
+--- a/src/store/atomic_batch.rs
++++ b/src/store/atomic_batch.rs
+@@ -3 +3,2 @@ use super::*;
+-use crate::record::batch::{BatchOperation, encode_payload};
++use crate::TimedTransactionError;
++use crate::record::batch::{BatchLayout, BatchOperation};
+@@ -39,5 +40,3 @@ impl Store {
+-        // Construct the additional encoded payload only while holding the
+-        // exclusive barrier, so concurrent callers cannot each allocate a
+-        // full batch before entering coordinator admission.
+-        let payload = encode_payload(operations)?;
+-        self.write_batch_locked(operations, &payload, tracker)
++        let batch = BatchLayout::new(operations)?;
++        self.write_batch_locked(batch, tracker, || Ok(()))
++            .map_err(TimedTransactionError::into_io)
+@@ -49,2 +48 @@ impl Store {
+-        operations: &[BatchOperation<'_>],
+-        payload: &[u8],
++        batch: BatchLayout<'_>,
+@@ -52 +50,2 @@ impl Store {
+-    ) -> io::Result<()> {
++        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
++    ) -> Result<(), TimedTransactionError> {
+@@ -54 +53 @@ impl Store {
+-            return Err(uncertain_error());
++            return Err(uncertain_error().into());
+@@ -60 +59,2 @@ impl Store {
+-            ));
++            )
++            .into());
+@@ -70 +70 @@ impl Store {
+-            for &operation in operations {
++            for &operation in batch.operations() {
+@@ -81 +81,2 @@ impl Store {
+-                            ));
++                            )
++                            .into());
+@@ -111 +112,11 @@ impl Store {
+-        self.commit_limited_tracked(Operation::Batch, &[0], payload, tracker)?;
++        let bytes = batch.encoded_len() as u64;
++        let mut reservation = self
++            .log_quota
++            .as_ref()
++            .map(|quota| quota.reserve(bytes))
++            .transpose()?;
++        self.commits
++            .commit_batch(&self.log, &self.inner, batch, tracker, before_submit)?;
++        if let Some(reservation) = reservation.as_mut() {
++            reservation.committed();
++        }
+@@ -117,0 +129,61 @@ impl Store {
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn batch_submission_rejection_releases_both_reservations_and_keeps_wire_format() {
++        use crate::record::batch::encode_payload;
++        use crate::test_support::retry_lock;
++
++        let dir = tempfile::tempdir().unwrap();
++        let path = dir.path();
++        let store = retry_lock(|| Store::open(path)).unwrap();
++        let before = store.log.len().unwrap();
++        let operations = [
++            BatchOperation::Put {
++                key: b"a",
++                value: b"first",
++            },
++            BatchOperation::Delete { key: b"a" },
++            BatchOperation::Put {
++                key: b"a",
++                value: b"last",
++            },
++        ];
++        let legacy_bytes = record::encode(
++            Operation::Batch,
++            &[0],
++            &encode_payload(&operations).unwrap(),
++        )
++        .unwrap();
++        let batch = BatchLayout::new(&operations).unwrap();
++        assert_eq!(batch.encoded_len(), legacy_bytes.len());
++        drop(store);
++        let store =
++            retry_lock(|| Store::open_with_log_limit(path, before + legacy_bytes.len() as u64))
++                .unwrap();
++        store
++            .set_group_commit_limits(legacy_bytes.len(), 1)
++            .unwrap();
++        {
++            let _writer = store.writes.write().unwrap();
++            let outcome = store
++                .write_batch_locked(batch, None, || Err(TimedTransactionError::DeadlineExceeded));
++            assert!(matches!(
++                outcome,
++                Err(TimedTransactionError::DeadlineExceeded)
++            ));
++        }
++        assert_eq!(store.log.len().unwrap(), before);
++        assert_eq!(store.get(b"a").unwrap(), None);
++        let status = store.group_commit_status().unwrap();
++        assert_eq!((status.reserved_bytes, status.reserved_records), (0, 0));
++        store.write_batch(&operations).unwrap();
++        let log = std::fs::read(path.join("records.log")).unwrap();
++        assert_eq!(&log[before as usize..], legacy_bytes);
++        drop(store);
++        let reopened = retry_lock(|| Store::open(path)).unwrap();
++        assert_eq!(reopened.get(b"a").unwrap().unwrap(), b"last");
++    }
++}
+diff --git a/src/store/commit.rs b/src/store/commit.rs
+index 025c0b4..b1efd70 100644
+--- a/src/store/commit.rs
++++ b/src/store/commit.rs
+@@ -6,0 +7 @@ use super::Inner;
++use crate::TimedTransactionError;
+@@ -7,0 +9 @@ use crate::log::{AppendRecord, Log, ValueLocation, prepare_batch};
++use crate::record::batch::BatchLayout;
+@@ -91,0 +94,23 @@ struct Entry {
++impl Entry {
++    fn new(
++        operation: Operation,
++        key: Vec<u8>,
++        encoded: Vec<u8>,
++        value_len: usize,
++        checksum: u32,
++    ) -> Self {
++        Self {
++            operation,
++            key,
++            encoded,
++            value_len,
++            checksum,
++            completion: Arc::new(Completion {
++                done: AtomicBool::new(false),
++                waiting: AtomicBool::new(false),
++                changed: Condvar::new(),
++            }),
++        }
++    }
++}
++
+@@ -395,6 +420 @@ impl Coordinator {
+-        let completion = Arc::new(Completion {
+-            done: AtomicBool::new(false),
+-            waiting: AtomicBool::new(false),
+-            changed: Condvar::new(),
+-        });
+-        let mut reservation = self.reserve(bytes)?;
++        let reservation = self.reserve(bytes)?;
+@@ -403 +423,32 @@ impl Coordinator {
+-        let key = key.to_vec();
++        let entry = Entry::new(operation, key.to_vec(), encoded, value.len(), checksum);
++        self.submit(log, inner, entry, reservation, tracker, || Ok(()))
++            .map_err(TimedTransactionError::into_io)
++    }
++
++    pub(super) fn commit_batch(
++        &self,
++        log: &Log,
++        inner: &RwLock<Inner>,
++        batch: BatchLayout<'_>,
++        tracker: Option<&crate::transaction_outcome::Tracker>,
++        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
++    ) -> Result<(), TimedTransactionError> {
++        const PAYLOAD_START: usize = HEADER_SIZE + 1;
++        let value_len = batch.payload_len();
++        let reservation = self.reserve(batch.encoded_len())?;
++        let encoded = batch.encode()?;
++        let checksum = crc32fast::hash(&encoded[PAYLOAD_START..PAYLOAD_START + value_len]);
++        let entry = Entry::new(Operation::Batch, vec![0], encoded, value_len, checksum);
++        self.submit(log, inner, entry, reservation, tracker, before_submit)
++    }
++
++    fn submit(
++        &self,
++        log: &Log,
++        inner: &RwLock<Inner>,
++        entry: Entry,
++        mut reservation: Reservation<'_>,
++        tracker: Option<&crate::transaction_outcome::Tracker>,
++        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
++    ) -> Result<(), TimedTransactionError> {
++        let completion = Arc::clone(&entry.completion);
+@@ -406,0 +458,6 @@ impl Coordinator {
++            drop(state);
++            return Err(error.into());
++        }
++        // Read the control state under the queue mutex before publishing the
++        // entry. Drop the mutex before unwinding the byte reservation.
++        if let Err(error) = before_submit() {
+@@ -416,8 +473 @@ impl Coordinator {
+-        state.queue.push_back(Entry {
+-            operation,
+-            key,
+-            encoded,
+-            value_len: value.len(),
+-            checksum,
+-            completion: Arc::clone(&completion),
+-        });
++        state.queue.push_back(entry);
+@@ -430 +480 @@ impl Coordinator {
+-                return Err(Self::failure(&state));
++                return Err(Self::failure(&state).into());
+diff --git a/src/store/transaction.rs b/src/store/transaction.rs
+index 3163241..f716908 100644
+--- a/src/store/transaction.rs
++++ b/src/store/transaction.rs
+@@ -4 +4 @@ use crate::record::batch::{
+-    BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS, encode_payload,
++    BatchLayout, BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS,
+@@ -660 +660 @@ impl Store {
+-            let payload = encode_payload(&operations)?;
++            let batch = BatchLayout::new(&operations)?;
+@@ -663 +663,5 @@ impl Store {
+-            self.write_batch_locked(&operations, &payload, tracker)?;
++            self.write_batch_locked(batch, tracker, || {
++                check_deadline(deadline)?;
++                crate::cancellation::check(cancellation)?;
++                Ok(())
++            })?;

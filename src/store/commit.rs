@@ -4,7 +4,9 @@
 //! publishes their index updates before waking the callers. Grouping is not a
 //! multi-key transaction: a failed or interrupted group has unknown outcomes.
 use super::Inner;
+use crate::TimedTransactionError;
 use crate::log::{AppendRecord, Log, ValueLocation, prepare_batch};
+use crate::record::batch::BatchLayout;
 use crate::record::{self, CHECKSUM_SIZE, HEADER_SIZE, Operation};
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
@@ -87,6 +89,29 @@ struct Entry {
     value_len: usize,
     checksum: u32,
     completion: Arc<Completion>,
+}
+
+impl Entry {
+    fn new(
+        operation: Operation,
+        key: Vec<u8>,
+        encoded: Vec<u8>,
+        value_len: usize,
+        checksum: u32,
+    ) -> Self {
+        Self {
+            operation,
+            key,
+            encoded,
+            value_len,
+            checksum,
+            completion: Arc::new(Completion {
+                done: AtomicBool::new(false),
+                waiting: AtomicBool::new(false),
+                changed: Condvar::new(),
+            }),
+        }
+    }
 }
 
 // A request has one waiter. All condition variables use the same state mutex,
@@ -392,18 +417,50 @@ impl Coordinator {
     ) -> io::Result<()> {
         // Store::append validates key and value lengths before admission.
         let bytes = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
-        let completion = Arc::new(Completion {
-            done: AtomicBool::new(false),
-            waiting: AtomicBool::new(false),
-            changed: Condvar::new(),
-        });
-        let mut reservation = self.reserve(bytes)?;
+        let reservation = self.reserve(bytes)?;
         let encoded = record::encode(operation, key, value)?;
         let checksum = crc32fast::hash(value);
-        let key = key.to_vec();
+        let entry = Entry::new(operation, key.to_vec(), encoded, value.len(), checksum);
+        self.submit(log, inner, entry, reservation, tracker, || Ok(()))
+            .map_err(TimedTransactionError::into_io)
+    }
+
+    pub(super) fn commit_batch(
+        &self,
+        log: &Log,
+        inner: &RwLock<Inner>,
+        batch: BatchLayout<'_>,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
+    ) -> Result<(), TimedTransactionError> {
+        const PAYLOAD_START: usize = HEADER_SIZE + 1;
+        let value_len = batch.payload_len();
+        let reservation = self.reserve(batch.encoded_len())?;
+        let encoded = batch.encode()?;
+        let checksum = crc32fast::hash(&encoded[PAYLOAD_START..PAYLOAD_START + value_len]);
+        let entry = Entry::new(Operation::Batch, vec![0], encoded, value_len, checksum);
+        self.submit(log, inner, entry, reservation, tracker, before_submit)
+    }
+
+    fn submit(
+        &self,
+        log: &Log,
+        inner: &RwLock<Inner>,
+        entry: Entry,
+        mut reservation: Reservation<'_>,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
+    ) -> Result<(), TimedTransactionError> {
+        let completion = Arc::clone(&entry.completion);
         let mut state = self.lock()?;
         if self.failed() {
             let error = Self::failure(&state);
+            drop(state);
+            return Err(error.into());
+        }
+        // Read the control state under the queue mutex before publishing the
+        // entry. Drop the mutex before unwinding the byte reservation.
+        if let Err(error) = before_submit() {
             drop(state);
             return Err(error);
         }
@@ -413,21 +470,14 @@ impl Coordinator {
         if let Some(tracker) = tracker {
             tracker.commit();
         }
-        state.queue.push_back(Entry {
-            operation,
-            key,
-            encoded,
-            value_len: value.len(),
-            checksum,
-            completion: Arc::clone(&completion),
-        });
+        state.queue.push_back(entry);
         reservation.active = false;
         loop {
             if completion.done.load(Ordering::Acquire) {
                 return Ok(());
             }
             if self.failed() {
-                return Err(Self::failure(&state));
+                return Err(Self::failure(&state).into());
             }
             if !state.active {
                 // Only one leader writes the log. It takes records already

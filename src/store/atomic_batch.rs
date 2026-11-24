@@ -1,6 +1,7 @@
 //! Atomic multi-key mutations encoded as one checksummed DB02 record.
 use super::*;
-use crate::record::batch::{BatchOperation, encode_payload};
+use crate::TimedTransactionError;
+use crate::record::batch::{BatchLayout, BatchOperation};
 
 impl Store {
     /// Applies ordered puts and deletes as one atomic, synchronized mutation.
@@ -36,28 +37,27 @@ impl Store {
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        // Construct the additional encoded payload only while holding the
-        // exclusive barrier, so concurrent callers cannot each allocate a
-        // full batch before entering coordinator admission.
-        let payload = encode_payload(operations)?;
-        self.write_batch_locked(operations, &payload, tracker)
+        let batch = BatchLayout::new(operations)?;
+        self.write_batch_locked(batch, tracker, || Ok(()))
+            .map_err(TimedTransactionError::into_io)
     }
 
     // Caller holds the exclusive writes barrier through durable publication.
     pub(super) fn write_batch_locked(
         &self,
-        operations: &[BatchOperation<'_>],
-        payload: &[u8],
+        batch: BatchLayout<'_>,
         tracker: Option<&crate::transaction_outcome::Tracker>,
-    ) -> io::Result<()> {
+        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
+    ) -> Result<(), TimedTransactionError> {
         if self.commits.failed() {
-            return Err(uncertain_error());
+            return Err(uncertain_error().into());
         }
         if self.log.is_legacy() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "atomic batches require a witnessed store; upgrade the legacy store first",
-            ));
+            )
+            .into());
         }
         let mut next_key_bytes = None;
         if self.max_live_keys.is_some() || self.max_live_key_bytes.is_some() {
@@ -67,7 +67,7 @@ impl Store {
             let mut present = BTreeMap::<&[u8], bool>::new();
             let mut count = inner.index.len();
             let mut key_bytes = self.live_key_bytes.load(Ordering::Relaxed);
-            for &operation in operations {
+            for &operation in batch.operations() {
                 let (kind, key, _) = operation.fields();
                 let exists = present
                     .get(key)
@@ -78,7 +78,8 @@ impl Store {
                         if self.max_live_keys.is_some_and(|max| count >= max) {
                             return Err(io::Error::other(
                                 "configured live key limit would be exceeded",
-                            ));
+                            )
+                            .into());
                         }
                         if let Some(max) = self.max_live_key_bytes {
                             key_bytes = key_bytes
@@ -108,10 +109,81 @@ impl Store {
             }
             next_key_bytes = self.max_live_key_bytes.map(|_| key_bytes);
         }
-        self.commit_limited_tracked(Operation::Batch, &[0], payload, tracker)?;
+        let bytes = batch.encoded_len() as u64;
+        let mut reservation = self
+            .log_quota
+            .as_ref()
+            .map(|quota| quota.reserve(bytes))
+            .transpose()?;
+        self.commits
+            .commit_batch(&self.log, &self.inner, batch, tracker, before_submit)?;
+        if let Some(reservation) = reservation.as_mut() {
+            reservation.committed();
+        }
         if let Some(bytes) = next_key_bytes {
             self.live_key_bytes.store(bytes, Ordering::Relaxed);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_submission_rejection_releases_both_reservations_and_keeps_wire_format() {
+        use crate::record::batch::encode_payload;
+        use crate::test_support::retry_lock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let store = retry_lock(|| Store::open(path)).unwrap();
+        let before = store.log.len().unwrap();
+        let operations = [
+            BatchOperation::Put {
+                key: b"a",
+                value: b"first",
+            },
+            BatchOperation::Delete { key: b"a" },
+            BatchOperation::Put {
+                key: b"a",
+                value: b"last",
+            },
+        ];
+        let legacy_bytes = record::encode(
+            Operation::Batch,
+            &[0],
+            &encode_payload(&operations).unwrap(),
+        )
+        .unwrap();
+        let batch = BatchLayout::new(&operations).unwrap();
+        assert_eq!(batch.encoded_len(), legacy_bytes.len());
+        drop(store);
+        let store =
+            retry_lock(|| Store::open_with_log_limit(path, before + legacy_bytes.len() as u64))
+                .unwrap();
+        store
+            .set_group_commit_limits(legacy_bytes.len(), 1)
+            .unwrap();
+        {
+            let _writer = store.writes.write().unwrap();
+            let outcome = store
+                .write_batch_locked(batch, None, || Err(TimedTransactionError::DeadlineExceeded));
+            assert!(matches!(
+                outcome,
+                Err(TimedTransactionError::DeadlineExceeded)
+            ));
+        }
+        assert_eq!(store.log.len().unwrap(), before);
+        assert_eq!(store.get(b"a").unwrap(), None);
+        let status = store.group_commit_status().unwrap();
+        assert_eq!((status.reserved_bytes, status.reserved_records), (0, 0));
+        store.write_batch(&operations).unwrap();
+        let log = std::fs::read(path.join("records.log")).unwrap();
+        assert_eq!(&log[before as usize..], legacy_bytes);
+        drop(store);
+        let reopened = retry_lock(|| Store::open(path)).unwrap();
+        assert_eq!(reopened.get(b"a").unwrap().unwrap(), b"last");
     }
 }

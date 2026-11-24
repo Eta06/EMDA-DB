@@ -510,6 +510,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   state access while retaining the writer gate. The regression detects
   a range phantom before exclusive admission and confirms cancellation
   releases the gate and staged reservation without appending a record.
+  Ordinary blind and transactional batches admit log and group-commit
+  capacity before allocating one encoded record. The
+  [allocation probe](../benchmarks/results/2026-11-24-single-buffer-ordinary-batch/README.md)
+  measures admitted and rejected 4 MiB batches. A regression verifies
+  byte-for-byte DB02 compatibility and reservation cleanup at submission.
 - [x] Implement a bounded optimistic serializable read-modify-write transaction prototype, including point/range reads, read-your-writes, rollback on callback error, conservative store-wide conflict detection and atomic DB02 commit. Independent operations and group commit are not transactions.
 - [x] Add bounded point-conditional atomic batches to the checkpoint-backed store, including concurrent transfer, validation, quota and uncertain-commit tests. A short [reference-model run](../benchmarks/results/2026-11-04-checkpoint-conditional-fuzz.json) exercised 10,251 inputs. This primitive compares current values, does not detect ABA or validate ranges, and is not a general transaction callback.
 - [x] Add conservative optimistic transactions to the checkpoint-backed store without copying its full index. Each read and final commit checks a process-local generation; staged writes commit as one DB02 record. Tests cover conflicts, range scans, ABA, transfers, resource reservations, rollover, process termination after acknowledgement and uncertain commit failures. A short [reference-model run](../benchmarks/results/2026-11-04-checkpoint-transaction-fuzz.json) exercised 9,929 inputs. This mode conflicts on all intervening writes.

@@ -37,6 +37,7 @@ pub(crate) struct Decoded<'a> {
     pub(crate) checksum: u32,
 }
 
+#[cfg(test)]
 pub(crate) fn encode_payload(operations: &[BatchOperation<'_>]) -> io::Result<Vec<u8>> {
     let length = payload_length(operations)?;
     let mut payload = Vec::with_capacity(length);
@@ -49,7 +50,7 @@ pub(crate) fn encode_record_admitted(
     admit: impl FnOnce(usize) -> io::Result<()>,
 ) -> io::Result<Vec<u8>> {
     let batch = BatchLayout::new(operations)?;
-    admit(HEADER_SIZE + 1 + batch.payload_len + CHECKSUM_SIZE)?;
+    admit(batch.encoded_len())?;
     batch.encode()
 }
 
@@ -76,8 +77,12 @@ impl<'a> BatchLayout<'a> {
         self.payload_len
     }
 
+    pub(crate) fn encoded_len(self) -> usize {
+        HEADER_SIZE + 1 + self.payload_len + CHECKSUM_SIZE
+    }
+
     pub(crate) fn encode(self) -> io::Result<Vec<u8>> {
-        let mut result = encoding_buffer(HEADER_SIZE + 1 + self.payload_len + CHECKSUM_SIZE)?;
+        let mut result = encoding_buffer(self.encoded_len())?;
         let header = encode_header(Operation::Batch, &[0], self.payload_len)?;
         result.extend_from_slice(&header);
         result.push(0);

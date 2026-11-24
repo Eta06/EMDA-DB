@@ -1,7 +1,7 @@
 //! Optimistic, serializable point transactions over a bounded index snapshot.
 use super::*;
 use crate::record::batch::{
-    BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS, encode_payload,
+    BatchLayout, BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS,
 };
 pub use crate::transaction_budget::MAX_TRANSACTION_STAGED_TOTAL_BYTES;
 use crate::transaction_budget::PendingReservation;
@@ -657,10 +657,14 @@ impl Store {
                     operations.push(BatchOperation::Put { key, value });
                 }
             }
-            let payload = encode_payload(&operations)?;
+            let batch = BatchLayout::new(&operations)?;
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
-            self.write_batch_locked(&operations, &payload, tracker)?;
+            self.write_batch_locked(batch, tracker, || {
+                check_deadline(deadline)?;
+                crate::cancellation::check(cancellation)?;
+                Ok(())
+            })?;
         } else {
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
