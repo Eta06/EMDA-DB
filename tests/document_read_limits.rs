@@ -4,9 +4,10 @@ use database_engine::retained_candidate::{
     OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
-    AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter,
-    DocumentReadLimits, DocumentTransactionLimits, DocumentTransactionMode, IndexDefinition,
-    IndexQuery, IndexValue, RetainedExportLimits, Store, TransactionFailure,
+    AggregateStatsRequest, CheckpointStore, CheckpointView, CollectionSchema, DocumentDatabase,
+    DocumentFilter, DocumentReadLimits, DocumentSnapshot, DocumentTransactionLimits,
+    DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue, RetainedExportLimits, Store,
+    TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -258,14 +259,7 @@ fn document_validation_limit_rejects_before_document_and_receipt_append() {
     }
 }
 
-#[test]
-fn cumulative_document_read_limits_apply_to_all_writable_backends() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("store");
-    let checkpoint_path = dir.path().join("checkpoint");
-    let catalog = dir.path().join("retained");
-    let store = Store::open(&path).unwrap();
-    let db = DocumentDatabase::new(&store);
+fn seed_indexed_documents(db: &DocumentDatabase<'_>) {
     db.create_collection("c", CollectionSchema::default())
         .unwrap();
     db.create_index(
@@ -280,6 +274,17 @@ fn cumulative_document_read_limits_apply_to_all_writable_backends() {
     .unwrap();
     db.insert("c", "a", &json!({"score": 1})).unwrap();
     db.insert("c", "b", &json!({"score": 2})).unwrap();
+}
+
+#[test]
+fn cumulative_document_read_limits_apply_to_all_writable_backends() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let checkpoint_path = dir.path().join("checkpoint");
+    let catalog = dir.path().join("retained");
+    let store = Store::open(&path).unwrap();
+    let db = DocumentDatabase::new(&store);
+    seed_indexed_documents(&db);
     store.put(b"key", b"data").unwrap();
     check_limits(&db);
     let digest = store.checkpoint_to(&checkpoint_path).unwrap();
@@ -349,4 +354,80 @@ fn cumulative_document_read_limits_apply_to_all_writable_backends() {
             .unwrap(),
         Some(initial)
     );
+}
+
+#[test]
+fn document_snapshot_read_limits_accumulate_across_pages_on_all_views() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    seed_indexed_documents(&DocumentDatabase::new(&store));
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+
+    let exercise = |snapshot: DocumentSnapshot<'_>| {
+        let first_query = IndexQuery {
+            limit: 1,
+            ..Default::default()
+        };
+        let limits = DocumentReadLimits {
+            max_read_units: 4,
+            max_read_bytes: usize::MAX,
+        };
+        let assert_rejected = |error: io::Error| {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(error.to_string(), "document snapshot read limit exceeded");
+        };
+        let snapshot = snapshot.with_read_limits(limits);
+        let first = snapshot.query_index("c", "score", &first_query).unwrap();
+        assert_eq!(first.documents[0].id, "a");
+        let next_query = IndexQuery {
+            after: Some(first.next.unwrap()),
+            ..first_query
+        };
+        assert_rejected(snapshot.query_index("c", "score", &next_query).unwrap_err());
+        assert_rejected(snapshot.get("c", "a").unwrap_err());
+
+        let snapshot = snapshot.with_read_limits(DocumentReadLimits {
+            max_read_units: 3,
+            ..limits
+        });
+        assert_rejected(
+            snapshot
+                .query_index(
+                    "c",
+                    "score",
+                    &IndexQuery {
+                        limit: 2,
+                        ..Default::default()
+                    },
+                )
+                .unwrap_err(),
+        );
+
+        let snapshot = snapshot.with_read_limits(DocumentReadLimits {
+            max_read_bytes: 0,
+            ..limits
+        });
+        assert_rejected(snapshot.get("c", "a").unwrap_err());
+        let next = snapshot
+            .with_read_limits(limits)
+            .query_index("c", "score", &next_query)
+            .unwrap();
+        assert_eq!(next.documents[0].id, "b");
+    };
+
+    let snapshot = store.snapshot(32, 4096).unwrap();
+    exercise(DocumentSnapshot::new(&snapshot));
+    drop(snapshot);
+    drop(store);
+
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let snapshot = store.snapshot().unwrap();
+    exercise(DocumentSnapshot::with_checkpoint_snapshot(&snapshot));
+    drop(snapshot);
+    drop(store);
+
+    let view = retry_lock(|| CheckpointView::open(&path, &checkpoint, &digest)).unwrap();
+    exercise(DocumentSnapshot::with_checkpoint_view(&view));
 }

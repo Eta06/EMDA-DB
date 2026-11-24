@@ -244,6 +244,9 @@ The initial document interface is bounded and experimental. This checklist recor
   reads all 2,047 keys when the initial observation fills the 2 MiB key budget.
   Point reads of present and absent keys inside that range also reuse the
   observation. Exclusive endpoints still require separate validation.
+  `DocumentSnapshot::with_read_limits` extends cumulative logical read
+  admission across pages on ordinary, checkpoint-backed, and historical
+  snapshots. A rejected page exhausts that wrapper's budget.
 - [ ] Add an authenticated service and genuine project isolation in the later security/service priority. The raw reserved prefix is not an isolation boundary; uncooperative raw writes can corrupt document metadata or create undetected omissions until bounded verification.
 - [x] Establish versioned migration, import/export and compatibility policy
   before a stable release. The [version 1 archive](VERSIONING.md#portable-collection-archives)

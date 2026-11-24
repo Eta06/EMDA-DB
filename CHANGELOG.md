@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add cumulative logical read limits across document snapshot pages and
+  point reads, including historical checkpoint views.
+
 - Report detailed tail-witness recovery outcomes when opening explicit and
   managed writable checkpoints with optional suffix operation limits.
 

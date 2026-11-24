@@ -44,7 +44,7 @@ enum BackendTransaction<'a, 'store> {
     HistoricalCheckpoint(&'a CheckpointView),
 }
 
-/// Cumulative logical read limits for one document transaction.
+/// Cumulative logical read limits for a document transaction or snapshot wrapper.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DocumentReadLimits {
     /// Maximum point requests, scan page requests, and admitted scan entries
@@ -127,7 +127,14 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 || bytes > budget.remaining.max_read_bytes
             {
                 budget.exhausted = true;
-                return Err(read_limit_exceeded());
+                return Err(match self.backend {
+                    BackendTransaction::OrdinarySnapshot(_)
+                    | BackendTransaction::CheckpointSnapshot(_)
+                    | BackendTransaction::HistoricalCheckpoint(_) => {
+                        key::invalid("document snapshot read limit exceeded")
+                    }
+                    _ => read_limit_exceeded(),
+                });
             }
             budget.remaining.max_read_units -= units;
             budget.remaining.max_read_bytes -= bytes;

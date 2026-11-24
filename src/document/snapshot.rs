@@ -1,5 +1,5 @@
 use super::{
-    DocumentPage, DocumentQuery, DocumentQueryExplanation, DocumentQueryResult,
+    DocumentPage, DocumentQuery, DocumentQueryExplanation, DocumentQueryResult, DocumentReadLimits,
     DocumentTransaction, IndexQuery, PlannedDocumentQueryResult,
 };
 use crate::{CheckpointSnapshot, CheckpointView, Snapshot};
@@ -35,6 +35,16 @@ impl<'a> DocumentSnapshot<'a> {
         Self {
             view: DocumentTransaction::historical_checkpoint(view),
         }
+    }
+
+    /// Sets a cumulative logical read budget for this wrapper, starting with
+    /// the next read. The budget covers metadata, documents, and index reads
+    /// across all pages. Exceeding either limit rejects the current request
+    /// and subsequent reads through this wrapper. Calling this method again
+    /// starts a new budget over the same captured view.
+    pub fn with_read_limits(mut self, limits: DocumentReadLimits) -> Self {
+        self.view.limit_reads(limits);
+        self
     }
 
     /// Reads one document from the captured view.

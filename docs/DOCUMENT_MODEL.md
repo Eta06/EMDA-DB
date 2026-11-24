@@ -200,6 +200,14 @@ snapshot's admission limits, deadline, cancellation and reaping rules
 apply. Each query also enforces its usual document limits. These two
 storage snapshots live in the current process.
 
+`DocumentSnapshot::with_read_limits` optionally shares one logical
+`DocumentReadLimits` budget across point reads, queries and pages on the
+same wrapper, including metadata and indexes. It applies to both live
+snapshot types and historical checkpoints. A request that exceeds the
+budget returns an error without a partial result and exhausts the wrapper
+for subsequent reads. Explicitly setting new limits starts a new budget
+over the same captured state. This limits logical read units and bytes.
+
 To resume the same historical view after restart, use `checkpoint_to`
 on the ordinary or checkpoint store. Preserve the checkpoint and its
 original covered log, plus the checkpoint digest and any cursor in trusted
