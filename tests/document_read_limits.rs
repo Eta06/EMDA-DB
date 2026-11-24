@@ -4,9 +4,9 @@ use database_engine::retained_candidate::{
     OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
-    CheckpointStore, CollectionSchema, DocumentDatabase, DocumentReadLimits,
-    DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue, RetainedExportLimits, Store,
-    TransactionFailure,
+    AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter,
+    DocumentReadLimits, DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue,
+    RetainedExportLimits, Store, TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -87,6 +87,30 @@ fn check_limits(db: &DocumentDatabase<'_>) {
         Ok(())
     })
     .unwrap();
+    let stats = AggregateStatsRequest {
+        filter: DocumentFilter::In {
+            path: vec!["score".into()],
+            values: vec![json!(1), json!(2)],
+        },
+        group_by: None,
+        fields: vec![vec!["score".into()]],
+        max_scanned: 4,
+    };
+    db.transaction_with_read_limits(limits(7, usize::MAX), mode, None, None, |tx| {
+        let result = tx.aggregate_stats_planned("c", &stats)?.result;
+        assert_eq!(result.groups[0].count, 2);
+        assert_eq!(result.groups[0].fields[0].sum, 3);
+        Ok(())
+    })
+    .unwrap();
+    let result = db.transaction_with_read_limits(limits(6, usize::MAX), mode, None, None, |tx| {
+        tx.put_raw(b"receipt", b"not committed")?;
+        assert!(is_read_limit(
+            &tx.aggregate_stats_planned("c", &stats).unwrap_err()
+        ));
+        Ok(())
+    });
+    assert!(matches!(result, Err(TransactionFailure::Callback(error)) if is_read_limit(&error)));
     assert_eq!(db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(), None);
 }
 
