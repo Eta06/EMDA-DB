@@ -46,7 +46,12 @@ def run_embedded(run, binary, engine, directory, clients, cycles, documents):
                str(clients), str(cycles), str(documents)]
     run["command"] = command
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
-    completed = subprocess.run(command, text=True, capture_output=True, timeout=360, check=False)
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, timeout=360, check=False)
+    except subprocess.TimeoutExpired as error:
+        run["stdout"] = (error.stdout or b"").decode(errors="replace")
+        run["stderr"] = (error.stderr or b"").decode(errors="replace")
+        raise
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
     run.update(returncode=completed.returncode, stderr=completed.stderr,
                child_cpu_seconds=after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime)
@@ -176,8 +181,10 @@ def main():
                 offset = (dimension + round_index) % len(variants)
                 order = variants[offset:] + variants[:offset]
                 for label, engine, binary in order:
-                    run = {"variant": label, "round": round_index + 1, "clients": count}
+                    run = {"variant": label, "round": round_index + 1, "clients": count,
+                           "status": "running"}
                     report["runs"].append(run)
+                    save_report(args.output, report)
                     if servers and binary is not None:
                         run["pre_run_quiet"] = quiet_window(seconds=.25, attempts=3)
                     before = snapshot()
@@ -189,7 +196,9 @@ def main():
                                                   count, args.cycles, args.documents)
                         run["result"] = result
                         validate(result, engine, count, args.cycles, args.documents)
+                        run["status"] = "verified"
                     except Exception as error:
+                        run["status"] = "failed"
                         run["error"] = str(error)
                         raise
                     finally:

@@ -87,11 +87,14 @@ The initial document interface is bounded and experimental. This checklist recor
   the verified observation used for conflict detection. A repeated scan
   rechecks the checkpoint. The [paired Linux traces](../benchmarks/results/2026-11-23-checkpoint-transaction-range/README.md)
   count reads for raw-key pages and a planned nonunique document query.
-- [ ] Measure and optimize document workloads with equivalent durability and comparable behavior against SQLite, MongoDB and other suitable alternatives. Publish workload definitions, distributions, concurrency, resource use, failures and noise; do not infer performance from the earlier byte-key baseline.
-  The [current-revision report](../benchmarks/results/2026-11-24-document-current/README.md)
-  extends durable SQLite comparisons to eight concurrent clients and
-  records measured compound-range reads across four engines. Concurrent
-  server-engine document writes and comparable resource attribution remain open.
+- [x] Measure and optimize document workloads with equivalent durability and comparable behavior against SQLite, MongoDB and other suitable alternatives. Publish workload definitions, distributions, concurrency, resource use, failures and noise; do not infer performance from the earlier byte-key baseline.
+  [Concurrent durable updates and indexed reads](../benchmarks/results/2026-11-24-cross-engine-document-contention/README.md)
+  cover up to eight clients across the two writable EMDA backends, SQLite,
+  PostgreSQL and MongoDB. All 100 measured cases verified every document
+  and indexed mapping after reopen or restart. The report records separate
+  server and client resources with their measurement scopes. [Compound-range
+  and earlier contention measurements](../benchmarks/results/2026-11-24-document-current/README.md)
+  include four-engine indexed reads and paired SQLite workloads.
   [Exact-index measurements](../benchmarks/results/2026-11-24-exact-index-streaming/README.md)
   show fewer allocator requests and lower sampled latency after removing
   duplicated IDs. Indexed SQLite remained faster in the sampled read workload.

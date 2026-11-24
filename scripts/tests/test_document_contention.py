@@ -1,10 +1,12 @@
 from pathlib import Path
+import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from benchmarks.document_contention import expected_row, run_clients, verify_reopened, verify_row
-from document_contention_compare import validate
+from document_contention_compare import run_embedded, validate
 
 
 class DocumentContentionTests(unittest.TestCase):
@@ -43,6 +45,15 @@ class DocumentContentionTests(unittest.TestCase):
         self.assertEqual(len(result["clients_samples"][0]["update_ns"]), 1)
         self.assertEqual(result["clients_samples"][0]["query_ns"], [])
         self.assertIn("resources_after", result)
+
+    def test_embedded_timeout_keeps_partial_process_output(self):
+        run = {}
+        timeout = subprocess.TimeoutExpired("binary", 1, output=b"partial result", stderr=b"error")
+        with patch("document_contention_compare.subprocess.run", side_effect=timeout):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                run_embedded(run, Path("binary"), "store", Path("."), 1, 1, 1)
+        self.assertEqual(run["stdout"], "partial result")
+        self.assertEqual(run["stderr"], "error")
 
 
 if __name__ == "__main__":
