@@ -1,12 +1,13 @@
-//! Bounded aggregation and ID-based relationship lookup over one snapshot.
+//! Bounded aggregation and relationship lookups over one snapshot.
 use super::{
     filter::{DocumentFilter, DocumentQuery, QueryPlan},
-    index::IndexValue,
+    index::{self, IndexValue},
     key,
-    query::DocumentEntry,
-    schema,
+    query::{DocumentEntry, index_definition},
+    schema::{self, CollectionSchema},
     transaction::DocumentTransaction,
 };
+use crate::record::{MAX_KEY, invalid_data};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io;
@@ -44,16 +45,16 @@ pub struct AggregateResult {
     pub plan: QueryPlan,
 }
 
-/// A source document and optional document referenced by its ID field.
+/// A source document and its optional related document.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookupEntry {
     /// The source document.
     pub source: DocumentEntry,
-    /// The matching document, or `None` for missing, null, or absent IDs.
+    /// The matching foreign document, if there is one.
     pub related: Option<Value>,
 }
 
-/// Bounded results of an ID lookup and source query statistics.
+/// Bounded relationship lookup results and source query statistics.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookupResult {
     /// Source rows with related documents.
@@ -149,6 +150,107 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<LookupResult> {
         schema::validate_path(local_path)?;
         let foreign = self.metadata(foreign_collection)?;
+        self.lookup_sources(
+            collection,
+            query,
+            |document, remaining| match schema::field(document, local_path) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(id)) => {
+                    self.read_lookup_target(foreign_collection, id, &foreign.schema, remaining)
+                }
+                Some(_) => Err(key::invalid(
+                    "lookup field must be a string ID, null, or missing",
+                )),
+            },
+        )
+    }
+
+    /// Resolve at most one related document per source row by a named unique
+    /// index. Local paths correspond to the index's fields in order. A missing
+    /// local field gives no match. Null is an exact indexed value. A partial
+    /// index limits matches to the documents it covers.
+    ///
+    /// Source and target reads share this transaction. The source query uses
+    /// a bounded collection scan and requires an unprojected result. Related
+    /// document bytes share a 16 MiB ceiling, counting repeated references.
+    pub fn lookup_unique_index(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign_collection: &str,
+        foreign_index: &str,
+    ) -> io::Result<LookupResult> {
+        let foreign = self.metadata(foreign_collection)?;
+        let definition = index_definition(&foreign, foreign_index)?;
+        if !definition.unique || local_paths.len() != definition.fields.len() {
+            return Err(key::invalid(
+                "lookup requires a unique index and one local path per indexed field",
+            ));
+        }
+        for path in local_paths {
+            schema::validate_path(path)?;
+        }
+        let prefix = key::index(b'U', foreign_collection, foreign_index)?;
+        self.lookup_sources(collection, query, |document, remaining| {
+            let Some(values) = local_paths
+                .iter()
+                .map(|path| schema::field(document, path))
+                .collect::<Option<Vec<_>>>()
+            else {
+                return Ok(None);
+            };
+            let mut tuple = prefix.clone();
+            for value in values {
+                IndexValue::from_json(value)?.encode(&mut tuple)?;
+            }
+            if tuple.len() > MAX_KEY {
+                return Ok(None);
+            }
+            let Some(owner) = self.read_unique_owner(&tuple)? else {
+                return Ok(None);
+            };
+            let id = std::str::from_utf8(&owner)
+                .map_err(|_| invalid_data("invalid unique index owner"))?;
+            let target = self
+                .read_lookup_target(foreign_collection, id, &foreign.schema, remaining)?
+                .ok_or_else(|| invalid_data("unique index references a missing document"))?;
+            let keys = index::keys(foreign_collection, definition, &target, id)
+                .map_err(|_| invalid_data("document cannot be represented by its index"))?;
+            let Some(keys) = keys.filter(|keys| keys.unique.as_deref() == Some(tuple.as_slice()))
+            else {
+                return Err(invalid_data("unique index does not match its document"));
+            };
+            if !self.has_index_entry(&keys.entry)? {
+                return Err(invalid_data("unique index has no matching document entry"));
+            }
+            Ok(Some(target))
+        })
+    }
+
+    fn read_lookup_target(
+        &self,
+        collection: &str,
+        id: &str,
+        schema: &CollectionSchema,
+        remaining: &mut usize,
+    ) -> io::Result<Option<Value>> {
+        self.read_document_bytes(&key::document(collection, id)?, |len| {
+            *remaining = remaining
+                .checked_sub(len)
+                .ok_or_else(|| key::invalid("lookup response exceeds 16 MiB"))?;
+            Ok(())
+        })?
+        .map(|encoded| Self::decode_document(&encoded, schema))
+        .transpose()
+    }
+
+    fn lookup_sources(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        mut resolve: impl FnMut(&Value, &mut usize) -> io::Result<Option<Value>>,
+    ) -> io::Result<LookupResult> {
         if query.projection.is_some() {
             return Err(key::invalid(
                 "lookup does not accept a projected source query",
@@ -158,23 +260,7 @@ impl DocumentTransaction<'_, '_> {
         let mut documents = Vec::with_capacity(result.documents.len());
         let mut remaining = 16 * 1024 * 1024_usize;
         for source in result.documents {
-            let related = match schema::field(&source.document, local_path) {
-                None | Some(Value::Null) => None,
-                Some(Value::String(id)) => self
-                    .read_document_bytes(&key::document(foreign_collection, id)?, |len| {
-                        remaining = remaining
-                            .checked_sub(len)
-                            .ok_or_else(|| key::invalid("lookup response exceeds 16 MiB"))?;
-                        Ok(())
-                    })?
-                    .map(|encoded| Self::decode_document(&encoded, &foreign.schema))
-                    .transpose()?,
-                Some(_) => {
-                    return Err(key::invalid(
-                        "lookup field must be a string ID, null, or missing",
-                    ));
-                }
-            };
+            let related = resolve(&source.document, &mut remaining)?;
             documents.push(LookupEntry { source, related });
         }
         Ok(LookupResult {

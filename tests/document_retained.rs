@@ -63,6 +63,22 @@ fn seed(source: &Path) -> Store {
     store
 }
 
+fn check_score_relationship(db: &DocumentDatabase<'_>) {
+    let rows = db
+        .lookup_unique_index(
+            "items",
+            &DocumentQuery::default(),
+            &[vec!["n".into()]],
+            "items",
+            "score",
+        )
+        .unwrap();
+    assert_eq!(rows.documents.len(), 2);
+    for row in rows.documents {
+        assert_eq!(row.related, Some(row.source.document));
+    }
+}
+
 fn prepare(root: &Path) -> ManagedRetainedStore {
     let source = root.join("source");
     let catalog = root.join("catalog");
@@ -367,6 +383,7 @@ fn authorized_cutover_preserves_document_transactions_through_reclamation() {
             .unwrap(),
         b"committed"
     );
+    check_score_relationship(&db);
     db.verify_collection("items").unwrap();
 
     let key = MaintenanceKey::generate().unwrap();
@@ -457,6 +474,7 @@ fn indexed_document_transactions_survive_automatic_reclamation_and_bound_restore
             .unwrap(),
         b"committed"
     );
+    check_score_relationship(&db);
     db.verify_collection("items").unwrap();
 }
 

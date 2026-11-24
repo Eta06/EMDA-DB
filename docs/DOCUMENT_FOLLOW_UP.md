@@ -177,7 +177,10 @@ The initial document interface is bounded and experimental. This checklist recor
   probes, equality prefixes, range endpoints and complete unique tuples. The
   ordinary and checkpoint backend tests cover budget rejection on execution,
   staged index removal, and captured metadata in snapshots.
-- [ ] Design richer schema types and validation, comparison/update/aggregation operators, array and multikey behavior, broader compound index unions, relationships, diagnostics, statistics and a cost-based planner; define compatibility and limits before implementation. Current lookups are by ID, aggregation is limited, and unplanned or ineligible collection queries require a complete bounded scan.
+- [x] Add bounded relationship lookups by a complete unique index tuple.
+  Tests cover typed and partial targets, exact response limits, staged
+  changes, missing-owner conflicts, and retained restore and reopen.
+- [ ] Design richer schema types and validation, comparison/update/aggregation operators, array and multikey behavior, broader compound index unions, relationships, diagnostics, statistics and a cost-based planner; define compatibility and limits before implementation. Existing lookups use an ID or a complete unique tuple, aggregation is limited, and unplanned or ineligible collection queries require a complete bounded scan.
   [String prefix filters](DOCUMENT_MODEL.md) use bounded UTF-8 operands
   and can use scalar ranges. Tests compare indexed and scan results for
   Unicode boundaries, missing fields, partial compound indexes, and a

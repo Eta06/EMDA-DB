@@ -766,6 +766,211 @@ fn aggregate_and_lookup_use_bounded_consistent_document_reads() {
 }
 
 #[test]
+fn unique_index_lookup_resolves_compound_relationships_and_observes_missing_tuples() {
+    use database_engine::{DocumentFilter, DocumentQuery};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let exercise = |db: &DocumentDatabase<'_>| {
+        for collection in ["orders", "people"] {
+            db.create_collection(collection, CollectionSchema::default())
+                .unwrap();
+        }
+        let definition = IndexDefinition {
+            name: "tenant_email".into(),
+            fields: vec![path("tenant"), path("email")],
+            unique: true,
+            partial: Some(PartialFilter::Equals {
+                path: path("active"),
+                value: IndexValue::Boolean(true),
+            }),
+        };
+        db.create_index("people", definition.clone()).unwrap();
+        db.create_index(
+            "people",
+            IndexDefinition {
+                name: "nonunique".into(),
+                unique: false,
+                ..definition
+            },
+        )
+        .unwrap();
+        let person = json!({"tenant":7, "email":"a@example", "active":true});
+        let null = json!({"tenant":7, "email":null, "active":true});
+        db.insert("people", "a", &person).unwrap();
+        db.insert("people", "n", &null).unwrap();
+        db.insert(
+            "people",
+            "excluded",
+            &json!({"tenant":7, "email":"absent", "active":false}),
+        )
+        .unwrap();
+        for (id, order) in [
+            ("a", json!({"org":7, "buyer":"a@example"})),
+            ("b", json!({"org":7, "buyer":null})),
+            ("c", json!({"org":7})),
+            ("d", json!({"org":7, "buyer":"absent"})),
+            ("e", json!({"org":"7", "buyer":"a@example"})),
+        ] {
+            db.insert("orders", id, &order).unwrap();
+        }
+
+        let paths = [path("org"), path("buyer")];
+        let query = DocumentQuery {
+            max_scanned: 5,
+            ..Default::default()
+        };
+        let rows = db
+            .lookup_unique_index("orders", &query, &paths, "people", "tenant_email")
+            .unwrap();
+        assert_eq!(rows.plan.scanned, 5);
+        assert_eq!(
+            rows.documents
+                .into_iter()
+                .map(|row| row.related)
+                .collect::<Vec<_>>(),
+            [Some(person), Some(null), None, None, None],
+        );
+        for (local, index) in [
+            (paths.as_slice(), "nonunique"),
+            (&paths[..1], "tenant_email"),
+        ] {
+            assert_eq!(
+                db.lookup_unique_index("orders", &query, local, "people", index)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+
+        let missing = DocumentQuery {
+            filter: DocumentFilter::Equal {
+                path: path("buyer"),
+                value: json!("absent"),
+            },
+            ..query
+        };
+        db.transaction_with_read_set(|tx| {
+            tx.replace("orders", "a", &json!({"org":7, "buyer":[]}), false)?;
+            assert_eq!(
+                tx.lookup_unique_index(
+                    "orders",
+                    &DocumentQuery::default(),
+                    &paths,
+                    "people",
+                    "tenant_email"
+                )
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::InvalidInput
+            );
+            tx.replace("orders", "a", &json!({"org":7, "buyer":"a@example"}), false)?;
+            Ok(())
+        })
+        .unwrap();
+
+        std::thread::scope(|scope| {
+            let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+            let (committed_tx, committed_rx) = mpsc::sync_channel(1);
+            let lookup = &missing;
+            let fields = &paths;
+            let reader = scope.spawn(move || {
+                db.transaction_with_read_set(|tx| {
+                    let rows =
+                        tx.lookup_unique_index("orders", lookup, fields, "people", "tenant_email")?;
+                    assert_eq!(rows.documents.len(), 1);
+                    assert_eq!(rows.documents[0].related, None);
+                    tx.put_raw(b"receipt", b"stale")?;
+                    observed_tx.send(()).unwrap();
+                    committed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(())
+                })
+            });
+            observed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let added = json!({"tenant":7, "email":"absent", "active":true});
+            db.insert("people", "new", &added).unwrap();
+            committed_tx.send(()).unwrap();
+            assert_eq!(
+                reader.join().unwrap().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            let rows = db
+                .lookup_unique_index("orders", &missing, &paths, "people", "tenant_email")
+                .unwrap();
+            assert_eq!(rows.documents[0].related.as_ref(), Some(&added));
+            db.transaction(|tx| {
+                assert_eq!(tx.get_raw(b"receipt")?, None);
+                tx.delete("people", "new")?;
+                let rows =
+                    tx.lookup_unique_index("orders", &missing, &paths, "people", "tenant_email")?;
+                assert_eq!(rows.documents[0].related, None);
+                Ok(())
+            })
+            .unwrap();
+        });
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let ordinary = Store::open(directory.path().join("ordinary")).unwrap();
+    exercise(&DocumentDatabase::new(&ordinary));
+    let path = directory.path().join("checkpoint-source");
+    let checkpoint = directory.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(store);
+    let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    exercise(&DocumentDatabase::with_checkpoint_store(&store));
+}
+
+#[test]
+fn unique_index_lookup_rejects_corrupt_targets_and_missing_companion_entries() {
+    use database_engine::DocumentQuery;
+
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let db = DocumentDatabase::new(&store);
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index(
+        "c",
+        IndexDefinition {
+            name: "by_code".into(),
+            fields: vec![path("code")],
+            unique: true,
+            partial: None,
+        },
+    )
+    .unwrap();
+    db.insert("c", "target", &json!({"code":"ref", "target":true}))
+        .unwrap();
+    db.insert("c", "wrong", &json!({"code":"other"})).unwrap();
+    db.insert("c", "source", &json!({"related":"ref"})).unwrap();
+    let find_key = |prefix: &[u8], value: &[u8]| {
+        store
+            .scan(None, None, 100)
+            .unwrap()
+            .into_iter()
+            .find(|(key, bytes)| {
+                key.starts_with(prefix) && (bytes == value || key.ends_with(value))
+            })
+            .unwrap()
+            .0
+    };
+    let owner = find_key(b"\0emda-document\x01U", b"target");
+    let entry = find_key(b"\0emda-document\x01I", b"target");
+    let query = DocumentQuery::default();
+    let lookup = || db.lookup_unique_index("c", &query, &[path("related")], "c", "by_code");
+    assert!(lookup().is_ok());
+    for substituted in [&b"gone"[..], &b"wrong"[..]] {
+        store.put(&owner, substituted).unwrap();
+        assert_eq!(lookup().unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+    store.put(&owner, b"target").unwrap();
+    store.delete(&entry).unwrap();
+    assert_eq!(lookup().unwrap_err().kind(), io::ErrorKind::InvalidData);
+}
+
+#[test]
 fn related_document_lookup_charges_repeated_and_staged_targets_at_the_exact_limit() {
     use database_engine::DocumentQuery;
 
@@ -774,7 +979,17 @@ fn related_document_lookup_charges_repeated_and_staged_targets_at_the_exact_limi
             db.create_collection(name, CollectionSchema::default())
                 .unwrap();
         }
-        let target = json!({"body": "x".repeat(1024 * 1024 - br#"{"body":""}"#.len())});
+        db.create_index(
+            "target",
+            IndexDefinition {
+                name: "external".into(),
+                fields: vec![path("external")],
+                unique: true,
+                partial: None,
+            },
+        )
+        .unwrap();
+        let target = json!({"body": "x".repeat(1024 * 1024 - br#"{"body":"","external":"large"}"#.len()), "external":"large"});
         db.insert("target", "large", &target).unwrap();
         db.transaction(|tx| {
             for index in 0..17 {
@@ -791,23 +1006,31 @@ fn related_document_lookup_charges_repeated_and_staged_targets_at_the_exact_limi
             limit: 17,
             ..exact.clone()
         };
-        let page = db.lookup("source", &exact, &path("ref"), "target").unwrap();
-        assert_eq!(page.documents.len(), 16);
-        assert!(
-            page.documents
-                .iter()
-                .all(|row| row.related.as_ref() == Some(&target))
-        );
-        drop(page);
-        let error = db
-            .lookup("source", &over, &path("ref"), "target")
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert_eq!(error.to_string(), "lookup response exceeds 16 MiB");
+        for indexed in [false, true] {
+            let lookup = |query| {
+                if indexed {
+                    db.lookup_unique_index("source", query, &[path("ref")], "target", "external")
+                } else {
+                    db.lookup("source", query, &path("ref"), "target")
+                }
+            };
+            let page = lookup(&exact).unwrap();
+            assert_eq!(page.documents.len(), 16);
+            assert!(
+                page.documents
+                    .iter()
+                    .all(|row| row.related.as_ref() == Some(&target))
+            );
+            drop(page);
+            let error = lookup(&over).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(error.to_string(), "lookup response exceeds 16 MiB");
+        }
         db.transaction_with_read_set(|tx| {
-            let smaller = json!({"body":"staged"});
+            let smaller = json!({"body":"staged", "external":"large"});
             tx.replace("target", "large", &smaller, false)?;
-            let result = tx.lookup("source", &over, &path("ref"), "target")?;
+            let result =
+                tx.lookup_unique_index("source", &over, &[path("ref")], "target", "external")?;
             assert_eq!(result.documents.len(), 17);
             assert!(
                 result

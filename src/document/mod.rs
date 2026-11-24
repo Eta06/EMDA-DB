@@ -614,6 +614,27 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.lookup(collection, query, local_path, foreign_collection))
     }
 
+    /// Follows complete scalar tuples into a named unique index in one
+    /// transaction. Supply the local paths in the foreign index's field order.
+    pub fn lookup_unique_index(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign_collection: &str,
+        foreign_index: &str,
+    ) -> io::Result<LookupResult> {
+        self.transaction(|tx| {
+            tx.lookup_unique_index(
+                collection,
+                query,
+                local_paths,
+                foreign_collection,
+                foreign_index,
+            )
+        })
+    }
+
     /// Executes a bounded collection scan with filter, sorting and projection.
     pub fn query(
         &self,

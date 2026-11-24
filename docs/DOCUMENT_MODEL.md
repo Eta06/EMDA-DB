@@ -369,6 +369,18 @@ The indexed path relies on the declared index being intact. It validates each en
 
 `aggregate` performs a bounded complete scan of at most 256 documents, with count, optional grouping by one scalar path and optional checked signed-integer sum. It groups matches as they are visited in document ID order and retains the groups and a scan page. Missing and null sum values are skipped. Non-integers and intermediate overflow fail after scan and filter validation. `lookup` follows a string document ID into another collection within the same transaction snapshot. Missing/null references and missing target IDs yield no related document. It admits up to 16 MiB of encoded related document bytes before reading the targets, counting repeats, and rejects a projected source query. These are narrow primitives, not MongoDB aggregation pipelines or general joins.
 
+`lookup_unique_index` takes one local object path per field of a named
+unique index, in index field order. The complete typed scalar tuple resolves
+at most one related document per source row. A missing local field or
+absent tuple yields no match. Explicit null can match an indexed null, and
+other present values must be indexable scalars. A partial index restricts
+the target population to its indexed documents. This form uses the same
+bounded source scan, projection rule, and 16 MiB related-document byte
+limit as ID lookup. It reads the unique owner, validates the target tuple
+and its companion index entry, and observes missing owner keys in
+read-set transactions. Correct results depend on maintained indexes.
+
+
 `aggregate_stats` computes count, exact checked `i128` sum, minimum, maximum and an optional approximate floating-point mean for one to 16 distinct paths in a complete scan of at most 256 documents. Grouping uses the same typed scalar ordering and distinguishes missing from null; an empty ungrouped scan returns one zero-count group, while an empty grouped scan returns none. Each field skips missing and null independently; any present non-signed-integer value fails the operation. Matching documents are grouped as they are visited; the groups and a scan page remain in memory. Scan and filter failures take precedence over aggregation errors. The result lists the requested paths once; every group returns statistics in that same order. The exact mean is the returned sum and field count as a rational; `mean()` is approximate. The method sees transaction-staged changes and shares the scan's serializable range validation and logical limits, but is not a general aggregation pipeline, indexed aggregation, total-memory quota, or MongoDB compatibility promise.
 
 `aggregate_stats_planned` applies the same statistics to candidates from a

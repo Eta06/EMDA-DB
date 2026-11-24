@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Follow complete scalar tuples through named unique document indexes in
+  bounded relationship lookups.
+
 - Preserve retirement headroom across retained catalog rotation and appends
   under a persisted storage quota.
 
