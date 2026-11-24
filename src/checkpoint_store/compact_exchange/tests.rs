@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::retry_lock;
-use crate::{COMPACTED_CHECKPOINT_FILE, Store};
+use crate::{COMPACTED_CHECKPOINT_FILE, CheckpointStoreLimits, HandoffFailure, Store, log::Log};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
@@ -48,6 +48,89 @@ fn verify_store(path: &Path) {
     assert_eq!(store.get(b"base").unwrap(), Some(b"initial".to_vec()));
     assert_eq!(store.get(b"a").unwrap(), Some(b"latest".to_vec()));
     assert_eq!(store.get(b"b").unwrap(), Some(b"value".to_vec()));
+}
+
+#[test]
+fn checkpoint_limits_reject_handoff_before_sibling_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("live");
+    let base = root.path().join("base");
+    let previous = root.path().join("previous");
+    let store = Store::open(&source).unwrap();
+    let digest = store.checkpoint_to(&base).unwrap();
+    store.put(b"key", b"acknowledged").unwrap();
+    store.close_private_store().unwrap();
+    let original_log = fs::read(source.join("records.log")).unwrap();
+    let original_witness = fs::read(source.join("commit.state")).unwrap();
+    let open = |checkpoint_view| {
+        retry_lock(|| {
+            CheckpointStore::open_using(
+                &source,
+                &base,
+                &digest,
+                CheckpointStoreLimits {
+                    checkpoint_view,
+                    ..Default::default()
+                },
+                None,
+                Log::open_checkpoint_writer,
+            )
+        })
+        .unwrap()
+    };
+    let store = open(Default::default());
+    let copy = root.path().join("independent-copy");
+    store.compact_to(&copy).unwrap();
+    let bytes = fs::metadata(copy.join(COMPACTED_CHECKPOINT_FILE))
+        .unwrap()
+        .len();
+    drop(store);
+    for (max_file_bytes, max_blocks, message) in [
+        (
+            bytes - 1,
+            1,
+            "checkpoint exceeds configured file size limit",
+        ),
+        (bytes, 0, "checkpoint has too many view blocks"),
+    ] {
+        let store = open(crate::CheckpointViewLimits {
+            max_file_bytes,
+            max_blocks,
+        });
+        assert!(matches!(
+            store.compact_and_replace_detailed(&previous),
+            Err(HandoffFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message
+        ));
+        assert!(!previous.exists());
+        assert_eq!(fs::read(source.join("records.log")).unwrap(), original_log);
+        assert_eq!(
+            fs::read(source.join("commit.state")).unwrap(),
+            original_witness
+        );
+    }
+    let limits = crate::CheckpointViewLimits {
+        max_file_bytes: bytes,
+        max_blocks: 1,
+    };
+    let (store, _) = open(limits)
+        .compact_and_replace_detailed(&previous)
+        .unwrap();
+    assert_eq!(store.limits().checkpoint_view, limits);
+    assert_eq!(
+        store.get(b"key").unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+    assert_eq!(
+        fs::metadata(source.join(COMPACTED_CHECKPOINT_FILE))
+            .unwrap()
+            .len(),
+        bytes
+    );
+    assert_eq!(
+        fs::read(previous.join("records.log")).unwrap(),
+        original_log
+    );
 }
 
 #[test]
@@ -225,7 +308,6 @@ fn checkpoint_handoff_faults_leave_two_recoverable_logs_and_valid_source_selecti
 
 #[test]
 fn detailed_checkpoint_handoff_classifies_candidate_and_exchange_failures() {
-    use crate::HandoffFailure;
     for managed in [false, true] {
         for failure in [
             "preflight",

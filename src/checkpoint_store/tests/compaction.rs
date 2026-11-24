@@ -49,7 +49,7 @@ fn checkpoint_compaction_crash_child() {
         &store.log,
         &state.view,
         count,
-        &parent.join("copy"),
+        (&parent.join("copy"), None),
         |parent| {
             if mode == "published" {
                 pause_compaction()
@@ -147,7 +147,7 @@ fn streamed_compaction_rejects_corrupt_staged_data_before_publication() {
         &store.log,
         &state.view,
         count,
-        &destination,
+        (&destination, None),
         |parent| File::open(parent)?.sync_all(),
         || Ok(()),
         |stage| {
@@ -180,7 +180,7 @@ fn streamed_compaction_reports_pre_and_post_publication_failures() {
             &store.log,
             &state.view,
             count,
-            &destination,
+            (&destination, None),
             |parent| {
                 if post_publish {
                     Err(io::Error::other("injected parent sync failure"))
@@ -241,7 +241,7 @@ fn streamed_compaction_blocks_mutations_while_allowing_reads() {
                 &copying.log,
                 &state.view,
                 count,
-                destination,
+                (destination, None),
                 |parent| File::open(parent)?.sync_all(),
                 || {
                     entered_tx.send(()).unwrap();
@@ -308,7 +308,7 @@ fn every_streamed_compaction_ancestor_sync_failure_reports_uncertain_copy() {
             &store.log,
             &state.view,
             count,
-            &destination,
+            (&destination, None),
             |parent| {
                 crate::directory::sync_existing_with(parent, |directory| {
                     let index = seen;

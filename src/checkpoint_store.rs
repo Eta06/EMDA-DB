@@ -859,7 +859,7 @@ impl CheckpointStore {
                     log,
                     view,
                     count,
-                    destination,
+                    (destination, None),
                     sync_parent,
                     || {
                         tracker.begin_publication();

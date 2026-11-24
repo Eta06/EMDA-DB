@@ -145,6 +145,12 @@ reopening and inspection of both paths. The original handle is consumed even
 on failure, no failure returns a new checkpoint digest, and existing paths,
 staging artifacts or an unhealthy source may remain.
 
+Checkpoint-backed handoff enforces its configured checkpoint file and
+block-directory limits while writing the private replacement. A limit
+rejection returns `NotPublished(InvalidInput)` before the sibling
+publication attempt. Independent `compact_to` copies use the format's
+default limits.
+
 `OnlineStore::compact_and_replace_detailed` separately classifies destination
 publication and exchange attempts. It does not consume the handle, and other
 callbacks can write during preparation. A candidate may omit those writes;

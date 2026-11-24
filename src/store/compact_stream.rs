@@ -1,6 +1,7 @@
 //! Verified separate-copy compaction from a checkpoint-backed index.
 use super::compact::{CopyRecord, MAX_COPY_BYTES, MAX_COPY_RECORDS, flush_copy};
 use super::{Log, Operation, Store, backup, record};
+use crate::checkpoint_view::CheckpointViewLimits;
 use crate::recovered_view::RecoveredCheckpointView;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
@@ -98,7 +99,7 @@ pub(crate) fn compact_checkpoint(
         source,
         view,
         count,
-        destination,
+        (destination, None),
         crate::directory::sync_existing,
         || Ok(()),
         |_| Ok(()),
@@ -109,11 +110,12 @@ pub(crate) fn compact_checkpoint_with_hooks(
     source: &Log,
     view: &RecoveredCheckpointView,
     expected_count: u64,
-    destination: &Path,
+    target_path: (&Path, Option<CheckpointViewLimits>),
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
     after_copy: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
+    let (destination, checkpoint_limits) = target_path;
     let parent = backup::parent_directory(destination)?;
     let mut staging = crate::staging::Stage::directory(parent)?;
     let target = Store::open(staging.path())?;
@@ -168,7 +170,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
         staging.path(),
         crate::checkpoint::StreamingOptions {
             verified_log: crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher),
-            limits: None,
+            limits: checkpoint_limits,
             tracker: None,
             pending_tail: None,
         },

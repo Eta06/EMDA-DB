@@ -70,6 +70,8 @@ impl CheckpointStore {
     /// failures. The handle is consumed even on error. A candidate can be
     /// partly configured, and no new checkpoint digest is returned on error;
     /// coordinate access and reconcile affected paths before retrying.
+    /// The replacement checkpoint must fit the configured view limits
+    /// before the sibling is published.
     pub fn compact_and_replace_detailed(
         self,
         previous: impl AsRef<Path>,
@@ -136,10 +138,22 @@ impl CheckpointStore {
         }
         drop(state);
         source_directory_is_owned(&source)?;
-        if let Some(tracker) = tracker {
-            tracker.begin_candidate();
-        }
-        let digest = self.compact_to(&previous)?;
+        let digest = self.compact_to_using(&previous, |log, view, count, destination| {
+            crate::store::compact_checkpoint_with_hooks(
+                log,
+                view,
+                count,
+                (destination, Some(self.checkpoint_view_limits)),
+                crate::directory::sync_existing,
+                || {
+                    if let Some(tracker) = tracker {
+                        tracker.begin_candidate();
+                    }
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+        })?;
         (hook.borrow_mut())(ExchangePoint::CopyPublished)?;
         let mut candidate = Self::open_using(
             &previous,

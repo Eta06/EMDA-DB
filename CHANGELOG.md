@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Enforce the checkpoint view's file and block limits before publishing a
+  checkpoint-backed compaction handoff candidate.
+
 - Bound source-log reads during online compaction and scoped retired
   cleanup under an optional per-maintenance-call ceiling.
 
