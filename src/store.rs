@@ -1,6 +1,7 @@
 //! Public store operations, in-process coordination, and exclusive ownership.
 
 use crate::log::{GenerationId, Log, StoreRecoveryLimits, ValueLocation};
+use crate::publication_outcome::{RecoveryOpenFailure, TailAdoptionTracker, track_recovery_open};
 use crate::record::{self, Operation};
 use crate::{backup, directory};
 use std::collections::BTreeMap;
@@ -257,6 +258,17 @@ impl Store {
         Self::open_with_recovery_checks_tracked(path.as_ref(), limits, || Ok(()), None)
     }
 
+    /// Opens with the same limits as [`Self::open_with_recovery_limits`] and
+    /// reports whether tail adoption was attempted or synchronized on failure.
+    pub fn open_with_recovery_limits_detailed(
+        path: impl AsRef<Path>,
+        limits: StoreRecoveryLimits,
+    ) -> Result<Self, RecoveryOpenFailure> {
+        track_recovery_open(|tracker| {
+            Self::open_with_recovery_checks_tracked(path.as_ref(), limits, || Ok(()), Some(tracker))
+        })
+    }
+
     // Run the check under the store lock before replay and, when needed,
     // again after validating the pending tail and before changing its witness.
     pub(crate) fn open_with_recovery_checks(
@@ -283,7 +295,7 @@ impl Store {
         path: &Path,
         limits: StoreRecoveryLimits,
         check: impl Fn() -> io::Result<()>,
-        adoption_tracker: Option<&crate::publication_outcome::TailAdoptionTracker>,
+        adoption_tracker: Option<&TailAdoptionTracker>,
     ) -> io::Result<Self> {
         let store = Self::open_using(path, |path, initialize| {
             check()?;

@@ -1253,7 +1253,7 @@ impl LogIo for AdoptionLog {
         }
     }
 }
-struct AdoptionWitness(File);
+struct AdoptionWitness(File, bool);
 impl WitnessIo for AdoptionWitness {
     fn len(&self) -> io::Result<u64> {
         WitnessIo::len(&self.0)
@@ -1265,13 +1265,20 @@ impl WitnessIo for AdoptionWitness {
         WitnessIo::write_all_at(&self.0, bytes, offset)
     }
     fn sync_data(&self) -> io::Result<()> {
-        Err(io::Error::other("injected adoption witness sync"))
+        if self.1 {
+            Err(io::Error::other("injected adoption witness sync"))
+        } else {
+            WitnessIo::sync_data(&self.0)
+        }
     }
 }
 
 #[test]
 fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
-    for fail_log in [true, false] {
+    use crate::RecoveryOpenFailure;
+    use crate::publication_outcome::track_recovery_open;
+
+    for (fail_log, fail_witness) in [(true, false), (false, true), (false, false)] {
         let root = tempfile::tempdir().unwrap();
         let path = root.path();
         std::fs::write(
@@ -1304,10 +1311,14 @@ fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
             .write(true)
             .open(path.join("commit.state"))
             .unwrap();
-        let witness = Witness::for_test(Box::new(AdoptionWitness(witness_file)), id, boundary);
+        let witness = Witness::for_test(
+            Box::new(AdoptionWitness(witness_file, fail_witness)),
+            id,
+            boundary,
+        );
         // Mirror the open sequence: replay must reach the exact validated end,
         // and an adoption error must prevent the replayed index being returned.
-        let open = || -> io::Result<_> {
+        let result = track_recovery_open(|tracker| -> io::Result<()> {
             let (log, index, end) = Log::from_parts(
                 Box::new(AdoptionLog(file, fail_log)),
                 Some(id),
@@ -1321,18 +1332,21 @@ fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
             assert!(boundary < end.length);
             assert!(index.contains_key(&b"base"[..]));
             assert!(index.contains_key(&b"tail"[..]));
-            log.adopt_replayed_tail(Some(boundary), end, || Ok(()), None)?;
-            Ok(index)
-        };
-        let error = match open() {
-            Ok(_) => panic!("adoption unexpectedly succeeded"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains(if fail_log {
-            "adoption log sync"
-        } else {
-            "adoption witness sync"
-        }));
+            log.adopt_replayed_tail(Some(boundary), end, || Ok(()), Some(tracker))?;
+            Err(io::Error::other("injected open error after adoption"))
+        });
+        match (fail_log, fail_witness, result.unwrap_err()) {
+            (true, false, RecoveryOpenFailure::NotAdopted(error)) => {
+                assert_eq!(error.to_string(), "injected adoption log sync");
+            }
+            (false, true, RecoveryOpenFailure::TailAdoptionOutcomeUnknown(error)) => {
+                assert_eq!(error.to_string(), "injected adoption witness sync");
+            }
+            (false, false, RecoveryOpenFailure::TailAdopted(error)) => {
+                assert_eq!(error.to_string(), "injected open error after adoption");
+            }
+            (_, _, failure) => panic!("unexpected recovery failure: {failure}"),
+        }
         assert_eq!(
             std::fs::read(path.join("records.log")).unwrap(),
             original_log
@@ -1341,7 +1355,7 @@ fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
         if fail_log {
             assert_eq!(after, old_witness);
         } else {
-            // The failed sync makes persistence uncertain even though the write is visible.
+            // The update is visible even in the injected witness-sync failure case.
             assert_eq!(
                 witness::decode(after.as_slice().try_into().unwrap(), &id).unwrap(),
                 original_log.len() as u64

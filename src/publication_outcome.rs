@@ -1,7 +1,49 @@
-//! Conservative outcomes for verified copy publication.
+//! Conservative outcomes for publication and recovery.
 use std::cell::Cell;
 use std::fmt;
 use std::io;
+
+/// A failed full-log open, classified by this call's tail-witness update.
+/// These outcomes describe the recovery attempt. Initialization may still
+/// have created files, and an earlier attempt may have changed the witness.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RecoveryOpenFailure {
+    /// This call never attempted to advance the witness for a replayed tail.
+    NotAdopted(io::Error),
+    /// The witness write or its required sync failed. Coordinate writers and
+    /// inspect the source before retrying. The witness may have advanced.
+    TailAdoptionOutcomeUnknown(io::Error),
+    /// The witness update completed and synchronized before a later open
+    /// error. The caller did not receive a store handle.
+    TailAdopted(io::Error),
+}
+
+impl fmt::Display for RecoveryOpenFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAdopted(error) => {
+                write!(formatter, "open failed before tail adoption: {error}")
+            }
+            Self::TailAdoptionOutcomeUnknown(error) => {
+                write!(formatter, "open tail adoption outcome unknown: {error}")
+            }
+            Self::TailAdopted(error) => {
+                write!(formatter, "open failed after tail adoption: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RecoveryOpenFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotAdopted(error)
+            | Self::TailAdoptionOutcomeUnknown(error)
+            | Self::TailAdopted(error) => Some(error),
+        }
+    }
+}
 
 /// A failed publication, classified by this call's destination attempt.
 ///
@@ -354,16 +396,35 @@ impl Tracker {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum TailAdoption {
+    #[default]
+    NotStarted,
+    OutcomeUnknown,
+    Synchronized,
+}
+
 #[derive(Default)]
-pub(crate) struct TailAdoptionTracker(Cell<bool>);
+pub(crate) struct TailAdoptionTracker(Cell<TailAdoption>);
 
 impl TailAdoptionTracker {
     pub(crate) fn update(&self, write_witness: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
-        self.0.set(true);
+        self.0.set(TailAdoption::OutcomeUnknown);
         write_witness()?;
-        self.0.set(false);
+        self.0.set(TailAdoption::Synchronized);
         Ok(())
     }
+}
+
+pub(crate) fn track_recovery_open<T>(
+    action: impl FnOnce(&TailAdoptionTracker) -> io::Result<T>,
+) -> Result<T, RecoveryOpenFailure> {
+    let tracker = TailAdoptionTracker::default();
+    action(&tracker).map_err(|error| match tracker.0.get() {
+        TailAdoption::NotStarted => RecoveryOpenFailure::NotAdopted(error),
+        TailAdoption::OutcomeUnknown => RecoveryOpenFailure::TailAdoptionOutcomeUnknown(error),
+        TailAdoption::Synchronized => RecoveryOpenFailure::TailAdopted(error),
+    })
 }
 
 #[derive(Default)]
@@ -397,7 +458,7 @@ pub(crate) fn track_managed_rebuild<T>(
             ManagedRebuildFailure::SelectionOutcomeUnknown(error)
         } else if tracker.checkpoint.started() {
             ManagedRebuildFailure::CheckpointOutcomeUnknown(error)
-        } else if tracker.tail_adoption.0.get() {
+        } else if tracker.tail_adoption.0.get() == TailAdoption::OutcomeUnknown {
             ManagedRebuildFailure::TailAdoptionOutcomeUnknown(error)
         } else {
             ManagedRebuildFailure::NotPublished(error)

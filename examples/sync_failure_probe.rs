@@ -311,6 +311,40 @@ fn attempt_rebuild_publication(root: &Path, operation: &str, rebuild: &str) -> P
     Ok(())
 }
 
+fn attempt_recovery_open(root: &Path) -> ProbeResult<()> {
+    use database_engine::{RecoveryOpenFailure, StoreRecoveryLimits};
+
+    let result = Store::open_with_recovery_limits_detailed(
+        root.join("source"),
+        StoreRecoveryLimits {
+            max_recovery_operations: Some(16),
+            ..Default::default()
+        },
+    );
+    let outcome = match result {
+        Ok(store) => {
+            if store.get(b"tail")?.as_deref() != Some(&b"acknowledged-tail"[..]) {
+                return Err("recovered tail value mismatch".into());
+            }
+            json!({"status":"success"})
+        }
+        Err(failure) => {
+            let (classification, error) = match failure {
+                RecoveryOpenFailure::NotAdopted(error) => ("not_adopted", error),
+                RecoveryOpenFailure::TailAdoptionOutcomeUnknown(error) => {
+                    ("tail_adoption_unknown", error)
+                }
+                RecoveryOpenFailure::TailAdopted(error) => ("tail_adopted", error),
+                other => return Err(other.into()),
+            };
+            json!({"status":"error", "classification":classification,
+                "kind":format!("{:?}",error.kind()), "message":error.to_string()})
+        }
+    };
+    println!("{outcome}");
+    Ok(())
+}
+
 fn attempt_managed_publication(root: &Path, operation: &str) -> ProbeResult<()> {
     use database_engine::ManagedRolloverFailure;
     let store = if operation.ends_with("-existing") {
@@ -721,6 +755,7 @@ fn main() -> ProbeResult<()> {
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation] if command == "attempt-publication" => attempt_publication(Path::new(root), operation),
         [command, root, operation, rebuild] if command == "attempt-rebuild-publication" => attempt_rebuild_publication(Path::new(root), operation, rebuild),
+        [command, root] if command == "attempt-recovery-open" => attempt_recovery_open(Path::new(root)),
         [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
         [command, root, order] if command == "verify-rejected" => verify_rejected(Path::new(root), order),

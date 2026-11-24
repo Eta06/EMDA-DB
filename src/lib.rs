@@ -66,7 +66,7 @@ pub use document::{
 pub use log::{PeakVerificationLimits, StoreRecoveryLimits};
 pub use publication_outcome::{
     HandoffFailure, ManagedRebuildFailure, ManagedRolloverFailure, OnlineHandoffFailure,
-    PublicationFailure, RetainedRotationFailure,
+    PublicationFailure, RecoveryOpenFailure, RetainedRotationFailure,
 };
 pub use record::batch::{BatchOperation, MAX_ATOMIC_BATCH_BYTES, MAX_ATOMIC_BATCH_OPERATIONS};
 pub use recovered_view::{

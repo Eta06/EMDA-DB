@@ -40,15 +40,23 @@ def run(binary, parent, format_name, rebuild, fault=None):
         if fault is not None:
             point, (syscall, index) = fault
             command += ["-e", f"inject={syscall}:error=EIO:when={index}"]
-        outcome = json.loads(subprocess.check_output([*command, binary, "attempt-rebuild-publication",
-                                                      root, operation, rebuild], text=True, timeout=30))
+        recovery_open = rebuild == "full-log-open"
+        attempt = ("attempt-recovery-open", root) if recovery_open else (
+            "attempt-rebuild-publication", root, operation, rebuild)
+        outcome = probe(command[0], *command[1:], binary, *attempt)
         lines = trace.read_text().splitlines()
         assert current_log == log.read_bytes()
         if fault is None:
             assert outcome["status"] == "success", outcome
-            assert (root / "result").is_file()
-            assert selection.read_bytes() != previous
-            assert probe(binary, "verify", root, operation, "success", "checkpoint-first")["status"] == "verified"
+            if recovery_open:
+                assert not (root / "result").exists()
+                assert selection.read_bytes() == previous
+                observed = witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
+                assert observed == new_boundary
+            else:
+                assert (root / "result").is_file()
+                assert selection.read_bytes() != previous
+                assert probe(binary, "verify", root, operation, "success", "checkpoint-first")["status"] == "verified"
             counts = collections.Counter()
             points = {}
             for line in lines:
@@ -69,7 +77,8 @@ def run(binary, parent, format_name, rebuild, fault=None):
                     break
             assert len(points) == 3, lines
             return points
-        classification = "not_published" if point == "before witness write" else "tail_adoption_unknown"
+        before_write = "not_adopted" if recovery_open else "not_published"
+        classification = before_write if point == "before witness write" else "tail_adoption_unknown"
         assert outcome["classification"] == classification, outcome
         assert not (root / "result").exists()
         assert selection.read_bytes() == previous
@@ -79,10 +88,18 @@ def run(binary, parent, format_name, rebuild, fault=None):
         errors = [line for line in lines if "(INJECTED)" in line]
         error_file = log if point == "before witness write" else marker
         assert len(errors) == 1 and str(error_file) in errors[0], errors
-        assert probe(binary, "verify", root, operation, "error", "ordinary-first")["status"] == "verified"
-        retry = probe(binary, "attempt-rebuild-publication", root, operation, rebuild)
+        if not recovery_open:
+            assert probe(binary, "verify", root, operation, "error", "ordinary-first")["status"] == "verified"
+        retry = probe(binary, *attempt)
         assert retry["status"] == "success", retry
-        assert probe(binary, "verify", root, operation, "success", "checkpoint-first")["status"] == "verified"
+        if recovery_open:
+            observed = witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
+            assert observed == new_boundary
+            assert current_log == log.read_bytes()
+            assert selection.read_bytes() == previous
+            assert not (root / "result").exists()
+        else:
+            assert probe(binary, "verify", root, operation, "success", "checkpoint-first")["status"] == "verified"
         return outcome, errors[0]
 
 def main():
@@ -91,7 +108,7 @@ def main():
     parser.add_argument("--directory", type=pathlib.Path, required=True)
     args = parser.parse_args()
     binary = args.binary.resolve()
-    for rebuild in ("ordinary", "full-bounded", "suffix-bounded"):
+    for rebuild in ("ordinary", "full-bounded", "suffix-bounded", "full-log-open"):
         for format_name in ("v2", "v3"):
             points = run(binary, args.directory, format_name, rebuild)
             for point, injection in points.items():

@@ -1,5 +1,5 @@
 //! End-to-end checks for the independently synchronized commit boundary.
-use database_engine::{BatchOperation, Store, StoreRecoveryLimits};
+use database_engine::{BatchOperation, RecoveryOpenFailure, Store, StoreRecoveryLimits};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -250,7 +250,7 @@ fn full_recovery_operation_limit_counts_batch_children_before_tail_adoption() {
     fs::File::open(&marker).unwrap().sync_all().unwrap();
     let bytes = fs::read(&log).unwrap();
     let open = |operations, live_key_bytes| {
-        Store::open_with_recovery_limits(
+        Store::open_with_recovery_limits_detailed(
             path,
             StoreRecoveryLimits {
                 max_log_bytes: Some(bytes.len() as u64),
@@ -265,8 +265,10 @@ fn full_recovery_operation_limit_counts_batch_children_before_tail_adoption() {
         (4, 7, "recovery operation limit exceeded"),
         (5, 6, "recovery live key byte limit would be exceeded"),
     ] {
-        assert!(matches!(open(operations, live_key_bytes), Err(error)
-            if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message));
+        assert!(
+            matches!(open(operations, live_key_bytes), Err(RecoveryOpenFailure::NotAdopted(error))
+            if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message)
+        );
         assert_eq!(fs::read(&marker).unwrap(), previous);
         assert_eq!(fs::read(&log).unwrap(), bytes);
     }
@@ -275,8 +277,10 @@ fn full_recovery_operation_limit_counts_batch_children_before_tail_adoption() {
     *corrupt.last_mut().unwrap() ^= 1;
     fs::write(&log, &corrupt).unwrap();
     // Even without budget for the children, replay verifies the outer CRC.
-    assert!(matches!(open(4, 7), Err(error)
-        if error.kind() == io::ErrorKind::InvalidData && error.to_string() == "record checksum mismatch"));
+    assert!(
+        matches!(open(4, 7), Err(RecoveryOpenFailure::NotAdopted(error))
+        if error.kind() == io::ErrorKind::InvalidData && error.to_string() == "record checksum mismatch")
+    );
     assert_eq!(fs::read(&marker).unwrap(), previous);
     assert_eq!(fs::read(&log).unwrap(), corrupt);
     fs::write(&log, &bytes).unwrap();

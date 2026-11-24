@@ -189,6 +189,14 @@ maintenance operations remain separate.
   encoded input. The mutation ceiling is checked only during open and
   must be supplied again at restart. The optional log and live-key
   limits continue to apply to subsequent writes.
+- `Store::open_with_recovery_limits_detailed` distinguishes failures before
+  any tail witness update (`NotAdopted`), during the witness write or its
+  required synchronization (`TailAdoptionOutcomeUnknown`), and after that
+  synchronization succeeds (`TailAdopted`). These describe this call's
+  adoption attempt only. Initialization may create store files, and earlier
+  attempts may have changed the witness. Coordinate writers and inspect the
+  source before retrying an uncertain adoption. Other `Store` open methods
+  continue to return the underlying I/O error.
 
 ### Crash, power failure, and uncertain outcomes
 
