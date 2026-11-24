@@ -24,12 +24,16 @@ run-name: Compound range cross-engine ${{ inputs.comparison_scale || 'smoke' }}
       - "examples/sqlite_restart_write_bench.rs"
       - "scripts/large_crash_compare.py"
       - "scripts/compare_crashes.py"
+      - "scripts/compare_engines.py"
       - "scripts/compound_range_external_compare.py"
       - "scripts/document_contention_compare.py"
       - "scripts/nonunique_query_compare.py"
+      - "scripts/network_compare.py"
+      - "scripts/embedded_bench_server.py"
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
       - "scripts/tests/test_compound_range_external_compare.py"
+      - "scripts/tests/test_compare_engines.py"
       - "scripts/tests/test_record_benchmark_case.py"
       - "scripts/tests/test_large_crash_compare.py"
       - "src/**"
@@ -45,12 +49,16 @@ run-name: Compound range cross-engine ${{ inputs.comparison_scale || 'smoke' }}
       - "examples/sqlite_restart_write_bench.rs"
       - "scripts/large_crash_compare.py"
       - "scripts/compare_crashes.py"
+      - "scripts/compare_engines.py"
       - "scripts/compound_range_external_compare.py"
       - "scripts/document_contention_compare.py"
       - "scripts/nonunique_query_compare.py"
+      - "scripts/network_compare.py"
+      - "scripts/embedded_bench_server.py"
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
       - "scripts/tests/test_compound_range_external_compare.py"
+      - "scripts/tests/test_compare_engines.py"
       - "scripts/tests/test_record_benchmark_case.py"
       - "scripts/tests/test_large_crash_compare.py"
       - "src/**"
@@ -146,4 +154,62 @@ jobs:
         with:
           name: document-contention-cross-engine-${{ inputs.comparison_scale || 'smoke' }}
           path: ${{ runner.temp }}/document-contention-*/
+          if-no-files-found: ignore
+  byte-key:
+    name: Turso and SQLite byte-key comparison
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Install Rust and pinned Turso binding
+        run: |
+          rustup toolchain install stable --profile minimal
+          python3 -m venv "$RUNNER_TEMP/turso-venv"
+          driver="$RUNNER_TEMP/turso-venv/bin/python"
+          grep '^pyturso==' scripts/benchmark-requirements.txt > "$RUNNER_TEMP/turso-requirements.txt"
+          "$driver" -m pip install --only-binary=:all: -r "$RUNNER_TEMP/turso-requirements.txt"
+      - name: Build and run matched byte-key workloads
+        env:
+          COMPARISON_SCALE: ${{ inputs.comparison_scale || 'smoke' }}
+        run: |
+          cargo +stable build --release --locked --example network_bench_server
+          cpu_set="$(python3 -c 'import os; c=sorted(os.sched_getaffinity(0)); assert len(c) >= 3; print(c[0], ",".join(map(str,c[1:-1])), c[-1])')"
+          read -r client_cpus server_cpus housekeeping_cpus <<< "$cpu_set"
+          rounds=2
+          key_count=32
+          cases=(single_mixed concurrent_mixed)
+          if [[ "$COMPARISON_SCALE" == measured ]]; then
+            rounds=3
+            key_count=4096
+            cases+=(write_only)
+          fi
+          case_dir="$RUNNER_TEMP/byte-key-$COMPARISON_SCALE"
+          driver="$RUNNER_TEMP/turso-venv/bin/python"
+          "$driver" -m scripts.benchmarks.record_case \
+            --directory "$case_dir" --case "byte-key-$COMPARISON_SCALE" -- \
+            "$driver" scripts/compare_engines.py \
+            --directory "$RUNNER_TEMP" --output "$case_dir/samples.json" \
+            --client-cpus "$client_cpus" --server-cpus "$server_cpus" --housekeeping-cpus "$housekeeping_cpus" \
+            --backends prototype sqlite turso --rounds "$rounds" --key-count "$key_count" --cases "${cases[@]}"
+      - name: Verify acknowledged changes after process termination
+        env:
+          COMPARISON_SCALE: ${{ inputs.comparison_scale || 'smoke' }}
+        if: ${{ !cancelled() && hashFiles('target/release/examples/network_bench_server') != '' }}
+        run: |
+          rounds=1
+          if [[ "$COMPARISON_SCALE" == measured ]]; then rounds=2; fi
+          case_dir="$RUNNER_TEMP/byte-key-restart-$COMPARISON_SCALE"
+          driver="$RUNNER_TEMP/turso-venv/bin/python"
+          "$driver" -m scripts.benchmarks.record_case \
+            --directory "$case_dir" --case "byte-key-restart-$COMPARISON_SCALE" -- \
+            "$driver" scripts/compare_crashes.py \
+            --directory "$RUNNER_TEMP" --output "$case_dir/samples.json" \
+            --backends prototype sqlite turso --rounds "$rounds"
+      - name: Preserve byte-key and restart reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: turso-byte-key-${{ inputs.comparison_scale || 'smoke' }}
+          path: ${{ runner.temp }}/byte-key-*/
           if-no-files-found: ignore

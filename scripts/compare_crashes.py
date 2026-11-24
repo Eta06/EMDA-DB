@@ -6,7 +6,6 @@ This is a process-crash check, not a power-loss test or proof of durability.
 import argparse
 import contextlib
 import hashlib
-import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -20,7 +19,7 @@ import time
 
 from benchmarks.clients import AdapterClient, PostgresClient, RedisClient, MongoClient, FoundationClient
 from benchmarks.services import IMAGES, LocalService
-from compare_engines import BACKENDS
+from compare_engines import BACKENDS, dependency_versions
 
 
 def adapter(backend, directory, server, cpus=None):
@@ -165,19 +164,13 @@ def main():
                 h.update(chunk)
         return h.hexdigest()
 
-    versions = {}
-    for package in ("psycopg", "redis", "pymongo", "pyturso", "rocksdict", "lmdb", "duckdb", "foundationdb"):
-        try:
-            versions[package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError:
-            versions[package] = None
     result = {
         "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "git_status": subprocess.check_output(["git", "status", "--short"], text=True),
         "source_sha256": {str(path): digest(path) for path in sources},
         "server_sha256": digest(args.server), "python": sys.version, "platform": platform.platform(),
-        "dependencies": versions,
+        "dependencies": dependency_versions(),
         "filesystem": json.loads(subprocess.check_output(
             ["findmnt", "-J", "-T", args.directory, "-o", "TARGET,FSTYPE"], text=True)),
         "scope": "SIGKILL after acknowledged writes, updates and deletes; no physical power failure",

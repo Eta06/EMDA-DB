@@ -84,6 +84,16 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def dependency_versions():
+    versions = {}
+    for package in ("psycopg", "redis", "pymongo", "pyturso", "rocksdict", "lmdb", "duckdb", "foundationdb"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = None
+    return versions
+
+
 def run_case_command(command, environment, timeout):
     """Stop only this case's process group on timeout, including its adapter."""
     process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -144,7 +154,7 @@ def main():
         "source_sha256": {str(p): digest(p) for p in sources}, "server_sha256": digest(args.server),
         "platform": platform.platform(), "python": sys.version,
         "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), "unknown"),
-        "dependencies": {p: importlib.metadata.version(p) for p in ("psycopg", "redis", "pymongo", "pyturso", "rocksdict", "lmdb", "duckdb", "foundationdb")},
+        "dependencies": dependency_versions(),
         "controls": {"client_cpus": args.client_cpus, "server_cpus": args.server_cpus, "housekeeping_cpus": args.housekeeping_cpus,
                      "allowed_cpus": sorted(allowed), "cpu_quota": read("/sys/fs/cgroup/cpu.max"),
                      "governor_visible": Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor").exists(),

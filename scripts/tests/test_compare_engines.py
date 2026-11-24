@@ -11,10 +11,22 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import compare_engines
-from compare_engines import CASES, configure_cases, run_case_command, validate_result
+from compare_engines import CASES, configure_cases, dependency_versions, run_case_command, validate_result
 
 
 class EngineComparisonConfigurationTests(unittest.TestCase):
+    def test_optional_packages_are_reported_without_blocking_a_subset(self):
+        def version(package):
+            if package == 'pyturso':
+                return '0.8.3'
+            raise compare_engines.importlib.metadata.PackageNotFoundError(package)
+
+        with patch.object(compare_engines.importlib.metadata, 'version', side_effect=version):
+            versions = dependency_versions()
+        self.assertEqual(versions['pyturso'], '0.8.3')
+        self.assertIsNone(versions['psycopg'])
+        self.assertIsNone(versions['foundationdb'])
+
     def test_selected_large_workloads_do_not_mutate_default_cases(self):
         baseline = [case.copy() for case in CASES]
         selected = configure_cases(['write_only', 'concurrent_mixed'], 100000)
