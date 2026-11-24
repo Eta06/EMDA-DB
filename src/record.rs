@@ -101,7 +101,7 @@ pub(crate) fn encode_header(
 
 pub(crate) fn encode(operation: Operation, key: &[u8], value: &[u8]) -> io::Result<Vec<u8>> {
     let header = encode_header(operation, key, value.len())?;
-    let mut record = Vec::with_capacity(HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE);
+    let mut record = encoding_buffer(HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE)?;
     append_record(&mut record, &header, key, value);
     Ok(record)
 }

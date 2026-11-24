@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Prepare checkpoint batch value locations during encoding, before append.
+
 - Complete managed checkpoint staging cleanup before adopting a pending tail.
 
 - Reuse relationship lookup key buffers and encode indexed JSON strings

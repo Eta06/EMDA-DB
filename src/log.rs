@@ -706,6 +706,16 @@ impl Log {
         Ok(locations)
     }
 
+    /// Appends a record whose index locations were prepared against this end.
+    pub(crate) fn append_checkpoint_record(&self, offset: u64, encoded: &[u8]) -> io::Result<()> {
+        if self.checked_append_offset()? != offset {
+            return Err(record::invalid_data(
+                "log length changed before checkpoint append",
+            ));
+        }
+        self.file.append_all(encoded)
+    }
+
     /// Appends one ordinary record to an exclusively owned private stage.
     /// The producer must propagate append errors and authenticate the complete
     /// value before returning success.

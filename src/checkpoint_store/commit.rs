@@ -1,6 +1,6 @@
 //! Admission, durable append and publication for checkpoint-backed writes.
 use super::*;
-use crate::log::{AppendRecord, prepare_batch};
+use crate::log::ValueLocation;
 use crate::record::batch::BatchLayout;
 use std::collections::BTreeSet;
 
@@ -123,12 +123,36 @@ impl CheckpointStore {
         // Keep the writer gate but let readers use the published view while
         // we encode the admitted mutation.
         drop(state);
-        let encoded = match mutation {
-            Mutation::Single(operation, key, value) => record::encode(operation, key, value)?,
-            Mutation::Batch(batch) => batch.encode()?,
+        // next_log was checked above. Rollover changes the base and suffix,
+        // but leaves their combined log length and every value offset intact.
+        let record_start = next_log - length as u64;
+        let mut updates = Vec::new();
+        let put_location = |offset: usize, value: &[u8]| ValueLocation {
+            offset: record_start + offset as u64,
+            length: value.len(),
+            checksum: crc32fast::hash(value),
         };
-        let value_start = HEADER_SIZE + key.len();
-        let value = &encoded[value_start..value_start + value_len];
+        let (encoded, location) = match mutation {
+            Mutation::Single(operation, key, value) => {
+                let encoded = record::encode(operation, key, value)?;
+                let location = (operation == Operation::Put)
+                    .then(|| put_location(HEADER_SIZE + key.len(), value));
+                (encoded, location)
+            }
+            Mutation::Batch(batch) => {
+                updates
+                    .try_reserve_exact(batch.operations().len())
+                    .map_err(|_| io::Error::other("checkpoint batch update allocation failed"))?;
+                let encoded = batch.encode_with_children(|child, offset| {
+                    let (operation, key, value) = child.fields();
+                    let location =
+                        (operation == Operation::Put).then(|| put_location(offset, value));
+                    updates.push((key, location));
+                })?;
+                (encoded, None)
+            }
+        };
+        debug_assert_eq!(encoded.len(), length);
         // Maintenance, detaching a shared overlay and encoding can take time.
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             return Err(crate::TimedTransactionError::DeadlineExceeded);
@@ -143,22 +167,7 @@ impl CheckpointStore {
             failed: &self.append_failed,
             published: false,
         };
-        let location = self
-            .log
-            .append_batch_unsynced(std::iter::once(AppendRecord {
-                encoded: &encoded,
-                key_len: key.len(),
-                value_len: value.len(),
-                checksum: crc32fast::hash(value),
-            }))?
-            .into_iter()
-            .next()
-            .expect("one appended record returns one location");
-        let updates = if operation == Operation::Batch {
-            Some(prepare_batch(value, location)?)
-        } else {
-            None
-        };
+        self.log.append_checkpoint_record(record_start, &encoded)?;
         self.log.sync_data()?;
         let mut state = self.state.write().map_err(|_| uncertain())?;
         if let Some(overlay) = next_overlay {
@@ -167,16 +176,15 @@ impl CheckpointStore {
         // A snapshot may have pinned the formerly exclusive overlay during
         // the sync. It must keep the old entries through this publication.
         let overlay = Arc::make_mut(&mut state.view.overlay);
-        if let Some(updates) = updates {
-            for update in updates {
-                if let Some(existing) = overlay.get_mut(update.key.as_slice()) {
-                    *existing = update.location;
+        if operation == Operation::Batch {
+            for (key, location) in updates {
+                if let Some(existing) = overlay.get_mut(key) {
+                    *existing = location;
                 } else {
-                    overlay.insert(update.key.into(), update.location);
+                    overlay.insert(key.into(), location);
                 }
             }
         } else {
-            let location = (operation == Operation::Put).then_some(location);
             if let Some(key) = owned_key {
                 overlay.insert(key, location);
             } else {

@@ -41,7 +41,7 @@ pub(crate) struct Decoded<'a> {
 pub(crate) fn encode_payload(operations: &[BatchOperation<'_>]) -> io::Result<Vec<u8>> {
     let length = payload_length(operations)?;
     let mut payload = Vec::with_capacity(length);
-    append_payload(&mut payload, operations)?;
+    append_payload(&mut payload, operations, |_, _| {})?;
     Ok(payload)
 }
 
@@ -82,11 +82,19 @@ impl<'a> BatchLayout<'a> {
     }
 
     pub(crate) fn encode(self) -> io::Result<Vec<u8>> {
+        self.encode_with_children(|_, _| {})
+    }
+
+    /// Observe each child and its value offset from the start of the DB02 record.
+    pub(crate) fn encode_with_children(
+        self,
+        visit: impl FnMut(BatchOperation<'a>, usize),
+    ) -> io::Result<Vec<u8>> {
         let mut result = encoding_buffer(self.encoded_len())?;
         let header = encode_header(Operation::Batch, &[0], self.payload_len)?;
         result.extend_from_slice(&header);
         result.push(0);
-        append_payload(&mut result, self.operations)?;
+        append_payload(&mut result, self.operations, visit)?;
         result.extend_from_slice(&crc32fast::hash(&result).to_le_bytes());
         Ok(result)
     }
@@ -116,12 +124,18 @@ fn payload_length(operations: &[BatchOperation<'_>]) -> io::Result<usize> {
     Ok(total)
 }
 
-fn append_payload(result: &mut Vec<u8>, operations: &[BatchOperation<'_>]) -> io::Result<()> {
+fn append_payload<'a>(
+    result: &mut Vec<u8>,
+    operations: &[BatchOperation<'a>],
+    mut visit: impl FnMut(BatchOperation<'a>, usize),
+) -> io::Result<()> {
     result.extend_from_slice(&(operations.len() as u32).to_le_bytes());
     for &operation in operations {
         let (kind, key, value) = operation.fields();
         let header = encode_header(kind, key, value.len())?;
+        let value_offset = result.len() + HEADER_SIZE + key.len();
         append_record(result, &header, key, value);
+        visit(operation, value_offset);
     }
     Ok(())
 }
@@ -194,4 +208,43 @@ pub(crate) fn decode_payload_into<'a>(
         return Err(invalid_data("trailing bytes in atomic batch"));
     }
     Ok(result)
+}
+
+#[cfg(test)]
+#[test]
+fn encoded_batch_child_locations_match_replay() {
+    let operations = [
+        BatchOperation::Put {
+            key: b"repeat",
+            value: b"first",
+        },
+        BatchOperation::Delete { key: b"repeat" },
+        BatchOperation::Put {
+            key: b"nul\0key",
+            value: b"",
+        },
+        BatchOperation::Put {
+            key: b"repeat",
+            value: b"\0\xfflast",
+        },
+    ];
+    let layout = BatchLayout::new(&operations).unwrap();
+    let mut observed = Vec::new();
+    let encoded = layout
+        .encode_with_children(|operation, offset| {
+            observed.push((operation.fields(), offset));
+        })
+        .unwrap();
+    assert_eq!(encoded, layout.encode().unwrap());
+    let payload_start = HEADER_SIZE + 1;
+    let decoded = decode_payload(&encoded[payload_start..encoded.len() - CHECKSUM_SIZE]).unwrap();
+    assert_eq!(decoded.len(), observed.len());
+    for (decoded, ((operation, key, value), offset)) in decoded.iter().zip(observed) {
+        assert!(decoded.operation == operation);
+        assert_eq!(decoded.key, key);
+        assert_eq!(offset, payload_start + decoded.value_offset);
+        assert_eq!(decoded.value_len, value.len());
+        assert_eq!(&encoded[offset..offset + decoded.value_len], value);
+        assert_eq!(decoded.checksum, crc32fast::hash(value));
+    }
 }
