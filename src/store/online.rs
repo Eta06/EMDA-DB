@@ -89,6 +89,20 @@ pub struct OnlineStore {
     reclamation_worker: AtomicBool,
 }
 
+impl Drop for OnlineStore {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|poison| poison.into_inner());
+        // If a snapshot outlives the last online handle, the Store stays
+        // alive for admission and file ownership. Its live index can go.
+        if Arc::strong_count(&state.store) > 1 {
+            release_live_index(&state.store);
+        }
+    }
+}
+
 /// An owned read-only view captured from an online store.
 ///
 /// Drop or cancel it to release its reservation and captured generation.
@@ -240,13 +254,16 @@ impl OnlineStore {
 
     /// Enables direct key-value read admission before sharing this handle.
     /// Exclusive access prevents any earlier untracked callback from running.
+    /// This also requires all owned snapshots to be closed.
     pub fn enable_direct_read_limit(&mut self, limit: usize) -> io::Result<()> {
         self.store_for_configuration()?
             .enable_direct_read_limit(limit)
     }
 
     /// Enables one shared limit for direct and snapshot reads before sharing
-    /// this handle. In-process compaction preserves the scope and limit.
+    /// this handle. Reads through snapshots from earlier generations still
+    /// use this counter after an in-process compaction.
+    /// This also requires all owned snapshots to be closed.
     pub fn enable_direct_and_snapshot_read_limit(&mut self, limit: usize) -> io::Result<()> {
         self.store_for_configuration()?
             .enable_direct_and_snapshot_read_limit(limit)
@@ -256,6 +273,12 @@ impl OnlineStore {
         let state = self.state.get_mut().map_err(|_| uncertain())?;
         if state.failed {
             return Err(uncertain());
+        }
+        if state.store.snapshot_budget_status()?.active != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "online store still has active snapshots",
+            ));
         }
         Arc::get_mut(&mut state.store).ok_or_else(|| {
             io::Error::new(io::ErrorKind::WouldBlock, "online store is still shared")
@@ -706,9 +729,7 @@ impl OnlineStore {
         // Keep one aggregate budget across the handoff.
         candidate.snapshot_budget = current.snapshot_budget.clone_shared();
         candidate.set_active_direct_write_limit(current.direct_write_status().limit)?;
-        current
-            .direct_reads
-            .copy_configuration_to(&mut candidate.direct_reads);
+        current.direct_reads.share_with(&mut candidate.direct_reads);
         let group_limits = current.group_commit_status()?;
         candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
         current._lock_file.verify_identity(&source)?;
@@ -777,15 +798,7 @@ impl OnlineStore {
         // The retired store can now be used only by captured snapshots and
         // reclamation. Those paths use captured roots or file descriptors.
         // Release the live root outside the callback admission lock.
-        let retired_index = {
-            let mut inner = current
-                .inner
-                .write()
-                .unwrap_or_else(|poison| poison.into_inner());
-            inner.index_key_bytes = 0;
-            std::mem::take(&mut inner.index)
-        };
-        drop(retired_index);
+        release_live_index(&current);
         let report = OnlineCompactionReport {
             initial_log_bytes: initial,
             final_log_bytes: final_boundary,
@@ -797,6 +810,18 @@ impl OnlineStore {
             .map(|hook| reclaim::retire(&source, &previous, &parent, &candidate, &current, hook));
         Ok((report, reclamation))
     }
+}
+
+fn release_live_index(store: &Store) {
+    let index = {
+        let mut inner = store
+            .inner
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner());
+        inner.index_key_bytes = 0;
+        std::mem::take(&mut inner.index)
+    };
+    drop(index);
 }
 
 impl OnlineCompactionOptions {
@@ -820,3 +845,48 @@ fn uncertain() -> io::Error {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn closing_the_online_handle_releases_only_the_uncaptured_live_index() {
+    let root = tempfile::tempdir().unwrap();
+    let online = OnlineStore::open(root.path()).unwrap();
+    online
+        .with_store(|store| store.put(b"key", b"old"))
+        .unwrap();
+    let snapshot = online.snapshot(1, 3).unwrap();
+    online
+        .with_store(|store| store.put(b"key", b"new"))
+        .unwrap();
+    let live_index = Arc::downgrade(
+        &online
+            .state
+            .read()
+            .unwrap()
+            .store
+            .inner
+            .read()
+            .unwrap()
+            .index,
+    );
+    drop(online);
+    assert!(live_index.upgrade().is_none());
+    assert_eq!(
+        snapshot
+            .as_snapshot()
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(b"old".as_slice())
+    );
+    drop(snapshot);
+    assert_eq!(
+        Store::open(root.path())
+            .unwrap()
+            .get(b"key")
+            .unwrap()
+            .as_deref(),
+        Some(b"new".as_slice())
+    );
+}

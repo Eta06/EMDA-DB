@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Share enabled direct and snapshot read admission across online handoffs,
+  and release the uncaptured live index when the online handle closes.
+
 - Release the retired live index after online handoff while captured
   snapshots retain their own index roots.
 

@@ -5,6 +5,7 @@
 //! so reconfiguration cannot race admission into an oversubscribed state.
 use crate::{CheckpointStore, Store};
 use std::io;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Maximum concurrently admitted independent reads on one open store.
@@ -26,7 +27,7 @@ pub struct DirectReadStatus {
 
 #[derive(Default)]
 pub(crate) struct DirectReads {
-    state: Option<AtomicUsize>,
+    state: Option<Arc<AtomicUsize>>,
     includes_snapshots: bool,
 }
 impl DirectReads {
@@ -55,14 +56,20 @@ impl DirectReads {
             ));
         }
         // Exclusive access ensures no previous guard or read is still active.
-        self.state = Some(AtomicUsize::new(limit << SHIFT));
+        self.state = Some(Arc::new(AtomicUsize::new(limit << SHIFT)));
         self.includes_snapshots = includes_snapshots;
         Ok(())
     }
     pub(crate) fn copy_configuration_to(&self, destination: &mut Self) {
         let status = self.status();
-        destination.state = status.limit.map(|limit| AtomicUsize::new(limit << SHIFT));
+        destination.state = status
+            .limit
+            .map(|limit| Arc::new(AtomicUsize::new(limit << SHIFT)));
         destination.includes_snapshots = status.includes_snapshots;
+    }
+    pub(crate) fn share_with(&self, destination: &mut Self) {
+        destination.state.clone_from(&self.state);
+        destination.includes_snapshots = self.includes_snapshots;
     }
     fn set_limit(&self, limit: usize) -> io::Result<()> {
         if limit > MAX_ACTIVE_DIRECT_READS {

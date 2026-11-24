@@ -26,6 +26,60 @@ fn online_handoff_keeps_disabled_direct_read_admission_disabled() {
 }
 
 #[test]
+fn snapshot_read_admission_remains_shared_across_handoff() {
+    let root = tempfile::tempdir().unwrap();
+    let (source, previous) = paths(root.path());
+    let mut online = OnlineStore::open(&source).unwrap();
+    online.enable_direct_and_snapshot_read_limit(1).unwrap();
+    online.with_store(|db| db.put(b"key", b"value")).unwrap();
+    let snapshot = online.snapshot(1, 3).unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    thread::scope(|scope| {
+        let read = scope.spawn(move || {
+            snapshot.as_snapshot().unwrap().get_admitted(b"key", |_| {
+                started_tx.send(()).unwrap();
+                resume_rx.recv_timeout(WAIT).unwrap();
+                Ok(())
+            })
+        });
+        started_rx.recv_timeout(WAIT).unwrap();
+        online
+            .compact_and_reclaim_detailed(&previous, &Default::default())
+            .unwrap();
+        online
+            .with_store(|db| {
+                assert_eq!(db.direct_read_status().active, Some(1));
+                assert_eq!(
+                    db.get(b"key").unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+                assert_eq!(
+                    db.set_active_direct_read_limit(0).unwrap_err().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+                Ok(())
+            })
+            .unwrap();
+        resume_tx.send(()).unwrap();
+        assert_eq!(
+            read.join().unwrap().unwrap().as_deref(),
+            Some(b"value".as_slice())
+        );
+    });
+    assert_eq!(
+        online
+            .with_store(|db| Ok(db.direct_read_status().active))
+            .unwrap(),
+        Some(0)
+    );
+    assert_eq!(
+        online.with_store(|db| db.get(b"key")).unwrap().as_deref(),
+        Some(b"value".as_slice())
+    );
+}
+
+#[test]
 fn handoff_keeps_a_transaction_limit_changed_during_copy() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());

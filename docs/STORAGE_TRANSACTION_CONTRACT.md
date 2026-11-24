@@ -276,13 +276,20 @@ the document view.
   lock and can hold disk blocks after a successful Linux reclamation unlinks
   the old directory. A named previous copy stays locked while a view owns it.
   After a synchronized handoff, the retired store releases its last live
-  index root. Each view continues holding the index root it captured.
+  index root. Closing the online handle also releases the last live root
+  while an owned view is still open. Each view continues holding the
+  index root it captured.
   Ordinary callbacks, compaction's private views and owned online views share
   one snapshot budget across all generations of an open online store. A full
   budget can prevent another compaction from taking its private snapshot.
   This is a logical snapshot budget. It excludes the current live index, disk
   blocks, other stores and elapsed time. Owned online snapshots have no
-  deadline. Their admission and health checks apply to the captured store.
+  deadline. Their health checks apply to the captured store. With direct
+  and snapshot read admission enabled, in-flight reads share one counter
+  across the live store and all its captured generations. Updating the
+  numeric limit applies to readers from every generation and respects
+  active admissions. Changing admission scope requires closing all owned
+  snapshots first.
 - `OnlineStore::start_reclamation_worker` opts into periodic or explicitly requested checks of the same reclaim operation. It permits one worker per handle, checks a synchronized log boundary and configured minimum length, and after its own successful handoff waits for configured growth from the boundary observed afterward on the same store identity. A manually replaced store resets that baseline; another operation can also change the store between observation and compaction. The thresholds are scheduling hints, not hard limits. If the maintenance lock is held before compaction begins, the worker records a `busy_checks` deferral and retries only on a later scheduled or requested check. This case is identified separately from a generic `WouldBlock` I/O error; other failures stop the worker and retain the underlying operation’s uncertain-outcome rules. It reports known successful handoffs and cleanup status separately. Panic is reported as requiring inspection and reopening. It holds a store reference and waits for an in-flight check when stopped or dropped; callbacks must not wait for the worker. The worker is not persistent, does not automatically retry uncertain failures or clean leftovers, and cannot guarantee a storage, memory, recovery-time or pause bound.
 - `CheckpointStore::compact_to` pauses source mutations, validates its trusted checkpoint and complete bounded suffix, then streams live keys into a new private store using the same synchronized record-group limits. It validates the target log and witness, compares its ordered key/value digest and count against the source, and emits a verified checkpoint inside the copy. The returned checkpoint digest must be protected separately. The compacted history starts with the current live keys, so its historical key-count peak is reset to that count. Existing readers may continue; the source remains unchanged, later source writes are absent from the copy, and switching applications is manual. A parent-directory sync failure after publication has an uncertain outcome. This avoids materializing complete source or target indexes during the operation but does not bound total process memory, provide in-place compaction, or erase old records from the source or backups.
 - Full-log backup verifies the synchronized staging file's record checksums and log digest from the same streamed bytes. It compares the verified length and digest to the original copy before publication. Restore validates the backup stream, checks the bytes copied to staging against that digest, and verifies the synchronized nonempty log against the same digest and record checksums in one readback before installing the witness. Each stream uses bounded read buffers. The backup footer provides an integrity check. Independent provenance requires retaining trust in the backup separately, and source and staging files must remain stable under the cooperative locking contract.

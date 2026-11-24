@@ -77,7 +77,8 @@ fn owned_snapshots_read_reclaimed_logs_and_share_capacity_across_generations() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         let previous = root.path().join("previous");
-        let online = create_store(&source, v2);
+        let mut online = create_store(&source, v2);
+        online.enable_direct_and_snapshot_read_limit(1).unwrap();
         online
             .with_store(|store| {
                 store.set_snapshot_budget_limits(3, 64, 8192)?;
@@ -93,6 +94,20 @@ fn owned_snapshots_read_reclaimed_logs_and_share_capacity_across_generations() {
                 .compact_and_reclaim_detailed(&previous, &OnlineCompactionOptions::default())
                 .unwrap();
             assert!(!previous.exists());
+            assert_eq!(
+                online.enable_direct_read_limit(4).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            online
+                .with_store(|store| store.set_active_direct_read_limit(0))
+                .unwrap();
+            assert_eq!(
+                first.as_snapshot().unwrap().get(b"key").unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            online
+                .with_store(|store| store.set_active_direct_read_limit(1))
+                .unwrap();
             online
                 .with_store(|store| {
                     store.put(b"key", &[value])?;
