@@ -474,3 +474,92 @@ fn document_snapshot_read_limits_accumulate_across_pages_on_all_views() {
     let view = retry_lock(|| CheckpointView::open(&path, &checkpoint, &digest)).unwrap();
     exercise(DocumentSnapshot::with_checkpoint_view(&view));
 }
+
+#[test]
+fn planned_projection_and_aggregation_cross_public_index_page_byte_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("store")).unwrap();
+    let db = DocumentDatabase::new(&store);
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index(
+        "c",
+        IndexDefinition {
+            name: "score".into(),
+            fields: vec![vec!["score".into()]],
+            unique: false,
+            partial: None,
+        },
+    )
+    .unwrap();
+    let document = json!({"score": 1, "payload": "x".repeat(1024 * 1024 - 64)});
+    for id in 0..17 {
+        db.insert("c", &format!("doc-{id:02}"), &document).unwrap();
+    }
+
+    let first = db
+        .query_index("c", "score", &IndexQuery::default())
+        .unwrap();
+    assert_eq!(first.documents.len(), 16);
+    let second = db
+        .query_index(
+            "c",
+            "score",
+            &IndexQuery {
+                after: first.next,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(second.documents.len(), 1);
+    assert_eq!(second.documents[0].id, "doc-16");
+
+    let filter = DocumentFilter::Equal {
+        path: vec!["score".into()],
+        value: json!(1),
+    };
+    // One metadata read, one index page, 17 index keys and 17 documents.
+    let budget = DocumentReadLimits {
+        max_read_units: 36,
+        max_read_bytes: usize::MAX,
+    };
+    let mode = DocumentTransactionMode::ReadSet;
+    db.transaction_with_read_limits(budget, mode, None, None, |tx| {
+        let result = tx.query_planned(
+            "c",
+            &DocumentQuery {
+                filter: filter.clone(),
+                projection: Some(vec![vec!["score".into()]]),
+                limit: 17,
+                max_scanned: 17,
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(result.result.plan.scanned, 17);
+        assert_eq!(result.result.documents.len(), 17);
+        assert!(
+            result
+                .result
+                .documents
+                .iter()
+                .all(|doc| doc.document == json!({"score": 1}))
+        );
+        Ok(())
+    })
+    .unwrap();
+    db.transaction_with_read_limits(budget, mode, None, None, |tx| {
+        let result = tx.aggregate_stats_planned(
+            "c",
+            &AggregateStatsRequest {
+                filter: filter.clone(),
+                group_by: None,
+                fields: vec![vec!["score".into()]],
+                max_scanned: 17,
+            },
+        )?;
+        assert_eq!(result.result.groups[0].count, 17);
+        assert_eq!(result.result.groups[0].fields[0].sum, 17);
+        Ok(())
+    })
+    .unwrap();
+}

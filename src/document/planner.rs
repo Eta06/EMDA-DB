@@ -1510,6 +1510,7 @@ impl DocumentTransaction<'_, '_> {
                 IndexScanOptions {
                     after: after.as_deref(),
                     byte_limit: Some(filter::MAX_SCAN_BYTES - budget.bytes),
+                    response_byte_limit: None,
                     candidate_limit: Some(remaining),
                     unique_equality,
                 },
@@ -1524,10 +1525,9 @@ impl DocumentTransaction<'_, '_> {
                 break;
             }
             budget.visits += returned;
-            // Return counts can be smaller than the rows scanned when the
-            // document response limit ends the page early. Only an
-            // entirely consumed, short index page proves exhaustion.
-            if unique_equality || (returned == indexed.plan.entries_read && returned < limit) {
+            // A short index scan proves exhaustion. This private visitor
+            // consumes all admitted candidates without building a response page.
+            if unique_equality || returned < limit {
                 break;
             }
             after = Some(indexed.next.ok_or_else(|| {

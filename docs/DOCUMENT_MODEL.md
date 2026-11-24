@@ -341,7 +341,9 @@ come from captured value locations, staged writes or retained entry framing.
 The retained path can read a framing buffer to locate the entry. Admitted
 values still undergo the usual integrity and schema checks.
 The planner keeps the distinct candidate IDs and streams documents into
-the requested window. Index and candidate budget errors take precedence
+the requested window. Planned queries and aggregates use the shared 32 MiB
+scan budget across their private index visits. An explicit `query_index`
+response still pages at 16 MiB. Index and candidate budget errors take precedence
 over filter and sort errors. Array-walking filters evaluate once in ID
 order. They revisit the candidate IDs within the transaction when the
 index probes return a different order. Other filters can run during the

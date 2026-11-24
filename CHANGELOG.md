@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream planned index candidates under their scan budget without rereading
+  documents at the public index response byte boundary.
+
 - Reject excess planned query and aggregate candidates before fetching
   their document payloads.
 

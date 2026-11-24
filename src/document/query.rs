@@ -142,6 +142,7 @@ pub(super) struct IndexScan {
 pub(super) struct IndexScanOptions<'a> {
     pub after: Option<&'a [u8]>,
     pub byte_limit: Option<usize>,
+    pub response_byte_limit: Option<usize>,
     pub candidate_limit: Option<usize>,
     pub unique_equality: bool,
 }
@@ -254,6 +255,7 @@ impl DocumentTransaction<'_, '_> {
                     .as_ref()
                     .map(|cursor| cursor.position.as_slice()),
                 byte_limit: None,
+                response_byte_limit: Some(MAX_QUERY_BYTES),
                 candidate_limit: None,
                 unique_equality: false,
             },
@@ -387,7 +389,10 @@ impl DocumentTransaction<'_, '_> {
                 .checked_add(id.len())
                 .and_then(|n| n.checked_add(encoded.len()))
                 .ok_or_else(|| key::invalid("query response size overflow"))?;
-            if next_used > MAX_QUERY_BYTES {
+            if options
+                .response_byte_limit
+                .is_some_and(|limit| next_used > limit)
+            {
                 break;
             }
             document_key_value_bytes = next_document_bytes;
