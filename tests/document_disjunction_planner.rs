@@ -748,10 +748,11 @@ fn overlapping_disjunct_ranges_share_the_document_byte_budget() {
         let query = |probes| {
             let filter = DocumentFilter::Or(
                 (0..probes)
-                    .map(|offset| DocumentFilter::Compare {
-                        path: path("tag"),
-                        comparison: Comparison::GreaterOrEqual,
-                        value: IndexValue::Integer(1 - offset),
+                    .map(|offset| {
+                        DocumentFilter::And(vec![
+                            compare_tag(Comparison::GreaterOrEqual, 1 - offset),
+                            compare_tag(Comparison::LessOrEqual, 34 - offset),
+                        ])
                     })
                     .collect(),
             );
@@ -768,6 +769,124 @@ fn overlapping_disjunct_ranges_share_the_document_byte_budget() {
             db.query_planned("items", &query(34)).unwrap_err().kind(),
             ErrorKind::InvalidInput
         );
+    });
+}
+
+fn compare_tag(comparison: Comparison, value: i64) -> DocumentFilter {
+    DocumentFilter::Compare {
+        path: path("tag"),
+        comparison,
+        value: IndexValue::Integer(value),
+    }
+}
+
+#[test]
+fn contained_disjunction_ranges_share_one_probe_and_preserve_residuals_and_conflicts() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index("items", index("tag", &["tag"])).unwrap();
+        for (id, tag, visible, allowed) in [
+            ("a", 1, true, true),
+            ("b", 2, false, true),
+            ("c", 3, false, false),
+            ("d", 5, true, false),
+            ("e", 6, true, true),
+        ] {
+            db.insert(
+                "items",
+                id,
+                &json!({"tag":tag, "visible":visible, "allowed":allowed}),
+            )
+            .unwrap();
+        }
+        let disjunction = |outer_lower, inner_lower| {
+            DocumentFilter::Or(vec![
+                DocumentFilter::And(vec![
+                    compare_tag(inner_lower, 1),
+                    compare_tag(Comparison::Less, 5),
+                    eq("allowed", json!(true)),
+                ]),
+                DocumentFilter::And(vec![
+                    compare_tag(outer_lower, 1),
+                    compare_tag(Comparison::LessOrEqual, 5),
+                    eq("visible", json!(true)),
+                ]),
+            ])
+        };
+        let query = request(
+            disjunction(Comparison::GreaterOrEqual, Comparison::Greater),
+            4,
+        );
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(planned.access, access(&["tag"], 1));
+        assert_eq!(planned.result.plan.scanned, 4);
+        assert_eq!(
+            planned
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b", "d"]
+        );
+        let explanation = db.explain_query("items", &query).unwrap();
+        assert_eq!(explanation.access, planned.access);
+        assert_eq!(explanation.probes.len(), 1);
+        assert!(explanation.probes[0].lower.as_ref().unwrap().inclusive);
+        assert!(explanation.probes[0].upper.as_ref().unwrap().inclusive);
+        assert_eq!(
+            planned.result.documents,
+            db.query(
+                "items",
+                &DocumentQuery {
+                    max_scanned: 5,
+                    ..query.clone()
+                }
+            )
+            .unwrap()
+            .documents
+        );
+
+        // A shared value with different inclusivity can make ranges cross.
+        let crossing = request(
+            disjunction(Comparison::Greater, Comparison::GreaterOrEqual),
+            6,
+        );
+        let planned = db.query_planned("items", &crossing).unwrap();
+        assert_eq!(planned.access, access(&["tag"], 2));
+        assert_eq!(planned.result.plan.scanned, 6);
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &crossing).unwrap().documents
+        );
+
+        std::thread::scope(|scope| {
+            let (read, observed) = mpsc::sync_channel(1);
+            let (written, resume) = mpsc::sync_channel(1);
+            let writer = scope.spawn(move || {
+                observed.recv_timeout(Duration::from_secs(5)).unwrap();
+                db.insert(
+                    "items",
+                    "new",
+                    &json!({"tag":3,"visible":false,"allowed":true}),
+                )
+                .unwrap();
+                written.send(()).unwrap();
+            });
+            let error = db
+                .transaction_with_read_set(|tx| {
+                    assert_eq!(tx.query_planned("items", &query)?.result.plan.scanned, 4);
+                    tx.put_raw(b"receipt", b"stale")?;
+                    read.send(()).unwrap();
+                    resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(())
+                })
+                .unwrap_err();
+            writer.join().unwrap();
+            assert!(is_transaction_conflict(&error));
+        });
+        assert_eq!(db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(), None);
     });
 }
 

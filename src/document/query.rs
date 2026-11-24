@@ -131,6 +131,51 @@ pub struct DocumentPage {
     pub plan: IndexQueryPlan,
 }
 
+pub(super) struct IndexBounds {
+    equal_prefix: Vec<u8>,
+    pub(super) after: Vec<u8>,
+    pub(super) before: Vec<u8>,
+}
+
+pub(super) fn index_bounds(
+    index_prefix: &[u8],
+    equal: &[IndexValue],
+    lower: Option<&IndexBound>,
+    upper: Option<&IndexBound>,
+) -> io::Result<IndexBounds> {
+    let mut equal_prefix = index_prefix.to_vec();
+    for value in equal {
+        value.encode(&mut equal_prefix)?;
+    }
+    let after = if let Some(lower) = lower {
+        let mut bound = equal_prefix.clone();
+        lower.value.encode(&mut bound)?;
+        if lower.inclusive {
+            bound
+        } else {
+            key::end(&bound)
+        }
+    } else {
+        equal_prefix.clone()
+    };
+    let before = if let Some(upper) = upper {
+        let mut bound = equal_prefix.clone();
+        upper.value.encode(&mut bound)?;
+        if upper.inclusive {
+            key::end(&bound)
+        } else {
+            bound
+        }
+    } else {
+        key::end(&equal_prefix)
+    };
+    Ok(IndexBounds {
+        equal_prefix,
+        after,
+        before,
+    })
+}
+
 // The planner needs the original encoded document and key lengths to enforce
 // the collection scan's byte budget without serializing parsed JSON again.
 pub(super) struct IndexScan {
@@ -289,30 +334,16 @@ impl DocumentTransaction<'_, '_> {
             return Err(key::invalid("query bounds exceed the index field count"));
         }
         let index_prefix = key::index(b'I', collection, &definition.name)?;
-        let mut equal_prefix = index_prefix.clone();
-        for value in &query.equal {
-            value.encode(&mut equal_prefix)?;
-        }
-        let mut after = equal_prefix.clone();
-        let mut before = key::end(&equal_prefix);
-        if let Some(lower) = &query.lower {
-            let mut bound = equal_prefix.clone();
-            lower.value.encode(&mut bound)?;
-            after = if lower.inclusive {
-                bound
-            } else {
-                key::end(&bound)
-            };
-        }
-        if let Some(upper) = &query.upper {
-            let mut bound = equal_prefix.clone();
-            upper.value.encode(&mut bound)?;
-            before = if upper.inclusive {
-                key::end(&bound)
-            } else {
-                bound
-            };
-        }
+        let IndexBounds {
+            equal_prefix,
+            after,
+            mut before,
+        } = index_bounds(
+            &index_prefix,
+            &query.equal,
+            query.lower.as_ref(),
+            query.upper.as_ref(),
+        )?;
         let after = if let Some(cursor) = options.after {
             if !cursor.starts_with(&equal_prefix)
                 || cursor >= before.as_slice()

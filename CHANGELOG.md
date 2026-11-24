@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Avoid repeated document reads from disjunction ranges wholly contained
+  in another range on the same index.
+
 - Plan the source query for document lookups by ID or unique tuple, including
   on captured snapshots. Report the chosen access path and actual source work.
 

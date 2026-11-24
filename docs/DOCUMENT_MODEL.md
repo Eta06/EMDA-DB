@@ -354,9 +354,13 @@ partial-index guards. A guard in one alternative does not qualify a sibling.
 The union can combine equality, membership, range and compound prefix probes
 across distinct indexes. A probe with the same index, equality tuple and
 range bounds, including inclusivity, runs once in its first occurrence.
-All branches share one cap of 256 distinct probes and the original
-document and byte budgets. Hits from distinct probes consume budget on
-each visit, even when their ranges overlap.
+All branches share one planning cap of 256 distinct probes. After
+admission, the planner removes range probes wholly covered by another
+range on the same index when their encoded endpoints fit the key format.
+It preserves the complete residual filter and the covering range's
+read-set dependency. The executed probes share the original document
+and byte budgets. Hits from the remaining distinct probes consume budget
+on each visit, including where ranges cross.
 When the candidate count is exhausted, an index lookahead can prove there
 is another candidate. The query rejects before fetching that candidate's
 document or its unique-owner record.

@@ -3,7 +3,7 @@ use super::{
     filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult, QueryPlan},
     index::{IndexDefinition, IndexValue, MAX_INDEX_STRING_BYTES, PartialFilter},
     key,
-    query::{IndexBound, IndexQuery, IndexScanOptions, index_definition},
+    query::{IndexBound, IndexQuery, IndexScanOptions, index_bounds, index_definition},
     transaction::{DocumentTransaction, Metadata},
 };
 use serde_json::Value;
@@ -1222,6 +1222,7 @@ fn choose_literal_disjunctions<'a>(
 }
 
 fn plan_query<'a>(
+    collection: &str,
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
 ) -> io::Result<Option<(DocumentQueryAccess, Vec<IndexProbe<'a>>)>> {
@@ -1254,22 +1255,21 @@ fn plan_query<'a>(
             &mut planned,
             allow_prefix,
         )? {
+            let mut ordered: Vec<_> = planned.into_iter().collect();
+            ordered.sort_unstable_by_key(|(_, ordinal)| *ordinal);
+            let mut probes: Vec<_> = ordered.into_iter().map(|(probe, _)| probe).collect();
+            remove_covered_ranges(collection, &mut probes)?;
             let access = DocumentQueryAccess::DisjunctionIndex {
-                indexes: planned
-                    .keys()
+                indexes: probes
+                    .iter()
                     .map(|probe| probe.index)
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .map(str::to_owned)
                     .collect(),
-                probes: planned.len(),
+                probes: probes.len(),
             };
-            let mut probes: Vec<_> = planned.into_iter().collect();
-            probes.sort_unstable_by_key(|(_, ordinal)| *ordinal);
-            return Ok(Some((
-                access,
-                probes.into_iter().map(|(probe, _)| probe).collect(),
-            )));
+            return Ok(Some((access, probes)));
         }
     }
     // This scans the whole index, so keep every narrower plan above it.
@@ -1299,6 +1299,58 @@ fn plan_query<'a>(
     }))
 }
 
+fn remove_covered_ranges(collection: &str, probes: &mut Vec<IndexProbe<'_>>) -> io::Result<()> {
+    let ranges = probes
+        .iter()
+        .enumerate()
+        .filter(|(_, probe)| probe.lower.is_some() || probe.upper.is_some());
+    // Exact probes retain their existing unique-equality and cursor checks.
+    if ranges.clone().take(2).count() < 2 {
+        return Ok(());
+    }
+    let mut intervals = Vec::new();
+    for (ordinal, probe) in ranges {
+        let prefix = key::index(b'I', collection, probe.index)?;
+        let bounds = index_bounds(
+            &prefix,
+            &probe.equal,
+            probe.lower.as_ref(),
+            probe.upper.as_ref(),
+        )?;
+        // Overlong endpoints go through the execution path's clipping rules.
+        // Leave those and empty intervals out of this optimization.
+        if bounds.after.len() <= crate::record::MAX_KEY
+            && bounds.before.len() <= crate::record::MAX_KEY
+            && bounds.after < bounds.before
+        {
+            intervals.push((
+                probe.index,
+                bounds.after,
+                std::cmp::Reverse(bounds.before),
+                ordinal,
+            ));
+        }
+    }
+    intervals.sort_unstable();
+    let mut keep = vec![true; probes.len()];
+    let mut covering = None;
+    // Starts ascend and ties put the widest interval first. Within each
+    // index, the largest end seen so far is enough to detect containment.
+    for (index, _, std::cmp::Reverse(end), ordinal) in intervals {
+        if covering
+            .as_ref()
+            .is_some_and(|(name, upper)| *name == index && end <= *upper)
+        {
+            keep[ordinal] = false;
+        } else {
+            covering = Some((index, end));
+        }
+    }
+    let mut keep = keep.into_iter();
+    probes.retain(|_| keep.next().expect("one decision per probe"));
+    Ok(())
+}
+
 #[derive(Default)]
 struct CandidateBudget {
     visits: usize,
@@ -1323,7 +1375,8 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<DocumentQueryExplanation> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let Some((access, probes)) = plan_query(&query.filter, &metadata.indexes)? else {
+        let Some((access, probes)) = plan_query(collection, &query.filter, &metadata.indexes)?
+        else {
             return Ok(DocumentQueryExplanation {
                 access: DocumentQueryAccess::CollectionScan,
                 probes: Vec::new(),
@@ -1357,7 +1410,8 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<PlannedDocumentQueryResult> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let Some((access, probes)) = plan_query(&query.filter, &metadata.indexes)? else {
+        let Some((access, probes)) = plan_query(collection, &query.filter, &metadata.indexes)?
+        else {
             return Ok(PlannedDocumentQueryResult {
                 result: self.query_with_schema(collection, &metadata.schema, query)?,
                 access: DocumentQueryAccess::CollectionScan,
@@ -1416,7 +1470,7 @@ impl DocumentTransaction<'_, '_> {
         filter::validate_filter(predicate)?;
         let metadata = self.metadata(collection)?;
         let mut state = T::default();
-        let Some((access, probes)) = plan_query(predicate, &metadata.indexes)? else {
+        let Some((access, probes)) = plan_query(collection, predicate, &metadata.indexes)? else {
             let plan = self.visit_filtered_documents_with_schema(
                 collection,
                 &metadata.schema,
