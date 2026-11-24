@@ -478,8 +478,13 @@ metadata, including the managed selection replacement, while the active
 generation still exists. The base writer fits its output to the remaining
 catalog budget and its own persisted generation limits. Reclamation
 reserves room for its private staging marker and directory. Automatic
-rotation accounts for that headroom before selecting the successor.
-Stale staging artifacts consume budget until cleanup.
+rotation and every rotation carrying a persistent quota account for
+that headroom before selecting the successor. While the inactive slot
+exists, appends under a persistent quota preserve room for the retirement
+marker and directory. Retire the inactive slot to release those bytes
+for appends. Stale staging artifacts consume budget until cleanup.
+A catalog already full under an earlier persisted policy can still need
+a verified backup and restore into a separate catalog with more headroom.
 
 `compact_with_persisted_storage_limits` publishes a successor whose
 witness-bound header carries both catalog ceilings (`EMDARW04` for

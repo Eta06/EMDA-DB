@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Preserve retirement headroom across retained catalog rotation and appends
+  under a persisted storage quota.
+
 - Explain a planned document query's access path and index probes without
   scanning documents or index entries.
 

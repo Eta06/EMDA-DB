@@ -319,6 +319,94 @@ fn catalog_storage_reserves_headroom_for_automatic_authorized_reclamation() {
 }
 
 #[test]
+fn persisted_catalog_storage_preserves_room_for_manual_retirement() {
+    use crate::retained_candidate::writable::managed::tests::catalog_usage;
+    use crate::retained_candidate::writable::{QUOTA_HEADER_BYTES, WITNESS_BYTES};
+    use crate::staging::Stage;
+
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"suffix", b"kept").unwrap();
+    let before = store.current;
+    let used = catalog_usage(&f.root);
+    let base_bytes = 144
+        + store
+            .scan(None, None, 8)
+            .unwrap()
+            .iter()
+            .map(|(key, value)| (8 + key.len() + value.len()) as u64)
+            .sum::<u64>();
+    let exact = CatalogStorageLimits {
+        bytes: used.bytes
+            + base_bytes
+            + (QUOTA_HEADER_BYTES + WITNESS_BYTES) as u64
+            + Stage::RETAINED_MARKER_BYTES,
+        entries: used.entries + 7,
+    };
+    for (limits, message) in [
+        (
+            CatalogStorageLimits {
+                entries: exact.entries - 1,
+                ..exact
+            },
+            "catalog entry limit exceeded",
+        ),
+        (
+            CatalogStorageLimits {
+                bytes: exact.bytes - 1,
+                ..exact
+            },
+            "compacted base byte limit exceeded",
+        ),
+    ] {
+        assert!(matches!(
+            store.compact_with_persisted_storage_limits_detailed(limits),
+            Err(RetainedRotationFailure::NotPublished(ref error))
+                if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message
+        ));
+        assert_eq!(store.authority.read().unwrap(), Some(before));
+        assert_eq!(catalog_usage(&f.root), used);
+        assert!(!Slot::B.path(&f.root).exists());
+    }
+    let selected = store.compact_with_persisted_storage_limits(exact).unwrap();
+    assert_ne!(selected, before.committed.generation);
+    let selection = store.current;
+    assert!(Slot::A.path(&f.root).is_dir());
+    drop(store);
+
+    let mut store = f.open();
+    assert_eq!(store.inner.store.header.storage_limits(), Some(exact));
+    let usage = catalog_usage(&f.root);
+    assert_eq!(usage.bytes + Stage::RETAINED_MARKER_BYTES, exact.bytes);
+    assert_eq!(usage.entries + 2, exact.entries);
+    let active = Slot::B.path(&f.root);
+    let log = fs::read(active.join("records.log")).unwrap();
+    let witness = fs::read(active.join("commit.state")).unwrap();
+    assert!(matches!(
+        store.put(b"new", b"ack"),
+        Err(MutationFailure::Rejected(ref error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "catalog byte limit exceeded"
+    ));
+    assert_eq!(store.authority.read().unwrap(), Some(selection));
+    assert_eq!(catalog_usage(&f.root), usage);
+    assert_eq!(fs::read(active.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(active.join("commit.state")).unwrap(), witness);
+    assert_eq!(store.get(b"new", 3).unwrap(), None);
+
+    assert!(store.reclaim_inactive().unwrap());
+    assert!(!Slot::A.path(&f.root).exists());
+    store.put(b"new", b"ack").unwrap();
+    drop(store);
+
+    let mut store = f.open();
+    assert_eq!(store.inner.store.header.storage_limits(), Some(exact));
+    assert_eq!(store.get(b"suffix", 4).unwrap().unwrap(), b"kept");
+    assert_eq!(store.get(b"new", 3).unwrap().unwrap(), b"ack");
+}
+
+#[test]
 fn prepared_catalog_requires_authority_and_a_witnessed_role() {
     let mut f = Fixture::prepare();
     assert!(Store::open(&f.root).is_err());

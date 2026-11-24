@@ -494,6 +494,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Inject [102 returned Linux filesystem errors](../benchmarks/results/2026-11-23-retained-archive-eio/README.md) during archive retirement, covering each observed sync and unlink ordinal with V2 and V3 source fixtures. Verify the selected store and an independently bound local restore before each clean retirement retry.
 - [x] Reject a locked inactive generation or one with unowned contents before advancing the retained authority revision. Verify that a rejected attempt leaves the authority and inactive files intact, and that a clean retry still fences older revisions before retiring the slot.
 - [x] Discard a verified abandoned cutover preparation before or after cutover. The [cleanup regression](../benchmarks/results/2026-11-19-abandoned-cutover-cleanup/README.md) checks the live source after a process kill, refuses registered or selected catalogs, and preserves unknown entries.
+- [x] Preserve room to retire the inactive retained generation under a
+  persisted catalog quota. Tests exercise exact rotation and append
+  limits, verify that rejections preserve the authority, log and witness,
+  and reopen and reclaim the old slot before appending.
 - [ ] Complete the retained-history lifecycle for independently retained backups and measure recovery at deployment scale. Retained reopen verifies the entire admitted base and replays a bounded suffix. Rotation is synchronous. Limits do not bound all allocations or the total disk space across active and retired files. Any path that skips full verification needs a documented corruption model and equivalent validation. Reclamation must preserve captured reads and transactions, recover from interrupted publication, and reject stale generations according to the authority contract.
   The [million-key larger-suffix comparison](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md)
   exercises 32,768 mutations per epoch and local authorized restore on macOS

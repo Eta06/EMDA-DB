@@ -748,7 +748,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         admit: impl FnOnce() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
         self.inner
-            .storage_room(encoded.len() as u64, 0)
+            .admit_append(encoded.len() as u64)
             .map_err(MutationFailure::Rejected)?;
         let current = self.current;
         let mut attempted = None;

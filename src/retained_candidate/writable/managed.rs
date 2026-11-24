@@ -28,6 +28,7 @@ const ACTIVE_FILE: &str = "active.retained";
 const ACTIVE_MAGIC: &[u8; 8] = b"EMDAAC01";
 const ACTIVE_BYTES: usize = 256;
 const CATALOG_BYTES: usize = 56;
+const RETIREMENT_STAGE_ENTRIES: u64 = 2;
 
 #[derive(Clone, Copy)]
 struct InitialLimits {
@@ -695,9 +696,28 @@ impl ManagedRetainedStore {
         bytes: &[u8],
         admit: impl FnOnce() -> io::Result<()>,
     ) -> Result<(), MutationFailure> {
-        self.storage_room(bytes.len() as u64, 0)
+        self.admit_append(bytes.len() as u64)
             .map_err(MutationFailure::Rejected)?;
         self.store.write_encoded(bytes, |_, _| admit(), |_| Ok(()))
+    }
+
+    fn admit_append(&self, encoded_bytes: u64) -> io::Result<()> {
+        let keep_retirement_room = self.store.header.storage_limits().is_some()
+            && match self.active.slot.other().path(&self.root).symlink_metadata() {
+                Ok(_) => true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error),
+            };
+        let (bytes, entries) = if keep_retirement_room {
+            let bytes = encoded_bytes
+                .checked_add(crate::staging::Stage::RETAINED_MARKER_BYTES)
+                .ok_or_else(storage::byte_limit)?;
+            (bytes, RETIREMENT_STAGE_ENTRIES)
+        } else {
+            (encoded_bytes, 0)
+        };
+        self.storage_room(bytes, entries)?;
+        Ok(())
     }
 
     fn storage_room(&self, reserve_bytes: u64, reserve_entries: u64) -> io::Result<u64> {
@@ -883,6 +903,7 @@ impl ManagedRetainedStore {
         }
         use crate::staging::Stage;
         let persisted_storage = persisted_storage.or_else(|| self.store.header.storage_limits());
+        let reserve_retirement = reclaim_after || persisted_storage.is_some();
         let next_limits = intersect(self.requested_storage, persisted_storage);
         let admission_limits =
             intersect(self.storage.as_ref().map(|quota| quota.limits), next_limits);
@@ -898,25 +919,24 @@ impl ManagedRetainedStore {
             0
         };
         // Directory stage and marker, four successor files, plus a possible
-        // selection stage. Reserving both markers covers failed cleanup.
-        let entries = if selection_bytes != 0 {
-            8
-        } else if reclaim_after {
-            // The published successor adds five paths. Reclamation needs
-            // two more after the preparation marker has been cleaned.
-            7
+        // selection stage. Once published, the successor adds five paths.
+        let preparation_entries: u64 = if selection_bytes == 0 { 6 } else { 8 };
+        let retirement_entries = if reserve_retirement {
+            5 + RETIREMENT_STAGE_ENTRIES
         } else {
-            6
+            0
+        };
+        let retirement_bytes = if reserve_retirement {
+            Stage::RETAINED_MARKER_BYTES
+        } else {
+            0
         };
         let max_base_bytes = catalog_storage(&self.root, self.catalog_magic, admission_limits)
             .map_or(Ok(u64::MAX), |quota| {
                 quota.room(
-                    (Stage::DIRECTORY_MARKER_BYTES + selection_bytes).max(if reclaim_after {
-                        Stage::RETAINED_MARKER_BYTES
-                    } else {
-                        0
-                    }) + generation_metadata,
-                    entries,
+                    (Stage::DIRECTORY_MARKER_BYTES + selection_bytes).max(retirement_bytes)
+                        + generation_metadata,
+                    preparation_entries.max(retirement_entries),
                 )
             })?;
         let mut stage = Stage::directory(&self.root)?;
@@ -1054,7 +1074,10 @@ impl ManagedRetainedStore {
     }
 
     fn reclaim_room(&self) -> io::Result<()> {
-        self.storage_room(crate::staging::Stage::RETAINED_MARKER_BYTES, 2)?;
+        self.storage_room(
+            crate::staging::Stage::RETAINED_MARKER_BYTES,
+            RETIREMENT_STAGE_ENTRIES,
+        )?;
         Ok(())
     }
 
