@@ -64,6 +64,15 @@ fn assert_operation_limit<T>(result: io::Result<T>) {
 
 #[test]
 fn recovery_scan_limit_counts_the_confirming_suffix_pass_only_for_pending_tails() {
+    exercise_recovery_scan_limits(false);
+}
+
+#[test]
+fn combined_checkpoint_recovery_scan_limit_counts_checkpoint_and_pending_confirmation() {
+    exercise_recovery_scan_limits(true);
+}
+
+fn exercise_recovery_scan_limits(combined: bool) {
     for force_v2 in [true, false] {
         if !force_v2 && !cfg!(target_os = "linux") {
             continue;
@@ -125,31 +134,72 @@ fn recovery_scan_limit_counts_the_confirming_suffix_pass_only_for_pending_tails(
             let complete = fs::read(&log_path).unwrap();
             let length = complete.len() as u64;
             let pending_limit = length + (length - prefix);
-            let open = |max| {
+            let checkpoint_bytes = fs::metadata(&index_path).unwrap().len();
+            let open_with_budgets = |max_log_scan_bytes, max_total_scan_bytes| {
                 let limits = CheckpointStoreLimits::default();
                 let recovery = CheckpointRecoveryLimits {
                     max_tail_operations: Some(3),
-                    max_log_scan_bytes: Some(max),
+                    max_log_scan_bytes,
                 };
-                if managed {
-                    CheckpointStore::open_managed_with_recovery_limits(&path, limits, recovery)
-                } else {
-                    CheckpointStore::open_with_recovery_limits(
+                match (managed, max_total_scan_bytes) {
+                    (true, Some(total)) => {
+                        CheckpointStore::open_managed_with_total_recovery_scan_limit(
+                            &path, limits, recovery, total,
+                        )
+                    }
+                    (false, Some(total)) => CheckpointStore::open_with_total_recovery_scan_limit(
                         &path,
                         &checkpoint,
                         &digest,
                         limits,
                         recovery,
-                    )
+                        total,
+                    ),
+                    (true, None) => {
+                        CheckpointStore::open_managed_with_recovery_limits(&path, limits, recovery)
+                    }
+                    (false, None) => CheckpointStore::open_with_recovery_limits(
+                        &path,
+                        &checkpoint,
+                        &digest,
+                        limits,
+                        recovery,
+                    ),
                 }
+            };
+            let open = |max| {
+                if combined {
+                    open_with_budgets(None, Some(checkpoint_bytes + max))
+                } else {
+                    open_with_budgets(Some(max), None)
+                }
+            };
+            let expected_error = if combined {
+                "checkpoint total recovery scan byte limit exceeded"
+            } else {
+                "checkpoint recovery log scan byte limit exceeded"
             };
             let assert_budget = |max| {
                 assert!(
                     matches!(open(max), Err(RecoveryOpenFailure::NotAdopted(error))
                     if error.kind() == io::ErrorKind::InvalidInput
-                        && error.to_string() == "checkpoint recovery log scan byte limit exceeded")
+                        && error.to_string() == expected_error)
                 );
             };
+            if combined {
+                assert!(matches!(
+                    open_with_budgets(Some(pending_limit - 1), Some(checkpoint_bytes + pending_limit)),
+                    Err(RecoveryOpenFailure::NotAdopted(error))
+                        if error.kind() == io::ErrorKind::InvalidInput
+                            && error.to_string() == "checkpoint recovery log scan byte limit exceeded"
+                ));
+                assert!(matches!(
+                    open_with_budgets(None, Some(0)),
+                    Err(RecoveryOpenFailure::NotAdopted(error))
+                        if error.kind() == io::ErrorKind::InvalidInput
+                            && error.to_string() == expected_error
+                ));
+            }
             // The scan budget rejects from the header, before checking the
             // digest trailer. Admitted recovery must authenticate the index.
             let index = fs::read(&index_path).unwrap();

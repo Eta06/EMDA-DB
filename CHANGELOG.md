@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an inclusive checkpoint and log scan budget for managed and explicit
+  writable checkpoint recovery, including pending-tail confirmation.
+
 - Avoid repeated document reads from disjunction ranges wholly contained
   in another range on the same index.
 

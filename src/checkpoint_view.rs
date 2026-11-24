@@ -181,7 +181,7 @@ pub(crate) enum TailAdmission {
     Unrestricted,
     Writable {
         max_tail_bytes: u64,
-        max_recovery_scan_bytes: Option<u64>,
+        recovery_scan: checkpoint::RecoveryScanLimits,
     },
     Witnessed(u64),
 }
@@ -364,15 +364,15 @@ impl CheckpointView {
         limits.validate()?;
         let (mut log, boundary) = Log::open_checkpoint_view(path)?;
         let length = Self::check_log_limit(&log, max_log_bytes)?;
-        let (max_tail_bytes, max_recovery_scan_bytes) = match tail {
-            TailAdmission::Unrestricted => (None, None),
+        let (max_tail_bytes, recovery_scan) = match tail {
+            TailAdmission::Unrestricted => (None, checkpoint::RecoveryScanLimits::default()),
             TailAdmission::Writable {
                 max_tail_bytes,
-                max_recovery_scan_bytes,
-            } => (Some(max_tail_bytes), max_recovery_scan_bytes),
+                recovery_scan,
+            } => (Some(max_tail_bytes), recovery_scan),
             TailAdmission::Witnessed(limit) => {
                 checkpoint::check_witnessed_length(length, boundary)?;
-                (Some(limit), None)
+                (Some(limit), checkpoint::RecoveryScanLimits::default())
             }
         };
         let checkpoint = checkpoint::open_index_file(checkpoint)?;
@@ -391,7 +391,7 @@ impl CheckpointView {
                 max_live_keys,
                 max_file_bytes: Some(limits.max_file_bytes),
                 max_tail_bytes,
-                max_recovery_scan_bytes,
+                recovery_scan,
                 max_view_blocks: Some(limits.max_blocks),
                 read_budget: read_budget.as_ref(),
             },
@@ -454,9 +454,7 @@ impl CheckpointView {
         if matches!(tail, TailAdmission::Witnessed(_)) || length < boundary {
             checkpoint::check_witnessed_length(length, boundary)?;
         }
-        if let Some(limit) = max_recovery_scan_bytes {
-            checkpoint::check_recovery_scan_bytes(length, verified.prefix, boundary, limit)?;
-        }
+        recovery_scan.admit(length, verified.prefix, boundary, verified.file_bytes)?;
         let has_tail = length > verified.prefix;
         log.release_view_witness()?;
         let view = Self {
