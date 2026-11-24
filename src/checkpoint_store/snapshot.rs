@@ -167,8 +167,26 @@ impl Drop for Reservation<'_> {
 /// Expired idle snapshots are reclaimed by a later snapshot request, an
 /// explicit reaping call or an optionally started worker.
 pub struct CheckpointSnapshot<'a> {
-    store: &'a CheckpointStore,
+    store: SnapshotOwner<'a>,
     state: Arc<RwLock<SnapshotData>>,
+}
+
+// An owned snapshot keeps its generation's store alive, including its open
+// log, checkpoint and lock descriptors, after an online handoff retires it.
+enum SnapshotOwner<'a> {
+    Borrowed(&'a CheckpointStore),
+    Owned(Arc<CheckpointStore>),
+}
+
+impl std::ops::Deref for SnapshotOwner<'_> {
+    type Target = CheckpointStore;
+
+    fn deref(&self) -> &CheckpointStore {
+        match self {
+            Self::Borrowed(store) => store,
+            Self::Owned(store) => store,
+        }
+    }
 }
 
 pub(super) type SnapshotRegistry = Vec<Weak<RwLock<SnapshotData>>>;
@@ -296,7 +314,47 @@ impl CheckpointSnapshot<'_> {
         self.state
             .write()
             .unwrap_or_else(|poison| poison.into_inner())
-            .release(self.store, SnapshotStatus::Cancelled);
+            .release(&self.store, SnapshotStatus::Cancelled);
+    }
+}
+
+impl CheckpointSnapshot<'_> {
+    /// Converts a view captured from `store` into one that owns the store.
+    pub(super) fn into_owned(mut self, store: Arc<CheckpointStore>) -> CheckpointSnapshot<'static> {
+        assert!(
+            std::ptr::eq::<CheckpointStore>(&*self.store, &*store),
+            "snapshot ownership requires its capturing store"
+        );
+        // Leave an inert state behind so dropping the borrowed form releases
+        // nothing; the owned form cancels the captured state when dropped.
+        let state = std::mem::replace(
+            &mut self.state,
+            Arc::new(RwLock::new(SnapshotData {
+                view: None,
+                blocks: 0,
+                keys: 0,
+                key_bytes: 0,
+                deadline: None,
+                status: SnapshotStatus::Cancelled,
+            })),
+        );
+        drop(self);
+        CheckpointSnapshot {
+            store: SnapshotOwner::Owned(store),
+            state,
+        }
+    }
+
+    /// Runs `inspect` on the captured view and its overlay key bytes.
+    pub(super) fn with_captured<T>(
+        &self,
+        inspect: impl FnOnce(&RecoveredCheckpointView, usize) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let data = self.view()?;
+        inspect(
+            data.view.as_ref().expect("active snapshot has a view"),
+            data.key_bytes,
+        )
     }
 }
 
@@ -429,7 +487,7 @@ impl CheckpointStore {
             tail_operations: state.view.tail_operations,
         };
         let snapshot = CheckpointSnapshot {
-            store: self,
+            store: SnapshotOwner::Borrowed(self),
             state: Arc::new(RwLock::new(SnapshotData {
                 view: Some(view),
                 blocks,

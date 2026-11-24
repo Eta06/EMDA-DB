@@ -73,6 +73,10 @@ jobs:
           record_benchmark drop-format-compat-probe-create cargo +stable run --release --locked --example drop_format_compat_probe -- create "$RUNNER_TEMP/drop-format-probe"
           record_benchmark drop-format-compat-probe-resume cargo +stable run --release --locked --example drop_format_compat_probe -- resume "$RUNNER_TEMP/drop-format-probe"
           record_benchmark online-reclaim-smoke python3 scripts/online_reclaim_compare.py --directory "$RUNNER_TEMP" --binary target/release/examples/online_reclaim_bench --output "$RUNNER_TEMP/online-reclaim-smoke.json" --keys 16 --rounds 2
+          cargo +stable build --release --locked --example online_checkpoint_reclaim_bench
+          for trial in 1 2 3; do
+            record_benchmark "online-checkpoint-reclaim-$trial" /usr/bin/time -v target/release/examples/online_checkpoint_reclaim_bench "$RUNNER_TEMP" 200000
+          done
           record_benchmark document-planner-smoke python3 scripts/document_scale_compare.py --compare-plans --directory "$RUNNER_TEMP" --binary target/release/examples/document_bench --baseline-binary target/release/examples/document_bench --output "$RUNNER_TEMP/document-planner-smoke.json" --sizes 5 --rounds 2 --cycles 3
           record_benchmark kv-bench-prototype-64b cargo +stable run --release --locked --example kv_bench -- prototype 2 20 16 50 "$RUNNER_TEMP"
           record_benchmark kv-bench-prototype-key-byte-limit-64b cargo +stable run --release --locked --example kv_bench -- prototype-key-byte-limit 2 20 16 50 "$RUNNER_TEMP"

@@ -4,6 +4,14 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `OnlineCheckpointStore` for managed checkpoint-backed stores. It
+  compacts while callbacks continue, catches up acknowledged writes,
+  publishes a verified replacement with its own checkpoint and managed
+  selection by atomic exchange, and can then reclaim the previous
+  generation. Owned snapshots keep reading a reclaimed generation until
+  dropped. Scoped retired cleanup resumes interrupted checkpoint-store
+  retirement, including a partly removed automatic checkpoint root.
+
 - Write and synchronize the bounded initial snapshot for online compaction
   before reopening the private candidate for catch-up.
 

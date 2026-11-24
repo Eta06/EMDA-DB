@@ -139,6 +139,52 @@ pub(crate) fn compact_checkpoint_with_hooks(
     before_publish: impl FnOnce() -> io::Result<()>,
     after_copy: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
+    compact_checkpoint_copy(
+        source,
+        view,
+        expected_count,
+        target_path,
+        (sync_parent, before_publish, after_copy),
+        true,
+    )
+}
+
+/// Copies a captured view while the source may still accept commits. A
+/// concurrent commit can advance the source witness, so the caller must
+/// verify it later while excluding writers.
+pub(crate) fn compact_checkpoint_concurrent(
+    source: &Log,
+    view: &RecoveredCheckpointView,
+    expected_count: u64,
+    target_path: (&Path, CheckpointCopyOptions),
+    before_publish: impl FnOnce() -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
+    compact_checkpoint_copy(
+        source,
+        view,
+        expected_count,
+        target_path,
+        (
+            crate::directory::sync_existing,
+            before_publish,
+            |_: &Path| Ok(()),
+        ),
+        false,
+    )
+}
+
+fn compact_checkpoint_copy(
+    source: &Log,
+    view: &RecoveredCheckpointView,
+    expected_count: u64,
+    target_path: (&Path, CheckpointCopyOptions),
+    (sync_parent, before_publish, after_copy): (
+        impl FnOnce(&Path) -> io::Result<()>,
+        impl FnOnce() -> io::Result<()>,
+        impl FnOnce(&Path) -> io::Result<()>,
+    ),
+    verify_source_witness: bool,
+) -> io::Result<[u8; 32]> {
     let (destination, mut options) = target_path;
     let parent = backup::parent_directory(destination)?;
     let mut staging = crate::staging::Stage::directory(parent)?;
@@ -197,7 +243,9 @@ pub(crate) fn compact_checkpoint_with_hooks(
         },
     )?;
     target.verify_witness()?;
-    source.verify_witness()?;
+    if verify_source_witness {
+        source.verify_witness()?;
+    }
     drop(target);
     lock.release()?;
     File::open(staging.path())?.sync_all()?;

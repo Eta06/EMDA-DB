@@ -817,6 +817,13 @@ enum RetiredRemovalPoint {
     StageDirectory,
 }
 
+const AUTOMATIC_ROOT: &str = ".emda-auto-checkpoints-v1";
+
+const RETIRED_CHECKPOINT_FILES: [&str; 2] = [
+    "checkpoint.selection",
+    crate::store::COMPACTED_CHECKPOINT_FILE,
+];
+
 // Keep the lock until the log and witness are unlinked. This makes cleanup
 // resumable after a process interruption while preserving unexpected entries.
 fn remove_retired_stage(
@@ -826,6 +833,19 @@ fn remove_retired_stage(
 ) -> io::Result<()> {
     let retired = stage.join("retired");
     if retired.exists() {
+        if kind == Kind::Retired {
+            // Checkpoint metadata of a retired checkpoint-backed store.
+            // Recovery of the replacement never reads it. The caller has
+            // validated the automatic root layout under the stage lock.
+            crate::checkpoint_store::automatic::remove_retired_root(&retired)?;
+            for name in RETIRED_CHECKPOINT_FILES {
+                match fs::remove_file(retired.join(name)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         for (name, point) in [
             ("base", RetiredRemovalPoint::Base),
             ("records.log", RetiredRemovalPoint::Records),
@@ -885,11 +905,25 @@ fn lock_safe_retired_payload(
     let known: &[_] = if kind == Kind::Retained {
         &["base", "records.log", "commit.state", "store.lock"]
     } else {
-        &["records.log", "commit.state", "store.lock"]
+        &[
+            RETIRED_CHECKPOINT_FILES[0],
+            RETIRED_CHECKPOINT_FILES[1],
+            "records.log",
+            "commit.state",
+            "store.lock",
+        ]
     };
     for entry in fs::read_dir(&retired)? {
         let entry = entry?;
         let name = entry.file_name();
+        if kind == Kind::Retired && name == AUTOMATIC_ROOT {
+            // Fail closed unless the directory has only the owned layout.
+            if !crate::checkpoint_store::automatic::retired_root_is_known(&retired)? {
+                return Ok(None);
+            }
+            has_other = true;
+            continue;
+        }
         if !known.iter().any(|known| name == *known) || !entry.file_type()?.is_file() {
             return Ok(None);
         }

@@ -20,6 +20,78 @@ pub(super) fn root(store: &Path) -> PathBuf {
     store.join(DIRECTORY)
 }
 
+fn remove_if_present(path: &Path) -> io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Reports whether a retired store's automatic checkpoint root is absent or
+/// contains only (a subset of) the owned layout: the root marker and both
+/// slot directories, each holding only its marker and checkpoint index.
+/// Partly removed layouts are accepted so an interrupted retirement can
+/// resume. Any other entry or file type returns `false`.
+pub(crate) fn retired_root_is_known(store: &Path) -> io::Result<bool> {
+    let root = root(store);
+    match fs::symlink_metadata(&root) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error),
+        Ok(metadata) if !metadata.is_dir() => return Ok(false),
+        Ok(_) => {}
+    }
+    for entry in fs::read_dir(&root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let kind = entry.file_type()?;
+        if name == OsStr::new(OWNER) && kind.is_file() {
+            continue;
+        }
+        if !SLOTS.iter().any(|slot| name == OsStr::new(slot)) || !kind.is_dir() {
+            return Ok(false);
+        }
+        for inner in fs::read_dir(entry.path())? {
+            let inner = inner?;
+            let inner_name = inner.file_name();
+            if !(inner_name == OsStr::new(OWNER) || inner_name == OsStr::new(INDEX))
+                || !inner.file_type()?.is_file()
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Removes the automatic checkpoint root of a retired store that has already
+/// been moved under a private owned stage. The whole layout is checked before
+/// any removal; an unknown entry is preserved and returned as an error.
+/// Removal is resumable after interruption at any step.
+pub(crate) fn remove_retired_root(store: &Path) -> io::Result<()> {
+    if !retired_root_is_known(store)? {
+        return Err(invalid(
+            "retired automatic checkpoint root has an unknown entry",
+        ));
+    }
+    let root = root(store);
+    if !root.exists() {
+        return Ok(());
+    }
+    for slot in SLOTS {
+        let slot = root.join(slot);
+        if slot.exists() {
+            remove_if_present(&slot.join(INDEX))?;
+            remove_if_present(&slot.join(OWNER))?;
+            File::open(&slot)?.sync_all()?;
+            fs::remove_dir(&slot)?;
+        }
+    }
+    remove_if_present(&root.join(OWNER))?;
+    File::open(&root)?.sync_all()?;
+    fs::remove_dir(&root)?;
+    File::open(store)?.sync_all()
+}
+
 pub(super) fn indexes(root: &Path) -> [PathBuf; 2] {
     SLOTS.map(|slot| root.join(slot).join(INDEX))
 }

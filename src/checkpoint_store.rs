@@ -22,10 +22,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
-mod automatic;
+pub(crate) mod automatic;
 mod commit;
 use commit::Mutation;
 mod compact_exchange;
+mod online;
+pub use online::{
+    OnlineCheckpointCompactionOptions, OnlineCheckpointSnapshot, OnlineCheckpointStore,
+};
 mod read_set;
 mod rebuild;
 mod rebuild_spill;
@@ -174,8 +178,10 @@ pub struct CheckpointStore {
     pub(crate) direct_reads: crate::direct_read::DirectReads,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: crate::store::TransactionQueue,
-    snapshot_budget: Mutex<snapshot::SnapshotBudget>,
-    snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
+    // Shared with later generations of an online checkpoint store, so owned
+    // snapshots of a retired generation keep counting against one budget.
+    snapshot_budget: Arc<Mutex<snapshot::SnapshotBudget>>,
+    snapshot_registry: Arc<Mutex<snapshot::SnapshotRegistry>>,
     pub(crate) snapshot_reaper_active: AtomicBool,
     checkpoint_worker: AtomicBool,
     path: PathBuf,
@@ -735,8 +741,8 @@ impl CheckpointStore {
             direct_reads: crate::direct_read::DirectReads::default(),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: crate::store::TransactionQueue::new(),
-            snapshot_budget: Mutex::new(snapshot::SnapshotBudget::default()),
-            snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::new()),
+            snapshot_budget: Arc::new(Mutex::new(snapshot::SnapshotBudget::default())),
+            snapshot_registry: Arc::new(Mutex::new(snapshot::SnapshotRegistry::new())),
             snapshot_reaper_active: AtomicBool::new(false),
             checkpoint_worker: AtomicBool::new(false),
             path,
@@ -1491,9 +1497,32 @@ impl CheckpointStore {
         &self,
         state: &State,
     ) -> io::Result<(u64, usize, crate::checkpoint::VerifiedLog)> {
-        self.log.verify_witness()?;
-        let view = &state.view;
         let boundary = self.log.len()?;
+        let (count, peak, log_hasher) =
+            self.verify_view_at(&state.view, state.overlay_key_bytes, boundary, true)?;
+        Ok((
+            count,
+            peak,
+            crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher),
+        ))
+    }
+
+    /// Verifies a captured view against the log prefix ending at `boundary`.
+    /// The prefix is immutable, so later appends do not affect this check.
+    /// Returns the live key count, historical peak and the prefix digest state.
+    /// Without the writer gate, concurrent commits can advance the witness, so
+    /// callers outside the gate skip the witness checks and repeat them later
+    /// while excluding writers.
+    fn verify_view_at(
+        &self,
+        view: &RecoveredCheckpointView,
+        overlay_key_bytes: usize,
+        boundary: u64,
+        check_witness: bool,
+    ) -> io::Result<(u64, usize, sha2::Sha256)> {
+        if check_witness {
+            self.log.verify_witness()?;
+        }
         if boundary.checked_sub(view.base.log_boundary()) != Some(view.tail_bytes) {
             return Err(record::invalid_data("checkpoint suffix length changed"));
         }
@@ -1510,7 +1539,7 @@ impl CheckpointStore {
                 .is_some_and(|limit| view.tail_operations > limit)
             || view.overlay.len() > self.max_tail_keys
             || touched_bytes > self.max_tail_key_bytes
-            || touched_bytes != state.overlay_key_bytes
+            || touched_bytes != overlay_key_bytes
         {
             return Err(record::invalid_data(
                 "checkpoint overlay exceeds its limits",
@@ -1597,9 +1626,10 @@ impl CheckpointStore {
                 "checkpoint overlay does not match verified suffix",
             ));
         }
-        self.log.verify_witness()?;
-        let verified_log = crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher);
-        Ok((current as u64, peak, verified_log))
+        if check_witness {
+            self.log.verify_witness()?;
+        }
+        Ok((current as u64, peak, log_hasher))
     }
 
     /// Replaces a key and synchronizes the mutation before returning.
