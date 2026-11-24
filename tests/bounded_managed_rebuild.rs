@@ -1152,6 +1152,93 @@ fn final_spill_merge_fits_without_a_second_materialized_copy() {
 }
 
 #[test]
+fn spill_read_cap_rejects_before_adoption_and_accepts_exact_reads() {
+    for v2 in [true, false] {
+        for full in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let base = root.path().join("base");
+            let destination = root.path().join("rebuilt");
+            let reference = root.path().join("reference");
+            let store = open_store(&path, v2);
+            let base_digest = store.checkpoint_to(&base).unwrap();
+            let witness = witness_bytes(&path);
+            store.put(b"a", b"one").unwrap();
+            store.put(b"b", b"two").unwrap();
+            let expected = store.checkpoint_to(&reference).unwrap();
+            drop(store);
+            restore_witness(&path, &witness);
+            let log = fs::read(path.join("records.log")).unwrap();
+            #[cfg(target_os = "linux")]
+            assert_eq!(&log[..8], if v2 { b"EMDALOG2" } else { b"EMDALOG3" });
+
+            let rebuild = |max_spill_read_bytes| {
+                if full {
+                    CheckpointStore::rebuild_managed_selection_full_bounded_with_spill_read_limit(
+                        &path,
+                        &destination,
+                        BoundedFullRebuildLimits {
+                            max_log_bytes: log.len() as u64,
+                            max_operations: 2,
+                            max_live_keys: 2,
+                            max_live_key_bytes: 2,
+                            max_chunk_keys: 1,
+                            max_chunk_key_bytes: 1,
+                            max_spill_bytes: 100,
+                            max_merge_fan_in: 2,
+                        },
+                        CheckpointViewLimits::default(),
+                        max_spill_read_bytes,
+                    )
+                } else {
+                    CheckpointStore::rebuild_managed_selection_bounded_with_spill_read_limit(
+                        &path,
+                        &destination,
+                        &base,
+                        &base_digest,
+                        BoundedSuffixRebuildLimits {
+                            max_log_bytes: log.len() as u64,
+                            max_operations: 2,
+                            max_chunk_keys: 1,
+                            max_chunk_key_bytes: 1,
+                            max_spill_bytes: 100,
+                            max_merge_fan_in: 2,
+                            base_checkpoint: CheckpointViewLimits::default(),
+                            output_checkpoint: CheckpointViewLimits::default(),
+                        },
+                        Some(2),
+                        max_spill_read_bytes,
+                    )
+                }
+            };
+            // One run with an in-memory final chunk. Reads cover the offset
+            // copy and writer hash, cursor open, entry and offset prefetch,
+            // then the trailer and hash at exhaustion.
+            let exact = (8 + 60) + (28 + 32 + 60) + (8 + 24) + (32 + 60);
+            for cap in [0, exact - 1] {
+                let error = rebuild(cap).unwrap_err();
+                assert!(matches!(error, ManagedRebuildFailure::NotPublished(error)
+                    if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "rebuild spill read byte limit exceeded"));
+                assert_eq!(witness_bytes(&path), witness);
+                assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+                assert!(!destination.exists());
+                assert!(!path.join("checkpoint.selection").exists());
+                assert_no_stages(&path);
+                assert_no_stages(root.path());
+            }
+            assert_eq!(rebuild(exact).unwrap(), expected);
+            assert_eq!(
+                fs::read(&destination).unwrap(),
+                fs::read(&reference).unwrap()
+            );
+            assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+            assert_ne!(witness_bytes(&path), witness);
+        }
+    }
+}
+
+#[test]
 fn torn_tail_after_complete_record_preserves_existing_selection_and_can_retry() {
     for v2 in [true, false] {
         check_torn_tail(v2, false);

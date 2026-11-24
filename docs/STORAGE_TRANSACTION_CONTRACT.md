@@ -385,6 +385,12 @@ the document view.
   The newest replay chunk can use one final merge input in memory. If the
   remaining runs leave no room, the rebuild can spill the chunk and use
   the regular merge path.
+- Both bounded rebuild paths offer an optional inclusive spill-read ceiling
+  separate from the peak spill disk quota. It charges logical read requests
+  to temporary runs and offset sidecars, including read-ahead and integrity
+  passes. It excludes source-log and checkpoint reads, filesystem metadata,
+  and physical I/O retries. Exceeding it returns `NotPublished(InvalidInput)`
+  before tail adoption, checkpoint publication, or selection publication.
 - Bounded full-log and trusted-base rebuilds check for an occupied checkpoint
   destination under the store lock before replay. With a pending tail they
   check again after staged verification, immediately before advancing the

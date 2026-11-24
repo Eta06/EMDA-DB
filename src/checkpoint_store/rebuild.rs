@@ -117,6 +117,43 @@ impl CheckpointStore {
         limits: BoundedFullRebuildLimits,
         checkpoint_limits: crate::CheckpointViewLimits,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_full_with_limits(
+            path.as_ref(),
+            destination.as_ref(),
+            limits,
+            checkpoint_limits,
+            None,
+        )
+    }
+
+    /// Rebuild from the full log with an inclusive cumulative spill-read cap.
+    /// The cap counts logical byte requests to temporary run and offset files,
+    /// including read-ahead and repeated integrity reads. It excludes source
+    /// and checkpoint reads, filesystem metadata, and physical I/O retries.
+    /// Exhaustion returns `NotPublished(InvalidInput)` before tail adoption.
+    pub fn rebuild_managed_selection_full_bounded_with_spill_read_limit(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: BoundedFullRebuildLimits,
+        checkpoint_limits: crate::CheckpointViewLimits,
+        max_spill_read_bytes: u64,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_full_with_limits(
+            path.as_ref(),
+            destination.as_ref(),
+            limits,
+            checkpoint_limits,
+            Some(max_spill_read_bytes),
+        )
+    }
+
+    fn rebuild_full_with_limits(
+        path: &Path,
+        destination: &Path,
+        limits: BoundedFullRebuildLimits,
+        checkpoint_limits: crate::CheckpointViewLimits,
+        max_spill_read_bytes: Option<u64>,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
         crate::publication_outcome::track_managed_rebuild(|tracker| {
             checkpoint_limits.validate()?;
             let mut spill = SpillLimits::new(
@@ -126,19 +163,13 @@ impl CheckpointStore {
                 limits.max_merge_fan_in,
                 limits.max_operations,
             )?;
+            spill.max_spill_read_bytes = max_spill_read_bytes;
             spill.max_log_bytes = Some(limits.max_log_bytes);
             spill.max_live_keys = Some(limits.max_live_keys);
             spill.max_live_key_bytes = Some(limits.max_live_key_bytes);
             spill.checkpoint_limits = Some(checkpoint_limits);
             with_standard_hooks(|hooks| {
-                Self::rebuild_spilling(
-                    path.as_ref(),
-                    destination.as_ref(),
-                    None,
-                    spill,
-                    Some(tracker),
-                    hooks,
-                )
+                Self::rebuild_spilling(path, destination, None, spill, Some(tracker), hooks)
             })
         })
     }
@@ -546,6 +577,7 @@ impl CheckpointStore {
             trusted_digest,
             limits,
             None,
+            None,
         )
     }
 
@@ -572,6 +604,33 @@ impl CheckpointStore {
             trusted_digest,
             limits,
             Some(max_live_keys),
+            None,
+        )
+    }
+
+    /// Rebuild from a trusted checkpoint and suffix with an inclusive
+    /// cumulative cap on logical reads of temporary run and offset files.
+    /// The cap includes read-ahead and repeated integrity reads, and excludes
+    /// source and checkpoint reads, filesystem metadata, and physical I/O
+    /// retries. Exhaustion returns `NotPublished(InvalidInput)` before tail
+    /// adoption. An optional historical live-key ceiling also applies.
+    pub fn rebuild_managed_selection_bounded_with_spill_read_limit(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        base_checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: BoundedSuffixRebuildLimits,
+        max_live_keys: Option<usize>,
+        max_spill_read_bytes: u64,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_bounded_with_limits(
+            path.as_ref(),
+            destination.as_ref(),
+            base_checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            max_live_keys,
+            Some(max_spill_read_bytes),
         )
     }
 
@@ -582,6 +641,7 @@ impl CheckpointStore {
         trusted_digest: &[u8; 32],
         limits: BoundedSuffixRebuildLimits,
         max_live_keys: Option<usize>,
+        max_spill_read_bytes: Option<u64>,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
         crate::publication_outcome::track_managed_rebuild(|tracker| {
             limits.base_checkpoint.validate()?;
@@ -593,6 +653,7 @@ impl CheckpointStore {
                 limits.max_merge_fan_in,
                 limits.max_operations,
             )?;
+            spill.max_spill_read_bytes = max_spill_read_bytes;
             spill.max_log_bytes = Some(limits.max_log_bytes);
             spill.max_live_keys = max_live_keys;
             spill.base_checkpoint_limits = limits.base_checkpoint;

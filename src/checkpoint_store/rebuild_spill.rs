@@ -117,6 +117,7 @@ pub(super) struct SpillLimits {
     pub(super) max_chunk_keys: usize,
     pub(super) max_chunk_key_bytes: usize,
     pub(super) max_spill_bytes: u64,
+    pub(super) max_spill_read_bytes: Option<u64>,
     pub(super) max_merge_fan_in: usize,
     pub(super) max_operations: u64,
     pub(super) max_log_bytes: Option<u64>,
@@ -138,6 +139,7 @@ impl SpillLimits {
             max_chunk_keys,
             max_chunk_key_bytes,
             max_spill_bytes,
+            max_spill_read_bytes: None,
             max_merge_fan_in,
             max_operations,
             max_log_bytes: None,
@@ -183,18 +185,41 @@ struct RunMeta {
     last_key: Vec<u8>,
 }
 
-struct FdInner {
+struct SpillResources {
     open: Cell<usize>,
     peak: Cell<usize>,
     limit: usize,
+    read_remaining: Cell<Option<u64>>,
+}
+
+impl SpillResources {
+    fn charge_read(&self, bytes: u64) -> io::Result<()> {
+        if let Some(remaining) = self.read_remaining.get() {
+            let remaining = remaining
+                .checked_sub(bytes)
+                .ok_or_else(|| invalid_input("rebuild spill read byte limit exceeded"))?;
+            self.read_remaining.set(Some(remaining));
+        }
+        Ok(())
+    }
+
+    fn read_exact_at(&self, file: &File, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        self.charge_read(bytes.len() as u64)?;
+        file.read_exact_at(bytes, offset)
+    }
+
+    fn hash_prefix(&self, file: &File, len: u64) -> io::Result<[u8; 32]> {
+        self.charge_read(len)?;
+        hash_prefix(file, len)
+    }
 }
 
 struct FdPermit {
-    inner: Rc<FdInner>,
+    inner: Rc<SpillResources>,
 }
 
 impl FdPermit {
-    fn acquire(inner: &Rc<FdInner>) -> io::Result<Self> {
+    fn acquire(inner: &Rc<SpillResources>) -> io::Result<Self> {
         let open = inner.open.get();
         if open >= inner.limit {
             return Err(io::Error::other(
@@ -225,7 +250,7 @@ enum Find {
 
 struct RunCursor {
     file: File,
-    _permit: FdPermit,
+    permit: FdPermit,
     identity: [u8; 32],
     count: u64,
     index: u64,
@@ -249,7 +274,14 @@ struct ReadAhead {
 }
 
 impl ReadAhead {
-    fn read(&mut self, file: &File, start: u64, size: usize, end: u64) -> io::Result<&[u8]> {
+    fn read(
+        &mut self,
+        file: &File,
+        fd: &SpillResources,
+        start: u64,
+        size: usize,
+        end: u64,
+    ) -> io::Result<&[u8]> {
         debug_assert!(size <= IO_BUFFER);
         let available = end
             .checked_sub(start)
@@ -263,6 +295,7 @@ impl ReadAhead {
             offset
         } else {
             let capacity = available.min(IO_BUFFER as u64) as usize;
+            fd.charge_read(capacity as u64)?;
             self.bytes.resize(capacity, 0);
             if let Err(error) = file.read_exact_at(&mut self.bytes, start) {
                 self.bytes.clear();
@@ -283,9 +316,10 @@ fn run_table_end(count: u64, table_at: u64) -> Option<u64> {
 }
 
 impl RunCursor {
-    fn open(fd: &Rc<FdInner>, run: &RunMeta, verify_hash: bool) -> io::Result<Self> {
+    fn open(fd: &Rc<SpillResources>, run: &RunMeta, verify_hash: bool) -> io::Result<Self> {
         let permit = FdPermit::acquire(fd)?;
         let file = File::open(&run.path)?;
+        fd.charge_read(HEADER_LEN)?;
         let (count, table_at, len) = read_header(&file)?;
         let expected_len = run_table_end(count, table_at);
         if count != run.entries || len != run.bytes || expected_len != Some(len) {
@@ -294,15 +328,15 @@ impl RunCursor {
             ));
         }
         let mut trailer = [0_u8; 32];
-        file.read_exact_at(&mut trailer, len - CHECKSUM_LEN)?;
+        fd.read_exact_at(&file, &mut trailer, len - CHECKSUM_LEN)?;
         if trailer != run.digest
-            || verify_hash && hash_prefix(&file, len - CHECKSUM_LEN)? != run.digest
+            || verify_hash && fd.hash_prefix(&file, len - CHECKSUM_LEN)? != run.digest
         {
             return Err(record::invalid_data("spill run checksum mismatch"));
         }
         Ok(Self {
             file,
-            _permit: permit,
+            permit,
             identity: run.identity,
             count,
             index: 0,
@@ -325,7 +359,7 @@ impl RunCursor {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let (key, state) = read_entry(
-                &self.file,
+                |bytes, offset| self.permit.inner.read_exact_at(&self.file, bytes, offset),
                 self.entry_range(mid)?,
                 self.table_at,
                 &self.identity,
@@ -358,10 +392,11 @@ impl RunCursor {
             }
             if let Some(scan) = &self.sequential {
                 let mut trailer = [0_u8; 32];
-                self.file.read_exact_at(&mut trailer, scan.end)?;
+                let fd = &self.permit.inner;
+                fd.read_exact_at(&self.file, &mut trailer, scan.end)?;
                 if self.file.metadata()?.len() != scan.end + CHECKSUM_LEN
                     || trailer != scan.digest
-                    || hash_prefix(&self.file, scan.end)? != scan.digest
+                    || fd.hash_prefix(&self.file, scan.end)? != scan.digest
                 {
                     return Err(record::invalid_data("spill run checksum mismatch"));
                 }
@@ -373,6 +408,7 @@ impl RunCursor {
             let last = self.index + 1 == self.count;
             let bytes = scan.offsets.read(
                 &self.file,
+                &self.permit.inner,
                 self.table_at + self.index * OFFSET_LEN,
                 if last { 8 } else { 16 },
                 scan.end,
@@ -388,9 +424,13 @@ impl RunCursor {
         let mut buffer;
         let (key, state) = if let Some(scan) = &mut self.sequential {
             let span = entry_span(&range, self.table_at)?;
-            let bytes = scan
-                .payload
-                .read(&self.file, range.start, span, self.table_at)?;
+            let bytes = scan.payload.read(
+                &self.file,
+                &self.permit.inner,
+                range.start,
+                span,
+                self.table_at,
+            )?;
             decode_entry(
                 bytes,
                 range.start,
@@ -402,7 +442,7 @@ impl RunCursor {
         } else {
             buffer = [0_u8; MAX_ENTRY_ON_DISK];
             read_entry(
-                &self.file,
+                |bytes, offset| self.permit.inner.read_exact_at(&self.file, bytes, offset),
                 range,
                 self.table_at,
                 &self.identity,
@@ -430,8 +470,11 @@ impl RunCursor {
         let mut bytes = [0_u8; 16];
         let last = index + 1 == self.count;
         let size = if last { 8 } else { 16 };
-        self.file
-            .read_exact_at(&mut bytes[..size], self.table_at + index * OFFSET_LEN)?;
+        self.permit.inner.read_exact_at(
+            &self.file,
+            &mut bytes[..size],
+            self.table_at + index * OFFSET_LEN,
+        )?;
         Ok(decode_entry_range(&bytes[..size], self.table_at))
     }
 }
@@ -448,9 +491,9 @@ fn decode_entry_range(bytes: &[u8], table_at: u64) -> Range<u64> {
 
 struct RunWriter {
     file: io::BufWriter<File>,
-    _permit: FdPermit,
+    permit: FdPermit,
     offsets: io::BufWriter<File>,
-    _offset_permit: FdPermit,
+    offset_permit: FdPermit,
     hasher: Sha256,
     cursor: u64,
     count: u64,
@@ -472,7 +515,7 @@ impl RunWriter {
     fn create(
         directory: &Path,
         id: u64,
-        fd: &Rc<FdInner>,
+        fd: &Rc<SpillResources>,
         expected_count: u64,
         expected_key_bytes: u64,
     ) -> io::Result<Self> {
@@ -508,9 +551,9 @@ impl RunWriter {
             .ok_or_else(|| io::Error::other("spill size overflow"))?;
         let mut writer = Self {
             file: io::BufWriter::with_capacity(IO_BUFFER, file),
-            _permit: permit,
+            permit,
             offsets: io::BufWriter::with_capacity(IO_BUFFER, offsets),
-            _offset_permit: offset_permit,
+            offset_permit,
             hasher: Sha256::new(),
             cursor: 0,
             count: 0,
@@ -612,6 +655,7 @@ impl RunWriter {
         let mut remaining = table_bytes;
         while remaining != 0 {
             let count = remaining.min(buffer.len() as u64) as usize;
+            self.offset_permit.inner.charge_read(count as u64)?;
             self.offsets.get_mut().read_exact(&mut buffer[..count])?;
             self.write_hashed(&buffer[..count])?;
             remaining -= count as u64;
@@ -628,7 +672,7 @@ impl RunWriter {
         self.file.write_all(&digest)?;
         self.file.flush()?;
         let file = self.file.get_mut();
-        let actual = hash_prefix(file, self.cursor)?;
+        let actual = self.permit.inner.hash_prefix(file, self.cursor)?;
         if actual != digest {
             return Err(record::invalid_data("spill run checksum mismatch"));
         }
@@ -688,7 +732,7 @@ enum Emit {
 
 pub(super) struct SpillSession {
     limits: SpillLimits,
-    fd: Rc<FdInner>,
+    fd: Rc<SpillResources>,
     runs: Vec<RunMeta>,
     dirty: BTreeMap<Vec<u8>, Option<ValueLocation>>,
     chunk_key_bytes: usize,
@@ -721,13 +765,14 @@ impl SpillSession {
             return Err(invalid_input("rebuild historical live key limit exceeded"));
         }
         Ok(Self {
-            fd: Rc::new(FdInner {
+            fd: Rc::new(SpillResources {
                 open: Cell::new(0),
                 peak: Cell::new(0),
                 limit: limits
                     .max_merge_fan_in
                     .checked_add(2)
                     .ok_or_else(|| io::Error::other("rebuild fan-in overflow"))?,
+                read_remaining: Cell::new(limits.max_spill_read_bytes),
             }),
             limits,
             runs: Vec::new(),
@@ -1373,7 +1418,7 @@ fn entry_checksum(
 }
 
 fn read_entry<'a>(
-    file: &File,
+    read: impl FnOnce(&mut [u8], u64) -> io::Result<()>,
     range: Range<u64>,
     table_at: u64,
     identity: &[u8; 32],
@@ -1383,7 +1428,7 @@ fn read_entry<'a>(
 ) -> io::Result<(&'a [u8], Option<ValueLocation>)> {
     let span = entry_span(&range, table_at)?;
     // Read the complete entry before interpreting its fields.
-    file.read_exact_at(&mut buffer[..span], range.start)?;
+    read(&mut buffer[..span], range.start)?;
     decode_entry(
         &buffer[..span],
         range.start,
@@ -1724,7 +1769,9 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(peak, 2);
         let directory = tempfile::tempdir().unwrap();
-        let mut session = SpillSession::create(directory.path(), limits(8, 0, 10), 0, 0).unwrap();
+        let mut limits = limits(8, 0, 10);
+        limits.max_spill_read_bytes = Some(0);
+        let mut session = SpillSession::create(directory.path(), limits, 0, 0).unwrap();
         for (key, location) in &ops {
             session.push(key, *location, |_| Ok(None)).unwrap();
         }
@@ -1872,10 +1919,11 @@ mod tests {
     #[test]
     fn oversized_offset_sidecar_cannot_extend_the_staged_run() {
         let directory = tempfile::tempdir().unwrap();
-        let fd = Rc::new(FdInner {
+        let fd = Rc::new(SpillResources {
             open: Cell::new(0),
             peak: Cell::new(0),
             limit: 2,
+            read_remaining: Cell::new(None),
         });
         let mut writer = RunWriter::create(directory.path(), 1, &fd, 1, 1).unwrap();
         writer.write_entry(b"a", Some(loc(100))).unwrap();
@@ -1921,6 +1969,22 @@ mod tests {
     }
 
     #[test]
+    fn spill_read_cap_counts_positional_probes_across_cursors() {
+        let (session, _directory, _) = finished_single_run();
+        // The last entry needs one offset, following the run header and trailer.
+        let probe_bytes = HEADER_LEN + CHECKSUM_LEN + OFFSET_LEN + 24;
+        session.fd.read_remaining.set(Some(2 * probe_bytes - 1));
+        assert!(matches!(
+            session.lookup_persisted(b"b").unwrap(),
+            Find::Found(Some(location)) if location == loc(200)
+        ));
+        assert_eq!(session.fd.read_remaining.get(), Some(probe_bytes - 1));
+        let error = must_err(session.lookup_persisted(b"b"));
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "rebuild spill read byte limit exceeded");
+    }
+
+    #[test]
     fn buffered_scan_rejects_changes_to_prefetched_entries_or_offsets_at_end() {
         for change_offset in [false, true] {
             let (session, _directory, path) = finished_single_run();
@@ -1959,10 +2023,11 @@ mod tests {
 
         for corrupt_offsets in [false, true] {
             let directory = tempfile::tempdir().unwrap();
-            let fd = Rc::new(FdInner {
+            let fd = Rc::new(SpillResources {
                 open: Cell::new(0),
                 peak: Cell::new(0),
                 limit: 2,
+                read_remaining: Cell::new(None),
             });
             let mut writer =
                 RunWriter::create(directory.path(), 1, &fd, count, count * key_len).unwrap();
@@ -2715,7 +2780,7 @@ mod tests {
         let (session, directory, path) = finished_single_run();
         let file = File::open(&path).unwrap();
         let error = match read_entry(
-            &file,
+            |bytes, offset| file.read_exact_at(bytes, offset),
             HEADER_LEN - 1..HEADER_LEN + 32,
             HEADER_LEN + 32,
             &[0; 32],

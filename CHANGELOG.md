@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an opt-in cumulative spill-read limit to bounded full-log and
+  trusted-checkpoint rebuilds.
+
 - Keep the newest replay chunk in memory during bounded rebuild emission
   when it fits the final merge fan-in.
 
