@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Optionally limit the logical log bytes pinned by retired online snapshots.
+  Manual and scheduled handoffs defer before publication if the limit would be exceeded.
+
 - Add bounded integer and UTF-8 string field rules for document schemas.
   Collections using the rules export version 2 archives.
 

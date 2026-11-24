@@ -519,6 +519,13 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   Deadline-based owned snapshots can release an unlinked generation on a
   later capture, explicit idle reaping or an optional worker that follows
   the online handle. All three skip busy views.
+  A per-handle logical byte limit can defer manual and scheduled handoffs
+  before publication when owned snapshots would retain too much retired
+  history. The limit counts a generation once, follows subsequent handoffs,
+  and releases its charge when the last view releases the generation.
+  Active log growth, named copies without snapshots, temporary files, and
+  filesystem allocation are outside this limit. Long-lived views can still
+  postpone compaction.
   The [paired macOS read comparison](../benchmarks/results/2026-11-24-online-read-admission/README.md)
   records the counter's steady-state throughput and its variability.
 - [x] Add per-open ordinary-store group-commit byte/record reservation limits and status, including live reconfiguration, rejection before submission and preservation across supported handoffs. [Fault, stress and performance evidence](GROUP_COMMIT_LIMITS_2026_11_05.md) records limitations and mixed measurements. These logical caps do not bound caller threads, other locks, checkpoint-store writes, process memory or project resources.

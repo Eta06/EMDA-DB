@@ -699,6 +699,7 @@ mod tests {
             .compact_and_reclaim_detailed(&previous, &Default::default())
             .unwrap();
         assert!(!previous.exists());
+        assert!(online.retired_snapshot_log_bytes().unwrap() > 0);
         online.with_store(|store| store.put(b"k", b"new")).unwrap();
         assert_eq!(
             snapshot.get(b"k").unwrap().as_deref(),
@@ -710,6 +711,7 @@ mod tests {
         assert_eq!(worker.stop().unwrap().reaped, 1);
         assert!(store.upgrade().is_none());
         assert!(log.upgrade().is_none());
+        assert_eq!(online.retired_snapshot_log_bytes().unwrap(), 0);
         assert_eq!(
             snapshot.get(b"k").unwrap_err().kind(),
             io::ErrorKind::TimedOut

@@ -1,6 +1,106 @@
 use super::*;
 
 #[test]
+fn retired_snapshot_log_limit_counts_generations_and_checks_the_final_boundary() {
+    let root = tempfile::tempdir().unwrap();
+    let (source, previous) = paths(root.path());
+    let store = OnlineStore::open(&source).unwrap();
+    store.with_store(|db| db.put(b"k", b"first")).unwrap();
+    let first_length = fs::metadata(source.join("records.log")).unwrap().len();
+    let mut first = store.snapshot(1, 1).unwrap();
+    let second = store.snapshot(1, 1).unwrap();
+    store
+        .set_retired_snapshot_log_limit(Some(first_length))
+        .unwrap();
+    let failure = store
+        .compact_reclaim_with_hooks_detailed(
+            &previous,
+            &Default::default(),
+            |point| {
+                if point == copy::Point::BeforeFinalBarrier {
+                    store.with_store(|db| db.put(b"k", b"later"))?;
+                }
+                Ok(())
+            },
+            crate::directory::sync_existing,
+            |_| Ok(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        failure,
+        OnlineReclaimFailure::Compaction(crate::OnlineHandoffFailure::NotPublished(error))
+            if is_retired_snapshot_limit(&error)
+    ));
+    assert!(!previous.exists());
+    assert_eq!(store.retired_snapshot_log_bytes().unwrap(), 0);
+
+    let grown_length = fs::metadata(source.join("records.log")).unwrap().len();
+    store
+        .set_retired_snapshot_log_limit(Some(grown_length))
+        .unwrap();
+    store
+        .compact_and_reclaim(&previous, &Default::default())
+        .unwrap();
+    assert_eq!(store.retired_snapshot_log_bytes().unwrap(), grown_length);
+    assert!(is_retired_snapshot_limit(
+        &store
+            .set_retired_snapshot_log_limit(Some(grown_length - 1))
+            .unwrap_err()
+    ));
+    first.cancel();
+    assert_eq!(store.retired_snapshot_log_bytes().unwrap(), grown_length);
+    assert_eq!(
+        second.as_snapshot().unwrap().get(b"k").unwrap(),
+        Some(b"first".to_vec())
+    );
+
+    let mut newest = None;
+    let active_length = fs::metadata(source.join("records.log")).unwrap().len();
+    store
+        .set_retired_snapshot_log_limit(Some(grown_length + active_length - 1))
+        .unwrap();
+    assert!(matches!(
+        store.compact_reclaim_with_hooks(
+            &previous,
+            &Default::default(),
+            |point| {
+                if point == copy::Point::BeforeFinalBarrier {
+                    newest = Some(store.snapshot(1, 1)?);
+                }
+                Ok(())
+            },
+            crate::directory::sync_existing,
+            |_| Ok(()),
+        ),
+        Err(OnlineReclaimError::Compaction(error)) if is_retired_snapshot_limit(&error)
+    ));
+    assert!(!previous.exists());
+    store
+        .set_retired_snapshot_log_limit(Some(grown_length + active_length))
+        .unwrap();
+    store
+        .compact_and_reclaim(&previous, &Default::default())
+        .unwrap();
+    assert_eq!(
+        store.retired_snapshot_log_bytes().unwrap(),
+        grown_length + active_length
+    );
+    drop(second);
+    assert_eq!(store.retired_snapshot_log_bytes().unwrap(), active_length);
+    let newest = newest.unwrap();
+    assert_eq!(
+        newest.as_snapshot().unwrap().get(b"k").unwrap(),
+        Some(b"later".to_vec())
+    );
+    drop(newest);
+    assert_eq!(store.retired_snapshot_log_bytes().unwrap(), 0);
+
+    drop(store);
+    let reopened = retry_lock(|| Store::open(&source)).unwrap();
+    assert_eq!(reopened.get(b"k").unwrap(), Some(b"later".to_vec()));
+}
+
+#[test]
 fn reads_continue_while_mutations_wait_and_the_new_previous_path_is_safe() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());

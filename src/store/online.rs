@@ -15,7 +15,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex, RwLock, TryLockError};
+use std::sync::{Arc, Mutex, RwLock, TryLockError, Weak};
 use std::time::Instant;
 
 // This private error identifies a lock conflict before compaction has done
@@ -37,6 +37,24 @@ fn is_maintenance_busy(error: &io::Error) -> bool {
         && error
             .get_ref()
             .is_some_and(|inner| inner.is::<MaintenanceBusy>())
+}
+
+#[derive(Debug)]
+struct RetiredSnapshotLimit;
+
+impl std::fmt::Display for RetiredSnapshotLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("retired snapshot log byte limit exceeded")
+    }
+}
+
+impl std::error::Error for RetiredSnapshotLimit {}
+
+fn is_retired_snapshot_limit(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        && error
+            .get_ref()
+            .is_some_and(|inner| inner.is::<RetiredSnapshotLimit>())
 }
 
 thread_local! { static ACTIVE_ACCESS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
@@ -78,6 +96,34 @@ impl Drop for Access {
 struct State {
     store: Arc<Store>,
     failed: bool,
+    retired: Vec<(Weak<Store>, u64)>,
+    retired_limit: Option<u64>,
+}
+
+impl State {
+    fn retired_bytes(&self) -> io::Result<u64> {
+        self.retired
+            .iter()
+            .filter(|(store, _)| store.strong_count() != 0)
+            .try_fold(0_u64, |total, (_, bytes)| {
+                total
+                    .checked_add(*bytes)
+                    .ok_or_else(|| io::Error::other("retired snapshot log byte count overflow"))
+            })
+    }
+
+    fn admit_retired_bytes(&self, bytes: u64) -> io::Result<()> {
+        if let Some(limit) = self.retired_limit {
+            let total = self.retired_bytes()?;
+            if total.checked_add(bytes).is_none_or(|total| total > limit) {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    RetiredSnapshotLimit,
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A guarded ordinary store that can prepare a compacted copy while callbacks
@@ -313,6 +359,8 @@ impl OnlineStore {
             state: RwLock::new(State {
                 store: Arc::new(store),
                 failed: false,
+                retired: Vec::new(),
+                retired_limit: None,
             }),
             maintenance: Mutex::new(()),
             reclamation_worker: AtomicBool::new(false),
@@ -363,6 +411,47 @@ impl OnlineStore {
     /// A busy view is skipped until a later reap, cancellation or drop.
     pub fn reap_expired_snapshots(&self) -> io::Result<usize> {
         self.with_store(Store::reap_expired_snapshots)
+    }
+
+    /// Sets an optional limit on logical log bytes pinned by owned snapshots
+    /// of retired generations. Each retained generation counts once, even if
+    /// several snapshots hold it. A handoff that would exceed this limit
+    /// returns `WouldBlock` before publishing the compacted sibling. It does
+    /// not cancel snapshots or reject ordinary writes. A reduction below the
+    /// currently pinned total is rejected and leaves the old limit in effect.
+    ///
+    /// The limit is local to this online handle and resets on reopen. It
+    /// excludes the active log, unpinned named copies, staging, and physical
+    /// filesystem allocation. The caller must not call this from a callback
+    /// using this handle.
+    pub fn set_retired_snapshot_log_limit(&self, limit: Option<u64>) -> io::Result<()> {
+        Access::check_not_active(self as *const Self as usize)?;
+        let mut state = self.state.write().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        if let Some(limit) = limit {
+            if state.retired_bytes()? > limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    RetiredSnapshotLimit,
+                ));
+            }
+        }
+        state.retired_limit = limit;
+        Ok(())
+    }
+
+    /// Returns the logical log bytes currently pinned by owned snapshots of
+    /// retired generations. The result may decrease as snapshots release their
+    /// views, including while this call is running.
+    pub fn retired_snapshot_log_bytes(&self) -> io::Result<u64> {
+        let _access = Access::enter(self as *const Self as usize)?;
+        let state = self.state.read().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        state.retired_bytes()
     }
 
     fn capture_snapshot(
@@ -697,6 +786,12 @@ impl OnlineStore {
         current._lock_file.verify_identity(&source)?;
         compact_exchange::source_directory_is_owned(&source)?;
         let (snapshot, initial) = copy::capture(&current, options)?;
+        {
+            let state = self.state.read().map_err(|_| uncertain())?;
+            if Arc::strong_count(&current) > 2 {
+                state.admit_retired_bytes(initial)?;
+            }
+        }
         let mut replay_digest = Sha256::new();
         copy::verify_initial(&snapshot, initial, options, Some(&mut replay_digest))?;
         let mut stage = crate::staging::Stage::directory(&parent)?;
@@ -730,6 +825,17 @@ impl OnlineStore {
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
         let final_boundary = copy::boundary_locked(&current)?;
+        // The state guard excludes new captures. Its Store and `current` own
+        // two references; any others retain this generation beyond handoff.
+        // Those references can only disappear until the new store is installed.
+        let pinned = Arc::strong_count(&current) > 2;
+        state.retired.retain(|(store, _)| store.strong_count() != 0);
+        state.admit_retired_bytes(if pinned { final_boundary } else { 0 })?;
+        if pinned {
+            state.retired.try_reserve(1).map_err(|_| {
+                io::Error::other("retired snapshot log accounting allocation failed")
+            })?;
+        }
         let final_replay_bytes = final_boundary
             .checked_sub(offset)
             .ok_or_else(|| io::Error::other("source log boundary moved backward"))?;
@@ -828,6 +934,11 @@ impl OnlineStore {
         } else {
             None
         };
+        if pinned {
+            state
+                .retired
+                .push((Arc::downgrade(&current), final_boundary));
+        }
         state.store = Arc::clone(&candidate);
         state.failed = false;
         drop(state);

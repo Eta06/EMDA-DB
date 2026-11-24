@@ -204,8 +204,8 @@ impl OnlineStore {
     /// observation and compaction; thresholds are scheduling hints, not caps.
     /// Intervals must be 1 ms through 24 hours, and both thresholds nonzero.
     ///
-    /// A maintenance-lock conflict before compaction begins defers the check
-    /// until the next interval or explicit request. Other errors stop the
+    /// A maintenance-lock conflict or retired snapshot log limit defers the
+    /// check until the next interval or explicit request. Other errors stop the
     /// worker for inspection, including I/O errors with uncertain outcomes.
     /// It does not retry those failures, delete crash leftovers,
     /// persist across reopen, bound disk/memory/recovery or pause time, provide
@@ -433,6 +433,9 @@ fn check_with(
         Ok(report) => report,
         Err(OnlineReclaimError::Compaction(error)) if super::is_maintenance_busy(&error) => {
             return Outcome::MaintenanceBusy;
+        }
+        Err(OnlineReclaimError::Compaction(error)) if super::is_retired_snapshot_limit(&error) => {
+            return Outcome::Skipped;
         }
         Err(OnlineReclaimError::Compaction(error)) => {
             return Outcome::Failed(Failure {

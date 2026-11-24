@@ -95,6 +95,32 @@ fn requested_checks_respect_thresholds_and_recover_all_writes() {
 }
 
 #[test]
+fn retired_snapshot_log_limit_defers_reclamation_until_the_view_is_released() {
+    let (_root, _source, previous, store) = fixture();
+    store.with_store(|db| db.put(b"key", b"old")).unwrap();
+    store.set_retired_snapshot_log_limit(Some(0)).unwrap();
+    let mut snapshot = store.snapshot(1, 3).unwrap();
+    let worker = start(&store, &previous, Duration::from_secs(3600), 1, 1);
+    worker.request_check().unwrap();
+    let status = wait_for(&worker, |s| s.checks >= 1);
+    assert_eq!((status.handoffs, status.reclaimed), (0, 0));
+    assert!(status.last_error.is_none());
+    assert!(!previous.exists());
+    store.with_store(|db| db.put(b"key", b"new")).unwrap();
+    assert_eq!(
+        snapshot.as_snapshot().unwrap().get(b"key").unwrap(),
+        Some(b"old".to_vec())
+    );
+    snapshot.cancel();
+    worker.request_check().unwrap();
+    let status = wait_for(&worker, |s| s.reclaimed >= 1);
+    assert_eq!((status.handoffs, status.reclaimed), (1, 1));
+    assert_eq!(store.retired_snapshot_log_bytes().unwrap(), 0);
+    assert!(!previous.exists());
+    worker.stop().unwrap();
+}
+
+#[test]
 fn periodic_checks_run_once_for_unchanged_data_and_lease_is_released() {
     let (_root, _source, previous, store) = fixture();
     store.with_store(|db| db.put(b"key", b"value")).unwrap();

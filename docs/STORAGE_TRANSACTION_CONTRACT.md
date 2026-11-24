@@ -287,6 +287,13 @@ the document view.
   `OnlineStore::snapshot_until` stops admitting reads at its monotonic
   deadline. A later capture or `OnlineStore::reap_expired_snapshots` releases
   idle expired reservations, indexes and log ownership across generations.
+  An optional `OnlineStore::set_retired_snapshot_log_limit` caps the sum of
+  synchronized log lengths of retired generations still held by owned
+  snapshots. Handoff checks the limit under the final callback and writer
+  barriers before publishing. Rejection returns `WouldBlock` and leaves the
+  active store and its snapshots usable. The scheduled reclamation worker
+  defers on this specific rejection. The limit is per open handle and does
+  not govern active log growth, physical allocation, or unpinned named copies.
   An optional `OnlineStore::start_snapshot_reaper` schedules those checks
   through the same handle across handoffs. Do not join or drop the worker
   inside an online callback. Busy reads can finish. After closing the online
