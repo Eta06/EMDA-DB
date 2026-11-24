@@ -5,6 +5,7 @@ use std::{fs::File, io::Read, os::unix::fs::MetadataExt};
 mod tests;
 
 const NAME: &str = "authority.record";
+const REPLACEMENT: &str = ".emda-authority-next-v1";
 const MAGIC: &[u8; 8] = b"EMDAAU01";
 const CHECKSUM: usize = 232;
 pub(super) const LENGTH: usize = CHECKSUM + 32;
@@ -13,6 +14,7 @@ pub(super) const LENGTH: usize = CHECKSUM + 32;
 /// Provision its directory on trusted, independently protected storage. The
 /// directory and its ancestors must stay stable. Administrative restore or
 /// rollback of this directory can defeat the catalog's freshness guarantees.
+/// The engine reserves `.emda-authority-next-v1` in this directory.
 pub struct FileRetainedAuthority {
     root: PathBuf,
     durable: Option<OpenedRecord>,
@@ -80,8 +82,10 @@ impl FileRetainedAuthority {
             return Err(record::invalid_data("invalid authority record path"));
         }
         let _guard = this.lock()?;
+        let observed = this.read_locked()?;
+        this.remove_abandoned_replacement()?;
         sync_existing(&this.root)?;
-        this.durable = Some(this.read_locked()?);
+        this.durable = Some(observed);
         Ok(this)
     }
 
@@ -91,6 +95,17 @@ impl FileRetainedAuthority {
         let lock = StoreLock::acquired(lock);
         lock.verify_identity(&self.root)?;
         Ok(lock)
+    }
+
+    // Called with store.lock held, only after the authority record validates.
+    fn remove_abandoned_replacement(&self) -> io::Result<()> {
+        let path = self.root.join(REPLACEMENT);
+        match path.symlink_metadata() {
+            Ok(metadata) if metadata.is_file() && metadata.nlink() == 1 => fs::remove_file(path),
+            Ok(_) => Err(record::invalid_data("invalid authority replacement path")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn read_locked(&self) -> io::Result<OpenedRecord> {
@@ -150,15 +165,23 @@ impl FileRetainedAuthority {
             return Ok(false);
         }
         validate_update(previous, next)?;
-        let (mut stage, mut file) = crate::staging::Stage::file(&self.root)?;
+        self.remove_abandoned_replacement()?;
+        let path = self.root.join(REPLACEMENT);
+        let mut file = File::from(rustix::fs::open(
+            &path,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )?);
+        let stage = tempfile::TempPath::try_from_path(path)?;
         file.write_all(&encode(Some(next)))?;
         file.sync_all()?;
         let metadata = file.metadata()?;
         let replacement = OpenedRecord::new(file, &metadata, Some(next));
         before_replace()?;
-        stage.replace_file(&self.root.join(NAME))?;
+        stage
+            .persist(self.root.join(NAME))
+            .map_err(|error| error.error)?;
         sync_directory(&self.root)?;
-        stage.publication_synchronized();
         self.durable = Some(replacement);
         Ok(true)
     }

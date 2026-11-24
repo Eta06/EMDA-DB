@@ -80,8 +80,11 @@ fn file_authority_validates_transitions_and_detects_damage() {
     let mut bytes = fs::read(&path).unwrap();
     bytes[24] ^= 1;
     fs::write(&path, bytes).unwrap();
+    let abandoned = root.join(REPLACEMENT);
+    fs::write(&abandoned, b"unpublished").unwrap();
     assert!(authority.read().is_err());
     assert!(FileRetainedAuthority::open(&root).is_err());
+    assert_eq!(fs::read(abandoned).unwrap(), b"unpublished");
     fs::remove_file(&path).unwrap();
     assert!(FileRetainedAuthority::open(&root).is_err());
 }
@@ -149,6 +152,84 @@ fn reuse_requires_the_same_validated_inode_and_successful_sync() {
             .read_using(|_| panic!("corrupt record needs no sync"))
             .is_err()
     );
+}
+
+#[test]
+fn pre_replace_failure_preserves_the_published_inode_and_cleans_the_private_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("authority");
+    let mut authority = registered(&root);
+    let path = root.join(REPLACEMENT);
+    fs::write(&path, b"incomplete earlier replacement").unwrap();
+    let published = fs::metadata(root.join(NAME)).unwrap();
+
+    let error = authority
+        .compare_and_swap_using(
+            Some(initial()),
+            intent(1),
+            || {
+                assert_eq!(fs::read(&path).unwrap(), encode(Some(intent(1))));
+                Err(io::Error::other("injected before rename"))
+            },
+            |_| panic!("directory sync before rename"),
+        )
+        .unwrap_err();
+    assert_eq!(error.to_string(), "injected before rename");
+    assert!(!path.exists());
+    assert_eq!(
+        fs::metadata(root.join(NAME)).unwrap().ino(),
+        published.ino()
+    );
+    assert_eq!(
+        authority
+            .read_using(|_| panic!("unchanged record was synced"))
+            .unwrap(),
+        Some(initial())
+    );
+    assert!(
+        authority
+            .compare_and_swap(Some(initial()), intent(1))
+            .unwrap()
+    );
+    assert_ne!(
+        fs::metadata(root.join(NAME)).unwrap().ino(),
+        published.ino()
+    );
+}
+
+#[test]
+fn authority_leaves_unexpected_replacement_types_untouched() {
+    for kind in ["symlink", "directory", "hardlink"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("authority");
+        let mut authority = registered(&root);
+        let target = dir.path().join("target");
+        fs::write(&target, b"outside the authority").unwrap();
+        let path = root.join(REPLACEMENT);
+        match kind {
+            "symlink" => std::os::unix::fs::symlink(&target, &path).unwrap(),
+            "directory" => fs::create_dir(&path).unwrap(),
+            "hardlink" => fs::hard_link(&target, &path).unwrap(),
+            _ => unreachable!(),
+        }
+        let before = path.symlink_metadata().unwrap();
+        assert_eq!(
+            FileRetainedAuthority::open(&root).err().unwrap().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            authority
+                .compare_and_swap(Some(initial()), intent(1))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        let after = path.symlink_metadata().unwrap();
+        assert_eq!(after.ino(), before.ino());
+        assert_eq!(after.file_type(), before.file_type());
+        assert_eq!(fs::read(&target).unwrap(), b"outside the authority");
+        assert_eq!(authority.read().unwrap(), Some(initial()));
+    }
 }
 
 #[test]
@@ -258,10 +339,22 @@ fn process_kills_preserve_one_complete_authority_record() {
             intent(1)
         };
         assert_eq!(authority.read().unwrap(), Some(visible));
+        let stage = root.join(REPLACEMENT);
+        assert_eq!(stage.exists(), boundary == "before");
         crate::cleanup_abandoned_staging(&root).unwrap();
+        assert_eq!(stage.exists(), boundary == "before");
         assert_eq!(
             FileRetainedAuthority::open(&root).unwrap().read().unwrap(),
             Some(visible)
         );
+        assert!(!stage.exists());
+        if boundary == "before" {
+            assert!(
+                authority
+                    .compare_and_swap(Some(initial()), intent(2))
+                    .unwrap()
+            );
+            assert_eq!(authority.read().unwrap(), Some(intent(2)));
+        }
     }
 }

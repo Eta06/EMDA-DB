@@ -1,4 +1,7 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
+use database_engine::retained_candidate::{
+    AuthorityPoint, AuthorityRecord, FileRetainedAuthority, RetainedAuthority,
+};
 use database_engine::{
     BatchOperation, BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixRebuildLimits,
     COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging,
@@ -785,9 +788,57 @@ fn verify_rejected(root: &Path, order: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn authority_probe(root: &Path, operation: &str) -> ProbeResult<()> {
+    let path = root.join("authority");
+    let initial = AuthorityRecord {
+        revision: 0,
+        committed: AuthorityPoint {
+            catalog: [1; 16],
+            generation: [2; 16],
+            header_digest: [3; 32],
+            suffix_end: 0,
+            suffix_digest: Sha256::digest([]).into(),
+        },
+        pending: None,
+    };
+    let next = AuthorityRecord {
+        revision: 1,
+        ..initial
+    };
+    match operation {
+        "setup" => {
+            let mut authority = FileRetainedAuthority::create(&path)?;
+            if !authority.compare_and_swap(None, initial)? {
+                return Err("authority fixture already registered".into());
+            }
+            println!("{}", json!({"status":"ready"}));
+        }
+        "attempt" => {
+            let mut authority = FileRetainedAuthority::open(&path)?;
+            let result = authority.compare_and_swap(Some(initial), next);
+            match result {
+                Ok(replaced) => println!("{}", json!({"status":"success","replaced":replaced})),
+                Err(error) => {
+                    println!("{}", json!({"status":"error","errno":error.raw_os_error()}))
+                }
+            }
+        }
+        "inspect" => {
+            let record = FileRetainedAuthority::open(&path)?.read()?;
+            if record != Some(initial) && record != Some(next) {
+                return Err("unexpected retained authority record".into());
+            }
+            println!("{}", json!({"revision":record.unwrap().revision}));
+        }
+        _ => return Err("unknown authority operation".into()),
+    }
+    Ok(())
+}
+
 fn main() -> ProbeResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
+        [command, root, operation] if command == "authority" => authority_probe(Path::new(root), operation),
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "setup-legacy" => setup_legacy(Path::new(root), operation),
         [command, root, operation] if command == "setup-managed" => setup_managed(Path::new(root), operation),

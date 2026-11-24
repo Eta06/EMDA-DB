@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Use a single lock-protected replacement for file-backed authority
+  updates, avoiding directory staging-marker syncs on each retained write.
+
 - Reject an over-budget writable recovery scan before verifying checkpoint
   entries. Admitted opens still verify the full checkpoint and log.
 

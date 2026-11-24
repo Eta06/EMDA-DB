@@ -563,7 +563,12 @@ and a checksummed, fixed-size record. Creation writes an explicit empty
 record. Missing or damaged records on open fail closed. Under an exclusive
 file lock, updates check the full prior record and next revision, sync a
 complete replacement, rename it atomically, and sync the authority
-directory before returning success. Reads synchronize the visible record's
+directory before returning success. The reserved `.emda-authority-next-v1`
+file is private to this protocol. It can be removed under the exclusive
+lock after validating the published record, including after an interrupted
+update. A nonregular or multiply linked entry at that name fails closed
+without being removed. Readers obtain the published record from
+`authority.record`. Reads synchronize the visible record's
 directory when observing a replacement. Each provider retains one descriptor
 for its last validated, synchronized record. Under the same lock, a read
 checks the complete record again and can reuse that synchronization for
