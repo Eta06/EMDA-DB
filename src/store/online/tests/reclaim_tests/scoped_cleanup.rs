@@ -130,6 +130,7 @@ fn detailed_retired_cleanup_reports_failure_at_each_parent_sync() {
         let mut payload_syncs = 0;
         let error = store.cleanup_retired_staging_using(
             &Default::default(),
+            &mut None,
             |file| {
                 payload_syncs += 1;
                 if fail_sync == payload_syncs {

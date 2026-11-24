@@ -346,7 +346,11 @@ the document view.
   confirmation at the final barrier. Cleanup counts its current-log
   verification. A cap rejection is reported before publishing a sibling
   or starting scoped removal, and concurrent acknowledged writes remain
-  visible. Each call captures its cap when it selects the source.
+  visible. Each direct call captures its cap when it selects the source.
+  A worker check shares one budget across scoped cleanup and compaction,
+  capturing the setting when it first verifies a source. A successful
+  cleanup remains complete if the subsequent compaction exceeds the
+  remaining budget.
   Identity and witness checks, target reads, physical retries and other
   operations' reads are outside this per-open limit. It measures logical
   bytes, while memory and pause duration have separate costs.

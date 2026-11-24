@@ -51,6 +51,89 @@ fn start(
 }
 
 #[test]
+fn reclamation_check_shares_source_reads_between_cleanup_and_compaction() {
+    for (retired, exact) in [(false, true), (true, false), (true, true)] {
+        let (_root, source, previous, store) = fixture();
+        let value = b"acknowledged";
+        store.with_store(|db| db.put(b"key", value)).unwrap();
+        if retired {
+            let outcome = store.compact_reclaim_with_hooks(
+                &previous,
+                &Default::default(),
+                |_| Ok(()),
+                crate::directory::sync_existing,
+                |at| {
+                    if at == super::super::reclaim::Point::AfterMove {
+                        Err(io::Error::other("leave a marked retired copy"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(matches!(
+                outcome,
+                Err(OnlineReclaimError::Reclamation { .. })
+            ));
+        }
+        let (id, log_bytes) = store
+            .with_store(|db| Ok((db.log.id(), db.log.len()?)))
+            .unwrap();
+        let source_before = fs::read(source.join("records.log")).unwrap();
+        // Compaction scans history twice and reads the one live value twice.
+        // Cleanup performs one additional scan only when a retired stage exists.
+        let total = (2 + u64::from(retired)) * log_bytes + 2 * value.len() as u64;
+        store
+            .set_maintenance_source_read_limit(Some(total - u64::from(!exact)))
+            .unwrap();
+        let control = Arc::new(Control::default());
+        control.lock().retired_cleanup = Some(RetiredCleanupStatus::default());
+        let schedule = Schedule {
+            previous: previous.clone(),
+            interval: WAIT,
+            minimum_log_bytes: 1,
+            minimum_growth_bytes: 1,
+            options: Default::default(),
+            cleanup_control: Some(Arc::clone(&control)),
+        };
+        let outcome = check(&store, &schedule, None);
+        if exact {
+            assert!(matches!(outcome, Outcome::Reclaimed(..)));
+        } else {
+            match outcome {
+                Outcome::Failed(failure) => {
+                    assert_eq!(failure.stage, OnlineReclamationFailureStage::Compaction);
+                    assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+                    assert_eq!(
+                        failure.error.to_string(),
+                        "online maintenance source read byte limit exceeded"
+                    );
+                }
+                _ => panic!("expected compaction to exceed the remaining budget"),
+            }
+            assert_eq!(fs::read(source.join("records.log")).unwrap(), source_before);
+        }
+        let metrics = control.lock().retired_cleanup.clone().unwrap();
+        assert_eq!(metrics.checks, 1);
+        assert_eq!(metrics.removed_payloads, u64::from(retired));
+        assert_eq!(metrics.removed_markers, u64::from(retired));
+        assert!(!previous.exists());
+        store
+            .with_store(|db| {
+                assert_eq!(db.log.id() != id, exact);
+                assert_eq!(db.get(b"key")?.as_deref(), Some(value.as_slice()));
+                Ok(())
+            })
+            .unwrap();
+        if !exact {
+            // A direct call starts with a fresh budget.
+            store
+                .compact_and_reclaim(&previous, &Default::default())
+                .unwrap();
+        }
+    }
+}
+
+#[test]
 fn requested_checks_respect_thresholds_and_recover_all_writes() {
     let (_root, source, previous, store) = fixture();
     let minimum_log = store.reclamation_observation().unwrap().bytes + 1;

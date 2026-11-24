@@ -3,6 +3,7 @@ use super::{
     Access, OnlineCompactionOptions, OnlineCompactionReport, OnlineReclaimError, OnlineStore,
     Store, compact_exchange, copy, uncertain,
 };
+use std::fs;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -238,6 +239,9 @@ impl OnlineStore {
     /// inspected, even if it belongs to another store. The supplied previous
     /// path must be unused when starting the worker. Cleanup can be expensive
     /// and stops on an ambiguous failure. The current log must be witnessed.
+    /// Cleanup and compaction share the configured logical source read ceiling
+    /// for each check. Completed cleanup can precede a budget rejection in
+    /// compaction.
     pub fn start_reclamation_worker_with_retired_cleanup(
         self: &Arc<Self>,
         previous: impl AsRef<Path>,
@@ -349,8 +353,16 @@ enum Outcome {
 }
 
 fn check(store: &OnlineStore, schedule: &Schedule, baseline: Option<&Observation>) -> Outcome {
+    let mut source_reads = None;
     if let Some(control) = &schedule.cleanup_control {
-        let result = store.cleanup_retired_staging(&schedule.options);
+        let result = store
+            .cleanup_retired_staging_using(
+                &schedule.options,
+                &mut source_reads,
+                fs::File::sync_all,
+                fs::File::sync_all,
+            )
+            .map_err(crate::StagingCleanupFailure::into_io_error);
         let mut state = control.lock();
         let metrics = state
             .retired_cleanup
@@ -390,7 +402,14 @@ fn check(store: &OnlineStore, schedule: &Schedule, baseline: Option<&Observation
         }
     }
     check_with(store, schedule, baseline, || {
-        store.compact_and_reclaim(&schedule.previous, &schedule.options)
+        store.compact_reclaim_using(
+            &schedule.previous,
+            &schedule.options,
+            |_| Ok(()),
+            crate::directory::sync_existing,
+            |_| Ok(()),
+            &mut source_reads,
+        )
     })
 }
 
