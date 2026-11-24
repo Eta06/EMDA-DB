@@ -268,6 +268,9 @@ remain open.
   `DocumentSnapshot::with_read_limits` extends cumulative logical read
   admission across pages on ordinary, checkpoint-backed, and historical
   snapshots. A rejected page exhausts that wrapper's budget.
+  Counts, sums and planned integer aggregates also use the captured documents
+  and indexes and share that budget. Tests cover intervening writes and
+  budget rejection on all three view types.
 - [ ] Add an authenticated service and genuine project isolation in the later security/service priority. The raw reserved prefix is not an isolation boundary; uncooperative raw writes can corrupt document metadata or create undetected omissions until bounded verification.
 - [x] Establish versioned migration, import/export and compatibility policy
   before a stable release. The [version 1 archive](VERSIONING.md#portable-collection-archives)

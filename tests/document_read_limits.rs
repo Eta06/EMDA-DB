@@ -4,10 +4,11 @@ use database_engine::retained_candidate::{
     OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
-    AggregateStatsRequest, CheckpointStore, CheckpointView, CollectionSchema, Comparison,
-    DocumentDatabase, DocumentFilter, DocumentQuery, DocumentReadLimits, DocumentRequestLimits,
-    DocumentSnapshot, DocumentTransactionLimits, DocumentTransactionMode, IndexDefinition,
-    IndexQuery, IndexValue, RetainedExportLimits, Store, TransactionFailure,
+    AggregateRequest, AggregateStatsRequest, CheckpointStore, CheckpointView, CollectionSchema,
+    Comparison, DocumentDatabase, DocumentFilter, DocumentQuery, DocumentQueryAccess,
+    DocumentReadLimits, DocumentRequestLimits, DocumentSnapshot, DocumentTransactionLimits,
+    DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue, RetainedExportLimits, Store,
+    TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -637,6 +638,82 @@ fn document_snapshot_read_limits_accumulate_across_pages_on_all_views() {
 
     let view = retry_lock(|| CheckpointView::open(&path, &checkpoint, &digest)).unwrap();
     exercise(DocumentSnapshot::with_checkpoint_view(&view));
+}
+
+#[test]
+fn snapshot_aggregation_preserves_captured_state_and_shares_read_budget() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let store = Store::open(&path).unwrap();
+    let db = DocumentDatabase::new(&store);
+    seed_indexed_documents(&db);
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+
+    let exercise = |snapshot: DocumentSnapshot<'_>, count, sum| {
+        let score = vec!["score".into()];
+        let request = AggregateRequest {
+            filter: DocumentFilter::All,
+            group_by: None,
+            sum: Some(score.clone()),
+            max_scanned: 3,
+        };
+        let aggregate = snapshot.aggregate("c", &request).unwrap();
+        assert_eq!(aggregate.groups[0].count, count);
+        assert_eq!(aggregate.groups[0].sum, Some(sum));
+
+        let stats = AggregateStatsRequest {
+            filter: DocumentFilter::Compare {
+                path: score.clone(),
+                comparison: Comparison::LessOrEqual,
+                value: IndexValue::Integer(1),
+            },
+            group_by: None,
+            fields: vec![score],
+            max_scanned: 3,
+        };
+        let expected = snapshot.aggregate_stats("c", &stats).unwrap();
+        assert_eq!(expected.groups[0].count, 1);
+        assert_eq!(expected.groups[0].fields[0].sum, 1);
+        let snapshot = snapshot.with_read_limits(DocumentReadLimits {
+            max_read_units: 4,
+            max_read_bytes: usize::MAX,
+        });
+        let planned = snapshot.aggregate_stats_planned("c", &stats).unwrap();
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::RangeIndex {
+                index: "score".into()
+            }
+        );
+        assert_eq!(planned.result.groups, expected.groups);
+        assert_eq!(planned.result.plan.scanned, 1);
+        let error = snapshot.aggregate("c", &request).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "document snapshot read limit exceeded");
+        assert_eq!(
+            snapshot.get("c", "a").unwrap_err().to_string(),
+            error.to_string()
+        );
+    };
+
+    let snapshot = store.snapshot(32, 4096).unwrap();
+    db.insert("c", "c", &json!({"score": 3})).unwrap();
+    exercise(DocumentSnapshot::new(&snapshot), 2, 3);
+    drop(snapshot);
+    drop(store);
+
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let snapshot = store.snapshot().unwrap();
+    DocumentDatabase::with_checkpoint_store(&store)
+        .insert("c", "d", &json!({"score": 4}))
+        .unwrap();
+    exercise(DocumentSnapshot::with_checkpoint_snapshot(&snapshot), 3, 6);
+    drop(snapshot);
+    drop(store);
+
+    let view = retry_lock(|| CheckpointView::open(&path, &checkpoint, &digest)).unwrap();
+    exercise(DocumentSnapshot::with_checkpoint_view(&view), 2, 3);
 }
 
 #[test]

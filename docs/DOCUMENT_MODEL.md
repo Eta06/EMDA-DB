@@ -193,16 +193,16 @@ not authenticate a position, identify a database instance, or retain a snapshot.
 For a consistent view across separate calls, borrow an existing
 `Store::snapshot` with `DocumentSnapshot::new`, or borrow a
 `CheckpointStore::snapshot` with `DocumentSnapshot::with_checkpoint_snapshot`.
-Point reads, collection scans, planned queries and named-index pages read
-the captured documents and index definitions. Keep using the same snapshot
-for every page, including after checkpoint rollover. The underlying storage
+Point reads, collection scans, planned queries, named-index pages and
+aggregates read the captured documents and index definitions. Keep using
+the same snapshot for every page, including after checkpoint rollover. The underlying storage
 snapshot's admission limits, deadline, cancellation and reaping rules
 apply. Each query also enforces its usual document limits. These two
 storage snapshots live in the current process.
 
 `DocumentSnapshot::with_read_limits` optionally shares one logical
-`DocumentReadLimits` budget across point reads, queries and pages on the
-same wrapper, including metadata and indexes. It applies to both live
+`DocumentReadLimits` budget across point reads, queries, pages and
+aggregates on the same wrapper, including metadata and indexes. It applies to both live
 snapshot types and historical checkpoints. A request that exceeds the
 budget returns an error without a partial result and exhausts the wrapper
 for subsequent reads. Explicitly setting new limits starts a new budget

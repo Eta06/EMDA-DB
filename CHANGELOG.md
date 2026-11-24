@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Run bounded counts, sums, and planned integer statistics over captured
+  document snapshots, sharing their cumulative read budget.
+
 - Add a per-open logical log read ceiling for automatic checkpoint rollover,
   enforced before checkpoint slot cleanup or the triggering append.
 

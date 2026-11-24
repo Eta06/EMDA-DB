@@ -1,6 +1,7 @@
 use super::{
-    DocumentPage, DocumentQuery, DocumentQueryExplanation, DocumentQueryResult, DocumentReadLimits,
-    DocumentTransaction, IndexQuery, PlannedDocumentQueryResult,
+    AggregateRequest, AggregateResult, AggregateStatsRequest, AggregateStatsResult, DocumentPage,
+    DocumentQuery, DocumentQueryExplanation, DocumentQueryResult, DocumentReadLimits,
+    DocumentTransaction, IndexQuery, PlannedAggregateStatsResult, PlannedDocumentQueryResult,
 };
 use crate::{CheckpointSnapshot, CheckpointView, Snapshot};
 use serde_json::Value;
@@ -77,6 +78,34 @@ impl<'a> DocumentSnapshot<'a> {
         query: &DocumentQuery,
     ) -> io::Result<PlannedDocumentQueryResult> {
         self.view.query_planned(collection, query)
+    }
+
+    /// Computes bounded counts and optional sums over the captured view.
+    pub fn aggregate(
+        &self,
+        collection: &str,
+        request: &AggregateRequest,
+    ) -> io::Result<AggregateResult> {
+        self.view.aggregate(collection, request)
+    }
+
+    /// Computes bounded integer statistics over the captured view.
+    pub fn aggregate_stats(
+        &self,
+        collection: &str,
+        request: &AggregateStatsRequest,
+    ) -> io::Result<AggregateStatsResult> {
+        self.view.aggregate_stats(collection, request)
+    }
+
+    /// Computes bounded statistics using qualifying indexes captured with
+    /// the documents. This path assumes those indexes are maintained.
+    pub fn aggregate_stats_planned(
+        &self,
+        collection: &str,
+        request: &AggregateStatsRequest,
+    ) -> io::Result<PlannedAggregateStatsResult> {
+        self.view.aggregate_stats_planned(collection, request)
     }
 
     /// Reads a named-index page from the captured view.
