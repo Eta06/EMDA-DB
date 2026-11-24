@@ -134,6 +134,37 @@ pub(crate) enum TailAdmission {
     Witnessed(u64),
 }
 
+/// The checkpoint index has been authenticated, but the covered log has
+/// not. Only the suffix range is available until prefix verification passes.
+pub(crate) struct PreparedCheckpoint {
+    base: CheckpointView,
+    verified: checkpoint::VerifiedCheckpoint,
+    log_length: u64,
+}
+
+impl PreparedCheckpoint {
+    pub(crate) fn suffix(&self) -> (&Log, std::ops::Range<u64>, u64) {
+        (
+            &self.base.log,
+            self.verified.prefix..self.log_length,
+            self.base.witnessed_boundary,
+        )
+    }
+
+    pub(crate) fn verify(mut self) -> io::Result<(CheckpointView, Sha256)> {
+        let covered_log_hash = checkpoint::verify_log_prefix(&self.base.log, &self.verified)?;
+        if self.base.log.len()? != self.log_length {
+            return Err(record::invalid_data(
+                "log length changed while opening checkpoint view",
+            ));
+        }
+        Arc::get_mut(&mut self.base.log)
+            .expect("prepared checkpoint exclusively owns its log")
+            .release_view_witness()?;
+        Ok((self.base, covered_log_hash))
+    }
+}
+
 impl CheckpointView {
     /// Opens a historical view without materializing the full key index.
     pub fn open(
@@ -173,30 +204,32 @@ impl CheckpointView {
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
     ) -> io::Result<Self> {
-        Self::open_shared_with_log_limits(
+        Self::prepare_shared(
             path.as_ref(),
             checkpoint.as_ref(),
             trusted_digest,
             limits,
             max_log_bytes,
             TailAdmission::Unrestricted,
-        )
+        )?
+        .verify()
+        .map(|(view, _)| view)
     }
 
-    pub(crate) fn open_shared_with_log_limits(
+    pub(crate) fn prepare_shared(
         path: &Path,
         checkpoint: &Path,
         trusted_digest: &[u8; 32],
         limits: CheckpointViewLimits,
         max_log_bytes: Option<u64>,
         tail: TailAdmission,
-    ) -> io::Result<Self> {
+    ) -> io::Result<PreparedCheckpoint> {
         limits.validate()?;
         let lock_file = File::open(path.join("store.lock"))?;
         fs2::FileExt::try_lock_shared(&lock_file)?;
         let lock_file = crate::store_lock::StoreLock::acquired(lock_file);
         lock_file.verify_identity(path)?;
-        Self::open_locked_with_recovery_limits(
+        Self::prepare_locked(
             path,
             checkpoint,
             trusted_digest,
@@ -205,7 +238,6 @@ impl CheckpointView {
             (max_log_bytes, None),
             tail,
         )
-        .map(|(view, _)| view)
     }
 
     // The caller owns a shared or exclusive lock for the entire view lifetime.
@@ -234,11 +266,32 @@ impl CheckpointView {
         trusted_digest: &[u8; 32],
         lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
-        (max_log_bytes, max_live_keys): (Option<u64>, Option<usize>),
+        log_limits: (Option<u64>, Option<usize>),
         tail: TailAdmission,
     ) -> io::Result<(Self, Sha256)> {
+        Self::prepare_locked(
+            path,
+            checkpoint,
+            trusted_digest,
+            lock_file,
+            limits,
+            log_limits,
+            tail,
+        )?
+        .verify()
+    }
+
+    pub(crate) fn prepare_locked(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        lock_file: crate::store_lock::StoreLock,
+        limits: CheckpointViewLimits,
+        (max_log_bytes, max_live_keys): (Option<u64>, Option<usize>),
+        tail: TailAdmission,
+    ) -> io::Result<PreparedCheckpoint> {
         limits.validate()?;
-        let (mut log, boundary) = Log::open_checkpoint_view(path)?;
+        let (log, boundary) = Log::open_checkpoint_view(path)?;
         let length = Self::check_log_limit(&log, max_log_bytes)?;
         let max_tail_bytes = match tail {
             TailAdmission::Unrestricted => None,
@@ -312,13 +365,10 @@ impl CheckpointView {
         if let Some(limit) = max_tail_bytes {
             checkpoint::checked_tail_bytes(length, verified.prefix, limit)?;
         }
-        let covered_log_hash = checkpoint::verify_log_prefix(&log, &verified)?;
-        let length = Self::check_log_limit(&log, max_log_bytes)?;
-        if let Some(limit) = max_tail_bytes {
-            checkpoint::checked_tail_bytes(length, verified.prefix, limit)?;
+        if matches!(tail, TailAdmission::Witnessed(_)) || length < boundary {
+            checkpoint::check_witnessed_length(length, boundary)?;
         }
         let has_tail = length > verified.prefix;
-        log.release_view_witness()?;
         let view = Self {
             log: Arc::new(log),
             index: Arc::new(CheckpointIndex {
@@ -335,7 +385,11 @@ impl CheckpointView {
             witnessed_boundary: boundary,
             _lock_file: Some(lock_file),
         };
-        Ok((view, covered_log_hash))
+        Ok(PreparedCheckpoint {
+            base: view,
+            verified,
+            log_length: length,
+        })
     }
 
     pub(crate) fn check_log_limit(log: &Log, max_log_bytes: Option<u64>) -> io::Result<u64> {

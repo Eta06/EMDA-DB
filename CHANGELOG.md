@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Check recovered checkpoint suffix operation and overlay limits before
+  hashing the covered log. Successful opens still verify the entire prefix.
+
 - Preserve the live checkpoint view when selection staging fails before
   rename. Detailed rollover and rebuild errors distinguish this from an
   uncertain selection replacement.

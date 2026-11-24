@@ -235,8 +235,10 @@ impl CheckpointStore {
 
     /// Bounds suffix mutations on open and before each append, counting every
     /// batch child. A zero limit permits an empty suffix and rejects writes.
-    /// Supply this per-open limit again after restart. The covered log prefix
-    /// is still verified and the limit does not cap all recovery I/O or memory.
+    /// Supply this per-open limit again after restart. Replay can reject an
+    /// over-budget suffix before hashing the covered log prefix. Every
+    /// successful open verifies the prefix. This limit does not cap all
+    /// recovery I/O or memory.
     pub fn open_with_suffix_operation_limit(
         path: impl AsRef<Path>,
         checkpoint: impl AsRef<Path>,
@@ -432,7 +434,7 @@ impl CheckpointStore {
                 ));
             }
         }
-        let (base, _) = CheckpointView::open_locked_with_recovery_limits(
+        let prepared = CheckpointView::prepare_locked(
             &path,
             &checkpoint,
             &digest,
@@ -441,12 +443,11 @@ impl CheckpointStore {
             (max_log_bytes, None),
             crate::checkpoint_view::TailAdmission::Bounded(max_tail_bytes),
         )?;
-        let (mut view, adoption_digest) = RecoveredCheckpointView::from_base_for_writer(
-            base,
+        let (mut view, adoption_digest) = RecoveredCheckpointView::from_prepared(
+            prepared,
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
-            max_log_bytes,
             max_tail_operations,
         )?;
         let boundary = view.base.witnessed_boundary;

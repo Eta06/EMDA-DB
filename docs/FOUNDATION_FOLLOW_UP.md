@@ -271,6 +271,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add optional whole-log byte admission to historical and recovered read-only checkpoint views before checkpoint verification, with caller-selected checkpoint file/block and suffix limits. Tests cover exact boundaries, early rejection, combined caps, correct historical and recovered results, unchanged log contents and shared-lock exclusion. A [reference-model fuzz run](../benchmarks/results/2026-11-04-readonly-recovery-limit-fuzz.json) exercised 34,837 cases. Limits are per-open logical bounds, not total memory or elapsed-time guarantees.
 - [x] Enforce recovered-view and writable checkpoint suffix-byte limits after verifying the checkpoint file and before reading its covered log. The [Linux ext4 traces](../benchmarks/results/2026-11-22-checkpoint-suffix-admission/README.md) confirm that over-limit opens skip the covered-data read. At the exact limit both APIs still detect prefix corruption and recover the expected suffix after the original bytes are restored.
 - [ ] Complete the live disk-backed index and bounded memory/cache management. Suffixes exceeding the selected caps need a newer checkpoint or ordinary recovery, and all accepted checkpoint openings hash the complete covered log prefix. Overlay limits are not total process-memory limits.
+  Read-only recovery and writable checkpoint opens now apply suffix overlay
+  and operation limits before the covered-log hash. Rejected opens can avoid
+  reading earlier history. The [paired Linux traces](../benchmarks/results/2026-11-24-checkpoint-suffix-preflight/README.md)
+  check rejected and admitted opens with up to 32 MiB of covered history.
   Checkpoint overlay versions share immutable key bytes. In the
   [allocation probe](../benchmarks/results/2026-11-24-checkpoint-overlay-keys/README.md),
   one put with a snapshot pinning 4,096 suffix keys requested 91.8% fewer

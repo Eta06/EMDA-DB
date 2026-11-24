@@ -1,6 +1,6 @@
 //! Read-only checkpoint plus bounded, validated log-suffix replay.
-use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits};
-use crate::log::ValueLocation;
+use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits, PreparedCheckpoint};
+use crate::log::{Log, ValueLocation};
 use crate::record;
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
 use std::borrow::Cow;
@@ -59,6 +59,24 @@ pub struct RecoveredCheckpointView {
     pub(crate) overlay: Arc<BTreeMap<Arc<[u8]>, Option<ValueLocation>>>,
     pub(crate) tail_bytes: u64,
     pub(crate) tail_operations: u64,
+}
+
+struct ReplayedSuffix {
+    overlay: BTreeMap<Arc<[u8]>, Option<ValueLocation>>,
+    bytes: u64,
+    operations: u64,
+    adoption_digest: Option<[u8; 32]>,
+}
+
+impl ReplayedSuffix {
+    fn attach(self, base: CheckpointView) -> RecoveredCheckpointView {
+        RecoveredCheckpointView {
+            base,
+            overlay: Arc::new(self.overlay),
+            tail_bytes: self.bytes,
+            tail_operations: self.operations,
+        }
+    }
 }
 
 impl RecoveredCheckpointView {
@@ -123,7 +141,8 @@ impl RecoveredCheckpointView {
     }
 
     /// Also limits the number of suffix mutations, counting every batch child.
-    /// A zero limit admits an empty suffix. The covered prefix is still verified.
+    /// A zero limit admits an empty suffix. Rejected suffixes can skip hashing
+    /// the covered prefix. Every successful open still verifies that prefix.
     pub fn open_with_suffix_operation_limit(
         path: impl AsRef<Path>,
         checkpoint: impl AsRef<Path>,
@@ -152,7 +171,7 @@ impl RecoveredCheckpointView {
             limits.max_tail_keys,
             limits.max_tail_key_bytes,
         )?;
-        let base = CheckpointView::open_shared_with_log_limits(
+        let prepared = CheckpointView::prepare_shared(
             path,
             checkpoint,
             trusted_digest,
@@ -160,13 +179,11 @@ impl RecoveredCheckpointView {
             limits.max_log_bytes,
             crate::checkpoint_view::TailAdmission::Witnessed(limits.max_tail_bytes),
         )?;
-        Self::from_base_mode(
-            base,
+        Self::from_prepared(
+            prepared,
             limits.max_tail_bytes,
             limits.max_tail_keys,
             limits.max_tail_key_bytes,
-            false,
-            limits.max_log_bytes,
             max_tail_operations,
         )
         .map(|(view, _)| view)
@@ -196,56 +213,58 @@ impl RecoveredCheckpointView {
         max_tail_key_bytes: usize,
         max_tail_operations: Option<u64>,
     ) -> io::Result<Self> {
-        Self::from_base_mode(
-            base,
-            max_tail_bytes,
-            max_tail_keys,
-            max_tail_key_bytes,
-            false,
-            None,
-            max_tail_operations,
-        )
-        .map(|(view, _)| view)
-    }
-
-    // Only an exclusive writer may adopt a complete unacknowledged tail,
-    // after this function validates it and before it publishes the view.
-    pub(crate) fn from_base_for_writer(
-        base: CheckpointView,
-        max_tail_bytes: u64,
-        max_tail_keys: usize,
-        max_tail_key_bytes: usize,
-        max_log_bytes: Option<u64>,
-        max_tail_operations: Option<u64>,
-    ) -> io::Result<(Self, Option<[u8; 32]>)> {
-        Self::from_base_mode(
-            base,
-            max_tail_bytes,
-            max_tail_keys,
-            max_tail_key_bytes,
-            true,
-            max_log_bytes,
-            max_tail_operations,
-        )
-    }
-
-    fn from_base_mode(
-        base: CheckpointView,
-        max_tail_bytes: u64,
-        max_tail_keys: usize,
-        max_tail_key_bytes: usize,
-        allow_unacknowledged: bool,
-        max_log_bytes: Option<u64>,
-        max_tail_operations: Option<u64>,
-    ) -> io::Result<(Self, Option<[u8; 32]>)> {
-        Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let boundary = base.witnessed_boundary;
-        let length = CheckpointView::check_log_limit(&base.log, max_log_bytes)?;
-        if !allow_unacknowledged || length < boundary {
-            crate::checkpoint::check_witnessed_length(length, boundary)?;
-        }
+        let length = base.log.len()?;
+        crate::checkpoint::check_witnessed_length(length, boundary)?;
+        let suffix = Self::replay_suffix(
+            &base.log,
+            base.log_boundary()..length,
+            boundary,
+            max_tail_bytes,
+            max_tail_keys,
+            max_tail_key_bytes,
+            max_tail_operations,
+        )?;
+        Ok(suffix.attach(base))
+    }
+
+    // Admission failures stop before hashing older log bytes. The prepared
+    // checkpoint admits the range and boundary for the caller's lock mode.
+    // A writer still rebinds any unwitnessed bytes before adopting them.
+    pub(crate) fn from_prepared(
+        prepared: PreparedCheckpoint,
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+        max_tail_operations: Option<u64>,
+    ) -> io::Result<(Self, Option<[u8; 32]>)> {
+        let (log, range, boundary) = prepared.suffix();
+        let suffix = Self::replay_suffix(
+            log,
+            range,
+            boundary,
+            max_tail_bytes,
+            max_tail_keys,
+            max_tail_key_bytes,
+            max_tail_operations,
+        )?;
+        let (base, _) = prepared.verify()?;
+        let adoption_digest = suffix.adoption_digest;
+        Ok((suffix.attach(base), adoption_digest))
+    }
+
+    fn replay_suffix(
+        log: &Log,
+        range: std::ops::Range<u64>,
+        boundary: u64,
+        max_tail_bytes: u64,
+        max_tail_keys: usize,
+        max_tail_key_bytes: usize,
+        max_tail_operations: Option<u64>,
+    ) -> io::Result<ReplayedSuffix> {
+        Self::validate_limits(max_tail_bytes, max_tail_keys, max_tail_key_bytes)?;
         let tail_bytes =
-            crate::checkpoint::checked_tail_bytes(length, base.log_boundary(), max_tail_bytes)?;
+            crate::checkpoint::checked_tail_bytes(range.end, range.start, max_tail_bytes)?;
         let mut overlay = BTreeMap::<Arc<[u8]>, Option<ValueLocation>>::new();
         let mut key_bytes = 0_usize;
         let mut tail_operations = 0_u64;
@@ -274,28 +293,24 @@ impl RecoveredCheckpointView {
             overlay.insert(Arc::from(key.as_ref()), location);
             Ok(())
         };
-        let start = base.log_boundary();
-        let adoption_digest = base.log.visit_checkpoint_suffix(
-            start,
-            length,
+        let adoption_digest = log.visit_checkpoint_suffix(
+            range.start,
+            range.end,
             boundary,
             max_tail_operations,
             visit,
         )?;
-        if base.log.len()? != length {
+        if log.len()? != range.end {
             return Err(record::invalid_data(
                 "log length changed while opening recovered view",
             ));
         }
-        Ok((
-            Self {
-                base,
-                overlay: Arc::new(overlay),
-                tail_bytes,
-                tail_operations,
-            },
+        Ok(ReplayedSuffix {
+            overlay,
+            bytes: tail_bytes,
+            operations: tail_operations,
             adoption_digest,
-        ))
+        })
     }
 
     /// Number of raw suffix bytes validated at open.

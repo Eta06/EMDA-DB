@@ -39,7 +39,7 @@ fn assert_operation_limit<T>(result: io::Result<T>) {
 
 #[test]
 fn suffix_operation_limit_counts_batch_children_overwrites_and_tombstones() {
-    let (dir, path, checkpoint, digest, _) = fixture();
+    let (dir, path, checkpoint, digest, prefix) = fixture();
     let log = path.join("records.log");
     let limits = CheckpointStoreLimits {
         max_tail_keys: 1,
@@ -78,6 +78,11 @@ fn suffix_operation_limit_counts_batch_children_overwrites_and_tombstones() {
     store.put(b"a", b"last").unwrap();
     assert_operation_limit(store.delete(b"a"));
     drop(store);
+
+    let acknowledged = fs::read(&log).unwrap();
+    let mut damaged = acknowledged.clone();
+    damaged[prefix as usize - 5] ^= 1;
+    fs::write(&log, &damaged).unwrap();
     assert_operation_limit(open(2));
     assert_operation_limit(RecoveredCheckpointView::open_with_suffix_operation_limit(
         &path,
@@ -86,6 +91,42 @@ fn suffix_operation_limit_counts_batch_children_overwrites_and_tombstones() {
         RecoveredViewLimits::default(),
         2,
     ));
+    for error in [
+        CheckpointStore::open_with_options(
+            &path,
+            &checkpoint,
+            &digest,
+            CheckpointStoreLimits {
+                max_tail_keys: 0,
+                ..Default::default()
+            },
+        )
+        .err()
+        .unwrap(),
+        RecoveredCheckpointView::open_with_options(
+            &path,
+            &checkpoint,
+            &digest,
+            RecoveredViewLimits {
+                max_tail_key_bytes: 0,
+                ..Default::default()
+            },
+        )
+        .err()
+        .unwrap(),
+    ] {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("recovered view suffix key"));
+    }
+    let admitted_error = open(3).err().unwrap();
+    assert_eq!(admitted_error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        admitted_error.to_string(),
+        "checkpoint does not match log prefix"
+    );
+    assert_eq!(fs::read(&log).unwrap(), damaged);
+    fs::write(&log, &acknowledged).unwrap();
+
     let view = RecoveredCheckpointView::open_with_suffix_operation_limit(
         &path,
         &checkpoint,
@@ -105,7 +146,7 @@ fn suffix_operation_limit_counts_batch_children_overwrites_and_tombstones() {
 
 #[test]
 fn suffix_operation_rejection_leaves_complete_tail_unadopted() {
-    let (_dir, path, checkpoint, digest, _) = fixture();
+    let (_dir, path, checkpoint, digest, prefix) = fixture();
     let log_path = path.join("records.log");
     let anchor_path = path.join("commit.state");
     let file = fs::File::open(&log_path).unwrap();
@@ -157,12 +198,22 @@ fn suffix_operation_rejection_leaves_complete_tail_unadopted() {
             limit,
         )
     };
+    let mut damaged = before.clone();
+    damaged[prefix as usize - 5] ^= 1;
+    fs::write(&log_path, &damaged).unwrap();
     assert_operation_limit(open(1));
-    assert_eq!(fs::read(&log_path).unwrap(), before);
+    let admitted_error = open(2).err().unwrap();
+    assert_eq!(admitted_error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        admitted_error.to_string(),
+        "checkpoint does not match log prefix"
+    );
+    assert_eq!(fs::read(&log_path).unwrap(), damaged);
     assert_eq!(read_witness(), previous);
     if metadata {
         assert_eq!(fs::read(&anchor_path).unwrap(), anchor);
     }
+    fs::write(&log_path, &before).unwrap();
     let store = open(2).unwrap();
     assert_eq!(read_witness(), complete);
     assert_eq!(
