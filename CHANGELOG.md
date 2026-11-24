@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject excess planned query and aggregate candidates before fetching
+  their document payloads.
+
 - Allow writable checkpoint recovery to cap logical log scan bytes,
   including the confirming suffix scan required before adopting a pending tail.
 

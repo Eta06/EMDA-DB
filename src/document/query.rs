@@ -142,6 +142,8 @@ pub(super) struct IndexScan {
 pub(super) struct IndexScanOptions<'a> {
     pub after: Option<&'a [u8]>,
     pub byte_limit: Option<usize>,
+    pub candidate_limit: Option<usize>,
+    pub unique_equality: bool,
 }
 
 pub(super) fn index_definition<'a>(
@@ -252,6 +254,8 @@ impl DocumentTransaction<'_, '_> {
                     .as_ref()
                     .map(|cursor| cursor.position.as_slice()),
                 byte_limit: None,
+                candidate_limit: None,
+                unique_equality: false,
             },
             |entry| documents.push(entry),
         )?;
@@ -263,7 +267,7 @@ impl DocumentTransaction<'_, '_> {
     }
 
     // The visitor's effects must remain private until the page passes all
-    // index checks and its caller admits the returned row count.
+    // index checks and admission limits.
     pub(super) fn visit_index_with_metadata(
         &self,
         collection: &str,
@@ -352,6 +356,15 @@ impl DocumentTransaction<'_, '_> {
         let mut document_key_value_bytes = 0_usize;
         let mut cursor = None;
         for (entry, _) in rows {
+            if options.unique_equality && returned != 0 {
+                return Err(invalid_data("unique index contains multiple matches"));
+            }
+            if options
+                .candidate_limit
+                .is_some_and(|limit| returned >= limit)
+            {
+                return Err(key::invalid("document scan exceeds the operation limit"));
+            }
             let id = entry_id(&entry, &index_prefix, definition.fields.len())?;
             let document_key = key::document(collection, id)?;
             let mut next_document_bytes = document_key_value_bytes;

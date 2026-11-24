@@ -4,10 +4,10 @@ use database_engine::retained_candidate::{
     OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
-    AggregateStatsRequest, CheckpointStore, CheckpointView, CollectionSchema, DocumentDatabase,
-    DocumentFilter, DocumentReadLimits, DocumentSnapshot, DocumentTransactionLimits,
-    DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue, RetainedExportLimits, Store,
-    TransactionFailure,
+    AggregateStatsRequest, CheckpointStore, CheckpointView, CollectionSchema, Comparison,
+    DocumentDatabase, DocumentFilter, DocumentQuery, DocumentReadLimits, DocumentSnapshot,
+    DocumentTransactionLimits, DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue,
+    RetainedExportLimits, Store, TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -137,6 +137,49 @@ fn check_limits(db: &DocumentDatabase<'_>) {
         Ok(())
     })
     .unwrap();
+
+    let range = DocumentFilter::Compare {
+        path: vec!["score".into()],
+        comparison: Comparison::GreaterOrEqual,
+        value: IndexValue::Integer(1),
+    };
+    for aggregate in [false, true] {
+        // Metadata, the page, two index rows and one document fit. The
+        // lookahead row proves a candidate overrun without spending a
+        // sixth unit fetching its document or exhausting the transaction.
+        db.transaction_with_read_limits(limits(5, usize::MAX), mode, None, None, |tx| {
+            let error = if aggregate {
+                tx.aggregate_stats_planned(
+                    "c",
+                    &AggregateStatsRequest {
+                        filter: range.clone(),
+                        group_by: None,
+                        fields: vec![vec!["score".into()]],
+                        max_scanned: 1,
+                    },
+                )
+                .unwrap_err()
+            } else {
+                tx.query_planned(
+                    "c",
+                    &DocumentQuery {
+                        filter: range.clone(),
+                        max_scanned: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap_err()
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "document scan exceeds the operation limit"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
     let stats = AggregateStatsRequest {
         filter: DocumentFilter::In {
             path: vec!["score".into()],

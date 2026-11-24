@@ -188,6 +188,10 @@ remain open.
   probes, equality prefixes, range endpoints and complete unique tuples. The
   ordinary and checkpoint backend tests cover budget rejection on execution,
   staged index removal, and captured metadata in snapshots.
+- [x] Reject planned query and aggregate candidate-count overruns before
+  reading the document behind the lookahead row. The exact read-unit test
+  covers ordinary, checkpoint, managed retained and authorized retained
+  document transactions.
 - [x] Add bounded relationship lookups by a complete unique index tuple.
   Tests cover typed and partial targets, exact response limits, staged
   changes, missing-owner conflicts, and retained restore and reopen.

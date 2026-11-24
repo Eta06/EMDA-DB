@@ -1488,13 +1488,13 @@ impl DocumentTransaction<'_, '_> {
         let definition = index_definition(metadata, index)?;
         let mut after: Option<Vec<u8>> = None;
         loop {
-            // Probe one entry beyond the candidate limit, never silently
-            // returning a prefix. Unique equality probes two to detect a
-            // corrupt duplicate rather than accepting it as one result.
+            // Check one extra index row for exhaustion without reading its
+            // document. A unique equality probe also checks for a duplicate.
+            let remaining = max_scanned - budget.visits;
             let limit = if unique_equality {
                 2
             } else {
-                (max_scanned - budget.visits + 1).min(256)
+                (remaining + 1).min(256)
             };
             let indexed = self.visit_index_with_metadata(
                 collection,
@@ -1510,23 +1510,16 @@ impl DocumentTransaction<'_, '_> {
                 IndexScanOptions {
                     after: after.as_deref(),
                     byte_limit: Some(filter::MAX_SCAN_BYTES - budget.bytes),
+                    candidate_limit: Some(remaining),
+                    unique_equality,
                 },
                 &mut visit,
             )?;
             let returned = indexed.plan.returned;
-            if unique_equality && returned > 1 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unique index contains multiple matches",
-                ));
-            }
             budget.bytes = budget
                 .bytes
                 .checked_add(indexed.document_key_value_bytes)
                 .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-            if returned > max_scanned - budget.visits {
-                return Err(key::invalid("document scan exceeds the operation limit"));
-            }
             if returned == 0 {
                 break;
             }

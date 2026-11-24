@@ -330,6 +330,9 @@ range bounds, including inclusivity, runs once in its first occurrence.
 All branches share one cap of 256 distinct probes and the original
 document and byte budgets. Hits from distinct probes consume budget on
 each visit, even when their ranges overlap.
+When the candidate count is exhausted, an index lookahead can prove there
+is another candidate. The query rejects before fetching that candidate's
+document or its unique-owner record.
 The planner checks each candidate's stored length against the document size
 limit, then charges its key and value against the remaining scan byte budget
 before materializing the value. The first over-budget candidate returns a
