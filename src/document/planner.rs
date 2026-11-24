@@ -1258,7 +1258,7 @@ fn plan_query<'a>(
             let mut ordered: Vec<_> = planned.into_iter().collect();
             ordered.sort_unstable_by_key(|(_, ordinal)| *ordinal);
             let mut probes: Vec<_> = ordered.into_iter().map(|(probe, _)| probe).collect();
-            remove_covered_ranges(collection, &mut probes)?;
+            coalesce_disjunction_ranges(collection, &mut probes)?;
             let access = DocumentQueryAccess::DisjunctionIndex {
                 indexes: probes
                     .iter()
@@ -1299,7 +1299,10 @@ fn plan_query<'a>(
     }))
 }
 
-fn remove_covered_ranges(collection: &str, probes: &mut Vec<IndexProbe<'_>>) -> io::Result<()> {
+fn coalesce_disjunction_ranges(
+    collection: &str,
+    probes: &mut Vec<IndexProbe<'_>>,
+) -> io::Result<()> {
     let ranges = probes
         .iter()
         .enumerate()
@@ -1333,18 +1336,31 @@ fn remove_covered_ranges(collection: &str, probes: &mut Vec<IndexProbe<'_>>) -> 
     }
     intervals.sort_unstable();
     let mut keep = vec![true; probes.len()];
-    let mut covering = None;
-    // Starts ascend and ties put the widest interval first. Within each
-    // index, the largest end seen so far is enough to detect containment.
-    for (index, _, std::cmp::Reverse(end), ordinal) in intervals {
-        if covering
-            .as_ref()
-            .is_some_and(|(name, upper)| *name == index && end <= *upper)
+    let mut covering: Option<(&str, Vec<u8>, usize)> = None;
+    // Starts ascend and ties put the widest interval first. Containment only
+    // needs the largest end. A crossing interval can extend that probe when
+    // both bounds constrain the same field after the same equality prefix.
+    for (index, after, std::cmp::Reverse(end), mut ordinal) in intervals {
+        if let Some((_, upper, previous)) = covering.as_ref().filter(|(name, _, _)| *name == index)
         {
-            keep[ordinal] = false;
-        } else {
-            covering = Some((index, end));
+            if end <= *upper {
+                keep[ordinal] = false;
+                continue;
+            }
+            // The scan excludes both endpoints. Equality could leave a gap
+            // at the shared boundary, so only join strict intersections.
+            if after < *upper && probes[ordinal].equal == probes[*previous].equal {
+                if ordinal < *previous {
+                    probes[ordinal].lower = probes[*previous].lower.take();
+                    keep[*previous] = false;
+                } else {
+                    probes[*previous].upper = probes[ordinal].upper.take();
+                    keep[ordinal] = false;
+                    ordinal = *previous;
+                }
+            }
         }
+        covering = Some((index, end, ordinal));
     }
     let mut keep = keep.into_iter();
     probes.retain(|_| keep.next().expect("one decision per probe"));

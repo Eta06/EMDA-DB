@@ -1,7 +1,7 @@
 use database_engine::{
-    CheckpointStore, CollectionSchema, Comparison, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue, PartialFilter, Store,
-    is_transaction_conflict,
+    AggregateStatsRequest, CheckpointStore, CollectionSchema, Comparison, DocumentDatabase,
+    DocumentFilter, DocumentQuery, DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue,
+    PartialFilter, Store, is_transaction_conflict,
 };
 use serde_json::{Value, json};
 use std::{io::ErrorKind, sync::mpsc, time::Duration};
@@ -734,24 +734,28 @@ fn independent_literal_disjunctions_track_empty_compound_probes() {
 }
 
 #[test]
-fn overlapping_disjunct_ranges_share_the_document_byte_budget() {
+fn disjoint_disjunct_ranges_share_the_document_byte_budget() {
     on_backends(|db| {
         db.create_collection("items", CollectionSchema::default())
             .unwrap();
         db.create_index("items", index("tag", &["tag"])).unwrap();
-        db.insert(
-            "items",
-            "a",
-            &json!({"tag": 1, "payload": "x".repeat(1_000_000)}),
-        )
-        .unwrap();
+        let payload = "x".repeat(1_000_000);
+        for tag in (0..34).map(|index| 3 * index) {
+            db.insert(
+                "items",
+                &tag.to_string(),
+                &json!({"tag": tag, "payload": payload}),
+            )
+            .unwrap();
+        }
         let query = |probes| {
             let filter = DocumentFilter::Or(
                 (0..probes)
-                    .map(|offset| {
+                    .map(|index| {
+                        let tag = 3 * index;
                         DocumentFilter::And(vec![
-                            compare_tag(Comparison::GreaterOrEqual, 1 - offset),
-                            compare_tag(Comparison::LessOrEqual, 34 - offset),
+                            compare_tag(Comparison::GreaterOrEqual, tag),
+                            compare_tag(Comparison::LessOrEqual, tag + 1),
                         ])
                     })
                     .collect(),
@@ -763,12 +767,61 @@ fn overlapping_disjunct_ranges_share_the_document_byte_budget() {
         let within = db.query_planned("items", &query(33)).unwrap();
         assert_eq!(within.access, access(&["tag"], 33));
         assert_eq!(within.result.plan.scanned, 33);
-        assert_eq!(within.result.plan.matched, 1);
-        assert_eq!(within.result.documents[0].document, json!({"tag": 1}));
+        assert_eq!(within.result.plan.matched, 33);
+        assert_eq!(within.result.documents[0].document, json!({"tag": 0}));
         assert_eq!(
             db.query_planned("items", &query(34)).unwrap_err().kind(),
             ErrorKind::InvalidInput
         );
+    });
+}
+
+#[test]
+fn overlapping_disjunct_ranges_charge_one_visit_for_the_same_index_entry() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index("items", index("tag", &["tag"])).unwrap();
+        db.insert(
+            "items",
+            "one",
+            &json!({"tag": 1, "payload": "x".repeat(1_000_000)}),
+        )
+        .unwrap();
+        let filter = DocumentFilter::Or(
+            (0..34)
+                .map(|offset| {
+                    DocumentFilter::And(vec![
+                        compare_tag(Comparison::GreaterOrEqual, 1 - offset),
+                        compare_tag(Comparison::LessOrEqual, 34 - offset),
+                    ])
+                })
+                .collect(),
+        );
+        let mut query = request(filter, 1);
+        query.projection = Some(vec![path("tag")]);
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(planned.access, access(&["tag"], 1));
+        assert_eq!(planned.result.plan.scanned, 1);
+        assert_eq!(planned.result.documents[0].document, json!({"tag": 1}));
+        let explanation = db.explain_query("items", &query).unwrap();
+        assert_eq!(
+            explanation.probes[0].lower.as_ref().unwrap().value,
+            IndexValue::Integer(-32)
+        );
+        assert_eq!(
+            explanation.probes[0].upper.as_ref().unwrap().value,
+            IndexValue::Integer(34)
+        );
+        let stats = AggregateStatsRequest {
+            filter: query.filter,
+            fields: vec![path("tag")],
+            group_by: None,
+            max_scanned: 1,
+        };
+        let planned = db.aggregate_stats_planned("items", &stats).unwrap();
+        assert_eq!(planned.access, access(&["tag"], 1));
+        assert_eq!(planned.result, db.aggregate_stats("items", &stats).unwrap());
     });
 }
 
@@ -778,6 +831,72 @@ fn compare_tag(comparison: Comparison, value: i64) -> DocumentFilter {
         comparison,
         value: IndexValue::Integer(value),
     }
+}
+
+#[test]
+fn merged_compound_disjunction_paginates_within_its_equality_prefix() {
+    on_backends(|db| {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        db.create_index("items", index("tenant_tag", &["tenant", "tag"]))
+            .unwrap();
+        db.transaction(|tx| {
+            for tag in 1..=260 {
+                tx.insert(
+                    "items",
+                    &format!("r{tag:03}"),
+                    &json!({"tenant":"a", "tag":tag}),
+                )?;
+            }
+            tx.insert("items", "other", &json!({"tenant":"b", "tag":110}))?;
+            Ok(())
+        })
+        .unwrap();
+        let range = |lower, upper| {
+            DocumentFilter::And(vec![
+                eq("tenant", json!("a")),
+                compare_tag(Comparison::GreaterOrEqual, lower),
+                compare_tag(Comparison::LessOrEqual, upper),
+            ])
+        };
+        // The branch with the larger lower endpoint comes first on purpose.
+        let mut query = request(DocumentFilter::Or(vec![range(96, 260), range(1, 170)]), 260);
+        query.limit = 256;
+        let planned = db.query_planned("items", &query).unwrap();
+        assert_eq!(planned.access, access(&["tenant_tag"], 1));
+        assert_eq!(planned.result.plan.scanned, 260);
+        assert_eq!(planned.result.plan.matched, 260);
+        assert_eq!(planned.result.documents.len(), 256);
+        let scan = DocumentQuery {
+            max_scanned: 261,
+            ..query.clone()
+        };
+        assert_eq!(
+            planned.result.documents,
+            db.query("items", &scan).unwrap().documents
+        );
+        query.max_scanned = 259;
+        assert_eq!(
+            db.query_planned("items", &query).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+
+        let mut hole = request(
+            DocumentFilter::Or(vec![range(1, 129), range(131, 260)]),
+            259,
+        );
+        hole.limit = 256;
+        let result = db.query_planned("items", &hole).unwrap();
+        assert_eq!(result.access, access(&["tenant_tag"], 2));
+        assert_eq!(result.result.plan.scanned, 259);
+        assert!(
+            !result
+                .result
+                .documents
+                .iter()
+                .any(|entry| entry.id == "r130")
+        );
+    });
 }
 
 #[test]
@@ -848,45 +967,68 @@ fn contained_disjunction_ranges_share_one_probe_and_preserve_residuals_and_confl
             .documents
         );
 
-        // A shared value with different inclusivity can make ranges cross.
+        // The crossing probes have different endpoint inclusivity and retain
+        // both original branches' residual predicates.
         let crossing = request(
             disjunction(Comparison::Greater, Comparison::GreaterOrEqual),
-            6,
+            4,
         );
         let planned = db.query_planned("items", &crossing).unwrap();
-        assert_eq!(planned.access, access(&["tag"], 2));
-        assert_eq!(planned.result.plan.scanned, 6);
+        assert_eq!(planned.access, access(&["tag"], 1));
+        assert_eq!(planned.result.plan.scanned, 4);
+        let scan = DocumentQuery {
+            max_scanned: 5,
+            ..crossing.clone()
+        };
         assert_eq!(
             planned.result.documents,
-            db.query("items", &crossing).unwrap().documents
+            db.query("items", &scan).unwrap().documents
         );
 
-        std::thread::scope(|scope| {
-            let (read, observed) = mpsc::sync_channel(1);
-            let (written, resume) = mpsc::sync_channel(1);
-            let writer = scope.spawn(move || {
-                observed.recv_timeout(Duration::from_secs(5)).unwrap();
-                db.insert(
-                    "items",
-                    "new",
-                    &json!({"tag":3,"visible":false,"allowed":true}),
-                )
-                .unwrap();
-                written.send(()).unwrap();
-            });
-            let error = db
-                .transaction_with_read_set(|tx| {
-                    assert_eq!(tx.query_planned("items", &query)?.result.plan.scanned, 4);
-                    tx.put_raw(b"receipt", b"stale")?;
+        for (tag, matching) in [(6, false), (1, true), (5, true)] {
+            let receipt = format!("receipt-{tag}");
+            let result = std::thread::scope(|scope| {
+                let (read, observed) = mpsc::sync_channel(1);
+                let (written, resume) = mpsc::sync_channel(1);
+                let writer = scope.spawn(move || {
+                    if observed.recv_timeout(Duration::from_secs(5)).is_ok() {
+                        db.insert(
+                            "items",
+                            &format!("new-{tag}"),
+                            &json!({"tag":tag,"visible":true,"allowed":true}),
+                        )
+                        .unwrap();
+                        written.send(()).unwrap();
+                    }
+                });
+                let result = db.transaction_with_read_set(|tx| {
+                    let plan = tx.query_planned(
+                        "items",
+                        &DocumentQuery {
+                            max_scanned: 5,
+                            ..crossing.clone()
+                        },
+                    )?;
+                    assert_eq!(plan.access, access(&["tag"], 1));
+                    tx.put_raw(receipt.as_bytes(), b"written")?;
                     read.send(()).unwrap();
                     resume.recv_timeout(Duration::from_secs(5)).unwrap();
                     Ok(())
-                })
-                .unwrap_err();
-            writer.join().unwrap();
-            assert!(is_transaction_conflict(&error));
-        });
-        assert_eq!(db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(), None);
+                });
+                drop(read);
+                writer.join().unwrap();
+                result
+            });
+            if matching {
+                assert!(is_transaction_conflict(&result.unwrap_err()));
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                db.transaction(|tx| tx.get_raw(receipt.as_bytes())).unwrap(),
+                (!matching).then(|| b"written".to_vec())
+            );
+        }
     });
 }
 

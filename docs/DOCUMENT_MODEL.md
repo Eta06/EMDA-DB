@@ -357,10 +357,12 @@ range bounds, including inclusivity, runs once in its first occurrence.
 All branches share one planning cap of 256 distinct probes. After
 admission, the planner removes range probes wholly covered by another
 range on the same index when their encoded endpoints fit the key format.
-It preserves the complete residual filter and the covering range's
-read-set dependency. The executed probes share the original document
-and byte budgets. Hits from the remaining distinct probes consume budget
-on each visit, including where ranges cross.
+Ranges that strictly intersect on the same index and leading equality
+tuple can share one probe over their exact union. Gaps and touching
+exclusive encoded bounds retain separate probes. The planner keeps the
+complete residual filter and tracks the executed ranges for read-set
+validation. The executed probes share the original document and byte
+budgets. Hits from distinct remaining probes consume budget on each visit.
 When the candidate count is exhausted, an index lookahead can prove there
 is another candidate. The query rejects before fetching that candidate's
 document or its unique-owner record.
@@ -439,7 +441,7 @@ source index dependencies and the target lookup dependencies.
 `aggregate_stats_planned` applies the same statistics to candidates from a
 qualifying index plan and reports the chosen access path. It falls back to a
 complete scan when no index qualifies. The 256-document ceiling counts
-index visits, including overlapping probes. Each matching document
+index visits across the executed probes. Each matching document
 contributes once. A single equality tuple streams rows in ID order.
 Other plans retain candidate IDs to deduplicate matches. Filters without
 array walks can aggregate in probe order on success. An array walk or a
