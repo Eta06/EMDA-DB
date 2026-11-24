@@ -1,5 +1,5 @@
 //! End-to-end checks for the independently synchronized commit boundary.
-use database_engine::Store;
+use database_engine::{BatchOperation, Store, StoreRecoveryLimits};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -219,6 +219,113 @@ fn crash_boundary_model_never_loses_a_prior_acknowledged_value_silently() {
             );
         }
     }
+}
+
+#[test]
+fn full_recovery_operation_limit_counts_batch_children_before_tail_adoption() {
+    let dir = tempdir().unwrap();
+    let path = dir.path();
+    let log = path.join("records.log");
+    let marker = path.join("commit.state");
+    let store = open_v2(path).unwrap();
+    store.put(b"first", b"old").unwrap();
+    let previous = fs::read(&marker).unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"first",
+                value: b"new",
+            },
+            BatchOperation::Delete { key: b"absent" },
+            BatchOperation::Put {
+                key: b"aa",
+                value: b"temporary",
+            },
+            BatchOperation::Delete { key: b"aa" },
+        ])
+        .unwrap();
+    let acknowledged = fs::read(&marker).unwrap();
+    drop(store);
+    fs::write(&marker, &previous).unwrap();
+    fs::File::open(&marker).unwrap().sync_all().unwrap();
+    let bytes = fs::read(&log).unwrap();
+    let open = |operations, live_key_bytes| {
+        Store::open_with_recovery_limits(
+            path,
+            StoreRecoveryLimits {
+                max_log_bytes: Some(bytes.len() as u64),
+                max_live_keys: Some(2),
+                max_live_key_bytes: Some(live_key_bytes),
+                max_recovery_operations: Some(operations),
+            },
+        )
+    };
+    for (operations, live_key_bytes, message) in [
+        (0, 7, "recovery operation limit exceeded"),
+        (4, 7, "recovery operation limit exceeded"),
+        (5, 6, "recovery live key byte limit would be exceeded"),
+    ] {
+        assert!(matches!(open(operations, live_key_bytes), Err(error)
+            if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message));
+        assert_eq!(fs::read(&marker).unwrap(), previous);
+        assert_eq!(fs::read(&log).unwrap(), bytes);
+    }
+
+    let mut corrupt = bytes.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    fs::write(&log, &corrupt).unwrap();
+    // Even without budget for the children, replay verifies the outer CRC.
+    assert!(matches!(open(4, 7), Err(error)
+        if error.kind() == io::ErrorKind::InvalidData && error.to_string() == "record checksum mismatch"));
+    assert_eq!(fs::read(&marker).unwrap(), previous);
+    assert_eq!(fs::read(&log).unwrap(), corrupt);
+    fs::write(&log, &bytes).unwrap();
+
+    let store = open(5, 7).unwrap();
+    assert_eq!(
+        store.scan(None, None, 8).unwrap(),
+        [(b"first".to_vec(), b"new".to_vec())]
+    );
+    assert_eq!(fs::read(&marker).unwrap(), acknowledged);
+    assert_eq!(fs::read(&log).unwrap(), bytes);
+}
+
+#[test]
+fn recovery_operation_limit_admits_empty_and_legacy_logs_at_exact_boundaries() {
+    let root = tempdir().unwrap();
+    let empty = root.path().join("empty");
+    let limit = |operations| StoreRecoveryLimits {
+        max_recovery_operations: Some(operations),
+        ..Default::default()
+    };
+    let store = Store::open_with_recovery_limits(&empty, limit(0)).unwrap();
+    store.put(b"later", b"write").unwrap();
+    drop(store);
+    assert!(
+        matches!(Store::open_with_recovery_limits(&empty, limit(0)), Err(error)
+        if error.to_string() == "recovery operation limit exceeded")
+    );
+    assert_eq!(
+        Store::open_with_recovery_limits(&empty, limit(1))
+            .unwrap()
+            .get(b"later")
+            .unwrap(),
+        Some(b"write".to_vec())
+    );
+
+    let legacy = root.path().join("legacy");
+    fs::create_dir(&legacy).unwrap();
+    let log = legacy.join("records.log");
+    let bytes = include_bytes!("fixtures/db01-legacy-record.bin");
+    fs::write(&log, bytes).unwrap();
+    assert!(
+        matches!(Store::open_with_recovery_limits(&legacy, limit(0)), Err(error)
+        if error.to_string() == "recovery operation limit exceeded")
+    );
+    let store = Store::open_with_recovery_limits(&legacy, limit(1)).unwrap();
+    assert_eq!(store.scan(None, None, 8).unwrap().len(), 1);
+    assert_eq!(fs::read(log).unwrap(), bytes);
+    assert!(!legacy.join("commit.state").exists());
 }
 
 #[test]

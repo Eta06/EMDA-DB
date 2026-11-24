@@ -1,6 +1,6 @@
 //! Public store operations, in-process coordination, and exclusive ownership.
 
-use crate::log::{GenerationId, Log, ValueLocation};
+use crate::log::{GenerationId, Log, StoreRecoveryLimits, ValueLocation};
 use crate::record::{self, Operation};
 use crate::{backup, directory};
 use std::collections::BTreeMap;
@@ -233,13 +233,28 @@ impl Store {
         max_live_keys: Option<usize>,
         max_live_key_bytes: Option<usize>,
     ) -> io::Result<Self> {
-        Self::open_with_recovery_checks(
-            path.as_ref(),
-            max_log_bytes,
-            max_live_keys,
-            max_live_key_bytes,
-            || Ok(()),
+        Self::open_with_recovery_limits(
+            path,
+            StoreRecoveryLimits {
+                max_log_bytes,
+                max_live_keys,
+                max_live_key_bytes,
+                ..Default::default()
+            },
         )
+    }
+
+    /// Opens using full-log recovery with an optional operation budget.
+    /// Every put, delete and batch child counts, including overwritten keys
+    /// and absent-key deletes. The operation budget applies only to the open.
+    /// Exhaustion prevents tail adoption. A rejected record may still be
+    /// read and checksummed, so use the separate log cap to bound input bytes.
+    /// Existing log and live-key limits also apply to later mutations.
+    pub fn open_with_recovery_limits(
+        path: impl AsRef<Path>,
+        limits: StoreRecoveryLimits,
+    ) -> io::Result<Self> {
+        Self::open_with_recovery_checks_tracked(path.as_ref(), limits, || Ok(()), None)
     }
 
     // Run the check under the store lock before replay and, when needed,
@@ -253,9 +268,12 @@ impl Store {
     ) -> io::Result<Self> {
         Self::open_with_recovery_checks_tracked(
             path,
-            max_log_bytes,
-            max_live_keys,
-            max_live_key_bytes,
+            StoreRecoveryLimits {
+                max_log_bytes,
+                max_live_keys,
+                max_live_key_bytes,
+                ..Default::default()
+            },
             check,
             None,
         )
@@ -263,25 +281,20 @@ impl Store {
 
     pub(crate) fn open_with_recovery_checks_tracked(
         path: &Path,
-        max_log_bytes: Option<u64>,
-        max_live_keys: Option<usize>,
-        max_live_key_bytes: Option<usize>,
+        limits: StoreRecoveryLimits,
         check: impl Fn() -> io::Result<()>,
         adoption_tracker: Option<&crate::publication_outcome::TailAdoptionTracker>,
     ) -> io::Result<Self> {
         let store = Self::open_using(path, |path, initialize| {
             check()?;
-            Log::open_with_recovery_limit_checked(
-                path,
-                initialize,
-                max_live_keys,
-                max_log_bytes,
-                max_live_key_bytes,
-                check,
-                adoption_tracker,
-            )
+            Log::open_with_recovery_limit_checked(path, initialize, limits, check, adoption_tracker)
         })?;
-        Self::set_open_limits(store, max_log_bytes, max_live_keys, max_live_key_bytes)
+        Self::set_open_limits(
+            store,
+            limits.max_log_bytes,
+            limits.max_live_keys,
+            limits.max_live_key_bytes,
+        )
     }
 
     fn set_open_limits(

@@ -63,7 +63,7 @@ pub use document::{
     PartialFilter, PlannedAggregateStatsResult, PlannedDocumentQueryResult, QueryPlan,
     SchemaMigrationStatus, SchemaStep,
 };
-pub use log::PeakVerificationLimits;
+pub use log::{PeakVerificationLimits, StoreRecoveryLimits};
 pub use publication_outcome::{
     HandoffFailure, ManagedRebuildFailure, ManagedRolloverFailure, OnlineHandoffFailure,
     PublicationFailure, RetainedRotationFailure,

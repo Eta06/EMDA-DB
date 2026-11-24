@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an optional operation budget for ordinary full-log recovery, including
+  ordered batch children and operations in an unacknowledged tail.
+
 - Combine logical document read limits and read-set validation limits in
   the detailed transaction API.
 

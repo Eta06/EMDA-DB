@@ -1,6 +1,6 @@
 //! V3 crash states, rollback detection, and compatibility of the one-fsync path.
 #![cfg(target_os = "linux")]
-use database_engine::{CheckpointStore, Store};
+use database_engine::{CheckpointStore, Store, StoreRecoveryLimits};
 use rustix::fs::{XattrFlags, getxattr, removexattr, setxattr};
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -472,7 +472,24 @@ fn replay_key_limit_does_not_advance_witness_for_unacknowledged_tail() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     assert_eq!(marker(dir.path()), first_boundary);
     assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
-    let reopened = Store::open(dir.path()).unwrap();
+    let recovery = |count| {
+        Store::open_with_recovery_limits(
+            dir.path(),
+            StoreRecoveryLimits {
+                max_recovery_operations: Some(count),
+                ..Default::default()
+            },
+        )
+    };
+    let anchor = fs::read(dir.path().join("commit.state")).unwrap();
+    assert!(
+        matches!(recovery(1), Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        && error.to_string() == "recovery operation limit exceeded")
+    );
+    assert_eq!(marker(dir.path()), first_boundary);
+    assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(dir.path().join("commit.state")).unwrap(), anchor);
+    let reopened = recovery(2).unwrap();
     assert_eq!(
         reopened.get(b"first").unwrap().as_deref(),
         Some(&b"one"[..])
