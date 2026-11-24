@@ -514,6 +514,47 @@ The [paired packed-range follow-up](../benchmarks/results/2026-11-04-checkpoint-
 
 For 10,000 keys, median latency fell about 34% and throughput rose about 55% in this sample. SQLite remained faster, and small-range run distributions overlap. Each p99 uses only 100 transactions per run. All quiet checks passed, no cgroup throttling or direct reclaim was recorded, and individual VM steal samples reached 5.89% across setup, measurement and cleanup. These measurements exclude checkpoint creation and do not exercise concurrent range revalidation or physical power loss.
 
+## Concurrent document updates and indexed reads
+
+The [contention runner](../scripts/document_contention_compare.py) preloads the
+same documents in every engine. Each client repeatedly replaces its own
+document by primary ID, then looks it up through the unique email index. Every
+lookup checks the returned ID and decoded document. Each run reopens the
+embedded store or cleanly restarts its disposable server, then verifies the
+complete primary state and every current email mapping.
+
+On Linux, build `document_contention_bench` in release mode. Use the pinned
+drivers and disposable Docker images from the
+[comparison workflow](../.github/workflows/compound-range-smoke.yml) for
+PostgreSQL and MongoDB. Choose disjoint CPU sets visible to your process.
+Omit the CPU arguments to run only the embedded engines.
+
+```sh
+cargo build --release --locked --example document_contention_bench
+case_dir=/tmp/emda-document-contention-measured
+python3 -m scripts.benchmarks.record_case \
+  --directory "$case_dir" --case document-contention-measured -- \
+  python3 scripts/document_contention_compare.py \
+    --directory /tmp --binary target/release/examples/document_contention_bench \
+    --output "$case_dir/samples.json.gz" --source-revision "$(git rev-parse HEAD)" \
+    --driver-cpus 0-1 --server-cpus 2-3 --clients 1,2,4,8 \
+    --rounds 5 --cycles 100 --documents 500
+```
+
+SQLite uses WAL with `synchronous=FULL`. PostgreSQL verifies that fsync,
+synchronous commit and full-page writes are enabled. MongoDB uses an
+acknowledged journaled write on one node. The same operation and verification
+workload runs against each engine. The Python server clients include loopback,
+driver and result-decoding costs. The Rust embedded paths run in process.
+
+The report includes every client's raw update and lookup latencies, retry
+counts, engine settings, query plans where available, and VM noise.
+Embedded RSS and subprocess CPU include setup and verification. Server-side
+Linux cgroup CPU, memory and I/O snapshots bracket timed client work when
+available. Cgroup memory includes file cache, and Python client RSS samples
+are process snapshots. These metrics have different scopes. No run targets
+physical power loss or off-host restore.
+
 ## Two-key transaction comparison
 
 `examples/transaction_bench.rs` runs serializable read-modify-write transactions that read, check and increment two matching counters. It checks the final counters after reopening. The `conservative`, `readset` and opt-in `readset-fifo` modes use the ordinary store's transaction validators; `checkpoint` uses the checkpoint-backed store's conservative transactions and `checkpoint-fifo` queues its callbacks and commits in FIFO order. `checkpoint-readset` and `checkpoint-readset-fifo` enable checkpoint point read-set validation without or with FIFO admission. Each prototype mode explicitly retries conflicts. `sqlite` uses separate connections, WAL, `synchronous=FULL`, `BEGIN IMMEDIATE` and application-level value checksums. SQLite's internal busy waiting contributes to latency but is not counted as a retry. The shared workload makes all clients update the same pair; the disjoint workload gives each client a different pair. Earlier recorded runs predate the checkpoint option.

@@ -18,12 +18,14 @@ run-name: Compound range cross-engine ${{ inputs.comparison_scale || 'smoke' }}
       - "Cargo.lock"
       - "Cargo.toml"
       - "examples/compound_range_query_bench.rs"
+      - "examples/document_contention_bench.rs"
       - "examples/network_bench_server.rs"
       - "examples/index_memory_bench.rs"
       - "examples/sqlite_restart_write_bench.rs"
       - "scripts/large_crash_compare.py"
       - "scripts/compare_crashes.py"
       - "scripts/compound_range_external_compare.py"
+      - "scripts/document_contention_compare.py"
       - "scripts/nonunique_query_compare.py"
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
@@ -37,12 +39,14 @@ run-name: Compound range cross-engine ${{ inputs.comparison_scale || 'smoke' }}
       - "Cargo.lock"
       - "Cargo.toml"
       - "examples/compound_range_query_bench.rs"
+      - "examples/document_contention_bench.rs"
       - "examples/network_bench_server.rs"
       - "examples/index_memory_bench.rs"
       - "examples/sqlite_restart_write_bench.rs"
       - "scripts/large_crash_compare.py"
       - "scripts/compare_crashes.py"
       - "scripts/compound_range_external_compare.py"
+      - "scripts/document_contention_compare.py"
       - "scripts/nonunique_query_compare.py"
       - "scripts/benchmark-requirements.txt"
       - "scripts/benchmarks/**"
@@ -116,4 +120,30 @@ jobs:
             ${{ runner.temp }}/compound-range-*/command.log
             ${{ runner.temp }}/compound-range-*/samples.json
             ${{ runner.temp }}/large-crash-smoke/
+          if-no-files-found: ignore
+      - name: Compare durable concurrent updates and indexed reads
+        env:
+          COMPARISON_SCALE: ${{ inputs.comparison_scale || 'smoke' }}
+        run: |
+          cargo +stable build --release --locked --example document_contention_bench
+          cpu_pair="$(python3 -c 'import os; c=sorted(os.sched_getaffinity(0)); assert len(c) >= 2; n=len(c)//2; print(",".join(map(str,c[:n])), ",".join(map(str,c[n:2*n])))')"
+          read -r driver_cpus server_cpus <<< "$cpu_pair"
+          workload=(--clients 1,4 --rounds 2 --cycles 4 --documents 32)
+          if [[ "$COMPARISON_SCALE" == measured ]]; then
+            workload=(--clients 1,2,4,8 --rounds 5 --cycles 100 --documents 500)
+          fi
+          driver="$RUNNER_TEMP/benchmark-venv/bin/python"
+          contention_case="$RUNNER_TEMP/document-contention-$COMPARISON_SCALE"
+          "$driver" -m scripts.benchmarks.record_case \
+            --directory "$contention_case" --case "document-contention-$COMPARISON_SCALE" -- \
+            "$driver" scripts/document_contention_compare.py \
+            --directory "$RUNNER_TEMP" --binary target/release/examples/document_contention_bench \
+            --output "$contention_case/samples.json.gz" --source-revision "$GITHUB_SHA" \
+            --driver-cpus "$driver_cpus" --server-cpus "$server_cpus" "${workload[@]}"
+      - name: Preserve document contention report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: document-contention-cross-engine-${{ inputs.comparison_scale || 'smoke' }}
+          path: ${{ runner.temp }}/document-contention-*/
           if-no-files-found: ignore
