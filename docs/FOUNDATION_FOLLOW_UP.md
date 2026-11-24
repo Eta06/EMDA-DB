@@ -212,6 +212,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   refine safe classifications where further boundaries can be proven.
   Existing error types are unchanged and unknown outcomes cannot be retried
   solely from error kind.
+  Detailed ordinary full-log open distinguishes failure before a tail
+  witness update, an uncertain update, and a completed update followed by
+  an open failure. It preserves the underlying I/O error and the existing
+  adoption order. See the [storage contract](STORAGE_TRANSACTION_CONTRACT.md).
   Managed and authority-backed retained stores classify removal attempts
   through `reclaim_inactive_detailed`, including removals during resumed
   cleanup. The classification is separate from authority fence uncertainty.

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Report whether ordinary full-log open failed before, during, or after
+  synchronization of an adopted tail's commit witness.
+
 - Add an optional operation budget for ordinary full-log recovery, including
   ordered batch children and operations in an unacknowledged tail.
 
