@@ -520,6 +520,17 @@ fn authority_state(root: &Path) -> Result<(u64, u64, [u8; 16])> {
 }
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use rustix::process::{Resource, getrlimit};
+        let limit = getrlimit(Resource::As);
+        if let Some(bytes) = limit.current {
+            println!("rlimit_as_soft_bytes={bytes}");
+        }
+        if let Some(bytes) = limit.maximum {
+            println!("rlimit_as_hard_bytes={bytes}");
+        }
+    }
     let args = std::env::args().collect::<Vec<_>>();
     let [_, phase, root, name, keys, epoch, options @ ..] = args.as_slice() else {
         return Err("usage: authorized_recovery_bench <setup|checkpoint-setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|checkpoint|retained|sqlite|both|all> <keys> <epoch> [--wide-suffix] [--writers=N]".into());

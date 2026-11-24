@@ -96,6 +96,59 @@ fn automatic_slot_protection_preserves_pinned_slot_and_rejects_before_append() {
 }
 
 #[test]
+fn automatic_checkpoint_scan_limit_preserves_slots_selection_and_log() {
+    let (_dir, path, store) = managed_fixture(1024, 1, 64);
+    store.enable_automatic_checkpoints().unwrap();
+    store.put(b"a", b"one").unwrap();
+    store.put(b"b", b"two").unwrap();
+    store.put(b"c", b"three").unwrap();
+    let snapshot = store.snapshot().unwrap();
+    let root = crate::checkpoint_store::automatic::root(&path);
+    let [first_slot, second_slot] = crate::checkpoint_store::automatic::indexes(&root);
+    let files = [
+        path.join("records.log"),
+        path.join("commit.state"),
+        crate::checkpoint_store::selection::path(&path),
+        first_slot,
+        second_slot,
+    ];
+    let before = files.each_ref().map(|file| fs::read(file).unwrap());
+    let exact = 3 * before[0].len() as u64;
+    store
+        .set_automatic_checkpoint_log_scan_limit(Some(exact - 1))
+        .unwrap();
+    assert!(matches!(
+        store.put_detailed(b"d", b"four"),
+        Err(crate::MutationFailure::Rejected(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "automatic checkpoint log scan byte limit exceeded"
+    ));
+    assert_eq!(files.each_ref().map(|file| fs::read(file).unwrap()), before);
+    assert_eq!(store.get(b"d").unwrap(), None);
+    store
+        .set_automatic_checkpoint_log_scan_limit(Some(exact))
+        .unwrap();
+    store.put(b"d", b"four").unwrap();
+    assert_eq!(snapshot.get(b"c").unwrap().as_deref(), Some(&b"three"[..]));
+    assert_eq!(snapshot.get(b"d").unwrap(), None);
+    drop(snapshot);
+
+    // The configured ceiling still applies to the now larger log. Reopen
+    // installs the default policy without a scan ceiling.
+    assert!(matches!(
+        store.put_detailed(b"e", b"five"),
+        Err(crate::MutationFailure::Rejected(error)) if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    drop(store);
+    let reopened =
+        retry_lock(|| CheckpointStore::open_managed_with_resource_limits(&path, 1024, 1, 64, None))
+            .unwrap();
+    assert_eq!(reopened.get(b"d").unwrap().as_deref(), Some(&b"four"[..]));
+    assert_eq!(reopened.get(b"e").unwrap(), None);
+    reopened.put(b"e", b"five").unwrap();
+}
+
+#[test]
 fn automatic_rollover_handles_suffix_byte_and_key_byte_limits() {
     for (max_tail, max_key_bytes, first, second) in [
         (60, 64, b"a".as_slice(), b"a".as_slice()),

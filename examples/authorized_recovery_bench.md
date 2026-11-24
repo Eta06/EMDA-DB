@@ -39,7 +39,9 @@ verified. Checkpoint reopen verifies the covered log, including old records.
 The Linux ceilings apply hard and soft `RLIMIT_AS` during mutation,
 fresh-process reopen, and full-state verification for the selected workers.
 The retained ceiling also applies during the optional lifecycle phase.
-Each phase records its limit and process peak RSS. Fixture creation, archive binding, initial
+Each capped phase records its configured limit, both kernel limits read inside
+the measured process, and process peak RSS. The driver rejects missing or
+mismatched kernel limits. Fixture creation, archive binding, initial
 cutover, and the ordinary and SQLite controls run uncapped. A ceiling covers one worker's
 virtual address space. Allocation failure can terminate the worker.
 Aggregate memory use and filesystem caches have separate costs.

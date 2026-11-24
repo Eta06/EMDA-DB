@@ -173,6 +173,22 @@ impl CheckpointStore {
         Ok(())
     }
 
+    /// Set an inclusive logical log read ceiling for each automatic
+    /// checkpoint rollover on this open handle. The ceiling charges the
+    /// complete existing log for source verification, staged checkpoint
+    /// verification, and opening the new view. Framing and metadata probes,
+    /// checkpoint-file reads, physical retries, and writes have separate
+    /// costs.
+    ///
+    /// An insufficient ceiling returns `InvalidInput` before slot cleanup,
+    /// publication, or the triggering append. A background check reports
+    /// that error and stops its worker. The ceiling survives a consuming
+    /// compaction handoff and resets on reopen. `None` restores the default.
+    pub fn set_automatic_checkpoint_log_scan_limit(&self, limit: Option<u64>) -> io::Result<()> {
+        self.write()?.automatic_checkpoint_log_scan_limit = limit;
+        Ok(())
+    }
+
     /// Enables persistent, on-demand checkpoint rollover when a write would
     /// exceed a suffix limit. A managed selection must already exist. Two
     /// engine-owned slots are reused; existing snapshots retain their open
@@ -382,6 +398,19 @@ impl CheckpointStore {
             usize::from(selected == &indexes[0] || (selected != &indexes[1] && pinned(0)));
         if pinned(next_slot) {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, PinnedSlot));
+        }
+        if let Some(limit) = state.automatic_checkpoint_log_scan_limit {
+            if self
+                .log
+                .len()?
+                .checked_mul(3)
+                .is_none_or(|reads| reads > limit)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "automatic checkpoint log scan byte limit exceeded",
+                ));
+            }
         }
         let destination = root.join(SLOTS[next_slot]);
         // Keep the writer gate across preparation and publication. The old

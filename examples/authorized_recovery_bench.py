@@ -114,8 +114,13 @@ def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False,
         print(json.dumps(metrics, sort_keys=True), file=output)
     if child.returncode != 0 or "peak_rss_bytes" not in metrics:
         raise SystemExit(f"{phase} {backend} epoch {epoch} failed, see {logfile}")
-    if address_space is not None and metrics["peak_rss_bytes"] > address_space:
-        raise SystemExit(f"peak RSS exceeded applied address-space limit, see {logfile}")
+    if address_space is not None:
+        if (metrics.get("rlimit_as_soft_bytes"), metrics.get("rlimit_as_hard_bytes")) != (
+            address_space, address_space
+        ):
+            raise SystemExit(f"worker reported missing or incorrect address-space limits, see {logfile}")
+        if metrics["peak_rss_bytes"] > address_space:
+            raise SystemExit(f"peak RSS exceeded applied address-space limit, see {logfile}")
     if phase == "mutate" and metrics.get("writers") != writers:
         raise SystemExit(f"{backend} epoch {epoch} reported the wrong writer count")
     return metrics

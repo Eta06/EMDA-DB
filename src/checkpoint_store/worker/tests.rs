@@ -120,6 +120,44 @@ fn pinned_automatic_slot_defers_worker_without_stopping_it() {
 }
 
 #[test]
+fn automatic_checkpoint_scan_limit_stops_worker_before_rollover() {
+    let (_root, path, store) = fixture();
+    store.put(b"tail", b"pending rollover").unwrap();
+    let selection = crate::checkpoint_store::selection::path(&path);
+    let before = fs::read(&selection).unwrap();
+    store
+        .set_automatic_checkpoint_log_scan_limit(Some(0))
+        .unwrap();
+    let worker = store
+        .start_checkpoint_worker(Duration::from_secs(3600), 1)
+        .unwrap();
+    worker.request_check().unwrap();
+    let status = wait_for(&worker, |status| status.stopped);
+    assert_eq!(status.checks, 1);
+    assert_eq!(status.checkpoints, 0);
+    assert_eq!(
+        status.last_error.as_deref(),
+        Some("automatic checkpoint log scan byte limit exceeded")
+    );
+    assert_eq!(fs::read(&selection).unwrap(), before);
+    assert_eq!(store.overlay_keys().unwrap(), 1);
+    worker.stop().unwrap();
+
+    store.set_automatic_checkpoint_log_scan_limit(None).unwrap();
+    let worker = store
+        .start_checkpoint_worker(Duration::from_secs(3600), 1)
+        .unwrap();
+    worker.request_check().unwrap();
+    wait_for(&worker, |status| status.checkpoints == 1);
+    assert_eq!(store.overlay_keys().unwrap(), 0);
+    assert_eq!(
+        store.get(b"tail").unwrap().as_deref(),
+        Some(&b"pending rollover"[..])
+    );
+    worker.stop().unwrap();
+}
+
+#[test]
 fn invalid_configuration_and_disabled_automatic_checkpoints_are_rejected() {
     let (_root, _path, store) = fixture();
     for (interval, threshold) in [

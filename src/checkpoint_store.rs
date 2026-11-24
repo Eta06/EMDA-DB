@@ -55,6 +55,7 @@ struct State {
     automatic: bool,
     automatic_slot_pins: Option<Box<[Option<crate::checkpoint_view::CheckpointPin>; 2]>>,
     protect_pinned_automatic_slots: bool,
+    automatic_checkpoint_log_scan_limit: Option<u64>,
 }
 
 // Dropping the state guard can let readers use the published view. The
@@ -644,6 +645,7 @@ impl CheckpointStore {
                 automatic,
                 automatic_slot_pins,
                 protect_pinned_automatic_slots: false,
+                automatic_checkpoint_log_scan_limit: None,
             }),
             writers: ControlledRwLock::new(()),
             append_failed: AtomicBool::new(false),

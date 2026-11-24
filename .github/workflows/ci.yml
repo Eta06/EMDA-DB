@@ -171,6 +171,10 @@ jobs:
                       or row["peak_rss_bytes"] <= 0
                       or (expected_limit is not None and row["peak_rss_bytes"] > expected_limit)):
                   raise SystemExit(f"Invalid recovery scope or memory coverage: {row}")
+              if expected_limit is not None and (
+                  row.get("rlimit_as_soft_bytes"), row.get("rlimit_as_hard_bytes")
+              ) != (expected_limit, expected_limit):
+                  raise SystemExit(f"Incorrect kernel address-space limits: {row}")
               if phase == "mutate" and (row["writers"], row["operations"]) != (4, operations):
                   raise SystemExit(f"Wrong write workload: {row}")
               # The epoch deletes IDs in [0, operations) congruent to -epoch modulo 11.

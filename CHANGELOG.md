@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a per-open logical log read ceiling for automatic checkpoint rollover,
+  enforced before checkpoint slot cleanup or the triggering append.
+
 - Add logical read ceilings for retained cutover recovery and archive retirement.
 
 - Add logical read ceilings for retained backup, restore, and authority registration.
