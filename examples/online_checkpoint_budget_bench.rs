@@ -23,6 +23,10 @@ use std::time::{Duration, Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
+/// Distinct keys each concurrent writer cycles through. Two writer phases
+/// stay below the default 16,384-key checkpoint suffix cap.
+const WRITER_KEYS: u64 = 4096;
+
 fn key(index: usize) -> [u8; 8] {
     (index as u64).to_be_bytes()
 }
@@ -184,7 +188,9 @@ fn main() -> Result<()> {
             let mut written = Vec::new();
             let mut index = 0_u64;
             while !stop.load(Ordering::Acquire) {
-                let key = format!("during-{index:08}").into_bytes();
+                // A fixed key set keeps the suffix within the default
+                // distinct-key cap; the model keeps the latest value.
+                let key = format!("during-{:05}", index % WRITER_KEYS).into_bytes();
                 let value = index.to_le_bytes().repeat(8);
                 store.with_store(|db| db.put(&key, &value))?;
                 written.push((key, value));

@@ -17,6 +17,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
+
+/// Distinct keys each concurrent writer cycles through. Two writer phases
+/// stay below the default 16,384-key checkpoint suffix cap.
+const WRITER_KEYS: u64 = 4096;
 // Acknowledged entries and each synchronized put's latency in microseconds.
 type WriterOutput = (Vec<(Vec<u8>, Vec<u8>)>, Vec<u128>);
 
@@ -131,7 +135,10 @@ fn writer(
         let mut latencies = Vec::new();
         let mut index = 0_u64;
         while !stop.load(Ordering::Acquire) {
-            let key = format!("{prefix}-{index:08}").into_bytes();
+            // A fixed key set keeps the suffix within the default
+            // distinct-key cap however fast the host is; the model keeps
+            // the latest acknowledged value for each key.
+            let key = format!("{prefix}-{:05}", index % WRITER_KEYS).into_bytes();
             let value = index.to_le_bytes().repeat(8);
             let start = Instant::now();
             store.with_store(|db| db.put(&key, &value))?;
