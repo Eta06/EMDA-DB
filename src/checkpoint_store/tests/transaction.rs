@@ -21,6 +21,106 @@ fn read_only_transaction_finishes_with_another_state_reader_present() {
 }
 
 #[test]
+fn writing_read_set_conflicts_can_finish_while_a_committed_reader_holds_state() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    std::thread::scope(|scope| {
+        let (staged, ready) = mpsc::channel();
+        let (resume, proceed) = mpsc::channel();
+        let (done, outcome) = mpsc::channel();
+        let store = &store;
+        scope.spawn(move || {
+            let result = store.transaction_with_read_set_fifo(|tx| {
+                assert!(tx.scan(Some(b"p"), Some(b"r"), 4)?.is_empty());
+                tx.put(b"unsubmitted", b"must roll back")?;
+                staged.send(()).map_err(io::Error::other)?;
+                proceed
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(io::Error::other)
+            });
+            done.send(result).unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(10)).unwrap();
+        store.put(b"q", b"phantom").unwrap();
+        let reader = store.state.read().unwrap();
+        resume.send(()).unwrap();
+        let observed = outcome.recv_timeout(Duration::from_secs(3));
+        assert_eq!(reader.view.get(b"q").unwrap().unwrap(), b"phantom");
+        assert_eq!(reader.view.get(b"unsubmitted").unwrap(), None);
+        drop(reader);
+        let error = observed
+            .expect("read-set validation waited for exclusive state access")
+            .unwrap_err();
+        assert!(crate::is_transaction_conflict(&error));
+    });
+    assert_eq!(store.transaction_queue.queued_for_test(), 0);
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(reopened.get(b"q").unwrap().unwrap(), b"phantom");
+    assert_eq!(reopened.get(b"unsubmitted").unwrap(), None);
+}
+
+#[test]
+fn cancelled_read_set_commit_releases_writer_gate_with_shared_reader_present() {
+    use crate::{CancellationToken, ControlledTransactionError};
+    use std::sync::{TryLockError, mpsc};
+    use std::time::{Duration, Instant};
+
+    let (_dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let before = fs::read(path.join("records.log")).unwrap();
+    let token = CancellationToken::new();
+    std::thread::scope(|scope| {
+        let (staged, ready) = mpsc::channel();
+        let (resume, proceed) = mpsc::channel();
+        let (done, outcome) = mpsc::channel();
+        let store = &store;
+        let worker_token = token.clone();
+        scope.spawn(move || {
+            let result = store.transaction_controlled(
+                &worker_token,
+                None,
+                CheckpointTransactionMode::ReadSet,
+                |tx| {
+                    tx.get(b"base")?;
+                    tx.put(b"unsubmitted", b"must roll back")?;
+                    staged.send(()).map_err(io::Error::other)?;
+                    proceed
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(io::Error::other)
+                },
+            );
+            done.send(result).unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(10)).unwrap();
+        let reader = store.state.read().unwrap();
+        resume.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !matches!(store.writers.try_read(), Err(TryLockError::WouldBlock)) {
+            assert!(
+                Instant::now() < deadline,
+                "transaction did not acquire writer gate"
+            );
+            std::thread::yield_now();
+        }
+        token.cancel();
+        let observed = outcome.recv_timeout(Duration::from_secs(3));
+        drop(reader);
+        assert!(matches!(
+            observed.unwrap(),
+            Err(ControlledTransactionError::Cancelled)
+        ));
+    });
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), before);
+    assert_eq!(store.transaction_budget.lock().unwrap().used, 0);
+    store.put(b"after", b"writer gate released").unwrap();
+}
+
+#[test]
 fn poisoned_transaction_budget_rejects_new_admissions() {
     let (_dir, path, checkpoint, digest) = fixture();
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();

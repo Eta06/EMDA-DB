@@ -560,8 +560,23 @@ impl CheckpointStore {
     fn read_before_write(
         &self,
     ) -> io::Result<(ControlledReadGuard<'_, State>, ControlledWriteGuard<'_, ()>)> {
-        let writer = self.writers.write().map_err(|_| uncertain())?;
-        Ok((self.read()?, writer))
+        self.read_before_write_until(None, None)
+            .map_err(crate::TimedTransactionError::into_io)
+    }
+
+    fn read_before_write_until(
+        &self,
+        deadline: Option<std::time::Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+    ) -> Result<
+        (ControlledReadGuard<'_, State>, ControlledWriteGuard<'_, ()>),
+        crate::TimedTransactionError,
+    > {
+        let writer =
+            crate::cancellation::write_lock(&self.writers, deadline, cancellation, uncertain)?;
+        let state = crate::cancellation::read_lock(&self.state, deadline, cancellation, uncertain)?;
+        self.ensure_healthy(&state)?;
+        Ok((state, writer))
     }
 
     fn write_after_read<'a>(
@@ -570,14 +585,8 @@ impl CheckpointStore {
         writer: ControlledWriteGuard<'a, ()>,
     ) -> io::Result<StateWrite<'a>> {
         drop(state);
-        // No mutation or checkpoint handoff can have changed the view
-        // between inspection and commit admission.
-        let state = self.state.write().map_err(|_| uncertain())?;
-        self.ensure_healthy(&state)?;
-        Ok(StateWrite {
-            state,
-            _writer: writer,
-        })
+        self.lock_state_for_write_until(writer, None, None)
+            .map_err(crate::TimedTransactionError::into_io)
     }
 
     fn write_until(
@@ -587,6 +596,17 @@ impl CheckpointStore {
     ) -> Result<StateWrite<'_>, crate::TimedTransactionError> {
         let writer =
             crate::cancellation::write_lock(&self.writers, deadline, cancellation, uncertain)?;
+        self.lock_state_for_write_until(writer, deadline, cancellation)
+    }
+
+    // The caller keeps the writer gate when moving from a shared read to
+    // this lock, so no mutation or checkpoint handoff can change the view.
+    fn lock_state_for_write_until<'a>(
+        &'a self,
+        writer: ControlledWriteGuard<'a, ()>,
+        deadline: Option<std::time::Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+    ) -> Result<StateWrite<'a>, crate::TimedTransactionError> {
         let state =
             crate::cancellation::write_lock(&self.state, deadline, cancellation, uncertain)?;
         self.ensure_healthy(&state)?;

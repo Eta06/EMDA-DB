@@ -617,8 +617,16 @@ impl CheckpointStore {
             })
             .collect::<Vec<_>>();
         let batch = BatchLayout::new(&operations)?;
-        let state = self.write_until(deadline, cancellation)?;
-        validate(&state)?;
+        let state = if track_points {
+            let (state, writer) = self.read_before_write_until(deadline, cancellation)?;
+            validate(&state)?;
+            drop(state);
+            self.lock_state_for_write_until(writer, deadline, cancellation)?
+        } else {
+            let state = self.write_until(deadline, cancellation)?;
+            validate(&state)?;
+            state
+        };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
         self.commit_until(
