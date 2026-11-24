@@ -1,8 +1,8 @@
 use super::{
     Append, BaseImport, Expected, GenerationRole, Header, OverlaySource, RecoveryLimits,
-    RecoveryScanLimit, RetainedStore, RetainedStoreLimits, StoreLock, SuffixImport, create_file,
-    decode_marker, invalid_input, open_regular, open_regular_with, random_id, read_marker,
-    suffix_end,
+    RecoveryScanLimit, RetainedStore, RetainedStoreLimits, StoreLock, SuffixImport, TailRecovery,
+    create_file, decode_marker, invalid_input, open_regular, open_regular_with, random_id,
+    read_marker, suffix_end,
 };
 use crate::directory::sync_existing;
 use crate::record;
@@ -544,6 +544,7 @@ impl ManagedRetainedStore {
             None,
             None,
         )
+        .map(|(store, _)| store)
     }
 
     /// Recover the selected generation with the same logical suffix scan
@@ -568,6 +569,7 @@ impl ManagedRetainedStore {
             None,
             None,
         )
+        .map(|(store, _)| store)
     }
 
     /// Recover the selected generation under the combined base and suffix
@@ -591,6 +593,7 @@ impl ManagedRetainedStore {
             None,
             None,
         )
+        .map(|(store, _)| store)
     }
 
     /// Recover with a per-open whole-catalog logical storage limit. When the
@@ -604,7 +607,7 @@ impl ManagedRetainedStore {
         suffix_threshold: Option<NonZeroU64>,
     ) -> io::Result<Self> {
         let root = root.as_ref();
-        let mut store = Self::open_role(
+        let (mut store, _) = Self::open_role(
             root,
             ceiling,
             CATALOG_MAGIC,
@@ -627,7 +630,7 @@ impl ManagedRetainedStore {
         select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
         authority: Option<AuthorityRecord>,
         startup_remaining: Option<&mut u64>,
-    ) -> io::Result<Self> {
+    ) -> io::Result<(Self, TailRecovery)> {
         let lock = lock_directory(root)?;
         let root = root.canonicalize()?;
         lock.verify_identity(&root)?;
@@ -640,7 +643,7 @@ impl ManagedRetainedStore {
             .as_deref()
             .map(|limit| RecoveryScanLimit::BaseAndSuffix(*limit))
             .or(scan_limit);
-        let store = RetainedStore::open_role(
+        let (store, recovery) = RetainedStore::open_role(
             &path,
             (RecoveryLimits::Ceiling(ceiling), scan_limit),
             &active.expected,
@@ -677,18 +680,21 @@ impl ManagedRetainedStore {
                 verify_active(&root, &active, catalog_magic)
             },
         )?;
-        Ok(Self {
-            store,
-            root,
-            active,
-            catalog_magic,
-            uncertain: false,
-            auto_reclaim: None,
-            cleanup_pending: false,
-            storage,
-            requested_storage,
-            lock,
-        })
+        Ok((
+            Self {
+                store,
+                root,
+                active,
+                catalog_magic,
+                uncertain: false,
+                auto_reclaim: None,
+                cleanup_pending: false,
+                storage,
+                requested_storage,
+                lock,
+            },
+            recovery,
+        ))
     }
 
     /// Recover a managed catalog and retire any verified inactive slot before
@@ -722,7 +728,7 @@ impl ManagedRetainedStore {
         limits: RetainedStartupLimits,
     ) -> io::Result<Self> {
         let mut remaining = limits.max_startup_scan_bytes;
-        let mut store = Self::open_role(
+        let (mut store, _) = Self::open_role(
             root.as_ref(),
             ceiling,
             CATALOG_MAGIC,

@@ -843,8 +843,17 @@ fn recovery_adopts_an_exact_proposed_tail_before_finalizing_a_pending_intent() {
     assert_eq!(fs::read(&log_path).unwrap(), original_log);
     assert_eq!(fs::read(&witnessed_path).unwrap(), witness);
     assert_eq!(f.provider.clone().read().unwrap(), authority);
-    let mut recovered = open_combined(cap).unwrap();
+    let mut recovered = AuthorizedRetainedStore::open_using(
+        &f.root,
+        LIMITS,
+        f.provider.clone(),
+        (None, Some(RecoveryScanLimit::BaseAndSuffix(cap))),
+        None,
+        |_| panic!("successful local adoption already synchronized the log and witness"),
+    )
+    .unwrap();
     assert_eq!(recovered.get(b"pending", 8).unwrap().unwrap(), b"proposed");
+    assert_ne!(fs::read(&witnessed_path).unwrap(), witness);
     let current = f.provider.read().unwrap().unwrap();
     assert_eq!(current.committed.suffix_end, encoded.len() as u64);
     assert!(current.pending.is_none());

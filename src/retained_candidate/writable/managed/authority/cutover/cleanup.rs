@@ -129,7 +129,7 @@ fn discard(
         check_layout(&path, &active)?;
         // The preparation was never selected. Its proposed quota may now
         // be smaller than the enclosing root and must not block removal.
-        let generation = RetainedStore::open_role(
+        let (generation, _) = RetainedStore::open_role(
             &active.slot.path(&path),
             (RecoveryLimits::Ceiling(ceiling), None),
             &active.expected,

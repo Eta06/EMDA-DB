@@ -458,7 +458,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 "retained authority already has a different record",
             ));
         }
-        let inner = ManagedRetainedStore::open_role(
+        let (inner, _) = ManagedRetainedStore::open_role(
             root,
             limits,
             AUTHORIZED_MAGIC,
@@ -605,7 +605,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         } else {
             (root.to_path_buf(), AUTHORIZED_MAGIC)
         };
-        let inner = ManagedRetainedStore::open_role(
+        let (inner, recovery) = ManagedRetainedStore::open_role(
             &catalog_path,
             limits,
             role,
@@ -623,10 +623,12 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             cleanup_pending: false,
         };
         if current.pending.is_some() {
-            // A prior writer can stop after updating the visible witness but
-            // before synchronizing it. Confirm durability on the pinned files
-            // before the independent authority acknowledges this endpoint.
-            sync_recovered_commit(&this.inner.store)?;
+            if recovery == TailRecovery::AlreadyWitnessed {
+                // The witness can be visible after a prior writer stopped
+                // before sync. If this open adopted the tail, both pinned
+                // files have already been synchronized in adoption order.
+                sync_recovered_commit(&this.inner.store)?;
+            }
             let actual = AuthorityPoint::from_store(this.inner.active.catalog, &this.inner.store);
             this.advance(current.finalized(actual)?)?;
         } else {

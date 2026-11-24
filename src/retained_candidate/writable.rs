@@ -84,6 +84,12 @@ enum RecoveryLimits {
     Ceiling(RetainedStoreLimits),
 }
 
+#[derive(PartialEq, Eq)]
+enum TailRecovery {
+    AlreadyWitnessed,
+    AdoptedAndSynced,
+}
+
 #[derive(Clone, Copy)]
 enum RecoveryScanLimit {
     Suffix(u64),
@@ -250,7 +256,7 @@ impl RetainedStore {
         witness.write_all(&marker(header.bytes(), end, &digest))?;
         witness.sync_all()?;
         drop((log, witness));
-        let store = Self::open_role(
+        let (store, _) = Self::open_role(
             dir,
             (RecoveryLimits::Exact(limits), None),
             expected,
@@ -343,6 +349,7 @@ impl RetainedStore {
             |directory, _, _, _| sync_directory(directory),
             || Ok(()),
         )
+        .map(|(store, _)| store)
     }
 
     fn open_role(
@@ -353,7 +360,7 @@ impl RetainedStore {
         preflight: impl FnOnce(&Header, u64, bool) -> io::Result<()>,
         authorize: impl FnOnce(&Path, &Header, u64, [u8; 32]) -> io::Result<()>,
         check_selection: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<Self> {
+    ) -> io::Result<(Self, TailRecovery)> {
         if !dir.symlink_metadata()?.file_type().is_dir() {
             return Err(record::invalid_data("invalid retained store directory"));
         }
@@ -441,21 +448,27 @@ impl RetainedStore {
         }
         check_selection()?;
         base.check_path(&base_path)?;
-        if pending {
+        let recovery = if pending {
             update_witness(&witness, header.bytes(), suffix_len, &hash)?;
-        }
-        Ok(Self {
-            base,
-            log,
-            witness,
-            header,
-            suffix_len,
-            hash,
-            overlay,
-            limits,
-            failed: false,
-            _lock: lock,
-        })
+            TailRecovery::AdoptedAndSynced
+        } else {
+            TailRecovery::AlreadyWitnessed
+        };
+        Ok((
+            Self {
+                base,
+                log,
+                witness,
+                header,
+                suffix_len,
+                hash,
+                overlay,
+                limits,
+                failed: false,
+                _lock: lock,
+            },
+            recovery,
+        ))
     }
 
     /// The unique identity generated when this writable generation was created.

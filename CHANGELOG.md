@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse the log and witness synchronization from local retained-tail
+  adoption when finalizing a recovered authority intent.
+
 - Bound retained recovery and startup retirement under one logical scan
   ceiling, with a separate per-mutation maintenance budget.
 
