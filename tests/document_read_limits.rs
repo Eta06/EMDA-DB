@@ -5,8 +5,8 @@ use database_engine::retained_candidate::{
 };
 use database_engine::{
     AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter,
-    DocumentReadLimits, DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue,
-    RetainedExportLimits, Store, TransactionFailure,
+    DocumentReadLimits, DocumentTransactionLimits, DocumentTransactionMode, IndexDefinition,
+    IndexQuery, IndexValue, RetainedExportLimits, Store, TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -32,6 +32,55 @@ fn check_limits(db: &DocumentDatabase<'_>) {
         Ok(())
     })
     .unwrap();
+
+    db.transaction_with_limits(
+        DocumentTransactionLimits {
+            reads: limits(2, 8),
+            max_validation_items: 0,
+        },
+        mode,
+        None,
+        None,
+        |tx| {
+            assert_eq!(tx.get_raw(b"key")?, Some(b"data".to_vec()));
+            assert!(tx.get_raw(b"z")?.is_none());
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    let outcome = db.transaction_with_limits(
+        DocumentTransactionLimits {
+            reads: limits(1, 8),
+            max_validation_items: 0,
+        },
+        mode,
+        None,
+        None,
+        |tx| {
+            tx.put_raw(b"receipt", b"not committed")?;
+            assert_eq!(tx.get_raw(b"key")?, Some(b"data".to_vec()));
+            assert!(is_read_limit(&tx.get_raw(b"z").unwrap_err()));
+            Ok(())
+        },
+    );
+    assert!(matches!(outcome, Err(TransactionFailure::Callback(error)) if is_read_limit(&error)));
+
+    let token = database_engine::CancellationToken::new();
+    token.cancel();
+    assert!(matches!(
+        db.transaction_with_limits(
+            DocumentTransactionLimits {
+                reads: limits(0, 0),
+                max_validation_items: 0
+            },
+            mode,
+            None,
+            Some(&token),
+            |_| -> io::Result<()> { panic!("cancelled callback ran") },
+        ),
+        Err(TransactionFailure::Cancelled)
+    ));
 
     for limits in [limits(2, 6), limits(0, 8)] {
         let result = db.transaction_with_read_limits(limits, mode, None, None, |tx| {
@@ -112,6 +161,101 @@ fn check_limits(db: &DocumentDatabase<'_>) {
     });
     assert!(matches!(result, Err(TransactionFailure::Callback(error)) if is_read_limit(&error)));
     assert_eq!(db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(), None);
+}
+
+#[test]
+fn document_validation_limit_rejects_before_document_and_receipt_append() {
+    for checkpoint_backed in [false, true] {
+        for (limit, conflict) in [(1, false), (2, false), (2, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("store");
+            let base = dir.path().join("checkpoint");
+            let ordinary = Store::open(&path).unwrap();
+            let documents = DocumentDatabase::new(&ordinary);
+            documents
+                .create_collection("c", CollectionSchema::default())
+                .unwrap();
+            documents
+                .insert("c", "a", &json!({"state":"initial"}))
+                .unwrap();
+            let digest = ordinary.checkpoint_to(&base).unwrap();
+            let exercise = |db: &DocumentDatabase<'_>| {
+                let source = path.join("records.log");
+                let mut before_commit = Vec::new();
+                let outcome = db.transaction_with_limits(
+                    DocumentTransactionLimits {
+                        reads: DocumentReadLimits {
+                            max_read_units: 8,
+                            max_read_bytes: 16 * 1024,
+                        },
+                        max_validation_items: limit,
+                    },
+                    DocumentTransactionMode::ReadSetFifo,
+                    None,
+                    None,
+                    |tx| {
+                        tx.replace("c", "a", &json!({"state":"staged"}), false)?;
+                        tx.put_raw(b"receipt", b"staged")?;
+                        db.transaction(|other| {
+                            if conflict {
+                                other.replace("c", "a", &json!({"state":"intervening"}), false)?;
+                            }
+                            other.put_raw(b"independent", b"kept")
+                        })?;
+                        before_commit = std::fs::read(&source)?;
+                        Ok(())
+                    },
+                );
+                if conflict || limit == 1 {
+                    let Err(TransactionFailure::Rejected(error)) = outcome else {
+                        panic!("expected pre-append rejection: {outcome:?}");
+                    };
+                    assert_eq!(database_engine::is_transaction_conflict(&error), conflict);
+                    if !conflict {
+                        assert!(
+                            error
+                                .to_string()
+                                .ends_with("cumulative validation limit exceeded")
+                        );
+                    }
+                    assert_eq!(std::fs::read(&source).unwrap(), before_commit);
+                } else {
+                    outcome.unwrap();
+                }
+            };
+            let budget = if checkpoint_backed {
+                drop(ordinary);
+                let store = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+                exercise(&DocumentDatabase::with_checkpoint_store(&store));
+                store.transaction_budget_status().unwrap()
+            } else {
+                exercise(&documents);
+                let status = ordinary.transaction_budget_status().unwrap();
+                drop(ordinary);
+                status
+            };
+            assert_eq!(budget.active_transactions, 0);
+            assert_eq!(budget.reserved_bytes, 0);
+            let store = retry_lock(|| Store::open(&path)).unwrap();
+            let db = DocumentDatabase::new(&store);
+            let state = if conflict {
+                "intervening"
+            } else if limit == 1 {
+                "initial"
+            } else {
+                "staged"
+            };
+            assert_eq!(db.get("c", "a").unwrap(), Some(json!({"state":state})));
+            assert_eq!(
+                store.get(b"receipt").unwrap(),
+                (!conflict && limit == 2).then(|| b"staged".to_vec())
+            );
+            assert_eq!(
+                store.get(b"independent").unwrap().as_deref(),
+                Some(b"kept".as_slice())
+            );
+        }
+    }
 }
 
 #[test]

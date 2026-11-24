@@ -234,6 +234,10 @@ The initial document interface is bounded and experimental. This checklist recor
   logical reads and bytes across indexed pages and point reads. It aborts
   staged changes even if the callback catches an over-budget error. Total
   request resource accounting and transaction scalability remain open.
+  `transaction_with_limits` also caps logical read-set validation work.
+  The [document budget tests](../tests/document_read_limits.rs) check exact
+  admission, pre-append rejection, genuine conflicts and document/receipt
+  recovery on the ordinary and checkpoint stores.
   Checkpoint read-set pagination reuses an observation when it already
   covers the next page's bounds, avoiding repeated full-range capture.
   The cross-platform [range regression](../tests/checkpoint_read_set_transaction.rs)

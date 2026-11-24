@@ -554,6 +554,17 @@ impl CheckpointStore {
         cancellation: Option<&crate::CancellationToken>,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> Result<T, crate::TransactionFailure> {
+        self.transaction_detailed_with_validation_limit(mode, deadline, cancellation, None, action)
+    }
+
+    pub(crate) fn transaction_detailed_with_validation_limit<T>(
+        &self,
+        mode: CheckpointTransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+        validation_limit: Option<u64>,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> Result<T, crate::TransactionFailure> {
         let read_set = matches!(
             mode,
             CheckpointTransactionMode::ReadSet | CheckpointTransactionMode::ReadSetFifo
@@ -565,7 +576,9 @@ impl CheckpointStore {
         let tracker = crate::transaction_outcome::Tracker::new();
         self.run_transaction(
             action,
-            read_set.then_some(ValidationBudget::Unlimited),
+            read_set.then(|| {
+                validation_limit.map_or(ValidationBudget::Unlimited, ValidationBudget::Remaining)
+            }),
             fifo,
             deadline,
             cancellation,

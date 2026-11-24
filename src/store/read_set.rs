@@ -21,9 +21,35 @@ pub(super) struct ReadSet {
     points: BTreeSet<Vec<u8>>,
     ranges: BTreeSet<Range>,
     bytes: usize,
+    validation_limit: Option<u64>,
 }
 
 impl ReadSet {
+    pub(super) fn with_validation_limit(validation_limit: Option<u64>) -> Self {
+        Self {
+            validation_limit,
+            ..Self::default()
+        }
+    }
+
+    fn inspect(&self, inspected: &mut usize) -> io::Result<()> {
+        *inspected += 1;
+        if *inspected > MAX_TRANSACTION_VALIDATION_ITEMS {
+            return Err(io::Error::other(
+                "transaction validation work limit exceeded",
+            ));
+        }
+        if self
+            .validation_limit
+            .is_some_and(|limit| *inspected as u64 > limit)
+        {
+            return Err(io::Error::other(
+                "transaction cumulative validation limit exceeded",
+            ));
+        }
+        Ok(())
+    }
+
     fn admit(&self, bytes: usize) -> io::Result<()> {
         if self.points.len() + self.ranges.len() >= MAX_TRANSACTION_READ_CONSTRAINTS
             || bytes > MAX_TRANSACTION_READ_CONSTRAINT_BYTES - self.bytes
@@ -68,12 +94,7 @@ impl ReadSet {
     ) -> io::Result<bool> {
         let mut inspected = 0_usize;
         for key in &self.points {
-            inspected += 1;
-            if inspected > MAX_TRANSACTION_VALIDATION_ITEMS {
-                return Err(io::Error::other(
-                    "transaction validation work limit exceeded",
-                ));
-            }
+            self.inspect(&mut inspected)?;
             let qualify = |location: Option<&ValueLocation>, generation| {
                 location.map(|location| GenerationLocation {
                     generation,
@@ -99,12 +120,7 @@ impl ReadSet {
                 if left.is_none() && right.is_none() {
                     break;
                 }
-                inspected += 1;
-                if inspected > MAX_TRANSACTION_VALIDATION_ITEMS {
-                    return Err(io::Error::other(
-                        "transaction validation work limit exceeded",
-                    ));
-                }
+                self.inspect(&mut inspected)?;
                 fn qualify<'a>(
                     entry: Option<(&'a Vec<u8>, &ValueLocation)>,
                     generation: Option<GenerationId>,

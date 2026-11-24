@@ -402,7 +402,7 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, false, None, None, None)
+        self.run_transaction(action, None, false, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -418,8 +418,15 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, false, None, None, None)
-            .map_err(TimedTransactionError::into_io)
+        self.run_transaction(
+            action,
+            Some(super::read_set::ReadSet::default()),
+            false,
+            None,
+            None,
+            None,
+        )
+        .map_err(TimedTransactionError::into_io)
     }
 
     /// Runs a read-set transaction with FIFO admission among calls to this method.
@@ -433,8 +440,15 @@ impl Store {
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, true, None, None, None)
-            .map_err(TimedTransactionError::into_io)
+        self.run_transaction(
+            action,
+            Some(super::read_set::ReadSet::default()),
+            true,
+            None,
+            None,
+            None,
+        )
+        .map_err(TimedTransactionError::into_io)
     }
 
     /// Runs a transaction with a monotonic, operation-boundary deadline.
@@ -462,7 +476,14 @@ impl Store {
             TransactionMode::ReadSet => (true, false),
             TransactionMode::ReadSetFifo => (true, true),
         };
-        self.run_transaction(action, track_reads, fifo, Some(deadline), None, None)
+        self.run_transaction(
+            action,
+            track_reads.then(super::read_set::ReadSet::default),
+            fifo,
+            Some(deadline),
+            None,
+            None,
+        )
     }
 
     /// Runs a transaction with cooperative cancellation and an optional
@@ -487,7 +508,7 @@ impl Store {
         };
         self.run_transaction(
             action,
-            track_reads,
+            track_reads.then(super::read_set::ReadSet::default),
             fifo,
             deadline,
             Some(cancellation),
@@ -513,6 +534,17 @@ impl Store {
         cancellation: Option<&crate::CancellationToken>,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
     ) -> Result<T, crate::TransactionFailure> {
+        self.transaction_detailed_with_validation_limit(mode, deadline, cancellation, None, action)
+    }
+
+    pub(crate) fn transaction_detailed_with_validation_limit<T>(
+        &self,
+        mode: TransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+        validation_limit: Option<u64>,
+        action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
+    ) -> Result<T, crate::TransactionFailure> {
         let (track_reads, fifo) = match mode {
             TransactionMode::Conservative => (false, false),
             TransactionMode::ReadSet => (true, false),
@@ -521,7 +553,7 @@ impl Store {
         let tracker = crate::transaction_outcome::Tracker::new();
         self.run_transaction(
             action,
-            track_reads,
+            track_reads.then(|| super::read_set::ReadSet::with_validation_limit(validation_limit)),
             fifo,
             deadline,
             cancellation,
@@ -533,7 +565,7 @@ impl Store {
     fn run_transaction<T>(
         &self,
         action: impl FnOnce(&mut Transaction<'_>) -> io::Result<T>,
-        track_reads: bool,
+        read_set: Option<super::read_set::ReadSet>,
         fifo: bool,
         deadline: Option<Instant>,
         cancellation: Option<&crate::CancellationToken>,
@@ -560,7 +592,7 @@ impl Store {
             snapshot,
             staged: BTreeMap::new(),
             encoded_bytes: 4,
-            read_set: track_reads.then(|| Mutex::new(super::read_set::ReadSet::default())),
+            read_set: read_set.map(Mutex::new),
             cancellation: cancellation.cloned(),
         };
         if let Some(tracker) = tracker {

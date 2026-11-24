@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Combine logical document read limits and read-set validation limits in
+  the detailed transaction API.
+
 - Add an opt-in cumulative validation limit for checkpoint read-set
   transactions across intervening writes.
 

@@ -75,6 +75,15 @@ pub enum DocumentTransactionMode {
     ReadSetFifo,
 }
 
+/// Logical callback reads and read-set revalidation for one transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentTransactionLimits {
+    /// Logical point requests, scan pages, entries, and their key/value bytes.
+    pub reads: DocumentReadLimits,
+    /// Cumulative point and range-item checks after intervening writes.
+    pub max_validation_items: u64,
+}
+
 /// A document view over one already-open store. The document namespace must
 /// not be modified using the raw key/value API. This is not a security boundary.
 pub struct DocumentDatabase<'a> {
@@ -272,6 +281,17 @@ impl<'a> DocumentDatabase<'a> {
         cancellation: Option<&CancellationToken>,
         action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> io::Result<T>,
     ) -> Result<T, TransactionFailure> {
+        self.transaction_detailed_with_validation_limit(mode, deadline, cancellation, None, action)
+    }
+
+    fn transaction_detailed_with_validation_limit<T>(
+        &self,
+        mode: DocumentTransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&CancellationToken>,
+        validation_limit: Option<u64>,
+        action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> io::Result<T>,
+    ) -> Result<T, TransactionFailure> {
         match self.backend {
             Backend::Store(store) => {
                 let mode = match mode {
@@ -279,11 +299,17 @@ impl<'a> DocumentDatabase<'a> {
                     DocumentTransactionMode::ReadSet => TransactionMode::ReadSet,
                     DocumentTransactionMode::ReadSetFifo => TransactionMode::ReadSetFifo,
                 };
-                store.transaction_detailed(mode, deadline, cancellation, |tx| {
-                    let mut transaction = DocumentTransaction::ordinary(tx);
-                    let result = action(&mut transaction);
-                    transaction.finish(result)
-                })
+                store.transaction_detailed_with_validation_limit(
+                    mode,
+                    deadline,
+                    cancellation,
+                    validation_limit,
+                    |tx| {
+                        let mut transaction = DocumentTransaction::ordinary(tx);
+                        let result = action(&mut transaction);
+                        transaction.finish(result)
+                    },
+                )
             }
             Backend::Checkpoint(store) => {
                 let mode = match mode {
@@ -293,11 +319,17 @@ impl<'a> DocumentDatabase<'a> {
                     DocumentTransactionMode::ReadSet => CheckpointTransactionMode::ReadSet,
                     DocumentTransactionMode::ReadSetFifo => CheckpointTransactionMode::ReadSetFifo,
                 };
-                store.transaction_detailed(mode, deadline, cancellation, |tx| {
-                    let mut transaction = DocumentTransaction::checkpoint(tx);
-                    let result = action(&mut transaction);
-                    transaction.finish(result)
-                })
+                store.transaction_detailed_with_validation_limit(
+                    mode,
+                    deadline,
+                    cancellation,
+                    validation_limit,
+                    |tx| {
+                        let mut transaction = DocumentTransaction::checkpoint(tx);
+                        let result = action(&mut transaction);
+                        transaction.finish(result)
+                    },
+                )
             }
             Backend::Retained(ref store) => retained::run(store, deadline, cancellation, action),
         }
@@ -320,6 +352,35 @@ impl<'a> DocumentDatabase<'a> {
             tx.limit_reads(limits);
             action(tx)
         })
+    }
+
+    /// Runs a detailed transaction with independent callback-read and
+    /// read-set validation limits. On the ordinary store validation happens
+    /// at commit. Checkpoint-backed transactions share the budget between
+    /// callback revalidation and commit. An observed point or compared range
+    /// item costs one validation unit. Initial observations and checks of
+    /// the same generation use zero validation units. Conservative and
+    /// serialized retained transactions do not replay a read set.
+    /// Exceeding either limit prevents append even if the callback catches
+    /// the error. Limits are inclusive and measure logical work.
+    pub fn transaction_with_limits<T>(
+        &self,
+        limits: DocumentTransactionLimits,
+        mode: DocumentTransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&CancellationToken>,
+        action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> io::Result<T>,
+    ) -> Result<T, TransactionFailure> {
+        self.transaction_detailed_with_validation_limit(
+            mode,
+            deadline,
+            cancellation,
+            Some(limits.max_validation_items),
+            |tx| {
+                tx.limit_reads(limits.reads);
+                action(tx)
+            },
+        )
     }
 
     /// Creates an empty collection and persists its schema atomically.

@@ -428,6 +428,21 @@ the error and returns success, the engine aborts before commit. The limits
 do not measure underlying I/O, validation reads at commit, allocator use
 or elapsed time. Deadlines, cancellation and per-operation bounds still apply.
 
+`transaction_with_limits` also sets `max_validation_items`. An ordinary
+read-set transaction compares its observations with committed state once,
+before append. A checkpoint-backed read-set transaction can revalidate
+inside the callback as well as before append, and both phases share the cap.
+Each point check, including an absent point, costs one unit. Ordinary range
+validation counts compared entry pairs, including an entry on only one side.
+Checkpoint range validation counts entries encountered during its scan.
+Initial capture and unchanged-generation validation cost zero units.
+Conservative transactions check the store generation. Retained transactions
+serialize access and still perform their applicable authority checks.
+An engine rejection during final validation returns
+`TransactionFailure::Rejected`. A limit error propagated by the callback
+returns `TransactionFailure::Callback`. Staged document and raw-key updates
+are discarded in either case. Independent writes keep their normal outcome.
+
 ### Moving a collection
 
 `export_collection` returns a versioned JSON archive from one transaction's
