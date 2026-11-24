@@ -458,15 +458,7 @@ fn uncertain_source_commit_during_copy_never_publishes_a_compacted_store() {
         let (_, resume) = mpsc::channel();
         let source_store = fault_store(&source, fault, Arc::clone(&armed), entered, resume);
         source_store.put(b"safe", b"committed").unwrap();
-        let online = OnlineStore {
-            path: fs::canonicalize(&source).unwrap(),
-            state: RwLock::new(State {
-                store: Arc::new(source_store),
-                failed: false,
-            }),
-            maintenance: Mutex::new(()),
-            reclamation_worker: std::sync::atomic::AtomicBool::new(false),
-        };
+        let online = OnlineStore::from_store(&source, source_store).unwrap();
         let result = online.compact_with_hooks(
             &previous,
             &Default::default(),
@@ -512,15 +504,7 @@ fn partial_source_append_at_every_offset_aborts_handoff_without_truncation() {
         let fault = Arc::new(Mutex::new(None));
         let source_store = open_fault_store(&source, Arc::clone(&fault)).unwrap();
         source_store.put(b"safe", b"committed").unwrap();
-        let online = OnlineStore {
-            path: fs::canonicalize(source.path()).unwrap(),
-            state: RwLock::new(State {
-                store: Arc::new(source_store),
-                failed: false,
-            }),
-            maintenance: Mutex::new(()),
-            reclamation_worker: std::sync::atomic::AtomicBool::new(false),
-        };
+        let online = OnlineStore::from_store(source.path(), source_store).unwrap();
         let result = online.compact_with_hooks(
             &previous,
             &Default::default(),
@@ -585,15 +569,7 @@ fn partial_v2_and_v3_source_appends_abort_handoff_without_truncation() {
             let fault = Arc::new(Mutex::new(None));
             let source_store = open_versioned_fault_store(&source, Arc::clone(&fault)).unwrap();
             source_store.put(b"safe", b"committed").unwrap();
-            let online = OnlineStore {
-                path: fs::canonicalize(&source).unwrap(),
-                state: RwLock::new(State {
-                    store: Arc::new(source_store),
-                    failed: false,
-                }),
-                maintenance: Mutex::new(()),
-                reclamation_worker: std::sync::atomic::AtomicBool::new(false),
-            };
+            let online = OnlineStore::from_store(&source, source_store).unwrap();
             let result = online.compact_with_hooks(
                 &previous,
                 &Default::default(),

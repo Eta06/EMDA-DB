@@ -294,12 +294,16 @@ impl OnlineStore {
         max_live_keys: Option<usize>,
         max_live_key_bytes: Option<usize>,
     ) -> io::Result<Self> {
-        let mut store = Store::open_with_resource_limits(
+        let store = Store::open_with_resource_limits(
             path.as_ref(),
             max_log_bytes,
             max_live_keys,
             max_live_key_bytes,
         )?;
+        Self::from_store(path.as_ref(), store)
+    }
+
+    fn from_store(path: &Path, mut store: Store) -> io::Result<Self> {
         let path = fs::canonicalize(path)?;
         store._lock_file.verify_identity(&path)?;
         store.snapshot_budget.make_shared();
