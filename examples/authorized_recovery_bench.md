@@ -76,7 +76,10 @@ SQLite controls. Allow space for the backup and restore as well.
 
 Add `--authorized-restore` to save the verified preparation receipt in a
 separate directory before publication, then register the destination with
-a fresh authority. The runner checks catalog and generation identities,
+a fresh authority. The lifecycle uses logical read ceilings for backup,
+archive retirement, restore, and registration. Its metrics record the
+ceilings and the exact source and restored entry counts.
+The runner checks catalog and generation identities,
 the saved receipt, unchanged source authority, and every restored entry
 after reopening. Preparation and registration are timed separately.
 The allocation samples include the receipt and fresh authority directories.
