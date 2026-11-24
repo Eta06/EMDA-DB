@@ -33,7 +33,7 @@ hard and soft 48 MiB process address-space limit. Fixture setup, initial
 cutover, and the ordinary and SQLite controls ran uncapped. The checkpoint
 rolled over four times and the retained catalog rotated once under the
 ceiling. All 16 ordered scans across the four backends verified
-1,045,597 live entries per epoch.
+between 1,045,597 and 1,045,598 live entries per epoch.
 
 | Engine | Ready wall ms | Ready CPU ms | Reopen peak RSS MiB | Mutation peak RSS MiB | Write epoch ms | Verified scan ms | Sampled allocation peak MiB | Rotations | Rollovers |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
