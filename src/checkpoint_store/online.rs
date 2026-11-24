@@ -33,6 +33,18 @@ impl std::fmt::Display for MaintenanceBusy {
 
 impl std::error::Error for MaintenanceBusy {}
 
+// A scheduled check found no safe room; nothing was reserved or published.
+#[derive(Debug)]
+struct ScheduledDeferral;
+
+impl std::fmt::Display for ScheduledDeferral {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("scheduled checkpoint compaction deferred")
+    }
+}
+
+impl std::error::Error for ScheduledDeferral {}
+
 thread_local! { static ACTIVE_ACCESS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
 
 struct Access(usize);
@@ -74,6 +86,8 @@ impl Drop for Access {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Point {
+    // After the disk-budget reservation is durable, before any allocation.
+    AfterReservation,
     InitialCopy,
     BeforeFinalBarrier,
     SelectionBeforeRename,
@@ -110,6 +124,10 @@ pub struct OnlineCheckpointStore {
     path: PathBuf,
     state: RwLock<State>,
     maintenance: Mutex<()>,
+    reclamation_worker: std::sync::atomic::AtomicBool,
+    // Previous generations replaced through this handle. A live token means
+    // an owned snapshot still holds that generation and its disk blocks.
+    retired: Mutex<Vec<std::sync::Weak<super::disk_budget::GenerationToken>>>,
 }
 
 /// An owned read-only view captured from an online checkpoint store.
@@ -387,6 +405,8 @@ impl OnlineCheckpointStore {
                 failed: false,
             }),
             maintenance: Mutex::new(()),
+            reclamation_worker: std::sync::atomic::AtomicBool::new(false),
+            retired: Mutex::new(Vec::new()),
         })
     }
 
@@ -676,6 +696,33 @@ impl OnlineCheckpointStore {
         })
     }
 
+    // A worker's compaction: the deferral conditions are decided under the
+    // same maintenance lease as the compaction itself.
+    fn compact_reclaim_scheduled(
+        &self,
+        previous: &Path,
+        options: &OnlineCheckpointCompactionOptions,
+        hooks: (
+            impl FnMut(Point) -> io::Result<()>,
+            impl FnOnce(&Path) -> io::Result<()>,
+        ),
+    ) -> Result<OnlineCompactionReport, OnlineReclaimFailure> {
+        let (report, reclamation) = crate::publication_outcome::track_online_handoff(|tracker| {
+            self.compact_internal_with(
+                previous,
+                options,
+                hooks,
+                Some(|_: RetirePoint| Ok(())),
+                Some(tracker),
+                true,
+            )
+        })
+        .map_err(OnlineReclaimFailure::Compaction)?;
+        reclaim_result(report, reclamation, |report, error| {
+            OnlineReclaimFailure::Reclamation { report, error }
+        })
+    }
+
     /// Removes marked retired stages tied to the current generation's log
     /// identity, finishing an interrupted or failed reclamation. While
     /// excluding mutations it first verifies the current generation against
@@ -746,12 +793,30 @@ impl OnlineCheckpointStore {
         &self,
         previous: &Path,
         options: &OnlineCheckpointCompactionOptions,
+        hooks: (
+            impl FnMut(Point) -> io::Result<()>,
+            impl FnOnce(&Path) -> io::Result<()>,
+        ),
+        retire_hook: Option<impl FnMut(RetirePoint) -> io::Result<()>>,
+        tracker: Option<&crate::publication_outcome::HandoffTracker>,
+    ) -> io::Result<(OnlineCompactionReport, Option<io::Result<()>>)> {
+        self.compact_internal_with(previous, options, hooks, retire_hook, tracker, false)
+    }
+
+    // `scheduled` adds the worker's deferral conditions. They are evaluated
+    // while holding the maintenance lease, so no manual maintenance can run
+    // between the decision and the compaction it admits.
+    fn compact_internal_with(
+        &self,
+        previous: &Path,
+        options: &OnlineCheckpointCompactionOptions,
         (mut hook, sync_parent): (
             impl FnMut(Point) -> io::Result<()>,
             impl FnOnce(&Path) -> io::Result<()>,
         ),
         retire_hook: Option<impl FnMut(RetirePoint) -> io::Result<()>>,
         tracker: Option<&crate::publication_outcome::HandoffTracker>,
+        scheduled: bool,
     ) -> io::Result<(OnlineCompactionReport, Option<io::Result<()>>)> {
         Access::check_not_active(self.id())?;
         let _maintenance = match self.maintenance.try_lock() {
@@ -761,6 +826,9 @@ impl OnlineCheckpointStore {
             }
             Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
         };
+        if scheduled && self.scheduled_deferral_locked()? {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, ScheduledDeferral));
+        }
         options.validate()?;
         let (source, previous, parent) =
             crate::store::compact_exchange::paths(&self.path, previous)?;
@@ -817,6 +885,7 @@ impl OnlineCheckpointStore {
             .ok_or_else(|| io::Error::other("replacement reservation overflow"))?;
             budget.reserve_compaction(&previous, total)?;
             reservation.0 = Some(Arc::clone(budget));
+            hook(Point::AfterReservation)?;
             reserved = Some(total);
             copy.target_log_bytes = Some(
                 copy.target_log_bytes
@@ -1032,6 +1101,14 @@ impl OnlineCheckpointStore {
         state.store = Arc::clone(&candidate);
         state.failed = false;
         drop(state);
+        {
+            let mut retired = self
+                .retired
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            retired.retain(|token| token.strong_count() != 0);
+            retired.push(current.generation_token());
+        }
         drop(_writer);
         drop(snapshot);
         drop(original_lock);
@@ -1201,6 +1278,8 @@ fn retire(
     stage.finish_retained_cleanup();
     Ok(())
 }
+
+mod worker;
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests;

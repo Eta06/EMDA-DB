@@ -12,8 +12,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const MIN_INTERVAL: Duration = Duration::from_millis(1);
-const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+pub(crate) const MIN_INTERVAL: Duration = Duration::from_millis(1);
+pub(crate) const MAX_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The operation at which a reclamation worker stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,22 +75,23 @@ pub struct RetiredCleanupStatus {
 }
 
 #[derive(Default)]
-struct WorkerState {
+pub(crate) struct WorkerState {
     stopping: bool,
     requested: bool,
     busy_checks: u64,
+    deferred_checks: u64,
     status: OnlineReclamationWorkerStatus,
     retired_cleanup: Option<RetiredCleanupStatus>,
 }
 
 #[derive(Default)]
-struct Control {
+pub(crate) struct Control {
     state: Mutex<WorkerState>,
     changed: Condvar,
 }
 
 impl Control {
-    fn lock(&self) -> MutexGuard<'_, WorkerState> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, WorkerState> {
         self.state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -143,6 +144,21 @@ impl OnlineReclamationWorker {
         self.control.lock().busy_checks
     }
 
+    /// Returns the number of checks deferred because compaction had no safe
+    /// room: outstanding disk-budget maintenance, a retired generation still
+    /// held by a snapshot, or a disk budget that cannot fit the replacement.
+    /// Ordinary-store workers do not use this counter. It saturates.
+    pub fn deferred_checks(&self) -> u64 {
+        self.control.lock().deferred_checks
+    }
+
+    pub(crate) fn from_parts(control: Arc<Control>, thread: JoinHandle<()>) -> Self {
+        Self {
+            control,
+            thread: Some(thread),
+        }
+    }
+
     /// Returns scoped cleanup counters when that option was enabled.
     pub fn retired_cleanup_status(&self) -> Option<RetiredCleanupStatus> {
         self.control.lock().retired_cleanup.clone()
@@ -185,7 +201,7 @@ struct Schedule {
     cleanup_control: Option<Arc<Control>>,
 }
 
-struct Observation {
+pub(crate) struct Observation {
     store: Weak<Store>,
     bytes: u64,
 }
@@ -332,17 +348,19 @@ impl OnlineStore {
     }
 }
 
-struct Failure {
-    stage: OnlineReclamationFailureStage,
-    error: io::Error,
-    report: Option<OnlineCompactionReport>,
-    reclaimed: bool,
+pub(crate) struct Failure {
+    pub(crate) stage: OnlineReclamationFailureStage,
+    pub(crate) error: io::Error,
+    pub(crate) report: Option<OnlineCompactionReport>,
+    pub(crate) reclaimed: bool,
 }
 
-enum Outcome {
+pub(crate) enum Outcome<O = Observation> {
     Skipped,
     MaintenanceBusy,
-    Reclaimed(OnlineCompactionReport, Observation),
+    // Compaction had no safe room and was not attempted.
+    Deferred,
+    Reclaimed(OnlineCompactionReport, O),
     Failed(Failure),
 }
 
@@ -478,7 +496,7 @@ fn check_with(
     }
 }
 
-fn guarded_run(control: &Control, action: impl FnOnce()) {
+pub(crate) fn guarded_run(control: &Control, action: impl FnOnce()) {
     if catch_unwind(AssertUnwindSafe(action)).is_err() {
         let mut state = control.lock();
         state.status.in_flight = false;
@@ -501,15 +519,26 @@ fn run_with(
     schedule: &Schedule,
     mut check: impl FnMut(&OnlineStore, &Schedule, Option<&Observation>) -> Outcome,
 ) {
+    run_loop(control, schedule.interval, |baseline| {
+        check(store, schedule, baseline)
+    });
+}
+
+/// Waits for the interval or a request, runs one check at a time and records
+/// its outcome until stopped or a check fails. Requests made during a check
+/// coalesce into one later check; waiting never spins.
+pub(crate) fn run_loop<O>(
+    control: &Control,
+    interval: Duration,
+    mut check: impl FnMut(Option<&O>) -> Outcome<O>,
+) {
     let mut baseline = None;
     loop {
         let mut state = control.lock();
         if !state.stopping && !state.requested {
             let (next, _) = control
                 .changed
-                .wait_timeout_while(state, schedule.interval, |state| {
-                    !state.stopping && !state.requested
-                })
+                .wait_timeout_while(state, interval, |state| !state.stopping && !state.requested)
                 .unwrap_or_else(|poison| poison.into_inner());
             state = next;
         }
@@ -522,7 +551,7 @@ fn run_with(
         state.status.in_flight = true;
         control.changed.notify_all();
         drop(state);
-        let outcome = check(store, schedule, baseline.as_ref());
+        let outcome = check(baseline.as_ref());
         let mut state = control.lock();
         state.status.in_flight = false;
         state.status.checks = state.status.checks.saturating_add(1);
@@ -530,6 +559,9 @@ fn run_with(
             Outcome::Skipped => {}
             Outcome::MaintenanceBusy => {
                 state.busy_checks = state.busy_checks.saturating_add(1);
+            }
+            Outcome::Deferred => {
+                state.deferred_checks = state.deferred_checks.saturating_add(1);
             }
             Outcome::Reclaimed(report, observed) => {
                 state.status.handoffs = state.status.handoffs.saturating_add(1);

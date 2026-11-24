@@ -556,7 +556,14 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   cleanup. It also records released old-log space and writer latency at
   handoff. The final pause includes a full live-set comparison and a full
   source-log read, so it grows with the store. Recovery still verifies the
-  full covered prefix, and there is no scheduled worker for this store type.
+  full covered prefix. An opt-in `OnlineCheckpointStore` reclamation worker
+  now schedules that handoff with explicit start and stop, one worker per
+  handle, coalesced requests, and size and growth thresholds. Under the
+  maintenance lease it defers while a replaced generation is still pinned,
+  while disk-budget maintenance is outstanding, or when the budget cannot
+  fit the replacement. It stops on a leftover previous path or an uncertain
+  handoff. It does not bound reclamation latency or recovery, persist
+  across reopen, or remove leftovers.
 - [x] Implement opt-in authority-backed retained cutover with a witnessed base and suffix, original-path older-reader rejection for the tested binaries and authority-checked selection. The [format specification](STREAMING_RETAINED_BASE_SPEC.md) defines the supported protocol and trust assumptions. The [buffered cutover campaign](../benchmarks/results/2026-11-19-buffered-retained-export/README.md) verified the complete base and exercised kernel failures before the original-path fence on Linux V2 and V3.
 - [x] Screen successor block and anchor limits against the rebased totals
   before creating the base file. Rotation checks the actual layout as it

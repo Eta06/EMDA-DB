@@ -4,6 +4,13 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an opt-in scheduled reclamation worker for `OnlineCheckpointStore`.
+  It runs the online handoff on an interval or on request, with size and
+  growth thresholds. Under the maintenance lease it defers while a replaced
+  generation is pinned, while disk-budget maintenance is outstanding, or
+  when the budget cannot fit the replacement. It stops on a leftover
+  previous path or an uncertain handoff. Workers report deferred checks.
+
 - Compare the online checkpoint handoff's source and replacement with an
   ordered streaming walk instead of paired scan pages. Each value pair is
   streamed through two 64 KiB buffers with both checksums verified, so the

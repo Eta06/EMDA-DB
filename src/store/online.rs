@@ -1,7 +1,7 @@
 //! A guarded store handle supporting bounded, concurrent compaction preparation.
 mod copy;
 mod reclaim;
-mod worker;
+pub(crate) mod worker;
 
 pub use worker::{
     OnlineReclamationFailure, OnlineReclamationFailureStage, OnlineReclamationWorker,

@@ -21,7 +21,7 @@ pub(crate) mod compact_exchange;
 mod compact_stream;
 mod group_limits;
 mod log_quota;
-mod online;
+pub(crate) mod online;
 mod point_read;
 mod read_set;
 mod retained_export;

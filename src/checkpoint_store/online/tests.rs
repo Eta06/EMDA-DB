@@ -10,17 +10,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
-type Model = BTreeMap<Vec<u8>, Vec<u8>>;
+pub(super) type Model = BTreeMap<Vec<u8>, Vec<u8>>;
 
-struct Fixture {
-    root: tempfile::TempDir,
-    source: PathBuf,
-    previous: PathBuf,
+pub(super) struct Fixture {
+    pub(super) root: tempfile::TempDir,
+    pub(super) source: PathBuf,
+    pub(super) previous: PathBuf,
 }
 
 // A managed checkpoint store with history: overwrites and deletes in the
 // suffix, optionally with automatic checkpoints in owned slots.
-fn fixture(automatic: bool) -> (Fixture, OnlineCheckpointStore, Model) {
+pub(super) fn fixture(automatic: bool) -> (Fixture, OnlineCheckpointStore, Model) {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("live");
     let previous = root.path().join("previous");
@@ -77,11 +77,11 @@ fn scan_all(read: impl Fn(Option<&[u8]>) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>>)
     }
 }
 
-fn live(online: &OnlineCheckpointStore) -> Model {
+pub(super) fn live(online: &OnlineCheckpointStore) -> Model {
     scan_all(|after| online.with_store(|store| store.scan(after, None, MAX_SCAN_ENTRIES)))
 }
 
-fn captured(snapshot: &OnlineCheckpointSnapshot) -> Model {
+pub(super) fn captured(snapshot: &OnlineCheckpointSnapshot) -> Model {
     scan_all(|after| {
         snapshot
             .as_snapshot()
@@ -90,17 +90,17 @@ fn captured(snapshot: &OnlineCheckpointSnapshot) -> Model {
     })
 }
 
-fn reopened(path: &Path) -> Model {
+pub(super) fn reopened(path: &Path) -> Model {
     let store = retry_lock(|| CheckpointStore::open_managed(path)).unwrap();
     scan_all(|after| store.scan(after, None, MAX_SCAN_ENTRIES))
 }
 
-fn write(online: &OnlineCheckpointStore, model: &mut Model, key: &[u8], value: &[u8]) {
+pub(super) fn write(online: &OnlineCheckpointStore, model: &mut Model, key: &[u8], value: &[u8]) {
     online.with_store(|store| store.put(key, value)).unwrap();
     model.insert(key.to_vec(), value.to_vec());
 }
 
-fn parent_entries(fixture: &Fixture) -> Vec<String> {
+pub(super) fn parent_entries(fixture: &Fixture) -> Vec<String> {
     let mut names = fs::read_dir(fixture.root.path())
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
