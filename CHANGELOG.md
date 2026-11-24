@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Allow writable checkpoint recovery to cap logical log scan bytes,
+  including the confirming suffix scan required before adopting a pending tail.
+
 - Reuse ordinary transaction read-set ranges for covered pages and point
   reads, reducing duplicate dependencies and commit validation work.
 

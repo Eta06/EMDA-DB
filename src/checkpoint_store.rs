@@ -114,6 +114,19 @@ impl Default for CheckpointStoreLimits {
 
 type OpenLimits = CheckpointStoreLimits;
 
+/// Additional admission limits for writable checkpoint recovery.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CheckpointRecoveryLimits {
+    /// Maximum suffix operations, including batch children. This also applies
+    /// to later suffix appends until rollover clears the suffix.
+    pub max_tail_operations: Option<u64>,
+    /// Maximum logical log bytes scanned during open. Counts prefix
+    /// verification and suffix replay, plus a second suffix pass before adoption
+    /// when there is a pending tail. Header identity checks outside these
+    /// scans, witness and checkpoint reads, and physical retries are separate.
+    pub max_log_scan_bytes: Option<u64>,
+}
+
 /// An experimental writable store backed by a verified on-disk checkpoint.
 ///
 /// Point operations and blind batches serialize through one write lock. A
@@ -249,12 +262,35 @@ impl CheckpointStore {
         limits: CheckpointStoreLimits,
         max_tail_operations: Option<u64>,
     ) -> Result<Self, RecoveryOpenFailure> {
+        Self::open_with_recovery_limits(
+            path,
+            checkpoint,
+            trusted_digest,
+            limits,
+            CheckpointRecoveryLimits {
+                max_tail_operations,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Opens an explicit checkpoint with both store and recovery limits.
+    /// The inclusive log scan budget is checked after checkpoint
+    /// authentication and before replay, writer setup or tail adoption.
+    /// Reapply the budget on each open. Reads after open do not use it.
+    pub fn open_with_recovery_limits(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointStoreLimits,
+        recovery: CheckpointRecoveryLimits,
+    ) -> Result<Self, RecoveryOpenFailure> {
         track_recovery_open(|tracker| {
             Self::open_source_using(
                 path.as_ref(),
                 OpenSource::Explicit(checkpoint.as_ref(), trusted_digest),
                 limits,
-                max_tail_operations,
+                recovery,
                 Log::open_checkpoint_writer,
                 selection::synchronize,
                 Some(tracker),
@@ -317,7 +353,7 @@ impl CheckpointStore {
                 max_log_bytes,
                 ..Default::default()
             },
-            None,
+            CheckpointRecoveryLimits::default(),
             Log::open_checkpoint_writer,
             selection::synchronize,
             None,
@@ -335,7 +371,7 @@ impl CheckpointStore {
             path.as_ref(),
             OpenSource::Managed,
             limits,
-            None,
+            CheckpointRecoveryLimits::default(),
             Log::open_checkpoint_writer,
             selection::synchronize,
             None,
@@ -350,12 +386,30 @@ impl CheckpointStore {
         limits: CheckpointStoreLimits,
         max_tail_operations: Option<u64>,
     ) -> Result<Self, RecoveryOpenFailure> {
+        Self::open_managed_with_recovery_limits(
+            path,
+            limits,
+            CheckpointRecoveryLimits {
+                max_tail_operations,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Opens a managed selection with the same budgets as
+    /// [`Self::open_with_recovery_limits`]. The log scan budget is checked
+    /// before stabilizing the selection or cleaning automatic stages.
+    pub fn open_managed_with_recovery_limits(
+        path: impl AsRef<Path>,
+        limits: CheckpointStoreLimits,
+        recovery: CheckpointRecoveryLimits,
+    ) -> Result<Self, RecoveryOpenFailure> {
         track_recovery_open(|tracker| {
             Self::open_source_using(
                 path.as_ref(),
                 OpenSource::Managed,
                 limits,
-                max_tail_operations,
+                recovery,
                 Log::open_checkpoint_writer,
                 selection::synchronize,
                 Some(tracker),
@@ -375,7 +429,10 @@ impl CheckpointStore {
             path.as_ref(),
             OpenSource::Managed,
             limits,
-            Some(max_tail_operations),
+            CheckpointRecoveryLimits {
+                max_tail_operations: Some(max_tail_operations),
+                ..Default::default()
+            },
             Log::open_checkpoint_writer,
             selection::synchronize,
             None,
@@ -411,7 +468,10 @@ impl CheckpointStore {
             path,
             OpenSource::Explicit(checkpoint, trusted_digest),
             limits,
-            max_tail_operations,
+            CheckpointRecoveryLimits {
+                max_tail_operations,
+                ..Default::default()
+            },
             open_writer,
             selection::synchronize,
             None,
@@ -422,7 +482,7 @@ impl CheckpointStore {
         path: &Path,
         source: OpenSource<'_>,
         limits: OpenLimits,
-        max_tail_operations: Option<u64>,
+        recovery: CheckpointRecoveryLimits,
         open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
         adoption_tracker: Option<&TailAdoptionTracker>,
@@ -498,6 +558,25 @@ impl CheckpointStore {
             (max_log_bytes, None),
             crate::checkpoint_view::TailAdmission::Bounded(max_tail_bytes),
         )?;
+        let (_, range, boundary) = prepared.suffix();
+        let length = range.end;
+        if let Some(max) = recovery.max_log_scan_bytes {
+            let extra = if length > boundary {
+                length - range.start
+            } else {
+                0
+            };
+            if length
+                .checked_add(extra)
+                .is_none_or(|scan_bytes| scan_bytes > max)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "checkpoint recovery log scan byte limit exceeded",
+                ));
+            }
+        }
+        let max_tail_operations = recovery.max_tail_operations;
         let suffix = RecoveredCheckpointView::replay_prepared(
             &prepared,
             max_tail_bytes,
@@ -505,8 +584,6 @@ impl CheckpointStore {
             max_tail_key_bytes,
             max_tail_operations,
         )?;
-        let (_, range, boundary) = prepared.suffix();
-        let length = range.end;
         let stabilize_configuration = || {
             // A previous selection rename may have succeeded even if its
             // directory sync failed. Stabilize the visible selection before

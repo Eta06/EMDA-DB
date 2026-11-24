@@ -1,7 +1,7 @@
 use database_engine::{
-    BatchOperation, CheckpointStore, CheckpointStoreLimits, MAX_RECOVERED_VIEW_TAIL_BYTES,
-    MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS, RecoveredCheckpointView,
-    RecoveredViewLimits, RecoveryOpenFailure, Store,
+    BatchOperation, CheckpointRecoveryLimits, CheckpointStore, CheckpointStoreLimits,
+    MAX_RECOVERED_VIEW_TAIL_BYTES, MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS,
+    RecoveredCheckpointView, RecoveredViewLimits, RecoveryOpenFailure, Store,
 };
 use std::fs;
 use std::io;
@@ -60,6 +60,131 @@ fn assert_operation_limit<T>(result: io::Result<T>) {
         error.to_string(),
         "checkpoint suffix operation limit exceeded"
     );
+}
+
+#[test]
+fn recovery_scan_limit_counts_the_confirming_suffix_pass_only_for_pending_tails() {
+    for force_v2 in [true, false] {
+        if !force_v2 && !cfg!(target_os = "linux") {
+            continue;
+        }
+        for managed in [false, true] {
+            let (dir, path, checkpoint, digest, prefix) = fixture_with_format(force_v2);
+            let selection = path.join("checkpoint.selection");
+            if managed {
+                CheckpointStore::rebuild_managed_selection(&path, dir.path().join("managed"))
+                    .unwrap();
+            }
+            let selected = fs::read(&selection).ok();
+            assert_eq!(selected.is_some(), managed);
+            let log_path = path.join("records.log");
+            let anchor_path = path.join("commit.state");
+            let file = fs::File::open(&log_path).unwrap();
+            let metadata = fs::read(&log_path).unwrap().starts_with(b"EMDALOG3");
+            let read_witness = || {
+                if metadata {
+                    let mut bytes = [0_u8; 36];
+                    assert_eq!(
+                        rustix::fs::fgetxattr(&file, "user.db.commit.v3", &mut bytes).unwrap(),
+                        bytes.len()
+                    );
+                    bytes.to_vec()
+                } else {
+                    fs::read(&anchor_path).unwrap()
+                }
+            };
+            let store = Store::open(&path).unwrap();
+            store.put(b"early", b"acknowledged suffix").unwrap();
+            let previous = read_witness();
+            store
+                .write_batch(&[
+                    BatchOperation::Delete { key: b"a" },
+                    BatchOperation::Put {
+                        key: b"tail",
+                        value: b"pending",
+                    },
+                ])
+                .unwrap();
+            drop(store);
+            let committed = read_witness();
+            if metadata {
+                rustix::fs::fsetxattr(
+                    &file,
+                    "user.db.commit.v3",
+                    &previous,
+                    rustix::fs::XattrFlags::REPLACE,
+                )
+                .unwrap();
+            } else {
+                fs::write(&anchor_path, &previous).unwrap();
+            }
+            let anchor = fs::read(&anchor_path).unwrap();
+            let complete = fs::read(&log_path).unwrap();
+            let length = complete.len() as u64;
+            let pending_limit = length + (length - prefix);
+            let open = |max| {
+                let limits = CheckpointStoreLimits::default();
+                let recovery = CheckpointRecoveryLimits {
+                    max_tail_operations: Some(3),
+                    max_log_scan_bytes: Some(max),
+                };
+                if managed {
+                    CheckpointStore::open_managed_with_recovery_limits(&path, limits, recovery)
+                } else {
+                    CheckpointStore::open_with_recovery_limits(
+                        &path,
+                        &checkpoint,
+                        &digest,
+                        limits,
+                        recovery,
+                    )
+                }
+            };
+            let assert_budget = |max| {
+                assert!(
+                    matches!(open(max), Err(RecoveryOpenFailure::NotAdopted(error))
+                    if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "checkpoint recovery log scan byte limit exceeded")
+                );
+            };
+            let mut damaged = complete.clone();
+            *damaged.last_mut().unwrap() ^= 1;
+            fs::write(&log_path, &damaged).unwrap();
+            assert_budget(pending_limit - 1);
+            assert!(
+                matches!(open(pending_limit), Err(RecoveryOpenFailure::NotAdopted(error))
+                if error.kind() == io::ErrorKind::InvalidData)
+            );
+            assert_eq!(fs::read(&log_path).unwrap(), damaged);
+            assert_eq!(fs::read(&anchor_path).unwrap(), anchor);
+            assert_eq!(read_witness(), previous);
+            assert_eq!(fs::read(&selection).ok(), selected);
+
+            fs::write(&log_path, &complete).unwrap();
+            assert_budget(pending_limit - 1);
+            let store = open(pending_limit).unwrap();
+            assert_eq!(store.get(b"a").unwrap(), None);
+            assert_eq!(
+                store.get(b"tail").unwrap().as_deref(),
+                Some(b"pending".as_slice())
+            );
+            assert_eq!(store.suffix_operation_limit(), Some(3));
+            assert_eq!(read_witness(), committed);
+            drop(store);
+
+            assert_budget(length - 1);
+            let reopened = open(length).unwrap();
+            assert_eq!(
+                reopened.get(b"early").unwrap().as_deref(),
+                Some(b"acknowledged suffix".as_slice())
+            );
+            assert_eq!(fs::read(&log_path).unwrap(), complete);
+            assert_eq!(fs::read(&selection).ok(), selected);
+            if metadata {
+                assert_eq!(fs::read(&anchor_path).unwrap(), anchor);
+            }
+        }
+    }
 }
 
 #[test]

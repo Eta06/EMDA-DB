@@ -15,6 +15,18 @@ syscalls = "fsync,fdatasync,read,pread64,pwrite64,fgetxattr,fsetxattr"
 def probe(binary, *args):
     return json.loads(subprocess.check_output([binary, *args], text=True, timeout=30))
 
+def log_read_requests(lines, log):
+    requests = []
+    for line in lines:
+        if not line.startswith(("read(", "pread64(")) or f"<{log}>" not in line:
+            continue
+        read = re.search(r", (\d+)(?:, \d+)?\)\s+= (\d+)$", line)
+        assert read is not None, line
+        requested, returned = map(int, read.groups())
+        assert requested == returned, line
+        requests.append(requested)
+    return requests
+
 def run(binary, parent, format_name, rebuild, fault=None):
     with tempfile.TemporaryDirectory(prefix="rebuild-tail-", dir=parent) as directory:
         root = pathlib.Path(directory).resolve()
@@ -33,6 +45,7 @@ def run(binary, parent, format_name, rebuild, fault=None):
             probe(binary, "setup-managed", root, operation)
         previous = read_selection()
         boundary = read_boundary()
+        prefix = log.stat().st_size
         probe(binary, "setup-managed-tail", root,
               "checkpoint-managed-rebuild-tail" if explicit else operation)
         new_boundary = read_boundary()
@@ -52,23 +65,35 @@ def run(binary, parent, format_name, rebuild, fault=None):
         recovery_open = rebuild in ("full-log-open", "managed-checkpoint-open", "explicit-checkpoint-open")
         attempt = ("attempt-recovery-open", root, rebuild) if recovery_open else (
             "attempt-rebuild-publication", root, operation, rebuild)
+        scan_cap = None
+        if fault is None and rebuild in ("managed-checkpoint-open", "explicit-checkpoint-open"):
+            scan_cap = 2 * len(current_log) - prefix
+            rejected = probe(*command, binary, *attempt, str(scan_cap - 1))
+            assert rejected == {"status": "error", "classification": "not_adopted",
+                                "kind": "InvalidInput",
+                                "message": "checkpoint recovery log scan byte limit exceeded"}, rejected
+            rejected_reads = log_read_requests(trace.read_text().splitlines(), log)
+            assert sum(rejected_reads) == 8 + 28, rejected_reads
+            assert log.read_bytes() == current_log and read_boundary() == boundary
+            assert read_selection() == previous
+            attempt += (str(scan_cap),)
         outcome = probe(command[0], *command[1:], binary, *attempt)
         lines = trace.read_text().splitlines()
         assert current_log == log.read_bytes()
         if fault is None:
             assert outcome["status"] == "success", outcome
+            if scan_cap is not None:
+                requests = log_read_requests(lines, log)
+                # Two identity opens and the probe's final point read are
+                # outside the byte ceiling asserted by checkpoint recovery.
+                assert sum(requests) == scan_cap + 2 * (8 + 28) + len(b"acknowledged-tail"), requests
+                print(json.dumps(dict(rebuild=rebuild, format=format_name,
+                                      point="checkpoint recovery log scan limit", scan_bytes=scan_cap,
+                                      rejected_request_bytes=rejected_reads, request_bytes=requests)), flush=True)
             if rebuild in ("full-bounded", "suffix-bounded"):
-                log_reads = [line for line in lines if line.startswith(("read(", "pread64("))
-                             and f"<{log}>" in line]
-                requests = []
-                for line in log_reads:
-                    read = re.search(r", (\d+)(?:, \d+)?\)\s+= (\d+)$", line)
-                    assert read is not None, line
-                    requested, returned = map(int, read.groups())
-                    assert requested == returned, line
-                    requests.append(requested)
+                requests = log_read_requests(lines, log)
                 expected_reads = 3 * len(current_log) + 7 * (8 + 28)
-                assert sum(requests) == expected_reads, log_reads
+                assert sum(requests) == expected_reads, requests
                 print(json.dumps(dict(rebuild=rebuild, format=format_name,
                                       point="source log read reservation", expected_bytes=expected_reads,
                                       request_bytes=requests)), flush=True)
