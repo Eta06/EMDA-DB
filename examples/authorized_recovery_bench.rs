@@ -323,7 +323,7 @@ fn verify(
     keys: u64,
     epoch: u64,
     churn: u64,
-) -> Result<()> {
+) -> Result<usize> {
     let mut expected = (0..keys).filter_map(|id| {
         let revision = if id < churn { epoch } else { 0 };
         (!deleted(id, revision)).then(|| (id.to_be_bytes(), value(id, revision)))
@@ -348,7 +348,7 @@ fn verify(
         return Err("missing entry".into());
     }
     println!("verified_entries={checked}");
-    Ok(())
+    Ok(checked)
 }
 
 fn bind_legacy_archive(root: &Path) -> Result<()> {
@@ -384,6 +384,8 @@ fn run_lifecycle(
         log_digest: bytes[8..40].try_into()?,
         witness_digest: bytes[40..].try_into()?,
     };
+    let recovery_scan = limits.base.file_bytes + limits.suffix.bytes;
+    let copy_scan = 2 * recovery_scan;
     let provider = FileRetainedAuthority::open(root.join("authority"))?;
     let mut catalog = Catalog::open_with_auto_reclaim(
         root.join("retained"),
@@ -394,7 +396,10 @@ fn run_lifecycle(
     let backup = root.join("backup");
     let restored = root.join("restored");
     let start = Instant::now();
-    let expected = catalog.backup_to(&backup)?;
+    let expected = catalog.backup_to_with_scan_limit(&backup, copy_scan)?;
+    println!(
+        "backup_restore_scan_limit_bytes={copy_scan} lifecycle_recovery_scan_limit_bytes={recovery_scan}"
+    );
     println!("backup_ns={}", start.elapsed().as_nanos());
     let start = Instant::now();
     if !catalog.retire_cutover_archive(&archive, &backup, &expected)? {
@@ -406,15 +411,16 @@ fn run_lifecycle(
         archive.log_bytes
     );
     let start = Instant::now();
-    if authorized {
+    let restored_entries = if authorized {
         let source_authority = FileRetainedAuthority::open(root.join("authority"))?
             .read()?
             .ok_or("missing source authority")?;
         let mut receipt = FileRetainedAuthority::create(root.join("restore-receipt"))?;
-        let prepared = Catalog::prepare_from_backup_recorded(
+        let prepared = Catalog::prepare_from_backup_recorded_with_scan_limit(
             &backup,
             &restored,
             limits,
+            copy_scan,
             None,
             &expected,
             |prepared| {
@@ -435,17 +441,23 @@ fn run_lifecycle(
         assert_eq!(saved.committed.suffix_digest, expected.digest);
         let authority = root.join("restored-authority");
         let register = Instant::now();
-        drop(Catalog::register_prepared(
+        drop(Catalog::register_prepared_with_recovery_scan_limit(
             &restored,
             limits,
             FileRetainedAuthority::create(&authority)?,
             saved,
+            recovery_scan,
         )?);
         println!("restore_register_ns={}", register.elapsed().as_nanos());
         println!("restore_ns={}", start.elapsed().as_nanos());
-        let mut restored =
-            Catalog::open(&restored, limits, FileRetainedAuthority::open(authority)?)?;
-        verify(
+        let mut restored = Catalog::open_with_recovery_scan_limit(
+            &restored,
+            limits,
+            FileRetainedAuthority::open(authority)?,
+            recovery_scan,
+            None,
+        )?;
+        let restored_entries = verify(
             |after| Ok(restored.scan(after, None, 1024)?),
             keys,
             epoch,
@@ -455,20 +467,31 @@ fn run_lifecycle(
             FileRetainedAuthority::open(root.join("authority"))?.read()?,
             Some(source_authority)
         );
+        restored_entries
     } else {
-        ManagedRetainedStore::restore_backup(&backup, &restored, limits, &expected)?;
+        ManagedRetainedStore::restore_backup_with_scan_limit(
+            &backup, &restored, limits, copy_scan, None, &expected,
+        )?;
         println!("restore_ns={}", start.elapsed().as_nanos());
-        let restored = ManagedRetainedStore::open(restored, limits)?;
+        let restored = ManagedRetainedStore::open_with_recovery_scan_limit(
+            restored,
+            limits,
+            recovery_scan,
+            None,
+        )?;
         verify(
             |after| Ok(restored.scan(after, None, 1024)?),
             keys,
             epoch,
             churn,
-        )?;
-    }
+        )?
+    };
     drop(catalog);
     let mut source = Backend::open(root, "retained", limits)?;
-    verify(|after| source.page(after), keys, epoch, churn)?;
+    let source_entries = verify(|after| source.page(after), keys, epoch, churn)?;
+    println!(
+        "restored_verified_entries={restored_entries} source_verified_entries={source_entries}"
+    );
     Ok(())
 }
 

@@ -129,12 +129,12 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
-      - name: Verify million-key four-writer retained and checkpoint recovery under a 48 MiB address-space limit
+      - name: Verify million-key four-writer retained and checkpoint recovery and authorized restore under a 48 MiB address-space limit
         run: |
           source scripts/benchmarks/record_case.sh
           cargo +stable build --release --locked --example authorized_recovery_bench
           status=0
-          record_benchmark writable-recovery-memory-ceiling python3 examples/authorized_recovery_bench.py target/release/examples/authorized_recovery_bench "$RUNNER_TEMP/writable-memory-workload" 1048576 4 --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 --writers 4 || status=$?
+          record_benchmark writable-recovery-memory-ceiling python3 examples/authorized_recovery_bench.py target/release/examples/authorized_recovery_bench "$RUNNER_TEMP/writable-memory-workload" 1048576 4 --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 --writers 4 --retire-and-restore --authorized-restore || status=$?
           if [[ -d "$RUNNER_TEMP/writable-memory-workload" ]]; then
             find "$RUNNER_TEMP/writable-memory-workload" -maxdepth 1 -type f -exec cp {} "$RUNNER_TEMP/benchmark-attempts/writable-recovery-memory-ceiling/" \;
           fi
@@ -155,7 +155,11 @@ jobs:
               for backend in backends
               for epoch in range(1, 5)
               for phase in ("mutate", "reopen", "verify")
-          } | {("all", 0, "setup"), ("checkpoint", 0, "checkpoint-setup"), ("retained", 0, "cutover")}
+          } | {
+              ("all", 0, "setup"), ("checkpoint", 0, "checkpoint-setup"),
+              ("retained", 0, "bind-archive"), ("retained", 0, "cutover"),
+              ("retained", 4, "authorized-lifecycle"),
+          }
           observed = {(row["backend"], row["epoch"], row["phase"]) for row in phases}
           if len(phases) != len(expected) or observed != expected:
               raise SystemExit("Missing, extra or duplicate recovery workload phase")
@@ -169,11 +173,17 @@ jobs:
                   raise SystemExit(f"Invalid recovery scope or memory coverage: {row}")
               if phase == "mutate" and (row["writers"], row["operations"]) != (4, operations):
                   raise SystemExit(f"Wrong write workload: {row}")
-              if phase == "verify":
-                  # The epoch deletes IDs in [0, operations) congruent to -epoch modulo 11.
-                  deleted = (operations - 1 + epoch) // 11 - (epoch - 1) // 11
-                  if row["verified_entries"] != keys - deleted:
-                      raise SystemExit(f"Incomplete ordered verification: {row}")
+              # The epoch deletes IDs in [0, operations) congruent to -epoch modulo 11.
+              live = keys - ((operations - 1 + epoch) // 11 - (epoch - 1) // 11)
+              if phase == "verify" and row["verified_entries"] != live:
+                  raise SystemExit(f"Incomplete ordered verification: {row}")
+              if phase == "authorized-lifecycle":
+                  if row["restored_verified_entries"] != live or row["source_verified_entries"] != live:
+                      raise SystemExit("Expected complete restored and source verification under the ceiling")
+                  recovery_scan = 140 * 1024**2  # 128 MiB base + 12 MiB suffix
+                  if (row["lifecycle_recovery_scan_limit_bytes"] != recovery_scan
+                          or row["backup_restore_scan_limit_bytes"] != 2 * recovery_scan):
+                      raise SystemExit("Expected logical copy and registration scan ceilings")
           if not any(row["backend"] == "retained" and row["phase"] == "mutate"
                      and row.get("rotations", 0) > 0 for row in phases):
               raise SystemExit("Expected a retained rotation under the ceiling")

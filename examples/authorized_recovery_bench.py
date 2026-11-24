@@ -133,7 +133,7 @@ def main():
     parser.add_argument("--checkpoint-address-space-mib", type=int,
                         help="Linux hard address-space ceiling for checkpoint mutate, reopen and verify phases")
     parser.add_argument("--retained-address-space-mib", type=int,
-                        help="Linux hard address-space ceiling for retained mutate, reopen and verify phases")
+                        help="Linux hard address-space ceiling for retained mutate, reopen, verify and optional restore phases")
     parser.add_argument("--writers", type=int, choices=range(1, 17), default=1,
                         metavar="N", help="concurrent clients per mutation phase (1–16)")
     parser.add_argument("--wide-suffix", action="store_true", help="run 32,768 mutations per epoch with a 12 MiB suffix budget")
@@ -179,7 +179,7 @@ def main():
     (directory / "environment.json").write_text(json.dumps(provenance, indent=2) + "\n")
     def phase(phase_name, backend, epoch):
         address_space = (address_spaces.get(backend)
-                         if phase_name in {"mutate", "reopen", "verify"} else None)
+                         if phase_name in {"mutate", "reopen", "verify", "lifecycle", "authorized-lifecycle"} else None)
         return run(binary, directory, phase_name, backend, args.keys, epoch,
                    wide_suffix=args.wide_suffix, address_space=address_space, writers=args.writers)
 

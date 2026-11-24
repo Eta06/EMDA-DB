@@ -27,7 +27,8 @@ python3 examples/authorized_recovery_bench.py \
 # Linux with util-linux prlimit
 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/memory-ceiling" 1048576 4 \
-  --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 --writers 4
+  --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 --writers 4 \
+  --retire-and-restore --authorized-restore
 ```
 
 `--checkpoint` adds a writable managed checkpoint store with automatic
@@ -35,11 +36,11 @@ rollover and a 2 MiB suffix byte limit. It rotates the starting backend
 across epochs and records the covered log boundary so rollover can be
 verified. Checkpoint reopen verifies the covered log, including old records.
 
-The Linux ceilings apply hard and soft `RLIMIT_AS` to the selected retained
-and checkpoint workers during mutation, fresh-process reopen and full-state
-verification. Each phase records its limit and process peak RSS. Fixture
-creation, initial cutover, optional backup and restore phases, and the
-ordinary and SQLite controls run uncapped. A ceiling covers one worker's
+The Linux ceilings apply hard and soft `RLIMIT_AS` during mutation,
+fresh-process reopen, and full-state verification for the selected workers.
+The retained ceiling also applies during the optional lifecycle phase.
+Each phase records its limit and process peak RSS. Fixture creation, archive binding, initial
+cutover, and the ordinary and SQLite controls run uncapped. A ceiling covers one worker's
 virtual address space. Allocation failure can terminate the worker.
 Aggregate memory use and filesystem caches have separate costs.
 
