@@ -26,8 +26,8 @@ python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/wide-suffix" 1048576 6 --sqlite --wide-suffix
 # Linux with util-linux prlimit
 python3 examples/authorized_recovery_bench.py \
-  target/release/examples/authorized_recovery_bench "$run/memory-ceiling" 262144 4 \
-  --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48
+  target/release/examples/authorized_recovery_bench "$run/memory-ceiling" 1048576 4 \
+  --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 --writers 4
 ```
 
 `--checkpoint` adds a writable managed checkpoint store with automatic
