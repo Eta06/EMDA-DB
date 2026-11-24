@@ -113,6 +113,29 @@ fn check_snapshot(snapshot: DocumentSnapshot<'_>, score: i64) {
             index: "score".into()
         }
     );
+    let relationship = snapshot
+        .lookup_unique_index_planned(
+            "items",
+            &DocumentQuery {
+                filter: DocumentFilter::Equal {
+                    path: vec!["n".into()],
+                    value: json!(score),
+                },
+                max_scanned: 1,
+                ..Default::default()
+            },
+            &[vec!["n".into()]],
+            "items",
+            "score",
+        )
+        .unwrap();
+    assert_eq!(relationship.access, stats.access);
+    assert_eq!(relationship.result.plan.scanned, 1);
+    assert_eq!(relationship.result.documents[0].source.id, "a");
+    assert_eq!(
+        relationship.result.documents[0].related,
+        Some(json!({"n": score}))
+    );
     assert_eq!(stats.result.groups[0].fields[0].sum, i128::from(score));
 
     let query = IndexQuery {

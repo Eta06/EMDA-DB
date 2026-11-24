@@ -30,7 +30,10 @@ pub(crate) mod detailed_fault_model;
 #[cfg(test)]
 mod point_read_tests;
 
-pub use aggregate::{AggregateGroup, AggregateRequest, AggregateResult, LookupEntry, LookupResult};
+pub use aggregate::{
+    AggregateGroup, AggregateRequest, AggregateResult, LookupEntry, LookupResult,
+    PlannedLookupResult,
+};
 pub use aggregate_stats::{
     AggregateStatsGroup, AggregateStatsRequest, AggregateStatsResult, NumericFieldStats,
     PlannedAggregateStatsResult,
@@ -707,6 +710,17 @@ impl<'a> DocumentDatabase<'a> {
         self.transaction(|tx| tx.lookup(collection, query, local_path, foreign_collection))
     }
 
+    /// Uses the bounded query planner for the source of an ID lookup.
+    pub fn lookup_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_path: &[String],
+        foreign_collection: &str,
+    ) -> io::Result<PlannedLookupResult> {
+        self.transaction(|tx| tx.lookup_planned(collection, query, local_path, foreign_collection))
+    }
+
     /// Follows complete scalar tuples into a named unique index in one
     /// transaction. Supply the local paths in the foreign index's field order.
     pub fn lookup_unique_index(
@@ -719,6 +733,26 @@ impl<'a> DocumentDatabase<'a> {
     ) -> io::Result<LookupResult> {
         self.transaction(|tx| {
             tx.lookup_unique_index(
+                collection,
+                query,
+                local_paths,
+                foreign_collection,
+                foreign_index,
+            )
+        })
+    }
+
+    /// Uses the bounded query planner for the source of a unique-tuple lookup.
+    pub fn lookup_unique_index_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign_collection: &str,
+        foreign_index: &str,
+    ) -> io::Result<PlannedLookupResult> {
+        self.transaction(|tx| {
+            tx.lookup_unique_index_planned(
                 collection,
                 query,
                 local_paths,

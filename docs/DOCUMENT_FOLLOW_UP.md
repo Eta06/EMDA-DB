@@ -217,6 +217,10 @@ remain open.
   validation, with a version 2 collection archive. Tests check failed
   migration steps, update and index rollback, and reopens on both writable
   backends.
+  Planned relationship lookups can use a bounded source index for either an
+  ID or a complete unique target tuple. Both sides share transaction or
+  snapshot reads. Tests cover source phantoms, inserts into an empty target
+  tuple, and the exact related-document byte ceiling.
 - [x] Add opt-in grouped integer statistics over the bounded document
   planner. Tests compare scan and indexed results, deduplicate overlapping
   probes, retain filter error precedence, and verify staged writes and

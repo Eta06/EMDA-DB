@@ -3,6 +3,7 @@ use super::{
     filter::{DocumentFilter, DocumentQuery, QueryPlan},
     index::{self, IndexValue, MAX_INDEX_FIELDS},
     key,
+    planner::{DocumentQueryAccess, PlannedDocumentQueryResult},
     query::{DocumentEntry, index_definition},
     schema::{self, CollectionSchema},
     transaction::DocumentTransaction,
@@ -59,8 +60,23 @@ pub struct LookupEntry {
 pub struct LookupResult {
     /// Source rows with related documents.
     pub documents: Vec<LookupEntry>,
-    /// The source collection scan.
+    /// Actual work on the source collection.
     pub plan: QueryPlan,
+}
+
+/// Relationship lookup results with the chosen source access path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlannedLookupResult {
+    /// Rows and actual source work.
+    pub result: LookupResult,
+    /// Access path used to select source rows.
+    pub access: DocumentQueryAccess,
+}
+
+struct LookupSource<'a> {
+    collection: &'a str,
+    query: &'a DocumentQuery,
+    planned: bool,
 }
 
 impl DocumentTransaction<'_, '_> {
@@ -148,12 +164,48 @@ impl DocumentTransaction<'_, '_> {
         local_path: &[String],
         foreign_collection: &str,
     ) -> io::Result<LookupResult> {
+        self.lookup_id_using(
+            LookupSource {
+                collection,
+                query,
+                planned: false,
+            },
+            local_path,
+            foreign_collection,
+        )
+        .map(|lookup| lookup.result)
+    }
+
+    /// Follows string IDs after selecting source rows with the bounded query
+    /// planner. Source and target reads share this transaction and its limits.
+    pub fn lookup_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_path: &[String],
+        foreign_collection: &str,
+    ) -> io::Result<PlannedLookupResult> {
+        self.lookup_id_using(
+            LookupSource {
+                collection,
+                query,
+                planned: true,
+            },
+            local_path,
+            foreign_collection,
+        )
+    }
+
+    fn lookup_id_using(
+        &self,
+        source: LookupSource<'_>,
+        local_path: &[String],
+        foreign_collection: &str,
+    ) -> io::Result<PlannedLookupResult> {
         schema::validate_path(local_path)?;
         let foreign = self.metadata(foreign_collection)?;
-        self.lookup_sources(
-            collection,
-            query,
-            |document, remaining| match schema::field(document, local_path) {
+        self.lookup_sources(source, |document, remaining| {
+            match schema::field(document, local_path) {
                 None | Some(Value::Null) => Ok(None),
                 Some(Value::String(id)) => {
                     self.read_lookup_target(foreign_collection, id, &foreign.schema, remaining)
@@ -161,8 +213,8 @@ impl DocumentTransaction<'_, '_> {
                 Some(_) => Err(key::invalid(
                     "lookup field must be a string ID, null, or missing",
                 )),
-            },
-        )
+            }
+        })
     }
 
     /// Resolve at most one related document per source row by a named unique
@@ -181,6 +233,49 @@ impl DocumentTransaction<'_, '_> {
         foreign_collection: &str,
         foreign_index: &str,
     ) -> io::Result<LookupResult> {
+        self.lookup_unique_index_using(
+            LookupSource {
+                collection,
+                query,
+                planned: false,
+            },
+            local_paths,
+            foreign_collection,
+            foreign_index,
+        )
+        .map(|lookup| lookup.result)
+    }
+
+    /// Resolves complete unique index tuples after selecting source rows with
+    /// the bounded query planner. Target validation and limits are the same as
+    /// in [Self::lookup_unique_index].
+    pub fn lookup_unique_index_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign_collection: &str,
+        foreign_index: &str,
+    ) -> io::Result<PlannedLookupResult> {
+        self.lookup_unique_index_using(
+            LookupSource {
+                collection,
+                query,
+                planned: true,
+            },
+            local_paths,
+            foreign_collection,
+            foreign_index,
+        )
+    }
+
+    fn lookup_unique_index_using(
+        &self,
+        source: LookupSource<'_>,
+        local_paths: &[Vec<String>],
+        foreign_collection: &str,
+        foreign_index: &str,
+    ) -> io::Result<PlannedLookupResult> {
         let foreign = self.metadata(foreign_collection)?;
         let definition = index_definition(&foreign, foreign_index)?;
         if !definition.unique || local_paths.len() != definition.fields.len() {
@@ -195,7 +290,7 @@ impl DocumentTransaction<'_, '_> {
         let mut entry = key::index(b'I', foreign_collection, foreign_index)?;
         let tuple_prefix = tuple.len();
         let entry_prefix = entry.len();
-        self.lookup_sources(collection, query, |document, remaining| {
+        self.lookup_sources(source, |document, remaining| {
             let mut values = [None; MAX_INDEX_FIELDS];
             for (slot, path) in values.iter_mut().zip(local_paths) {
                 let Some(value) = schema::field(document, path) else {
@@ -254,25 +349,39 @@ impl DocumentTransaction<'_, '_> {
 
     fn lookup_sources(
         &self,
-        collection: &str,
-        query: &DocumentQuery,
+        source: LookupSource<'_>,
         mut resolve: impl FnMut(&Value, &mut usize) -> io::Result<Option<Value>>,
-    ) -> io::Result<LookupResult> {
+    ) -> io::Result<PlannedLookupResult> {
+        let LookupSource {
+            collection,
+            query,
+            planned,
+        } = source;
         if query.projection.is_some() {
             return Err(key::invalid(
                 "lookup does not accept a projected source query",
             ));
         }
-        let result = self.query(collection, query)?;
+        let PlannedDocumentQueryResult { result, access } = if planned {
+            self.query_planned(collection, query)?
+        } else {
+            PlannedDocumentQueryResult {
+                result: self.query(collection, query)?,
+                access: DocumentQueryAccess::CollectionScan,
+            }
+        };
         let mut documents = Vec::with_capacity(result.documents.len());
         let mut remaining = 16 * 1024 * 1024_usize;
         for source in result.documents {
             let related = resolve(&source.document, &mut remaining)?;
             documents.push(LookupEntry { source, related });
         }
-        Ok(LookupResult {
-            documents,
-            plan: result.plan,
+        Ok(PlannedLookupResult {
+            result: LookupResult {
+                documents,
+                plan: result.plan,
+            },
+            access,
         })
     }
 }

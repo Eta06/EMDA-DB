@@ -2,6 +2,7 @@ use super::{
     AggregateRequest, AggregateResult, AggregateStatsRequest, AggregateStatsResult, DocumentPage,
     DocumentQuery, DocumentQueryExplanation, DocumentQueryResult, DocumentReadLimits,
     DocumentTransaction, IndexQuery, PlannedAggregateStatsResult, PlannedDocumentQueryResult,
+    PlannedLookupResult,
 };
 use crate::retained_candidate::{AuthorizedRetainedStore, ManagedRetainedStore, RetainedAuthority};
 use crate::{CheckpointSnapshot, CheckpointView, Snapshot};
@@ -102,6 +103,38 @@ impl<'a> DocumentSnapshot<'a> {
         query: &DocumentQuery,
     ) -> io::Result<PlannedDocumentQueryResult> {
         self.view.query_planned(collection, query)
+    }
+
+    /// Selects source rows with the bounded planner and follows their string
+    /// IDs within the captured view.
+    pub fn lookup_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_path: &[String],
+        foreign_collection: &str,
+    ) -> io::Result<PlannedLookupResult> {
+        self.view
+            .lookup_planned(collection, query, local_path, foreign_collection)
+    }
+
+    /// Selects source rows with the bounded planner and resolves their
+    /// complete unique tuples within the captured view.
+    pub fn lookup_unique_index_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign_collection: &str,
+        foreign_index: &str,
+    ) -> io::Result<PlannedLookupResult> {
+        self.view.lookup_unique_index_planned(
+            collection,
+            query,
+            local_paths,
+            foreign_collection,
+            foreign_index,
+        )
     }
 
     /// Computes bounded counts and optional sums over the captured view.

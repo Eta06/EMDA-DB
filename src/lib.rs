@@ -62,8 +62,8 @@ pub use document::{
     IndexJobStatus, IndexQuery, IndexQueryPlan, IndexStep, IndexValue, LookupEntry, LookupResult,
     MAX_COLLECTION_ARCHIVE_BYTES, MAX_COLLECTION_ARCHIVE_DOCUMENTS,
     MAX_DOCUMENT_UPDATE_INPUT_BYTES, MaintenanceKey, MaintenanceProgress, NumericFieldStats,
-    PartialFilter, PlannedAggregateStatsResult, PlannedDocumentQueryResult, QueryPlan,
-    SchemaMigrationStatus, SchemaStep,
+    PartialFilter, PlannedAggregateStatsResult, PlannedDocumentQueryResult, PlannedLookupResult,
+    QueryPlan, SchemaMigrationStatus, SchemaStep,
 };
 pub use log::{PeakVerificationLimits, StoreRecoveryLimits};
 pub use publication_outcome::{

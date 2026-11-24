@@ -420,6 +420,15 @@ limit as ID lookup. It reads the unique owner, validates the target tuple
 and its companion index entry, and observes missing owner keys in
 read-set transactions. Correct results depend on maintained indexes.
 
+`lookup_planned` and `lookup_unique_index_planned` use the bounded query
+planner for source selection and report the chosen access path. They fall
+back to a complete source scan when no index qualifies. Source sorting,
+offset, limit, and candidate admission use the rules of `query_planned`.
+Both sides use one transaction or captured `DocumentSnapshot`, sharing any
+configured read budget. The projection restriction and the 16 MiB
+related-document ceiling still apply. Read-set transactions track both the
+source index dependencies and the target lookup dependencies.
+
 
 `aggregate_stats` computes count, exact checked `i128` sum, minimum, maximum and an optional approximate floating-point mean for one to 16 distinct paths in a complete scan of at most 256 documents. Grouping uses the same typed scalar ordering and distinguishes missing from null; an empty ungrouped scan returns one zero-count group, while an empty grouped scan returns none. Each field skips missing and null independently; any present non-signed-integer value fails the operation. Matching documents are grouped as they are visited; the groups and a scan page remain in memory. Scan and filter failures take precedence over aggregation errors. The result lists the requested paths once; every group returns statistics in that same order. The exact mean is the returned sum and field count as a rational; `mean()` is approximate. The method sees transaction-staged changes and shares the scan's serializable range validation and logical limits, but is not a general aggregation pipeline, indexed aggregation, total-memory quota, or MongoDB compatibility promise.
 

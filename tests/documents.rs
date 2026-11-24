@@ -767,7 +767,7 @@ fn aggregate_and_lookup_use_bounded_consistent_document_reads() {
 
 #[test]
 fn unique_index_lookup_resolves_compound_relationships_and_observes_missing_tuples() {
-    use database_engine::{DocumentFilter, DocumentQuery};
+    use database_engine::{DocumentFilter, DocumentQuery, DocumentQueryAccess, DocumentSnapshot};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -776,6 +776,16 @@ fn unique_index_lookup_resolves_compound_relationships_and_observes_missing_tupl
             db.create_collection(collection, CollectionSchema::default())
                 .unwrap();
         }
+        db.create_index(
+            "orders",
+            IndexDefinition {
+                name: "buyers".into(),
+                fields: vec![path("buyer")],
+                unique: false,
+                partial: None,
+            },
+        )
+        .unwrap();
         let definition = IndexDefinition {
             name: "tenant_email".into(),
             fields: vec![path("tenant"), path("email")],
@@ -806,7 +816,7 @@ fn unique_index_lookup_resolves_compound_relationships_and_observes_missing_tupl
         )
         .unwrap();
         for (id, order) in [
-            ("a", json!({"org":7, "buyer":"a@example"})),
+            ("a", json!({"org":7, "buyer":"a@example", "person_id":"a"})),
             ("b", json!({"org":7, "buyer":null})),
             ("c", json!({"org":7})),
             ("d", json!({"org":7, "buyer":"absent"})),
@@ -829,7 +839,7 @@ fn unique_index_lookup_resolves_compound_relationships_and_observes_missing_tupl
                 .into_iter()
                 .map(|row| row.related)
                 .collect::<Vec<_>>(),
-            [Some(person), Some(null), None, None, None],
+            [Some(person.clone()), Some(null), None, None, None],
         );
         for (local, index) in [
             (paths.as_slice(), "nonunique"),
@@ -843,15 +853,71 @@ fn unique_index_lookup_resolves_compound_relationships_and_observes_missing_tupl
             );
         }
 
+        let ids = DocumentQuery {
+            filter: DocumentFilter::Equal {
+                path: path("buyer"),
+                value: json!("a@example"),
+            },
+            max_scanned: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            db.lookup("orders", &ids, &path("person_id"), "people")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let rows = db
+            .lookup_planned("orders", &ids, &path("person_id"), "people")
+            .unwrap();
+        assert_eq!(
+            rows.access,
+            DocumentQueryAccess::EqualityIndex {
+                index: "buyers".into()
+            }
+        );
+        assert_eq!(rows.result.plan.scanned, 2);
+        assert_eq!(rows.result.documents[0].source.id, "a");
+        assert_eq!(rows.result.documents[0].related, Some(person));
+        assert_eq!(rows.result.documents[1].source.id, "e");
+        assert_eq!(rows.result.documents[1].related, None);
+        for query in [
+            DocumentQuery {
+                max_scanned: 1,
+                ..ids.clone()
+            },
+            DocumentQuery {
+                projection: Some(vec![path("buyer")]),
+                ..ids
+            },
+        ] {
+            assert_eq!(
+                db.lookup_planned("orders", &query, &path("person_id"), "people")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        let fallback = db
+            .lookup_unique_index_planned("orders", &query, &paths, "people", "tenant_email")
+            .unwrap();
+        assert_eq!(fallback.access, DocumentQueryAccess::CollectionScan);
+        assert_eq!(fallback.result.plan.scanned, 5);
         let missing = DocumentQuery {
             filter: DocumentFilter::Equal {
                 path: path("buyer"),
                 value: json!("absent"),
             },
+            max_scanned: 2,
             ..query
         };
         db.transaction_with_read_set(|tx| {
-            tx.replace("orders", "a", &json!({"org":7, "buyer":[]}), false)?;
+            tx.replace(
+                "orders",
+                "a",
+                &json!({"org":[], "buyer":"a@example"}),
+                false,
+            )?;
             assert_eq!(
                 tx.lookup_unique_index(
                     "orders",
@@ -864,62 +930,134 @@ fn unique_index_lookup_resolves_compound_relationships_and_observes_missing_tupl
                 .kind(),
                 io::ErrorKind::InvalidInput
             );
-            tx.replace("orders", "a", &json!({"org":7, "buyer":"a@example"}), false)?;
+            tx.replace(
+                "orders",
+                "a",
+                &json!({"org":7, "buyer":"a@example", "person_id":"a"}),
+                false,
+            )?;
             Ok(())
         })
         .unwrap();
 
-        std::thread::scope(|scope| {
-            let (observed_tx, observed_rx) = mpsc::sync_channel(1);
-            let (committed_tx, committed_rx) = mpsc::sync_channel(1);
-            let lookup = &missing;
-            let fields = &paths;
-            let reader = scope.spawn(move || {
-                db.transaction_with_read_set(|tx| {
-                    let rows =
-                        tx.lookup_unique_index("orders", lookup, fields, "people", "tenant_email")?;
-                    assert_eq!(rows.documents.len(), 1);
-                    assert_eq!(rows.documents[0].related, None);
-                    tx.put_raw(b"receipt", b"stale")?;
-                    observed_tx.send(()).unwrap();
-                    committed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                    Ok(())
-                })
+        let added = json!({"tenant":7, "email":"absent", "active":true});
+        for source_insert in [false, true] {
+            std::thread::scope(|scope| {
+                let (observed_tx, observed_rx) = mpsc::sync_channel(1);
+                let (committed_tx, committed_rx) = mpsc::sync_channel(1);
+                let lookup = &missing;
+                let fields = &paths;
+                let expected = source_insert.then_some(&added);
+                let reader = scope.spawn(move || {
+                    db.transaction_with_read_set(|tx| {
+                        let rows = tx.lookup_unique_index_planned(
+                            "orders",
+                            lookup,
+                            fields,
+                            "people",
+                            "tenant_email",
+                        )?;
+                        assert_eq!(
+                            rows.access,
+                            DocumentQueryAccess::EqualityIndex {
+                                index: "buyers".into()
+                            }
+                        );
+                        assert_eq!(rows.result.plan.scanned, 1);
+                        assert_eq!(rows.result.documents[0].related.as_ref(), expected);
+                        tx.put_raw(b"receipt", b"stale")?;
+                        observed_tx.send(()).unwrap();
+                        committed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        Ok(())
+                    })
+                });
+                observed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                if source_insert {
+                    db.insert("orders", "f", &json!({"org":7, "buyer":"absent"}))
+                        .unwrap();
+                } else {
+                    db.insert("people", "new", &added).unwrap();
+                }
+                committed_tx.send(()).unwrap();
+                assert!(database_engine::is_transaction_conflict(
+                    &reader.join().unwrap().unwrap_err()
+                ));
             });
-            observed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            let added = json!({"tenant":7, "email":"absent", "active":true});
-            db.insert("people", "new", &added).unwrap();
-            committed_tx.send(()).unwrap();
-            assert_eq!(
-                reader.join().unwrap().unwrap_err().kind(),
-                io::ErrorKind::WouldBlock
-            );
-            let rows = db
-                .lookup_unique_index("orders", &missing, &paths, "people", "tenant_email")
-                .unwrap();
-            assert_eq!(rows.documents[0].related.as_ref(), Some(&added));
-            db.transaction(|tx| {
-                assert_eq!(tx.get_raw(b"receipt")?, None);
-                tx.delete("people", "new")?;
-                let rows =
-                    tx.lookup_unique_index("orders", &missing, &paths, "people", "tenant_email")?;
-                assert_eq!(rows.documents[0].related, None);
-                Ok(())
-            })
+        }
+        let rows = db
+            .lookup_unique_index_planned("orders", &missing, &paths, "people", "tenant_email")
             .unwrap();
-        });
+        assert_eq!(rows.result.documents.len(), 2);
+        assert!(
+            rows.result
+                .documents
+                .iter()
+                .all(|row| row.related.as_ref() == Some(&added))
+        );
+        db.transaction(|tx| {
+            assert_eq!(tx.get_raw(b"receipt")?, None);
+            tx.delete("people", "new")?;
+            let rows = tx.lookup_unique_index_planned(
+                "orders",
+                &missing,
+                &paths,
+                "people",
+                "tenant_email",
+            )?;
+            assert!(
+                rows.result
+                    .documents
+                    .iter()
+                    .all(|row| row.related.is_none())
+            );
+            Ok(())
+        })
+        .unwrap();
     };
 
+    let check_snapshot = |db: &DocumentDatabase<'_>, snapshot: DocumentSnapshot<'_>| {
+        let query = DocumentQuery {
+            filter: DocumentFilter::Equal {
+                path: path("buyer"),
+                value: json!("a@example"),
+            },
+            max_scanned: 2,
+            ..Default::default()
+        };
+        let replacement = json!({"tenant":7, "email":"a@example", "active":false});
+        db.replace("people", "a", &replacement, false).unwrap();
+        let old = snapshot
+            .lookup_planned("orders", &query, &path("person_id"), "people")
+            .unwrap();
+        let current = db
+            .lookup_planned("orders", &query, &path("person_id"), "people")
+            .unwrap();
+        assert_eq!(
+            old.result.documents[0].related.as_ref().unwrap()["active"],
+            true
+        );
+        assert_eq!(current.result.documents[0].related, Some(replacement));
+    };
     let directory = tempfile::tempdir().unwrap();
     let ordinary = Store::open(directory.path().join("ordinary")).unwrap();
-    exercise(&DocumentDatabase::new(&ordinary));
+    let db = DocumentDatabase::new(&ordinary);
+    exercise(&db);
+    check_snapshot(
+        &db,
+        DocumentSnapshot::new(&ordinary.snapshot(32, 8192).unwrap()),
+    );
     let path = directory.path().join("checkpoint-source");
     let checkpoint = directory.path().join("checkpoint");
     let store = Store::open(&path).unwrap();
     let digest = store.checkpoint_to(&checkpoint).unwrap();
     drop(store);
     let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
-    exercise(&DocumentDatabase::with_checkpoint_store(&store));
+    let db = DocumentDatabase::with_checkpoint_store(&store);
+    exercise(&db);
+    check_snapshot(
+        &db,
+        DocumentSnapshot::with_checkpoint_snapshot(&store.snapshot().unwrap()),
+    );
 }
 
 #[test]
@@ -972,13 +1110,23 @@ fn unique_index_lookup_rejects_corrupt_targets_and_missing_companion_entries() {
 
 #[test]
 fn related_document_lookup_charges_repeated_and_staged_targets_at_the_exact_limit() {
-    use database_engine::DocumentQuery;
+    use database_engine::{DocumentFilter, DocumentQuery, DocumentQueryAccess};
 
     let exercise = |db: &DocumentDatabase<'_>| {
         for name in ["source", "target"] {
             db.create_collection(name, CollectionSchema::default())
                 .unwrap();
         }
+        db.create_index(
+            "source",
+            IndexDefinition {
+                name: "by_ref".into(),
+                fields: vec![path("ref")],
+                unique: false,
+                partial: None,
+            },
+        )
+        .unwrap();
         db.create_index(
             "target",
             IndexDefinition {
@@ -1000,18 +1148,41 @@ fn related_document_lookup_charges_repeated_and_staged_targets_at_the_exact_limi
         .unwrap();
         let exact = DocumentQuery {
             limit: 16,
+            filter: DocumentFilter::Equal {
+                path: path("ref"),
+                value: json!("large"),
+            },
             ..Default::default()
         };
         let over = DocumentQuery {
             limit: 17,
             ..exact.clone()
         };
-        for indexed in [false, true] {
-            let lookup = |query| {
-                if indexed {
+        for (indexed, planned) in [(false, false), (true, false), (false, true), (true, true)] {
+            let lookup = |query| match (indexed, planned) {
+                (true, false) => {
                     db.lookup_unique_index("source", query, &[path("ref")], "target", "external")
-                } else {
-                    db.lookup("source", query, &path("ref"), "target")
+                }
+                (false, false) => db.lookup("source", query, &path("ref"), "target"),
+                (_, true) => {
+                    let rows = if indexed {
+                        db.lookup_unique_index_planned(
+                            "source",
+                            query,
+                            &[path("ref")],
+                            "target",
+                            "external",
+                        )?
+                    } else {
+                        db.lookup_planned("source", query, &path("ref"), "target")?
+                    };
+                    assert_eq!(
+                        rows.access,
+                        DocumentQueryAccess::EqualityIndex {
+                            index: "by_ref".into()
+                        }
+                    );
+                    Ok(rows.result)
                 }
             };
             let page = lookup(&exact).unwrap();

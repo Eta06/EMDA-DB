@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan the source query for document lookups by ID or unique tuple, including
+  on captured snapshots. Report the chosen access path and actual source work.
+
 - Reuse the log and witness synchronization from local retained-tail
   adoption when finalizing a recovered authority intent.
 
