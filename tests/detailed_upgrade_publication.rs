@@ -111,7 +111,7 @@ fn detailed_format_upgrade_preserves_source_and_existing_destination() {
         let copy_bytes = fs::read(destination.join("records.log")).unwrap();
         assert!(matches!(
             store.upgrade_format_detailed(&destination),
-            Err(PublicationFailure::OutcomeUnknown(_))
+            Err(PublicationFailure::NotPublished(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
         ));
         assert_eq!(
             fs::read(destination.join("records.log")).unwrap(),
@@ -141,7 +141,7 @@ fn detailed_legacy_upgrade_classifies_empty_and_nonempty_sources() {
     store.upgrade_legacy_detailed(&target).unwrap();
     assert!(matches!(
         store.upgrade_legacy_detailed(&target),
-        Err(PublicationFailure::OutcomeUnknown(_))
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
     ));
     assert_eq!(fs::read(source.join("records.log")).unwrap(), bytes);
     let copy = retry_lock(|| Store::open(&target)).unwrap();
@@ -162,7 +162,7 @@ fn detailed_legacy_upgrade_classifies_empty_and_nonempty_sources() {
     Store::upgrade_empty_legacy_detailed(&empty, &empty_target).unwrap();
     assert!(matches!(
         Store::upgrade_empty_legacy_detailed(&empty, &empty_target),
-        Err(PublicationFailure::OutcomeUnknown(_))
+        Err(PublicationFailure::NotPublished(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
     ));
     assert!(fs::read(empty.join("records.log")).unwrap().is_empty());
     assert_eq!(
