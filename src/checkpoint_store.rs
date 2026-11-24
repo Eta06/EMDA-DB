@@ -3,7 +3,7 @@ use crate::checkpoint_view::{CheckpointView, CheckpointViewLimits};
 use crate::controlled_lock::{
     ControlledRwLock, ReadGuard as ControlledReadGuard, WriteGuard as ControlledWriteGuard,
 };
-use crate::log::{GenerationId, Log};
+use crate::log::{GenerationId, Log, ValueLocation};
 #[cfg(test)]
 use crate::record::batch::encode_payload;
 use crate::record::batch::{BatchLayout, BatchOperation};
@@ -49,7 +49,7 @@ struct State {
     failed: bool,
     selection: Option<selection::Selection>,
     automatic: bool,
-    automatic_slot_pins: [Option<crate::checkpoint_view::CheckpointPin>; 2],
+    automatic_slot_pins: Option<Box<[Option<crate::checkpoint_view::CheckpointPin>; 2]>>,
     protect_pinned_automatic_slots: bool,
 }
 
@@ -496,10 +496,12 @@ impl CheckpointStore {
         let log_generation = log.id().map(GenerationId);
         let automatic_slot_pins = match &selection {
             Some(selected) if automatic_config.is_some() => {
-                automatic::indexes(&automatic::root(&path))
-                    .map(|index| (selected.checkpoint == index).then(|| view.base.checkpoint_pin()))
+                let pins = automatic::indexes(&automatic::root(&path)).map(|index| {
+                    (selected.checkpoint == index).then(|| view.base.checkpoint_pin())
+                });
+                pins.iter().any(Option::is_some).then(|| Box::new(pins))
             }
-            _ => [None, None],
+            _ => None,
         };
         Ok(Self {
             log,
@@ -1127,41 +1129,44 @@ impl CheckpointStore {
                 "checkpoint overlay exceeds its limits",
             ));
         }
-        // Resolve initial membership by merging the sorted touched keys with
-        // checkpoint blocks, instead of rereading an index block per key.
-        // The nested option distinguishes an unseen key from a tombstone.
-        let mut probes = view
-            .overlay
-            .keys()
-            .cloned()
-            .map(|key| (key, (false, None)))
-            .collect::<BTreeMap<_, (bool, Option<Option<crate::log::ValueLocation>>)>>();
-        if let Some(first) = probes.keys().next().cloned() {
-            probes.get_mut(&first).expect("first probe exists").0 =
-                view.base.location(&first)?.is_some();
-            let mut pending = probes
-                .range_mut::<[u8], _>((Excluded(first.as_ref()), Unbounded))
-                .peekable();
+        struct Probe<'a> {
+            key: &'a [u8],
+            present: bool,
+            // The outer option distinguishes an unseen key from a tombstone.
+            replayed: Option<Option<ValueLocation>>,
+        }
+
+        // The committed overlay is immutable during verification and
+        // already sorted. Borrow its keys and reserve all probe slots once.
+        let mut probes = Vec::new();
+        probes
+            .try_reserve_exact(view.overlay.len())
+            .map_err(io::Error::other)?;
+        probes.extend(view.overlay.keys().map(|key| Probe {
+            key,
+            present: false,
+            replayed: None,
+        }));
+        // Resolve initial membership with one forward scan of the relevant
+        // checkpoint blocks instead of a separate lookup for every key.
+        if let Some((first, rest)) = probes.split_first_mut() {
+            first.present = view.base.location(first.key)?.is_some();
+            let mut pending = rest.iter_mut().peekable();
             if pending.peek().is_some() {
-                view.base.visit_entries(Some(&first), None, |base_key, _| {
-                    while pending
-                        .peek()
-                        .is_some_and(|(key, _)| key.as_ref() < base_key)
-                    {
-                        pending.next();
-                    }
-                    if pending
-                        .peek()
-                        .is_some_and(|(key, _)| key.as_ref() == base_key)
-                    {
-                        pending.next().expect("peeked probe").1.0 = true;
-                    }
-                    if pending.peek().is_none() {
-                        Ok(std::ops::ControlFlow::Break(()))
-                    } else {
-                        Ok(std::ops::ControlFlow::Continue(()))
-                    }
-                })?;
+                view.base
+                    .visit_entries(Some(first.key), None, |base_key, _| {
+                        while pending.peek().is_some_and(|probe| probe.key < base_key) {
+                            pending.next();
+                        }
+                        if pending.peek().is_some_and(|probe| probe.key == base_key) {
+                            pending.next().expect("peeked probe").present = true;
+                        }
+                        if pending.peek().is_none() {
+                            Ok(std::ops::ControlFlow::Break(()))
+                        } else {
+                            Ok(std::ops::ControlFlow::Continue(()))
+                        }
+                    })?;
             }
         }
         let mut operations = 0_u64;
@@ -1172,10 +1177,11 @@ impl CheckpointStore {
             &mut log_hasher,
             |key, location| {
                 operations += 1;
-                let probe = probes
-                    .get_mut(key.as_ref())
-                    .ok_or_else(|| record::invalid_data("verified suffix has an unexpected key"))?;
-                match (probe.0, location.is_some()) {
+                let position = probes
+                    .binary_search_by(|probe| probe.key.cmp(key.as_ref()))
+                    .map_err(|_| record::invalid_data("verified suffix has an unexpected key"))?;
+                let probe = &mut probes[position];
+                match (probe.present, location.is_some()) {
                     (false, true) => {
                         current = current.checked_add(1).ok_or_else(|| {
                             record::invalid_data("checkpoint live key count overflow")
@@ -1189,8 +1195,8 @@ impl CheckpointStore {
                     _ => {}
                 }
                 peak = peak.max(current);
-                probe.0 = location.is_some();
-                probe.1 = Some(location);
+                probe.present = location.is_some();
+                probe.replayed = Some(location);
                 Ok(())
             },
         )?;
@@ -1199,10 +1205,10 @@ impl CheckpointStore {
                 "checkpoint suffix operation count changed",
             ));
         }
-        if view
-            .overlay
+        if probes
             .iter()
-            .any(|(key, location)| probes.get(key).and_then(|probe| probe.1) != Some(*location))
+            .zip(view.overlay.values())
+            .any(|(probe, location)| probe.replayed != Some(*location))
         {
             return Err(record::invalid_data(
                 "checkpoint overlay does not match verified suffix",

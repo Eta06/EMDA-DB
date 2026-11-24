@@ -372,8 +372,10 @@ impl CheckpointStore {
         // slot's last owner goes away, it cannot acquire a new owner here.
         let pinned = |slot: usize| {
             state.protect_pinned_automatic_slots
-                && state.automatic_slot_pins[slot]
+                && state
+                    .automatic_slot_pins
                     .as_ref()
+                    .and_then(|pins| pins[slot].as_ref())
                     .is_some_and(crate::checkpoint_view::CheckpointPin::is_live)
         };
         let next_slot =
@@ -430,7 +432,9 @@ impl CheckpointStore {
             sync_selection_parent,
             &Default::default(),
         )?;
-        state.automatic_slot_pins[next_slot] = Some(pin);
+        state
+            .automatic_slot_pins
+            .get_or_insert_with(|| Box::new([None, None]))[next_slot] = Some(pin);
         Ok(StateWrite { state, _writer })
     }
 }

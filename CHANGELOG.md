@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify checkpoint rollover suffixes with one packed probe array that
+  borrows the committed overlay's keys and reserves memory fallibly.
+
+- Optionally protect automatic checkpoint slots pinned by snapshots.
+  Rollover defers when all eligible slots are pinned.
+
 - Pack checkpoint lookup landmarks into one bounded array and use
   fallible reservations when building the sparse block directory.
 
