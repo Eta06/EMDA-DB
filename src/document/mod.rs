@@ -84,6 +84,19 @@ pub struct DocumentTransactionLimits {
     pub max_validation_items: u64,
 }
 
+/// Cumulative logical work ceilings for a document transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentRequestLimits {
+    /// Callback read and read-set validation limits.
+    pub transaction: DocumentTransactionLimits,
+    /// Maximum individual puts and deletes submitted to staging. Includes
+    /// repeated writes, metadata changes, and document index maintenance.
+    pub max_write_units: usize,
+    /// Maximum logical bytes submitted to staging. A put counts its key and
+    /// value. A delete counts its key. Replaced staged data is charged again.
+    pub max_write_bytes: usize,
+}
+
 /// A document view over one already-open store. The document namespace must
 /// not be modified using the raw key/value API. This is not a security boundary.
 pub struct DocumentDatabase<'a> {
@@ -381,6 +394,24 @@ impl<'a> DocumentDatabase<'a> {
                 action(tx)
             },
         )
+    }
+
+    /// Runs a detailed transaction under inclusive read, validation, and
+    /// cumulative staging limits. The first over-limit staging write aborts
+    /// the transaction even if the callback handles the error. Limits count
+    /// logical work and exclude encoding, allocations, and elapsed time.
+    pub fn transaction_with_request_limits<T>(
+        &self,
+        limits: DocumentRequestLimits,
+        mode: DocumentTransactionMode,
+        deadline: Option<Instant>,
+        cancellation: Option<&CancellationToken>,
+        action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> io::Result<T>,
+    ) -> Result<T, TransactionFailure> {
+        self.transaction_with_limits(limits.transaction, mode, deadline, cancellation, |tx| {
+            tx.limit_writes(limits.max_write_units, limits.max_write_bytes);
+            action(tx)
+        })
     }
 
     /// Creates an empty collection and persists its schema atomically.

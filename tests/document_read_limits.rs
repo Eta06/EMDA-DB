@@ -5,9 +5,9 @@ use database_engine::retained_candidate::{
 };
 use database_engine::{
     AggregateStatsRequest, CheckpointStore, CheckpointView, CollectionSchema, Comparison,
-    DocumentDatabase, DocumentFilter, DocumentQuery, DocumentReadLimits, DocumentSnapshot,
-    DocumentTransactionLimits, DocumentTransactionMode, IndexDefinition, IndexQuery, IndexValue,
-    RetainedExportLimits, Store, TransactionFailure,
+    DocumentDatabase, DocumentFilter, DocumentQuery, DocumentReadLimits, DocumentRequestLimits,
+    DocumentSnapshot, DocumentTransactionLimits, DocumentTransactionMode, IndexDefinition,
+    IndexQuery, IndexValue, RetainedExportLimits, Store, TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -354,6 +354,115 @@ fn seed_indexed_documents(db: &DocumentDatabase<'_>) {
 
 #[test]
 fn cumulative_document_read_limits_apply_to_all_writable_backends() {
+    check_writable_backends(check_limits, 0);
+}
+
+#[test]
+fn cumulative_document_write_limits_apply_to_all_writable_backends() {
+    check_writable_backends(check_write_limits, 3);
+}
+
+fn check_write_limits(db: &DocumentDatabase<'_>) {
+    let mode = DocumentTransactionMode::ReadSet;
+    let limits = |units, bytes| DocumentRequestLimits {
+        transaction: DocumentTransactionLimits {
+            reads: DocumentReadLimits {
+                max_read_units: 100,
+                max_read_bytes: usize::MAX,
+            },
+            max_validation_items: 0,
+        },
+        max_write_units: units,
+        max_write_bytes: bytes,
+    };
+    let is_write_limit = |error: &io::Error| {
+        error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "document transaction write limit exceeded"
+    };
+    db.transaction_with_request_limits(limits(3, 9), mode, None, None, |tx| {
+        tx.put_raw(b"w", b"old")?;
+        tx.delete_raw(b"w")?;
+        tx.put_raw(b"w", b"new")
+    })
+    .unwrap();
+    for limit in [limits(2, 9), limits(3, 8)] {
+        let rejected = db.transaction_with_request_limits(limit, mode, None, None, |tx| {
+            tx.put_raw(b"w", b"old")?;
+            tx.delete_raw(b"w")?;
+            assert!(is_write_limit(&tx.put_raw(b"w", b"try").unwrap_err()));
+            assert!(tx.get_raw(b"w")?.is_none());
+            Ok(())
+        });
+        assert!(
+            matches!(rejected, Err(TransactionFailure::Callback(error)) if is_write_limit(&error))
+        );
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"w")).unwrap(),
+            Some(b"new".to_vec())
+        );
+    }
+
+    let mut read_limited = limits(1, 8);
+    read_limited.transaction.reads.max_read_units = 0;
+    let rejected = db.transaction_with_request_limits(read_limited, mode, None, None, |tx| {
+        tx.put_raw(b"w", b"read")?;
+        assert!(is_read_limit(&tx.get_raw(b"w").unwrap_err()));
+        Ok(())
+    });
+    assert!(matches!(rejected, Err(TransactionFailure::Callback(error)) if is_read_limit(&error)));
+    assert_eq!(
+        db.transaction(|tx| tx.get_raw(b"w")).unwrap(),
+        Some(b"new".to_vec())
+    );
+
+    let indexed = IndexQuery {
+        equal: vec![IndexValue::Integer(3)],
+        ..Default::default()
+    };
+    // One raw receipt, one index entry, and one document share the limit.
+    let rejected =
+        db.transaction_with_request_limits(limits(2, usize::MAX), mode, None, None, |tx| {
+            tx.put_raw(b"receipt", b"indexed")?;
+            assert!(is_write_limit(
+                &tx.insert("c", "z", &json!({"score": 3})).unwrap_err()
+            ));
+            Ok(())
+        });
+    assert!(matches!(rejected, Err(TransactionFailure::Callback(error)) if is_write_limit(&error)));
+    assert!(db.get("c", "z").unwrap().is_none());
+    assert!(
+        db.query_index("c", "score", &indexed)
+            .unwrap()
+            .documents
+            .is_empty()
+    );
+    assert!(
+        db.transaction(|tx| tx.get_raw(b"receipt"))
+            .unwrap()
+            .is_none()
+    );
+
+    db.transaction_with_request_limits(limits(3, usize::MAX), mode, None, None, |tx| {
+        tx.put_raw(b"receipt", b"indexed")?;
+        tx.insert("c", "z", &json!({"score": 3}))
+    })
+    .unwrap();
+    assert_eq!(
+        db.query_index("c", "score", &indexed).unwrap().documents[0].id,
+        "z"
+    );
+    assert_eq!(
+        db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(),
+        Some(b"indexed".to_vec())
+    );
+    db.transaction(|tx| {
+        assert!(tx.delete("c", "z")?);
+        tx.delete_raw(b"receipt")
+    })
+    .unwrap();
+}
+
+fn check_writable_backends(check: fn(&DocumentDatabase<'_>), authority_commits: u64) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let checkpoint_path = dir.path().join("checkpoint");
@@ -362,7 +471,7 @@ fn cumulative_document_read_limits_apply_to_all_writable_backends() {
     let db = DocumentDatabase::new(&store);
     seed_indexed_documents(&db);
     store.put(b"key", b"data").unwrap();
-    check_limits(&db);
+    check(&db);
     let digest = store.checkpoint_to(&checkpoint_path).unwrap();
 
     let retained_limits = RetainedStoreLimits {
@@ -395,10 +504,10 @@ fn cumulative_document_read_limits_apply_to_all_writable_backends() {
     ManagedRetainedStore::copy_from_store(store, &path, &catalog, export, retained_limits).unwrap();
     let checkpoint_store =
         retry_lock(|| CheckpointStore::open(&path, &checkpoint_path, &digest)).unwrap();
-    check_limits(&DocumentDatabase::with_checkpoint_store(&checkpoint_store));
+    check(&DocumentDatabase::with_checkpoint_store(&checkpoint_store));
     drop(checkpoint_store);
     let mut retained = ManagedRetainedStore::open(&catalog, retained_limits).unwrap();
-    check_limits(&DocumentDatabase::with_managed_retained_store(
+    check(&DocumentDatabase::with_managed_retained_store(
         &mut retained,
     ));
 
@@ -420,16 +529,38 @@ fn cumulative_document_read_limits_apply_to_all_writable_backends() {
         initial,
     )
     .unwrap();
-    check_limits(&DocumentDatabase::with_authorized_retained_store(
+    check(&DocumentDatabase::with_authorized_retained_store(
         &mut retained,
     ));
-    assert_eq!(
-        FileRetainedAuthority::open(&authority)
-            .unwrap()
-            .read()
-            .unwrap(),
-        Some(initial)
-    );
+    let current = FileRetainedAuthority::open(&authority)
+        .unwrap()
+        .read()
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.revision, initial.revision + 2 * authority_commits);
+    assert!(current.pending.is_none());
+    if authority_commits == 0 {
+        assert_eq!(current, initial);
+    } else {
+        drop(retained);
+        let mut reopened = Catalog::open(
+            &authorized,
+            retained_limits,
+            FileRetainedAuthority::open(&authority).unwrap(),
+        )
+        .unwrap();
+        let db = DocumentDatabase::with_authorized_retained_store(&mut reopened);
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"w")).unwrap(),
+            Some(b"new".to_vec())
+        );
+        assert!(
+            db.transaction(|tx| tx.get_raw(b"receipt"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(db.get("c", "z").unwrap().is_none());
+    }
 }
 
 #[test]

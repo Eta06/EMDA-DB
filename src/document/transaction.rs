@@ -60,8 +60,18 @@ struct ReadBudget {
     exhausted: bool,
 }
 
+struct WriteBudget {
+    units: usize,
+    bytes: usize,
+    exhausted: bool,
+}
+
 fn read_limit_exceeded() -> io::Error {
     key::invalid("document transaction read limit exceeded")
+}
+
+fn write_limit_exceeded() -> io::Error {
+    key::invalid("document transaction write limit exceeded")
 }
 
 /// A document transaction backed by the same atomic commit as raw key/value
@@ -71,6 +81,7 @@ pub struct DocumentTransaction<'a, 'store> {
     backend: BackendTransaction<'a, 'store>,
     failed: bool,
     read_budget: Option<Mutex<ReadBudget>>,
+    write_budget: Option<WriteBudget>,
 }
 
 impl<'a, 'store> DocumentTransaction<'a, 'store> {
@@ -107,6 +118,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             backend,
             failed: false,
             read_budget: None,
+            write_budget: None,
         }
     }
 
@@ -115,6 +127,29 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             remaining: limits,
             exhausted: false,
         }));
+    }
+
+    pub(super) fn limit_writes(&mut self, units: usize, bytes: usize) {
+        self.write_budget = Some(WriteBudget {
+            units,
+            bytes,
+            exhausted: false,
+        });
+    }
+
+    fn charge_write(&mut self, key_bytes: usize, value_bytes: usize) -> io::Result<()> {
+        let Some(budget) = &mut self.write_budget else {
+            return Ok(());
+        };
+        if let Some(bytes) = key_bytes.checked_add(value_bytes) {
+            if !budget.exhausted && budget.units != 0 && bytes <= budget.bytes {
+                budget.units -= 1;
+                budget.bytes -= bytes;
+                return Ok(());
+            }
+        }
+        budget.exhausted = true;
+        Err(write_limit_exceeded())
     }
 
     fn charge_read(&self, units: usize, bytes: usize) -> io::Result<()> {
@@ -151,6 +186,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             if budget.exhausted {
                 return Err(read_limit_exceeded());
             }
+        }
+        if self.write_budget.is_some_and(|budget| budget.exhausted) {
+            return Err(write_limit_exceeded());
         }
         if self.failed {
             return Err(io::Error::other(
@@ -241,6 +279,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     }
 
     pub(super) fn write(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {
+        self.charge_write(key.len(), value.len())?;
         match &mut self.backend {
             BackendTransaction::Ordinary(tx) => tx.put(key, value),
             BackendTransaction::Checkpoint(tx) => tx.put(key, value),
@@ -254,6 +293,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     }
 
     pub(super) fn remove(&mut self, key: &[u8]) -> io::Result<()> {
+        self.charge_write(key.len(), 0)?;
         match &mut self.backend {
             BackendTransaction::Ordinary(tx) => tx.delete(key),
             BackendTransaction::Checkpoint(tx) => tx.delete(key),

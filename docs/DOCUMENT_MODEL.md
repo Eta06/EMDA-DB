@@ -445,7 +445,7 @@ for group in &report.groups {
 }
 ```
 
-### Cumulative transaction reads
+### Cumulative transaction work
 
 `transaction_with_read_limits` combines the detailed transaction API with
 caller-selected read units and logical byte limits. Each point request and
@@ -472,6 +472,17 @@ An engine rejection during final validation returns
 `TransactionFailure::Rejected`. A limit error propagated by the callback
 returns `TransactionFailure::Callback`. Staged document and raw-key updates
 are discarded in either case. Independent writes keep their normal outcome.
+
+`transaction_with_request_limits` adds cumulative staging units and bytes
+to those read and validation limits. Each low-level put costs one unit and
+its key and value lengths. Each delete costs one unit and its key length.
+Document, metadata, index and raw writes share the same limits. Repeated
+staging of a key is charged each time even when the resulting batch contains
+just its final change. This limit is independent of the backend's maximum
+pending batch size. If any staging write exceeds the cap, the transaction
+aborts before append even if the callback catches the error. The counters
+measure logical staging work and exclude encoding, allocations and elapsed
+time.
 
 ### Moving a collection
 
