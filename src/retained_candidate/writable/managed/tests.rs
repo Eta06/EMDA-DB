@@ -588,6 +588,96 @@ fn managed_backup_restores_the_captured_generation_after_source_reclamation() {
 }
 
 #[test]
+fn managed_backup_and_restore_charge_copy_and_verification_before_staging() {
+    let f = Fixture::new(LIMITS);
+    let backup = f.tmp.path().join("backup");
+    let restored = f.tmp.path().join("restored");
+    let mut store = f.open();
+    store.put(b"b", b"captured").unwrap();
+    let active_path = store.active.slot.path(&f.root);
+    let base_path = active_path.join("base");
+    let base = fs::read(&base_path).unwrap();
+    let log = fs::read(active_path.join("records.log")).unwrap();
+    let witness = fs::read(active_path.join("commit.state")).unwrap();
+    let cap = 2 * (base.len() as u64 + store.store.suffix_len as u64);
+
+    let mut corrupt = base.clone();
+    corrupt[base.len() - 33] ^= 1;
+    fs::write(&base_path, corrupt).unwrap();
+    assert!(matches!(
+        store.backup_to_with_scan_limit(&backup, cap - 1),
+        Err(crate::SuffixExportFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "retained backup scan byte limit exceeded"
+    ));
+    assert!(matches!(
+        store.backup_to_with_scan_limit(&backup, cap),
+        Err(crate::SuffixExportFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(!backup.exists());
+    fs::write(&base_path, &base).unwrap();
+    let binding = store.backup_to_with_scan_limit(&backup, cap).unwrap();
+
+    let suffix_path = backup.join("suffix");
+    let suffix = fs::read(&suffix_path).unwrap();
+    let mut corrupt = suffix.clone();
+    *corrupt.last_mut().unwrap() ^= 1;
+    fs::write(&suffix_path, corrupt).unwrap();
+    let restore = |limit| {
+        ManagedRetainedStore::restore_backup_with_scan_limit(
+            &backup, &restored, LIMITS, limit, None, &binding,
+        )
+    };
+    assert!(matches!(
+        restore(cap - 1),
+        Err(PublicationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "retained restore scan byte limit exceeded"
+    ));
+    assert!(matches!(
+        restore(cap),
+        Err(PublicationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(!restored.exists());
+    fs::write(&suffix_path, &suffix).unwrap();
+    let mut oversized = binding.clone();
+    oversized.end = u64::MAX;
+    assert!(matches!(
+        ManagedRetainedStore::restore_backup_with_scan_limit(
+            &backup, &restored, LIMITS, u64::MAX, None, &oversized,
+        ),
+        Err(PublicationFailure::NotPublished(error))
+            if error.to_string() == "retained restore scan byte limit exceeded"
+    ));
+    let quota = CatalogStorageLimits {
+        bytes: 2048,
+        entries: 8,
+    };
+    let id = ManagedRetainedStore::restore_backup_with_scan_limit(
+        &backup,
+        &restored,
+        LIMITS,
+        cap,
+        Some(quota),
+        &binding,
+    )
+    .unwrap();
+    let recovered = ManagedRetainedStore::open(&restored, LIMITS).unwrap();
+    assert_eq!(recovered.generation_id().unwrap(), id);
+    assert_eq!(recovered.store.header.storage_limits(), Some(quota));
+    assert_eq!(
+        recovered.scan(None, None, 8).unwrap(),
+        store.scan(None, None, 8).unwrap()
+    );
+    assert_eq!(fs::read(&suffix_path).unwrap(), suffix);
+    assert_eq!(fs::read(backup.join("candidate/base")).unwrap(), base);
+    assert_eq!(fs::read(active_path.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(active_path.join("commit.state")).unwrap(), witness);
+}
+
+#[test]
 fn managed_backup_rollback_binding_and_limits_reject_before_restore_publication() {
     let f = Fixture::new(LIMITS);
     let backup = f.tmp.path().join("backup");
@@ -725,7 +815,7 @@ fn managed_backup_uncertainty_returns_the_verified_binding() {
     let mut store = f.open();
     store.put(b"b", b"captured").unwrap();
     let error = store
-        .backup_using(&backup, |_| Err(io::Error::other("sync interrupted")))
+        .backup_using(&backup, None, |_| Err(io::Error::other("sync interrupted")))
         .unwrap_err();
     let crate::SuffixExportFailure::OutcomeUnknown { error, expected } = error else {
         panic!("unexpected backup failure: {error:?}");
@@ -2470,7 +2560,7 @@ fn managed_cutover_crash_child() {
     if point == "backup" {
         let root = Path::new(&root);
         let store = ManagedRetainedStore::open(root.join("catalog"), LIMITS).unwrap();
-        let result = store.backup_using(&root.join("interrupted-backup"), |_| pause());
+        let result = store.backup_using(&root.join("interrupted-backup"), None, |_| pause());
         panic!("managed backup did not stop at the boundary: {result:?}");
     }
     let mut store = ManagedRetainedStore::open(root, LIMITS).unwrap();

@@ -107,6 +107,16 @@ impl InitialLimits {
         }
     }
 
+    fn with_optional_storage(
+        generation: RetainedStoreLimits,
+        storage: Option<CatalogStorageLimits>,
+    ) -> Self {
+        match storage {
+            Some(storage) => Self::with_storage(generation, storage),
+            None => generation.into(),
+        }
+    }
+
     fn max_base_bytes(self) -> io::Result<u64> {
         let Some(storage) = self.storage else {
             return Ok(u64::MAX);

@@ -610,6 +610,16 @@ can be opened independently, so moving writers still requires application
 coordination. A trusted binding identifies the retained snapshot. Freshness
 after later source writes requires an independent freshness policy.
 
+`backup_to_with_scan_limit` on both catalog types charges the complete
+encoded base and suffix twice. The first pass copies the source and the
+second verifies the staged backup. Managed `restore_backup_with_scan_limit`
+and authorized `prepare_from_backup_recorded_with_scan_limit` likewise
+charge the bound byte lengths for the copy and staged verification or
+replay. Admission precedes staging and receipt recording. An optional
+persistent storage quota applies separately. The logical ceilings cover
+payload reads. Metadata and framing probes, physical retries and writes
+have separate costs.
+
 ## Future migration of existing stores and external authority
 
 `AuthorizedRetainedStore` exercises independent authority on a newly
@@ -734,6 +744,11 @@ callback fails, publication does not begin. After interruption, the receipt
 can exist with an absent destination. `register_prepared` checks the exact
 visible catalog before advancing its authority, including after an
 interrupted rename or directory sync.
+
+`register_prepared_with_recovery_scan_limit` charges one complete base
+verification and suffix replay, plus confirmation of the suffix when the
+local witness is older than the prepared endpoint. A scan budget refusal
+comes before witness adoption or an authority comparison.
 
 This restores a selected snapshot into a new lineage. Keep the original
 authority and choose the recovery point independently. The backup binding

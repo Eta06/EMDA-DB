@@ -147,6 +147,7 @@ fn uncertain_backup_restore_keeps_its_verified_registration_record() {
         &backup,
         &destination,
         LIMITS.into(),
+        None,
         &binding,
         |_| Err(io::Error::other("injected restored parent sync error")),
         |_| Ok(()),
@@ -182,6 +183,94 @@ fn uncertain_backup_restore_keeps_its_verified_registration_record() {
     assert_eq!(fixture.provider.read().unwrap(), original);
     drop(restored);
     assert!(Catalog::register_prepared(&destination, LIMITS, provider, prepared).is_err());
+}
+
+#[test]
+fn authorized_backup_restore_and_registration_admit_before_publication() {
+    use crate::retained_candidate::writable::marker;
+
+    type Catalog = AuthorizedRetainedStore<Provider>;
+    let mut fixture = Fixture::prepare();
+    fixture.register();
+    let mut source = fixture.open();
+    source.put(b"suffix", b"captured").unwrap();
+    let original = fixture.provider.read().unwrap();
+    let parent = fixture.root.parent().unwrap();
+    let backup = parent.join("budgeted-backup");
+    let destination = parent.join("budgeted-restore");
+    let base_bytes = source.inner.store.base.metadata().file_bytes;
+    let suffix_bytes = source.inner.store.suffix_len as u64;
+    let cap = 2 * (base_bytes + suffix_bytes);
+    assert!(matches!(
+        source.backup_to_with_scan_limit(&backup, cap - 1),
+        Err(crate::SuffixExportFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(!backup.exists());
+    let binding = source.backup_to_with_scan_limit(&backup, cap).unwrap();
+    assert!(matches!(
+        Catalog::prepare_from_backup_recorded_with_scan_limit(
+            &backup, &destination, LIMITS, cap - 1, None, &binding,
+            |_| panic!("scan admission must precede recording"),
+        ),
+        Err(AuthorizedRestoreFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(!destination.exists());
+    let mut recorded = None;
+    let prepared = Catalog::prepare_from_backup_recorded_with_scan_limit(
+        &backup,
+        &destination,
+        LIMITS,
+        cap,
+        None,
+        &binding,
+        |record| {
+            assert!(!destination.exists());
+            recorded = Some(record);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(recorded, Some(prepared));
+
+    let generation = Slot::A.path(&destination);
+    let witness = generation.join("commit.state");
+    let end_witness = fs::read(&witness).unwrap();
+    // Model a local witness rolled back to the empty boundary. The retained
+    // receipt still independently binds the exact prepared suffix endpoint.
+    let log = open_regular(&generation.join("records.log")).unwrap();
+    let header =
+        Header::read(&log, GenerationRole::Authorized(prepared.committed.catalog)).unwrap();
+    let empty = marker(header.bytes(), 0, &Sha256::digest([]).into());
+    fs::write(&witness, empty).unwrap();
+
+    let mut provider = Provider::default();
+    let registration = base_bytes + 2 * suffix_bytes;
+    assert!(matches!(
+        Catalog::register_prepared_with_recovery_scan_limit(
+            &destination, LIMITS, provider.clone(), prepared, registration - 1,
+        ),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "retained recovery scan byte limit exceeded"
+    ));
+    assert_eq!(provider.read().unwrap(), None);
+    assert_eq!(fs::read(&witness).unwrap(), empty);
+    let mut restored = Catalog::register_prepared_with_recovery_scan_limit(
+        &destination,
+        LIMITS,
+        provider.clone(),
+        prepared,
+        registration,
+    )
+    .unwrap();
+    assert_eq!(
+        restored.get(b"suffix", 8).unwrap().as_deref(),
+        Some(&b"captured"[..])
+    );
+    assert_eq!(provider.read().unwrap(), Some(prepared));
+    assert_eq!(fs::read(&witness).unwrap(), end_witness);
+    assert_eq!(fixture.provider.read().unwrap(), original);
 }
 
 #[test]

@@ -155,6 +155,7 @@ fn recorded_restore_crash_child() {
         &backup,
         &root.join("restored"),
         LIMITS.into(),
+        None,
         &binding,
         |parent| {
             if boundary == "after-rename" {

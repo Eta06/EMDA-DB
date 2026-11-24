@@ -284,6 +284,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             backup.as_ref(),
             destination.as_ref(),
             limits.into(),
+            None,
             expected,
             sync_existing,
             |_| Ok(()),
@@ -302,6 +303,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             backup.as_ref(),
             destination.as_ref(),
             InitialLimits::with_storage(limits, storage),
+            None,
             expected,
             sync_existing,
             |_| Ok(()),
@@ -326,14 +328,35 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         expected: &SuffixExpected,
         record_prepared: impl FnOnce(AuthorityRecord) -> io::Result<()>,
     ) -> Result<AuthorityRecord, AuthorizedRestoreFailure> {
-        let limits = match storage {
-            Some(storage) => InitialLimits::with_storage(limits, storage),
-            None => limits.into(),
-        };
         Self::prepare_from_backup_using(
             backup.as_ref(),
             destination.as_ref(),
-            limits,
+            InitialLimits::with_optional_storage(limits, storage),
+            None,
+            expected,
+            sync_existing,
+            record_prepared,
+        )
+    }
+
+    /// Prepare under the logical read ceiling of
+    /// [`ManagedRetainedStore::restore_backup_with_scan_limit`], recording
+    /// the verified receipt before publication. Admission failure precedes
+    /// staging and does not invoke `record_prepared`.
+    pub fn prepare_from_backup_recorded_with_scan_limit(
+        backup: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        max_scan_bytes: u64,
+        storage: Option<CatalogStorageLimits>,
+        expected: &SuffixExpected,
+        record_prepared: impl FnOnce(AuthorityRecord) -> io::Result<()>,
+    ) -> Result<AuthorityRecord, AuthorizedRestoreFailure> {
+        Self::prepare_from_backup_using(
+            backup.as_ref(),
+            destination.as_ref(),
+            InitialLimits::with_optional_storage(limits, storage),
+            Some(max_scan_bytes),
             expected,
             sync_existing,
             record_prepared,
@@ -344,6 +367,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         backup: &Path,
         destination: &Path,
         limits: InitialLimits,
+        max_scan_bytes: Option<u64>,
         expected: &SuffixExpected,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         record_prepared: impl FnOnce(AuthorityRecord) -> io::Result<()>,
@@ -353,6 +377,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             backup,
             destination,
             limits,
+            max_scan_bytes,
             expected,
             InitialPublication {
                 magic: AUTHORIZED_MAGIC,
@@ -390,8 +415,37 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     pub fn register_prepared(
         root: impl AsRef<Path>,
         limits: RetainedStoreLimits,
+        authority: A,
+        prepared: AuthorityRecord,
+    ) -> io::Result<Self> {
+        Self::register_prepared_using(root.as_ref(), limits, authority, prepared, None)
+    }
+
+    /// Register under the same logical recovery scan ceiling as
+    /// [`Self::open_with_recovery_scan_limit`]. Admission precedes witness
+    /// adoption and any authority compare-and-swap.
+    pub fn register_prepared_with_recovery_scan_limit(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        authority: A,
+        prepared: AuthorityRecord,
+        max_scan_bytes: u64,
+    ) -> io::Result<Self> {
+        Self::register_prepared_using(
+            root.as_ref(),
+            limits,
+            authority,
+            prepared,
+            Some(RecoveryScanLimit::BaseAndSuffix(max_scan_bytes)),
+        )
+    }
+
+    fn register_prepared_using(
+        root: &Path,
+        limits: RetainedStoreLimits,
         mut authority: A,
         prepared: AuthorityRecord,
+        scan_limit: Option<RecoveryScanLimit>,
     ) -> io::Result<Self> {
         if prepared.revision != 0 || prepared.pending.is_some() {
             return Err(invalid_input(
@@ -405,10 +459,10 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             ));
         }
         let inner = ManagedRetainedStore::open_role(
-            root.as_ref(),
+            root,
             limits,
             AUTHORIZED_MAGIC,
-            (None, None),
+            (None, scan_limit),
             |root, catalog| select_authorized(root, catalog, prepared.committed),
             Some(prepared),
         )?;
@@ -623,14 +677,33 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         destination: impl AsRef<Path>,
     ) -> Result<SuffixExpected, crate::SuffixExportFailure> {
+        self.backup_using(destination.as_ref(), None)
+    }
+
+    /// Back up the verified selection under the logical ceiling of
+    /// [`ManagedRetainedStore::backup_to_with_scan_limit`].
+    pub fn backup_to_with_scan_limit(
+        &mut self,
+        destination: impl AsRef<Path>,
+        max_scan_bytes: u64,
+    ) -> Result<SuffixExpected, crate::SuffixExportFailure> {
+        self.backup_using(destination.as_ref(), Some(max_scan_bytes))
+    }
+
+    fn backup_using(
+        &mut self,
+        destination: &Path,
+        max_scan_bytes: Option<u64>,
+    ) -> Result<SuffixExpected, crate::SuffixExportFailure> {
         self.verify_current()
             .map_err(crate::SuffixExportFailure::NotPublished)?;
         if let Some(fence) = &self.fence {
             fence
-                .check_backup_parent(destination.as_ref())
+                .check_backup_parent(destination)
                 .map_err(crate::SuffixExportFailure::NotPublished)?;
         }
-        self.inner.backup_to(destination)
+        self.inner
+            .backup_using(destination, max_scan_bytes, sync_existing)
     }
 
     pub fn get(&mut self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {

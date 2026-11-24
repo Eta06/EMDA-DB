@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add logical read ceilings for retained backup, restore, and authority registration.
+
 - Bound nested JSON equality work across document update conditions and array
   add-unique and remove operators.
 

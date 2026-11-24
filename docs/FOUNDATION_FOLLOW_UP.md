@@ -559,6 +559,12 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   persisted catalog quota. Tests exercise exact rotation and append
   limits, verify that rejections preserve the authority, log and witness,
   and reopen and reclaim the old slot before appending.
+- [x] Bound logical copy and verification reads for retained backup and
+  restore, and bound verification and any suffix confirmation during
+  prepared authority registration. The [retained format specification](STREAMING_RETAINED_BASE_SPEC.md)
+  describes the ceilings. Regressions verify that short budgets preserve
+  the destination, retained receipt callback, local witness and authority
+  as applicable, and that admitted corrupted bytes still fail verification.
 - [ ] Complete the retained-history lifecycle for independently retained backups and measure recovery at deployment scale. Retained reopen verifies the entire admitted base and replays a bounded suffix. Rotation is synchronous. Limits do not bound all allocations or the total disk space across active and retired files. Any path that skips full verification needs a documented corruption model and equivalent validation. Reclamation must preserve captured reads and transactions, recover from interrupted publication, and reject stale generations according to the authority contract.
   The [million-key larger-suffix comparison](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md)
   exercises 32,768 mutations per epoch and local authorized restore on macOS

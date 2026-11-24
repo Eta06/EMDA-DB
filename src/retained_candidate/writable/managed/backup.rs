@@ -19,12 +19,25 @@ impl ManagedRetainedStore {
         &self,
         destination: impl AsRef<Path>,
     ) -> Result<SuffixExpected, SuffixExportFailure> {
-        self.backup_using(destination.as_ref(), sync_existing)
+        self.backup_using(destination.as_ref(), None, sync_existing)
+    }
+
+    /// Back up under an inclusive logical read ceiling. Copying the base
+    /// and suffix and verifying the staged files each charge their full
+    /// encoded lengths. Metadata and framing probes, I/O retries, and writes
+    /// have separate costs. Refusal precedes staging and publication.
+    pub fn backup_to_with_scan_limit(
+        &self,
+        destination: impl AsRef<Path>,
+        max_scan_bytes: u64,
+    ) -> Result<SuffixExpected, SuffixExportFailure> {
+        self.backup_using(destination.as_ref(), Some(max_scan_bytes), sync_existing)
     }
 
     pub(super) fn backup_using(
         &self,
         destination: &Path,
+        max_scan_bytes: Option<u64>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<SuffixExpected, SuffixExportFailure> {
         let mut verified = None;
@@ -34,6 +47,12 @@ impl ManagedRetainedStore {
             self.store.verify_boundary(&digest)?;
             let base_path = self.active.slot.path(&self.root).join("base");
             self.store.base.check_path(&base_path)?;
+            admit_copy_scans(
+                max_scan_bytes,
+                self.store.base.metadata().file_bytes,
+                self.store.suffix_len as u64,
+                "retained backup scan byte limit exceeded",
+            )?;
             let parent = crate::backup::parent_directory(destination)?;
             check_separation(&self.root, parent)?;
             let mut stage = crate::staging::Stage::directory(parent)?;
@@ -97,6 +116,7 @@ impl ManagedRetainedStore {
             backup.as_ref(),
             destination.as_ref(),
             limits.into(),
+            None,
             expected,
         )
     }
@@ -113,6 +133,29 @@ impl ManagedRetainedStore {
             backup.as_ref(),
             destination.as_ref(),
             InitialLimits::with_storage(limits, storage),
+            None,
+            expected,
+        )
+    }
+
+    /// Restore under an inclusive logical read ceiling for copying both
+    /// files, replaying the staged suffix, and verifying the staged base.
+    /// Metadata and framing probes, retries, and writes have separate costs.
+    /// Scan budget refusal precedes staging. The optional catalog quota
+    /// applies independently and persists in the new catalog.
+    pub fn restore_backup_with_scan_limit(
+        backup: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        max_scan_bytes: u64,
+        storage: Option<CatalogStorageLimits>,
+        expected: &SuffixExpected,
+    ) -> Result<[u8; 16], PublicationFailure> {
+        Self::restore_backup_using(
+            backup.as_ref(),
+            destination.as_ref(),
+            InitialLimits::with_optional_storage(limits, storage),
+            Some(max_scan_bytes),
             expected,
         )
     }
@@ -121,12 +164,14 @@ impl ManagedRetainedStore {
         backup: &Path,
         destination: &Path,
         limits: InitialLimits,
+        max_scan_bytes: Option<u64>,
         expected: &SuffixExpected,
     ) -> Result<[u8; 16], PublicationFailure> {
         Self::restore_backup_bound(
             backup,
             destination,
             limits,
+            max_scan_bytes,
             expected,
             InitialPublication::new(CATALOG_MAGIC, sync_existing),
         )
@@ -137,6 +182,7 @@ impl ManagedRetainedStore {
         backup: &Path,
         destination: &Path,
         limits: InitialLimits,
+        max_scan_bytes: Option<u64>,
         expected: &SuffixExpected,
         publication: InitialPublication<
             impl FnOnce(&Path) -> io::Result<()>,
@@ -146,6 +192,13 @@ impl ManagedRetainedStore {
         let parent = crate::backup::parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(backup, parent).map_err(PublicationFailure::NotPublished)?;
+        admit_copy_scans(
+            max_scan_bytes,
+            expected.candidate.base_bytes(),
+            expected.end,
+            "retained restore scan byte limit exceeded",
+        )
+        .map_err(PublicationFailure::NotPublished)?;
         Self::create_bound(
             &backup.join(CANDIDATE),
             destination,
@@ -155,6 +208,22 @@ impl ManagedRetainedStore {
             publication,
         )
     }
+}
+
+fn admit_copy_scans(
+    limit: Option<u64>,
+    base: u64,
+    suffix: u64,
+    message: &'static str,
+) -> io::Result<()> {
+    if limit.is_some_and(|limit| {
+        base.checked_add(suffix)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .is_none_or(|scans| scans > limit)
+    }) {
+        return Err(invalid_input(message));
+    }
+    Ok(())
 }
 
 pub(super) fn verify_backup(
