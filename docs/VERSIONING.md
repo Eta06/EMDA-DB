@@ -66,6 +66,13 @@ JSON names and value types. The destination name is supplied at import.
 The reader rejects duplicate or unknown archive fields and unsupported
 versions. A fixed version 1 fixture is checked on macOS and Linux.
 
+Archive version 2 uses the same envelope and requires a schema containing
+at least one `IntegerRange` or `StringBytes` field type. These types encode
+as a JSON object named for the variant, containing its `min` and `max`
+bounds. A version 1 archive with either type is rejected. Collections
+with only the original field types keep exporting version 1. Use a
+reader that understands the bounded schema to import version 2.
+
 The archive version is independent of log and collection metadata versions.
 For a compatible migration, open the source using a revision that supports
 its current log and metadata, complete pending maintenance, then export and
@@ -87,5 +94,11 @@ or index key encoding require a cursor version decision. Cursor payloads are
 separate from the database files and do not change the stored document format.
 
 The document interface reserves a versioned byte-key namespace and stores versioned collection metadata, JSON objects, and secondary index keys in the ordinary log. Its atomic transactions emit DB02 records, so revisions that cannot read DB02 cannot reopen logs containing document commits. Unknown collection metadata versions and fields are rejected on access. Older engines that can read the log do not protect or maintain document indexes and can corrupt the document model through raw writes. This unreleased version provides no stable document-format, migration or downgrade promise; back up data and use the same revision for recovery. See [document namespace and semantics](DOCUMENT_MODEL.md).
+
+The two bounded field types extend the schema inside existing metadata
+versions. Readers that predate these variants reject a collection
+containing one in either its active or pending schema. Activating these
+rules requires a document reader that supports them. Exhaustive Rust
+matches on `FieldType` need arms for the two new variants.
 
 Incremental document index build/drop or schema migration permanently upgrades the affected collection metadata to version 2. It stores durable maintenance jobs and cursors in DB02 transactions, atomically with associated index changes. Starting incremental collection deletion writes a version 3 metadata marker. A checkpoint-backed step that returns a full page atomically upgrades the marker to version 4 and writes a separate reserved cursor key with the deleted keys. The final step checks all namespaces, then removes the cursor and metadata atomically. Readers from before version 4 reject that marked collection; current readers can resume version 3 jobs without a cursor. Current document readers accept versions 1 and 2 and valid marked versions 3 and 4; older readers reject versions they do not support and must not write the affected collection. Completed index and schema jobs are removed, but their metadata version stays at 2. Raw key/value APIs and older engines can still bypass document invariants and are not a safe downgrade path.

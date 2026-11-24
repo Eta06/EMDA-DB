@@ -14,7 +14,16 @@ use std::marker::PhantomData;
 pub const MAX_COLLECTION_ARCHIVE_BYTES: usize = 8 * 1024 * 1024;
 /// Maximum documents in one atomic collection archive.
 pub const MAX_COLLECTION_ARCHIVE_DOCUMENTS: usize = 256;
-const VERSION: u32 = 1;
+const LEGACY_VERSION: u32 = 1;
+const BOUNDED_SCHEMA_VERSION: u32 = 2;
+
+fn archive_version(schema: &CollectionSchema) -> u32 {
+    if schema.has_value_bounds() {
+        BOUNDED_SCHEMA_VERSION
+    } else {
+        LEGACY_VERSION
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,7 +124,7 @@ impl DocumentTransaction<'_, '_> {
             |id, document| documents.push(ArchiveDocument { id, document }),
         )?;
         let archive = CollectionArchive {
-            version: VERSION,
+            version: archive_version(&metadata.schema),
             schema: metadata.schema,
             indexes: metadata.indexes,
             documents,
@@ -135,7 +144,7 @@ impl DocumentTransaction<'_, '_> {
             }
             let archive: CollectionArchive = serde_json::from_slice(bytes)
                 .map_err(|_| key::invalid("invalid document collection archive"))?;
-            if archive.version != VERSION {
+            if archive.version != archive_version(&archive.schema) {
                 return Err(key::invalid(
                     "unsupported document collection archive version",
                 ));

@@ -1,5 +1,5 @@
 //! Small, explicit schema rules shared by both storage backends.
-use super::key;
+use super::{key, transaction::MAX_DOCUMENT_BYTES};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -7,15 +7,30 @@ use std::io;
 
 /// The JSON type accepted by a schema rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum FieldType {
     /// A JSON boolean.
     Boolean,
     /// A signed 64-bit JSON integer.
     Integer,
+    /// A signed 64-bit JSON integer in an inclusive range.
+    IntegerRange {
+        /// Lowest accepted integer.
+        min: i64,
+        /// Highest accepted integer.
+        max: i64,
+    },
     /// Any JSON number representable by serde_json.
     Number,
     /// A UTF-8 JSON string.
     String,
+    /// A UTF-8 string with an inclusive byte-length range.
+    StringBytes {
+        /// Minimum UTF-8 bytes, possibly zero.
+        min: usize,
+        /// Maximum UTF-8 bytes, at most 1 MiB.
+        max: usize,
+    },
     /// A JSON object.
     Object,
     /// A JSON array.
@@ -106,6 +121,15 @@ pub(super) fn validate_tree(document: &Value) -> io::Result<()> {
 }
 
 impl CollectionSchema {
+    pub(super) fn has_value_bounds(&self) -> bool {
+        self.fields.iter().any(|rule| {
+            matches!(
+                rule.field_type,
+                FieldType::IntegerRange { .. } | FieldType::StringBytes { .. }
+            )
+        })
+    }
+
     pub(super) fn validate_definition(&self) -> io::Result<()> {
         if self.fields.len() > 64 {
             return Err(key::invalid("schema exceeds 64 field rules"));
@@ -113,6 +137,15 @@ impl CollectionSchema {
         let mut paths = BTreeSet::new();
         for rule in &self.fields {
             validate_path(&rule.path)?;
+            match rule.field_type {
+                FieldType::IntegerRange { min, max } if min > max => {
+                    return Err(key::invalid("invalid schema integer range"));
+                }
+                FieldType::StringBytes { min, max } if min > max || max > MAX_DOCUMENT_BYTES => {
+                    return Err(key::invalid("invalid schema string byte range"));
+                }
+                _ => {}
+            }
             if !paths.insert(&rule.path) {
                 return Err(key::invalid("schema contains a duplicate field path"));
             }
@@ -135,8 +168,14 @@ impl CollectionSchema {
                     let valid = match rule.field_type {
                         FieldType::Boolean => value.is_boolean(),
                         FieldType::Integer => value.as_i64().is_some(),
+                        FieldType::IntegerRange { min, max } => value
+                            .as_i64()
+                            .is_some_and(|value| (min..=max).contains(&value)),
                         FieldType::Number => value.is_number(),
                         FieldType::String => value.is_string(),
+                        FieldType::StringBytes { min, max } => value
+                            .as_str()
+                            .is_some_and(|value| (min..=max).contains(&value.len())),
                         FieldType::Object => value.is_object(),
                         FieldType::Array => value.is_array(),
                     };

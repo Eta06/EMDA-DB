@@ -175,6 +175,10 @@ The initial document interface is bounded and experimental. This checklist recor
   and can use scalar ranges. Tests compare indexed and scan results for
   Unicode boundaries, missing fields, partial compound indexes, and a
   concurrent phantom that rolls back a staged write.
+  Bounded integer and UTF-8 string fields use the same write and migration
+  validation, with a version 2 collection archive. Tests check failed
+  migration steps, update and index rollback, and reopens on both writable
+  backends.
 - [x] Add opt-in authenticated progress for incremental index builds and schema migrations. Guarded advancement uses a separately retained per-job key, fails on a substituted cursor or definition, and preserves bounded steps and deletion of the cursor document. The [trust model](DOCUMENT_MODEL.md#guarded-progress-for-index-builds-and-schema-migrations) describes key custody, cancellation and compatibility.
 - [x] Migrate unfinished unguarded builds and schema jobs with an atomic guarded restart. It checks the caller's expected definition, discards unchecked cursor progress, and resumes from the beginning while keeping valid pending index entries. Tests cover rollback, a competing old step, reopen, and the rescan of a document before the former frontier on ordinary and checkpoint stores. The managed retained path also checks that both restarts and a raw receipt commit together across rotation and reopen. All 14 selected document integration tests passed on macOS and Linux ARM64 ext4.
 - [x] Interrupt the append, sync, and witness update of a guarded index

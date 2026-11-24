@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add bounded integer and UTF-8 string field rules for document schemas.
+  Collections using the rules export version 2 archives.
+
 - Add deadlines and idle reaping for owned online snapshots, including
   snapshots that pin an already unlinked generation. The optional online
   reaper follows the live handle across handoffs.
