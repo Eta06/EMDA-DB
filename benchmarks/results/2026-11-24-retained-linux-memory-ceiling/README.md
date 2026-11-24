@@ -26,3 +26,7 @@ enforced ceiling was exercised on Linux.
 
 [Hosted CI](https://github.com/Eta06/EMDA-DB/actions/runs/45344487724) ·
 [Reproduction command](../../../examples/authorized_recovery_bench.md)
+
+The [expanded gate](../2026-11-24-writable-recovery-linux-ceiling/README.md)
+also verifies writable checkpoint rollover and recovery under the same
+process ceiling.
