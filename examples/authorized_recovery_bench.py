@@ -46,7 +46,8 @@ def command(binary, phase, fixture, backend, keys, epoch):
     return timing + [str(binary), phase, str(fixture), backend, str(keys), str(epoch)]
 
 
-def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False):
+def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False,
+        retained_address_space_bytes=None):
     fixture = directory / "fixture"
     excluded = ()
     if phase in {"bind-archive", "lifecycle", "authorized-lifecycle"}:
@@ -66,6 +67,11 @@ def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False):
     args = command(binary, phase, fixture, backend, keys, epoch)
     if wide_suffix:
         args.append("--wide-suffix")
+    address_space = (retained_address_space_bytes
+                     if backend == "retained" and phase in {"mutate", "reopen", "verify"}
+                     else None)
+    if address_space is not None:
+        args = ["prlimit", f"--as={address_space}:{address_space}", "--", *args]
     with logfile.open("w") as out:
         child = subprocess.Popen(args,
                                  stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
@@ -83,6 +89,7 @@ def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False):
     combined = logfile.read_text()
     metrics = {"phase": phase, "backend": backend, "keys": keys, "epoch": epoch,
                "exit": child.returncode, "observed_seconds": duration,
+               "address_space_limit_bytes": address_space,
                "allocated_initial_bytes": initial, "allocated_final_bytes": final,
                "allocated_peak_sample_bytes": max(peak, final), "disk_samples": samples + 1}
     for name, value in re.findall(r"(\w+)=(\d+)(?=\s|$)", combined):
@@ -104,6 +111,8 @@ def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False):
         print(json.dumps(metrics, sort_keys=True), file=output)
     if child.returncode != 0 or "peak_rss_bytes" not in metrics:
         raise SystemExit(f"{phase} {backend} epoch {epoch} failed, see {logfile}")
+    if address_space is not None and metrics["peak_rss_bytes"] > address_space:
+        raise SystemExit(f"peak RSS exceeded applied address-space limit, see {logfile}")
     return metrics
 
 
@@ -114,6 +123,8 @@ def main():
     parser.add_argument("keys", type=int)
     parser.add_argument("epochs", type=int)
     parser.add_argument("--sqlite", action="store_true", help="include a WAL/FULL SQLite control")
+    parser.add_argument("--retained-address-space-mib", type=int,
+                        help="Linux hard address-space ceiling for retained mutate, reopen and verify phases")
     parser.add_argument("--wide-suffix", action="store_true", help="run 32,768 mutations per epoch with a 12 MiB suffix budget")
     parser.add_argument("--retire-and-restore", action="store_true", help="verify a local backup, retire the legacy archive, and restore the final state")
     parser.add_argument("--authorized-restore", action="store_true", help="restore using an independently recorded receipt and a fresh authority")
@@ -123,6 +134,11 @@ def main():
         parser.error(f"keys must be {min_keys}–1048576 and epochs must be 1–1000")
     if args.authorized_restore and not args.retire_and_restore:
         parser.error("--authorized-restore requires --retire-and-restore")
+    address_space = None
+    if args.retained_address_space_mib is not None:
+        if sys.platform != "linux" or args.retained_address_space_mib <= 0:
+            parser.error("--retained-address-space-mib requires Linux and a positive limit")
+        address_space = args.retained_address_space_mib * 1024**2
     binary, directory = args.binary.resolve(strict=True), args.new_directory.resolve()
     directory.mkdir()
     backends = ["ordinary", "retained", "sqlite"] if args.sqlite else ["ordinary", "retained"]
@@ -136,11 +152,12 @@ def main():
         "retire_and_restore": args.retire_and_restore,
         "authorized_restore": args.authorized_restore,
         "wide_suffix": args.wide_suffix,
+        "retained_address_space_limit_bytes": address_space,
     }
     (directory / "environment.json").write_text(json.dumps(provenance, indent=2) + "\n")
     def phase(phase_name, backend, epoch):
         return run(binary, directory, phase_name, backend, args.keys, epoch,
-                   wide_suffix=args.wide_suffix)
+                   wide_suffix=args.wide_suffix, retained_address_space_bytes=address_space)
 
     phase("setup", "all" if args.sqlite else "both", 0)
     if args.retire_and_restore:

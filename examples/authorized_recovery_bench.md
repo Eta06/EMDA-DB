@@ -24,7 +24,19 @@ EMDA_BENCH_SUFFIX_WORK=240000000 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/authorized-restore" 1048576 6 --sqlite --retire-and-restore --authorized-restore
 python3 examples/authorized_recovery_bench.py \
   target/release/examples/authorized_recovery_bench "$run/wide-suffix" 1048576 6 --sqlite --wide-suffix
+# Linux with util-linux prlimit
+python3 examples/authorized_recovery_bench.py \
+  target/release/examples/authorized_recovery_bench "$run/memory-ceiling" 262144 4 --sqlite --wide-suffix --retained-address-space-mib 48
 ```
+
+The Linux ceiling applies a hard and soft `RLIMIT_AS` to each fresh retained
+worker that opens the writable catalog, mutates it, rotates it, or verifies
+its live state. Each phase records the limit and process peak RSS. Fixture
+creation, initial cutover, optional backup and restore phases, and the
+ordinary and SQLite controls run uncapped. The ceiling covers one worker's
+virtual address space. Allocation failure can terminate the worker, so apply
+the ceiling to a dedicated process. Aggregate memory use and filesystem
+caches have separate costs.
 
 Each run needs a fresh directory and enough space for both fixtures and
 the two retained generations that coexist during rotation. Run builds
