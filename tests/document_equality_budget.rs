@@ -1,7 +1,7 @@
 //! Equality inputs and work share the document filter's resource budgets.
 use database_engine::{
     AggregateRequest, AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase,
-    DocumentFilter, DocumentQuery, Store,
+    DocumentFilter, DocumentQuery, DocumentQueryAccess, IndexDefinition, Store,
 };
 use serde_json::{Value, json};
 use std::io::ErrorKind;
@@ -182,5 +182,110 @@ fn equality_and_membership_share_one_comparison_budget_and_abort_atomically() {
             db.transaction(|tx| tx.get_raw(b"work-rollback")).unwrap(),
             None
         );
+    });
+}
+
+fn create_indexed_collection(db: &DocumentDatabase<'_>) {
+    db.create_collection("c", CollectionSchema::default())
+        .unwrap();
+    db.create_index(
+        "c",
+        IndexDefinition {
+            name: "by_n".into(),
+            fields: vec![path("n")],
+            unique: false,
+            partial: None,
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn nested_membership_work_limit_is_shared_by_scans_and_indexed_aggregation() {
+    on_backends(|db| {
+        create_indexed_collection(db);
+        // Each nested comparison visits 125,000 child values.
+        let payload = json!(vec![0; 125_000]);
+        db.insert("c", "a", &json!({"n": 1, "payload": payload, "extra": [0]}))
+            .unwrap();
+        let mut filters = vec![equal("n", json!(1))];
+        filters.extend((0..8).map(|_| DocumentFilter::In {
+            path: path("payload"),
+            values: vec![payload.clone()],
+        }));
+        let exact = query(DocumentFilter::And(filters.clone()));
+        let scanned = db.query("c", &exact).unwrap();
+        let planned = db.query_planned("c", &exact).unwrap();
+        assert_eq!(scanned.documents.len(), 1);
+        assert_eq!(scanned.documents, planned.result.documents);
+        assert!(matches!(
+            planned.access,
+            DocumentQueryAccess::EqualityIndex { .. }
+        ));
+
+        filters.push(equal("extra", json!([0])));
+        let exceeded = query(DocumentFilter::And(filters));
+        let request = AggregateStatsRequest {
+            filter: exceeded.filter.clone(),
+            group_by: None,
+            fields: vec![path("n")],
+            max_scanned: 32,
+        };
+        for error in [
+            db.query("c", &exceeded).unwrap_err(),
+            db.query_planned("c", &exceeded).unwrap_err(),
+            db.aggregate_stats("c", &request).unwrap_err(),
+            db.aggregate_stats_planned("c", &request).unwrap_err(),
+        ] {
+            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+            assert_eq!(
+                error.to_string(),
+                "nested equality comparison limit exceeded"
+            );
+        }
+    });
+}
+
+#[test]
+fn repeated_string_equality_stops_at_the_shared_text_limit() {
+    on_backends(|db| {
+        create_indexed_collection(db);
+        let text = json!("x".repeat(256 * 1024));
+        let document = json!({"n": 1, "text": text});
+        for id in 0..32 {
+            db.insert("c", &format!("doc-{id:02}"), &document).unwrap();
+        }
+        let mut filters = vec![equal("n", json!(1))];
+        filters.extend((0..8).map(|_| equal("text", text.clone())));
+        let request = DocumentQuery {
+            projection: Some(vec![path("n")]),
+            max_scanned: 64,
+            ..query(DocumentFilter::And(filters))
+        };
+        let planned = db.query_planned("c", &request).unwrap();
+        assert!(matches!(
+            planned.access,
+            DocumentQueryAccess::EqualityIndex { .. }
+        ));
+        assert_eq!(planned.result.documents.len(), 32);
+        assert_eq!(
+            db.query("c", &request).unwrap().documents,
+            planned.result.documents,
+        );
+        let error = db
+            .transaction(|tx| {
+                tx.insert("c", "overflow", &document)?;
+                tx.put_raw(b"receipt", b"staged")?;
+                tx.query_planned("c", &request)?;
+                Ok(())
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "filter equality text byte limit exceeded"
+        );
+        assert_eq!(db.get("c", "overflow").unwrap(), None);
+        assert_eq!(db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(), None);
     });
 }

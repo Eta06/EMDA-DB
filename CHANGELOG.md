@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound the nested values and text bytes examined by document equality and
+  membership filters across queries and aggregation.
+
 - Stream large values in checkpoint-backed compaction and verify staged
   values during log replay to reduce temporary memory and avoid value rereads.
 
