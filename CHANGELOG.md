@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add an opt-in cumulative validation limit for checkpoint read-set
+  transactions across intervening writes.
+
 - Bound live key bytes at the trusted checkpoint and at every suffix state
   during a managed rebuild, with optional count and spill-read caps.
 

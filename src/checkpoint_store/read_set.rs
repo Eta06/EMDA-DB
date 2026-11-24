@@ -14,6 +14,32 @@ use std::sync::Arc;
 
 const RANGE_RESERVATION_QUANTUM: usize = 4 * 1024;
 
+pub(super) enum ValidationBudget {
+    Unlimited,
+    Remaining(u64),
+    Exhausted,
+}
+
+impl ValidationBudget {
+    fn exhausted() -> io::Error {
+        io::Error::other("checkpoint transaction cumulative validation limit exceeded")
+    }
+
+    fn charge(&mut self) -> io::Result<()> {
+        match self {
+            Self::Unlimited => Ok(()),
+            Self::Remaining(items) if *items != 0 => {
+                *items -= 1;
+                Ok(())
+            }
+            Self::Remaining(_) | Self::Exhausted => {
+                *self = Self::Exhausted;
+                Err(Self::exhausted())
+            }
+        }
+    }
+}
+
 pub(super) struct RangeEntry {
     end: usize,
     location: GenerationLocation,
@@ -84,11 +110,16 @@ pub(super) struct ReadSet {
     charged: usize,
     validated_generation: u64,
     validated_log_generation: Option<GenerationId>,
+    validation: ValidationBudget,
     conflicted: bool,
 }
 
 impl ReadSet {
-    pub(super) fn new(generation: u64, log_generation: Option<GenerationId>) -> Self {
+    pub(super) fn new(
+        generation: u64,
+        log_generation: Option<GenerationId>,
+        validation: ValidationBudget,
+    ) -> Self {
         Self {
             points: BTreeMap::new(),
             ranges: Vec::new(),
@@ -97,6 +128,7 @@ impl ReadSet {
             charged: 0,
             validated_generation: generation,
             validated_log_generation: log_generation,
+            validation,
             conflicted: false,
         }
     }
@@ -104,6 +136,9 @@ impl ReadSet {
     // Before exposing another observation after a write, ensure every prior
     // point and complete requested range still matches this locked state.
     pub(super) fn check_state(&mut self, state: &State) -> io::Result<()> {
+        if matches!(self.validation, ValidationBudget::Exhausted) {
+            return Err(ValidationBudget::exhausted());
+        }
         if self.conflicted {
             return Err(conflict());
         }
@@ -249,7 +284,10 @@ impl ReadSet {
 
     // The caller holds a state lock. Matching all immutable locations and
     // membership makes the observations valid for this complete state.
-    pub(super) fn matches(&self, state: &State) -> io::Result<bool> {
+    pub(super) fn matches(&mut self, state: &State) -> io::Result<bool> {
+        if matches!(self.validation, ValidationBudget::Exhausted) {
+            return Err(ValidationBudget::exhausted());
+        }
         if self.conflicted {
             return Ok(false);
         }
@@ -265,6 +303,7 @@ impl ReadSet {
         }
         let mut work = 0_usize;
         for (key, location) in &self.points {
+            self.validation.charge()?;
             work += 1;
             if state
                 .view
@@ -285,6 +324,7 @@ impl ReadSet {
                 range.after.as_deref(),
                 range.before.as_deref(),
                 |key, location| {
+                    self.validation.charge()?;
                     let Some(previous) = range.entries.get(index) else {
                         same = false;
                         return Ok(ControlFlow::Break(()));

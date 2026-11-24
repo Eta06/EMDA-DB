@@ -1,4 +1,5 @@
 //! Optimistic transactions over the checkpoint-backed store.
+use super::read_set::ValidationBudget;
 use super::*;
 use crate::TimedTransactionError;
 use crate::log::ValueLocation;
@@ -382,7 +383,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, false, None, None, None)
+        self.run_transaction(action, None, false, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -397,7 +398,7 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, false, true, None, None, None)
+        self.run_transaction(action, None, true, None, None, None)
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -416,8 +417,39 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, false, None, None, None)
-            .map_err(TimedTransactionError::into_io)
+        self.run_transaction(
+            action,
+            Some(ValidationBudget::Unlimited),
+            false,
+            None,
+            None,
+            None,
+        )
+        .map_err(TimedTransactionError::into_io)
+    }
+
+    /// Runs a read-set transaction with an inclusive cumulative limit on
+    /// observations revisited after intervening writes. One unit is charged
+    /// per point checked and per entry encountered in a previously observed
+    /// range, including an extra entry that would reveal a phantom. The first
+    /// capture and validations against the same generation charge no units.
+    /// Exhaustion rejects the transaction before append, even if the callback
+    /// catches the limit error. The limit counts logical work and excludes
+    /// block reads, bytes, callback work and elapsed time.
+    pub fn transaction_with_read_set_validation_limit<T>(
+        &self,
+        max_validation_items: u64,
+        action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.run_transaction(
+            action,
+            Some(ValidationBudget::Remaining(max_validation_items)),
+            false,
+            None,
+            None,
+            None,
+        )
+        .map_err(TimedTransactionError::into_io)
     }
 
     /// Runs a read-set transaction with FIFO callback and commit admission.
@@ -427,8 +459,15 @@ impl CheckpointStore {
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
     ) -> io::Result<T> {
-        self.run_transaction(action, true, true, None, None, None)
-            .map_err(TimedTransactionError::into_io)
+        self.run_transaction(
+            action,
+            Some(ValidationBudget::Unlimited),
+            true,
+            None,
+            None,
+            None,
+        )
+        .map_err(TimedTransactionError::into_io)
     }
 
     /// Runs a selected transaction mode with an operation-boundary deadline.
@@ -455,7 +494,14 @@ impl CheckpointStore {
             mode,
             CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
         );
-        self.run_transaction(action, read_set, fifo, Some(deadline), None, None)
+        self.run_transaction(
+            action,
+            read_set.then_some(ValidationBudget::Unlimited),
+            fifo,
+            Some(deadline),
+            None,
+            None,
+        )
     }
 
     /// Runs a selected mode with cooperative cancellation and an optional
@@ -481,8 +527,15 @@ impl CheckpointStore {
             mode,
             CheckpointTransactionMode::Fifo | CheckpointTransactionMode::ReadSetFifo
         );
-        self.run_transaction(action, read_set, fifo, deadline, Some(cancellation), None)
-            .map_err(crate::cancellation::classify)
+        self.run_transaction(
+            action,
+            read_set.then_some(ValidationBudget::Unlimited),
+            fifo,
+            deadline,
+            Some(cancellation),
+            None,
+        )
+        .map_err(crate::cancellation::classify)
     }
 
     /// Runs a transaction with optional controls and structured failure outcomes.
@@ -512,7 +565,7 @@ impl CheckpointStore {
         let tracker = crate::transaction_outcome::Tracker::new();
         self.run_transaction(
             action,
-            read_set,
+            read_set.then_some(ValidationBudget::Unlimited),
             fifo,
             deadline,
             cancellation,
@@ -524,7 +577,7 @@ impl CheckpointStore {
     fn run_transaction<T>(
         &self,
         action: impl FnOnce(&mut CheckpointTransaction<'_>) -> io::Result<T>,
-        track_points: bool,
+        validation: Option<ValidationBudget>,
         fifo: bool,
         deadline: Option<Instant>,
         cancellation: Option<&crate::CancellationToken>,
@@ -561,14 +614,20 @@ impl CheckpointStore {
         };
         check_deadline(deadline)?;
         crate::cancellation::check(cancellation)?;
+        let track_points = validation.is_some();
         let mut transaction = CheckpointTransaction {
             store: self,
             generation,
             log_generation,
             deadline,
             cancellation: cancellation.cloned(),
-            read_set: track_points
-                .then(|| Mutex::new(super::read_set::ReadSet::new(generation, log_generation))),
+            read_set: validation.map(|budget| {
+                Mutex::new(super::read_set::ReadSet::new(
+                    generation,
+                    log_generation,
+                    budget,
+                ))
+            }),
             staged: BTreeMap::new(),
             encoded_bytes: 4,
         };

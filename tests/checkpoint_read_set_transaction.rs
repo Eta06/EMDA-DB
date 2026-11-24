@@ -19,6 +19,105 @@ fn fixture() -> (tempfile::TempDir, CheckpointStore) {
 }
 
 #[test]
+fn cumulative_validation_limit_counts_points_and_complete_ranges_across_generations() {
+    for cap in [5, 6] {
+        let (dir, store) = fixture();
+        let log = dir.path().join("store/records.log");
+        let mut before_commit = Vec::new();
+        let result = store.transaction_with_read_set_validation_limit(cap, |tx| {
+            assert!(tx.get(b"missing")?.is_none());
+            // The page returns one key, but both base keys are dependencies.
+            assert_eq!(tx.scan(None, Some(b"d"), 1)?.len(), 1);
+            tx.put(b"staged", b"value")?;
+            store.put(b"z1", b"independent")?;
+            assert!(tx.get(b"missing")?.is_none());
+            assert!(tx.get(b"missing")?.is_none());
+            store.put(b"z2", b"independent")?;
+            before_commit = std::fs::read(&log)?;
+            Ok(())
+        });
+        if cap == 5 {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+            assert_eq!(
+                error.to_string(),
+                "checkpoint transaction cumulative validation limit exceeded"
+            );
+            assert!(!database_engine::is_transaction_conflict(&error));
+            assert_eq!(store.get(b"staged").unwrap(), None);
+            assert_eq!(std::fs::read(&log).unwrap(), before_commit);
+        } else {
+            result.unwrap();
+            assert_eq!(
+                store.get(b"staged").unwrap().as_deref(),
+                Some(b"value".as_slice())
+            );
+        }
+        let status = store.transaction_budget_status().unwrap();
+        assert_eq!(status.reserved_bytes, 0);
+        assert_eq!(status.active_transactions, 0);
+        store.put(b"after", b"writer gate released").unwrap();
+        drop(store);
+        let recovered = Store::open(dir.path().join("store")).unwrap();
+        assert_eq!(
+            recovered.get(b"staged").unwrap(),
+            (cap == 6).then(|| b"value".to_vec())
+        );
+        assert_eq!(
+            recovered.get(b"z2").unwrap().as_deref(),
+            Some(b"independent".as_slice())
+        );
+    }
+}
+
+#[test]
+fn caught_validation_limit_errors_prevent_append_and_charged_phantoms_conflict() {
+    for cap in [0, 1] {
+        let (dir, store) = fixture();
+        store
+            .transaction_with_read_set_validation_limit(0, |tx| {
+                assert!(tx.get(b"a")?.is_some());
+                assert!(tx.scan(Some(b"p"), Some(b"r"), 1)?.is_empty());
+                store.rollover_to(dir.path().join("rolled"))?;
+                assert!(tx.get(b"a")?.is_some());
+                tx.put(b"same-generation", b"allowed")
+            })
+            .unwrap();
+        let log = dir.path().join("store/records.log");
+        let mut before_commit = Vec::new();
+        let outcome = store.transaction_with_read_set_validation_limit(cap, |tx| {
+            assert!(tx.scan(Some(b"p"), Some(b"r"), 1)?.is_empty());
+            tx.put(b"staged", b"value")?;
+            store.put(b"q", b"phantom")?;
+            before_commit = std::fs::read(&log)?;
+            let observed = tx.get(b"a").unwrap_err();
+            assert_eq!(
+                database_engine::is_transaction_conflict(&observed),
+                cap == 1
+            );
+            if cap == 0 {
+                assert_eq!(
+                    observed.to_string(),
+                    "checkpoint transaction cumulative validation limit exceeded"
+                );
+            }
+            Ok(())
+        });
+        let error = outcome.unwrap_err();
+        assert_eq!(database_engine::is_transaction_conflict(&error), cap == 1);
+        if cap == 0 {
+            assert_eq!(
+                error.to_string(),
+                "checkpoint transaction cumulative validation limit exceeded"
+            );
+        }
+        assert_eq!(std::fs::read(&log).unwrap(), before_commit);
+        assert_eq!(store.get(b"staged").unwrap(), None);
+        assert_eq!(store.transaction_budget_status().unwrap().reserved_bytes, 0);
+    }
+}
+
+#[test]
 fn unrelated_writes_can_commit_but_observed_present_versions_conflict() {
     let (_dir, store) = fixture();
     store
