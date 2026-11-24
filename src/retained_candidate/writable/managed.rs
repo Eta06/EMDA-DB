@@ -116,7 +116,8 @@ use storage::{CatalogStorage, intersect};
 
 pub use authority::{
     AuthorityPoint, AuthorityRecord, AuthorizedReclamationFailure, AuthorizedRestoreFailure,
-    AuthorizedRetainedStore, CutoverArchiveBinding, FileRetainedAuthority, ReclamationFenceOutcome,
+    AuthorizedRetainedStore, CutoverArchiveBinding, CutoverArchiveRetirementFailure,
+    CutoverArchiveRetirementStep, FileRetainedAuthority, ReclamationFenceOutcome,
     RetainedAuthority,
 };
 

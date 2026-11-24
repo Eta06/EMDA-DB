@@ -390,7 +390,9 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     };
     let initial = Catalog::cutover_from_store(store, &root, EXPORT, LIMITS).unwrap();
     let fence = fs::read(root.join("records.log")).unwrap();
-    let catalog = Marker::load(&root).unwrap().catalog_path(&root);
+    let catalog = Marker::load(&root)
+        .unwrap()
+        .catalog_path(&root.canonicalize().unwrap());
     let log = catalog.join(ARCHIVE_LOG);
     let witness = catalog.join(ARCHIVE_WITNESS);
     let mut provider = FileRetainedAuthority::create(&authority_path).unwrap();
@@ -452,10 +454,12 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
             sync_existing(directory)
         },
         |path| fs::remove_file(path),
+        sync_existing,
     );
     assert!(
-        matches!(&result, Err(PublicationFailure::NotPublished(error))
-            if error.kind() == io::ErrorKind::InvalidData),
+        matches!(&result, Err(failure)
+            if failure.step == CutoverArchiveRetirementStep::Verify
+                && failure.error.kind() == io::ErrorKind::InvalidData),
         "{result:?}"
     );
     assert_eq!(fs::read(&log).unwrap(), old_log);
@@ -473,11 +477,13 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
             sync_existing(directory)
         },
         |_| panic!("retirement started after backup corruption"),
+        sync_existing,
     );
     assert!(
-        matches!(&result, Err(PublicationFailure::NotPublished(error))
-            if error.kind() == io::ErrorKind::InvalidData
-            && error.to_string() == "backup suffix mismatch"),
+        matches!(&result, Err(failure)
+            if failure.step == CutoverArchiveRetirementStep::Verify
+                && failure.error.kind() == io::ErrorKind::InvalidData
+                && failure.error.to_string() == "backup suffix mismatch"),
         "{result:?}"
     );
     assert_eq!(fs::read(&log).unwrap(), old_log);
@@ -491,26 +497,59 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
         &expected,
         |_| Err(io::Error::other("injected backup directory sync failure")),
         |_| panic!("retirement started after backup sync failure"),
+        |_| panic!("catalog sync after failed verification"),
     );
-    assert!(
-        matches!(result, Err(PublicationFailure::NotPublished(error))
-        if error.to_string() == "injected backup directory sync failure")
+    let failure = result.unwrap_err();
+    assert_eq!(failure.step, CutoverArchiveRetirementStep::Verify);
+    assert_eq!(
+        failure.error.to_string(),
+        "injected backup directory sync failure"
     );
+    assert!(!failure.log_unlinked && !failure.witness_unlinked);
     assert_eq!(fs::read(&log).unwrap(), old_log);
     assert_eq!(fs::read(&witness).unwrap(), old_witness);
     assert_eq!(fs::read(&suffix).unwrap(), saved);
 
     let revision = store.current;
-    assert!(matches!(
-        store.retire_archive_using(&binding, &backup, &expected, sync_existing, |path| {
-            if path.file_name() == Some(ARCHIVE_LOG.as_ref()) {
-                fs::remove_file(path)
-            } else {
-                Err(io::Error::other("injected unlink failure"))
-            }
-        }),
-        Err(PublicationFailure::OutcomeUnknown(error)) if error.to_string() == "injected unlink failure"
-    ));
+    let failure = store
+        .retire_archive_using(
+            &binding,
+            &backup,
+            &expected,
+            sync_existing,
+            |path| {
+                assert_eq!(path, log);
+                Err(io::Error::other("injected log unlink failure"))
+            },
+            |_| panic!("catalog sync after failed log unlink"),
+        )
+        .unwrap_err();
+    assert_eq!(failure.step, CutoverArchiveRetirementStep::UnlinkLog);
+    assert_eq!(failure.error.to_string(), "injected log unlink failure");
+    assert!(!failure.log_unlinked && !failure.witness_unlinked);
+    assert_eq!(fs::read(&log).unwrap(), old_log);
+    assert_eq!(fs::read(&witness).unwrap(), old_witness);
+
+    let failure = store
+        .retire_archive_using(
+            &binding,
+            &backup,
+            &expected,
+            sync_existing,
+            |path| {
+                if path == log {
+                    fs::remove_file(path)
+                } else {
+                    assert_eq!(path, witness);
+                    Err(io::Error::other("injected witness unlink failure"))
+                }
+            },
+            |_| panic!("catalog sync after failed witness unlink"),
+        )
+        .unwrap_err();
+    assert_eq!(failure.step, CutoverArchiveRetirementStep::UnlinkWitness);
+    assert_eq!(failure.error.to_string(), "injected witness unlink failure");
+    assert!(failure.log_unlinked && !failure.witness_unlinked);
     assert!(!log.exists());
     assert_eq!(fs::read(&witness).unwrap(), old_witness);
     drop(store);
@@ -521,11 +560,57 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     )
     .unwrap();
     assert_eq!(store.current, revision);
+    let sync_failure = |directory: &Path| {
+        assert_eq!(directory, catalog);
+        assert!(!log.exists() && !witness.exists());
+        Err(io::Error::other("injected catalog sync failure"))
+    };
+    let failure = store
+        .retire_archive_using(
+            &binding,
+            &backup,
+            &expected,
+            sync_existing,
+            |path| {
+                assert_eq!(path, witness);
+                fs::remove_file(path)
+            },
+            sync_failure,
+        )
+        .unwrap_err();
+    assert_eq!(failure.step, CutoverArchiveRetirementStep::SyncCatalog);
+    assert_eq!(failure.error.to_string(), "injected catalog sync failure");
+    assert!(!failure.log_unlinked && failure.witness_unlinked);
+    let failure = store
+        .retire_archive_using(
+            &binding,
+            &backup,
+            &expected,
+            sync_existing,
+            |_| panic!("retry attempted to unlink an absent file"),
+            sync_failure,
+        )
+        .unwrap_err();
+    assert_eq!(failure.step, CutoverArchiveRetirementStep::SyncCatalog);
+    assert!(!failure.log_unlinked && !failure.witness_unlinked);
+    let mut synchronized = false;
     assert!(
-        store
-            .retire_cutover_archive(&binding, &backup, &expected)
+        !store
+            .retire_archive_using(
+                &binding,
+                &backup,
+                &expected,
+                sync_existing,
+                |_| panic!("retry attempted to unlink an absent file"),
+                |directory| {
+                    assert_eq!(directory, catalog);
+                    synchronized = true;
+                    sync_existing(directory)
+                },
+            )
             .unwrap()
     );
+    assert!(synchronized);
     assert!(
         !store
             .retire_cutover_archive(&binding, &backup, &expected)

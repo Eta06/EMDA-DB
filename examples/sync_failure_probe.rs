@@ -1,7 +1,8 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
 use database_engine::retained_candidate::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits,
-    OverlayLimits, ReclamationFenceOutcome, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, CutoverArchiveBinding, Expected,
+    FileRetainedAuthority, IndexLimits, ManagedRetainedStore, OverlayLimits,
+    ReclamationFenceOutcome, RetainedAuthority, RetainedStoreLimits, SuffixExpected, SuffixLimits,
 };
 use database_engine::{
     BatchOperation, BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixRebuildLimits,
@@ -840,28 +841,30 @@ fn authority_probe(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+const RETAINED_FIXTURE_LIMITS: RetainedStoreLimits = RetainedStoreLimits {
+    base: database_engine::retained_base_v2::Limits {
+        file_bytes: 8192,
+        entries: 32,
+        key_bytes: 256,
+        work_bytes: 8193,
+    },
+    index: IndexLimits {
+        blocks: 4,
+        anchor_bytes: 64,
+    },
+    suffix: SuffixLimits {
+        bytes: 8192,
+        operations: 64,
+        work: 4096,
+    },
+    overlay: OverlayLimits {
+        entries: 32,
+        key_bytes: 256,
+    },
+};
+
 fn authorized_reclamation_probe(root: &Path, operation: &str) -> ProbeResult<()> {
-    let limits = RetainedStoreLimits {
-        base: database_engine::retained_base_v2::Limits {
-            file_bytes: 8192,
-            entries: 32,
-            key_bytes: 256,
-            work_bytes: 8193,
-        },
-        index: IndexLimits {
-            blocks: 4,
-            anchor_bytes: 64,
-        },
-        suffix: SuffixLimits {
-            bytes: 8192,
-            operations: 64,
-            work: 4096,
-        },
-        overlay: OverlayLimits {
-            entries: 32,
-            key_bytes: 256,
-        },
-    };
+    let limits = RETAINED_FIXTURE_LIMITS;
     let authority = root.join("authority");
     let catalog = root.join("catalog");
     if operation == "setup" {
@@ -929,9 +932,102 @@ fn authorized_reclamation_probe(root: &Path, operation: &str) -> ProbeResult<()>
     Ok(())
 }
 
+fn archive_retirement_probe(root: &Path, operation: &str) -> ProbeResult<()> {
+    use std::fs;
+    let limits = RETAINED_FIXTURE_LIMITS;
+    let source = root.join("source");
+    let authority = root.join("authority");
+    let backup = root.join("archive-backup");
+    let binding_path = root.join("archive-bindings");
+    if operation == "prepare" {
+        let ordinary = Store::open(&source)?;
+        let log = fs::read(source.join("records.log"))?;
+        let witness = fs::read(source.join("commit.state"))?;
+        let initial = AuthorizedRetainedStore::<FileRetainedAuthority>::cutover_from_store(
+            ordinary,
+            &source,
+            RetainedExportLimits {
+                max_log_bytes: 8192,
+                max_live_keys: 32,
+                max_live_key_bytes: 256,
+                max_output_bytes: 8192,
+            },
+            limits,
+        )?;
+        let mut provider = FileRetainedAuthority::create(&authority)?;
+        if !provider.compare_and_swap(None, initial)? {
+            return Err("authority fixture already registered".into());
+        }
+        let mut store = AuthorizedRetainedStore::open(&source, limits, provider)?;
+        store.put(b"tail", b"retained-append")?;
+        let expected = store.backup_to(&backup)?;
+        fs::write(
+            binding_path,
+            [
+                &(log.len() as u64).to_le_bytes()[..],
+                &Sha256::digest(&log),
+                &Sha256::digest(&witness),
+                &expected.candidate.header,
+                &expected.candidate.witness,
+                &expected.candidate.base_digest,
+                &expected.end.to_le_bytes(),
+                &expected.digest,
+            ]
+            .concat(),
+        )?;
+        println!("{}", json!({"status":"ready"}));
+        return Ok(());
+    }
+    let bytes: [u8; 288] = fs::read(binding_path)?
+        .try_into()
+        .map_err(|_| "invalid saved archive bindings")?;
+    let archive = CutoverArchiveBinding {
+        log_bytes: u64::from_le_bytes(bytes[..8].try_into()?),
+        log_digest: bytes[8..40].try_into()?,
+        witness_digest: bytes[40..72].try_into()?,
+    };
+    let expected = SuffixExpected {
+        candidate: Expected {
+            header: bytes[72..184].try_into()?,
+            witness: bytes[184..216].try_into()?,
+            base_digest: bytes[216..248].try_into()?,
+        },
+        end: u64::from_le_bytes(bytes[248..256].try_into()?),
+        digest: bytes[256..].try_into()?,
+    };
+    let mut store =
+        AuthorizedRetainedStore::open(&source, limits, FileRetainedAuthority::open(&authority)?)?;
+    let outcome = match operation {
+        "attempt" => match store.retire_cutover_archive_detailed(&archive, &backup, &expected) {
+            Ok(removed) => json!({"status":"success","removed":removed}),
+            Err(error) => json!({"status":"error","step":format!("{:?}",error.step),
+                "errno":error.error.raw_os_error(),"log_unlinked":error.log_unlinked,
+                "witness_unlinked":error.witness_unlinked}),
+        },
+        "verify" => {
+            let rows = [
+                (b"old".to_vec(), b"original".to_vec()),
+                (b"safe".to_vec(), b"acknowledged".to_vec()),
+                (b"tail".to_vec(), b"retained-append".to_vec()),
+            ];
+            let restored = root.join("archive-restore");
+            ManagedRetainedStore::restore_backup(&backup, &restored, limits, &expected)?;
+            let restored = ManagedRetainedStore::open(restored, limits)?;
+            if store.scan(None, None, 4)? != rows || restored.scan(None, None, 4)? != rows {
+                return Err("retirement fixture or restored backup changed".into());
+            }
+            json!({"status":"verified","entries":rows.len()})
+        }
+        _ => return Err("unknown archive retirement operation".into()),
+    };
+    println!("{outcome}");
+    Ok(())
+}
+
 fn main() -> ProbeResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
+        [command, root, operation] if command == "archive-retirement" => archive_retirement_probe(Path::new(root), operation),
         [command, root, operation] if command == "authorized-reclamation" => authorized_reclamation_probe(Path::new(root), operation),
         [command, root, operation] if command == "authority" => authority_probe(Path::new(root), operation),
         [command, root, format] if command == "setup" => setup(Path::new(root), format),

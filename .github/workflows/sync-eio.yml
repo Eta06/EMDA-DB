@@ -25,6 +25,7 @@ name: Filesystem EIO checks
       - "scripts/sync_eio_campaign.py"
       - "scripts/check_rebuild_witness_faults.py"
       - "scripts/check_authority_replacement_faults.py"
+      - "scripts/check_archive_retirement_faults.py"
       - "scripts/campaign_report.py"
       - "scripts/campaign_fixtures.py"
       - "scripts/double_eio_campaign.py"
@@ -81,6 +82,7 @@ name: Filesystem EIO checks
       - "scripts/sync_eio_campaign.py"
       - "scripts/check_rebuild_witness_faults.py"
       - "scripts/check_authority_replacement_faults.py"
+      - "scripts/check_archive_retirement_faults.py"
       - "scripts/campaign_report.py"
       - "scripts/campaign_fixtures.py"
       - "scripts/double_eio_campaign.py"
@@ -142,6 +144,7 @@ jobs:
         run: |
           cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe --example configuration_failure_probe --example reclamation_failure_probe --example staging_cleanup_failure_probe
           python3 scripts/check_authority_replacement_faults.py --binary target/release/examples/sync_failure_probe --directory "$RUNNER_TEMP" > "$RUNNER_TEMP/authority-replacement-faults.jsonl"
+          python3 scripts/check_archive_retirement_faults.py --binary target/release/examples/sync_failure_probe --directory "$RUNNER_TEMP" > "$RUNNER_TEMP/archive-retirement-faults.jsonl"
           python3 scripts/check_rebuild_witness_faults.py --binary target/release/examples/sync_failure_probe --directory "$RUNNER_TEMP" > "$RUNNER_TEMP/rebuild-witness-faults.jsonl"
           for error_name in EIO EAGAIN ENOSPC; do
             for group in sync namespace; do
@@ -228,6 +231,7 @@ jobs:
           name: filesystem-eio-results
           path: |
             ${{ runner.temp }}/authority-replacement-faults.jsonl
+            ${{ runner.temp }}/archive-retirement-faults.jsonl
             ${{ runner.temp }}/sync-eio-result.json
             ${{ runner.temp }}/sync-eio-persistent.json
             ${{ runner.temp }}/eio-data.json

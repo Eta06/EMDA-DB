@@ -19,7 +19,8 @@ mod suffix_file;
 mod writable;
 pub use writable::{
     AuthorityPoint, AuthorityRecord, AuthorizedReclamationFailure, AuthorizedRestoreFailure,
-    AuthorizedRetainedStore, CatalogStorageLimits, CutoverArchiveBinding, FileRetainedAuthority,
+    AuthorizedRetainedStore, CatalogStorageLimits, CutoverArchiveBinding,
+    CutoverArchiveRetirementFailure, CutoverArchiveRetirementStep, FileRetainedAuthority,
     ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedStore,
     RetainedStoreLimits,
 };

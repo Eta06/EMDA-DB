@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Report the failed retirement step and observed unlinks when removing
+  the ordinary archive of an authority-backed cutover.
+
 - Admit ordinary recovery against a logical scan byte limit that includes
   the additional full-log verification required for pending-tail adoption.
 

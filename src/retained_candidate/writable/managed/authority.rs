@@ -2,7 +2,9 @@ use super::*;
 
 mod cutover;
 mod file;
-pub use cutover::CutoverArchiveBinding;
+pub use cutover::{
+    CutoverArchiveBinding, CutoverArchiveRetirementFailure, CutoverArchiveRetirementStep,
+};
 pub use file::FileRetainedAuthority;
 
 #[cfg(test)]

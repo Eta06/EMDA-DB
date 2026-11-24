@@ -24,6 +24,57 @@ pub struct CutoverArchiveBinding {
     pub witness_digest: [u8; 32],
 }
 
+/// The operation that failed during a cutover archive retirement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CutoverArchiveRetirementStep {
+    /// Archive, authority or backup checks failed before any unlink attempt.
+    Verify,
+    /// The archived log unlink did not return success.
+    UnlinkLog,
+    /// The archived witness unlink did not return success.
+    UnlinkWitness,
+    /// The visible archive state could not be synchronized.
+    SyncCatalog,
+}
+
+/// A failed archive retirement and the unlink calls it observed succeeding.
+///
+/// A false flag also covers an already absent file or an unconfirmed unlink.
+/// A true flag records a successful syscall, not persistence across a crash.
+/// After a failed unlink or catalog sync, inspect the trusted catalog and
+/// retry with the original archive binding and an exact current backup.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct CutoverArchiveRetirementFailure {
+    /// The failed operation in this call.
+    pub step: CutoverArchiveRetirementStep,
+    /// The archived log unlink returned success in this call.
+    pub log_unlinked: bool,
+    /// The archived witness unlink returned success in this call.
+    pub witness_unlinked: bool,
+    /// The underlying verification, unlink or synchronization error.
+    pub error: io::Error,
+}
+
+impl std::fmt::Display for CutoverArchiveRetirementFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let operation = match self.step {
+            CutoverArchiveRetirementStep::Verify => "archive retirement verification",
+            CutoverArchiveRetirementStep::UnlinkLog => "archived log unlink",
+            CutoverArchiveRetirementStep::UnlinkWitness => "archived witness unlink",
+            CutoverArchiveRetirementStep::SyncCatalog => "archive catalog sync",
+        };
+        write!(formatter, "{operation} failed: {}", self.error)
+    }
+}
+
+impl std::error::Error for CutoverArchiveRetirementFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 pub(super) struct Fence {
     root: PathBuf,
     lock: StoreLock,
@@ -288,9 +339,33 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         backup: impl AsRef<Path>,
         expected: &SuffixExpected,
     ) -> Result<bool, PublicationFailure> {
-        self.retire_archive_using(archive, backup.as_ref(), expected, sync_existing, |path| {
-            fs::remove_file(path)
-        })
+        self.retire_cutover_archive_detailed(archive, backup, expected)
+            .map_err(|failure| match failure.step {
+                CutoverArchiveRetirementStep::Verify => {
+                    PublicationFailure::NotPublished(failure.error)
+                }
+                _ => PublicationFailure::OutcomeUnknown(failure.error),
+            })
+    }
+
+    /// Retire with the same checks as [`Self::retire_cutover_archive`]
+    /// and report the failed step and observed unlinks separately.
+    /// Synchronization is required even when both names are already absent,
+    /// since a previous call could have failed after removing them.
+    pub fn retire_cutover_archive_detailed(
+        &mut self,
+        archive: &CutoverArchiveBinding,
+        backup: impl AsRef<Path>,
+        expected: &SuffixExpected,
+    ) -> Result<bool, CutoverArchiveRetirementFailure> {
+        self.retire_archive_using(
+            archive,
+            backup.as_ref(),
+            expected,
+            sync_existing,
+            |path| fs::remove_file(path),
+            sync_existing,
+        )
     }
 
     fn retire_archive_using(
@@ -300,8 +375,13 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         expected: &SuffixExpected,
         sync_backup_directory: impl FnOnce(&Path) -> io::Result<()>,
         mut remove: impl FnMut(&Path) -> io::Result<()>,
-    ) -> Result<bool, PublicationFailure> {
-        crate::publication_outcome::track(|tracker| {
+        sync_catalog: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<bool, CutoverArchiveRetirementFailure> {
+        use CutoverArchiveRetirementStep::{SyncCatalog, UnlinkLog, UnlinkWitness, Verify};
+        let mut step = Verify;
+        let mut log_unlinked = false;
+        let mut witness_unlinked = false;
+        let result = (|| {
             self.verify_current()?;
             let fence = self
                 .fence
@@ -348,15 +428,25 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             )?;
             self.verify_current()?;
             backup.check_paths()?;
-            tracker.begin_publication();
             if have_log {
+                step = UnlinkLog;
                 remove(&log)?;
+                log_unlinked = true;
             }
             if have_witness {
+                step = UnlinkWitness;
                 remove(&witness)?;
+                witness_unlinked = true;
             }
-            sync_existing(&root)?;
-            Ok(have_log || have_witness)
+            step = SyncCatalog;
+            sync_catalog(&root)?;
+            Ok(log_unlinked || witness_unlinked)
+        })();
+        result.map_err(|error| CutoverArchiveRetirementFailure {
+            step,
+            log_unlinked,
+            witness_unlinked,
+            error,
         })
     }
 }

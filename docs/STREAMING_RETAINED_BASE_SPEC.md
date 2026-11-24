@@ -703,6 +703,12 @@ An unlink or parent sync error reports `OutcomeUnknown` once removal
 begins. A retry verifies each remaining archive file against the
 original binding and synchronizes the catalog directory. The backup
 must still match the current selected generation at retry time.
+`retire_cutover_archive_detailed` distinguishes verification failure,
+an unconfirmed log or witness unlink, and catalog sync failure. Its
+flags record unlink calls that returned success during that attempt.
+They describe the observed operations. Persistence requires successful
+catalog sync. Even a retry that finds neither archive name must
+synchronize the catalog directory before returning success.
 
 An operator can discard a complete abandoned preparation by passing
 the 16-byte identifier encoded in its `retained-cutover-*` name.
