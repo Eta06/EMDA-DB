@@ -759,6 +759,15 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Stream source-bound retained suffix export into private staging. Compare historical and live source state using authenticated value digests. The [paired export measurement](../benchmarks/results/2026-11-22-streamed-suffix-export/README.md) records a reduction in peak RSS with a higher export latency on a large-value workload.
 - [x] Enable runtime SHA-256 acceleration on ARM64 macOS and Linux. The [paired recovery measurement](../benchmarks/results/2026-11-19-arm64-sha-restore/README.md) records the measured restore and eager-open gains, independent digest verification, cross-backend restore compatibility and forced-software tests.
 - [ ] Enforce persistent project-wide memory and storage quotas, including independent authority storage, backups, recovery and background work. The file, scan and catalog caps measure logical resources. Total process memory and filesystem allocation need separate accounting. Membership-changing writes under key caps still serialize and need further measurement and optimization without oversubscription.
+  A first single-store slice adds a persistent logical disk budget for
+  managed checkpoint stores. Appends and online compaction are admitted
+  against live files, a durable replacement reservation, a previous
+  generation awaiting removal and generations still held by owned
+  snapshots. The [macOS APFS and hosted Linux evidence](../benchmarks/results/2026-11-25-checkpoint-disk-budget/README.md)
+  records charged against observed bytes from writes through compaction,
+  retirement and snapshot release, plus refusals and interrupted
+  maintenance. Project-wide, backup, filesystem-allocation and memory
+  accounting remain open.
 - [x] Measure process-isolated authority-backed reopen and rotation against a paired ordinary control at 131,072 keys on macOS APFS and Linux ext4. The [recovery measurement](../benchmarks/results/2026-11-19-authorized-recovery-resources/README.md) checks every key and records reopen latency, peak process RSS and sampled transient allocation.
 - [ ] Demonstrate the priority's exit criteria: independent concurrent clients, transactional atomicity, acknowledged-write recovery under the documented fault model, and measured memory within configured limits.
 
