@@ -139,9 +139,9 @@ impl std::error::Error for RetainedRotationFailure {
     }
 }
 
-/// A failed offline managed-selection rebuild, classified by this call's two
-/// publication attempts. Full-log recovery may have adopted and synchronized
-/// an unacknowledged tail before either publication begins. Existing paths and
+/// A failed offline managed-selection rebuild, classified by this call's
+/// tail adoption and publication attempts. A later failure can follow a
+/// synchronized tail adoption. Existing paths and
 /// staging artifacts may remain; these variants do not certify source health,
 /// cleanup, or an independently recoverable checkpoint. The rebuild releases
 /// its store lock before returning, so callers must coordinate other writers.
@@ -149,8 +149,14 @@ impl std::error::Error for RetainedRotationFailure {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ManagedRebuildFailure {
-    /// This call began neither checkpoint nor selection publication.
+    /// This call began neither checkpoint nor selection publication and
+    /// did not return an uncertain witness update.
     NotPublished(io::Error),
+    /// Updating the source witness for a complete replayed tail failed.
+    /// The witness may have changed. Coordinate writers and inspect the
+    /// source before retrying. Checkpoint and selection publication did
+    /// not begin.
+    TailAdoptionOutcomeUnknown(io::Error),
     /// This call may have published the checkpoint, but did not begin
     /// selection publication. No new digest is returned on failure.
     CheckpointOutcomeUnknown(io::Error),
@@ -165,6 +171,9 @@ impl fmt::Display for ManagedRebuildFailure {
         match self {
             Self::NotPublished(error) => {
                 write!(formatter, "rebuild publication not started: {error}")
+            }
+            Self::TailAdoptionOutcomeUnknown(error) => {
+                write!(formatter, "rebuild tail adoption outcome unknown: {error}")
             }
             Self::CheckpointOutcomeUnknown(error) => {
                 write!(
@@ -186,6 +195,7 @@ impl std::error::Error for ManagedRebuildFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NotPublished(error)
+            | Self::TailAdoptionOutcomeUnknown(error)
             | Self::CheckpointOutcomeUnknown(error)
             | Self::SelectionOutcomeUnknown(error) => Some(error),
         }
@@ -345,9 +355,22 @@ impl Tracker {
 }
 
 #[derive(Default)]
+pub(crate) struct TailAdoptionTracker(Cell<bool>);
+
+impl TailAdoptionTracker {
+    pub(crate) fn update(&self, write_witness: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+        self.0.set(true);
+        write_witness()?;
+        self.0.set(false);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct ManagedTracker {
     pub(crate) checkpoint: Tracker,
     pub(crate) selection: Tracker,
+    pub(crate) tail_adoption: TailAdoptionTracker,
 }
 
 pub(crate) fn track_managed<T>(
@@ -368,13 +391,16 @@ pub(crate) fn track_managed<T>(
 pub(crate) fn track_managed_rebuild<T>(
     action: impl FnOnce(&ManagedTracker) -> io::Result<T>,
 ) -> Result<T, ManagedRebuildFailure> {
-    track_managed(action).map_err(|failure| match failure {
-        ManagedRolloverFailure::NotPublished(error) => ManagedRebuildFailure::NotPublished(error),
-        ManagedRolloverFailure::CheckpointOutcomeUnknown(error) => {
-            ManagedRebuildFailure::CheckpointOutcomeUnknown(error)
-        }
-        ManagedRolloverFailure::SelectionOutcomeUnknown(error) => {
+    let tracker = ManagedTracker::default();
+    action(&tracker).map_err(|error| {
+        if tracker.selection.started() {
             ManagedRebuildFailure::SelectionOutcomeUnknown(error)
+        } else if tracker.checkpoint.started() {
+            ManagedRebuildFailure::CheckpointOutcomeUnknown(error)
+        } else if tracker.tail_adoption.0.get() {
+            ManagedRebuildFailure::TailAdoptionOutcomeUnknown(error)
+        } else {
+            ManagedRebuildFailure::NotPublished(error)
         }
     })
 }

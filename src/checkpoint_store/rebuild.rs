@@ -180,7 +180,14 @@ impl CheckpointStore {
                 path.as_ref(),
                 destination.as_ref(),
                 |path, check| {
-                    crate::Store::open_with_recovery_checks(path, None, None, None, check)
+                    crate::Store::open_with_recovery_checks_tracked(
+                        path,
+                        None,
+                        None,
+                        None,
+                        check,
+                        Some(&tracker.tail_adoption),
+                    )
                 },
                 selection::sync_ancestors,
                 || Ok(()),
@@ -236,12 +243,13 @@ impl CheckpointStore {
                 path.as_ref(),
                 destination.as_ref(),
                 |path, check| {
-                    crate::Store::open_with_recovery_checks(
+                    crate::Store::open_with_recovery_checks_tracked(
                         path,
                         max_log_bytes,
                         max_live_keys,
                         max_live_key_bytes,
                         check,
+                        Some(&tracker.tail_adoption),
                     )
                 },
                 selection::sync_ancestors,
@@ -789,6 +797,7 @@ impl CheckpointStore {
         let pending_tail = (length > witness).then_some(crate::checkpoint::PendingTail {
             witness_boundary: witness,
             check_before_adoption: &check_selection,
+            adoption_tracker: tracker.map(|tracker| &tracker.tail_adoption),
         });
         // The staged checkpoint verifies the whole source against verified_log
         // before publication. Recheck the base index before using its entries.

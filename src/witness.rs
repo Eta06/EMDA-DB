@@ -2,7 +2,7 @@
 //!
 //! A damaged witness is an error, even when the log looks valid: silently
 //! falling back to an older boundary could hide loss of acknowledged writes.
-use crate::record;
+use crate::{publication_outcome::TailAdoptionTracker, record};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::FileExt;
@@ -177,6 +177,14 @@ impl Witness {
     }
 
     pub(crate) fn advance(&self, offset: u64) -> io::Result<()> {
+        self.advance_tracked(offset, None)
+    }
+
+    pub(crate) fn advance_tracked(
+        &self,
+        offset: u64,
+        tracker: Option<&TailAdoptionTracker>,
+    ) -> io::Result<()> {
         let mut current = self
             .offset
             .lock()
@@ -186,8 +194,14 @@ impl Witness {
                 "commit witness changed or moved backward",
             ));
         }
-        self.file.write_all_at(&encode(&self.id, offset), 0)?;
-        self.file.sync_data()?;
+        let write_witness = || {
+            self.file.write_all_at(&encode(&self.id, offset), 0)?;
+            self.file.sync_data()
+        };
+        match tracker {
+            Some(tracker) => tracker.update(write_witness)?,
+            None => write_witness()?,
+        }
         *current = offset;
         Ok(())
     }
@@ -230,6 +244,7 @@ impl Witness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publication_outcome::{ManagedRebuildFailure, track_managed_rebuild};
     use std::sync::Arc;
 
     #[derive(Clone, Copy)]
@@ -281,7 +296,16 @@ mod tests {
             });
             let handle = Handle(Arc::clone(&memory));
             let witness = Witness::for_test(Box::new(handle), id, 28);
-            assert!(witness.advance(128).is_err(), "offset {count}");
+            let result = track_managed_rebuild(|tracker| {
+                witness.advance_tracked(128, Some(&tracker.tail_adoption))
+            });
+            assert!(
+                matches!(
+                    result,
+                    Err(ManagedRebuildFailure::TailAdoptionOutcomeUnknown(_))
+                ),
+                "offset {count}: {result:?}"
+            );
             let state = read(&Handle(memory), &id);
             assert!(
                 state.is_err() || matches!(state, Ok(28 | 128)),
@@ -298,8 +322,33 @@ mod tests {
             fault: Fault::Sync,
         });
         let witness = Witness::for_test(Box::new(Handle(Arc::clone(&memory))), id, 28);
-        assert!(witness.advance(128).is_err());
+        let result = track_managed_rebuild(|tracker| {
+            witness.advance_tracked(128, Some(&tracker.tail_adoption))
+        });
+        assert!(matches!(
+            result,
+            Err(ManagedRebuildFailure::TailAdoptionOutcomeUnknown(_))
+        ));
         assert_eq!(read(&Handle(memory), &id).unwrap(), 128);
         assert!(witness.verify(128).is_err()); // The original open instance is not safe to reuse.
+    }
+
+    #[test]
+    fn substituted_witness_fails_before_advancement() {
+        let id = [7; 16];
+        let memory = Arc::new(Memory {
+            bytes: Mutex::new(encode(&id, 64).to_vec()),
+            fault: Fault::Partial(0),
+        });
+        let witness = Witness::for_test(Box::new(Handle(Arc::clone(&memory))), id, 28);
+        let result = track_managed_rebuild(|tracker| {
+            witness.advance_tracked(128, Some(&tracker.tail_adoption))
+        });
+        assert!(matches!(
+            result,
+            Err(ManagedRebuildFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidData
+        ));
+        assert_eq!(read(&Handle(memory), &id).unwrap(), 64);
     }
 }

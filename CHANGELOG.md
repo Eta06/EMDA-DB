@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Report uncertainty from an attempted source-witness update separately
+  from checkpoint and selection publication in detailed managed rebuilds.
+
 - Reserve capacity before encoding ordinary blind and transactional batches
   into one DB02 record buffer.
 

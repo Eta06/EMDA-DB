@@ -253,6 +253,9 @@ fn attempt_rebuild_publication(root: &Path, operation: &str) -> ProbeResult<()> 
         Err(error) => {
             let (classification, error) = match error {
                 ManagedRebuildFailure::NotPublished(error) => ("not_published", error),
+                ManagedRebuildFailure::TailAdoptionOutcomeUnknown(error) => {
+                    ("tail_adoption_unknown", error)
+                }
                 ManagedRebuildFailure::CheckpointOutcomeUnknown(error) => {
                     ("checkpoint_unknown", error)
                 }

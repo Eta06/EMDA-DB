@@ -5,11 +5,24 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sync_eio_campaign import (check_initialization, check_source, check_unrecognized_markers,
+from sync_eio_campaign import (check_initialization, check_managed_publication_outcome,
+                               check_source, check_unrecognized_markers,
                                reports_injected_error, stage_inventory, stage_markers, targets_fixture, traced_ordinals)
 
 
 class SyncEioCampaignTests(unittest.TestCase):
+    def test_uncertain_tail_adoption_requires_offline_rebuild_without_publication(self):
+        outcome = {'status': 'error', 'classification': 'tail_adoption_unknown'}
+        existing = {'checkpoint': 'previous-selected'}
+        verification = {'target_visible': False, 'selection_visible': True}
+        check_managed_publication_outcome(outcome, verification, existing, existing,
+                                          allow_tail_adoption=True)
+        with self.assertRaisesRegex(ValueError, 'tail adoption outcome'):
+            check_managed_publication_outcome(outcome, verification, existing, existing)
+        with self.assertRaisesRegex(ValueError, 'tail adoption outcome'):
+            check_managed_publication_outcome(outcome, dict(verification, target_visible=True),
+                                              existing, existing, allow_tail_adoption=True)
+
     def test_injected_errno_must_match_the_requested_error(self):
         line = '123 fsync(3</work/case/log>) = -1 EINTR (Interrupted system call) (INJECTED)'
         self.assertTrue(reports_injected_error(line, 'EINTR'))

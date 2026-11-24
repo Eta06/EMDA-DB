@@ -70,6 +70,7 @@ pub(crate) struct StreamingOptions<'a> {
 pub(crate) struct PendingTail<'a> {
     pub(crate) witness_boundary: u64,
     pub(crate) check_before_adoption: &'a dyn Fn() -> io::Result<()>,
+    pub(crate) adoption_tracker: Option<&'a crate::publication_outcome::TailAdoptionTracker>,
 }
 
 fn hash_log_prefix(log: &Log, length: u64) -> io::Result<Sha256> {
@@ -412,12 +413,7 @@ fn create_streaming_in_directory(
         crate::test_support::pause_bounded_rebuild("checkpoint-verified")?;
         require_available_destination(destination)?;
         (tail.check_before_adoption)()?;
-        log.sync_validated_boundary(prefix).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("unacknowledged tail adoption may have started; inspect the witness before retrying: {error}"),
-            )
-        })?;
+        log.sync_validated_boundary_tracked(prefix, tail.adoption_tracker)?;
         #[cfg(test)]
         crate::test_support::pause_bounded_rebuild("tail-adopted")?;
     }

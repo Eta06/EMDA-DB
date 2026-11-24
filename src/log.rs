@@ -224,7 +224,15 @@ impl Log {
         path: &Path,
         may_initialize: bool,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
-        Self::open_with_recovery_limit_checked(path, may_initialize, None, None, None, || Ok(()))
+        Self::open_with_recovery_limit_checked(
+            path,
+            may_initialize,
+            None,
+            None,
+            None,
+            || Ok(()),
+            None,
+        )
     }
 
     pub(crate) fn open_with_recovery_limit_checked(
@@ -234,6 +242,7 @@ impl Log {
         max_log_bytes: Option<u64>,
         max_live_key_bytes: Option<usize>,
         before_adoption: impl FnOnce() -> io::Result<()>,
+        adoption_tracker: Option<&crate::publication_outcome::TailAdoptionTracker>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         Self::open_configured(
             path,
@@ -242,7 +251,7 @@ impl Log {
             max_log_bytes,
             max_live_key_bytes,
             None,
-            (|_| Ok(()), before_adoption),
+            (|_| Ok(()), before_adoption, adoption_tracker),
         )
     }
 
@@ -261,7 +270,7 @@ impl Log {
             max_log_bytes,
             None,
             Some((checkpoint, trusted_digest)),
-            (|_| Ok(()), || Ok(())),
+            (|_| Ok(()), || Ok(()), None),
         )
     }
 
@@ -278,7 +287,7 @@ impl Log {
             None,
             None,
             None,
-            (hook, || Ok(())),
+            (hook, || Ok(()), None),
         )
     }
 
@@ -289,9 +298,10 @@ impl Log {
         max_log_bytes: Option<u64>,
         max_live_key_bytes: Option<usize>,
         checkpoint: Option<(&Path, &[u8; 32])>,
-        (mut initialization_hook, before_adoption): (
+        (mut initialization_hook, before_adoption, adoption_tracker): (
             impl FnMut(InitializationPoint) -> io::Result<()>,
             impl FnOnce() -> io::Result<()>,
+            Option<&crate::publication_outcome::TailAdoptionTracker>,
         ),
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         let log_path = path.join("records.log");
@@ -402,7 +412,7 @@ impl Log {
             checkpoint,
         )?;
         log.anchor = anchor;
-        log.adopt_replayed_tail(boundary, validated_end, before_adoption)?;
+        log.adopt_replayed_tail(boundary, validated_end, before_adoption, adoption_tracker)?;
         Ok((log, index))
     }
 
@@ -411,6 +421,7 @@ impl Log {
         boundary: Option<u64>,
         validated_end: ReplayedEnd,
         before_adoption: impl FnOnce() -> io::Result<()>,
+        adoption_tracker: Option<&crate::publication_outcome::TailAdoptionTracker>,
     ) -> io::Result<()> {
         if boundary.is_some() {
             if let Some(adoption) = validated_end.adoption {
@@ -418,7 +429,7 @@ impl Log {
                 // Validate it first, then durably publish the adopted boundary.
                 adoption.verify_current_bytes(self)?;
                 before_adoption()?;
-                self.sync_validated_boundary(validated_end.length)?;
+                self.sync_validated_boundary_tracked(validated_end.length, adoption_tracker)?;
             }
             if self.file.len()? != validated_end.length {
                 return Err(record::invalid_data("log length changed after recovery"));
@@ -753,6 +764,14 @@ impl Log {
 
     // Adopt only the boundary whose records the caller actually validated.
     pub(crate) fn sync_validated_boundary(&self, boundary: u64) -> io::Result<()> {
+        self.sync_validated_boundary_tracked(boundary, None)
+    }
+
+    pub(crate) fn sync_validated_boundary_tracked(
+        &self,
+        boundary: u64,
+        tracker: Option<&crate::publication_outcome::TailAdoptionTracker>,
+    ) -> io::Result<()> {
         self.require_attached_witness()?;
         if self.file.len()? != boundary {
             return Err(record::invalid_data(
@@ -763,7 +782,7 @@ impl Log {
             self.file.sync_data()?;
         }
         if let Some(witness) = &self.witness {
-            witness.advance(boundary)?;
+            witness.advance_tracked(boundary, tracker)?;
         }
         Ok(())
     }

@@ -326,7 +326,8 @@ def check_publication_outcome(outcome, verification):
         raise ValueError('a not-published call left a visible destination')
 
 
-def check_managed_publication_outcome(outcome, verification, before, after, require_target=True, require_handle=True):
+def check_managed_publication_outcome(outcome, verification, before, after, require_target=True,
+                                      require_handle=True, allow_tail_adoption=False):
     classification = outcome.get('classification')
     target = verification.get('target_visible')
     selection = verification.get('selection_visible')
@@ -345,6 +346,9 @@ def check_managed_publication_outcome(outcome, verification, before, after, requ
     elif classification == 'not_published':
         if target or before != after:
             raise ValueError('managed rollover published after a not-published result')
+    elif classification == 'tail_adoption_unknown':
+        if not allow_tail_adoption or target or before != after:
+            raise ValueError('invalid managed rebuild tail adoption outcome')
     elif classification == 'checkpoint_unknown':
         if before != after:
             raise ValueError('selection changed before its publication began')
@@ -415,7 +419,8 @@ def run_case(binary, parent, format_name, operation, syscall=None, ordinal=None,
         if 'classification' in traced['outcome']:
             if operation in MANAGED_OPERATIONS:
                 check_managed_publication_outcome(traced['outcome'], verification, selection_before, selection_after,
-                                                  require_handle=operation not in MANAGED_REBUILD_OPERATIONS)
+                                                  require_handle=operation not in MANAGED_REBUILD_OPERATIONS,
+                                                  allow_tail_adoption=operation in MANAGED_REBUILD_SUFFIX_OPERATIONS)
             else:
                 check_publication_outcome(traced['outcome'], verification)
         final = snapshot(root, format_name)

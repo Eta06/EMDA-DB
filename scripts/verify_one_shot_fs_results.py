@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 
-from sync_eio_campaign import LEGACY_OPERATIONS, MANAGED_OPERATIONS, MANAGED_REBUILD_OPERATIONS, MANAGED_SUFFIX_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
+from sync_eio_campaign import LEGACY_OPERATIONS, MANAGED_OPERATIONS, MANAGED_REBUILD_OPERATIONS, MANAGED_REBUILD_SUFFIX_OPERATIONS, MANAGED_SUFFIX_OPERATIONS, RECOVERY_ORDERS, SYSCALL_SETS, WRITES
 
 ORDERS = {'ordinary-first': ['ordinary', 'checkpoint'],
           'checkpoint-first': ['checkpoint', 'ordinary']}
@@ -44,7 +44,8 @@ def check_probe(probe, operation, order, syscall=None, error_name=None, publicat
         if operation in MANAGED_OPERATIONS:
             selection = probe['managed_selection']
             check_managed_publication_outcome(probe['outcome'], verified, selection['before'], selection['after_attempt'],
-                                              require_target=managed_binding, require_handle=managed_handle)
+                                              require_target=managed_binding, require_handle=managed_handle,
+                                              allow_tail_adoption=operation in MANAGED_REBUILD_SUFFIX_OPERATIONS)
         else:
             check_publication_outcome(probe['outcome'], verified)
     if operation in MANAGED_OPERATIONS:

@@ -79,7 +79,7 @@ fn replayed_tail_adoption_rejects_changes_after_validation() {
             expected.push(b'x');
         }
         let error = log
-            .adopt_replayed_tail(Some(boundary), end, || Ok(()))
+            .adopt_replayed_tail(Some(boundary), end, || Ok(()), None)
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         if same_length {
@@ -163,7 +163,7 @@ fn replayed_v3_tail_adoption_rejects_growth_after_validation() {
         .unwrap();
     expected.push(b'x');
     assert_eq!(
-        log.adopt_replayed_tail(Some(boundary), end, || Ok(()))
+        log.adopt_replayed_tail(Some(boundary), end, || Ok(()), None)
             .unwrap_err()
             .kind(),
         io::ErrorKind::InvalidData
@@ -1321,7 +1321,7 @@ fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
             assert!(boundary < end.length);
             assert!(index.contains_key(&b"base"[..]));
             assert!(index.contains_key(&b"tail"[..]));
-            log.adopt_replayed_tail(Some(boundary), end, || Ok(()))?;
+            log.adopt_replayed_tail(Some(boundary), end, || Ok(()), None)?;
             Ok(index)
         };
         let error = match open() {
