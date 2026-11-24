@@ -127,13 +127,12 @@ fn rebuild_publication_errors_and_panics_leave_a_recoverable_visible_selection()
             if panic {
                 assert!(outcome.is_err());
             } else {
-                assert!(
-                    outcome
-                        .unwrap()
-                        .unwrap_err()
-                        .to_string()
-                        .contains("recovery required")
-                );
+                let message = outcome.unwrap().unwrap_err().to_string();
+                if after_rename {
+                    assert!(message.contains("recovery required"));
+                } else {
+                    assert_eq!(message, "injected before rename");
+                }
             }
             let visible = fs::read(&selection).unwrap();
             assert_eq!(visible == previous, !after_rename);

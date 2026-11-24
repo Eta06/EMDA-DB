@@ -215,6 +215,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   Managed and authority-backed retained stores classify removal attempts
   through `reclaim_inactive_detailed`, including removals during resumed
   cleanup. The classification is separate from authority fence uncertainty.
+  Managed checkpoint selection now distinguishes failed staging from an
+  attempted rename in manual rollover and offline rebuild. Live manual
+  and automatic rollover preserve the prior writable view if selection
+  staging fails. Failure after the rename attempt still requires reopening.
 - [x] Add opt-in generic staging-cleanup outcomes distinguishing calls that
   began no removals from failures after removal may have started. The result
   does not certify directory durability, cleanup, source health or a backup.

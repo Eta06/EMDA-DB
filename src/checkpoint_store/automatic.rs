@@ -386,6 +386,7 @@ impl CheckpointStore {
             next,
             before_selection_rename,
             sync_selection_parent,
+            &Default::default(),
         )?;
         Ok(StateWrite { state, _writer })
     }

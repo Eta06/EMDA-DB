@@ -62,7 +62,7 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
         assert_eq!(result.map(drop).is_ok(), phase == "success");
         let poisoned = store.state.read().unwrap().failed;
         assert_eq!(fs::read(path.join("records.log")).unwrap(), old_log);
-        assert_eq!(poisoned, phase.starts_with("selection-"));
+        assert_eq!(poisoned, phase == "selection-published");
         if poisoned {
             assert!(store.get(b"a").is_err());
         } else {
@@ -80,6 +80,9 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
             selection == old_selection,
             !matches!(phase, "selection-published" | "success")
         );
+        if phase == "selection-staged" {
+            store.put(b"retry", b"recovered before reopen").unwrap();
+        }
         drop(store);
         let reopened = retry_lock(|| {
             CheckpointStore::open_managed_with_resource_limits(&path, 1024, 1, 64, None)
@@ -89,6 +92,10 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
         assert_eq!(
             reopened.get(b"a").unwrap().as_deref(),
             Some(&b"acknowledged"[..])
+        );
+        assert_eq!(
+            reopened.get(b"retry").unwrap(),
+            (phase == "selection-staged").then(|| b"recovered before reopen".to_vec())
         );
         reopened.put(b"b", b"recovered").unwrap();
         assert_eq!(

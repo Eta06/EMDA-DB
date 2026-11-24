@@ -188,7 +188,7 @@ fn detailed_managed_rollover_classifies_each_publication_boundary() {
                     result,
                     Err(ManagedRolloverFailure::NotPublished(_))
                 )),
-                "checkpoint-sync" | "checkpoint-open" => assert!(matches!(
+                "checkpoint-sync" | "checkpoint-open" | "selection-before" => assert!(matches!(
                     result,
                     Err(ManagedRolloverFailure::CheckpointOutcomeUnknown(_))
                 )),
@@ -206,7 +206,7 @@ fn detailed_managed_rollover_classifies_each_publication_boundary() {
                 visible_selection == previous_selection,
                 failure != "selection-after"
             );
-            if failure.starts_with("selection-") {
+            if failure == "selection-after" {
                 assert!(store.get(b"before").is_err());
                 assert!(store.put(b"after", b"rejected").is_err());
             } else {
@@ -232,7 +232,36 @@ fn detailed_managed_rollover_classifies_each_publication_boundary() {
 }
 
 #[test]
-fn managed_selection_publication_failures_poison_the_writer_and_recover_visible_selection() {
+fn selection_staging_contention_keeps_the_prior_view_writable() {
+    let (dir, path, checkpoint, digest) = fixture();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    store.rollover_managed(dir.path().join("first")).unwrap();
+    let selection_path = super::super::selection::path(&path);
+    let previous = fs::read(&selection_path).unwrap();
+    let parent = File::open(&path).unwrap();
+    fs2::FileExt::try_lock_exclusive(&parent).unwrap();
+    let staged = dir.path().join("unselected");
+    let error = store.rollover_managed_detailed(&staged).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::ManagedRolloverFailure::CheckpointOutcomeUnknown(error)
+            if error.kind() == io::ErrorKind::WouldBlock
+    ));
+    assert!(staged.is_file());
+    assert_eq!(fs::read(&selection_path).unwrap(), previous);
+    store.put(b"tail", b"still writable").unwrap();
+    fs2::FileExt::unlock(&parent).unwrap();
+    store.rollover_managed(dir.path().join("second")).unwrap();
+    drop(store);
+    let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+    assert_eq!(
+        reopened.get(b"tail").unwrap(),
+        Some(b"still writable".to_vec())
+    );
+}
+
+#[test]
+fn managed_selection_failures_poison_only_after_replacement_begins() {
     for already_managed in [false, true] {
         for after_rename in [false, true] {
             let (dir, path, checkpoint, digest) = fixture();
@@ -265,16 +294,26 @@ fn managed_selection_publication_failures_poison_the_writer_and_recover_visible_
                     },
                 )
                 .unwrap_err();
-            assert!(error.to_string().contains("reopen required"));
             assert!(destination.exists());
-            assert!(store.get(b"before").is_err());
-            assert!(snapshot.get(b"before").is_err());
-            assert!(store.put(b"after", b"not committed").is_err());
             let observed = fs::read(&selection_file).ok();
             if after_rename {
+                assert!(error.to_string().contains("reopen required"));
+                assert!(store.get(b"before").is_err());
+                assert!(snapshot.get(b"before").is_err());
+                assert!(store.put(b"after", b"not committed").is_err());
                 assert_ne!(observed, old_selection);
             } else {
+                assert_eq!(error.to_string(), "before rename");
                 assert_eq!(observed, old_selection);
+                assert_eq!(
+                    store.get(b"before").unwrap(),
+                    Some(b"acknowledged".to_vec())
+                );
+                assert_eq!(
+                    snapshot.get(b"before").unwrap(),
+                    Some(b"acknowledged".to_vec())
+                );
+                store.put(b"after", b"continued").unwrap();
             }
             drop(snapshot);
             drop(store);
@@ -294,7 +333,10 @@ fn managed_selection_publication_failures_poison_the_writer_and_recover_visible_
                 reopened.get(b"before").unwrap().as_deref(),
                 Some(&b"acknowledged"[..])
             );
-            assert_eq!(reopened.get(b"after").unwrap(), None);
+            assert_eq!(
+                reopened.get(b"after").unwrap(),
+                (!after_rename).then(|| b"continued".to_vec()),
+            );
             reopened.put(b"resumed", b"value").unwrap();
         }
     }

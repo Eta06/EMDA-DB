@@ -274,36 +274,33 @@ pub(crate) fn track_online_handoff<T>(
     })
 }
 
+#[derive(Default)]
 pub(crate) struct Tracker(Cell<bool>);
 
 impl Tracker {
     pub(crate) fn begin_publication(&self) {
         self.0.set(true);
     }
+
+    pub(crate) fn started(&self) -> bool {
+        self.0.get()
+    }
 }
 
+#[derive(Default)]
 pub(crate) struct ManagedTracker {
     pub(crate) checkpoint: Tracker,
-    selection_started: Cell<bool>,
-}
-
-impl ManagedTracker {
-    pub(crate) fn begin_selection(&self) {
-        self.selection_started.set(true);
-    }
+    pub(crate) selection: Tracker,
 }
 
 pub(crate) fn track_managed<T>(
     action: impl FnOnce(&ManagedTracker) -> io::Result<T>,
 ) -> Result<T, ManagedRolloverFailure> {
-    let tracker = ManagedTracker {
-        checkpoint: Tracker(Cell::new(false)),
-        selection_started: Cell::new(false),
-    };
+    let tracker = ManagedTracker::default();
     action(&tracker).map_err(|error| {
-        if tracker.selection_started.get() {
+        if tracker.selection.started() {
             ManagedRolloverFailure::SelectionOutcomeUnknown(error)
-        } else if tracker.checkpoint.0.get() {
+        } else if tracker.checkpoint.started() {
             ManagedRolloverFailure::CheckpointOutcomeUnknown(error)
         } else {
             ManagedRolloverFailure::NotPublished(error)
@@ -328,9 +325,9 @@ pub(crate) fn track_managed_rebuild<T>(
 pub(crate) fn track<T>(
     action: impl FnOnce(&Tracker) -> io::Result<T>,
 ) -> Result<T, PublicationFailure> {
-    let tracker = Tracker(Cell::new(false));
+    let tracker = Tracker::default();
     action(&tracker).map_err(|error| {
-        if tracker.0.get() {
+        if tracker.started() {
             PublicationFailure::OutcomeUnknown(error)
         } else {
             PublicationFailure::NotPublished(error)

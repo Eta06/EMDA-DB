@@ -884,7 +884,9 @@ impl CheckpointStore {
 
     /// Creates and selects a managed checkpoint with separate conservative
     /// failure classifications for checkpoint and selection publication.
-    /// A selection-publication failure disables this instance. Reopen the
+    /// A selection staging error leaves the prior view active and falls in
+    /// the checkpoint classification. A failure after selection replacement
+    /// begins disables this instance. Reopen the
     /// visible selection, or recover with the previous trusted checkpoint or
     /// full log if none exists. No failure returns a new checkpoint digest,
     /// and classifications do not certify store health.
@@ -982,14 +984,13 @@ impl CheckpointStore {
         let next_view = self.rollover_view(&state, &destination, &digest)?;
         let next = selection::Selection::new(destination, digest)?;
         drop(state);
-        if let Some(tracker) = tracker {
-            tracker.begin_selection();
-        }
+        let local_tracker = crate::publication_outcome::Tracker::default();
         drop(self.publish_managed_view(
             next_view,
             next,
             before_selection_rename,
             sync_selection_parent,
+            tracker.map_or(&local_tracker, |tracker| &tracker.selection),
         )?);
         Ok(digest)
     }
@@ -1003,11 +1004,15 @@ impl CheckpointStore {
         next: selection::Selection,
         before_rename: impl FnOnce() -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: &crate::publication_outcome::Tracker,
     ) -> io::Result<ControlledWriteGuard<'_, State>> {
-        let result = selection::publish(&self.path, &next, before_rename, sync_parent);
-        let mut state = self.state.write().map_err(|_| uncertain())?;
+        let result =
+            selection::publish_tracked(&self.path, &next, before_rename, sync_parent, tracker);
         if let Err(error) = result {
-            state.failed = true;
+            if !tracker.started() {
+                return Err(error);
+            }
+            self.state.write().map_err(|_| uncertain())?.failed = true;
             return Err(io::Error::new(
                 error.kind(),
                 format!(
@@ -1015,6 +1020,7 @@ impl CheckpointStore {
                 ),
             ));
         }
+        let mut state = self.state.write().map_err(|_| uncertain())?;
         state.view = view;
         state.overlay_key_bytes = 0;
         state.selection = Some(next);

@@ -354,11 +354,13 @@ impl CheckpointStore {
         verify_before_selection(&path, &destination, &digest, Default::default())?;
         let next = selection::Selection::new(destination, digest)?;
         selection::require_unchanged(&path, expected)?;
-        if let Some(tracker) = tracker {
-            tracker.begin_selection();
-        }
-        selection::publish(&path, &next, before_selection_rename, sync_selection_parent)
-            .map_err(|error| io::Error::new(error.kind(), format!("managed selection publication may have occurred; recovery required: {error}")))?;
+        publish_selection(
+            &path,
+            &next,
+            before_selection_rename,
+            sync_selection_parent,
+            tracker,
+        )?;
         Ok(digest)
     }
 
@@ -834,26 +836,40 @@ impl CheckpointStore {
         drop(writer);
         let next = selection::Selection::new(destination, digest)?;
         check_selection()?;
-        if let Some(tracker) = tracker {
-            tracker.begin_selection();
-        }
-        selection::publish(
+        publish_selection(
             &path,
             &next,
             || (hooks.before_selection_rename)(),
             |parent| (hooks.sync_selection_parent)(parent),
-        )
-        .map_err(|error| {
+            tracker,
+        )?;
+        drop(lock_file);
+        Ok(digest)
+    }
+}
+
+fn publish_selection(
+    store: &Path,
+    next: &selection::Selection,
+    before_rename: impl FnOnce() -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    tracker: Option<&crate::publication_outcome::ManagedTracker>,
+) -> io::Result<()> {
+    let local_tracker = crate::publication_outcome::Tracker::default();
+    let selection_tracker = tracker.map_or(&local_tracker, |tracker| &tracker.selection);
+    selection::publish_tracked(store, next, before_rename, sync_parent, selection_tracker).map_err(
+        |error| {
+            if !selection_tracker.started() {
+                return error;
+            }
             io::Error::new(
                 error.kind(),
                 format!(
                     "managed selection publication may have occurred; recovery required: {error}"
                 ),
             )
-        })?;
-        drop(lock_file);
-        Ok(digest)
-    }
+        },
+    )
 }
 
 fn verify_before_selection(
@@ -1237,7 +1253,8 @@ mod tests {
         assert!(saw_lock, "selection hook was not reached: {failure:?}");
         assert!(matches!(
             failure,
-            ManagedRebuildFailure::SelectionOutcomeUnknown(_)
+            ManagedRebuildFailure::CheckpointOutcomeUnknown(error)
+                if error.to_string() == "injected before selection rename"
         ));
         assert!(replacement.is_file());
         assert!(!selection::path(&path).exists());
@@ -1406,7 +1423,8 @@ mod tests {
                 "selection" => {
                     assert!(matches!(
                         result.unwrap(),
-                        Err(ManagedRebuildFailure::SelectionOutcomeUnknown(_))
+                        Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(error))
+                            if error.to_string() == "selection"
                     ));
                     assert!(destination.is_file());
                     assert!(!selection::path(&path).exists());

@@ -159,11 +159,28 @@ pub(super) fn publish(
     before_rename: impl FnOnce() -> io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
+    publish_tracked(
+        store,
+        selection,
+        before_rename,
+        sync_parent,
+        &Default::default(),
+    )
+}
+
+pub(super) fn publish_tracked(
+    store: &Path,
+    selection: &Selection,
+    before_rename: impl FnOnce() -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    tracker: &crate::publication_outcome::Tracker,
+) -> io::Result<()> {
     let (mut stage, mut file) = crate::staging::Stage::file(store)?;
     file.write_all(&selection.encode())?;
     file.sync_all()?;
     drop(file);
     before_rename()?;
+    tracker.begin_publication();
     stage.replace_file(&path(store))?;
     sync_parent(store)?;
     stage.publication_synchronized();

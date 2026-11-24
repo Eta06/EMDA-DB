@@ -177,7 +177,7 @@ fn detailed_rebuild_classifies_publication_boundaries_and_preserves_recovery() {
                 });
                 let classified = match failure {
                     "reject" => matches!(&result, Err(ManagedRebuildFailure::NotPublished(_))),
-                    "checkpoint-sync" | "checkpoint-open" => matches!(
+                    "checkpoint-sync" | "checkpoint-open" | "selection-before" => matches!(
                         &result,
                         Err(ManagedRebuildFailure::CheckpointOutcomeUnknown(_))
                     ),
