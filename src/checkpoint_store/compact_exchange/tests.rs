@@ -181,7 +181,7 @@ fn managed_auto_setting_survives_handoff_reopen_and_new_rollover() {
     assert_eq!(cp.transaction_budget_status().unwrap().limit_bytes, 0);
     assert!(cp.read().unwrap().protect_pinned_automatic_slots);
     assert_eq!(
-        cp.read().unwrap().automatic_checkpoint_log_scan_limit,
+        cp.read().unwrap().automatic_checkpoint_log_scan_limit(),
         Some(3 * LOG_LIMIT)
     );
     assert!(cp.automatic_checkpoints_enabled().unwrap());
@@ -203,7 +203,10 @@ fn managed_auto_setting_survives_handoff_reopen_and_new_rollover() {
     .unwrap();
     assert!(cp.automatic_checkpoints_enabled().unwrap());
     assert!(!cp.read().unwrap().protect_pinned_automatic_slots);
-    assert_eq!(cp.read().unwrap().automatic_checkpoint_log_scan_limit, None);
+    assert_eq!(
+        cp.read().unwrap().automatic_checkpoint_log_scan_limit(),
+        None
+    );
     assert_eq!(
         cp.transaction_budget_status().unwrap().limit_bytes,
         crate::MAX_TRANSACTION_STAGED_TOTAL_BYTES

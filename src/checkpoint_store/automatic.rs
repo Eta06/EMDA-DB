@@ -185,7 +185,13 @@ impl CheckpointStore {
     /// that error and stops its worker. The ceiling survives a consuming
     /// compaction handoff and resets on reopen. `None` restores the default.
     pub fn set_automatic_checkpoint_log_scan_limit(&self, limit: Option<u64>) -> io::Result<()> {
-        self.write()?.automatic_checkpoint_log_scan_limit = limit;
+        let mut state = self.write()?;
+        if limit.is_some() || state.automatic_checkpoint.is_some() {
+            state
+                .automatic_checkpoint
+                .get_or_insert_with(Default::default)
+                .log_scan_limit = limit;
+        }
         Ok(())
     }
 
@@ -389,9 +395,9 @@ impl CheckpointStore {
         let pinned = |slot: usize| {
             state.protect_pinned_automatic_slots
                 && state
-                    .automatic_slot_pins
+                    .automatic_checkpoint
                     .as_ref()
-                    .and_then(|pins| pins[slot].as_ref())
+                    .and_then(|options| options.slot_pins[slot].as_ref())
                     .is_some_and(crate::checkpoint_view::CheckpointPin::is_live)
         };
         let next_slot =
@@ -399,7 +405,7 @@ impl CheckpointStore {
         if pinned(next_slot) {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, PinnedSlot));
         }
-        if let Some(limit) = state.automatic_checkpoint_log_scan_limit {
+        if let Some(limit) = state.automatic_checkpoint_log_scan_limit() {
             if self
                 .log
                 .len()?
@@ -462,8 +468,9 @@ impl CheckpointStore {
             &Default::default(),
         )?;
         state
-            .automatic_slot_pins
-            .get_or_insert_with(|| Box::new([None, None]))[next_slot] = Some(pin);
+            .automatic_checkpoint
+            .get_or_insert_with(Default::default)
+            .slot_pins[next_slot] = Some(pin);
         Ok(StateWrite { state, _writer })
     }
 }

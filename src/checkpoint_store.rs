@@ -53,9 +53,22 @@ struct State {
     failed: bool,
     selection: Option<selection::Selection>,
     automatic: bool,
-    automatic_slot_pins: Option<Box<[Option<crate::checkpoint_view::CheckpointPin>; 2]>>,
+    automatic_checkpoint: Option<Box<AutomaticCheckpointState>>,
     protect_pinned_automatic_slots: bool,
-    automatic_checkpoint_log_scan_limit: Option<u64>,
+}
+
+#[derive(Default)]
+struct AutomaticCheckpointState {
+    slot_pins: [Option<crate::checkpoint_view::CheckpointPin>; 2],
+    log_scan_limit: Option<u64>,
+}
+
+impl State {
+    fn automatic_checkpoint_log_scan_limit(&self) -> Option<u64> {
+        self.automatic_checkpoint
+            .as_ref()
+            .and_then(|options| options.log_scan_limit)
+    }
 }
 
 // Dropping the state guard can let readers use the published view. The
@@ -624,12 +637,17 @@ impl CheckpointStore {
         }
         let overlay_key_bytes = view.overlay.keys().map(|key| key.len()).sum();
         let log_generation = log.id().map(GenerationId);
-        let automatic_slot_pins = match &selection {
+        let automatic_checkpoint = match &selection {
             Some(selected) if automatic_config.is_some() => {
                 let pins = automatic::indexes(&automatic::root(&path)).map(|index| {
                     (selected.checkpoint == index).then(|| view.base.checkpoint_pin())
                 });
-                pins.iter().any(Option::is_some).then(|| Box::new(pins))
+                pins.iter().any(Option::is_some).then(|| {
+                    Box::new(AutomaticCheckpointState {
+                        slot_pins: pins,
+                        log_scan_limit: None,
+                    })
+                })
             }
             _ => None,
         };
@@ -643,9 +661,8 @@ impl CheckpointStore {
                 failed: false,
                 selection,
                 automatic,
-                automatic_slot_pins,
+                automatic_checkpoint,
                 protect_pinned_automatic_slots: false,
-                automatic_checkpoint_log_scan_limit: None,
             }),
             writers: ControlledRwLock::new(()),
             append_failed: AtomicBool::new(false),

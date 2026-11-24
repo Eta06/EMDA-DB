@@ -123,7 +123,7 @@ impl CheckpointStore {
         let original_selection = state.selection.clone();
         let enabled = state.automatic;
         let protect_pinned_slots = state.protect_pinned_automatic_slots;
-        let automatic_scan_limit = state.automatic_checkpoint_log_scan_limit;
+        let automatic_scan_limit = state.automatic_checkpoint_log_scan_limit();
         let original_lock = state.view.base.share_store_lock()?;
         original_lock.verify_identity(&source)?;
         if selection::load(&source)? != original_selection {
