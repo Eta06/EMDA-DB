@@ -746,6 +746,19 @@ impl Log {
         self.log_id
     }
 
+    pub(crate) fn require_same_checkpoint_log(&self, view: &Self) -> io::Result<()> {
+        let identity = self.file.file_identity()?;
+        if self.log_id != view.log_id
+            || identity.is_none()
+            || identity != view.file.file_identity()?
+        {
+            return Err(record::invalid_data(
+                "log identity changed while opening checkpoint writer",
+            ));
+        }
+        Ok(())
+    }
+
     // A validated checkpoint view only reads immutable log locations. It keeps
     // the captured boundary separately and does not use these descriptors after
     // validation. An active writer keeps its own full witness and identity.

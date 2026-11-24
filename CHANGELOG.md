@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Verify a checkpoint's covered log once when adopting a complete tail.
+  Recovery binds replay and the writer to the same log file.
+
 - Check recovered checkpoint suffix operation and overlay limits before
   hashing the covered log. Successful opens still verify the entire prefix.
 

@@ -277,6 +277,108 @@ fn whole_log_limit_rejects_unacknowledged_tail_before_adoption() {
 }
 
 #[test]
+fn writer_open_rejects_a_replacement_log_with_the_same_generation() {
+    for pending in [false, true] {
+        let (_dir, path, checkpoint, digest) = fixture();
+        let log_path = path.join("records.log");
+        let original_path = path.join("parked.log");
+        let witness_path = path.join("commit.state");
+        if pending {
+            let tail = record::encode(Operation::Put, b"tail", b"value").unwrap();
+            OpenOptions::new()
+                .append(true)
+                .open(&log_path)
+                .unwrap()
+                .write_all(&tail)
+                .unwrap();
+        } else {
+            let store = retry_lock(|| Store::open(&path)).unwrap();
+            store.put(b"tail", b"value").unwrap();
+            store.close_private_store().unwrap();
+        }
+        let original = fs::read(&log_path).unwrap();
+        let witness = fs::read(&witness_path).unwrap();
+        let replacement = record::encode(Operation::Put, b"swap", b"value").unwrap();
+        let mut substituted = original.clone();
+        let start = substituted.len() - replacement.len();
+        substituted[start..].copy_from_slice(&replacement);
+        let error = retry_lock(|| {
+            CheckpointStore::open_using(
+                &path,
+                &checkpoint,
+                &digest,
+                OpenLimits::default(),
+                None,
+                |path, boundary, length| {
+                    fs::rename(&log_path, &original_path)?;
+                    fs::write(&log_path, &substituted)?;
+                    Log::open_checkpoint_writer(path, boundary, length)
+                },
+            )
+        })
+        .err()
+        .expect("writer accepted a replacement log");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            error.to_string(),
+            "log identity changed while opening checkpoint writer"
+        );
+        assert_eq!(fs::read(&witness_path).unwrap(), witness);
+        assert_eq!(fs::read(&original_path).unwrap(), original);
+        assert_eq!(fs::read(&log_path).unwrap(), substituted);
+        fs::rename(&original_path, &log_path).unwrap();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        assert_eq!(store.get(b"tail").unwrap(), Some(b"value".to_vec()));
+        assert_eq!(store.get(b"swap").unwrap(), None);
+    }
+}
+
+#[test]
+fn pending_tail_adoption_checks_covered_bytes_on_the_writer() {
+    let (_dir, path, checkpoint, digest) = fixture();
+    let log_path = path.join("records.log");
+    let prefix = fs::metadata(&log_path).unwrap().len();
+    let tail = record::encode(Operation::Put, b"tail", b"value").unwrap();
+    OpenOptions::new()
+        .append(true)
+        .open(&log_path)
+        .unwrap()
+        .write_all(&tail)
+        .unwrap();
+    let original = fs::read(&log_path).unwrap();
+    let witness_path = path.join("commit.state");
+    let witness = fs::read(&witness_path).unwrap();
+    let corrupt_offset = prefix as usize - 5;
+    let error = retry_lock(|| {
+        CheckpointStore::open_using(
+            &path,
+            &checkpoint,
+            &digest,
+            OpenLimits::default(),
+            None,
+            |path, boundary, length| {
+                let log = Log::open_checkpoint_writer(path, boundary, length)?;
+                let file = OpenOptions::new().write(true).open(&log_path)?;
+                FileExt::write_all_at(
+                    &file,
+                    &[original[corrupt_offset] ^ 1],
+                    corrupt_offset as u64,
+                )?;
+                Ok(log)
+            },
+        )
+    })
+    .err()
+    .expect("writer adopted a suffix with a damaged covered prefix");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "checkpoint does not match log prefix");
+    assert_eq!(fs::read(&witness_path).unwrap(), witness);
+    fs::write(&log_path, &original).unwrap();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    assert_eq!(store.get(b"tail").unwrap(), Some(b"value".to_vec()));
+}
+
+#[test]
 fn changed_tail_during_writer_open_leaves_witness_unchanged() {
     let (_dir, path, checkpoint, digest) = fixture();
     let log_path = path.join("records.log");

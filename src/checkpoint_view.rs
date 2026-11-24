@@ -151,17 +151,32 @@ impl PreparedCheckpoint {
         )
     }
 
-    pub(crate) fn verify(mut self) -> io::Result<(CheckpointView, Sha256)> {
+    pub(crate) fn verify(self) -> io::Result<(CheckpointView, Sha256)> {
         let covered_log_hash = checkpoint::verify_log_prefix(&self.base.log, &self.verified)?;
         if self.base.log.len()? != self.log_length {
             return Err(record::invalid_data(
                 "log length changed while opening checkpoint view",
             ));
         }
-        Arc::get_mut(&mut self.base.log)
-            .expect("prepared checkpoint exclusively owns its log")
-            .release_view_witness()?;
         Ok((self.base, covered_log_hash))
+    }
+
+    // Verify the covered bytes on the final writer descriptor, and bind the
+    // suffix to the exact bytes that were replayed via the view's descriptor.
+    pub(crate) fn verify_for_adoption(
+        self,
+        writer: &Log,
+        suffix_digest: &[u8; 32],
+    ) -> io::Result<CheckpointView> {
+        writer.require_same_checkpoint_log(&self.base.log)?;
+        checkpoint::bind_replayed_log(
+            writer,
+            self.verified.prefix,
+            self.log_length,
+            &self.verified.log_digest,
+            suffix_digest,
+        )?;
+        Ok(self.base)
     }
 }
 
@@ -291,7 +306,7 @@ impl CheckpointView {
         tail: TailAdmission,
     ) -> io::Result<PreparedCheckpoint> {
         limits.validate()?;
-        let (log, boundary) = Log::open_checkpoint_view(path)?;
+        let (mut log, boundary) = Log::open_checkpoint_view(path)?;
         let length = Self::check_log_limit(&log, max_log_bytes)?;
         let max_tail_bytes = match tail {
             TailAdmission::Unrestricted => None,
@@ -369,6 +384,7 @@ impl CheckpointView {
             checkpoint::check_witnessed_length(length, boundary)?;
         }
         let has_tail = length > verified.prefix;
+        log.release_view_witness()?;
         let view = Self {
             log: Arc::new(log),
             index: Arc::new(CheckpointIndex {
@@ -484,9 +500,6 @@ impl CheckpointView {
         Ok(verified)
     }
 
-    pub(crate) fn covered_log_digest(&self) -> &[u8; 32] {
-        &self.log_digest
-    }
     /// Whether the log contained bytes beyond the checkpoint at open time.
     /// Those bytes may include committed or unacknowledged records and are not read by this view.
     pub fn has_log_tail(&self) -> bool {

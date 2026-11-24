@@ -443,46 +443,32 @@ impl CheckpointStore {
             (max_log_bytes, None),
             crate::checkpoint_view::TailAdmission::Bounded(max_tail_bytes),
         )?;
-        let (mut view, adoption_digest) = RecoveredCheckpointView::from_prepared(
-            prepared,
+        let suffix = RecoveredCheckpointView::replay_prepared(
+            &prepared,
             max_tail_bytes,
             max_tail_keys,
             max_tail_key_bytes,
             max_tail_operations,
         )?;
-        let boundary = view.base.witnessed_boundary;
-        let length = view
-            .base
-            .log_boundary()
-            .checked_add(view.tail_bytes)
-            .ok_or_else(|| record::invalid_data("checkpoint suffix length overflow"))?;
-        if max_log_bytes.is_some_and(|max| length > max) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "existing log exceeds configured limit",
-            ));
-        }
-        let log = open_writer(&path, boundary, length)?;
-        if log.id() != view.base.log.id() {
-            return Err(record::invalid_data(
-                "log identity changed while opening checkpoint writer",
-            ));
-        }
-        if let Some(suffix_digest) = adoption_digest {
-            crate::checkpoint::bind_replayed_log(
-                &log,
-                view.base.log_boundary(),
-                length,
-                view.base.covered_log_digest(),
-                &suffix_digest,
-            )?;
+        let (_, range, boundary) = prepared.suffix();
+        let length = range.end;
+        let (base, log) = if let Some(suffix_digest) = suffix.adoption_digest {
+            let log = open_writer(&path, boundary, length)?;
+            let base = prepared.verify_for_adoption(&log, &suffix_digest)?;
             log.sync_validated_boundary(length).map_err(|error| {
                 io::Error::new(
                     error.kind(),
                     format!("failed to synchronize recovered tail; outcome is uncertain: {error}"),
                 )
             })?;
-        }
+            (base, log)
+        } else {
+            let (base, _) = prepared.verify()?;
+            let log = open_writer(&path, boundary, length)?;
+            log.require_same_checkpoint_log(&base.log)?;
+            (base, log)
+        };
+        let mut view = suffix.attach(base);
         // A previous selection rename may have succeeded even if its directory
         // sync failed. Stabilize the currently visible selection before writes.
         if selection.is_some() {

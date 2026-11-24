@@ -61,15 +61,15 @@ pub struct RecoveredCheckpointView {
     pub(crate) tail_operations: u64,
 }
 
-struct ReplayedSuffix {
+pub(crate) struct ReplayedSuffix {
     overlay: BTreeMap<Arc<[u8]>, Option<ValueLocation>>,
     bytes: u64,
     operations: u64,
-    adoption_digest: Option<[u8; 32]>,
+    pub(crate) adoption_digest: Option<[u8; 32]>,
 }
 
 impl ReplayedSuffix {
-    fn attach(self, base: CheckpointView) -> RecoveredCheckpointView {
+    pub(crate) fn attach(self, base: CheckpointView) -> RecoveredCheckpointView {
         RecoveredCheckpointView {
             base,
             overlay: Arc::new(self.overlay),
@@ -179,14 +179,15 @@ impl RecoveredCheckpointView {
             limits.max_log_bytes,
             crate::checkpoint_view::TailAdmission::Witnessed(limits.max_tail_bytes),
         )?;
-        Self::from_prepared(
-            prepared,
+        let suffix = Self::replay_prepared(
+            &prepared,
             limits.max_tail_bytes,
             limits.max_tail_keys,
             limits.max_tail_key_bytes,
             max_tail_operations,
-        )
-        .map(|(view, _)| view)
+        )?;
+        let (base, _) = prepared.verify()?;
+        Ok(suffix.attach(base))
     }
 
     pub(crate) fn validate_limits(
@@ -231,15 +232,15 @@ impl RecoveredCheckpointView {
     // Admission failures stop before hashing older log bytes. The prepared
     // checkpoint admits the range and boundary for the caller's lock mode.
     // A writer still rebinds any unwitnessed bytes before adopting them.
-    pub(crate) fn from_prepared(
-        prepared: PreparedCheckpoint,
+    pub(crate) fn replay_prepared(
+        prepared: &PreparedCheckpoint,
         max_tail_bytes: u64,
         max_tail_keys: usize,
         max_tail_key_bytes: usize,
         max_tail_operations: Option<u64>,
-    ) -> io::Result<(Self, Option<[u8; 32]>)> {
+    ) -> io::Result<ReplayedSuffix> {
         let (log, range, boundary) = prepared.suffix();
-        let suffix = Self::replay_suffix(
+        Self::replay_suffix(
             log,
             range,
             boundary,
@@ -247,10 +248,7 @@ impl RecoveredCheckpointView {
             max_tail_keys,
             max_tail_key_bytes,
             max_tail_operations,
-        )?;
-        let (base, _) = prepared.verify()?;
-        let adoption_digest = suffix.adoption_digest;
-        Ok((suffix.attach(base), adoption_digest))
+        )
     }
 
     fn replay_suffix(

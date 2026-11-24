@@ -128,6 +128,9 @@ impl LogIo for FaultLog {
     fn len(&self) -> io::Result<u64> {
         Ok(self.file.metadata()?.len())
     }
+    fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {
+        LogIo::file_identity(&self.file)
+    }
     fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
         FileExt::read_exact_at(&self.file, bytes, offset)
     }

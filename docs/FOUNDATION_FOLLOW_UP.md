@@ -275,6 +275,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   and operation limits before the covered-log hash. Rejected opens can avoid
   reading earlier history. The [paired Linux traces](../benchmarks/results/2026-11-24-checkpoint-suffix-preflight/README.md)
   check rejected and admitted opens with up to 32 MiB of covered history.
+  Writable recovery also checks that replay and append refer to the same
+  file. A complete unacknowledged tail uses one covered-log hash on the
+  final writer descriptor and still verifies the exact replayed suffix.
+  The [V3 adoption traces](../benchmarks/results/2026-11-24-checkpoint-tail-adoption/README.md)
+  check both the read volume and synchronization of the updated witness.
   Checkpoint overlay versions share immutable key bytes. In the
   [allocation probe](../benchmarks/results/2026-11-24-checkpoint-overlay-keys/README.md),
   one put with a snapshot pinning 4,096 suffix keys requested 91.8% fewer
