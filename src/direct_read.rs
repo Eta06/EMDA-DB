@@ -25,7 +25,7 @@ pub struct DirectReadStatus {
     pub includes_snapshots: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DirectReads {
     state: Option<Arc<AtomicUsize>>,
     includes_snapshots: bool,
@@ -66,10 +66,6 @@ impl DirectReads {
             .limit
             .map(|limit| Arc::new(AtomicUsize::new(limit << SHIFT)));
         destination.includes_snapshots = status.includes_snapshots;
-    }
-    pub(crate) fn share_with(&self, destination: &mut Self) {
-        destination.state.clone_from(&self.state);
-        destination.includes_snapshots = self.includes_snapshots;
     }
     fn set_limit(&self, limit: usize) -> io::Result<()> {
         if limit > MAX_ACTIVE_DIRECT_READS {

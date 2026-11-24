@@ -516,6 +516,8 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   while each snapshot continues to own its separately captured root.
   Closing an online handle also releases its uncaptured live root. Enabled
   direct and snapshot read admission counts in-flight reads across handoff.
+  Deadline-based owned snapshots can release an unlinked generation on a
+  later capture or explicit idle reaping, while skipping an active reader.
   The [paired macOS read comparison](../benchmarks/results/2026-11-24-online-read-admission/README.md)
   records the counter's steady-state throughput and its variability.
 - [x] Add per-open ordinary-store group-commit byte/record reservation limits and status, including live reconfiguration, rejection before submission and preservation across supported handoffs. [Fault, stress and performance evidence](GROUP_COMMIT_LIMITS_2026_11_05.md) records limitations and mixed measurements. These logical caps do not bound caller threads, other locks, checkpoint-store writes, process memory or project resources.

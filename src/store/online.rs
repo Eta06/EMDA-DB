@@ -16,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
+use std::time::Instant;
 
 // This private error identifies a lock conflict before compaction has done
 // any work. An arbitrary WouldBlock from later I/O may have an uncertain
@@ -301,6 +302,7 @@ impl OnlineStore {
         let path = fs::canonicalize(path)?;
         store._lock_file.verify_identity(&path)?;
         store.snapshot_budget.make_shared();
+        store.snapshot_registry.make_shared();
         Ok(Self {
             path,
             state: RwLock::new(State {
@@ -336,12 +338,40 @@ impl OnlineStore {
     /// is process-local and shares the captured store's read admission and
     /// health checks.
     pub fn snapshot(&self, max_keys: usize, max_key_bytes: usize) -> io::Result<OnlineSnapshot> {
+        self.capture_snapshot(max_keys, max_key_bytes, None)
+    }
+
+    /// Captures a view whose new reads expire at a process-local deadline.
+    /// Later captures or explicit reaping can release idle expired views,
+    /// including views of retired generations. A read in progress can finish.
+    pub fn snapshot_until(
+        &self,
+        max_keys: usize,
+        max_key_bytes: usize,
+        deadline: Instant,
+    ) -> io::Result<OnlineSnapshot> {
+        self.capture_snapshot(max_keys, max_key_bytes, Some(deadline))
+    }
+
+    /// Releases the reservations and captured generation of idle expired views.
+    /// A busy view is skipped until a later reap, cancellation or drop.
+    pub fn reap_expired_snapshots(&self) -> io::Result<usize> {
+        self.with_store(Store::reap_expired_snapshots)
+    }
+
+    fn capture_snapshot(
+        &self,
+        max_keys: usize,
+        max_key_bytes: usize,
+        deadline: Option<Instant>,
+    ) -> io::Result<OnlineSnapshot> {
         let _access = Access::enter(self as *const Self as usize)?;
         let state = self.state.read().map_err(|_| uncertain())?;
         if state.failed {
             return Err(uncertain());
         }
-        let snapshot = Store::owned_snapshot(Arc::clone(&state.store), max_keys, max_key_bytes)?;
+        let snapshot =
+            Store::owned_snapshot(Arc::clone(&state.store), max_keys, max_key_bytes, deadline)?;
         Ok(OnlineSnapshot {
             snapshot: Some(snapshot),
         })
@@ -728,8 +758,9 @@ impl OnlineStore {
         // Owned views may still reserve capacity on the retired generation.
         // Keep one aggregate budget across the handoff.
         candidate.snapshot_budget = current.snapshot_budget.clone_shared();
+        candidate.snapshot_registry = current.snapshot_registry.clone_shared();
         candidate.set_active_direct_write_limit(current.direct_write_status().limit)?;
-        current.direct_reads.share_with(&mut candidate.direct_reads);
+        candidate.direct_reads = current.direct_reads.clone();
         let group_limits = current.group_commit_status()?;
         candidate.set_group_commit_limits(group_limits.limit_bytes, group_limits.limit_records)?;
         current._lock_file.verify_identity(&source)?;

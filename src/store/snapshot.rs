@@ -43,19 +43,19 @@ pub(super) struct SnapshotBudget {
     key_byte_limit: usize,
 }
 
-pub(super) enum SnapshotBudgetStorage {
-    Local(Mutex<SnapshotBudget>),
-    Shared(Arc<Mutex<SnapshotBudget>>),
+pub(super) enum SnapshotStorage<T> {
+    Local(Mutex<T>),
+    Shared(Arc<Mutex<T>>),
 }
 
-impl Default for SnapshotBudgetStorage {
+impl<T: Default> Default for SnapshotStorage<T> {
     fn default() -> Self {
         Self::Local(Mutex::default())
     }
 }
 
-impl std::ops::Deref for SnapshotBudgetStorage {
-    type Target = Mutex<SnapshotBudget>;
+impl<T> std::ops::Deref for SnapshotStorage<T> {
+    type Target = Mutex<T>;
 
     fn deref(&self) -> &Self::Target {
         match self {
@@ -65,7 +65,7 @@ impl std::ops::Deref for SnapshotBudgetStorage {
     }
 }
 
-impl SnapshotBudgetStorage {
+impl<T: Default> SnapshotStorage<T> {
     pub(super) fn make_shared(&mut self) {
         *self = match std::mem::take(self) {
             Self::Local(budget) => Self::Shared(Arc::new(budget)),
@@ -75,7 +75,7 @@ impl SnapshotBudgetStorage {
 
     pub(super) fn clone_shared(&self) -> Self {
         let Self::Shared(budget) = self else {
-            unreachable!("an online store always shares its snapshot budget");
+            unreachable!("an online store always shares its snapshot resources");
         };
         Self::Shared(Arc::clone(budget))
     }
@@ -148,7 +148,7 @@ impl SnapshotBudget {
     }
 }
 
-/// A stable read-only index view borrowing the open store.
+/// A stable read-only index view over a captured store state.
 ///
 /// Drop it to release its retained index view. Snapshots are process-local, do not
 /// survive reopening, and do not make independent writes transactional.
@@ -158,25 +158,29 @@ impl SnapshotBudget {
 /// reaping call or an optionally started worker. Expiry is checked at
 /// operation boundaries, not during I/O.
 pub struct Snapshot<'a> {
-    pub(super) store: SnapshotStore<'a>,
+    store: SnapshotStore<'a>,
     pub(super) generation: u64,
     pub(super) log_generation: Option<GenerationId>,
     state: Arc<RwLock<SnapshotData>>,
 }
 
-#[derive(Clone)]
-pub(super) enum SnapshotStore<'a> {
+enum SnapshotStore<'a> {
     Borrowed(&'a Store),
-    Owned(Arc<Store>),
+    Owned(crate::direct_read::DirectReads),
 }
 
-impl std::ops::Deref for SnapshotStore<'_> {
-    type Target = Store;
-
-    fn deref(&self) -> &Store {
+impl<'a> SnapshotStore<'a> {
+    fn borrowed(&self) -> Option<&'a Store> {
         match self {
-            Self::Borrowed(store) => store,
-            Self::Owned(store) => store,
+            Self::Borrowed(store) => Some(store),
+            Self::Owned(_) => None,
+        }
+    }
+
+    fn direct_reads(&self) -> &crate::direct_read::DirectReads {
+        match self {
+            Self::Borrowed(store) => &store.direct_reads,
+            Self::Owned(reads) => reads,
         }
     }
 }
@@ -194,6 +198,7 @@ pub(super) struct SnapshotData {
     pub(super) log_generation: Option<GenerationId>,
     pub(super) log: Option<Arc<Log>>,
     pub(super) index: Arc<BTreeMap<Vec<u8>, ValueLocation>>,
+    owned_store: Option<Arc<Store>>,
     reserved_keys: usize,
     reserved_key_bytes: usize,
     status: SnapshotStatus,
@@ -201,13 +206,27 @@ pub(super) struct SnapshotData {
 }
 
 impl SnapshotData {
-    fn release(&mut self, store: &Store, status: SnapshotStatus) {
+    fn store<'a>(&'a self, borrowed: Option<&'a Store>) -> &'a Store {
+        self.owned_store
+            .as_deref()
+            .or(borrowed)
+            .expect("active snapshot has a store")
+    }
+
+    fn release(&mut self, borrowed: Option<&Store>, status: SnapshotStatus) {
         if self.status == SnapshotStatus::Active {
             // Release this view before capacity becomes available again.
             self.index = Arc::new(BTreeMap::new());
             self.log = None;
-            store
-                .snapshot_budget
+            let owned_budget = self
+                .owned_store
+                .as_ref()
+                .map(|store| store.snapshot_budget.clone_shared());
+            self.owned_store = None;
+            owned_budget
+                .as_ref()
+                .or_else(|| borrowed.map(|store| &store.snapshot_budget))
+                .expect("active snapshot has a budget")
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
                 .release(self.reserved_keys, self.reserved_key_bytes);
@@ -285,28 +304,28 @@ impl Store {
         max_key_bytes: usize,
         deadline: Option<Instant>,
     ) -> io::Result<Snapshot<'_>> {
-        Self::capture_snapshot(
-            SnapshotStore::Borrowed(self),
-            max_keys,
-            max_key_bytes,
-            deadline,
-        )
+        Self::capture_snapshot(Some(self), None, max_keys, max_key_bytes, deadline)
     }
 
     pub(super) fn owned_snapshot(
         store: Arc<Self>,
         max_keys: usize,
         max_key_bytes: usize,
+        deadline: Option<Instant>,
     ) -> io::Result<Snapshot<'static>> {
-        Self::capture_snapshot(SnapshotStore::Owned(store), max_keys, max_key_bytes, None)
+        Self::capture_snapshot(None, Some(store), max_keys, max_key_bytes, deadline)
     }
 
-    fn capture_snapshot(
-        store: SnapshotStore<'_>,
+    fn capture_snapshot<'a>(
+        borrowed: Option<&'a Store>,
+        owned: Option<Arc<Self>>,
         max_keys: usize,
         max_key_bytes: usize,
         deadline: Option<Instant>,
-    ) -> io::Result<Snapshot<'_>> {
+    ) -> io::Result<Snapshot<'a>> {
+        let store = borrowed
+            .or(owned.as_deref())
+            .expect("snapshot capture has a store");
         if max_keys > MAX_SNAPSHOT_KEYS || max_key_bytes > MAX_SNAPSHOT_KEY_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -336,13 +355,16 @@ impl Store {
             .reserve(key_count, key_bytes)?;
         // Protect the reservation even if allocating the shared state unwinds.
         let mut reservation = SnapshotReservation {
-            store: &store,
+            store,
             keys: key_count,
             key_bytes,
             active: true,
         };
         let snapshot = Snapshot {
-            store: store.clone(),
+            store: match borrowed {
+                Some(store) => SnapshotStore::Borrowed(store),
+                None => SnapshotStore::Owned(store.direct_reads.clone()),
+            },
             generation: inner.generation,
             log_generation: inner.log_generation,
             state: Arc::new(RwLock::new(SnapshotData {
@@ -351,6 +373,7 @@ impl Store {
                     inner.log.as_ref().expect("published log missing"),
                 )),
                 index: Arc::clone(&inner.index),
+                owned_store: owned.clone(),
                 reserved_keys: key_count,
                 reserved_key_bytes: key_bytes,
                 status: SnapshotStatus::Active,
@@ -405,7 +428,8 @@ impl Store {
     }
 
     /// Reclaims expired snapshots that have no operation currently using them.
-    /// Busy snapshots are skipped; call again later. This does not reclaim the log.
+    /// Busy snapshots are skipped; call again later. For owned online views,
+    /// reaping also releases their ownership of the captured generation.
     pub fn reap_expired_snapshots(&self) -> io::Result<usize> {
         let mut registry = self
             .snapshot_registry
@@ -428,7 +452,7 @@ impl Store {
                 .deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)
             {
-                data.release(self, SnapshotStatus::Expired);
+                data.release(Some(self), SnapshotStatus::Expired);
                 reaped += 1;
                 return false;
             }
@@ -439,6 +463,12 @@ impl Store {
 }
 
 impl Snapshot<'_> {
+    pub(super) fn borrowed_store(&self) -> &Store {
+        self.store
+            .borrowed()
+            .expect("transaction snapshots borrow their store")
+    }
+
     pub(super) fn ensure_healthy(&self) -> io::Result<()> {
         drop(self.read_index()?);
         Ok(())
@@ -459,7 +489,7 @@ impl Snapshot<'_> {
         {
             return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
         }
-        if self.store.commits.failed() {
+        if data.store(self.store.borrowed()).commits.failed() {
             return Err(uncertain_error());
         }
         Ok(data)
@@ -474,7 +504,7 @@ impl Snapshot<'_> {
             .state
             .write()
             .unwrap_or_else(|poison| poison.into_inner());
-        data.release(&self.store, SnapshotStatus::Cancelled);
+        data.release(self.store.borrowed(), SnapshotStatus::Cancelled);
     }
 
     /// Whether this snapshot has been explicitly cancelled.
@@ -497,7 +527,7 @@ impl Snapshot<'_> {
         mut admit: impl FnMut(usize) -> io::Result<()>,
     ) -> io::Result<Option<Vec<u8>>> {
         record::validate_key(key)?;
-        let _admission = self.store.direct_reads.acquire_snapshot()?;
+        let _admission = self.store.direct_reads().acquire_snapshot()?;
         let data = self.read_index()?;
         data.index
             .get(key)
@@ -539,7 +569,7 @@ impl Snapshot<'_> {
                 "scan limit must be between 1 and 1024",
             ));
         }
-        let _admission = self.store.direct_reads.acquire_snapshot()?;
+        let _admission = self.store.direct_reads().acquire_snapshot()?;
         let data = self.read_index()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
             return Ok(Vec::new());
@@ -571,6 +601,95 @@ impl Snapshot<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reaping_an_owned_deadline_skips_busy_state_and_frees_capacity_once() {
+        let root = tempfile::tempdir().unwrap();
+        let online = OnlineStore::open(root.path()).unwrap();
+        online
+            .with_store(|store| {
+                store.set_snapshot_budget_limits(1, 1, 1)?;
+                store.put(b"k", b"v")
+            })
+            .unwrap();
+        assert_eq!(
+            online
+                .snapshot_until(1, 1, Instant::now())
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        let mut owned = online
+            .snapshot_until(1, 1, Instant::now() + std::time::Duration::from_secs(3600))
+            .unwrap();
+        let snapshot = owned.as_snapshot().unwrap();
+        snapshot.state.write().unwrap().deadline = Some(Instant::now());
+        let busy = snapshot.state.read().unwrap();
+        assert_eq!(online.reap_expired_snapshots().unwrap(), 0);
+        assert!(online.snapshot(1, 1).is_err());
+        drop(busy);
+        let replacement = online.snapshot(1, 1).unwrap();
+        assert_eq!(
+            snapshot.get(b"k").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            snapshot.scan(None, None, 1).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(snapshot.state.read().unwrap().owned_store.is_none());
+        assert_eq!(online.reap_expired_snapshots().unwrap(), 0);
+        owned.cancel();
+        assert!(online.snapshot(1, 1).is_err());
+        drop(replacement);
+        assert!(online.snapshot(1, 1).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn expired_owned_snapshot_releases_an_unlinked_generation_after_handoff() {
+        let root = tempfile::tempdir().unwrap();
+        let online = OnlineStore::open(root.path().join("live")).unwrap();
+        let previous = root.path().join("previous");
+        online.with_store(|store| store.put(b"k", b"old")).unwrap();
+        let view = online
+            .snapshot_until(1, 1, Instant::now() + std::time::Duration::from_secs(3600))
+            .unwrap();
+        let snapshot = view.as_snapshot().unwrap();
+        let (store, log) = {
+            let data = snapshot.read_index().unwrap();
+            (
+                Arc::downgrade(data.owned_store.as_ref().unwrap()),
+                Arc::downgrade(data.log.as_ref().unwrap()),
+            )
+        };
+        online
+            .compact_and_reclaim_detailed(&previous, &Default::default())
+            .unwrap();
+        assert!(!previous.exists());
+        online.with_store(|store| store.put(b"k", b"new")).unwrap();
+        assert_eq!(
+            snapshot.get(b"k").unwrap().as_deref(),
+            Some(b"old".as_slice())
+        );
+        assert!(log.upgrade().is_some());
+        snapshot.state.write().unwrap().deadline = Some(Instant::now());
+        assert_eq!(online.reap_expired_snapshots().unwrap(), 1);
+        assert!(store.upgrade().is_none());
+        assert!(log.upgrade().is_none());
+        assert_eq!(
+            snapshot.get(b"k").unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(
+            online
+                .with_store(|store| store.get(b"k"))
+                .unwrap()
+                .as_deref(),
+            Some(b"new".as_slice())
+        );
+    }
 
     #[test]
     fn aggregate_key_and_byte_budgets_are_released_after_reservation() {
@@ -796,7 +915,7 @@ mod tests {
             .map(|snapshot| snapshot.state.write().unwrap())
             .collect::<Vec<_>>();
         for data in &mut guards {
-            data.release(&store, SnapshotStatus::Cancelled);
+            data.release(Some(&store), SnapshotStatus::Cancelled);
         }
         assert_eq!(store.snapshot_budget.lock().unwrap().active, 0);
         let error = store

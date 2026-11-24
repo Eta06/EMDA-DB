@@ -105,7 +105,7 @@ impl Drop for Transaction<'_> {
         self.staged.clear();
         if self.encoded_bytes > 4 {
             self.snapshot
-                .store
+                .borrowed_store()
                 .transaction_budget
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
@@ -247,7 +247,7 @@ impl Transaction<'_> {
         let mut result = Vec::new();
         let mut bytes = 0_usize;
         while result.len() < limit {
-            if self.snapshot.store.commits.failed() {
+            if self.snapshot.borrowed_store().commits.failed() {
                 return Err(uncertain_error());
             }
             let choice = match (base.peek(), pending.peek()) {
@@ -320,8 +320,10 @@ impl Transaction<'_> {
         }
         let increase = new_size.saturating_sub(old_size);
         let decrease = old_size.saturating_sub(new_size);
-        let mut reservation =
-            PendingReservation::acquire(&self.snapshot.store.transaction_budget, increase)?;
+        let mut reservation = PendingReservation::acquire(
+            &self.snapshot.borrowed_store().transaction_budget,
+            increase,
+        )?;
         let replacement = if operation == Operation::Put {
             Some(value.to_vec())
         } else {
@@ -330,7 +332,7 @@ impl Transaction<'_> {
         self.staged.insert(key.to_vec(), replacement);
         if decrease > 0 {
             self.snapshot
-                .store
+                .borrowed_store()
                 .transaction_budget
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())

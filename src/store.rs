@@ -88,8 +88,8 @@ pub struct Store {
     // With this limit enabled, the exclusive write barrier serializes every
     // mutation and the counter update. It excludes allocator overhead.
     live_key_bytes: AtomicUsize,
-    snapshot_budget: snapshot::SnapshotBudgetStorage,
-    snapshot_registry: Mutex<snapshot::SnapshotRegistry>,
+    snapshot_budget: snapshot::SnapshotStorage<snapshot::SnapshotBudget>,
+    snapshot_registry: snapshot::SnapshotStorage<snapshot::SnapshotRegistry>,
     pub(crate) snapshot_reaper_active: AtomicBool,
     transaction_budget: Mutex<crate::transaction_budget::TransactionBudget>,
     transaction_queue: transaction_queue::TransactionQueue,
@@ -367,8 +367,8 @@ impl Store {
             max_live_keys: None,
             max_live_key_bytes: None,
             live_key_bytes: AtomicUsize::new(0),
-            snapshot_budget: snapshot::SnapshotBudgetStorage::default(),
-            snapshot_registry: Mutex::new(snapshot::SnapshotRegistry::default()),
+            snapshot_budget: snapshot::SnapshotStorage::default(),
+            snapshot_registry: snapshot::SnapshotStorage::default(),
             snapshot_reaper_active: AtomicBool::new(false),
             transaction_budget: Mutex::new(crate::transaction_budget::TransactionBudget::default()),
             transaction_queue: transaction_queue::TransactionQueue::new(),
