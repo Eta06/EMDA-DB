@@ -273,6 +273,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   an intermediate batch peak, unchanged witness and selection on rejection,
   and a byte-identical rebuild at the exact limit. Use full-log rebuild to
   enforce a byte cap on history before the base.
+- [x] Bound cumulative trusted-checkpoint reads during suffix rebuild. The
+  two-block regression covers both digest passes, alternating lookup
+  misses, buffer reuse, and ordered emission. A one-byte shortage leaves
+  the active selection and commit witness intact.
 
 - [x] Add an explicit on-disk index checkpoint verified against a separately trusted digest and suffix replay, with historical peak accounting and fail-closed corruption/format checks. The checkpoint is a derived plaintext file, not a backup or a security boundary when its digest is attacker-controlled.
 - [x] Verify checkpoint files through independent positional reads and reuse bounded key buffers. The [nested-scan regression and Linux ARM64 measurements](../benchmarks/results/2026-11-22-checkpoint-verifier-buffers/README.md) confirm independent cursor positions, one fewer allocation per scanned entry, and the same index read-byte totals.

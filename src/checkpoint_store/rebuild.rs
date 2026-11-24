@@ -665,6 +665,51 @@ impl CheckpointStore {
         limits: BoundedSuffixRebuildLimits,
         admission: BoundedSuffixAdmission,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_suffix_with_admission(
+            path.as_ref(),
+            destination.as_ref(),
+            base_checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            admission,
+            None,
+        )
+    }
+
+    /// Also caps cumulative reads from the trusted base checkpoint. Each
+    /// verification reserves the file length up front. Each uncached block
+    /// read during replay and emission charges its full byte length. This
+    /// excludes log, spill and output checkpoint reads and physical I/O
+    /// retries. Exhaustion leaves the witness and selection unchanged.
+    pub fn rebuild_managed_selection_bounded_with_checkpoint_read_limit(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        base_checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: BoundedSuffixRebuildLimits,
+        admission: BoundedSuffixAdmission,
+        max_base_checkpoint_read_bytes: u64,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_suffix_with_admission(
+            path.as_ref(),
+            destination.as_ref(),
+            base_checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            admission,
+            Some(max_base_checkpoint_read_bytes),
+        )
+    }
+
+    fn rebuild_suffix_with_admission(
+        path: &Path,
+        destination: &Path,
+        base_checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        limits: BoundedSuffixRebuildLimits,
+        admission: BoundedSuffixAdmission,
+        max_base_checkpoint_read_bytes: Option<u64>,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
         crate::publication_outcome::track_managed_rebuild(|tracker| {
             limits.base_checkpoint.validate()?;
             limits.output_checkpoint.validate()?;
@@ -676,6 +721,7 @@ impl CheckpointStore {
                 limits.max_operations,
             )?;
             spill.max_spill_read_bytes = admission.max_spill_read_bytes;
+            spill.max_base_checkpoint_read_bytes = max_base_checkpoint_read_bytes;
             spill.max_log_bytes = Some(limits.max_log_bytes);
             spill.max_live_keys = admission.max_live_keys;
             spill.max_live_key_bytes = admission.max_live_key_bytes;
@@ -683,9 +729,9 @@ impl CheckpointStore {
             spill.checkpoint_limits = Some(limits.output_checkpoint);
             with_standard_hooks(|hooks| {
                 Self::rebuild_bounded_using(
-                    path.as_ref(),
-                    destination.as_ref(),
-                    base_checkpoint.as_ref(),
+                    path,
+                    destination,
+                    base_checkpoint,
                     trusted_digest,
                     spill,
                     Some(tracker),
@@ -807,12 +853,15 @@ impl CheckpointStore {
         crate::checkpoint::require_available_destination(&destination)?;
         let (view, mut replayed, base_key_bytes) = match base {
             Some((checkpoint, digest)) => {
-                let prepared = CheckpointView::prepare_locked(
+                let prepared = CheckpointView::prepare_locked_with_read_limit(
                     &path,
                     &checkpoint,
                     digest,
                     lock_file.clone(),
-                    limits.base_checkpoint_limits,
+                    (
+                        limits.base_checkpoint_limits,
+                        limits.max_base_checkpoint_read_bytes,
+                    ),
                     (limits.max_log_bytes, limits.max_live_keys),
                     crate::checkpoint_view::TailAdmission::Unrestricted,
                 )?;

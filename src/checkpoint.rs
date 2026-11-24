@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAGIC: &[u8; 8] = b"EMDAIDX1";
 const HEADER_BYTES: u64 = 68;
@@ -674,12 +675,42 @@ pub(crate) fn check_witnessed_length(length: u64, boundary: u64) -> io::Result<(
     Ok(())
 }
 
+pub(crate) struct CheckpointReadBudget(AtomicU64);
+
+impl CheckpointReadBudget {
+    pub(crate) fn new(bytes: u64) -> Self {
+        Self(AtomicU64::new(bytes))
+    }
+
+    pub(crate) fn charge(&self, bytes: u64) -> io::Result<()> {
+        let mut remaining = self.0.load(Ordering::Relaxed);
+        loop {
+            let next = remaining.checked_sub(bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "rebuild base checkpoint read byte limit exceeded",
+                )
+            })?;
+            match self.0.compare_exchange_weak(
+                remaining,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(current) => remaining = current,
+            }
+        }
+    }
+}
+
 #[derive(Default)]
-pub(crate) struct IndexAdmission {
+pub(crate) struct IndexAdmission<'a> {
     pub(crate) max_live_keys: Option<usize>,
     pub(crate) max_file_bytes: Option<u64>,
     pub(crate) max_tail_bytes: Option<u64>,
     pub(crate) max_view_blocks: Option<usize>,
+    pub(crate) read_budget: Option<&'a CheckpointReadBudget>,
 }
 
 fn view_block_capacity(max_blocks: usize) -> u64 {
@@ -701,7 +732,7 @@ pub(crate) fn visit_index_file(
     log_length: u64,
     witness_boundary: u64,
     trusted_digest: &[u8; 32],
-    admission: IndexAdmission,
+    admission: IndexAdmission<'_>,
     mut visit: impl FnMut(u64, &[u8; 2], &[u8], &[u8; 16], ValueLocation) -> io::Result<()>,
 ) -> io::Result<VerifiedCheckpoint> {
     let length = file.metadata()?.len();
@@ -723,7 +754,10 @@ pub(crate) fn visit_index_file(
     {
         return Err(block_limit_error());
     }
-    let mut reader = BufReader::new(PositionalReader::new(file, 0));
+    if let Some(budget) = admission.read_budget {
+        budget.charge(length)?;
+    }
+    let mut reader = BufReader::new(PositionalReader::new(file, 0).take(length));
     let mut digest = Sha256::new();
     let mut header = [0_u8; HEADER_BYTES as usize];
     read_checked(&mut reader, &mut digest, &mut header)?;

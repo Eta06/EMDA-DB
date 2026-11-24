@@ -157,6 +157,7 @@ struct CheckpointIndex {
     file: File,
     blocks: Vec<Block>,
     landmarks: Vec<u16>,
+    read_budget: Option<checkpoint::CheckpointReadBudget>,
 }
 
 pub(crate) struct CheckpointPin(Weak<CheckpointIndex>);
@@ -334,6 +335,26 @@ impl CheckpointView {
         trusted_digest: &[u8; 32],
         lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
+        log_limits: (Option<u64>, Option<usize>),
+        tail: TailAdmission,
+    ) -> io::Result<PreparedCheckpoint> {
+        Self::prepare_locked_with_read_limit(
+            path,
+            checkpoint,
+            trusted_digest,
+            lock_file,
+            (limits, None),
+            log_limits,
+            tail,
+        )
+    }
+
+    pub(crate) fn prepare_locked_with_read_limit(
+        path: &Path,
+        checkpoint: &Path,
+        trusted_digest: &[u8; 32],
+        lock_file: crate::store_lock::StoreLock,
+        (limits, max_checkpoint_read_bytes): (CheckpointViewLimits, Option<u64>),
         (max_log_bytes, max_live_keys): (Option<u64>, Option<usize>),
         tail: TailAdmission,
     ) -> io::Result<PreparedCheckpoint> {
@@ -349,6 +370,7 @@ impl CheckpointView {
             }
         };
         let checkpoint = checkpoint::open_index_file(checkpoint)?;
+        let read_budget = max_checkpoint_read_bytes.map(checkpoint::CheckpointReadBudget::new);
         let mut blocks = Vec::new();
         let mut landmarks = Vec::new();
         let max_landmarks = limits.max_landmarks();
@@ -364,6 +386,7 @@ impl CheckpointView {
                 max_file_bytes: Some(limits.max_file_bytes),
                 max_tail_bytes,
                 max_view_blocks: Some(limits.max_blocks),
+                read_budget: read_budget.as_ref(),
             },
             |offset, key_len, key, tail, _| {
                 let size = key_len.len() + key.len() + tail.len();
@@ -432,6 +455,7 @@ impl CheckpointView {
                 file: checkpoint,
                 blocks,
                 landmarks,
+                read_budget,
             }),
             prefix: verified.prefix,
             log_digest: verified.log_digest,
@@ -537,6 +561,7 @@ impl CheckpointView {
             checkpoint::IndexAdmission {
                 max_file_bytes: Some(self.limits.max_file_bytes),
                 max_view_blocks: Some(self.limits.max_blocks),
+                read_budget: self.index.read_budget.as_ref(),
                 ..Default::default()
             },
             |_, _, key, _, _| {
@@ -562,6 +587,9 @@ impl CheckpointView {
     }
 
     fn read_block(&self, block: &Block, bytes: &mut Vec<u8>) -> io::Result<()> {
+        if let Some(budget) = &self.index.read_budget {
+            budget.charge(block.length as u64)?;
+        }
         bytes.resize(block.length, 0);
         self.index.file.read_exact_at(bytes, block.offset)?;
         if Sha256::digest(bytes.as_slice()).as_slice() != block.digest {

@@ -420,6 +420,14 @@ the document view.
   Use the full-log rebuild when a byte cap must cover history before the
   checkpoint. Spill-read limits cover logical temporary-file reads. These
   caps measure the admitted resources individually.
+- `rebuild_managed_selection_bounded_with_checkpoint_read_limit` adds
+  a cumulative cap on the trusted checkpoint's logical reads. The initial
+  verification and subsequent digest recheck each reserve a full file
+  pass. Each uncached block read during suffix lookup and output emission
+  charges its length before reading. Exhaustion rejects before tail adoption
+  and leaves the existing witness and selection in place. The cap excludes
+  file metadata, physical retries, source-log reads, spill-file reads, and
+  output checkpoint reads. It composes with the other rebuild limits.
 - `rebuild_managed_selection_bounded_with_log_limit_detailed` additionally
   rejects an oversized whole log with `NotPublished(InvalidInput)` before
   checkpoint validation and tail adoption. This admission check assumes

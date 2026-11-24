@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Optionally cap cumulative reads of the trusted base checkpoint during
+  bounded managed rebuild.
+
 - Store retained sparse-index anchors in one bounded buffer to reduce
   per-block recovery allocations.
 
