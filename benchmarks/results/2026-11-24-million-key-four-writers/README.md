@@ -46,6 +46,11 @@ The [Linux memory archive](linux-memory-artifacts.tar.gz) contains the
 [completed memory job] metadata and log, command and binary identity,
 phase logs, measurements, the CI verifier, and the summary script.
 
+The [full Linux CI] passed both Rust toolchains and the stable optimized
+suite. The [CI archive](linux-ci-artifacts.tar.gz) preserves all 45 standard
+benchmark smoke attempts, their outputs and the full workflow log.
+
+[full Linux CI]: https://github.com/Eta06/EMDA-DB/actions/runs/45393021332
 [completed memory job]: https://github.com/Eta06/EMDA-DB/actions/runs/45393021332/job/138444179727
 
 ## Reproduction and limits
