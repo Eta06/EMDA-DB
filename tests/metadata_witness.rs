@@ -1,6 +1,6 @@
 //! V3 crash states, rollback detection, and compatibility of the one-fsync path.
 #![cfg(target_os = "linux")]
-use database_engine::Store;
+use database_engine::{CheckpointStore, Store};
 use rustix::fs::{XattrFlags, getxattr, removexattr, setxattr};
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -112,6 +112,57 @@ fn new_stores_use_metadata_and_each_acknowledgement_advances_it() {
         );
         assert_eq!(fs::read(dir.path().join("commit.state")).unwrap(), anchor);
     }
+}
+
+#[test]
+fn invalid_checkpoint_configuration_preserves_pending_v3_boundary() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("source");
+    let checkpoint = dir.path().join("checkpoint");
+    let selected = dir.path().join("selected");
+    let source = Store::open(&path).unwrap();
+    source.put(b"base", b"acknowledged").unwrap();
+    let digest = source.checkpoint_to(&checkpoint).unwrap();
+    drop(source);
+    let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    store.rollover_managed(&selected).unwrap();
+    store.enable_automatic_checkpoints().unwrap();
+    let old_boundary = marker(&path);
+    store.put(b"pending", b"complete").unwrap();
+    let new_boundary = marker(&path);
+    assert_ne!(old_boundary, new_boundary);
+    drop(store);
+    let log = path.join("records.log");
+    setxattr(&log, NAME, &old_boundary, XattrFlags::REPLACE).unwrap();
+    let original_log = fs::read(&log).unwrap();
+    assert_eq!(&original_log[..8], b"EMDALOG3");
+    let anchor = path.join("commit.state");
+    let original_anchor = fs::read(&anchor).unwrap();
+    let selection = path.join("checkpoint.selection");
+    let original_selection = fs::read(&selection).unwrap();
+    let configuration = path.join(".emda-auto-checkpoints-v1/owner");
+    let valid_configuration = fs::read(&configuration).unwrap();
+    fs::write(&configuration, b"invalid configuration").unwrap();
+    let error = CheckpointStore::open_managed(&path)
+        .err()
+        .expect("invalid configuration must fail");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "automatic checkpoint configuration is invalid"
+    );
+    assert_eq!(fs::read(log).unwrap(), original_log);
+    assert_eq!(fs::read(anchor).unwrap(), original_anchor);
+    assert_eq!(fs::read(selection).unwrap(), original_selection);
+    assert_eq!(marker(&path), old_boundary);
+
+    fs::write(configuration, valid_configuration).unwrap();
+    let store = CheckpointStore::open_managed(&path).unwrap();
+    assert_eq!(
+        store.get(b"pending").unwrap().as_deref(),
+        Some(&b"complete"[..])
+    );
+    assert_eq!(marker(&path), new_boundary);
 }
 
 #[test]

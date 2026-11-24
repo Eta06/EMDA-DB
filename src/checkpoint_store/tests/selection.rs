@@ -716,13 +716,18 @@ fn panic_during_selection_publication_rejects_further_writes_and_recovers() {
 }
 
 #[test]
-fn managed_open_rejects_selection_and_directory_sync_failures_before_return() {
+fn managed_open_rejects_selection_and_directory_sync_failures_before_adoption() {
     for fault in ["file", "directory-before", "directory-after"] {
         let (dir, path, checkpoint, digest) = fixture();
         let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
         store.rollover_managed(dir.path().join("first")).unwrap();
         store.put(b"before", b"acknowledged").unwrap();
+        let witness = path.join("commit.state");
+        let original_witness = fs::read(&witness).unwrap();
+        store.put(b"pending", b"complete").unwrap();
         drop(store);
+        fs::write(&witness, &original_witness).unwrap();
+        let original_log = fs::read(path.join("records.log")).unwrap();
         let original_selection = fs::read(super::super::selection::path(&path)).unwrap();
         let result = retry_lock(|| {
             CheckpointStore::open_source_using(
@@ -761,7 +766,15 @@ fn managed_open_rejects_selection_and_directory_sync_failures_before_return() {
                 },
             )
         });
-        assert!(result.is_err());
+        let error = result.err().expect("selection sync must fail");
+        let expected = match fault {
+            "file" => "selection sync",
+            "directory-before" => "directory sync",
+            _ => "post-sync error",
+        };
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(fs::read(&witness).unwrap(), original_witness);
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), original_log);
         assert_eq!(
             fs::read(super::super::selection::path(&path)).unwrap(),
             original_selection
@@ -771,6 +784,11 @@ fn managed_open_rejects_selection_and_directory_sync_failures_before_return() {
             reopened.get(b"before").unwrap().as_deref(),
             Some(&b"acknowledged"[..])
         );
+        assert_eq!(
+            reopened.get(b"pending").unwrap().as_deref(),
+            Some(&b"complete"[..])
+        );
+        assert_ne!(fs::read(&witness).unwrap(), original_witness);
         reopened.put(b"after", b"value").unwrap();
     }
 }

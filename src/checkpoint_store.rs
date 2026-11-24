@@ -454,34 +454,39 @@ impl CheckpointStore {
         )?;
         let (_, range, boundary) = prepared.suffix();
         let length = range.end;
-        let (base, log) = if let Some(suffix_digest) = suffix.adoption_digest {
+        let stabilize_configuration = || {
+            // A previous selection rename may have succeeded even if its
+            // directory sync failed. Stabilize the visible selection before
+            // allowing writes, including adoption of a complete tail.
+            if selection.is_some() {
+                sync_selection(&path)?;
+            }
+            let config = automatic::open_existing(&path)?;
+            if config.is_some() && selection.is_none() {
+                return Err(record::invalid_data(
+                    "automatic checkpointing requires a managed selection",
+                ));
+            }
+            Ok(config)
+        };
+        let (base, log, automatic_config) = if let Some(suffix_digest) = suffix.adoption_digest {
             let log = open_writer(&path, boundary, length)?;
             let base = prepared.verify_for_adoption(&log, &suffix_digest)?;
+            let config = stabilize_configuration()?;
             log.sync_validated_boundary(length).map_err(|error| {
                 io::Error::new(
                     error.kind(),
                     format!("failed to synchronize recovered tail; outcome is uncertain: {error}"),
                 )
             })?;
-            (base, log)
+            (base, log, config)
         } else {
             let (base, _) = prepared.verify()?;
             let log = open_writer(&path, boundary, length)?;
             log.require_same_checkpoint_log(&base.log)?;
-            (base, log)
+            (base, log, stabilize_configuration()?)
         };
         let mut view = suffix.attach(base);
-        // A previous selection rename may have succeeded even if its directory
-        // sync failed. Stabilize the currently visible selection before writes.
-        if selection.is_some() {
-            sync_selection(&path)?;
-        }
-        let automatic_config = automatic::open_existing(&path)?;
-        if automatic_config.is_some() && selection.is_none() {
-            return Err(record::invalid_data(
-                "automatic checkpointing requires a managed selection",
-            ));
-        }
         if automatic_config.is_some() {
             // The durable selection was verified and stabilized above. Stale
             // recognized stages cannot be the selected published checkpoint.

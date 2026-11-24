@@ -1,6 +1,51 @@
 use super::*;
 use crate::BatchOperation;
 
+#[test]
+fn invalid_automatic_configuration_rejects_before_tail_adoption() {
+    let (_dir, path, store) = managed_fixture(
+        MAX_RECOVERED_VIEW_TAIL_BYTES,
+        MAX_RECOVERED_VIEW_TAIL_KEYS,
+        MAX_RECOVERED_VIEW_TAIL_KEY_BYTES,
+    );
+    store.enable_automatic_checkpoints().unwrap();
+    let witness = path.join("commit.state");
+    let original_witness = fs::read(&witness).unwrap();
+    store.put(b"pending", b"complete").unwrap();
+    drop(store);
+    fs::write(&witness, &original_witness).unwrap();
+    let original_log = fs::read(path.join("records.log")).unwrap();
+    let selection = super::super::selection::path(&path);
+    let original_selection = fs::read(&selection).unwrap();
+    let marker = super::super::automatic::root(&path).join("owner");
+    let original_marker = fs::read(&marker).unwrap();
+    fs::write(&marker, b"invalid automatic configuration").unwrap();
+
+    let error = retry_lock(|| CheckpointStore::open_managed(&path))
+        .err()
+        .expect("invalid configuration must fail");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "automatic checkpoint configuration is invalid"
+    );
+    assert_eq!(fs::read(&witness).unwrap(), original_witness);
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), original_log);
+    assert_eq!(fs::read(selection).unwrap(), original_selection);
+    assert_eq!(
+        fs::read(&marker).unwrap(),
+        b"invalid automatic configuration"
+    );
+
+    fs::write(marker, original_marker).unwrap();
+    let recovered = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+    assert_eq!(
+        recovered.get(b"pending").unwrap().as_deref(),
+        Some(&b"complete"[..])
+    );
+    assert_ne!(fs::read(witness).unwrap(), original_witness);
+}
+
 fn managed_fixture(
     max_tail_bytes: u64,
     max_tail_keys: usize,

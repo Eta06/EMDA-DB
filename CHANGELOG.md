@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stabilize managed checkpoint selection and automatic-checkpoint
+  configuration before adopting a pending tail when opening a writable
+  checkpoint store.
+
 - Report uncertainty from an attempted source-witness update separately
   from checkpoint and selection publication in detailed managed rebuilds.
 
