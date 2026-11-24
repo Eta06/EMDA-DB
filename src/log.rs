@@ -16,6 +16,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 
+pub(crate) const INLINE_VALUE_COMPARE_BYTES: usize = 256;
+
 /// Optional logical limits for a full-log ordinary store open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StoreRecoveryLimits {
@@ -662,7 +664,7 @@ impl Log {
         let Some(location) = location else {
             return Ok(expected.is_none());
         };
-        let mut small = [0; 256];
+        let mut small = [0; INLINE_VALUE_COMPARE_BYTES];
         if location.length <= small.len() {
             let bytes = &mut small[..location.length];
             self.read_into(location, bytes)?;

@@ -1,6 +1,8 @@
 //! Public store operations, in-process coordination, and exclusive ownership.
 
-use crate::log::{GenerationId, Log, StoreRecoveryLimits, ValueLocation};
+use crate::log::{
+    GenerationId, INLINE_VALUE_COMPARE_BYTES, Log, StoreRecoveryLimits, ValueLocation,
+};
 use crate::publication_outcome::{RecoveryOpenFailure, TailAdoptionTracker, track_recovery_open};
 use crate::record::{self, Operation};
 use crate::{backup, directory};
@@ -644,15 +646,35 @@ impl Store {
         };
         record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
-        // Ordinary mutations hold the shared side through acknowledgement.
-        // The exclusive side makes the read and commit indivisible relative
-        // to every other mutation, including other compare-exchange calls.
-        let _writer = self
+        let writer = self
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
         let (log, location) = self.current_value(key)?;
-        if !log.value_matches(location, expected)? {
+        let (_writer, matches) =
+            if location.is_some_and(|location| location.length > INLINE_VALUE_COMPARE_BYTES) {
+                // The captured log location is immutable while this store is
+                // borrowed. Let writes proceed during the streamed checksum,
+                // then establish which value is current under the barrier.
+                drop(writer);
+                let comparison = log.value_matches(location, expected);
+                let writer = self
+                    .writes
+                    .write()
+                    .map_err(|_| io::Error::other("write barrier poisoned"))?;
+                let (current_log, current_location) = self.current_value(key)?;
+                let matches = if current_location == location && Arc::ptr_eq(&log, &current_log) {
+                    comparison?
+                } else {
+                    // Compare the new value under the barrier. A hot key can
+                    // cause at most one extra comparison before a decision.
+                    current_log.value_matches(current_location, expected)?
+                };
+                (writer, matches)
+            } else {
+                (writer, log.value_matches(location, expected)?)
+            };
+        if !matches {
             return Ok(false);
         }
         self.commit_limited_tracked(operation, key, value, tracker)?;

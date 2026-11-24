@@ -11,6 +11,7 @@ use std::time::Duration;
 struct BlockingReadIo {
     file: File,
     armed: Arc<AtomicBool>,
+    fail_after_append: Option<Arc<AtomicBool>>,
     started: mpsc::Sender<()>,
     resume: Mutex<mpsc::Receiver<()>>,
 }
@@ -34,7 +35,15 @@ impl LogIo for BlockingReadIo {
 
     fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
         let mut file = &self.file;
-        file.write_all(bytes)
+        file.write_all(bytes)?;
+        if self
+            .fail_after_append
+            .as_ref()
+            .is_some_and(|armed| armed.swap(false, Ordering::SeqCst))
+        {
+            return Err(io::Error::other("injected error after complete append"));
+        }
+        Ok(())
     }
 
     fn sync_data(&self) -> io::Result<()> {
@@ -59,6 +68,7 @@ fn blocked_read_does_not_block_a_write_and_observes_its_original_value() {
             Log::from_io(Box::new(BlockingReadIo {
                 file,
                 armed: Arc::clone(&armed),
+                fail_after_append: None,
                 started: started_tx,
                 resume: Mutex::new(resume_rx),
             }))
@@ -98,6 +108,95 @@ fn blocked_read_does_not_block_a_write_and_observes_its_original_value() {
 }
 
 #[test]
+fn streamed_compare_exchange_rechecks_after_concurrent_writes() {
+    let old = vec![b'x'; crate::recovery::RECOVERY_READ_BUFFER_BYTES + 1];
+    for (write_key, expected, matches, fail_after_append) in [
+        (b"other".as_slice(), old.clone(), true, false),
+        (b"key".as_slice(), old.clone(), false, false),
+        (b"key".as_slice(), b"concurrent".to_vec(), true, false),
+        (b"other".as_slice(), old.clone(), false, true),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let append_fault = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let store = Arc::new(
+            Store::open_using(root.path(), |path, initialize| {
+                let (mut log, index) = Log::open(path, initialize)?;
+                let file = OpenOptions::new()
+                    .read(true)
+                    .append(true)
+                    .open(path.join("records.log"))?;
+                log.replace_io_for_test(Box::new(BlockingReadIo {
+                    file,
+                    armed: Arc::clone(&armed),
+                    fail_after_append: Some(Arc::clone(&append_fault)),
+                    started: started_tx,
+                    resume: Mutex::new(resume_rx),
+                }));
+                Ok((log, index))
+            })
+            .unwrap(),
+        );
+        store.put(b"key", &old).unwrap();
+        armed.store(true, Ordering::SeqCst);
+        let comparing = Arc::clone(&store);
+        let compare = thread::spawn(move || {
+            comparing.compare_exchange_detailed(b"key", Some(&expected), Some(b"replaced"))
+        });
+        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+        append_fault.store(fail_after_append, Ordering::SeqCst);
+        let writing = Arc::clone(&store);
+        let (done_tx, done_rx) = mpsc::channel();
+        let write = thread::spawn(move || {
+            let _ = done_tx.send(writing.put_detailed(write_key, b"concurrent"));
+        });
+        let result = done_rx.recv_timeout(Duration::from_secs(3));
+        resume_tx.send(()).unwrap();
+        let comparison = compare.join().unwrap();
+        write.join().unwrap();
+        let write = result.expect("streaming the comparison held the writer barrier");
+        if fail_after_append {
+            assert!(matches!(
+                write,
+                Err(crate::MutationFailure::OutcomeUnknown(_))
+            ));
+            assert!(matches!(
+                comparison,
+                Err(crate::MutationFailure::Rejected(_))
+            ));
+            assert!(store.get(b"key").is_err());
+        } else {
+            write.unwrap();
+            assert_eq!(comparison.unwrap(), matches);
+        }
+
+        Arc::try_unwrap(store)
+            .ok()
+            .expect("workers released the fixture")
+            .close_private_store()
+            .unwrap();
+        let reopened = Store::open(root.path()).unwrap();
+        let expected = if matches {
+            b"replaced".as_slice()
+        } else if write_key == b"key" {
+            b"concurrent".as_slice()
+        } else {
+            old.as_slice()
+        };
+        assert_eq!(reopened.get(b"key").unwrap().as_deref(), Some(expected));
+        if write_key == b"other" {
+            assert_eq!(
+                reopened.get(b"other").unwrap().as_deref(),
+                Some(b"concurrent".as_slice())
+            );
+        }
+    }
+}
+
+#[test]
 fn expired_snapshot_reaping_does_not_interrupt_a_blocked_read() {
     use std::time::Instant;
     let dir = tempfile::tempdir().unwrap();
@@ -114,6 +213,7 @@ fn expired_snapshot_reaping_does_not_interrupt_a_blocked_read() {
         Log::from_io(Box::new(BlockingReadIo {
             file,
             armed: Arc::clone(&armed),
+            fail_after_append: None,
             started: started_tx,
             resume: Mutex::new(resume_rx),
         }))
@@ -176,6 +276,7 @@ fn scan_captures_locations_before_concurrent_updates_without_blocking_writes() {
             Log::from_io(Box::new(BlockingReadIo {
                 file,
                 armed: Arc::clone(&armed),
+                fail_after_append: None,
                 started: started_tx,
                 resume: Mutex::new(resume_rx),
             }))
@@ -237,6 +338,7 @@ fn compaction_keeps_readers_available_and_blocks_writes_until_copy_finishes() {
             Log::from_io(Box::new(BlockingReadIo {
                 file,
                 armed: Arc::clone(&armed),
+                fail_after_append: None,
                 started: started_tx,
                 resume: Mutex::new(resume_rx),
             }))
@@ -349,6 +451,7 @@ fn direct_read_admission_counts_blocked_io_and_does_not_block_writes() {
         Log::from_io(Box::new(BlockingReadIo {
             file,
             armed: Arc::clone(&armed),
+            fail_after_append: None,
             started: started_tx,
             resume: Mutex::new(resume_rx),
         }))
