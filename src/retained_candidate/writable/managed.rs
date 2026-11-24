@@ -461,7 +461,27 @@ impl ManagedRetainedStore {
             root.as_ref(),
             ceiling,
             CATALOG_MAGIC,
+            (None, None),
+            Active::load,
             None,
+        )
+    }
+
+    /// Recover the selected generation with the same logical suffix scan
+    /// budget as [`RetainedStore::open_with_suffix_scan_limit`]. An optional
+    /// catalog storage ceiling is intersected with its persisted limits.
+    /// This open does not start automatic reclamation.
+    pub fn open_with_suffix_scan_limit(
+        root: impl AsRef<Path>,
+        ceiling: RetainedStoreLimits,
+        max_suffix_scan_bytes: u64,
+        storage_limits: Option<CatalogStorageLimits>,
+    ) -> io::Result<Self> {
+        Self::open_role(
+            root.as_ref(),
+            ceiling,
+            CATALOG_MAGIC,
+            (storage_limits, Some(max_suffix_scan_bytes)),
             Active::load,
             None,
         )
@@ -482,7 +502,7 @@ impl ManagedRetainedStore {
             root,
             ceiling,
             CATALOG_MAGIC,
-            Some(storage_limits),
+            (Some(storage_limits), None),
             Active::load,
             None,
         )?;
@@ -497,7 +517,7 @@ impl ManagedRetainedStore {
         root: &Path,
         ceiling: RetainedStoreLimits,
         catalog_magic: &'static [u8; 8],
-        requested_storage: Option<CatalogStorageLimits>,
+        (requested_storage, max_suffix_scan_bytes): (Option<CatalogStorageLimits>, Option<u64>),
         select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
         authority: Option<AuthorityRecord>,
     ) -> io::Result<Self> {
@@ -510,7 +530,7 @@ impl ManagedRetainedStore {
         let path = active.slot.path(&root);
         let store = RetainedStore::open_role(
             &path,
-            RecoveryLimits::Ceiling(ceiling),
+            (RecoveryLimits::Ceiling(ceiling), max_suffix_scan_bytes),
             &active.expected,
             (
                 generation_role(catalog_magic, catalog),

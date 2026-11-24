@@ -865,6 +865,58 @@ fn each_failed_commit_boundary_poisons_and_recovers_the_complete_batch() {
 }
 
 #[test]
+fn recovery_suffix_scan_budget_counts_replay_and_confirmation() {
+    let f = Fixture::new(LIMITS);
+    let open = |cap| RetainedStore::open_with_suffix_scan_limit(&f.path, LIMITS, &f.expected, cap);
+    let mut store = open(0).unwrap();
+    store.put(b"known", b"committed").unwrap();
+    let committed = store.suffix_len as u64;
+    drop(store);
+    let tail = record::encode(Operation::Put, b"pending", b"proposed").unwrap();
+    f.append_unacknowledged(&tail);
+    let suffix_bytes = committed + tail.len() as u64;
+    let log = fs::read(f.log()).unwrap();
+    let witness = fs::read(f.witness()).unwrap();
+
+    // Admission precedes parsing even if the tail is damaged. An admitted
+    // reopen still validates the digest and every record before adoption.
+    let mut damaged = log.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(f.log(), &damaged).unwrap();
+    let error = open(2 * suffix_bytes - 1).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "retained recovery suffix scan byte limit exceeded"
+    );
+    assert_eq!(
+        open(2 * suffix_bytes).err().unwrap().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(fs::read(f.log()).unwrap(), damaged);
+    assert_eq!(fs::read(f.witness()).unwrap(), witness);
+    fs::write(f.log(), &log).unwrap();
+
+    let opened = open(2 * suffix_bytes).unwrap();
+    assert_eq!(
+        opened.get(b"pending", 8).unwrap().as_deref(),
+        Some(&b"proposed"[..])
+    );
+    drop(opened);
+    assert_ne!(fs::read(f.witness()).unwrap(), witness);
+    assert_eq!(
+        open(suffix_bytes - 1).err().unwrap().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    let reopened = open(suffix_bytes).unwrap();
+    assert_eq!(
+        reopened.get(b"known", 9).unwrap().as_deref(),
+        Some(&b"committed"[..])
+    );
+    assert_eq!(fs::read(f.log()).unwrap(), log);
+}
+
+#[test]
 fn recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix() {
     let f = Fixture::new(LIMITS);
     let path = f.path.join("base");
@@ -1166,7 +1218,7 @@ fn recovery_rechecks_suffix_bytes_before_advancing_witness() {
         };
         let replacement = record::encode(Operation::Put, key, b"new").unwrap();
 
-        let result = RetainedStore::open_using(&f.path, LIMITS, &f.expected, |path| {
+        let result = RetainedStore::open_using(&f.path, LIMITS, &f.expected, None, |path| {
             let file = OpenOptions::new().write(true).open(f.log())?;
             file.write_all_at(&replacement, offset)?;
             crate::directory::sync_existing(path)
@@ -1205,7 +1257,7 @@ fn recovery_verifies_the_base_after_directory_sync() {
             }
             let log = fs::read(f.log()).unwrap();
 
-            let result = RetainedStore::open_using(&f.path, LIMITS, &f.expected, |path| {
+            let result = RetainedStore::open_using(&f.path, LIMITS, &f.expected, None, |path| {
                 if replace_path {
                     fs::rename(&base_path, &original_path)?;
                     fs::write(&base_path, &base)?;
@@ -1260,7 +1312,7 @@ fn uncertain_creation_leaves_a_complete_candidate_for_inspection() {
     file.sync_data().unwrap();
     let witness = destination.join("commit.state");
     let before = fs::read(&witness).unwrap();
-    let error = RetainedStore::open_using(&destination, LIMITS, &f.expected, |_| {
+    let error = RetainedStore::open_using(&destination, LIMITS, &f.expected, None, |_| {
         Err(io::Error::other("injected open directory sync failure"))
     })
     .err()

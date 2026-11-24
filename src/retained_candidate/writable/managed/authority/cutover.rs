@@ -316,7 +316,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             &fence.catalog_path(),
             limits,
             CUTOVER_MAGIC,
-            None,
+            (None, None),
             |root, catalog| select_authorized(root, catalog, initial.committed),
             Some(initial),
         )?;

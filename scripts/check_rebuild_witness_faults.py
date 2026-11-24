@@ -152,6 +152,60 @@ def run(binary, parent, format_name, rebuild, fault=None):
             assert probe(binary, "verify", root, operation, "success", "checkpoint-first")["status"] == "verified"
         return outcome, errors[0]
 
+def check_retained_scan(binary, directory, fmt):
+    with tempfile.TemporaryDirectory(prefix="retained-scan-", dir=directory) as temporary:
+        root = pathlib.Path(temporary).resolve()
+        assert probe(binary, "setup", root, fmt)["status"] == "ready"
+        ready = probe(binary, "prepare-retained-scan", root)
+        assert ready["status"] == "ready"
+        header = ready["header_bytes"]
+        catalog = root / "scan-catalog"
+        log = catalog / "generation-a/records.log"
+        base = catalog / "generation-a/base"
+        witness = catalog / "generation-a/commit.state"
+        selection = catalog / "active.retained"
+        old = (root / "scan-witness-before").read_bytes()
+        complete = witness.read_bytes()
+        log_bytes, selection_bytes = log.read_bytes(), selection.read_bytes()
+        assert old != complete
+        witness.write_bytes(old)
+        suffix_bytes = len(log_bytes) - header
+        assert suffix_bytes > 0
+        trace = root / "scan.trace"
+        command = ["strace", "-qq", "-y", "-o", trace, "-e", "trace=read,pread64"]
+        checks = []
+        for cap, scans, accepted in ((2 * suffix_bytes - 1, 0, False),
+                                     (2 * suffix_bytes, 2, True),
+                                     (suffix_bytes - 1, 0, False),
+                                     (suffix_bytes, 1, True)):
+            previous = witness.read_bytes()
+            outcome = probe(*command, binary, "attempt-retained-scan", root, str(cap))
+            lines = trace.read_text().splitlines()
+            requests = []
+            for line in lines:
+                if line.startswith("pread64(") and f"<{log}>" in line:
+                    chunks = re.search(r", (\d+), (\d+)\)\s+= (\d+)$", line)
+                    assert chunks, line
+                    requested, offset, returned = map(int, chunks.groups())
+                    assert requested == returned, line
+                    if offset >= header:
+                        requests.append(requested)
+            assert sum(requests) == scans * suffix_bytes, requests
+            if accepted:
+                assert outcome == {"status": "success"}, outcome
+                assert witness.read_bytes() == complete
+            else:
+                assert outcome == {"status": "error", "kind": "InvalidInput",
+                                   "message": "retained recovery suffix scan byte limit exceeded"}, outcome
+                assert witness.read_bytes() == previous
+                assert not any(f"<{base}>" in line for line in lines), lines
+            assert log.read_bytes() == log_bytes and selection.read_bytes() == selection_bytes
+            checks.append(dict(cap=cap, outcome=outcome, suffix_reads=requests, trace=lines))
+        assert probe(binary, "verify-retained-scan", root) == {"status": "verified"}
+        print(json.dumps(dict(rebuild="retained-managed", format=fmt, point="retained recovery suffix scan limit",
+                              suffix_bytes=suffix_bytes, checks=checks)), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=pathlib.Path, required=True)
@@ -166,6 +220,8 @@ def main():
                 outcome, trace = run(binary, args.directory, format_name, rebuild, (point, injection))
                 print(json.dumps(dict(rebuild=rebuild, format=format_name, point=point,
                                       injection=injection, outcome=outcome, trace=trace)), flush=True)
+    for format_name in ("v2", "v3"):
+        check_retained_scan(binary, args.directory, format_name)
 
 
 if __name__ == "__main__":

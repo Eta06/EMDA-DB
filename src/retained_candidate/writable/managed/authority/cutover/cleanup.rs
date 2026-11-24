@@ -131,7 +131,7 @@ fn discard(
         // be smaller than the enclosing root and must not block removal.
         let generation = RetainedStore::open_role(
             &active.slot.path(&path),
-            RecoveryLimits::Ceiling(ceiling),
+            (RecoveryLimits::Ceiling(ceiling), None),
             &active.expected,
             (
                 generation_role(CUTOVER_MAGIC, catalog),

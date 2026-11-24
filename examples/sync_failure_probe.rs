@@ -1024,9 +1024,70 @@ fn archive_retirement_probe(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn prepare_retained_scan(root: &Path) -> ProbeResult<()> {
+    let source = Store::open(root.join("source"))?;
+    let candidate = root.join("scan-candidate");
+    let expected = source.build_retained_candidate(
+        &candidate,
+        [42; 16],
+        [43; 16],
+        RetainedExportLimits {
+            max_log_bytes: 8192,
+            max_live_keys: 32,
+            max_live_key_bytes: 256,
+            max_output_bytes: 8192,
+        },
+    )?;
+    let catalog = root.join("scan-catalog");
+    let slot = catalog.join("generation-a");
+    ManagedRetainedStore::create(&candidate, &catalog, RETAINED_FIXTURE_LIMITS, &expected)?;
+    let header_bytes = std::fs::metadata(slot.join("records.log"))?.len();
+    let mut store = ManagedRetainedStore::open(&catalog, RETAINED_FIXTURE_LIMITS)?;
+    store.put(b"head", b"first")?;
+    let path = slot.join("commit.state");
+    let before = std::fs::read(&path)?;
+    store.put(b"tail", b"last")?;
+    drop(store);
+    std::fs::write(root.join("scan-witness-before"), before)?;
+    println!("{}", json!({"status":"ready","header_bytes":header_bytes}));
+    Ok(())
+}
+
+fn attempt_retained_scan(root: &Path, cap: Option<u64>) -> ProbeResult<()> {
+    let catalog = root.join("scan-catalog");
+    let result = match cap {
+        Some(cap) => match ManagedRetainedStore::open_with_suffix_scan_limit(
+            catalog,
+            RETAINED_FIXTURE_LIMITS,
+            cap,
+            None,
+        ) {
+            Ok(_) => json!({"status":"success"}),
+            Err(error) => {
+                json!({"status":"error","kind":format!("{:?}", error.kind()),"message":error.to_string()})
+            }
+        },
+        None => {
+            let store = ManagedRetainedStore::open(catalog, RETAINED_FIXTURE_LIMITS)?;
+            if store.get(b"head", 5)?.as_deref() != Some(b"first")
+                || store.get(b"tail", 4)?.as_deref() != Some(b"last")
+                || store.get(b"safe", 12)?.as_deref() != Some(b"acknowledged")
+            {
+                return Err("retained scan fixture values changed".into());
+            }
+            json!({"status":"verified"})
+        }
+    };
+    println!("{result}");
+    Ok(())
+}
+
 fn main() -> ProbeResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
+        [command, root] if command == "prepare-retained-scan" => prepare_retained_scan(Path::new(root)),
+        [command, root, cap] if command == "attempt-retained-scan" => attempt_retained_scan(Path::new(root), Some(cap.parse()?)),
+        [command, root] if command == "verify-retained-scan" => attempt_retained_scan(Path::new(root), None),
         [command, root, operation] if command == "archive-retirement" => archive_retirement_probe(Path::new(root), operation),
         [command, root, operation] if command == "authorized-reclamation" => authorized_reclamation_probe(Path::new(root), operation),
         [command, root, operation] if command == "authority" => authority_probe(Path::new(root), operation),

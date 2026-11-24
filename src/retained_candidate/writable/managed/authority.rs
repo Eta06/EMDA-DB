@@ -408,7 +408,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             root.as_ref(),
             limits,
             AUTHORIZED_MAGIC,
-            None,
+            (None, None),
             |root, catalog| select_authorized(root, catalog, prepared.committed),
             Some(prepared),
         )?;
@@ -444,7 +444,28 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             root.as_ref(),
             limits,
             authority,
-            None,
+            (None, None),
+            RetainedStore::sync_recovered_commit,
+        )
+    }
+
+    /// Recover under the same logical suffix scan budget as
+    /// [`RetainedStore::open_with_suffix_scan_limit`]. Admission precedes
+    /// local witness adoption and resolution of any authority intent. An
+    /// optional catalog storage ceiling also applies, and this open does
+    /// not start automatic reclamation.
+    pub fn open_with_suffix_scan_limit(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        authority: A,
+        max_suffix_scan_bytes: u64,
+        storage_limits: Option<CatalogStorageLimits>,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            root.as_ref(),
+            limits,
+            authority,
+            (storage_limits, Some(max_suffix_scan_bytes)),
             RetainedStore::sync_recovered_commit,
         )
     }
@@ -464,7 +485,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             root.as_ref(),
             limits,
             authority,
-            Some(storage_limits),
+            (Some(storage_limits), None),
             RetainedStore::sync_recovered_commit,
         )?;
         if suffix_threshold.is_some() {
@@ -478,7 +499,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         root: &Path,
         limits: RetainedStoreLimits,
         mut authority: A,
-        storage_limits: Option<CatalogStorageLimits>,
+        recovery_admission: (Option<CatalogStorageLimits>, Option<u64>),
         sync_recovered_commit: impl FnOnce(&RetainedStore) -> io::Result<()>,
     ) -> io::Result<Self> {
         let current = authority
@@ -503,7 +524,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             &catalog_path,
             limits,
             role,
-            storage_limits,
+            recovery_admission,
             |root, catalog| select_authorized(root, catalog, current.committed),
             Some(current),
         )?;

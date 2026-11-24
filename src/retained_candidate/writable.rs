@@ -225,7 +225,7 @@ impl RetainedStore {
         drop((log, witness));
         let store = Self::open_role(
             dir,
-            RecoveryLimits::Exact(limits),
+            (RecoveryLimits::Exact(limits), None),
             expected,
             (role, None, base),
             |_, _| Ok(()),
@@ -256,6 +256,26 @@ impl RetainedStore {
             directory.as_ref(),
             limits,
             expected,
+            None,
+            crate::directory::sync_existing,
+        )
+    }
+
+    /// Recover under an inclusive logical suffix scan byte limit. A tail
+    /// beyond the local witness requires two complete suffix scans. Open
+    /// reserves both before replay. Header, witness and base reads, physical
+    /// I/O retries, and reads after open are outside this per-open limit.
+    pub fn open_with_suffix_scan_limit(
+        directory: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        max_suffix_scan_bytes: u64,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            directory.as_ref(),
+            limits,
+            expected,
+            Some(max_suffix_scan_bytes),
             crate::directory::sync_existing,
         )
     }
@@ -264,11 +284,12 @@ impl RetainedStore {
         dir: &Path,
         limits: RetainedStoreLimits,
         expected: &Expected,
+        max_suffix_scan_bytes: Option<u64>,
         sync_directory: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<Self> {
         Self::open_role(
             dir,
-            RecoveryLimits::Exact(limits),
+            (RecoveryLimits::Exact(limits), max_suffix_scan_bytes),
             expected,
             (GenerationRole::Standalone, None, None),
             |_, _| Ok(()),
@@ -279,7 +300,7 @@ impl RetainedStore {
 
     fn open_role(
         dir: &Path,
-        limits: RecoveryLimits,
+        (limits, max_suffix_scan_bytes): (RecoveryLimits, Option<u64>),
         expected: &Expected,
         (role, generation, imported_base): (GenerationRole, Option<[u8; 16]>, Option<BaseImport>),
         preflight: impl FnOnce(&Header, u64) -> io::Result<()>,
@@ -311,6 +332,18 @@ impl RetainedStore {
         }
         if suffix_len > limits.suffix.bytes {
             return Err(invalid_input("suffix byte limit exceeded"));
+        }
+        let pending = committed < suffix_len;
+        if let Some(limit) = max_suffix_scan_bytes {
+            let confirmation = if pending { suffix_len } else { 0 };
+            if suffix_len
+                .checked_add(confirmation)
+                .is_none_or(|scan_bytes| scan_bytes > limit)
+            {
+                return Err(invalid_input(
+                    "retained recovery suffix scan byte limit exceeded",
+                ));
+            }
         }
         preflight(&header, suffix_len)?;
         let base_path = dir.join("base");
@@ -351,7 +384,6 @@ impl RetainedStore {
         check_binding(base.metadata(), expected)?;
         lock.verify_identity(dir)?;
         verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
-        let pending = committed < suffix_len;
         if pending {
             log.sync_data()?;
             // Bind the witness update to the bytes used to build the overlay.

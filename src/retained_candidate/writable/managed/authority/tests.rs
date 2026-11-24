@@ -711,7 +711,30 @@ fn recovery_adopts_an_exact_proposed_tail_before_finalizing_a_pending_intent() {
     let encoded = record::encode(Operation::Put, b"pending", b"proposed").unwrap();
     let mut log = OpenOptions::new().append(true).open(&log_path).unwrap();
     log.write_all(&encoded).unwrap();
-    let mut recovered = f.open();
+    let witnessed_path = Slot::A.path(&f.root).join("commit.state");
+    let witness = fs::read(&witnessed_path).unwrap();
+    let original_log = fs::read(&log_path).unwrap();
+    let authority = f.provider.read().unwrap();
+    let open = |cap| {
+        AuthorizedRetainedStore::open_with_suffix_scan_limit(
+            &f.root,
+            LIMITS,
+            f.provider.clone(),
+            cap,
+            None,
+        )
+    };
+    let error = open((2 * encoded.len() - 1) as u64).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "retained recovery suffix scan byte limit exceeded"
+    );
+    assert_eq!(fs::read(&log_path).unwrap(), original_log);
+    assert_eq!(fs::read(&witnessed_path).unwrap(), witness);
+    assert_eq!(f.provider.clone().read().unwrap(), authority);
+
+    let mut recovered = open((2 * encoded.len()) as u64).unwrap();
     assert_eq!(recovered.get(b"pending", 8).unwrap().unwrap(), b"proposed");
     let current = f.provider.read().unwrap().unwrap();
     assert_eq!(current.committed.suffix_end, encoded.len() as u64);
@@ -741,23 +764,46 @@ fn pending_recovery_requires_local_sync_even_with_an_advanced_witness() {
         u64::from_le_bytes(witness[40..48].try_into().unwrap()),
         proposed.suffix_end
     );
-    let error =
-        AuthorizedRetainedStore::open_using(&f.root, LIMITS, f.provider.clone(), None, |store| {
+    let error = AuthorizedRetainedStore::open_using(
+        &f.root,
+        LIMITS,
+        f.provider.clone(),
+        (None, None),
+        |store| {
             assert_eq!(
                 AuthorityPoint::from_store(proposed.catalog, store),
                 proposed
             );
             store.log.sync_data()?;
             Err(io::Error::other("injected recovery witness sync failure"))
-        })
-        .err()
-        .expect("recovery must return the sync failure before advancing authority");
+        },
+    )
+    .err()
+    .expect("recovery must return the sync failure before advancing authority");
     assert_eq!(error.to_string(), "injected recovery witness sync failure");
     assert_eq!(f.provider.read().unwrap(), Some(pending));
     assert_eq!(fs::read(slot.join("records.log")).unwrap(), log);
     assert_eq!(fs::read(slot.join("commit.state")).unwrap(), witness);
 
-    let mut reopened = f.open();
+    let error = AuthorizedRetainedStore::open_with_suffix_scan_limit(
+        &f.root,
+        LIMITS,
+        f.provider.clone(),
+        proposed.suffix_end - 1,
+        None,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(f.provider.read().unwrap(), Some(pending));
+    let mut reopened = AuthorizedRetainedStore::open_with_suffix_scan_limit(
+        &f.root,
+        LIMITS,
+        f.provider.clone(),
+        proposed.suffix_end,
+        None,
+    )
+    .unwrap();
     assert_eq!(reopened.get(b"pending", 8).unwrap().unwrap(), b"proposed");
     let committed = f.provider.read().unwrap().unwrap();
     assert_eq!(committed.committed, proposed);

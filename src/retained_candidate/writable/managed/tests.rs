@@ -246,16 +246,33 @@ fn catalog_storage_caps_appends_and_rejects_oversize_recovery_before_adoption() 
         .unwrap();
     assert_eq!(error.to_string(), "catalog byte limit exceeded");
     assert_eq!(fs::read(&witness).unwrap(), committed);
-    assert_eq!(fs::read(&log).unwrap(), [accepted, tail].concat());
-    let reopened = ManagedRetainedStore::open_with_storage_limits(
-        &f.root,
-        LIMITS,
-        catalog_usage(&f.root),
-        None,
-    )
-    .unwrap();
+    let suffix_bytes = (record.len() + tail.len()) as u64;
+    let pending_log = [accepted, tail].concat();
+    assert_eq!(fs::read(&log).unwrap(), pending_log);
+    let selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let open = |cap, storage| {
+        ManagedRetainedStore::open_with_suffix_scan_limit(&f.root, LIMITS, cap, Some(storage))
+    };
+    let exact_storage = catalog_usage(&f.root);
+    let error = open(2 * suffix_bytes - 1, exact_storage).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "retained recovery suffix scan byte limit exceeded"
+    );
+    assert_eq!(
+        open(2 * suffix_bytes, limit).err().unwrap().to_string(),
+        "catalog byte limit exceeded"
+    );
+    assert_eq!(fs::read(&witness).unwrap(), committed);
+    assert_eq!(fs::read(&log).unwrap(), pending_log);
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
+    let reopened = open(2 * suffix_bytes, exact_storage).unwrap();
     assert_eq!(reopened.get(b"a", 7).unwrap().unwrap(), b"recover");
     assert_ne!(fs::read(&witness).unwrap(), committed);
+    drop(reopened);
+    assert!(open(suffix_bytes, exact_storage).is_ok());
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
 }
 
 #[test]

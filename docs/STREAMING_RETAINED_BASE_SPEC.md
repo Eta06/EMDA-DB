@@ -278,6 +278,15 @@ writable replay before the engine copies the base. The prepared base is
 still authenticated in full, and the private directory is synchronized
 before publication. Recovery cannot adopt an added tail during initialization.
 
+Standalone, managed and authority-backed opens can opt into
+`open_with_suffix_scan_limit`. It charges one complete logical suffix
+scan for replay and a second if the physical suffix extends beyond the
+local witness. Both scans must fit before reading the suffix body or
+authenticating the base. A rejected open leaves the witness, selection
+and authority intent in place. Header, witness, base and catalog reads,
+physical I/O retries, and reads after open are outside this per-open
+ceiling. Catalog opens can apply a storage ceiling at the same time.
+
 Mutations require exclusive use of the handle.
 The encoder checks physical suffix bytes and ordered operation count before
 allocating an encoded put, delete, or batch. With automatic rotation, the

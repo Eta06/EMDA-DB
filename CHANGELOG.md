@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound logical suffix scan bytes on writable retained opens, including
+  the confirmation pass required before adopting bytes beyond the witness.
+
 - Report the failed retirement step and observed unlinks when removing
   the ordinary archive of an authority-backed cutover.
 
