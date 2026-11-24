@@ -1,39 +1,6 @@
 use super::*;
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
-};
+use std::sync::{Mutex, atomic::AtomicBool, mpsc};
 use std::time::Duration;
-
-struct PausingLog {
-    file: File,
-    armed: AtomicBool,
-    entered: mpsc::Sender<()>,
-    resume: Mutex<mpsc::Receiver<()>>,
-}
-impl LogIo for PausingLog {
-    fn len(&self) -> io::Result<u64> {
-        Ok(self.file.metadata()?.len())
-    }
-    fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
-        if self.armed.swap(false, Ordering::SeqCst) {
-            self.entered.send(()).unwrap();
-            self.resume
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(10))
-                .map_err(|_| io::Error::other("release timed out"))?;
-        }
-        FileExt::read_exact_at(&self.file, bytes, offset)
-    }
-    fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
-        (&self.file).write_all(bytes)
-    }
-    fn sync_data(&self) -> io::Result<()> {
-        self.file.sync_data()
-    }
-}
 
 #[test]
 fn automatic_rollover_keeps_committed_reads_available_during_verification() {

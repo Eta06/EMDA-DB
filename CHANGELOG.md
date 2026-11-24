@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Allow checkpoint reads and snapshots during conditional value checks.
+  Other writers remain excluded through commit.
+
 - Compare conditional-write values with fixed scratch buffers and read
   integer counters without temporary heap allocations. Mismatches still
   verify the complete stored value.

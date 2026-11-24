@@ -555,6 +555,31 @@ impl CheckpointStore {
             .map_err(crate::TimedTransactionError::into_io)
     }
 
+    // Hold the writer gate while inspecting committed values. Readers can
+    // still use the view while a condition reads and verifies its value.
+    fn read_before_write(
+        &self,
+    ) -> io::Result<(ControlledReadGuard<'_, State>, ControlledWriteGuard<'_, ()>)> {
+        let writer = self.writers.write().map_err(|_| uncertain())?;
+        Ok((self.read()?, writer))
+    }
+
+    fn write_after_read<'a>(
+        &'a self,
+        state: ControlledReadGuard<'a, State>,
+        writer: ControlledWriteGuard<'a, ()>,
+    ) -> io::Result<StateWrite<'a>> {
+        drop(state);
+        // No mutation or checkpoint handoff can have changed the view
+        // between inspection and commit admission.
+        let state = self.state.write().map_err(|_| uncertain())?;
+        self.ensure_healthy(&state)?;
+        Ok(StateWrite {
+            state,
+            _writer: writer,
+        })
+    }
+
     fn write_until(
         &self,
         deadline: Option<std::time::Instant>,
@@ -1293,7 +1318,7 @@ impl CheckpointStore {
         };
         record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
-        let state = self.write()?;
+        let (state, writer) = self.read_before_write()?;
         if !state
             .view
             .base
@@ -1302,6 +1327,7 @@ impl CheckpointStore {
         {
             return Ok(false);
         }
+        let state = self.write_after_read(state, writer)?;
         self.commit(state, Mutation::Single(operation, key, value), tracker)?;
         Ok(true)
     }
@@ -1332,7 +1358,7 @@ impl CheckpointStore {
     ) -> io::Result<i64> {
         record::validate_key(key)?;
         let _admission = self.direct_writes.acquire()?;
-        let state = self.write()?;
+        let (state, writer) = self.read_before_write()?;
         let current = state
             .view
             .base
@@ -1341,6 +1367,7 @@ impl CheckpointStore {
         let next = current.checked_add(delta).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
+        let state = self.write_after_read(state, writer)?;
         self.commit(
             state,
             Mutation::Single(Operation::Put, key, &next.to_le_bytes()),
@@ -1429,7 +1456,7 @@ impl CheckpointStore {
                 })?;
         }
         let _admission = self.direct_writes.acquire()?;
-        let state = self.write()?;
+        let (state, writer) = self.read_before_write()?;
         let batch = BatchLayout::new(operations)?;
         for (key, expected) in conditions {
             if !state
@@ -1441,6 +1468,7 @@ impl CheckpointStore {
                 return Ok(false);
             }
         }
+        let state = self.write_after_read(state, writer)?;
         self.commit(state, Mutation::Batch(batch), tracker)?;
         Ok(true)
     }

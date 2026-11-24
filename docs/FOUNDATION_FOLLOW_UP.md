@@ -502,6 +502,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   buffers. The [macOS allocation comparison](../benchmarks/results/2026-11-24-streamed-conditions/README.md)
   measures 8-byte, 65,537-byte and 4 MiB mismatches. Tests check rejection
   after late-block corruption and compare checkpoint base and suffix values.
+  Checkpoint conditional writes now take shared state access during value
+  verification while holding the writer gate. A paused-read regression
+  checks point reads and snapshot consistency before the commit, writer
+  exclusion, mismatch and successful reopen.
 - [x] Implement a bounded optimistic serializable read-modify-write transaction prototype, including point/range reads, read-your-writes, rollback on callback error, conservative store-wide conflict detection and atomic DB02 commit. Independent operations and group commit are not transactions.
 - [x] Add bounded point-conditional atomic batches to the checkpoint-backed store, including concurrent transfer, validation, quota and uncertain-commit tests. A short [reference-model run](../benchmarks/results/2026-11-04-checkpoint-conditional-fuzz.json) exercised 10,251 inputs. This primitive compares current values, does not detect ABA or validate ranges, and is not a general transaction callback.
 - [x] Add conservative optimistic transactions to the checkpoint-backed store without copying its full index. Each read and final commit checks a process-local generation; staged writes commit as one DB02 record. Tests cover conflicts, range scans, ABA, transfers, resource reservations, rollover, process termination after acknowledgement and uncertain commit failures. A short [reference-model run](../benchmarks/results/2026-11-04-checkpoint-transaction-fuzz.json) exercised 9,929 inputs. This mode conflicts on all intervening writes.

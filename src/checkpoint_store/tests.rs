@@ -15,6 +15,35 @@ impl CheckpointStore {
     }
 }
 
+struct PausingLog {
+    file: File,
+    armed: std::sync::atomic::AtomicBool,
+    entered: std::sync::mpsc::Sender<()>,
+    resume: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+impl LogIo for PausingLog {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len())
+    }
+    fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            self.entered.send(()).unwrap();
+            self.resume
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .map_err(|_| io::Error::other("release timed out"))?;
+        }
+        FileExt::read_exact_at(&self.file, bytes, offset)
+    }
+    fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
+        (&self.file).write_all(bytes)
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+}
+
 fn fixture() -> (
     tempfile::TempDir,
     std::path::PathBuf,
