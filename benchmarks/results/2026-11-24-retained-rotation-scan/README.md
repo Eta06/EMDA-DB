@@ -28,8 +28,7 @@ Native macOS Rust 1.85.0 passed 1,332 tests across 112 nonempty binaries.
 Formatting, warnings-denied Clippy, and rustdoc passed. Hosted [Linux]
 passed on both toolchains, including the stable optimized build. The
 [filesystem fault] and [ENOSPC] workflows passed. Hosted [macOS] passed
-on Rust 1.85.0. The hosted stable macOS job was still running when these
-artifacts were collected.
+on both toolchains.
 
 The [raw archive](raw-artifacts.tar.gz) includes the logs, all 45 standard
 benchmark smoke attempts, all five [cross-engine smoke] attempts, and
