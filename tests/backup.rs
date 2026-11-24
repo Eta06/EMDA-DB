@@ -202,6 +202,9 @@ fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {
                     && error.to_string() == "full-log backup or restore exceeds configured scan byte limit"
         ));
         assert!(!destination.exists());
+        // Unlock explicitly: a child forked by a parallel test can inherit this
+        // descriptor and keep the lock until it execs if it is only dropped.
+        fs2::FileExt::unlock(&parent).unwrap();
         drop(parent);
 
         assert!(matches!(
