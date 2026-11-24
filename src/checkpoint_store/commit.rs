@@ -228,14 +228,12 @@ impl CheckpointStore {
                     overlay.insert(key.into(), location);
                 }
             }
+        } else if let Some(key) = owned_key {
+            overlay.insert(key, location);
         } else {
-            if let Some(key) = owned_key {
-                overlay.insert(key, location);
-            } else {
-                *overlay
-                    .get_mut(key)
-                    .expect("writer gate holds admitted key") = location;
-            }
+            *overlay
+                .get_mut(key)
+                .expect("writer gate holds admitted key") = location;
         }
         state.view.tail_bytes = next_tail;
         state.view.tail_operations = next_operations;
