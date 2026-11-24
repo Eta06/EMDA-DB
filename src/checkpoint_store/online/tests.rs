@@ -3,7 +3,7 @@
 //! physical power-loss tests.
 use super::*;
 use crate::test_support::retry_lock;
-use crate::{OnlineHandoffFailure, Store};
+use crate::{MAX_SCAN_ENTRIES, OnlineHandoffFailure, Store};
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -578,3 +578,4 @@ fn process_kill_at_handoff_and_retirement_boundaries_preserves_acknowledged_data
 }
 
 mod budget;
+mod verify;

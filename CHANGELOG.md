@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Compare the online checkpoint handoff's source and replacement with an
+  ordered streaming walk instead of paired scan pages. Each value pair is
+  streamed through two 64 KiB buffers with both checksums verified, so the
+  final comparison no longer materializes up to two 32 MiB pages.
+
 - Add a persistent logical disk budget for managed checkpoint-backed stores.
   `OnlineCheckpointStore::set_disk_budget` stores the limit in the store
   directory. Appends and online compaction are admitted before they

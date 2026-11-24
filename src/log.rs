@@ -811,6 +811,62 @@ impl Log {
         Ok(())
     }
 
+    /// Compares a value in this log with one in `other` through two fixed
+    /// buffers. Both values are always read to their end and their checksums
+    /// verified, so corruption anywhere, including after the first differing
+    /// chunk, is an error rather than a mismatch.
+    pub(crate) fn value_equals(
+        &self,
+        location: ValueLocation,
+        other: &Self,
+        other_location: ValueLocation,
+        (buffer, other_buffer): (&mut [u8], &mut [u8]),
+    ) -> io::Result<bool> {
+        assert!(!buffer.is_empty() && buffer.len() == other_buffer.len());
+        let mut equal = location.length == other_location.length;
+        let mut sides = [
+            (
+                self,
+                location,
+                crc32fast::Hasher::new(),
+                location.offset,
+                location.length,
+            ),
+            (
+                other,
+                other_location,
+                crc32fast::Hasher::new(),
+                other_location.offset,
+                other_location.length,
+            ),
+        ];
+        while sides.iter().any(|(_, _, _, _, remaining)| *remaining > 0) {
+            let mut counts = [0; 2];
+            for (index, (log, _, checksum, offset, remaining)) in sides.iter_mut().enumerate() {
+                let count = (*remaining).min(buffer.len());
+                let chunk = if index == 0 {
+                    &mut buffer[..count]
+                } else {
+                    &mut other_buffer[..count]
+                };
+                log.file.read_exact_at(chunk, *offset)?;
+                checksum.update(chunk);
+                *offset = offset
+                    .checked_add(count as u64)
+                    .ok_or_else(|| record::invalid_data("stored value offset overflow"))?;
+                *remaining -= count;
+                counts[index] = count;
+            }
+            equal &= buffer[..counts[0]] == other_buffer[..counts[1]];
+        }
+        for (_, location, checksum, _, _) in sides {
+            if checksum.finalize() != location.checksum {
+                return Err(record::invalid_data("stored value checksum mismatch"));
+            }
+        }
+        Ok(equal)
+    }
+
     pub(crate) fn read_i64_or_zero(&self, location: Option<ValueLocation>) -> io::Result<i64> {
         let Some(location) = location else {
             return Ok(0);

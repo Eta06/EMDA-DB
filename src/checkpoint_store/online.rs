@@ -9,8 +9,7 @@ use super::{
 };
 use crate::record::batch::BatchOperation;
 use crate::{
-    MAX_ATOMIC_BATCH_BYTES, MAX_SCAN_ENTRIES, OnlineCompactionReport, OnlineReclaimError,
-    OnlineReclaimFailure,
+    MAX_ATOMIC_BATCH_BYTES, OnlineCompactionReport, OnlineReclaimError, OnlineReclaimFailure,
 };
 use sha2::Sha256;
 use std::cell::RefCell;
@@ -282,21 +281,79 @@ fn replay(
     writer.flush()
 }
 
-// Compares every live entry of the paused source with the candidate.
+const VERIFY_WINDOW_KEYS: usize = 1024;
+const VERIFY_WINDOW_KEY_BYTES: usize = 256 * 1024;
+const VERIFY_CHUNK_BYTES: usize = crate::recovery::RECOVERY_READ_BUFFER_BYTES;
+
+fn mismatch() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "online checkpoint candidate does not match the paused source",
+    )
+}
+
+// Compares the complete ordered live sets of the paused source and the
+// candidate. Source keys and locations are taken in bounded windows; the
+// candidate is walked over the same key range and each value pair is
+// streamed through two fixed buffers. Scratch is bounded by the window caps
+// plus two chunk buffers, independently of value sizes. Elapsed time still
+// grows with the store.
 fn verify_candidate(source: &CheckpointStore, candidate: &CheckpointStore) -> io::Result<()> {
-    let state = source.read()?;
+    let source_state = source.read()?;
+    let candidate_state = candidate.read()?;
+    let mut keys = Vec::new();
+    let mut window: Vec<(usize, usize, crate::log::ValueLocation)> = Vec::new();
+    let (mut buffer, mut other_buffer) = (vec![0; VERIFY_CHUNK_BYTES], vec![0; VERIFY_CHUNK_BYTES]);
     let mut after: Option<Vec<u8>> = None;
     loop {
-        let expected = state.view.scan(after.as_deref(), None, MAX_SCAN_ENTRIES)?;
-        let actual = candidate.scan(after.as_deref(), None, MAX_SCAN_ENTRIES)?;
-        if expected != actual {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "online checkpoint candidate does not match the paused source",
-            ));
+        keys.clear();
+        window.clear();
+        source_state
+            .view
+            .visit_entries(after.as_deref(), None, |key, location| {
+                if !window.is_empty()
+                    && (window.len() >= VERIFY_WINDOW_KEYS
+                        || keys.len() + key.len() > VERIFY_WINDOW_KEY_BYTES)
+                {
+                    return Ok(std::ops::ControlFlow::Break(()));
+                }
+                window.push((keys.len(), key.len(), location));
+                keys.extend_from_slice(key);
+                Ok(std::ops::ControlFlow::Continue(()))
+            })?;
+        let last = window
+            .last()
+            .map(|&(start, length, _)| &keys[start..start + length]);
+        let mut matched = 0;
+        candidate_state
+            .view
+            .visit_entries(after.as_deref(), None, |key, location| {
+                let Some(&(start, length, expected)) = window.get(matched) else {
+                    // Past the window: stop at the next window, or report a
+                    // candidate key the source lacks.
+                    return match last {
+                        Some(last) if key > last => Ok(std::ops::ControlFlow::Break(())),
+                        _ => Err(mismatch()),
+                    };
+                };
+                if key != &keys[start..start + length]
+                    || !source.log.value_equals(
+                        expected,
+                        &candidate.log,
+                        location,
+                        (&mut buffer, &mut other_buffer),
+                    )?
+                {
+                    return Err(mismatch());
+                }
+                matched += 1;
+                Ok(std::ops::ControlFlow::Continue(()))
+            })?;
+        if matched != window.len() {
+            return Err(mismatch());
         }
-        match expected.last() {
-            Some((key, _)) => after = Some(key.clone()),
+        match last {
+            Some(last) => after = Some(last.to_vec()),
             None => return Ok(()),
         }
     }
