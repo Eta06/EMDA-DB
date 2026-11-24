@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Report detailed tail-witness recovery outcomes when opening explicit and
+  managed writable checkpoints with optional suffix operation limits.
+
 - Report whether ordinary full-log open failed before, during, or after
   synchronization of an adopted tail's commit witness.
 

@@ -216,6 +216,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   witness update, an uncertain update, and a completed update followed by
   an open failure. It preserves the underlying I/O error and the existing
   adoption order. See the [storage contract](STORAGE_TRANSACTION_CONTRACT.md).
+  Detailed explicit and managed checkpoint opens use the same witness
+  outcomes. Configuration validation and managed selection synchronization
+  still complete before tail adoption.
   Managed and authority-backed retained stores classify removal attempts
   through `reclaim_inactive_detailed`, including removals during resumed
   cleanup. The classification is separate from authority fence uncertainty.

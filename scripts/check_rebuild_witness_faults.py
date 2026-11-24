@@ -21,12 +21,21 @@ def run(binary, parent, format_name, rebuild, fault=None):
         log = root / "source/records.log"
         witness = root / "source/commit.state"
         selection = root / "source/checkpoint.selection"
+        def read_boundary():
+            return witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
+
+        def read_selection():
+            return selection.read_bytes() if selection.exists() else None
+
         probe(binary, "setup", root, format_name)
-        probe(binary, "setup-managed", root, operation)
-        previous = selection.read_bytes()
-        boundary = witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
-        probe(binary, "setup-managed-tail", root, operation)
-        new_boundary = witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
+        explicit = rebuild == "explicit-checkpoint-open"
+        if not explicit:
+            probe(binary, "setup-managed", root, operation)
+        previous = read_selection()
+        boundary = read_boundary()
+        probe(binary, "setup-managed-tail", root,
+              "checkpoint-managed-rebuild-tail" if explicit else operation)
+        new_boundary = read_boundary()
         assert boundary != new_boundary
         if format_name == "v2":
             witness.write_bytes(boundary)
@@ -40,8 +49,8 @@ def run(binary, parent, format_name, rebuild, fault=None):
         if fault is not None:
             point, (syscall, index) = fault
             command += ["-e", f"inject={syscall}:error=EIO:when={index}"]
-        recovery_open = rebuild == "full-log-open"
-        attempt = ("attempt-recovery-open", root) if recovery_open else (
+        recovery_open = rebuild in ("full-log-open", "managed-checkpoint-open", "explicit-checkpoint-open")
+        attempt = ("attempt-recovery-open", root, rebuild) if recovery_open else (
             "attempt-rebuild-publication", root, operation, rebuild)
         outcome = probe(command[0], *command[1:], binary, *attempt)
         lines = trace.read_text().splitlines()
@@ -50,9 +59,8 @@ def run(binary, parent, format_name, rebuild, fault=None):
             assert outcome["status"] == "success", outcome
             if recovery_open:
                 assert not (root / "result").exists()
-                assert selection.read_bytes() == previous
-                observed = witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
-                assert observed == new_boundary
+                assert read_selection() == previous
+                assert read_boundary() == new_boundary
             else:
                 assert (root / "result").is_file()
                 assert selection.read_bytes() != previous
@@ -65,6 +73,8 @@ def run(binary, parent, format_name, rebuild, fault=None):
                     continue
                 syscall = match[1]
                 counts[syscall] += 1
+                if rebuild == "managed-checkpoint-open" and syscall == "fsync" and str(selection) in line:
+                    points["selection sync"] = (syscall, counts[syscall])
                 if ("witness write" not in points and str(log) in line
                         and syscall == ("fdatasync" if format_name == "v2" else "fgetxattr")):
                     points["before witness write"] = (syscall, counts[syscall])
@@ -75,28 +85,26 @@ def run(binary, parent, format_name, rebuild, fault=None):
                 elif "witness write" in points and syscall in ("fsync", "fdatasync"):
                     points["witness sync"] = (syscall, counts[syscall])
                     break
-            assert len(points) == 3, lines
+            assert len(points) == (4 if rebuild == "managed-checkpoint-open" else 3), lines
             return points
         before_write = "not_adopted" if recovery_open else "not_published"
-        classification = before_write if point == "before witness write" else "tail_adoption_unknown"
+        classification = before_write if point in ("before witness write", "selection sync") else "tail_adoption_unknown"
         assert outcome["classification"] == classification, outcome
         assert not (root / "result").exists()
-        assert selection.read_bytes() == previous
-        observed = witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
+        assert read_selection() == previous
         expected = new_boundary if point == "witness sync" else boundary
-        assert observed == expected
+        assert read_boundary() == expected
         errors = [line for line in lines if "(INJECTED)" in line]
-        error_file = log if point == "before witness write" else marker
+        error_file = {"before witness write": log, "selection sync": selection}.get(point, marker)
         assert len(errors) == 1 and str(error_file) in errors[0], errors
         if not recovery_open:
             assert probe(binary, "verify", root, operation, "error", "ordinary-first")["status"] == "verified"
         retry = probe(binary, *attempt)
         assert retry["status"] == "success", retry
         if recovery_open:
-            observed = witness.read_bytes() if format_name == "v2" else os.getxattr(log, attribute)
-            assert observed == new_boundary
+            assert read_boundary() == new_boundary
             assert current_log == log.read_bytes()
-            assert selection.read_bytes() == previous
+            assert read_selection() == previous
             assert not (root / "result").exists()
         else:
             assert probe(binary, "verify", root, operation, "success", "checkpoint-first")["status"] == "verified"
@@ -108,7 +116,8 @@ def main():
     parser.add_argument("--directory", type=pathlib.Path, required=True)
     args = parser.parse_args()
     binary = args.binary.resolve()
-    for rebuild in ("ordinary", "full-bounded", "suffix-bounded", "full-log-open"):
+    for rebuild in ("ordinary", "full-bounded", "suffix-bounded", "full-log-open",
+                    "managed-checkpoint-open", "explicit-checkpoint-open"):
         for format_name in ("v2", "v3"):
             points = run(binary, args.directory, format_name, rebuild)
             for point, injection in points.items():

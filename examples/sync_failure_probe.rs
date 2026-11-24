@@ -311,19 +311,41 @@ fn attempt_rebuild_publication(root: &Path, operation: &str, rebuild: &str) -> P
     Ok(())
 }
 
-fn attempt_recovery_open(root: &Path) -> ProbeResult<()> {
+fn attempt_recovery_open(root: &Path, mode: &str) -> ProbeResult<()> {
     use database_engine::{RecoveryOpenFailure, StoreRecoveryLimits};
 
-    let result = Store::open_with_recovery_limits_detailed(
-        root.join("source"),
-        StoreRecoveryLimits {
-            max_recovery_operations: Some(16),
-            ..Default::default()
-        },
-    );
+    let source = root.join("source");
+    let result = match mode {
+        "full-log-open" => Store::open_with_recovery_limits_detailed(
+            source,
+            StoreRecoveryLimits {
+                max_recovery_operations: Some(16),
+                ..Default::default()
+            },
+        )
+        .map(|store| store.get(b"tail")),
+        "managed-checkpoint-open" => {
+            CheckpointStore::open_managed_with_options_detailed(source, Default::default(), Some(1))
+                .map(|store| store.get(b"tail"))
+        }
+        "explicit-checkpoint-open" => {
+            let digest = std::fs::read(root.join("checkpoint.digest"))?
+                .try_into()
+                .map_err(|_| "invalid checkpoint digest")?;
+            CheckpointStore::open_with_options_detailed(
+                source,
+                root.join("checkpoint"),
+                &digest,
+                Default::default(),
+                Some(1),
+            )
+            .map(|store| store.get(b"tail"))
+        }
+        _ => return Err("unknown recovery open mode".into()),
+    };
     let outcome = match result {
-        Ok(store) => {
-            if store.get(b"tail")?.as_deref() != Some(&b"acknowledged-tail"[..]) {
+        Ok(value) => {
+            if value?.as_deref() != Some(&b"acknowledged-tail"[..]) {
                 return Err("recovered tail value mismatch".into());
             }
             json!({"status":"success"})
@@ -755,7 +777,7 @@ fn main() -> ProbeResult<()> {
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation] if command == "attempt-publication" => attempt_publication(Path::new(root), operation),
         [command, root, operation, rebuild] if command == "attempt-rebuild-publication" => attempt_rebuild_publication(Path::new(root), operation, rebuild),
-        [command, root] if command == "attempt-recovery-open" => attempt_recovery_open(Path::new(root)),
+        [command, root, mode] if command == "attempt-recovery-open" => attempt_recovery_open(Path::new(root), mode),
         [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
         [command, root, order] if command == "verify-rejected" => verify_rejected(Path::new(root), order),

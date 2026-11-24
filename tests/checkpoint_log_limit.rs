@@ -1,7 +1,7 @@
 use database_engine::{
     BatchOperation, CheckpointStore, CheckpointStoreLimits, MAX_RECOVERED_VIEW_TAIL_BYTES,
     MAX_RECOVERED_VIEW_TAIL_KEY_BYTES, MAX_RECOVERED_VIEW_TAIL_KEYS, RecoveredCheckpointView,
-    RecoveredViewLimits, Store,
+    RecoveredViewLimits, RecoveryOpenFailure, Store,
 };
 use std::fs;
 use std::io;
@@ -215,23 +215,26 @@ fn suffix_operation_rejection_leaves_complete_tail_unadopted() {
     }
     let before = fs::read(&log_path).unwrap();
     let open = |limit| {
-        CheckpointStore::open_with_suffix_operation_limit(
+        CheckpointStore::open_with_options_detailed(
             &path,
             &checkpoint,
             &digest,
             CheckpointStoreLimits::default(),
-            limit,
+            Some(limit),
         )
     };
     let mut damaged = before.clone();
     damaged[prefix as usize - 5] ^= 1;
     fs::write(&log_path, &damaged).unwrap();
-    assert_operation_limit(open(1));
-    let admitted_error = open(2).err().unwrap();
-    assert_eq!(admitted_error.kind(), io::ErrorKind::InvalidData);
-    assert_eq!(
-        admitted_error.to_string(),
-        "checkpoint does not match log prefix"
+    assert!(
+        matches!(open(1), Err(RecoveryOpenFailure::NotAdopted(error))
+        if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "checkpoint suffix operation limit exceeded")
+    );
+    assert!(
+        matches!(open(2), Err(RecoveryOpenFailure::NotAdopted(error))
+        if error.kind() == io::ErrorKind::InvalidData
+            && error.to_string() == "checkpoint does not match log prefix")
     );
     assert_eq!(fs::read(&log_path).unwrap(), damaged);
     assert_eq!(read_witness(), previous);
@@ -350,7 +353,8 @@ fn suffix_operation_limit_survives_automatic_rollover_and_managed_reopen() {
     drop(snapshot);
     drop(store);
     let store =
-        CheckpointStore::open_managed_with_suffix_operation_limit(&path, limits, 1).unwrap();
+        CheckpointStore::open_managed_with_options_detailed(&path, limits, Some(1)).unwrap();
+    assert_eq!(store.suffix_operation_limit(), Some(1));
     assert!(store.automatic_checkpoints_enabled().unwrap());
     assert_eq!(
         store.get(b"a").unwrap().as_deref(),

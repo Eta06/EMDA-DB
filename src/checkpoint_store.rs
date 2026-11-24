@@ -4,6 +4,7 @@ use crate::controlled_lock::{
     ControlledRwLock, ReadGuard as ControlledReadGuard, WriteGuard as ControlledWriteGuard,
 };
 use crate::log::{GenerationId, Log, ValueLocation};
+use crate::publication_outcome::{RecoveryOpenFailure, TailAdoptionTracker, track_recovery_open};
 #[cfg(test)]
 use crate::record::batch::encode_payload;
 use crate::record::batch::{BatchLayout, BatchOperation};
@@ -235,6 +236,29 @@ impl CheckpointStore {
         )
     }
 
+    /// Opens an explicit checkpoint with the selected limits and detailed
+    /// tail adoption errors. The optional operation cap also applies to later
+    /// suffix writes, as in [`Self::open_with_suffix_operation_limit`].
+    pub fn open_with_options_detailed(
+        path: impl AsRef<Path>,
+        checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: CheckpointStoreLimits,
+        max_tail_operations: Option<u64>,
+    ) -> Result<Self, RecoveryOpenFailure> {
+        track_recovery_open(|tracker| {
+            Self::open_source_using(
+                path.as_ref(),
+                OpenSource::Explicit(checkpoint.as_ref(), trusted_digest),
+                limits,
+                max_tail_operations,
+                Log::open_checkpoint_writer,
+                selection::synchronize,
+                Some(tracker),
+            )
+        })
+    }
+
     /// Bounds suffix mutations on open and before each append, counting every
     /// batch child. A zero limit permits an empty suffix and rejects writes.
     /// Supply this per-open limit again after restart. Replay can reject an
@@ -293,6 +317,7 @@ impl CheckpointStore {
             None,
             Log::open_checkpoint_writer,
             selection::synchronize,
+            None,
         )
     }
 
@@ -310,7 +335,29 @@ impl CheckpointStore {
             None,
             Log::open_checkpoint_writer,
             selection::synchronize,
+            None,
         )
+    }
+
+    /// Opens the managed checkpoint with detailed tail adoption errors.
+    /// Selection and configuration checks still precede witness adoption.
+    /// The optional operation cap also applies to later suffix writes.
+    pub fn open_managed_with_options_detailed(
+        path: impl AsRef<Path>,
+        limits: CheckpointStoreLimits,
+        max_tail_operations: Option<u64>,
+    ) -> Result<Self, RecoveryOpenFailure> {
+        track_recovery_open(|tracker| {
+            Self::open_source_using(
+                path.as_ref(),
+                OpenSource::Managed,
+                limits,
+                max_tail_operations,
+                Log::open_checkpoint_writer,
+                selection::synchronize,
+                Some(tracker),
+            )
+        })
     }
 
     /// Opens the managed checkpoint with the same per-open operation ceiling
@@ -328,6 +375,7 @@ impl CheckpointStore {
             Some(max_tail_operations),
             Log::open_checkpoint_writer,
             selection::synchronize,
+            None,
         )
     }
 
@@ -363,6 +411,7 @@ impl CheckpointStore {
             max_tail_operations,
             open_writer,
             selection::synchronize,
+            None,
         )
     }
 
@@ -373,6 +422,7 @@ impl CheckpointStore {
         max_tail_operations: Option<u64>,
         open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
+        adoption_tracker: Option<&TailAdoptionTracker>,
     ) -> io::Result<Self> {
         let OpenLimits {
             max_tail_bytes,
@@ -479,12 +529,18 @@ impl CheckpointStore {
             let log = open_writer(&path, boundary, length)?;
             let base = prepared.verify_for_adoption(&log, &suffix_digest)?;
             let config = stabilize_configuration()?;
-            log.sync_validated_boundary(length).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("failed to synchronize recovered tail; outcome is uncertain: {error}"),
-                )
-            })?;
+            if let Some(tracker) = adoption_tracker {
+                log.sync_validated_boundary_tracked(length, Some(tracker))?;
+            } else {
+                log.sync_validated_boundary(length).map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!(
+                            "failed to synchronize recovered tail; outcome is uncertain: {error}"
+                        ),
+                    )
+                })?;
+            }
             (base, log, config)
         } else {
             let (base, _) = prepared.verify()?;

@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::io;
 
-/// A failed full-log open, classified by this call's tail-witness update.
+/// A failed writable recovery open, classified by this call's tail-witness update.
 /// These outcomes describe the recovery attempt. Initialization may still
 /// have created files, and an earlier attempt may have changed the witness.
 #[derive(Debug)]

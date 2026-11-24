@@ -25,6 +25,7 @@ fn tail_adoption_rejects_log_growth_after_validation() {
             Ok(log)
         },
         |_| Ok(()),
+        None,
     );
     let error = match result {
         Ok(_) => panic!("open accepted unvalidated log growth"),
@@ -72,6 +73,7 @@ fn v3_tail_adoption_rejects_log_growth_after_validation() {
             Ok(log)
         },
         |_| Ok(()),
+        None,
     );
     let error = match result {
         Ok(_) => panic!("open accepted unvalidated log growth"),
@@ -764,6 +766,7 @@ fn managed_open_rejects_selection_and_directory_sync_failures_before_adoption() 
                         },
                     )
                 },
+                None,
             )
         });
         let error = result.err().expect("selection sync must fail");
@@ -912,6 +915,7 @@ fn managed_open_refuses_each_failed_selection_ancestor_sync() {
                         })
                     })
                 },
+                None,
             )
         });
         assert!(result.is_err());
