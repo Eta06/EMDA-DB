@@ -27,8 +27,7 @@ passing focused results.
 Native macOS Rust 1.85.0 passed all 1,328 tests across 112 nonempty
 binaries. Warnings-denied Clippy and rustdoc passed. Hosted [Linux]
 passed both toolchains and the optimized stable suite. The hosted
-[macOS] stable job passed. At archive capture, the hosted macOS
-Rust 1.85.0 job was still running. The [filesystem fault] and [ENOSPC]
+[macOS] stable and Rust 1.85.0 jobs both passed. The [filesystem fault] and [ENOSPC]
 workflows passed. Physical power-loss testing and independent off-host
 restore remain deferred.
 
