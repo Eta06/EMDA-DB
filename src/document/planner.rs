@@ -109,6 +109,32 @@ pub struct PlannedDocumentQueryResult {
     pub access: DocumentQueryAccess,
 }
 
+/// A planned query's access path and ordered index probes before execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DocumentQueryExplanation {
+    /// The path selected from the current collection metadata.
+    pub access: DocumentQueryAccess,
+    /// The probes in execution order. Empty for a collection scan.
+    pub probes: Vec<DocumentQueryProbe>,
+}
+
+/// One probe in a document query explanation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DocumentQueryProbe {
+    /// Name of the index being probed.
+    pub index: String,
+    /// Leading fields constrained to these exact values, in index order.
+    pub equal: Vec<IndexValue>,
+    /// Optional lower bound on the next indexed field.
+    pub lower: Option<IndexBound>,
+    /// Optional upper bound on the next indexed field.
+    pub upper: Option<IndexBound>,
+    /// Whether the probe constrains every field of a unique index to equality.
+    pub unique_equality: bool,
+}
+
 type Predicate<'a> = (&'a DocumentFilter, bool);
 
 // Each supplied predicate must hold with the indicated polarity. Descend
@@ -1218,6 +1244,37 @@ fn in_id_order(probes: &[IndexProbe<'_>], metadata: &Metadata) -> bool {
 }
 
 impl DocumentTransaction<'_, '_> {
+    /// Validates the query and explains the access path using this transaction's
+    /// collection metadata, including staged index changes. Execution reports
+    /// the actual scan work and enforces the candidate limits.
+    pub fn explain_query(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+    ) -> io::Result<DocumentQueryExplanation> {
+        filter::validate_query(query)?;
+        let metadata = self.metadata(collection)?;
+        let Some((access, probes)) = plan_query(&query.filter, &metadata.indexes)? else {
+            return Ok(DocumentQueryExplanation {
+                access: DocumentQueryAccess::CollectionScan,
+                probes: Vec::new(),
+            });
+        };
+        Ok(DocumentQueryExplanation {
+            access,
+            probes: probes
+                .into_iter()
+                .map(|probe| DocumentQueryProbe {
+                    index: probe.index.to_owned(),
+                    equal: probe.equal,
+                    lower: probe.lower,
+                    upper: probe.upper,
+                    unique_equality: probe.unique_equality,
+                })
+                .collect(),
+        })
+    }
+
     /// Executes a bounded filtered query using a qualifying exact equality
     /// tuple, scalar range, bounded membership union or a union of indexed
     /// disjuncts. Falls back to the collection scan when none qualifies.

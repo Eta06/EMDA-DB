@@ -1,7 +1,8 @@
 //! Planned queries must preserve filtering and serializable index observations.
 use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentSort, IndexDefinition, IndexValue, PartialFilter, Store,
+    DocumentQueryAccess, DocumentReadLimits, DocumentSnapshot, DocumentSort,
+    DocumentTransactionMode, IndexBound, IndexDefinition, IndexValue, PartialFilter, Store,
 };
 use serde_json::{Value, json};
 use std::io::ErrorKind;
@@ -35,6 +36,17 @@ fn index(
 fn compare(db: &DocumentDatabase<'_>, query: &DocumentQuery, access: DocumentQueryAccess) {
     let scan = db.query("c", query).unwrap();
     let planned = db.query_planned("c", query).unwrap();
+    let explanation = db.explain_query("c", query).unwrap();
+    assert_eq!(explanation.access, access);
+    if matches!(
+        access,
+        DocumentQueryAccess::UniqueEqualityIndex { .. }
+            | DocumentQueryAccess::UniqueCompoundEqualityIndex { .. }
+            | DocumentQueryAccess::PartialUniqueEqualityIndex { .. }
+    ) {
+        assert_eq!(explanation.probes.len(), 1);
+        assert!(explanation.probes[0].unique_equality);
+    }
     assert_eq!(planned.access, access);
     assert_eq!(planned.result.documents, scan.documents);
     assert_eq!(planned.result.plan.matched, scan.plan.matched);
@@ -119,6 +131,182 @@ fn planned_queries_report_errors_in_document_order_after_probe_admission() {
             check_index_order_error_precedence(&DocumentDatabase::new(&store));
         }
     }
+}
+
+#[test]
+fn explain_planned_query_uses_metadata_without_consuming_candidates() {
+    for checkpoint in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("store");
+        let store = Store::open(&path).unwrap();
+        let db = DocumentDatabase::new(&store);
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("group_score", &["group", "score"], false, None))
+            .unwrap();
+        for (id, score) in [("a", 2), ("b", 3)] {
+            db.insert("c", id, &json!({"group":"x", "score":score}))
+                .unwrap();
+        }
+        if checkpoint {
+            let base = directory.path().join("checkpoint");
+            let digest = store.checkpoint_to(&base).unwrap();
+            drop(store);
+            let store = retry_lock(|| CheckpointStore::open(&path, &base, &digest)).unwrap();
+            let snapshot = store.snapshot().unwrap();
+            check_explanation(
+                &DocumentDatabase::with_checkpoint_store(&store),
+                &DocumentSnapshot::with_checkpoint_snapshot(&snapshot),
+            );
+        } else {
+            let snapshot = store.snapshot(16, 4096).unwrap();
+            check_explanation(&db, &DocumentSnapshot::new(&snapshot));
+        }
+    }
+}
+
+fn check_explanation(db: &DocumentDatabase<'_>, snapshot: &DocumentSnapshot<'_>) {
+    use database_engine::Comparison;
+
+    let query = DocumentQuery {
+        filter: DocumentFilter::And(vec![
+            equal("group", json!("x")),
+            DocumentFilter::Compare {
+                path: path("score"),
+                comparison: Comparison::Greater,
+                value: IndexValue::Integer(1),
+            },
+            DocumentFilter::Compare {
+                path: path("score"),
+                comparison: Comparison::LessOrEqual,
+                value: IndexValue::Integer(3),
+            },
+        ]),
+        max_scanned: 1,
+        ..Default::default()
+    };
+    let expected = db.explain_query("c", &query).unwrap();
+    assert_eq!(
+        expected.access,
+        DocumentQueryAccess::CompoundRangeIndex {
+            index: "group_score".into(),
+            equality_fields: 1,
+        }
+    );
+    let [probe] = expected.probes.as_slice() else {
+        panic!("expected one compound range");
+    };
+    assert_eq!(probe.index, "group_score");
+    assert_eq!(probe.equal, [IndexValue::String("x".into())]);
+    assert_eq!(
+        probe.lower,
+        Some(IndexBound {
+            value: IndexValue::Integer(1),
+            inclusive: false,
+        })
+    );
+    assert_eq!(
+        probe.upper,
+        Some(IndexBound {
+            value: IndexValue::Integer(3),
+            inclusive: true,
+        })
+    );
+    assert!(!probe.unique_equality);
+    assert_eq!(
+        db.query_planned("c", &query).unwrap_err().to_string(),
+        "document scan exceeds the operation limit"
+    );
+
+    let admitted = DocumentQuery {
+        max_scanned: 2,
+        ..query.clone()
+    };
+    assert_eq!(
+        db.query_planned("c", &admitted).unwrap().access,
+        expected.access
+    );
+    assert_eq!(
+        db.transaction_with_read_limits(
+            DocumentReadLimits {
+                max_read_units: 1,
+                max_read_bytes: usize::MAX
+            },
+            DocumentTransactionMode::ReadSet,
+            None,
+            None,
+            |tx| tx.explain_query("c", &query),
+        )
+        .unwrap(),
+        expected
+    );
+
+    let exact_tuple = |score| {
+        DocumentFilter::And(vec![
+            equal("group", json!("x")),
+            equal("score", json!(score)),
+        ])
+    };
+    let disjunction = DocumentQuery {
+        filter: DocumentFilter::Or(vec![exact_tuple(3), exact_tuple(2), exact_tuple(3)]),
+        max_scanned: 2,
+        ..Default::default()
+    };
+    let union = db.explain_query("c", &disjunction).unwrap();
+    assert_eq!(
+        union.access,
+        DocumentQueryAccess::DisjunctionIndex {
+            indexes: vec!["group_score".into()],
+            probes: 2,
+        }
+    );
+    assert_eq!(union.probes.len(), 2);
+    for (probe, score) in union.probes.iter().zip([3, 2]) {
+        assert_eq!(probe.index, "group_score");
+        assert_eq!(
+            probe.equal,
+            [IndexValue::String("x".into()), IndexValue::Integer(score)]
+        );
+        assert!(probe.lower.is_none() && probe.upper.is_none());
+    }
+    assert_eq!(
+        db.query_planned("c", &disjunction).unwrap().access,
+        union.access
+    );
+
+    let invalid = DocumentQuery {
+        max_scanned: 0,
+        ..query.clone()
+    };
+    let invalid_error = db.explain_query("c", &invalid).unwrap_err();
+    assert_eq!(invalid_error.kind(), ErrorKind::InvalidInput);
+    assert_eq!(
+        invalid_error.to_string(),
+        db.query_planned("c", &invalid).unwrap_err().to_string()
+    );
+    assert_eq!(
+        db.explain_query("missing", &query).unwrap_err().kind(),
+        ErrorKind::NotFound
+    );
+
+    db.transaction(|tx| {
+        tx.drop_index("c", "group_score")?;
+        let staged = tx.explain_query("c", &admitted)?;
+        assert_eq!(staged.access, DocumentQueryAccess::CollectionScan);
+        assert!(staged.probes.is_empty());
+        assert_eq!(tx.query_planned("c", &admitted)?.access, staged.access);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        db.explain_query("c", &query).unwrap().access,
+        DocumentQueryAccess::CollectionScan
+    );
+    assert_eq!(snapshot.explain_query("c", &query).unwrap(), expected);
+    assert_eq!(
+        snapshot.query_planned("c", &admitted).unwrap().access,
+        expected.access
+    );
 }
 
 fn exercise(db: &DocumentDatabase<'_>) {

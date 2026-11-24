@@ -1,6 +1,6 @@
 use super::{
-    DocumentPage, DocumentQuery, DocumentQueryResult, DocumentTransaction, IndexQuery,
-    PlannedDocumentQueryResult,
+    DocumentPage, DocumentQuery, DocumentQueryExplanation, DocumentQueryResult,
+    DocumentTransaction, IndexQuery, PlannedDocumentQueryResult,
 };
 use crate::{CheckpointSnapshot, CheckpointView, Snapshot};
 use serde_json::Value;
@@ -49,6 +49,15 @@ impl<'a> DocumentSnapshot<'a> {
         query: &DocumentQuery,
     ) -> io::Result<DocumentQueryResult> {
         self.view.query(collection, query)
+    }
+
+    /// Explains a planned query using the captured collection metadata.
+    pub fn explain_query(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+    ) -> io::Result<DocumentQueryExplanation> {
+        self.view.explain_query(collection, query)
     }
 
     /// Executes a bounded, optionally indexed query over the captured view.

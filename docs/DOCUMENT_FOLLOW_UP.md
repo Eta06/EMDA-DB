@@ -173,6 +173,10 @@ The initial document interface is bounded and experimental. This checklist recor
   membership without range bounds. The [local campaign](../benchmarks/results/2026-11-23-complete-membership-model/README.md)
   checked exact and grouped caps, sparse fallback, candidate accounting,
   and equality with scans on both backends through clean reopens.
+- [x] Explain bounded query access paths before execution, including ordered
+  probes, equality prefixes, range endpoints and complete unique tuples. The
+  ordinary and checkpoint backend tests cover budget rejection on execution,
+  staged index removal, and captured metadata in snapshots.
 - [ ] Design richer schema types and validation, comparison/update/aggregation operators, array and multikey behavior, broader compound index unions, relationships, diagnostics, statistics and a cost-based planner; define compatibility and limits before implementation. Current lookups are by ID, aggregation is limited, and unplanned or ineligible collection queries require a complete bounded scan.
   [String prefix filters](DOCUMENT_MODEL.md) use bounded UTF-8 operands
   and can use scalar ranges. Tests compare indexed and scan results for

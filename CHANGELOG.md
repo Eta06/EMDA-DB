@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Explain a planned document query's access path and index probes without
+  scanning documents or index entries.
+
 - Add an opt-in cumulative spill-read limit to bounded full-log and
   trusted-checkpoint rebuilds.
 

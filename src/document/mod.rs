@@ -43,7 +43,9 @@ pub use integrity::CollectionIntegrity;
 pub use lifecycle::CollectionDropStep;
 pub use maintenance_key::{MaintenanceKey, MaintenanceProgress};
 pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
-pub use planner::{DocumentQueryAccess, PlannedDocumentQueryResult};
+pub use planner::{
+    DocumentQueryAccess, DocumentQueryExplanation, DocumentQueryProbe, PlannedDocumentQueryResult,
+};
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
 pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
@@ -619,6 +621,16 @@ impl<'a> DocumentDatabase<'a> {
         query: &DocumentQuery,
     ) -> io::Result<DocumentQueryResult> {
         self.transaction(|tx| tx.query(collection, query))
+    }
+
+    /// Describes how `query_planned` would execute using only the collection
+    /// metadata observed by this call.
+    pub fn explain_query(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+    ) -> io::Result<DocumentQueryExplanation> {
+        self.transaction(|tx| tx.explain_query(collection, query))
     }
 
     /// Executes a bounded query using qualifying index probes, including
