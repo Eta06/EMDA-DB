@@ -35,6 +35,7 @@ pub use commit::{
 };
 pub(crate) use compact::{GroupedCopy, RestoreSize};
 pub use compact_stream::COMPACTED_CHECKPOINT_FILE;
+pub(crate) use compact_stream::CheckpointCopyOptions;
 pub(crate) use compact_stream::compact_checkpoint;
 pub(crate) use compact_stream::compact_checkpoint_with_hooks;
 use log_quota::LogQuota;

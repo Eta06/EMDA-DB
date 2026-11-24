@@ -53,15 +53,54 @@ fn hash_entry(hash: &mut Sha256, key: &[u8], value_len: usize, value_digest: [u8
     hash.update(value_digest);
 }
 
+#[derive(Default)]
+pub(crate) struct CheckpointCopyOptions {
+    pub(crate) checkpoint_limits: Option<CheckpointViewLimits>,
+    pub(crate) source_value_read_bytes: Option<u64>,
+    pub(crate) target_log_bytes: Option<u64>,
+}
+
+impl CheckpointCopyOptions {
+    pub(crate) fn charge_source_reads(&mut self, bytes: u64) -> io::Result<()> {
+        charge(
+            &mut self.source_value_read_bytes,
+            bytes,
+            "checkpoint compaction source log read byte limit exceeded",
+        )
+    }
+
+    pub(crate) fn charge_target_log(&mut self, bytes: u64) -> io::Result<()> {
+        charge(
+            &mut self.target_log_bytes,
+            bytes,
+            "checkpoint compaction target log byte limit exceeded",
+        )
+    }
+}
+
+fn charge(remaining: &mut Option<u64>, bytes: u64, message: &'static str) -> io::Result<()> {
+    if let Some(remaining) = remaining {
+        *remaining = remaining
+            .checked_sub(bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+    }
+    Ok(())
+}
+
 fn copy_live(
     source: &Log,
     view: &RecoveredCheckpointView,
     target: &Log,
+    options: &mut CheckpointCopyOptions,
 ) -> io::Result<(u64, [u8; 32])> {
     let mut copy = GroupedCopy::new(target, None);
     let mut count = 0_u64;
     let mut hash = Sha256::new();
     view.visit_entries(None, None, |key, location| {
+        options.charge_source_reads(location.length as u64)?;
+        options.charge_target_log(
+            (record::HEADER_SIZE + key.len() + location.length + record::CHECKSUM_SIZE) as u64,
+        )?;
         let mut value = Sha256::new();
         copy.put_log_value(key, source, location, |chunk| value.update(chunk))?;
         hash_entry(&mut hash, key, location.length, value.finalize().into());
@@ -78,13 +117,13 @@ pub(crate) fn compact_checkpoint(
     source: &Log,
     view: &RecoveredCheckpointView,
     count: u64,
-    destination: &Path,
+    target: (&Path, CheckpointCopyOptions),
 ) -> io::Result<[u8; 32]> {
     compact_checkpoint_with_hooks(
         source,
         view,
         count,
-        (destination, None),
+        target,
         crate::directory::sync_existing,
         || Ok(()),
         |_| Ok(()),
@@ -95,16 +134,16 @@ pub(crate) fn compact_checkpoint_with_hooks(
     source: &Log,
     view: &RecoveredCheckpointView,
     expected_count: u64,
-    target_path: (&Path, Option<CheckpointViewLimits>),
+    target_path: (&Path, CheckpointCopyOptions),
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
     after_copy: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<[u8; 32]> {
-    let (destination, checkpoint_limits) = target_path;
+    let (destination, mut options) = target_path;
     let parent = backup::parent_directory(destination)?;
     let mut staging = crate::staging::Stage::directory(parent)?;
     let target = Store::open(staging.path())?;
-    let copied = copy_live(source, view, &target.log);
+    let copied = copy_live(source, view, &target.log, &mut options);
     let closed = target.close_private_store();
     let (copied_count, source_digest) = copied?;
     closed?;
@@ -145,7 +184,7 @@ pub(crate) fn compact_checkpoint_with_hooks(
         staging.path(),
         crate::checkpoint::StreamingOptions {
             verified_log: crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher),
-            limits: checkpoint_limits,
+            limits: options.checkpoint_limits,
             tracker: None,
             pending_tail: None,
         },

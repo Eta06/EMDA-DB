@@ -141,6 +141,18 @@ pub struct CheckpointRecoveryLimits {
     pub max_log_scan_bytes: Option<u64>,
 }
 
+/// Optional logical limits for a checkpoint-backed compacted copy.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CheckpointCompactionLimits {
+    /// One complete source log scan and the live value bytes read for copying.
+    /// Checkpoint reads, witness and identity probes, target verification and
+    /// physical retries have separate costs.
+    pub max_source_log_read_bytes: Option<u64>,
+    /// Complete encoded replacement log length, including its header.
+    /// Checkpoint, witness, and staging metadata bytes are separate.
+    pub max_target_log_bytes: Option<u64>,
+}
+
 /// An experimental writable store backed by a verified on-disk checkpoint.
 ///
 /// Point operations and blind batches serialize through one write lock. A
@@ -914,7 +926,11 @@ impl CheckpointStore {
     /// source remains unchanged and later source writes are not in the copy.
     /// An error after publication can leave an uncertain destination.
     pub fn compact_to(&self, destination: impl AsRef<Path>) -> io::Result<[u8; 32]> {
-        self.compact_to_using(destination.as_ref(), crate::store::compact_checkpoint)
+        self.compact_to_using(
+            destination.as_ref(),
+            CheckpointCompactionLimits::default(),
+            crate::store::compact_checkpoint,
+        )
     }
 
     /// Creates a compacted copy with structured destination-publication
@@ -924,21 +940,39 @@ impl CheckpointStore {
         &self,
         destination: impl AsRef<Path>,
     ) -> Result<[u8; 32], crate::PublicationFailure> {
-        self.compact_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
+        self.compact_to_with_limits_detailed(destination, CheckpointCompactionLimits::default())
+    }
+
+    /// Creates a fully verified compacted copy under independent inclusive
+    /// source-log read and replacement log ceilings. If a ceiling is
+    /// exceeded, returns `NotPublished(InvalidInput)`; a private stage may
+    /// have been created. Admission alone does not establish source health.
+    /// The publication and digest requirements of `compact_to_detailed` apply.
+    pub fn compact_to_with_limits_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+        limits: CheckpointCompactionLimits,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        self.compact_to_detailed_with_sync(
+            destination.as_ref(),
+            limits,
+            crate::directory::sync_existing,
+        )
     }
 
     fn compact_to_detailed_with_sync(
         &self,
         destination: &Path,
+        limits: CheckpointCompactionLimits,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 32], crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.compact_to_using(destination, |log, view, count, destination| {
+            self.compact_to_using(destination, limits, |log, view, count, target| {
                 crate::store::compact_checkpoint_with_hooks(
                     log,
                     view,
                     count,
-                    (destination, None),
+                    target,
                     sync_parent,
                     || {
                         tracker.begin_publication();
@@ -953,13 +987,28 @@ impl CheckpointStore {
     fn compact_to_using(
         &self,
         destination: &Path,
-        create: impl FnOnce(&Log, &RecoveredCheckpointView, u64, &Path) -> io::Result<[u8; 32]>,
+        limits: CheckpointCompactionLimits,
+        create: impl FnOnce(
+            &Log,
+            &RecoveredCheckpointView,
+            u64,
+            (&Path, crate::store::CheckpointCopyOptions),
+        ) -> io::Result<[u8; 32]>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let _writer = self.writers.read().map_err(|_| uncertain())?;
         let state = self.read()?;
+        let mut options = crate::store::CheckpointCopyOptions {
+            source_value_read_bytes: limits.max_source_log_read_bytes,
+            target_log_bytes: limits.max_target_log_bytes,
+            ..Default::default()
+        };
+        if options.source_value_read_bytes.is_some() {
+            options.charge_source_reads(self.log.len()?)?;
+        }
+        options.charge_target_log(crate::witness::LOG_HEADER_SIZE as u64)?;
         let (count, _, _) = self.verify_for_checkpoint(&state)?;
-        create(&self.log, &state.view, count, destination)
+        create(&self.log, &state.view, count, (destination, options))
     }
 
     fn backup_using(

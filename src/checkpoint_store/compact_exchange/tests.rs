@@ -51,6 +51,77 @@ fn verify_store(path: &Path) {
 }
 
 #[test]
+fn checkpoint_handoff_log_budgets_preserve_selection_on_rejection() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("live");
+    let previous = root.path().join("previous");
+    let store = fixture(root.path(), true, false);
+    let log_original = fs::read(path.join("records.log")).unwrap();
+    let witness_original = fs::read(path.join("commit.state")).unwrap();
+    let selection_original = fs::read(selection::path(&path)).unwrap();
+    let live_values = (b"initial".len() + b"latest".len() + b"value".len()) as u64;
+    let source_limit = log_original.len() as u64 + live_values;
+    let target_limit = crate::witness::LOG_HEADER_SIZE as u64
+        + 3 * (crate::record::HEADER_SIZE + crate::record::CHECKSUM_SIZE) as u64
+        + (b"base".len() + b"a".len() + b"b".len()) as u64
+        + live_values;
+    let result = store.compact_and_replace_with_limits_detailed(
+        &previous,
+        CheckpointCompactionLimits {
+            max_source_log_read_bytes: Some(source_limit - 1),
+            max_target_log_bytes: Some(target_limit),
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(HandoffFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string().contains("source log read")
+    ));
+    assert!(!previous.exists());
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), log_original);
+    assert_eq!(
+        fs::read(path.join("commit.state")).unwrap(),
+        witness_original
+    );
+    assert_eq!(
+        fs::read(selection::path(&path)).unwrap(),
+        selection_original
+    );
+
+    let store = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+    let (active, _) = store
+        .compact_and_replace_with_limits_detailed(
+            &previous,
+            CheckpointCompactionLimits {
+                max_source_log_read_bytes: Some(source_limit),
+                max_target_log_bytes: Some(target_limit),
+            },
+        )
+        .ok()
+        .expect("exact ceilings admit the exchange");
+    assert_eq!(
+        fs::metadata(path.join("records.log")).unwrap().len(),
+        target_limit
+    );
+    assert_eq!(
+        fs::read(previous.join("records.log")).unwrap(),
+        log_original
+    );
+    assert_eq!(
+        fs::read(previous.join("commit.state")).unwrap(),
+        witness_original
+    );
+    assert_eq!(
+        active.get(b"a").unwrap().as_deref(),
+        Some(b"latest".as_slice())
+    );
+    active.put(b"a", b"after exchange").unwrap();
+    active.log.verify_witness().unwrap();
+    verify_store(&previous);
+}
+
+#[test]
 fn checkpoint_limits_reject_handoff_before_sibling_publication() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("live");
@@ -342,6 +413,7 @@ fn detailed_checkpoint_handoff_classifies_candidate_and_exchange_failures() {
             let original = fs::read(source.join("records.log")).unwrap();
             let result = cp.compact_and_replace_detailed_with_hooks(
                 &destination,
+                CheckpointCompactionLimits::default(),
                 |point| {
                     let reject = match failure {
                         "copy" => point == ExchangePoint::CopyPublished,

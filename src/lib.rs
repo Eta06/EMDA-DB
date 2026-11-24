@@ -39,9 +39,9 @@ pub use backup::{FormatUpgradeLimits, FullLogBackupLimits, FullLogRestoreLimits}
 pub use cancellation::{CancellationToken, ControlledTransactionError};
 pub use checkpoint_store::{
     BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixAdmission,
-    BoundedSuffixRebuildLimits, CheckpointRecoveryLimits, CheckpointSnapshot,
-    CheckpointSnapshotBudgetStatus, CheckpointStore, CheckpointStoreLimits, CheckpointTransaction,
-    CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,
+    BoundedSuffixRebuildLimits, CheckpointCompactionLimits, CheckpointRecoveryLimits,
+    CheckpointSnapshot, CheckpointSnapshotBudgetStatus, CheckpointStore, CheckpointStoreLimits,
+    CheckpointTransaction, CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,
     MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
 };

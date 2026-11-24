@@ -1,5 +1,5 @@
 //! Blocking checkpoint-store handoff with persistent managed configuration.
-use super::{CheckpointStore, automatic, selection};
+use super::{CheckpointCompactionLimits, CheckpointStore, automatic, selection};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -76,8 +76,25 @@ impl CheckpointStore {
         self,
         previous: impl AsRef<Path>,
     ) -> Result<(Self, [u8; 32]), crate::HandoffFailure> {
+        self.compact_and_replace_with_limits_detailed(
+            previous,
+            CheckpointCompactionLimits::default(),
+        )
+    }
+
+    /// Consumes the store and imposes inclusive source read and replacement log
+    /// ceilings before publishing the sibling. A ceiling rejection returns
+    /// `NotPublished(InvalidInput)`. Candidate verification reads, including
+    /// reopening the replacement for exchange, have separate costs. The
+    /// requirements of `compact_and_replace_detailed` apply.
+    pub fn compact_and_replace_with_limits_detailed(
+        self,
+        previous: impl AsRef<Path>,
+        limits: CheckpointCompactionLimits,
+    ) -> Result<(Self, [u8; 32]), crate::HandoffFailure> {
         self.compact_and_replace_detailed_with_hooks(
             previous.as_ref(),
+            limits,
             |_| Ok(()),
             crate::directory::sync_existing,
         )
@@ -86,11 +103,12 @@ impl CheckpointStore {
     fn compact_and_replace_detailed_with_hooks(
         self,
         previous: &Path,
+        limits: CheckpointCompactionLimits,
         hook: impl FnMut(ExchangePoint) -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<(Self, [u8; 32]), crate::HandoffFailure> {
         crate::publication_outcome::track_handoff(|tracker| {
-            self.compact_and_replace_tracked(previous, hook, sync_parent, Some(tracker))
+            self.compact_and_replace_tracked(previous, limits, hook, sync_parent, Some(tracker))
         })
     }
 
@@ -100,12 +118,19 @@ impl CheckpointStore {
         hook: impl FnMut(ExchangePoint) -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<(Self, [u8; 32])> {
-        self.compact_and_replace_tracked(previous, hook, sync_parent, None)
+        self.compact_and_replace_tracked(
+            previous,
+            CheckpointCompactionLimits::default(),
+            hook,
+            sync_parent,
+            None,
+        )
     }
 
     fn compact_and_replace_tracked(
         self,
         previous: &Path,
+        limits: CheckpointCompactionLimits,
         hook: impl FnMut(ExchangePoint) -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::HandoffTracker>,
@@ -139,22 +164,27 @@ impl CheckpointStore {
         }
         drop(state);
         source_directory_is_owned(&source)?;
-        let digest = self.compact_to_using(&previous, |log, view, count, destination| {
-            crate::store::compact_checkpoint_with_hooks(
-                log,
-                view,
-                count,
-                (destination, Some(self.checkpoint_view_limits)),
-                crate::directory::sync_existing,
-                || {
-                    if let Some(tracker) = tracker {
-                        tracker.begin_candidate();
-                    }
-                    Ok(())
-                },
-                |_| Ok(()),
-            )
-        })?;
+        let digest = self.compact_to_using(
+            &previous,
+            limits,
+            |log, view, count, (destination, mut options)| {
+                options.checkpoint_limits = Some(self.checkpoint_view_limits);
+                crate::store::compact_checkpoint_with_hooks(
+                    log,
+                    view,
+                    count,
+                    (destination, options),
+                    crate::directory::sync_existing,
+                    || {
+                        if let Some(tracker) = tracker {
+                            tracker.begin_candidate();
+                        }
+                        Ok(())
+                    },
+                    |_| Ok(()),
+                )
+            },
+        )?;
         (hook.borrow_mut())(ExchangePoint::CopyPublished)?;
         let mut candidate = Self::open_using(
             &previous,

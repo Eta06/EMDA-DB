@@ -1,6 +1,130 @@
 use super::*;
 
 #[test]
+fn checkpoint_compaction_admits_exact_log_budgets_and_verifies_history() {
+    use std::os::unix::fs::FileExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let destination = root.path().join("copy");
+    let initial = Store::open(&path).unwrap();
+    initial.put(b"a", b"kept").unwrap();
+    initial.put(b"b", b"superseded bytes").unwrap();
+    initial.put(b"empty", b"").unwrap();
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    let large = vec![47; 4 * 1024 * 1024];
+    initial
+        .write_batch(&[
+            crate::BatchOperation::Delete { key: b"b" },
+            crate::BatchOperation::Put {
+                key: b"large",
+                value: &large,
+            },
+        ])
+        .unwrap();
+    initial.close_private_store().unwrap();
+    let source = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+    let log_path = path.join("records.log");
+    let log_before = fs::read(&log_path).unwrap();
+    let witness_before = fs::read(path.join("commit.state")).unwrap();
+    let checkpoint_before = fs::read(&checkpoint).unwrap();
+    let entries = || {
+        let mut names = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let names_before = entries();
+    let live_values = (b"kept".len() + large.len()) as u64;
+    let log_bytes = log_before.len() as u64;
+    let max_source = log_bytes + live_values;
+    let max_target = crate::witness::LOG_HEADER_SIZE as u64
+        + 3 * (crate::record::HEADER_SIZE + crate::record::CHECKSUM_SIZE) as u64
+        + (b"a".len() + b"empty".len() + b"large".len()) as u64
+        + live_values;
+    for (source_limit, target_limit, message) in [
+        (log_bytes - 1, max_target, "source log read"),
+        (max_source - 1, max_target, "source log read"),
+        (max_source, max_target - 1, "target log"),
+        (
+            max_source,
+            crate::witness::LOG_HEADER_SIZE as u64 - 1,
+            "target log",
+        ),
+    ] {
+        let failure = source.compact_to_with_limits_detailed(
+            &destination,
+            CheckpointCompactionLimits {
+                max_source_log_read_bytes: Some(source_limit),
+                max_target_log_bytes: Some(target_limit),
+            },
+        );
+        assert!(matches!(
+            failure,
+            Err(crate::PublicationFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidInput
+                    && error.to_string().contains(message)
+        ));
+        assert_eq!(entries(), names_before);
+        assert_eq!(fs::read(&log_path).unwrap(), log_before);
+        assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness_before);
+        assert_eq!(fs::read(&checkpoint).unwrap(), checkpoint_before);
+        source.log.verify_witness().unwrap();
+    }
+
+    let exact = CheckpointCompactionLimits {
+        max_source_log_read_bytes: Some(max_source),
+        max_target_log_bytes: Some(max_target),
+    };
+    let copied_digest = source
+        .compact_to_with_limits_detailed(&destination, exact)
+        .unwrap();
+    assert_eq!(
+        fs::metadata(destination.join("records.log")).unwrap().len(),
+        max_target
+    );
+    let copied = CheckpointStore::open(
+        &destination,
+        destination.join(crate::COMPACTED_CHECKPOINT_FILE),
+        &copied_digest,
+    )
+    .unwrap();
+    assert_eq!(
+        copied.get(b"a").unwrap().as_deref(),
+        Some(b"kept".as_slice())
+    );
+    assert_eq!(copied.get(b"b").unwrap(), None);
+    assert_eq!(copied.get(b"empty").unwrap(), Some(Vec::new()));
+    assert_eq!(
+        copied.get(b"large").unwrap().as_deref(),
+        Some(large.as_slice())
+    );
+    assert_eq!(fs::read(&log_path).unwrap(), log_before);
+    assert_eq!(fs::read(path.join("commit.state")).unwrap(), witness_before);
+
+    let obsolete = b"superseded bytes";
+    let offset = log_before
+        .windows(obsolete.len())
+        .position(|bytes| bytes == obsolete)
+        .unwrap();
+    let writer = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&log_path)
+        .unwrap();
+    FileExt::write_all_at(&writer, b"X", offset as u64).unwrap();
+    let missing = root.path().join("rejected");
+    assert!(matches!(
+        source.compact_to_with_limits_detailed(&missing, exact),
+        Err(crate::PublicationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert!(!missing.exists());
+}
+
+#[test]
 fn streamed_compaction_preserves_maximum_and_empty_values() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
@@ -39,7 +163,7 @@ fn detailed_checkpoint_compaction_reports_unknown_after_parent_sync_failure() {
     let (root, path, checkpoint, digest) = fixture();
     let source = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
     let destination = root.path().join("copy");
-    let result = source.compact_to_detailed_with_sync(&destination, |_| {
+    let result = source.compact_to_detailed_with_sync(&destination, Default::default(), |_| {
         Err(io::Error::other("injected parent sync failure"))
     });
     assert!(matches!(
@@ -83,7 +207,7 @@ fn checkpoint_compaction_crash_child() {
         &store.log,
         &state.view,
         count,
-        (&parent.join("copy"), None),
+        (&parent.join("copy"), Default::default()),
         |parent| {
             if mode == "published" {
                 pause_compaction()
@@ -181,7 +305,7 @@ fn streamed_compaction_rejects_corrupt_staged_data_before_publication() {
         &store.log,
         &state.view,
         count,
-        (&destination, None),
+        (&destination, Default::default()),
         |parent| File::open(parent)?.sync_all(),
         || Ok(()),
         |stage| {
@@ -202,7 +326,7 @@ fn streamed_compaction_rejects_corrupt_staged_data_before_publication() {
         &store.log,
         &state.view,
         count,
-        (&destination, None),
+        (&destination, Default::default()),
         |parent| File::open(parent)?.sync_all(),
         || Ok(()),
         |stage| {
@@ -235,7 +359,7 @@ fn streamed_compaction_reports_pre_and_post_publication_failures() {
             &store.log,
             &state.view,
             count,
-            (&destination, None),
+            (&destination, Default::default()),
             |parent| {
                 if post_publish {
                     Err(io::Error::other("injected parent sync failure"))
@@ -296,7 +420,7 @@ fn streamed_compaction_blocks_mutations_while_allowing_reads() {
                 &copying.log,
                 &state.view,
                 count,
-                (destination, None),
+                (destination, Default::default()),
                 |parent| File::open(parent)?.sync_all(),
                 || {
                     entered_tx.send(()).unwrap();
@@ -363,7 +487,7 @@ fn every_streamed_compaction_ancestor_sync_failure_reports_uncertain_copy() {
             &store.log,
             &state.view,
             count,
-            (&destination, None),
+            (&destination, Default::default()),
             |parent| {
                 crate::directory::sync_existing_with(parent, |directory| {
                     let index = seen;
