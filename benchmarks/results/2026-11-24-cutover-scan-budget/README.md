@@ -23,3 +23,25 @@ The [raw archive](macos-artifacts.tar.gz) records the tested source patch,
 attempt, binary hash, phase logs, measurements, and verification scripts.
 The [benchmark guide](../../../examples/authorized_recovery_bench.md)
 describes the hosted Linux version with a 48 MiB process ceiling.
+
+## Hosted Linux and native macOS validation
+
+The [Linux memory job] at `c5740b46` passed all 53 phases with
+1,048,576 starting keys, four writers and four epochs. The 25 capped
+phases include the final lifecycle worker. Under the 48 MiB process
+address-space ceiling and the 424,886,372-byte logical archive scan
+ceiling, that worker retired the archive and verified all 1,045,597
+live entries in both the source and restored catalogs. Its peak RSS was
+13,512,704 bytes. The hosted final worker measured 203.08 ms for backup,
+372.32 ms for archive retirement, and 571.20 ms for restore through
+authority registration. These figures describe that fixture and runner.
+
+Native macOS Rust 1.85.0 passed 1,341 tests across 112 nonempty binaries.
+Hosted [macOS] passed both toolchains. The [Linux memory archive] contains
+the exact job and phase logs, metrics, CI verifier, and local macOS test
+logs. Fixture setup and cutover have separate process memory costs.
+Filesystem cache and concurrent processes are outside the worker ceiling.
+
+[Linux memory job]: https://github.com/Eta06/EMDA-DB/actions/runs/45398885440/job/138465314000
+[macOS]: https://github.com/Eta06/EMDA-DB/actions/runs/45398885435
+[Linux memory archive]: linux-memory-artifacts.tar.gz
