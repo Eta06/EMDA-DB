@@ -442,6 +442,11 @@ the document view.
   checkpoint validation and tail adoption. This admission check assumes
   cooperating writers and stable source files; it does not bound repeated I/O,
   elapsed time or total memory, and rejection does not certify source health.
+- Full-log and trusted-base bounded rebuilds compute the encoded output
+  length from the final live-key count and key bytes. Oversized output is
+  rejected before the final spill merge and tail adoption. Staged and
+  published checkpoint verification both use that output-length ceiling.
+  The configured output block limit still applies to the actual layout.
 - Bounded full-log and trusted-base rebuilds admit an entire batch's child
   count before decoding or allocating child updates. On operation-limit
   rejection, they still stream the outer record and check its checksum.
