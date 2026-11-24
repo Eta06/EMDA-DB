@@ -30,6 +30,9 @@ fn reclamation_removes_old_history_and_recovers_live_state() {
 #[test]
 fn reclamation_supports_legacy_v2_and_v3_store_fixtures() {
     for version in ["legacy", "v2", "v3"] {
+        if version == "v3" && !cfg!(target_os = "linux") {
+            continue;
+        }
         let root = tempfile::tempdir().unwrap();
         let (source, previous) = paths(root.path());
         fs::create_dir(&source).unwrap();

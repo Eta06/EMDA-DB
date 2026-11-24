@@ -503,7 +503,8 @@ impl OnlineStore {
 
     /// Creates a verified compacted sibling while ordinary callbacks continue,
     /// catches up acknowledged writes, then excludes callbacks for final
-    /// replay, verification and a Linux atomic directory exchange. The old
+    /// replay, verification and an atomic directory exchange on supported
+    /// Linux filesystems or macOS APFS. The old
     /// complete store remains at `previous`. A publication or sync error after
     /// exchange poisons this handle; drop and reopen both paths to inspect them.
     ///
@@ -837,12 +838,6 @@ impl OnlineStore {
             source_reads,
         }: CompactionVerification<'_>,
     ) -> io::Result<(OnlineCompactionReport, Option<io::Result<()>>)> {
-        if !cfg!(target_os = "linux") {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "online directory exchange currently requires Linux",
-            ));
-        }
         Access::check_not_active(self as *const Self as usize)?;
         let _maintenance = match self.maintenance.try_lock() {
             Ok(guard) => guard,
@@ -991,7 +986,13 @@ impl OnlineStore {
         if let Some(tracker) = tracker {
             tracker.begin_exchange();
         }
-        compact_exchange::exchange(&source, &previous).map_err(|error| {
+        compact_exchange::exchange(
+            &source,
+            &previous,
+            &current._lock_file,
+            &candidate._lock_file,
+        )
+        .map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!("online exchange may have occurred; reopen required: {error}"),
@@ -1082,7 +1083,7 @@ fn uncertain() -> io::Error {
     io::Error::other("online store handoff may have an uncertain outcome; reopen required")
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests;
 
 #[cfg(test)]

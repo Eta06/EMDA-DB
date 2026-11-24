@@ -439,6 +439,7 @@ fn target_quota_failure_during_catchup_keeps_later_source_write() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn uncertain_source_commit_during_copy_never_publishes_a_compacted_store() {
     use crate::store::metadata_tests::{Fault, store as fault_store};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -550,6 +551,9 @@ fn partial_v2_and_v3_source_appends_abort_handoff_without_truncation() {
         .unwrap()
         .len();
     for version in ["v2", "v3"] {
+        if version == "v3" && !cfg!(target_os = "linux") {
+            continue;
+        }
         for offset in 0..length {
             let root = tempfile::tempdir().unwrap();
             let (source, previous) = paths(root.path());

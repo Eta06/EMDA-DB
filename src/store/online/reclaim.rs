@@ -21,20 +21,6 @@ pub(super) enum Point {
     AfterParentSync,
 }
 
-#[cfg(target_os = "linux")]
-fn rename_noreplace(source: &Path, destination: &Path) -> io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    renameat_with(CWD, source, CWD, destination, RenameFlags::NOREPLACE).map_err(Into::into)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn rename_noreplace(_source: &Path, _destination: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "retired store reclamation requires Linux",
-    ))
-}
-
 fn remove_optional(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -70,7 +56,7 @@ pub(super) fn retire(
         compact_exchange::source_directory_is_owned(previous)?;
         // Hide the old directory under an owned private name before unlinking
         // its lock. A newly created store at the old path cannot be touched.
-        rename_noreplace(previous, &hidden)?;
+        crate::backup::publish_noreplace(previous, &hidden)?;
         moved = true;
         stage.preserve_payload_on_drop();
         hook(Point::AfterMove)?;

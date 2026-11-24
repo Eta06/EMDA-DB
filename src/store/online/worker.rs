@@ -269,12 +269,6 @@ impl OnlineStore {
         options: OnlineCompactionOptions,
         cleanup_retired: bool,
     ) -> io::Result<OnlineReclamationWorker> {
-        if !cfg!(target_os = "linux") {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "online reclamation requires Linux",
-            ));
-        }
         Access::check_not_active(self.as_ref() as *const Self as usize)?;
         if !(MIN_INTERVAL..=MAX_INTERVAL).contains(&interval)
             || minimum_log_bytes == 0
@@ -564,5 +558,5 @@ fn run_with(
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests;

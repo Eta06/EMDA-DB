@@ -8,6 +8,17 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_exchange_refuses_non_apfs_before_staging() {
+    let error = paths(Path::new("/dev/null"), Path::new("/dev/emda-unused")).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    assert_eq!(
+        error.to_string(),
+        "atomic directory exchange on macOS requires APFS"
+    );
+}
+
 fn populated(root: &Path) -> (Store, PathBuf, PathBuf) {
     let source = root.join("live");
     let previous = root.join("previous");
@@ -253,7 +264,7 @@ fn exchange_holds_both_mapping_locks_through_failed_parent_sync() {
             Ok(())
         },
         |parent| {
-            assert_eq!(parent, root.path());
+            assert_eq!(parent, fs::canonicalize(root.path()).unwrap());
             for path in [&source, &previous] {
                 assert_eq!(
                     Store::open(path).err().unwrap().kind(),

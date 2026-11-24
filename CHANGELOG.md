@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Enable verified blocking compaction, online handoff and retired-log
+  reclamation on macOS APFS using atomic directory exchange.
+
+- Add an inclusive combined scan budget for historical and recovered
+  read-only checkpoint opens, charging the log range each view verifies.
+
 - Add an inclusive checkpoint and log scan budget for managed and explicit
   writable checkpoint recovery, including pending-tail confirmation.
 

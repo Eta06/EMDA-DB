@@ -1,5 +1,6 @@
 //! Blocking, atomic handoff to a verified compacted sibling store.
 use super::{LogQuota, Store};
+use crate::store_lock::StoreLock;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,12 @@ pub(super) fn source_directory_is_owned(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn paths(source: &Path, previous: &Path) -> io::Result<(PathBuf, PathBuf, PathBuf)> {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic directory exchange requires Linux or macOS APFS",
+        ));
+    }
     let source = fs::canonicalize(source)?;
     let parent = source
         .parent()
@@ -37,6 +44,8 @@ pub(crate) fn paths(source: &Path, previous: &Path) -> io::Result<(PathBuf, Path
             io::Error::new(io::ErrorKind::InvalidInput, "store has no parent directory")
         })?
         .to_path_buf();
+    #[cfg(target_os = "macos")]
+    require_apfs(&parent)?;
     let previous_parent = crate::backup::parent_directory(previous)?;
     if fs::canonicalize(previous_parent)? != parent {
         return Err(io::Error::new(
@@ -62,23 +71,58 @@ pub(crate) fn paths(source: &Path, previous: &Path) -> io::Result<(PathBuf, Path
     Ok((source, previous, parent))
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn exchange(source: &Path, previous: &Path) -> io::Result<()> {
-    use rustix::fs::{CWD, RenameFlags, renameat_with};
-    renameat_with(CWD, source, CWD, previous, RenameFlags::EXCHANGE).map_err(Into::into)
+#[cfg(target_os = "macos")]
+fn require_apfs(parent: &Path) -> io::Result<()> {
+    let stat = rustix::fs::statfs(parent)?;
+    let name = stat.f_fstypename.map(|byte| byte as u8);
+    // Restrict exchange and subsequent retirement to the native filesystem
+    // for which we exercise exchange, exclusive rename and directory sync.
+    if !name.starts_with(b"apfs\0") {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "atomic directory exchange on macOS requires APFS",
+        ));
+    }
+    Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn exchange(_source: &Path, _previous: &Path) -> io::Result<()> {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn exchange(
+    source: &Path,
+    previous: &Path,
+    original: &StoreLock,
+    candidate: &StoreLock,
+) -> io::Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    renameat_with(CWD, source, CWD, previous, RenameFlags::EXCHANGE)?;
+    original
+        .verify_identity(previous)
+        .and_then(|()| candidate.verify_identity(source))
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("store exchange mapping could not be verified; reopen both paths: {error}"),
+            )
+        })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn exchange(
+    _source: &Path,
+    _previous: &Path,
+    _original: &StoreLock,
+    _candidate: &StoreLock,
+) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "atomic directory exchange currently requires Linux",
+        "atomic directory exchange requires Linux or macOS APFS",
     ))
 }
 
 impl Store {
     /// Consumes an exclusively owned store, creates a verified compacted sibling,
-    /// then atomically exchanges the two directories on Linux. The returned
+    /// then atomically exchanges the two directories on supported Linux
+    /// filesystems and macOS APFS. The returned
     /// store owns the compacted data at `source`; the complete old store remains
     /// at `previous` for explicit inspection or deletion. Both paths must have
     /// the same resolved parent, and `previous` must not already exist.
@@ -150,12 +194,6 @@ impl Store {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::HandoffTracker>,
     ) -> io::Result<Self> {
-        if !cfg!(target_os = "linux") {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "atomic directory exchange currently requires Linux",
-            ));
-        }
         let (source, previous, parent) = paths(source, previous)?;
         self._lock_file.verify_identity(&source)?;
         source_directory_is_owned(&source)?;
@@ -189,7 +227,7 @@ impl Store {
         if let Some(tracker) = tracker {
             tracker.begin_exchange();
         }
-        exchange(&source, &previous)?;
+        exchange(&source, &previous, &self._lock_file, &candidate._lock_file)?;
         hook(ExchangePoint::AfterExchange).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -209,5 +247,5 @@ impl Store {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests;

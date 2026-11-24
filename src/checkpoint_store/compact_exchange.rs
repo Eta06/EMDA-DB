@@ -44,7 +44,8 @@ fn source_directory_is_owned(path: &Path) -> io::Result<()> {
 
 impl CheckpointStore {
     /// Consumes this checkpoint-backed store and atomically exchanges it with
-    /// a verified compacted sibling on Linux. `previous` must not exist and
+    /// a verified compacted sibling on supported Linux filesystems and on
+    /// macOS APFS. `previous` must not exist and
     /// must have the same resolved parent as the source. The returned store
     /// stays at the original path; the previous full log remains at `previous`.
     /// The returned digest identifies the new `COMPACTED_CHECKPOINT_FILE` and
@@ -135,12 +136,6 @@ impl CheckpointStore {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::HandoffTracker>,
     ) -> io::Result<(Self, [u8; 32])> {
-        if !cfg!(target_os = "linux") {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "atomic directory exchange currently requires Linux",
-            ));
-        }
         let hook = std::cell::RefCell::new(hook);
         let (source, previous, parent) =
             crate::store::compact_exchange::paths(&self.path, previous)?;
@@ -234,7 +229,12 @@ impl CheckpointStore {
         if let Some(tracker) = tracker {
             tracker.begin_exchange();
         }
-        crate::store::compact_exchange::exchange(&source, &previous)?;
+        crate::store::compact_exchange::exchange(
+            &source,
+            &previous,
+            &original_lock,
+            &candidate_lock,
+        )?;
         (hook.borrow_mut())(ExchangePoint::AfterExchange).map_err(|error| {
             io::Error::new(
                 error.kind(),
@@ -250,5 +250,5 @@ impl CheckpointStore {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests;

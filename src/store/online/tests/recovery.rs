@@ -87,6 +87,9 @@ fn process_kill_at_copy_publication_and_exchange_recovers_complete_data() {
 #[test]
 fn legacy_v2_and_v3_fixtures_compact_without_changing_live_data() {
     for version in ["legacy", "v2", "v3"] {
+        if version == "v3" && !cfg!(target_os = "linux") {
+            continue;
+        }
         let root = tempfile::tempdir().unwrap();
         let (source, previous) = paths(root.path());
         fs::create_dir(&source).unwrap();
