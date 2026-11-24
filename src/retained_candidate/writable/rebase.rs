@@ -54,6 +54,7 @@ impl RetainedStore {
         destination: &Path,
         limits: RetainedStoreLimits,
         max_base_bytes: u64,
+        mut max_scan_bytes: Option<u64>,
     ) -> io::Result<Expected> {
         self.ensure_healthy()?;
         let space = limits
@@ -63,6 +64,19 @@ impl RetainedStore {
             .min(limits.base.work_bytes.saturating_sub(1))
             .checked_sub(FRAME_BYTES)
             .ok_or_else(|| invalid_input("compacted base byte limit exceeded"))?;
+        let mut charge = |bytes| {
+            if let Some(remaining) = &mut max_scan_bytes {
+                *remaining = remaining
+                    .checked_sub(bytes)
+                    .ok_or_else(|| invalid_input("retained rotation scan byte limit exceeded"))?;
+            }
+            Ok(())
+        };
+        let base_bytes = self.base.metadata().file_bytes;
+        charge(base_bytes - FRAME_BYTES)?; // Merge reads every base block.
+        charge(base_bytes)?; // Final source verification reads the frame too.
+        charge(self.suffix_len as u64)?; // History replay.
+        charge(self.suffix_len as u64)?; // Final source verification.
         let suffix_digest = self.hash.clone().finalize().into();
         self.verify_boundary(&suffix_digest)?;
         // The history sweep authenticates the frame, the base blocks that
@@ -73,6 +87,7 @@ impl RetainedStore {
             self.suffix_file(),
             self.limits.suffix,
             suffix_digest,
+            &mut charge,
         )?;
         if peaks.entries > limits.base.entries || peaks.key_bytes > limits.base.key_bytes {
             return Err(invalid_input(
@@ -84,6 +99,8 @@ impl RetainedStore {
             return Err(invalid_input("compacted base byte limit exceeded"));
         }
         IndexedBase::admit_totals(peaks.entries, peaks.key_bytes, encoded, limits.index)?;
+        // The successor opens and verifies the complete output before publication.
+        charge(encoded + FRAME_BYTES)?;
         let source = self.generation_id();
         let base = random_id()?;
         let boundary = self.header.len as u64 + self.suffix_len as u64;

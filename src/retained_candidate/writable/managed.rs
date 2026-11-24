@@ -844,7 +844,27 @@ impl ManagedRetainedStore {
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
-        self.compact_detailed_using(limits, None, || Ok(()), sync_existing, sync_existing)
+        self.compact_detailed_using(limits, None, None, || Ok(()), sync_existing, sync_existing)
+    }
+
+    /// Compact under an inclusive logical read budget while using the active
+    /// generation's persisted limits. The budget covers base blocks read for
+    /// sizing, suffix replay and value reads, the merge, the final source
+    /// verification, and the successor base readback. A budget rejection
+    /// occurs before successor publication. Metadata, framing and EOF probes
+    /// outside the full scans, physical retries, and writes are excluded.
+    pub fn compact_with_scan_limit(
+        &mut self,
+        max_scan_bytes: u64,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_detailed_using(
+            self.store.limits,
+            None,
+            Some(max_scan_bytes),
+            || Ok(()),
+            sync_existing,
+            sync_existing,
+        )
     }
 
     /// Publish a successor with persistent catalog storage limits. The
@@ -867,6 +887,7 @@ impl ManagedRetainedStore {
         self.compact_detailed_using(
             self.store.limits,
             Some(limits),
+            None,
             || Ok(()),
             sync_existing,
             sync_existing,
@@ -893,6 +914,7 @@ impl ManagedRetainedStore {
         self.compact_detailed_using(
             limits,
             persisted_storage,
+            None,
             before_select,
             sync_existing,
             sync_selection,
@@ -904,6 +926,7 @@ impl ManagedRetainedStore {
         &mut self,
         limits: RetainedStoreLimits,
         persisted_storage: Option<CatalogStorageLimits>,
+        max_scan_bytes: Option<u64>,
         before_select: impl FnOnce() -> io::Result<()>,
         sync_successor: impl FnOnce(&Path) -> io::Result<()>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
@@ -914,6 +937,7 @@ impl ManagedRetainedStore {
                 limits,
                 self.auto_reclaim.is_some(),
                 persisted_storage,
+                max_scan_bytes,
                 &tracker.checkpoint,
                 sync_successor,
             )?;
@@ -942,6 +966,7 @@ impl ManagedRetainedStore {
         limits: RetainedStoreLimits,
         reclaim_after: bool,
         persisted_storage: Option<CatalogStorageLimits>,
+        max_scan_bytes: Option<u64>,
         tracker: &crate::publication_outcome::Tracker,
         sync_successor: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<(Active, RetainedStore, Option<CatalogStorage>)> {
@@ -1002,9 +1027,12 @@ impl ManagedRetainedStore {
                 )
             })?;
         let mut stage = Stage::directory(&self.root)?;
-        let expected =
-            self.store
-                .write_rebased_base(&stage.path().join("base"), limits, max_base_bytes)?;
+        let expected = self.store.write_rebased_base(
+            &stage.path().join("base"),
+            limits,
+            max_base_bytes,
+            max_scan_bytes,
+        )?;
         let next = RetainedStore::initialize(
             stage.path(),
             limits,

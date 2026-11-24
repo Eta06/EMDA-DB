@@ -682,7 +682,22 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
-        self.compact_detailed_using(limits, None, sync_existing)
+        self.compact_detailed_using(limits, None, None, sync_existing)
+    }
+
+    /// Compact under the logical read budget of
+    /// [`ManagedRetainedStore::compact_with_scan_limit`]. Admission
+    /// precedes successor publication and any authority update.
+    pub fn compact_with_scan_limit(
+        &mut self,
+        max_scan_bytes: u64,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_detailed_using(
+            self.inner.store.limits,
+            None,
+            Some(max_scan_bytes),
+            sync_existing,
+        )
     }
 
     /// Select a successor carrying persistent catalog storage limits. For
@@ -702,13 +717,14 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         limits: CatalogStorageLimits,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
-        self.compact_detailed_using(self.inner.store.limits, Some(limits), sync_existing)
+        self.compact_detailed_using(self.inner.store.limits, Some(limits), None, sync_existing)
     }
 
     fn compact_detailed_using(
         &mut self,
         limits: RetainedStoreLimits,
         persisted_storage: Option<CatalogStorageLimits>,
+        max_scan_bytes: Option<u64>,
         sync_successor: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], RetainedRotationFailure> {
         crate::publication_outcome::track_retained_rotation(|tracker| {
@@ -718,6 +734,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 limits,
                 self.auto_reclaim.is_some(),
                 persisted_storage,
+                max_scan_bytes,
                 &tracker.checkpoint,
                 sync_successor,
             )?;

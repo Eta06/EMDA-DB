@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a read budget for explicit retained rotation through successor verification.
+
 - Bound the active-generation verification reads used by retained retirement.
 
 - Add a combined base and suffix scan limit for writable retained recovery.

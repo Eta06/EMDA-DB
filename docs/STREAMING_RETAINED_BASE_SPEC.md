@@ -481,6 +481,18 @@ reject a rebase before changing the selection. The two slots, temporary
 stages, directory entries, returned pages and allocator overhead have
 separate storage and memory costs.
 
+Managed and authority-backed handles can use `compact_with_scan_limit`
+for explicit rotation under an inclusive logical read ceiling. It charges
+the selected base blocks used for sizing, the full base body streamed
+during the merge, both suffix passes and the live suffix values used by
+the merge, the full final source-base verification, and the successor's
+complete base readback. The successor cost is admitted before writing the
+replacement base. A budget refusal reports `NotPublished(InvalidInput)`
+before publishing the successor or attempting selection. The ceiling
+uses the current persisted generation limits and applies only to that
+rotation. Separate framing and EOF probes, metadata, physical retries,
+and all writes have separate costs.
+
 `open_with_auto_reclaim` opts one handle into synchronous maintenance. On
 open it clears abandoned private stages within the catalog and retires any
 verified inactive generation. Before writing to a nonempty suffix, it rotates

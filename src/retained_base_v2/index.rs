@@ -476,6 +476,7 @@ impl IndexedBase {
     pub(crate) fn visit_selected_block_lengths<'a>(
         &self,
         keys: impl Iterator<Item = &'a [u8]>,
+        mut before_block: impl FnMut(u64) -> io::Result<()>,
         mut visit: impl FnMut(&[u8], usize) -> io::Result<()>,
     ) -> io::Result<()> {
         self.check_length()?;
@@ -518,9 +519,9 @@ impl IndexedBase {
             {
                 keys.next();
             }
-            self.visit_block(&self.blocks[position], |key, value| {
-                visit(key, value.remaining)
-            })?;
+            let block = &self.blocks[position];
+            before_block(block.end - block.start)?;
+            self.visit_block(block, |key, value| visit(key, value.remaining))?;
         }
         Ok(())
     }

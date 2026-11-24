@@ -954,6 +954,7 @@ fn sparse_rebase_sizes_touched_blocks_and_authenticates_skipped_blocks_before_pu
             inner.suffix_file(),
             inner.limits.suffix,
             inner.hash.clone().finalize().into(),
+            |_| Ok(()),
         )
         .unwrap();
     assert_eq!(peaks.encoded_bytes, encoded);
@@ -999,6 +1000,7 @@ fn streamed_rebase_peak_scan_rejects_rechecksummed_superseded_values() {
             inner.suffix_file(),
             inner.limits.suffix,
             expected,
+            |_| Ok(()),
         )
     };
     assert_eq!(peaks().unwrap().entries, 2);
@@ -1491,7 +1493,7 @@ fn successor_open_rejects_a_rechecksummed_staged_base() {
     let path = stage.path().join("base");
     let expected = store
         .store
-        .write_rebased_base(&path, LIMITS, u64::MAX)
+        .write_rebased_base(&path, LIMITS, u64::MAX, None)
         .unwrap();
     let mut bytes = fs::read(&path).unwrap();
     let trailer = bytes.len() - 32;
@@ -1544,7 +1546,7 @@ fn rebase_admits_the_successor_index_before_writing_disallowed_blocks() {
 
     let error = store
         .store
-        .write_rebased_base(&path, with_index(0, 64), u64::MAX)
+        .write_rebased_base(&path, with_index(0, 64), u64::MAX, None)
         .unwrap_err();
     assert_eq!(error.to_string(), "retained base block limit exceeded");
     assert!(!path.exists());
@@ -1556,7 +1558,7 @@ fn rebase_admits_the_successor_index_before_writing_disallowed_blocks() {
     let state = store.scan(None, None, 32).unwrap();
     let error = store
         .store
-        .write_rebased_base(&path, with_index(1, anchor.len() - 1), u64::MAX)
+        .write_rebased_base(&path, with_index(1, anchor.len() - 1), u64::MAX, None)
         .unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -1664,6 +1666,89 @@ fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
 }
 
 #[test]
+fn rotation_scan_limit_counts_touched_blocks_suffix_values_and_successor() {
+    use crate::retained_base_v2::{FRAME_BYTES, encoded_entry_bytes};
+
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"a",
+                value: b"fresh",
+            },
+            BatchOperation::Delete { key: b"z" },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"more",
+            },
+        ])
+        .unwrap();
+    let original = Slot::A.path(&f.root);
+    let successor = Slot::B.path(&f.root);
+    let base = fs::read(original.join("base")).unwrap();
+    let log = fs::read(original.join("records.log")).unwrap();
+    let witness = fs::read(original.join("commit.state")).unwrap();
+    let selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let files = catalog_usage(&f.root);
+    let entries = store.scan(None, None, 4).unwrap();
+    let base_bytes = base.len() as u64;
+    assert!(base_bytes - FRAME_BYTES < 1024); // Includes just one touched block.
+    let successor_bytes = FRAME_BYTES
+        + encoded_entry_bytes(b"a", b"fresh".len())
+        + encoded_entry_bytes(b"b", b"more".len());
+    let suffix = store.store.suffix_len as u64;
+    let cap = base_bytes
+        + 2 * (base_bytes - FRAME_BYTES)
+        + 2 * suffix
+        + (b"fresh".len() + b"more".len()) as u64
+        + successor_bytes;
+    for short in [0, cap - 1] {
+        assert!(matches!(
+            store.compact_with_scan_limit(short),
+            Err(RetainedRotationFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidInput
+                    && error.to_string() == "retained rotation scan byte limit exceeded"
+        ));
+        assert!(!successor.exists());
+        assert_eq!(catalog_usage(&f.root), files);
+        assert_eq!(fs::read(original.join("base")).unwrap(), base);
+        assert_eq!(fs::read(original.join("records.log")).unwrap(), log);
+        assert_eq!(fs::read(original.join("commit.state")).unwrap(), witness);
+        assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
+        assert_eq!(store.scan(None, None, 4).unwrap(), entries);
+    }
+    let mut damaged = base.clone();
+    // The final payload byte sits before the unchanged SHA-256 trailer.
+    damaged[base.len() - 33] ^= 1;
+    fs::write(original.join("base"), damaged).unwrap();
+    let reserved = base_bytes + (base_bytes - FRAME_BYTES) + 2 * suffix;
+    assert!(matches!(
+        store.compact_with_scan_limit(reserved),
+        Err(RetainedRotationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(matches!(
+        store.compact_with_scan_limit(cap),
+        Err(RetainedRotationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData
+                && error.to_string() == "retained base block digest mismatch"
+    ));
+    assert!(!successor.exists());
+    fs::write(original.join("base"), base).unwrap();
+    let generation = store.compact_with_scan_limit(cap).unwrap();
+    assert_eq!(
+        fs::metadata(successor.join("base")).unwrap().len(),
+        successor_bytes
+    );
+    assert_eq!(fs::read(original.join("records.log")).unwrap(), log);
+    drop(store);
+    let reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), generation);
+    assert_eq!(reopened.scan(None, None, 4).unwrap(), entries);
+}
+
+#[test]
 fn detailed_rotation_reports_successor_sync_failure_before_selection() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();
@@ -1672,6 +1757,7 @@ fn detailed_rotation_reports_successor_sync_failure_before_selection() {
     let selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
     let result = store.compact_detailed_using(
         LIMITS,
+        None,
         None,
         || panic!("selection must not start"),
         |root| {
@@ -1714,6 +1800,7 @@ fn selection_failure_before_rename_leaves_only_old_slot_authorized() {
     let result = store.compact_detailed_using(
         LIMITS,
         None,
+        None,
         || Err(io::Error::other("before selection")),
         sync_existing,
         sync_existing,
@@ -1743,6 +1830,7 @@ fn selection_sync_failure_blocks_writes_and_reclaim_until_reopen() {
     let old = store.active.clone();
     let result = store.compact_detailed_using(
         LIMITS,
+        None,
         None,
         || Ok(()),
         sync_existing,

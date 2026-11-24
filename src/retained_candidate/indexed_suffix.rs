@@ -227,6 +227,7 @@ impl Overlay {
         suffix: SuffixFile<'_>,
         limits: SuffixLimits,
         expected: [u8; 32],
+        mut charge: impl FnMut(u64) -> io::Result<()>,
     ) -> io::Result<LivePeaks> {
         let mut present = Vec::new();
         present
@@ -237,7 +238,7 @@ impl Overlay {
         let mut encoded_bytes = initial.file_bytes - FRAME_BYTES;
         let keys = self.entries.iter().map(|entry| entry.key.as_slice());
         let mut touched = keys.clone().enumerate().peekable();
-        base.visit_selected_block_lengths(keys, |key, value_len| {
+        base.visit_selected_block_lengths(keys, &mut charge, |key, value_len| {
             // Selected base blocks arrive in key order, so each suffix key
             // can be discarded as soon as the scan has passed it.
             while let Some(&(position, candidate)) = touched.peek() {
@@ -262,6 +263,8 @@ impl Overlay {
         })?;
         for entry in &self.entries {
             if let Some(value) = &entry.value {
+                // Reserve the source value read that the later merge needs.
+                charge(value.range.len() as u64)?;
                 encoded_bytes = encoded_bytes
                     .checked_add(encoded_entry_bytes(&entry.key, value.range.len()))
                     .ok_or_else(|| record::invalid_data("retained encoded size overflow"))?;

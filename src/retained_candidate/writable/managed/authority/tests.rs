@@ -875,6 +875,45 @@ fn competing_copies_can_acknowledge_only_one_append() {
 }
 
 #[test]
+fn rotation_scan_limit_preserves_authority_on_rejection() {
+    use crate::retained_base_v2::FRAME_BYTES;
+
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"base", b"earlier!").unwrap();
+    store.put(b"base", b"latest!!").unwrap();
+    let original = Slot::A.path(&f.root);
+    let successor = Slot::B.path(&f.root);
+    let base = fs::metadata(original.join("base")).unwrap().len();
+    let suffix = store.inner.store.suffix_len as u64;
+    let cap = 2 * base + 2 * (base - FRAME_BYTES) + 2 * suffix + b"latest!!".len() as u64;
+    let current = f.provider.read().unwrap().unwrap();
+    let log = fs::read(original.join("records.log")).unwrap();
+    let witness = fs::read(original.join("commit.state")).unwrap();
+    assert!(matches!(
+        store.compact_with_scan_limit(cap - 1),
+        Err(RetainedRotationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "retained rotation scan byte limit exceeded"
+    ));
+    assert_eq!(f.provider.read().unwrap(), Some(current));
+    assert!(!successor.exists());
+    assert_eq!(fs::read(original.join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(original.join("commit.state")).unwrap(), witness);
+    let generation = store.compact_with_scan_limit(cap).unwrap();
+    assert_eq!(
+        f.provider.read().unwrap().unwrap().committed.generation,
+        generation
+    );
+    drop(store);
+    assert_eq!(
+        f.open().get(b"base", 8).unwrap().as_deref(),
+        Some(&b"latest!!"[..])
+    );
+}
+
+#[test]
 fn selected_rotation_resets_the_suffix_and_reuses_both_slots() {
     let mut f = Fixture::prepare();
     f.register();
@@ -1032,7 +1071,7 @@ fn detailed_rotation_reports_successor_sync_failure_before_authority_advance() {
     let mut store = f.open();
     store.put(b"ack", b"kept").unwrap();
     let prior = store.current;
-    let result = store.compact_detailed_using(LIMITS, None, |root| {
+    let result = store.compact_detailed_using(LIMITS, None, None, |root| {
         assert!(Slot::B.path(root).is_dir());
         assert_eq!(*f.provider.record.lock().unwrap(), Some(prior));
         Err(io::Error::other("successor sync"))
