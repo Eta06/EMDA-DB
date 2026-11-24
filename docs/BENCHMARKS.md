@@ -420,6 +420,11 @@ Compacted record bytes matched in every run. The checkpoint-backed path also emi
 
 The [document comparison report](DOCUMENT_COMPARISON_2026_11_04.md) records a four-round single-client baseline for the prototype, SQLite, PostgreSQL and MongoDB, including raw samples, versioned configurations and differences in adapters and guarantees. It is a small hot dataset and does not establish broader performance or reliability.
 
+The [unique-tuple relationship comparison](../benchmarks/results/2026-11-24-unique-tuple-lookup-sqlite/README.md)
+compares a bounded EMDA lookup with a SQLite partial-index left join.
+Both runs verify every result and preserve all timings, the workload
+source, and the SQLite plan.
+
 ## Embedded document scaling harness
 
 `scripts/document_scale_compare.py` repeats the in-process prototype and SQLite document workload with a configurable nonempty indexed collection. The release example inserts the baseline in 32-document transactions and times create/read/replace/indexed-lookup/delete cycles for separate transient documents. After reopening, the prototype checks every baseline document and every deleted ID by primary key, then traverses the email index. SQLite checks every row and runs `integrity_check`. The script rotates engine order, validates every sample count, retains raw results and failures, and records VM/cgroup noise. Prototype log format, process high-water RSS and file sizes are recorded. Process RSS excludes page cache. Setup and verification are outside the individual operation timers but inside telemetry windows. Optionally provide `--baseline-binary /path/to/older/document_bench` to rotate an older prototype binary, the current prototype and SQLite for a before/after comparison. The workload uses a single client and a clean reopen.
