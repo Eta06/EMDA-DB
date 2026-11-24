@@ -2,7 +2,6 @@
 use super::*;
 use crate::log::ValueLocation;
 use crate::record::batch::BatchLayout;
-use std::collections::BTreeSet;
 
 #[derive(Clone, Copy)]
 pub(super) enum Mutation<'a> {
@@ -18,12 +17,36 @@ impl<'a> Mutation<'a> {
         }
     }
 
-    fn keys(self) -> impl Iterator<Item = &'a [u8]> {
-        let (key, batch) = match self {
-            Self::Single(_, key, _) => (Some(key), &[][..]),
-            Self::Batch(batch) => (None, batch.operations()),
-        };
-        key.into_iter().chain(batch.iter().map(|op| op.fields().1))
+    fn distinct_keys(self) -> io::Result<MutationKeys<'a>> {
+        match self {
+            Self::Single(_, key, _) => Ok(MutationKeys::Single([key])),
+            Self::Batch(batch) => {
+                if let [child] = batch.operations() {
+                    return Ok(MutationKeys::Single([child.fields().1]));
+                }
+                let mut keys = Vec::new();
+                keys.try_reserve_exact(batch.operations().len())
+                    .map_err(|_| io::Error::other("checkpoint batch key allocation failed"))?;
+                keys.extend(batch.operations().iter().map(|child| child.fields().1));
+                keys.sort_unstable();
+                keys.dedup();
+                Ok(MutationKeys::Batch(keys))
+            }
+        }
+    }
+}
+
+enum MutationKeys<'a> {
+    Single([&'a [u8]; 1]),
+    Batch(Vec<&'a [u8]>),
+}
+
+impl<'a> MutationKeys<'a> {
+    fn as_slice(&self) -> &[&'a [u8]] {
+        match self {
+            Self::Single(key) => key,
+            Self::Batch(keys) => keys,
+        }
     }
 }
 
@@ -99,19 +122,40 @@ impl CheckpointStore {
         if self.max_log_bytes.is_some_and(|max| next_log > max) {
             return Err(io::Error::other("configured log byte limit would be exceeded").into());
         }
-        let admission = self.admit_suffix(&state, length, mutation);
-        let (next_tail, next_operations, new_key_bytes) = match admission {
-            Ok(admitted) => admitted,
-            Err(_)
-                if state.automatic
-                    && state.view.tail_bytes > 0
-                    && self.fits_empty_suffix(length, mutation) =>
-            {
+        let operations = mutation.operations();
+        let can_rollover = state.automatic
+            && state.view.tail_bytes > 0
+            && length as u64 <= self.max_tail_bytes
+            && self.max_tail_operations.is_none_or(|max| operations <= max);
+        let current = self.admit_suffix_length(
+            state.view.tail_bytes,
+            state.view.tail_operations,
+            length,
+            operations,
+        );
+        let current = match current {
+            Err(error) if !can_rollover => return Err(error.into()),
+            current => current,
+        };
+        let distinct = mutation.distinct_keys()?;
+        let keys = distinct.as_slice();
+        let admitted = current.and_then(|(bytes, operations)| {
+            self.admit_suffix_keys(&state, keys)
+                .map(|key_bytes| (bytes, operations, key_bytes))
+        });
+        let (next_tail, next_operations, new_key_bytes) = match admitted {
+            Ok(value) => value,
+            Err(_) if can_rollover && self.fits_empty_suffix_keys(keys) => {
                 state = self.automatic_rollover(state)?;
-                self.admit_suffix(&state, length, mutation)?
+                (
+                    length as u64,
+                    operations,
+                    self.admit_suffix_keys(&state, keys)?,
+                )
             }
             Err(error) => return Err(error.into()),
         };
+        drop(distinct);
         let owned_key = (operation != Operation::Batch && !state.view.overlay.contains_key(key))
             .then(|| Arc::<[u8]>::from(key));
         // A snapshot can pin this overlay. Detach before submission, keeping
@@ -201,22 +245,19 @@ impl CheckpointStore {
         Ok(())
     }
 
-    fn admit_suffix(
+    fn admit_suffix_length(
         &self,
-        state: &State,
+        tail_bytes: u64,
+        tail_operations: u64,
         length: usize,
-        mutation: Mutation<'_>,
-    ) -> io::Result<(u64, u64, usize)> {
-        let next_tail = state
-            .view
-            .tail_bytes
+        operations: u64,
+    ) -> io::Result<(u64, u64)> {
+        let next_tail = tail_bytes
             .checked_add(length as u64)
             .filter(|total| *total <= self.max_tail_bytes)
             .ok_or_else(|| io::Error::other("checkpoint suffix byte limit would be exceeded"))?;
-        let next_operations = state
-            .view
-            .tail_operations
-            .checked_add(mutation.operations())
+        let next_operations = tail_operations
+            .checked_add(operations)
             .filter(|&count| self.max_tail_operations.is_none_or(|limit| count <= limit))
             .ok_or_else(|| {
                 io::Error::new(
@@ -224,41 +265,29 @@ impl CheckpointStore {
                     "checkpoint suffix operation limit exceeded",
                 )
             })?;
-        let new_keys = mutation
-            .keys()
-            .filter(|key| !state.view.overlay.contains_key(*key))
-            .collect::<BTreeSet<_>>();
-        if state.view.overlay.len() + new_keys.len() > self.max_tail_keys {
+        Ok((next_tail, next_operations))
+    }
+
+    fn admit_suffix_keys(&self, state: &State, keys: &[&[u8]]) -> io::Result<usize> {
+        // A validated mutation has at most 1,024 keys of 1,024 bytes each.
+        let (count, bytes) = keys
+            .iter()
+            .filter(|key| !state.view.overlay.contains_key(**key))
+            .fold((0, 0), |(count, bytes), key| (count + 1, bytes + key.len()));
+        if state.view.overlay.len() + count > self.max_tail_keys {
             return Err(io::Error::other(
                 "checkpoint suffix key limit would be exceeded",
             ));
         }
-        let new_key_bytes = new_keys
-            .iter()
-            .try_fold(state.overlay_key_bytes, |sum, key| {
-                sum.checked_add(key.len())
-                    .filter(|total| *total <= self.max_tail_key_bytes)
-                    .ok_or_else(|| {
-                        io::Error::other("checkpoint suffix key byte limit would be exceeded")
-                    })
-            })?;
-        Ok((next_tail, next_operations, new_key_bytes))
+        state
+            .overlay_key_bytes
+            .checked_add(bytes)
+            .filter(|total| *total <= self.max_tail_key_bytes)
+            .ok_or_else(|| io::Error::other("checkpoint suffix key byte limit would be exceeded"))
     }
 
-    fn fits_empty_suffix(&self, length: usize, mutation: Mutation<'_>) -> bool {
-        if length as u64 > self.max_tail_bytes
-            || self
-                .max_tail_operations
-                .is_some_and(|limit| mutation.operations() > limit)
-        {
-            return false;
-        }
-        let keys = mutation.keys().collect::<BTreeSet<_>>();
-        if keys.len() > self.max_tail_keys {
-            return false;
-        }
-        keys.into_iter()
-            .try_fold(0_usize, |sum, key| sum.checked_add(key.len()))
-            .is_some_and(|bytes| bytes <= self.max_tail_key_bytes)
+    fn fits_empty_suffix_keys(&self, keys: &[&[u8]]) -> bool {
+        keys.len() <= self.max_tail_keys
+            && keys.iter().map(|key| key.len()).sum::<usize>() <= self.max_tail_key_bytes
     }
 }

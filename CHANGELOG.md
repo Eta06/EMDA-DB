@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse the same distinct batch keys for checkpoint suffix admission and
+  automatic rollover. Single-key admission uses no heap scratch space.
+
 - Prepare checkpoint batch value locations during encoding, before append.
 
 - Complete managed checkpoint staging cleanup before adopting a pending tail.

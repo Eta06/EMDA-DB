@@ -360,6 +360,73 @@ fn suffix_operation_limit_survives_automatic_rollover_and_managed_reopen() {
 }
 
 #[test]
+fn duplicate_batch_keys_fit_exact_limits_after_automatic_rollover() {
+    let (dir, path, checkpoint, digest, _) = fixture();
+    let limits = CheckpointStoreLimits {
+        max_tail_keys: 2,
+        max_tail_key_bytes: 4,
+        ..Default::default()
+    };
+    let store =
+        CheckpointStore::open_with_suffix_operation_limit(&path, &checkpoint, &digest, limits, 4)
+            .unwrap();
+    store.rollover_managed(dir.path().join("managed")).unwrap();
+    store.enable_automatic_checkpoints().unwrap();
+    store.put(b"old", b"kept").unwrap();
+    let log = path.join("records.log");
+    let selection = path.join("checkpoint.selection");
+    let before = fs::read(&log).unwrap();
+    let initial_selection = fs::read(&selection).unwrap();
+    let error = store
+        .write_batch(&[
+            BatchOperation::Delete { key: b"aaa" },
+            BatchOperation::Delete { key: b"bb" },
+        ])
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "checkpoint suffix key limit would be exceeded"
+    );
+    assert_eq!(fs::read(&log).unwrap(), before);
+    assert_eq!(fs::read(&selection).unwrap(), initial_selection);
+
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"aa",
+                value: b"first",
+            },
+            BatchOperation::Delete { key: b"aa" },
+            BatchOperation::Put {
+                key: b"bb",
+                value: b"second",
+            },
+            BatchOperation::Put {
+                key: b"aa",
+                value: b"last",
+            },
+        ])
+        .unwrap();
+    assert_ne!(fs::read(&selection).unwrap(), initial_selection);
+    drop(store);
+
+    let store =
+        CheckpointStore::open_managed_with_suffix_operation_limit(&path, limits, 4).unwrap();
+    assert_eq!(
+        store.get(b"aa").unwrap().as_deref(),
+        Some(b"last".as_slice())
+    );
+    assert_eq!(
+        store.get(b"bb").unwrap().as_deref(),
+        Some(b"second".as_slice())
+    );
+    assert_eq!(
+        store.get(b"old").unwrap().as_deref(),
+        Some(b"kept".as_slice())
+    );
+}
+
+#[test]
 fn concurrent_batches_cannot_oversubscribe_suffix_operations() {
     let (_dir, path, checkpoint, digest, _) = fixture();
     let open = || {
