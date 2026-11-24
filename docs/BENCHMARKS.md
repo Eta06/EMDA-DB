@@ -42,6 +42,10 @@ replace the raw results. Retain measured CI artifacts in the repository
 before the provider's artifact retention period expires.
 The CI and release smoke workflows upload the attempt records and
 generated sample reports even when a benchmark command fails.
+An active `main` CI run can finish uploading its results after a newer
+push. GitHub keeps the newest pending run in that branch's queue and
+supersedes stale pull request runs. See the
+[workflow concurrency rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
 
 Existing comparisons are linked throughout this page. Start with the
 [ten-engine matrix](LOCAL_COMPARISON_2026_11_03.md), the
