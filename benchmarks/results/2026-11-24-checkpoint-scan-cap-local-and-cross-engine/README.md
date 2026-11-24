@@ -13,3 +13,6 @@ fixture then reopens at the lower acknowledged-log budget.
 
 [Cross-engine smoke](https://github.com/Eta06/EMDA-DB/actions/runs/45349825327) ·
 [Storage contract](../../../docs/STORAGE_TRANSACTION_CONTRACT.md)
+
+The [Linux syscall evidence](../2026-11-24-checkpoint-recovery-scan-syscalls/README.md)
+also verifies both witness formats and both writable open paths.
