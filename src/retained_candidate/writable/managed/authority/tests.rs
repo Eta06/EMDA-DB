@@ -734,7 +734,27 @@ fn recovery_adopts_an_exact_proposed_tail_before_finalizing_a_pending_intent() {
     assert_eq!(fs::read(&witnessed_path).unwrap(), witness);
     assert_eq!(f.provider.clone().read().unwrap(), authority);
 
-    let mut recovered = open((2 * encoded.len()) as u64).unwrap();
+    let base_bytes = fs::metadata(Slot::A.path(&f.root).join("base"))
+        .unwrap()
+        .len();
+    let open_combined = |cap| {
+        AuthorizedRetainedStore::open_with_recovery_scan_limit(
+            &f.root,
+            LIMITS,
+            f.provider.clone(),
+            cap,
+            None,
+        )
+    };
+    let cap = base_bytes + (2 * encoded.len()) as u64;
+    assert_eq!(
+        open_combined(cap - 1).err().unwrap().to_string(),
+        "retained recovery scan byte limit exceeded"
+    );
+    assert_eq!(fs::read(&log_path).unwrap(), original_log);
+    assert_eq!(fs::read(&witnessed_path).unwrap(), witness);
+    assert_eq!(f.provider.clone().read().unwrap(), authority);
+    let mut recovered = open_combined(cap).unwrap();
     assert_eq!(recovered.get(b"pending", 8).unwrap().unwrap(), b"proposed");
     let current = f.provider.read().unwrap().unwrap();
     assert_eq!(current.committed.suffix_end, encoded.len() as u64);

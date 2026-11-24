@@ -84,6 +84,34 @@ enum RecoveryLimits {
     Ceiling(RetainedStoreLimits),
 }
 
+#[derive(Clone, Copy)]
+enum RecoveryScanLimit {
+    Suffix(u64),
+    BaseAndSuffix(u64),
+}
+
+impl RecoveryScanLimit {
+    fn admit(self, base: u64, suffix: u64, pending: bool) -> io::Result<()> {
+        let (base, limit, message) = match self {
+            Self::Suffix(limit) => (
+                0,
+                limit,
+                "retained recovery suffix scan byte limit exceeded",
+            ),
+            Self::BaseAndSuffix(limit) => {
+                (base, limit, "retained recovery scan byte limit exceeded")
+            }
+        };
+        let confirmation = if pending { suffix } else { 0 };
+        suffix
+            .checked_add(confirmation)
+            .and_then(|scans| scans.checked_add(base))
+            .filter(|&scans| scans <= limit)
+            .map(|_| ())
+            .ok_or_else(|| invalid_input(message))
+    }
+}
+
 /// An independently created writable retained generation. It keeps one
 /// immutable, authenticated base on disk and admits writes to a bounded
 /// suffix. The existing source and candidate remain separate copies.
@@ -165,7 +193,7 @@ impl RetainedStore {
                 return Err(invalid_input("destination parent is inside candidate"));
             }
             check_files(candidate, expected)?;
-            let base_size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+            let base_size = expected.base_bytes();
             if base_size > limits.base.file_bytes
                 || base_size
                     .checked_add(1)
@@ -275,7 +303,27 @@ impl RetainedStore {
             directory.as_ref(),
             limits,
             expected,
-            Some(max_suffix_scan_bytes),
+            Some(RecoveryScanLimit::Suffix(max_suffix_scan_bytes)),
+            crate::directory::sync_existing,
+        )
+    }
+
+    /// Recover under an inclusive logical byte limit for the full encoded
+    /// base and suffix scans. Replay charges the suffix once, and a pending
+    /// local tail needs a second scan before adoption. Admission precedes
+    /// both payload scans. Metadata and framing probes, physical I/O retries,
+    /// and later reads have separate costs. Supply the limit on each open.
+    pub fn open_with_recovery_scan_limit(
+        directory: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        expected: &Expected,
+        max_scan_bytes: u64,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            directory.as_ref(),
+            limits,
+            expected,
+            Some(RecoveryScanLimit::BaseAndSuffix(max_scan_bytes)),
             crate::directory::sync_existing,
         )
     }
@@ -284,12 +332,12 @@ impl RetainedStore {
         dir: &Path,
         limits: RetainedStoreLimits,
         expected: &Expected,
-        max_suffix_scan_bytes: Option<u64>,
+        scan_limit: Option<RecoveryScanLimit>,
         sync_directory: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<Self> {
         Self::open_role(
             dir,
-            (RecoveryLimits::Exact(limits), max_suffix_scan_bytes),
+            (RecoveryLimits::Exact(limits), scan_limit),
             expected,
             (GenerationRole::Standalone, None, None),
             |_, _| Ok(()),
@@ -300,7 +348,7 @@ impl RetainedStore {
 
     fn open_role(
         dir: &Path,
-        (limits, max_suffix_scan_bytes): (RecoveryLimits, Option<u64>),
+        (limits, scan_limit): (RecoveryLimits, Option<RecoveryScanLimit>),
         expected: &Expected,
         (role, generation, imported_base): (GenerationRole, Option<[u8; 16]>, Option<BaseImport>),
         preflight: impl FnOnce(&Header, u64) -> io::Result<()>,
@@ -334,16 +382,8 @@ impl RetainedStore {
             return Err(invalid_input("suffix byte limit exceeded"));
         }
         let pending = committed < suffix_len;
-        if let Some(limit) = max_suffix_scan_bytes {
-            let confirmation = if pending { suffix_len } else { 0 };
-            if suffix_len
-                .checked_add(confirmation)
-                .is_none_or(|scan_bytes| scan_bytes > limit)
-            {
-                return Err(invalid_input(
-                    "retained recovery suffix scan byte limit exceeded",
-                ));
-            }
+        if let Some(limit) = scan_limit {
+            limit.admit(expected.base_bytes(), suffix_len, pending)?;
         }
         preflight(&header, suffix_len)?;
         let base_path = dir.join("base");
@@ -380,7 +420,11 @@ impl RetainedStore {
             RecoveryBase::Local(file) => file,
         };
         // A rejected suffix cannot trigger a base copy or full base scan.
-        let base = IndexedBase::open(base, limits.base, limits.index)?;
+        let mut base_limits = limits.base;
+        if matches!(scan_limit, Some(RecoveryScanLimit::BaseAndSuffix(_))) {
+            base_limits.file_bytes = base_limits.file_bytes.min(expected.base_bytes());
+        }
+        let base = IndexedBase::open(base, base_limits, limits.index)?;
         check_binding(base.metadata(), expected)?;
         lock.verify_identity(dir)?;
         verify_files(&log, &witness, header.bytes(), log_size, &saved)?;
@@ -656,7 +700,7 @@ impl BaseImport {
         expected: &Expected,
         max_output_bytes: u64,
     ) -> io::Result<Self> {
-        let size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+        let size = expected.base_bytes();
         if size > max_output_bytes {
             return Err(invalid_input("catalog byte limit exceeded"));
         }
@@ -687,7 +731,7 @@ impl BaseImport {
 }
 
 fn preflight_base(base: &File, limits: RetainedStoreLimits, expected: &Expected) -> io::Result<()> {
-    let size = u64::from_le_bytes(expected.header[48..56].try_into().unwrap());
+    let size = expected.base_bytes();
     if base.metadata()?.len() != size {
         return Err(record::invalid_data(
             "retained base length does not match its binding",

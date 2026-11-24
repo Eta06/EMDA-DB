@@ -34,6 +34,10 @@ pub struct Expected {
 }
 
 impl Expected {
+    fn base_bytes(&self) -> u64 {
+        u64::from_le_bytes(self.header[48..56].try_into().unwrap())
+    }
+
     fn base_binding(&self) -> retained_base_v2::Expected {
         retained_base_v2::Expected {
             digest: self.base_digest,

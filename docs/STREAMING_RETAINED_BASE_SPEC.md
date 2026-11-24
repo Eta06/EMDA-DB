@@ -287,6 +287,15 @@ and authority intent in place. Header, witness, base and catalog reads,
 physical I/O retries, and reads after open are outside this per-open
 ceiling. Catalog opens can apply a storage ceiling at the same time.
 
+The same three open paths provide `open_with_recovery_scan_limit` to
+cap the combined logical work of one complete encoded base scan and the
+required suffix scans. Admission uses the bound base length and the
+physical suffix length before reading either payload. One byte below
+the required sum returns `InvalidInput`; an exact fit proceeds with full
+authentication. This per-open budget also excludes the base framing and
+EOF probes. Persisted generation and catalog limits still apply, and
+authority-backed opens preserve any pending intent on budget rejection.
+
 Mutations require exclusive use of the handle.
 The encoder checks physical suffix bytes and ordered operation count before
 allocating an encoded put, delete, or batch. With automatic rotation, the

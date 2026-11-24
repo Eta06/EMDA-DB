@@ -465,7 +465,33 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             root.as_ref(),
             limits,
             authority,
-            (storage_limits, Some(max_suffix_scan_bytes)),
+            (
+                storage_limits,
+                Some(RecoveryScanLimit::Suffix(max_suffix_scan_bytes)),
+            ),
+            RetainedStore::sync_recovered_commit,
+        )
+    }
+
+    /// Recover under the combined base and suffix budget of
+    /// [`RetainedStore::open_with_recovery_scan_limit`]. A budget rejection
+    /// precedes tail adoption and resolution of an authority intent.
+    /// An optional catalog storage ceiling is applied separately.
+    pub fn open_with_recovery_scan_limit(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        authority: A,
+        max_scan_bytes: u64,
+        storage_limits: Option<CatalogStorageLimits>,
+    ) -> io::Result<Self> {
+        Self::open_using(
+            root.as_ref(),
+            limits,
+            authority,
+            (
+                storage_limits,
+                Some(RecoveryScanLimit::BaseAndSuffix(max_scan_bytes)),
+            ),
             RetainedStore::sync_recovered_commit,
         )
     }
@@ -499,7 +525,7 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         root: &Path,
         limits: RetainedStoreLimits,
         mut authority: A,
-        recovery_admission: (Option<CatalogStorageLimits>, Option<u64>),
+        recovery_admission: (Option<CatalogStorageLimits>, Option<RecoveryScanLimit>),
         sync_recovered_commit: impl FnOnce(&RetainedStore) -> io::Result<()>,
     ) -> io::Result<Self> {
         let current = authority

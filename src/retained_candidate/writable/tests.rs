@@ -917,6 +917,55 @@ fn recovery_suffix_scan_budget_counts_replay_and_confirmation() {
 }
 
 #[test]
+fn recovery_scan_budget_includes_the_base_before_checking_payloads() {
+    let f = Fixture::new(LIMITS);
+    let base = f.path.join("base");
+    let original_base = fs::read(&base).unwrap();
+    let base_bytes = original_base.len() as u64;
+    let open =
+        |cap| RetainedStore::open_with_recovery_scan_limit(&f.path, LIMITS, &f.expected, cap);
+    let error = open(base_bytes - 1).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "retained recovery scan byte limit exceeded"
+    );
+    drop(open(base_bytes).unwrap());
+
+    let tail = record::encode(Operation::Put, b"pending", b"proposed").unwrap();
+    f.append_unacknowledged(&tail);
+    let exact_pending = base_bytes + 2 * tail.len() as u64;
+    let log = fs::read(f.log()).unwrap();
+    let witness = fs::read(f.witness()).unwrap();
+    let mut damaged = original_base.clone();
+    damaged[base_bytes as usize - 33] ^= 1;
+    fs::write(&base, &damaged).unwrap();
+    let error = open(exact_pending - 1).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        error.to_string(),
+        "retained recovery scan byte limit exceeded"
+    );
+    assert_eq!(
+        open(exact_pending).err().unwrap().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(fs::read(&base).unwrap(), damaged);
+    assert_eq!(fs::read(f.witness()).unwrap(), witness);
+    assert_eq!(fs::read(f.log()).unwrap(), log);
+
+    fs::write(&base, original_base).unwrap();
+    drop(open(exact_pending).unwrap());
+    let committed = open(base_bytes + tail.len() as u64).unwrap();
+    assert_eq!(
+        committed.get(b"pending", 8).unwrap().as_deref(),
+        Some(&b"proposed"[..])
+    );
+    assert_ne!(fs::read(f.witness()).unwrap(), witness);
+    assert_eq!(fs::read(f.log()).unwrap(), log);
+}
+
+#[test]
 fn recovery_rejects_a_mismatched_base_length_before_decoding_the_suffix() {
     let f = Fixture::new(LIMITS);
     let path = f.path.join("base");

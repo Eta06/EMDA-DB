@@ -168,42 +168,55 @@ def check_retained_scan(binary, directory, fmt):
         complete = witness.read_bytes()
         log_bytes, selection_bytes = log.read_bytes(), selection.read_bytes()
         assert old != complete
-        witness.write_bytes(old)
+        base_bytes = base.stat().st_size
         suffix_bytes = len(log_bytes) - header
         assert suffix_bytes > 0
         trace = root / "scan.trace"
         command = ["strace", "-qq", "-y", "-o", trace, "-e", "trace=read,pread64"]
-        checks = []
-        for cap, scans, accepted in ((2 * suffix_bytes - 1, 0, False),
-                                     (2 * suffix_bytes, 2, True),
-                                     (suffix_bytes - 1, 0, False),
-                                     (suffix_bytes, 1, True)):
-            previous = witness.read_bytes()
-            outcome = probe(*command, binary, "attempt-retained-scan", root, str(cap))
-            lines = trace.read_text().splitlines()
-            requests = []
-            for line in lines:
-                if line.startswith("pread64(") and f"<{log}>" in line:
-                    chunks = re.search(r", (\d+), (\d+)\)\s+= (\d+)$", line)
-                    assert chunks, line
-                    requested, offset, returned = map(int, chunks.groups())
-                    assert requested == returned, line
-                    if offset >= header:
-                        requests.append(requested)
-            assert sum(requests) == scans * suffix_bytes, requests
-            if accepted:
-                assert outcome == {"status": "success"}, outcome
-                assert witness.read_bytes() == complete
-            else:
-                assert outcome == {"status": "error", "kind": "InvalidInput",
-                                   "message": "retained recovery suffix scan byte limit exceeded"}, outcome
-                assert witness.read_bytes() == previous
-                assert not any(f"<{base}>" in line for line in lines), lines
-            assert log.read_bytes() == log_bytes and selection.read_bytes() == selection_bytes
-            checks.append(dict(cap=cap, outcome=outcome, suffix_reads=requests, trace=lines))
-        assert probe(binary, "verify-retained-scan", root) == {"status": "verified"}
-        print(json.dumps(dict(rebuild="retained-managed", format=fmt, point="retained recovery suffix scan limit",
-                              suffix_bytes=suffix_bytes, checks=checks)), flush=True)
+        for combined in (False, True):
+            witness.write_bytes(old)
+            base_cost = base_bytes if combined else 0
+            operation = "attempt-retained-combined-scan" if combined else "attempt-retained-scan"
+            name = "retained recovery scan" if combined else "retained recovery suffix scan"
+            checks = []
+            for scans, accepted in ((2, False), (2, True), (1, False), (1, True)):
+                cap = base_cost + scans * suffix_bytes - int(not accepted)
+                previous = witness.read_bytes()
+                outcome = probe(*command, binary, operation, root, str(cap))
+                lines = trace.read_text().splitlines()
+                suffix_reads = []
+                base_reads = []
+                for line in lines:
+                    if line.startswith("pread64(") and f"<{log}>" in line:
+                        chunks = re.search(r", (\d+), (\d+)\)\s+= (\d+)$", line)
+                        assert chunks, line
+                        requested, offset, returned = map(int, chunks.groups())
+                        assert requested == returned, line
+                        if offset >= header:
+                            suffix_reads.append(returned)
+                    if line.startswith("read(") and f"<{base}>" in line:
+                        size = re.search(r", \d+\)\s+= (\d+)$", line)
+                        assert size, line
+                        base_reads.append(int(size[1]))
+                assert sum(suffix_reads) == (scans * suffix_bytes if accepted else 0), suffix_reads
+                assert sum(base_reads) == (base_bytes if accepted else 0), base_reads
+                if accepted:
+                    assert outcome == {"status": "success"}, outcome
+                    assert witness.read_bytes() == complete
+                    if combined:
+                        assert sum(suffix_reads) + sum(base_reads) == cap
+                else:
+                    assert outcome == {"status": "error", "kind": "InvalidInput",
+                                       "message": f"{name} byte limit exceeded"}, outcome
+                    assert witness.read_bytes() == previous
+                    assert not any(f"<{base}>" in line for line in lines), lines
+                assert log.read_bytes() == log_bytes and selection.read_bytes() == selection_bytes
+                checks.append(dict(cap=cap, outcome=outcome, suffix_reads=suffix_reads,
+                                   base_reads=base_reads, trace=lines))
+            assert probe(binary, "verify-retained-scan", root) == {"status": "verified"}
+            print(json.dumps(dict(rebuild="retained-managed", format=fmt, point=f"{name} limit",
+                                  base_bytes=base_bytes, suffix_bytes=suffix_bytes,
+                                  checks=checks)), flush=True)
 
 
 def main():

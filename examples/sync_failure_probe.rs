@@ -1053,20 +1053,32 @@ fn prepare_retained_scan(root: &Path) -> ProbeResult<()> {
     Ok(())
 }
 
-fn attempt_retained_scan(root: &Path, cap: Option<u64>) -> ProbeResult<()> {
+fn attempt_retained_scan(root: &Path, cap: Option<(u64, bool)>) -> ProbeResult<()> {
     let catalog = root.join("scan-catalog");
     let result = match cap {
-        Some(cap) => match ManagedRetainedStore::open_with_suffix_scan_limit(
-            catalog,
-            RETAINED_FIXTURE_LIMITS,
-            cap,
-            None,
-        ) {
-            Ok(_) => json!({"status":"success"}),
-            Err(error) => {
-                json!({"status":"error","kind":format!("{:?}", error.kind()),"message":error.to_string()})
+        Some((cap, combined)) => {
+            let opened = if combined {
+                ManagedRetainedStore::open_with_recovery_scan_limit(
+                    catalog,
+                    RETAINED_FIXTURE_LIMITS,
+                    cap,
+                    None,
+                )
+            } else {
+                ManagedRetainedStore::open_with_suffix_scan_limit(
+                    catalog,
+                    RETAINED_FIXTURE_LIMITS,
+                    cap,
+                    None,
+                )
+            };
+            match opened {
+                Ok(_) => json!({"status":"success"}),
+                Err(error) => {
+                    json!({"status":"error","kind":format!("{:?}", error.kind()),"message":error.to_string()})
+                }
             }
-        },
+        }
         None => {
             let store = ManagedRetainedStore::open(catalog, RETAINED_FIXTURE_LIMITS)?;
             if store.get(b"head", 5)?.as_deref() != Some(b"first")
@@ -1086,7 +1098,9 @@ fn main() -> ProbeResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
         [command, root] if command == "prepare-retained-scan" => prepare_retained_scan(Path::new(root)),
-        [command, root, cap] if command == "attempt-retained-scan" => attempt_retained_scan(Path::new(root), Some(cap.parse()?)),
+        [command, root, cap] if matches!(command.as_str(), "attempt-retained-scan" | "attempt-retained-combined-scan") => {
+            attempt_retained_scan(Path::new(root), Some((cap.parse()?, command == "attempt-retained-combined-scan")))
+        }
         [command, root] if command == "verify-retained-scan" => attempt_retained_scan(Path::new(root), None),
         [command, root, operation] if command == "archive-retirement" => archive_retirement_probe(Path::new(root), operation),
         [command, root, operation] if command == "authorized-reclamation" => authorized_reclamation_probe(Path::new(root), operation),

@@ -1,7 +1,8 @@
 use super::{
     Append, BaseImport, Expected, GenerationRole, Header, OverlaySource, RecoveryLimits,
-    RetainedStore, RetainedStoreLimits, StoreLock, SuffixImport, create_file, decode_marker,
-    invalid_input, open_regular, open_regular_with, random_id, read_marker, suffix_end,
+    RecoveryScanLimit, RetainedStore, RetainedStoreLimits, StoreLock, SuffixImport, create_file,
+    decode_marker, invalid_input, open_regular, open_regular_with, random_id, read_marker,
+    suffix_end,
 };
 use crate::directory::sync_existing;
 use crate::record;
@@ -481,7 +482,32 @@ impl ManagedRetainedStore {
             root.as_ref(),
             ceiling,
             CATALOG_MAGIC,
-            (storage_limits, Some(max_suffix_scan_bytes)),
+            (
+                storage_limits,
+                Some(RecoveryScanLimit::Suffix(max_suffix_scan_bytes)),
+            ),
+            Active::load,
+            None,
+        )
+    }
+
+    /// Recover the selected generation under the combined base and suffix
+    /// budget of [`RetainedStore::open_with_recovery_scan_limit`]. An optional
+    /// catalog storage ceiling is applied separately.
+    pub fn open_with_recovery_scan_limit(
+        root: impl AsRef<Path>,
+        ceiling: RetainedStoreLimits,
+        max_scan_bytes: u64,
+        storage_limits: Option<CatalogStorageLimits>,
+    ) -> io::Result<Self> {
+        Self::open_role(
+            root.as_ref(),
+            ceiling,
+            CATALOG_MAGIC,
+            (
+                storage_limits,
+                Some(RecoveryScanLimit::BaseAndSuffix(max_scan_bytes)),
+            ),
             Active::load,
             None,
         )
@@ -517,7 +543,7 @@ impl ManagedRetainedStore {
         root: &Path,
         ceiling: RetainedStoreLimits,
         catalog_magic: &'static [u8; 8],
-        (requested_storage, max_suffix_scan_bytes): (Option<CatalogStorageLimits>, Option<u64>),
+        (requested_storage, scan_limit): (Option<CatalogStorageLimits>, Option<RecoveryScanLimit>),
         select: impl FnOnce(&Path, [u8; 16]) -> io::Result<Active>,
         authority: Option<AuthorityRecord>,
     ) -> io::Result<Self> {
@@ -530,7 +556,7 @@ impl ManagedRetainedStore {
         let path = active.slot.path(&root);
         let store = RetainedStore::open_role(
             &path,
-            (RecoveryLimits::Ceiling(ceiling), max_suffix_scan_bytes),
+            (RecoveryLimits::Ceiling(ceiling), scan_limit),
             &active.expected,
             (
                 generation_role(catalog_magic, catalog),

@@ -267,7 +267,24 @@ fn catalog_storage_caps_appends_and_rejects_oversize_recovery_before_adoption() 
     assert_eq!(fs::read(&witness).unwrap(), committed);
     assert_eq!(fs::read(&log).unwrap(), pending_log);
     assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
-    let reopened = open(2 * suffix_bytes, exact_storage).unwrap();
+    let base_bytes = fs::metadata(slot.join("base")).unwrap().len();
+    let open_combined = |cap| {
+        ManagedRetainedStore::open_with_recovery_scan_limit(
+            &f.root,
+            LIMITS,
+            cap,
+            Some(exact_storage),
+        )
+    };
+    let cap = base_bytes + 2 * suffix_bytes;
+    assert_eq!(
+        open_combined(cap - 1).err().unwrap().to_string(),
+        "retained recovery scan byte limit exceeded"
+    );
+    assert_eq!(fs::read(&witness).unwrap(), committed);
+    assert_eq!(fs::read(&log).unwrap(), pending_log);
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
+    let reopened = open_combined(cap).unwrap();
     assert_eq!(reopened.get(b"a", 7).unwrap().unwrap(), b"recover");
     assert_ne!(fs::read(&witness).unwrap(), committed);
     drop(reopened);
