@@ -173,17 +173,17 @@ fn assert_enospc(error: &io::Error) {
 }
 
 enum Engine {
-    Ordinary(Store),
-    Checkpoint(CheckpointStore),
+    Ordinary(Box<Store>),
+    Checkpoint(Box<CheckpointStore>),
 }
 
 impl Engine {
     fn open(path: &Path, checkpoint: &Path, digest: &[u8; 32], writer: Writer) -> io::Result<Self> {
         match writer {
-            Writer::Ordinary => Store::open(path).map(Self::Ordinary),
-            Writer::Checkpoint => {
-                CheckpointStore::open(path, checkpoint, digest).map(Self::Checkpoint)
-            }
+            Writer::Ordinary => Store::open(path).map(Box::new).map(Self::Ordinary),
+            Writer::Checkpoint => CheckpointStore::open(path, checkpoint, digest)
+                .map(Box::new)
+                .map(Self::Checkpoint),
         }
     }
     fn put(&self, key: &[u8], value: &[u8]) -> io::Result<()> {
