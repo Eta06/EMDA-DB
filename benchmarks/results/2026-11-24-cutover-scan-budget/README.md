@@ -42,6 +42,13 @@ the exact job and phase logs, metrics, CI verifier, and local macOS test
 logs. Fixture setup and cutover have separate process memory costs.
 Filesystem cache and concurrent processes are outside the worker ceiling.
 
+The [complete hosted archive] preserves all 45 standard benchmark smoke
+attempts and five cross-engine attempts, including their configurations and
+raw results. Both Linux toolchains passed, along with the filesystem EIO
+and disposable ENOSPC checks. The archive includes the workflow logs,
+phase verifier, and file checksums.
+
 [Linux memory job]: https://github.com/Eta06/EMDA-DB/actions/runs/45398885440/job/138465314000
 [macOS]: https://github.com/Eta06/EMDA-DB/actions/runs/45398885435
 [Linux memory archive]: linux-memory-artifacts.tar.gz
+[complete hosted archive]: raw-hosted-artifacts.tar.gz
