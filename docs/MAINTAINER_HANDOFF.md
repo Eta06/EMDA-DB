@@ -41,3 +41,17 @@ when available. Consult Fable 5.2 when available and a difficult design or
 performance decision warrants a second opinion. Assign each agent a clear
 scope and stopping point. Review its findings and verify integrated changes
 before publishing.
+
+Link the relevant [roadmap section](ROADMAP.md#product-research-and-documentation)
+or [idea brief](PERFORMANCE_AND_FEATURE_IDEAS.md) directly in product research
+and documentation assignments. Once the shared SDK contract is agreed, delegate
+Node.js and Python implementation separately and use the same compatibility
+suite to review both.
+
+## Development disk usage
+
+Periodically check free space and growth in the checkout and validation
+environments, particularly before large builds and fuzz or benchmark campaigns.
+Inspect `target/`, `fuzz/target/`, temporary runs, and benchmark artifacts.
+Preserve tracked evidence, reproducibility inputs, and artifacts used by active
+jobs. Identify disposable build output before cleaning it up.

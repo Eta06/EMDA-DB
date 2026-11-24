@@ -1,6 +1,8 @@
 # Database roadmap
 
-The product name is a placeholder. This roadmap describes intended work, not implemented features or a release schedule. Its ambition is broad parity with relevant PostgreSQL and MongoDB capabilities plus useful new ideas. The [competitor inventory](COMPETITOR_FEATURES.md) records the currently researched capabilities and their sources; it is a living inventory, not an exhaustive list of every release-specific option. New discoveries and changed requirements should be added without implying feature compatibility before it is implemented and tested.
+Key-value, documents, and SQL are the three core interfaces of EMDA-DB. The roadmap describes intended work and its sequencing. The [competitor inventory](COMPETITOR_FEATURES.md) is the starting point for tracking capabilities from SQLite, MySQL, PostgreSQL, and MongoDB, alongside specialized engines. Record availability and behavioral, protocol, and format compatibility against specific versions and tests.
+
+The flagship Harbor goal is scale-to-zero with durable data, strong isolation, and low idle compute. Aim to lead competitors in speed and safety on comparable workloads. Publish latency, throughput, recovery, resource, and fault-test evidence with each supported claim.
 
 See [foundation and storage follow-up](FOUNDATION_FOLLOW_UP.md) for deferred validation and the current priority 0/1 checklist.
 
@@ -66,10 +68,12 @@ Exit evidence: a documented SQL subset works over the shared transaction and sto
 ## Priority 4: secure service and project isolation
 
 - Add a bounded network API and SDKs with timeouts, authentication, authorization, TLS, and audit-safe diagnostics.
+- Plan [CLI and MCP management interfaces for Harbor and Lens](PERFORMANCE_AND_FEATURE_IDEAS.md#cli-and-mcp-management) over the corresponding authenticated interfaces.
 - Define project/user identities, roles, data access rules, and least-privilege service boundaries.
 - Enforce project isolation at each layer and test cross-project access, unauthorized operations, malformed requests, and resource exhaustion.
 - Control per-project requests, connections, CPU, memory, storage, and background work; use admission control when capacity is exhausted.
 - Build project lifecycle and safe sleep/wake separately from the embedded engine. Store data durably while workers sleep; specify cold-start, ownership, and active-transaction behavior. See [scale-to-zero design goals](SCALE_TO_ZERO.md).
+- Design the [Harbor managed service and Lens client](PERFORMANCE_AND_FEATURE_IDEAS.md#harbor-lens-and-datasets). Allow eligible paid Harbor plans to disable automatic suspension. Self-hosted operators can choose their own lifecycle and resource policies.
 
 Exit evidence: isolation and overload tests pass and operational limits are measurable. A process boundary alone does not establish complete isolation or high availability.
 
@@ -110,3 +114,11 @@ Potential differentiators to validate with real users and benchmarks:
 - Optional AI-assisted query or schema suggestions using explicitly configured data-access and privacy boundaries.
 
 Suggestions must not silently weaken authorization or durability, destroy data, or change a project's configuration without an explicit mechanism chosen by its owner. Benchmark potential improvements before enabling them by default.
+
+### Product research and documentation
+
+- [ ] Add Windows support after the current macOS and Linux foundation work. Establish Windows-specific filesystem, locking, crash-recovery, and CI evidence before claiming support.
+- Plan [durable SSD, durable RAM-first, and RAM-only storage modes](PERFORMANCE_AND_FEATURE_IDEAS.md#storage-modes-and-runtime-policy). Start with bounded caching and measure cold opens before exposing any performance profiles.
+- Explore [agent memory, skill discovery, and natural-language search](PERFORMANCE_AND_FEATURE_IDEAS.md#agent-context-and-natural-language-search). Keep model calls outside the engine's query path and measure retrieval quality and latency under load.
+- Explore [Node.js, Python, and database interoperability](PERFORMANCE_AND_FEATURE_IDEAS.md#language-bindings-and-interoperability). Define a shared engine contract before delegating SDK implementation.
+- [ ] Add a `docs/README.md` index for current plans, contracts, and benchmark evidence. Use it to plan a staged cleanup of dated reports and old handoffs, updating links and reproduction commands with each move.

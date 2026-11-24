@@ -1,12 +1,18 @@
 # Project scale-to-zero: design goals
 
-Scale-to-zero is **planned, not implemented**. Its purpose is to stop an inactive project's dedicated database worker while retaining its data on durable storage, then restart it when authorized work arrives. The shared router, control plane, identity services, monitoring, and storage infrastructure still consume resources. A sleeping project also retains stored data and backups; it is not zero-cost.
+Scale-to-zero is planned. An inactive database can release its worker's CPU and RAM back to a shared pool while its durable data and backups remain available for recovery. Authorized work starts the worker again. The router, control plane, identity services, monitoring, and storage retain their own resource costs.
+
+## Operator and plan controls
+
+- Eligible paid Harbor plans should allow owners to disable automatic suspension per database and keep its worker active. Define plan defaults and idle-timeout ranges when the plans are designed.
+- Self-hosted operators should configure automatic suspension, idle timeouts, and always-on behavior themselves. Hosted plan policy applies to Harbor. Embedded applications control their own open and close lifecycle.
+- Apply the lifecycle policy independently from persistence and resource quotas. A RAM-only database cannot preserve data through worker shutdown without writing a durable copy.
 
 ## Proposed lifecycle
 
 1. **Active:** The worker accepts operations subject to project authorization and resource limits.
 2. **Draining:** After a configured inactivity period, stop admitting new work to the current worker while checking for active operations, transactions, snapshots, and work that requires the worker to remain available. A concurrent request must be handled without losing it: either cancel the drain safely or trigger a subsequent wake.
-3. **Sleeping:** Stop the dedicated worker only after in-flight work is safely resolved and the engine's documented synchronization/close requirements are met. Retain database files and the metadata required to find them.
+3. **Sleeping:** Stop the worker only after in-flight work is safely resolved and the engine's documented synchronization and close requirements are met. Retain database files and the metadata required to find them.
 4. **Waking:** Coordinate concurrent wake requests so there is only one authorized owner of the database, restart the worker, recover and verify its data, then admit requests after readiness checks. Bound queueing and wait times; return an explicit retryable error if capacity or recovery is unavailable.
 5. **Failed:** If startup, synchronization, or recovery fails, report a clear error and retain diagnostic state. Do not silently start an empty database or delete data to make the wake succeed.
 
@@ -23,4 +29,4 @@ The state machine, timeouts, allowed cancellation, persistent state, and retry r
 
 ## Acceptance evidence
 
-Before advertising this feature, test simultaneous first requests, a request during draining, worker and control-plane crashes, restart during recovery, full storage, project isolation, active transactions and snapshots, queue limits, and recovery from backups. Measure p50/p95/p99 warm and cold latency, resource use, sleep/wake time, and failures for varied data sizes and workloads. Report the shared overhead as well as dedicated per-project resources. Process-kill tests alone do not prove power-loss safety.
+Before advertising this feature, test simultaneous first requests, a request during draining, worker and control-plane crashes, restart during recovery, full storage, project isolation, active transactions and snapshots, queue limits, and recovery from backups. Verify that disabling automatic suspension keeps the worker active through the idle deadline. Measure p50/p95/p99 warm and cold latency, resource use, sleep/wake time, and failures for varied data sizes and workloads. Report the shared overhead and per-database resources. Process-kill tests alone do not prove power-loss safety.
