@@ -10,7 +10,7 @@ use database_engine::{
 use rusqlite::{Connection, OpenFlags, config::DbConfig, params};
 use rustix::time::{ClockId, clock_gettime};
 use sha2::{Digest, Sha256};
-use std::{error::Error, fs, io, num::NonZeroU64, path::Path, time::Instant};
+use std::{error::Error, fs, io, num::NonZeroU64, path::Path, sync::Mutex, thread, time::Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
@@ -125,26 +125,7 @@ impl Backend {
             Self::Ordinary(store) => store.write_batch(operations)?,
             Self::Checkpoint(store) => store.write_batch(operations)?,
             Self::Retained(store) => store.write_batch(operations)?,
-            Self::Sqlite(connection) => {
-                let transaction = connection.transaction()?;
-                {
-                    let mut put = transaction.prepare_cached(
-                        "INSERT INTO kv VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,crc=excluded.crc",
-                    )?;
-                    let mut delete = transaction.prepare_cached("DELETE FROM kv WHERE key=?1")?;
-                    for operation in operations {
-                        match operation {
-                            BatchOperation::Put { key, value } => {
-                                put.execute(params![key, value, crc32fast::hash(value)])?;
-                            }
-                            BatchOperation::Delete { key } => {
-                                delete.execute([key])?;
-                            }
-                        }
-                    }
-                }
-                transaction.commit()?;
-            }
+            Self::Sqlite(connection) => write_sqlite(connection, operations)?,
         }
         Ok(())
     }
@@ -218,8 +199,35 @@ fn cpu_ns() -> i128 {
     i128::from(time.tv_sec) * 1_000_000_000 + i128::from(time.tv_nsec)
 }
 
-fn apply(store: &mut Backend, count: u64, epoch: u64) -> Result<()> {
-    for start in (0..count).step_by(BATCH as usize) {
+fn write_sqlite(connection: &mut Connection, operations: &[BatchOperation<'_>]) -> Result<()> {
+    let transaction = connection.transaction()?;
+    {
+        let mut put = transaction.prepare_cached(
+            "INSERT INTO kv VALUES (?1,?2,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,crc=excluded.crc",
+        )?;
+        let mut delete = transaction.prepare_cached("DELETE FROM kv WHERE key=?1")?;
+        for operation in operations {
+            match operation {
+                BatchOperation::Put { key, value } => {
+                    put.execute(params![key, value, crc32fast::hash(value)])?;
+                }
+                BatchOperation::Delete { key } => {
+                    delete.execute([key])?;
+                }
+            }
+        }
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn apply_batches(
+    starts: impl Iterator<Item = u64>,
+    count: u64,
+    epoch: u64,
+    mut write: impl FnMut(&[BatchOperation<'_>]) -> Result<()>,
+) -> Result<()> {
+    for start in starts {
         let rows = (start..(start + BATCH).min(count))
             .map(|key| (key, key.to_be_bytes(), value(key, epoch)))
             .collect::<Vec<_>>();
@@ -233,9 +241,81 @@ fn apply(store: &mut Backend, count: u64, epoch: u64) -> Result<()> {
                 }
             })
             .collect::<Vec<_>>();
-        store.write(&operations)?;
+        write(&operations)?;
     }
     Ok(())
+}
+
+fn apply(store: &mut Backend, count: u64, epoch: u64) -> Result<()> {
+    apply_batches((0..count).step_by(BATCH as usize), count, epoch, |ops| {
+        store.write(ops)
+    })
+}
+
+fn run_writers(
+    count: u64,
+    epoch: u64,
+    writers: usize,
+    write_batches: impl Fn(std::iter::StepBy<std::ops::Range<u64>>, u64, u64) -> Result<()> + Sync,
+) -> Result<()> {
+    let start = Mutex::new(());
+    thread::scope(|scope| -> Result<()> {
+        // Release waiting writers only after launch. Dropping on a spawn error
+        // also releases them so the scope can join the threads already started.
+        let release = start.lock().map_err(|_| "writer start gate poisoned")?;
+        let mut workers = Vec::with_capacity(writers);
+        for writer in 0..writers {
+            let write_batches = &write_batches;
+            let start = &start;
+            workers.push(thread::Builder::new().stack_size(256 * 1024).spawn_scoped(
+                scope,
+                move || {
+                    drop(start.lock().map_err(|_| "writer start gate poisoned")?);
+                    let starts = (writer as u64 * BATCH..count).step_by(writers * BATCH as usize);
+                    write_batches(starts, count, epoch).map_err(|error| error.to_string())
+                },
+            )?);
+        }
+        drop(release);
+        for worker in workers {
+            worker.join().map_err(|_| "writer panicked")??;
+        }
+        Ok(())
+    })
+}
+
+fn apply_concurrently(
+    store: &mut Backend,
+    root: &Path,
+    count: u64,
+    epoch: u64,
+    writers: usize,
+) -> Result<()> {
+    match store {
+        Backend::Ordinary(store) => run_writers(count, epoch, writers, |starts, count, epoch| {
+            apply_batches(starts, count, epoch, |ops| Ok(store.write_batch(ops)?))
+        }),
+        Backend::Checkpoint(store) => run_writers(count, epoch, writers, |starts, count, epoch| {
+            apply_batches(starts, count, epoch, |ops| Ok(store.write_batch(ops)?))
+        }),
+        Backend::Retained(store) => {
+            // Authorized writes require exclusive access to one authority owner.
+            let store = Mutex::new(store);
+            run_writers(count, epoch, writers, |starts, count, epoch| {
+                apply_batches(starts, count, epoch, |ops| {
+                    let mut store = store.lock().map_err(|_| "authority owner poisoned")?;
+                    Ok(store.write_batch(ops)?)
+                })
+            })
+        }
+        Backend::Sqlite(_) => run_writers(count, epoch, writers, |starts, count, epoch| {
+            let mut connection = sqlite(&root.join("sqlite"), false)?;
+            connection.busy_timeout(std::time::Duration::from_secs(5))?;
+            apply_batches(starts, count, epoch, |ops| {
+                write_sqlite(&mut connection, ops)
+            })
+        }),
+    }
 }
 
 fn verify(
@@ -409,13 +489,22 @@ fn authority_state(root: &Path) -> Result<(u64, u64, [u8; 16])> {
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let [_, phase, root, name, keys, epoch, options @ ..] = args.as_slice() else {
-        return Err("usage: authorized_recovery_bench <setup|checkpoint-setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|checkpoint|retained|sqlite|both|all> <keys> <epoch> [--wide-suffix]".into());
+        return Err("usage: authorized_recovery_bench <setup|checkpoint-setup|bind-archive|cutover|mutate|reopen|verify|lifecycle> <root> <ordinary|checkpoint|retained|sqlite|both|all> <keys> <epoch> [--wide-suffix] [--writers=N]".into());
     };
-    let churn = match options {
-        [] => DEFAULT_CHURN,
-        [option] if option == "--wide-suffix" => WIDE_CHURN,
-        _ => return Err("expected at most one --wide-suffix option".into()),
-    };
+    let mut churn = DEFAULT_CHURN;
+    let mut writers = 1;
+    for option in options {
+        if option == "--wide-suffix" {
+            churn = WIDE_CHURN;
+        } else if let Some(value) = option.strip_prefix("--writers=") {
+            writers = value.parse()?;
+        } else {
+            return Err("unexpected benchmark option".into());
+        }
+    }
+    if !(1..=16).contains(&writers) {
+        return Err("writers must be 1–16".into());
+    }
     let root = Path::new(root);
     let keys: u64 = keys.parse()?;
     let epoch: u64 = epoch.parse()?;
@@ -513,11 +602,15 @@ fn main() -> Result<()> {
                 };
                 let start = Instant::now();
                 let cpu_start = cpu_ns();
-                apply(&mut store, churn, epoch)?;
+                if writers == 1 {
+                    apply(&mut store, churn, epoch)?;
+                } else {
+                    apply_concurrently(&mut store, root, churn, epoch, writers)?;
+                }
                 let write_cpu = cpu_ns() - cpu_start;
                 let write_time = start.elapsed().as_nanos();
                 println!(
-                    "mutate_ns={write_time} mutate_cpu_ns={write_cpu} batches={} operations={churn}",
+                    "mutate_ns={write_time} mutate_cpu_ns={write_cpu} batches={} operations={churn} writers={writers}",
                     churn / BATCH
                 );
                 if let Some((revision, _, _)) = before {

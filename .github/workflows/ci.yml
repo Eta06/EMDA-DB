@@ -129,12 +129,12 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
-      - name: Verify retained and checkpoint recovery under a 48 MiB address-space limit
+      - name: Verify four-writer retained and checkpoint recovery under a 48 MiB address-space limit
         run: |
           source scripts/benchmarks/record_case.sh
           cargo +stable build --release --locked --example authorized_recovery_bench
           status=0
-          record_benchmark writable-recovery-memory-ceiling python3 examples/authorized_recovery_bench.py target/release/examples/authorized_recovery_bench "$RUNNER_TEMP/writable-memory-workload" 262144 4 --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 || status=$?
+          record_benchmark writable-recovery-memory-ceiling python3 examples/authorized_recovery_bench.py target/release/examples/authorized_recovery_bench "$RUNNER_TEMP/writable-memory-workload" 262144 4 --sqlite --wide-suffix --checkpoint --checkpoint-address-space-mib 48 --retained-address-space-mib 48 --writers 4 || status=$?
           if [[ -d "$RUNNER_TEMP/writable-memory-workload" ]]; then
             find "$RUNNER_TEMP/writable-memory-workload" -maxdepth 1 -type f -exec cp {} "$RUNNER_TEMP/benchmark-attempts/writable-recovery-memory-ceiling/" \;
           fi
@@ -154,6 +154,8 @@ jobs:
           if (len(capped) != len(expected)
                   or {(phase["backend"], phase["epoch"], phase["phase"]) for phase in capped} != expected
                   or any(phase["address_space_limit_bytes"] != 48 * 1024**2 for phase in capped)
+                  or any(phase.get("writers") != 4 or phase.get("operations") != 32768
+                         for phase in capped if phase["phase"] == "mutate")
                   or sum(phase.get("rotations", 0) for phase in capped) == 0
                   or sum(phase.get("checkpoint_advanced", 0) for phase in capped) == 0):
               raise SystemExit("Expected capped retained rotation and checkpoint rollover")

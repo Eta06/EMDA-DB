@@ -47,7 +47,7 @@ def command(binary, phase, fixture, backend, keys, epoch):
 
 
 def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False,
-        address_space=None):
+        address_space=None, writers=1):
     fixture = directory / "fixture"
     excluded = ()
     if phase in {"bind-archive", "lifecycle", "authorized-lifecycle"}:
@@ -67,11 +67,17 @@ def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False,
     args = command(binary, phase, fixture, backend, keys, epoch)
     if wide_suffix:
         args.append("--wide-suffix")
+    env = os.environ.copy()
+    if phase == "mutate" and writers > 1:
+        args.append(f"--writers={writers}")
+        if sys.platform == "linux":
+            # Give each engine the same arena policy under concurrent allocations.
+            env["MALLOC_ARENA_MAX"] = "1"
     if address_space is not None:
         args = ["prlimit", f"--as={address_space}:{address_space}", "--", *args]
     with logfile.open("w") as out:
         child = subprocess.Popen(args,
-                                 stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+                                 stdout=out, stderr=subprocess.STDOUT, start_new_session=True, env=env)
         try:
             while child.poll() is None:
                 peak = max(peak, allocated_bytes(paths, excluded))
@@ -110,6 +116,8 @@ def run(binary, directory, phase, backend, keys, epoch, *, wide_suffix=False,
         raise SystemExit(f"{phase} {backend} epoch {epoch} failed, see {logfile}")
     if address_space is not None and metrics["peak_rss_bytes"] > address_space:
         raise SystemExit(f"peak RSS exceeded applied address-space limit, see {logfile}")
+    if phase == "mutate" and metrics.get("writers") != writers:
+        raise SystemExit(f"{backend} epoch {epoch} reported the wrong writer count")
     return metrics
 
 
@@ -126,6 +134,8 @@ def main():
                         help="Linux hard address-space ceiling for checkpoint mutate, reopen and verify phases")
     parser.add_argument("--retained-address-space-mib", type=int,
                         help="Linux hard address-space ceiling for retained mutate, reopen and verify phases")
+    parser.add_argument("--writers", type=int, choices=range(1, 17), default=1,
+                        metavar="N", help="concurrent clients per mutation phase (1–16)")
     parser.add_argument("--wide-suffix", action="store_true", help="run 32,768 mutations per epoch with a 12 MiB suffix budget")
     parser.add_argument("--retire-and-restore", action="store_true", help="verify a local backup, retire the legacy archive, and restore the final state")
     parser.add_argument("--authorized-restore", action="store_true", help="restore using an independently recorded receipt and a fresh authority")
@@ -161,6 +171,8 @@ def main():
         "retire_and_restore": args.retire_and_restore,
         "authorized_restore": args.authorized_restore,
         "wide_suffix": args.wide_suffix,
+        "writers": args.writers,
+        "linux_concurrent_malloc_arena_max": "1" if sys.platform == "linux" and args.writers > 1 else None,
         "retained_address_space_limit_bytes": address_spaces.get("retained"),
         "checkpoint_address_space_limit_bytes": address_spaces.get("checkpoint"),
     }
@@ -169,7 +181,7 @@ def main():
         address_space = (address_spaces.get(backend)
                          if phase_name in {"mutate", "reopen", "verify"} else None)
         return run(binary, directory, phase_name, backend, args.keys, epoch,
-                   wide_suffix=args.wide_suffix, address_space=address_space)
+                   wide_suffix=args.wide_suffix, address_space=address_space, writers=args.writers)
 
     phase("setup", "all" if args.sqlite else "both", 0)
     if args.checkpoint:

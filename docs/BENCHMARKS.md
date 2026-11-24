@@ -56,6 +56,21 @@ The [hosted cross-engine archive](../benchmarks/results/2026-11-24-hosted-compet
 preserves the raw artifacts from 206 workflow runs, indexed by commit and
 run ID.
 
+## Concurrent writable recovery gate
+
+The Linux CI gate starts four writer threads per mutation phase. Each
+writer submits disjoint 128-operation batches. Ordinary and checkpoint
+writers share the engine handle. Authorized retained writers share one
+authority owner via a mutex. SQLite writers each use a WAL connection
+with `synchronous=FULL`. Concurrent Linux mutation phases use one
+allocator arena across all backends and request 256 KiB stacks per writer.
+
+Each epoch reopens in fresh processes and verifies the complete ordered
+key/value state. The 48 MiB address-space ceiling applies to checkpoint
+and authorized retained mutation, reopen and verification phases. The
+ordinary and SQLite controls run without that ceiling. See the
+[CI command and assertions](../.github/workflows/ci.yml).
+
 ## macOS small-write comparison with SQLite
 
 The [36 raw runs](../benchmarks/results/2026-11-23-macos-kv-sqlite.json)
