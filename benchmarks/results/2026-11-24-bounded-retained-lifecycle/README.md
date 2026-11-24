@@ -44,3 +44,8 @@ archive as part of the same capped worker.
 
 [Linux memory job]: https://github.com/Eta06/EMDA-DB/actions/runs/45397265214/job/138460536278
 [Linux raw archive]: linux-memory-artifacts.tar.gz
+
+The [complete CI run](https://github.com/Eta06/EMDA-DB/actions/runs/45397265214)
+also passed both Rust toolchains and the stable optimized suite.
+Its [CI archive](linux-ci-artifacts.tar.gz) includes all 45 standard
+benchmark attempts, their outputs and the complete workflow log.
