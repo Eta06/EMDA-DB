@@ -78,6 +78,8 @@ selected filesystem and lock paths separately from transaction conflict
 classification.
 The filesystem workflow's manual `full_eintr` option runs the broader
 interrupted-call matrix on GitHub and preserves each syscall group's report.
+The [November 24 Linux campaign](../benchmarks/results/2026-11-24-full-linux-eintr/README.md)
+verified 4,906 injections and retained all nine reports.
 [`verify_one_shot_fs_results.py`](../scripts/verify_one_shot_fs_results.py)
 checks a completed one-shot report for every selected ordinal, both recovery
 orders and the requested returned errno. It checks retained summaries, not
