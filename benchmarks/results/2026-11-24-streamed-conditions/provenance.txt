@@ -1,0 +1,152 @@
+Darwin 27.0.0 arm64
+ProductName:		macOS
+ProductVersion:		27.0
+BuildVersion:		26A425
+rustc 1.85.0 (4d91de4e4 2025-02-17)
+binary: rustc
+commit-hash: 4d91de4e48198da2e33413efdcd9cd2cc0c46688
+commit-date: 2025-02-17
+host: aarch64-apple-darwin
+release: 1.85.0
+LLVM version: 19.1.7
+
+Baseline: 92c46310497b5cd3681685e2b042464e2c65e0f8
+diff --git a/src/checkpoint_store.rs b/src/checkpoint_store.rs
+index 20dc91b..0043efd 100644
+--- a/src/checkpoint_store.rs
++++ b/src/checkpoint_store.rs
+@@ -1297 +1297,6 @@ impl CheckpointStore {
+-        if state.view.get(key)?.as_deref() != expected {
++        if !state
++            .view
++            .base
++            .log
++            .value_matches(state.view.location(key)?, expected)?
++        {
+@@ -1331,9 +1336,5 @@ impl CheckpointStore {
+-        let current = match state.view.get(key)? {
+-            None => 0,
+-            Some(bytes) => i64::from_le_bytes(bytes.try_into().map_err(|_| {
+-                io::Error::new(
+-                    io::ErrorKind::InvalidData,
+-                    "increment requires an eight-byte signed integer",
+-                )
+-            })?),
+-        };
++        let current = state
++            .view
++            .base
++            .log
++            .read_i64_or_zero(state.view.location(key)?)?;
+@@ -1434 +1435,6 @@ impl CheckpointStore {
+-            if state.view.get(key)?.as_deref() != *expected {
++            if !state
++                .view
++                .base
++                .log
++                .value_matches(state.view.location(key)?, *expected)?
++            {
+diff --git a/src/log.rs b/src/log.rs
+index 21f3b32..b5d4d43 100644
+--- a/src/log.rs
++++ b/src/log.rs
+@@ -576,0 +577,66 @@ impl Log {
++    pub(crate) fn value_matches(
++        &self,
++        location: Option<ValueLocation>,
++        expected: Option<&[u8]>,
++    ) -> io::Result<bool> {
++        let Some(location) = location else {
++            return Ok(expected.is_none());
++        };
++        let mut small = [0; 256];
++        if location.length <= small.len() {
++            let bytes = &mut small[..location.length];
++            self.read_into(location, bytes)?;
++            return Ok(expected == Some(bytes));
++        }
++        self.stream_value_matches(location, expected)
++    }
++
++    #[inline(never)]
++    fn stream_value_matches(
++        &self,
++        location: ValueLocation,
++        expected: Option<&[u8]>,
++    ) -> io::Result<bool> {
++        let mut expected = expected.filter(|bytes| bytes.len() == location.length);
++        let mut buffer = [0; crate::recovery::RECOVERY_READ_BUFFER_BYTES];
++        let mut checksum = crc32fast::Hasher::new();
++        let mut offset = location.offset;
++        let mut remaining = location.length;
++        // A mismatch still requires reading and checking the entire value.
++        // Corruption or truncation must never be reported as a failed match.
++        while remaining > 0 {
++            let count = remaining.min(buffer.len());
++            let chunk = &mut buffer[..count];
++            self.file.read_exact_at(chunk, offset)?;
++            checksum.update(chunk);
++            if let Some(bytes) = expected {
++                let (expected_chunk, rest) = bytes.split_at(count);
++                expected = (expected_chunk == chunk).then_some(rest);
++            }
++            offset = offset
++                .checked_add(count as u64)
++                .ok_or_else(|| record::invalid_data("stored value offset overflow"))?;
++            remaining -= count;
++        }
++        if checksum.finalize() != location.checksum {
++            return Err(record::invalid_data("stored value checksum mismatch"));
++        }
++        Ok(expected.is_some())
++    }
++
++    pub(crate) fn read_i64_or_zero(&self, location: Option<ValueLocation>) -> io::Result<i64> {
++        let Some(location) = location else {
++            return Ok(0);
++        };
++        let mut bytes = [0; 8];
++        if location.length != bytes.len() {
++            // Validate malformed values too, preserving the checksum error.
++            self.value_matches(Some(location), None)?;
++            return Err(record::invalid_data(
++                "increment requires an eight-byte signed integer",
++            ));
++        }
++        self.read_into(location, &mut bytes)?;
++        Ok(i64::from_le_bytes(bytes))
++    }
++
+diff --git a/src/store.rs b/src/store.rs
+index 5b50087..9329638 100644
+--- a/src/store.rs
++++ b/src/store.rs
+@@ -389,0 +390,5 @@ impl Store {
++        let (log, location) = self.current_value(key)?;
++        location.map(|location| log.read(location)).transpose()
++    }
++
++    fn current_value(&self, key: &[u8]) -> io::Result<(Arc<Log>, Option<ValueLocation>)> {
+@@ -398,2 +403 @@ impl Store {
+-        drop(inner);
+-        location.map(|location| log.read(location)).transpose()
++        Ok((log, location))
+@@ -569 +573,2 @@ impl Store {
+-        if self.get_validated(key)?.as_deref() != expected {
++        let (log, location) = self.current_value(key)?;
++        if !log.value_matches(location, expected)? {
+@@ -610,12 +615,2 @@ impl Store {
+-        let current = match self.get_validated(key)? {
+-            None => 0,
+-            Some(bytes) => {
+-                let array: [u8; 8] = bytes.try_into().map_err(|_| {
+-                    io::Error::new(
+-                        io::ErrorKind::InvalidData,
+-                        "increment requires an eight-byte signed integer",
+-                    )
+-                })?;
+-                i64::from_le_bytes(array)
+-            }
+-        };
++        let (log, location) = self.current_value(key)?;
++        let current = log.read_i64_or_zero(location)?;

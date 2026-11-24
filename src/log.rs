@@ -574,6 +574,72 @@ impl Log {
         Ok(())
     }
 
+    pub(crate) fn value_matches(
+        &self,
+        location: Option<ValueLocation>,
+        expected: Option<&[u8]>,
+    ) -> io::Result<bool> {
+        let Some(location) = location else {
+            return Ok(expected.is_none());
+        };
+        let mut small = [0; 256];
+        if location.length <= small.len() {
+            let bytes = &mut small[..location.length];
+            self.read_into(location, bytes)?;
+            return Ok(expected == Some(bytes));
+        }
+        self.stream_value_matches(location, expected)
+    }
+
+    #[inline(never)]
+    fn stream_value_matches(
+        &self,
+        location: ValueLocation,
+        expected: Option<&[u8]>,
+    ) -> io::Result<bool> {
+        let mut expected = expected.filter(|bytes| bytes.len() == location.length);
+        let mut buffer = [0; crate::recovery::RECOVERY_READ_BUFFER_BYTES];
+        let mut checksum = crc32fast::Hasher::new();
+        let mut offset = location.offset;
+        let mut remaining = location.length;
+        // A mismatch still requires reading and checking the entire value.
+        // Corruption or truncation must never be reported as a failed match.
+        while remaining > 0 {
+            let count = remaining.min(buffer.len());
+            let chunk = &mut buffer[..count];
+            self.file.read_exact_at(chunk, offset)?;
+            checksum.update(chunk);
+            if let Some(bytes) = expected {
+                let (expected_chunk, rest) = bytes.split_at(count);
+                expected = (expected_chunk == chunk).then_some(rest);
+            }
+            offset = offset
+                .checked_add(count as u64)
+                .ok_or_else(|| record::invalid_data("stored value offset overflow"))?;
+            remaining -= count;
+        }
+        if checksum.finalize() != location.checksum {
+            return Err(record::invalid_data("stored value checksum mismatch"));
+        }
+        Ok(expected.is_some())
+    }
+
+    pub(crate) fn read_i64_or_zero(&self, location: Option<ValueLocation>) -> io::Result<i64> {
+        let Some(location) = location else {
+            return Ok(0);
+        };
+        let mut bytes = [0; 8];
+        if location.length != bytes.len() {
+            // Validate malformed values too, preserving the checksum error.
+            self.value_matches(Some(location), None)?;
+            return Err(record::invalid_data(
+                "increment requires an eight-byte signed integer",
+            ));
+        }
+        self.read_into(location, &mut bytes)?;
+        Ok(i64::from_le_bytes(bytes))
+    }
+
     pub(crate) fn len(&self) -> io::Result<u64> {
         self.file.len()
     }

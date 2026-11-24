@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Compare conditional-write values with fixed scratch buffers and read
+  integer counters without temporary heap allocations. Mismatches still
+  verify the complete stored value.
+
 - Report retained successor publication and selection attempts separately
   through the detailed compaction methods on managed and authority-backed stores.
 

@@ -170,6 +170,99 @@ macro_rules! quota_rejections {
 }
 
 #[test]
+fn streamed_conditions_verify_large_values_even_after_a_mismatch() {
+    use std::fs::{self, OpenOptions};
+    use std::io::ErrorKind;
+    use std::os::unix::fs::FileExt;
+
+    fn checksum_rejection<T: std::fmt::Debug>(result: Result<T, MutationFailure>) {
+        assert!(matches!(
+            result.unwrap_err(),
+            MutationFailure::Rejected(error)
+                if error.kind() == ErrorKind::InvalidData
+                    && error.to_string() == "stored value checksum mismatch"
+        ));
+    }
+
+    macro_rules! exercise_large {
+        ($store:expr, $key:expr, $value:expr, $log:expr) => {{
+            let store = &$store;
+            let key = $key;
+            let value = $value;
+            let log = $log;
+            let raw = fs::read(log).unwrap();
+            let start = raw.windows(32).position(|part| part == &value[..32]).unwrap();
+            assert_eq!(&raw[start..start + value.len()], value);
+            let mut incorrect = value.to_vec();
+            incorrect[0] ^= 1;
+            for expected in [None, Some(b"short".as_slice()), Some(incorrect.as_slice())] {
+                assert!(!store.compare_exchange_detailed(key, expected, Some(b"unexpected")).unwrap());
+            }
+            assert!(matches!(
+                store.increment_i64_detailed(key, 1),
+                Err(MutationFailure::Rejected(error))
+                    if error.to_string() == "increment requires an eight-byte signed integer"
+            ));
+            assert_eq!(fs::read(log).unwrap(), raw);
+
+            let file = OpenOptions::new().write(true).open(log).unwrap();
+            let last_byte = (start + value.len() - 1) as u64;
+            file.write_all_at(&[value[value.len() - 1] ^ 1], last_byte).unwrap();
+            let damaged = fs::read(log).unwrap();
+            for expected in [None, Some(b"short".as_slice()), Some(incorrect.as_slice())] {
+                checksum_rejection(store.compare_exchange_detailed(key, expected, Some(b"unexpected")));
+            }
+            checksum_rejection(store.increment_i64_detailed(key, 1));
+            assert_eq!(fs::read(log).unwrap(), damaged);
+
+            file.write_all_at(&value[value.len() - 1..], last_byte).unwrap();
+            assert!(store.compare_exchange_detailed(key, Some(value), Some(b"verified")).unwrap());
+            assert_eq!(store.get(key).unwrap().unwrap(), b"verified");
+        }};
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("store");
+    let checkpoint = root.path().join("checkpoint");
+    let log = source.join("records.log");
+    let store = Store::open(&source).unwrap();
+    let base = vec![0xa1; 128 * 1024 + 1];
+    let suffix = vec![0xb2; 128 * 1024 + 1];
+    store.put(b"ordinary", &base).unwrap();
+    exercise_large!(store, b"ordinary", &base, &log);
+    let base = vec![0xc3; 128 * 1024 + 1];
+    store.put(b"base", &base).unwrap();
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    store.put(b"suffix", &suffix).unwrap();
+    drop(store);
+
+    let store = CheckpointStore::open(&source, &checkpoint, &digest).unwrap();
+    let mut incorrect = suffix.clone();
+    *incorrect.last_mut().unwrap() ^= 1;
+    let operations = [BatchOperation::Put {
+        key: b"marked",
+        value: b"yes",
+    }];
+    assert!(
+        !store
+            .compare_exchange_batch_detailed(&[(b"suffix", Some(&incorrect))], &operations)
+            .unwrap()
+    );
+    assert_eq!(store.get(b"marked").unwrap(), None);
+    assert!(
+        store
+            .compare_exchange_batch_detailed(
+                &[(b"base", Some(&base)), (b"suffix", Some(&suffix))],
+                &operations
+            )
+            .unwrap()
+    );
+    assert_eq!(store.get(b"marked").unwrap().unwrap(), b"yes");
+    exercise_large!(store, b"base", &base, &log);
+    exercise_large!(store, b"suffix", &suffix, &log);
+}
+
+#[test]
 fn log_quota_rejections_do_not_submit_direct_mutations() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");

@@ -1294,7 +1294,12 @@ impl CheckpointStore {
         record::validate(operation, key, value)?;
         let _admission = self.direct_writes.acquire()?;
         let state = self.write()?;
-        if state.view.get(key)?.as_deref() != expected {
+        if !state
+            .view
+            .base
+            .log
+            .value_matches(state.view.location(key)?, expected)?
+        {
             return Ok(false);
         }
         self.commit(state, Mutation::Single(operation, key, value), tracker)?;
@@ -1328,15 +1333,11 @@ impl CheckpointStore {
         record::validate_key(key)?;
         let _admission = self.direct_writes.acquire()?;
         let state = self.write()?;
-        let current = match state.view.get(key)? {
-            None => 0,
-            Some(bytes) => i64::from_le_bytes(bytes.try_into().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "increment requires an eight-byte signed integer",
-                )
-            })?),
-        };
+        let current = state
+            .view
+            .base
+            .log
+            .read_i64_or_zero(state.view.location(key)?)?;
         let next = current.checked_add(delta).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
@@ -1431,7 +1432,12 @@ impl CheckpointStore {
         let state = self.write()?;
         let batch = BatchLayout::new(operations)?;
         for (key, expected) in conditions {
-            if state.view.get(key)?.as_deref() != *expected {
+            if !state
+                .view
+                .base
+                .log
+                .value_matches(state.view.location(key)?, *expected)?
+            {
                 return Ok(false);
             }
         }

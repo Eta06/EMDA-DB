@@ -387,6 +387,11 @@ impl Store {
     // operations use this path so direct-read saturation cannot prevent a
     // separately admitted write from inspecting its current value.
     fn get_validated(&self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let (log, location) = self.current_value(key)?;
+        location.map(|location| log.read(location)).transpose()
+    }
+
+    fn current_value(&self, key: &[u8]) -> io::Result<(Arc<Log>, Option<ValueLocation>)> {
         let inner = self.read()?;
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -395,8 +400,7 @@ impl Store {
         // concurrent writer publishes a newer value after this lookup.
         let location = inner.index.get(key).copied();
         let log = Arc::clone(inner.log.as_ref().expect("published log missing"));
-        drop(inner);
-        location.map(|location| log.read(location)).transpose()
+        Ok((log, location))
     }
 
     /// Reads up to 1,024 keys from one captured index state, in input order.
@@ -566,7 +570,8 @@ impl Store {
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        if self.get_validated(key)?.as_deref() != expected {
+        let (log, location) = self.current_value(key)?;
+        if !log.value_matches(location, expected)? {
             return Ok(false);
         }
         self.commit_limited_tracked(operation, key, value, tracker)?;
@@ -607,18 +612,8 @@ impl Store {
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
-        let current = match self.get_validated(key)? {
-            None => 0,
-            Some(bytes) => {
-                let array: [u8; 8] = bytes.try_into().map_err(|_| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "increment requires an eight-byte signed integer",
-                    )
-                })?;
-                i64::from_le_bytes(array)
-            }
-        };
+        let (log, location) = self.current_value(key)?;
+        let current = log.read_i64_or_zero(location)?;
         let next = current.checked_add(delta).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
