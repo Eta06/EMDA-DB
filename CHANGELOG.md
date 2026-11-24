@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Report independent authority fence and file removal outcomes for
+  authorized retained-generation reclamation.
+
 - Reuse collection metadata when a planned query or aggregation falls back
   to a scan, so it uses the same read budget as the direct scan.
 

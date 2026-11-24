@@ -235,7 +235,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   still complete before tail adoption.
   Managed and authority-backed retained stores classify removal attempts
   through `reclaim_inactive_detailed`, including removals during resumed
-  cleanup. The classification is separate from authority fence uncertainty.
+  cleanup. Authorized retained catalogs also expose
+  `reclaim_inactive_with_outcome` to report fence confirmation independently
+  of removal and to identify an unconfirmed fence that requires reopening.
   Managed checkpoint selection now distinguishes failed staging from an
   attempted rename in manual rollover and offline rebuild. Live manual
   and automatic rollover preserve the prior writable view if selection

@@ -1062,10 +1062,13 @@ fn reclamation_rejects_unavailable_inactive_slot_before_advancing_authority() {
     let witness = fs::read(inactive.join("commit.state")).unwrap();
 
     let lock = lock_directory(&inactive).unwrap();
-    assert_eq!(
-        store.reclaim_inactive().unwrap_err().kind(),
-        io::ErrorKind::WouldBlock
-    );
+    assert!(matches!(
+        store.reclaim_inactive_with_outcome(),
+        Err(AuthorizedReclamationFailure {
+            fence: ReclamationFenceOutcome::NotAttempted,
+            cleanup: StagingCleanupFailure::NotStarted(error),
+        }) if error.kind() == io::ErrorKind::WouldBlock
+    ));
     assert_eq!(f.provider.read().unwrap(), Some(before));
     drop(lock);
 
@@ -1093,20 +1096,88 @@ fn reclamation_rejects_unavailable_inactive_slot_before_advancing_authority() {
 
 #[test]
 fn reclamation_fence_failure_keeps_the_inactive_generation() {
+    for applied in [false, true] {
+        let mut f = Fixture::prepare();
+        f.register();
+        let mut store = f.open();
+        store.compact().unwrap();
+        store.authority.fault = Some((2, applied));
+        assert!(matches!(
+            store.reclaim_inactive_with_outcome(),
+            Err(AuthorizedReclamationFailure {
+                fence: ReclamationFenceOutcome::Unconfirmed,
+                cleanup: StagingCleanupFailure::NotStarted(_),
+            })
+        ));
+        assert!(Slot::A.path(&f.root).exists());
+        assert_eq!(
+            f.provider.read().unwrap().unwrap().revision,
+            1 + u64::from(applied)
+        );
+        assert!(store.get(b"base", 8).is_err());
+        drop(store);
+        let mut reopened = f.open();
+        assert!(reopened.reclaim_inactive_with_outcome().unwrap());
+        assert!(!Slot::A.path(&f.root).exists());
+        assert_eq!(reopened.get(b"base", 8).unwrap().unwrap(), b"imported");
+    }
+}
+
+#[test]
+fn confirmed_fence_can_precede_a_validation_failure_without_removal() {
     let mut f = Fixture::prepare();
     f.register();
     let mut store = f.open();
     store.compact().unwrap();
-    store.authority.fault = Some((2, true));
+    let base = Slot::B.path(&f.root).join("base");
+    let original = fs::read(&base).unwrap();
+    let mut damaged = original.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(&base, damaged).unwrap();
+
     assert!(matches!(
-        store.reclaim_inactive_detailed(),
-        Err(StagingCleanupFailure::NotStarted(_))
+        store.reclaim_inactive_with_outcome(),
+        Err(AuthorizedReclamationFailure {
+            fence: ReclamationFenceOutcome::Confirmed,
+            cleanup: StagingCleanupFailure::NotStarted(error),
+        }) if error.kind() == io::ErrorKind::InvalidData
     ));
+    assert_eq!(f.provider.read().unwrap().unwrap().revision, 2);
     assert!(Slot::A.path(&f.root).exists());
-    assert!(store.get(b"base", 8).is_err());
+    assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
+    fs::write(base, original).unwrap();
     drop(store);
-    assert!(f.open().reclaim_inactive().unwrap());
+    assert!(f.open().reclaim_inactive_with_outcome().unwrap());
+}
+
+#[test]
+fn confirmed_fence_and_uncertain_removal_resume_after_restart() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"ack", b"keep").unwrap();
+    store.compact().unwrap();
+    let before = f.provider.read().unwrap().unwrap();
+    let error = store.reclaim_inactive_using(|_| Err(io::Error::other("injected retirement sync")));
+    assert!(matches!(
+        error,
+        Err(AuthorizedReclamationFailure {
+            fence: ReclamationFenceOutcome::Confirmed,
+            cleanup: StagingCleanupFailure::OutcomeUnknown(ref error),
+        }) if error.to_string() == "injected retirement sync"
+    ));
+    let fence = before.finalized(before.committed).unwrap();
+    assert_eq!(f.provider.read().unwrap(), Some(fence));
     assert!(!Slot::A.path(&f.root).exists());
+    assert!(crate::staging::has_retained_stage(&f.root).unwrap());
+    drop(store);
+
+    let mut reopened = f.open();
+    assert_eq!(reopened.get(b"ack", 4).unwrap().unwrap(), b"keep");
+    assert!(reopened.reclaim_inactive_with_outcome().unwrap());
+    assert!(!crate::staging::has_retained_stage(&f.root).unwrap());
+    assert_eq!(f.provider.read().unwrap(), Some(fence));
+    assert!(!reopened.reclaim_inactive_with_outcome().unwrap());
 }
 
 #[test]

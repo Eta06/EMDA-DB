@@ -48,6 +48,46 @@ pub struct AuthorityRecord {
     pub pending: Option<AuthorityPoint>,
 }
 
+/// The authority fence attempted by one inactive-generation reclamation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReclamationFenceOutcome {
+    /// This call did not submit an authority fence.
+    NotAttempted,
+    /// The provider did not confirm the fence. Reopen before retrying.
+    Unconfirmed,
+    /// The provider confirmed the fence before cleanup failed.
+    Confirmed,
+}
+
+/// A failed authorized reclamation with independent fence and removal outcomes.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct AuthorizedReclamationFailure {
+    /// Outcome of this call's authority fence.
+    pub fence: ReclamationFenceOutcome,
+    /// Outcome of any removal, including previously interrupted cleanup resumed
+    /// in this call before the authority fence.
+    pub cleanup: StagingCleanupFailure,
+}
+
+impl std::fmt::Display for AuthorizedReclamationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let fence = match self.fence {
+            ReclamationFenceOutcome::NotAttempted => "authority fence not attempted",
+            ReclamationFenceOutcome::Unconfirmed => "authority fence unconfirmed",
+            ReclamationFenceOutcome::Confirmed => "authority fence confirmed",
+        };
+        write!(formatter, "{fence}, {}", self.cleanup)
+    }
+}
+
+impl std::error::Error for AuthorizedReclamationFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cleanup)
+    }
+}
+
 /// Publication of a fresh authorized backup restore failed.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -661,6 +701,27 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     /// An error can leave the authority fence uncertain even if no removal
     /// started. Reopen if the handle reports an uncertain selection.
     pub fn reclaim_inactive_detailed(&mut self) -> Result<bool, StagingCleanupFailure> {
+        self.reclaim_inactive_with_outcome()
+            .map_err(|error| error.cleanup)
+    }
+
+    /// Reclaims the inactive generation and distinguishes authority fence
+    /// failures from removal failures. The two outcomes describe this call.
+    /// An unconfirmed fence disables this handle, even when this call began no
+    /// removal. Earlier interrupted retirement can be resumed before a new
+    /// fence is submitted. Inspect uncertain removal and reopen after an
+    /// unconfirmed fence before deciding whether to retry.
+    pub fn reclaim_inactive_with_outcome(&mut self) -> Result<bool, AuthorizedReclamationFailure> {
+        self.reclaim_inactive_using(sync_existing)
+    }
+
+    fn reclaim_inactive_using(
+        &mut self,
+        sync_retirement: impl FnMut(&Path) -> io::Result<()>,
+    ) -> Result<bool, AuthorizedReclamationFailure> {
+        use ReclamationFenceOutcome::{Confirmed, NotAttempted, Unconfirmed};
+
+        let mut outcome = NotAttempted;
         StagingCleanupFailure::track_removal(|removal_started| {
             self.verify_current()?;
             let resumed = self.inner.resume_retirement(removal_started)?;
@@ -668,12 +729,18 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
                 return Ok(resumed);
             };
             let fence = self.current.finalized(self.current.committed)?;
+            outcome = Unconfirmed;
             self.inner.uncertain = true;
             self.advance(fence)?;
+            outcome = Confirmed;
             self.inner.uncertain = false;
             self.inner
-                .reclaim_locked(&inactive, retired_lock, removal_started, sync_existing)?;
+                .reclaim_locked(&inactive, retired_lock, removal_started, sync_retirement)?;
             Ok(true)
+        })
+        .map_err(|cleanup| AuthorizedReclamationFailure {
+            fence: outcome,
+            cleanup,
         })
     }
 

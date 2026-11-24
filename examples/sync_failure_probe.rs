@@ -1,10 +1,12 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
 use database_engine::retained_candidate::{
-    AuthorityPoint, AuthorityRecord, FileRetainedAuthority, RetainedAuthority,
+    AuthorityPoint, AuthorityRecord, AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits,
+    OverlayLimits, ReclamationFenceOutcome, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
     BatchOperation, BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixRebuildLimits,
-    COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging,
+    COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, RetainedExportLimits,
+    StagingCleanupFailure, Store, cleanup_abandoned_staging,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -835,9 +837,99 @@ fn authority_probe(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
+fn authorized_reclamation_probe(root: &Path, operation: &str) -> ProbeResult<()> {
+    let limits = RetainedStoreLimits {
+        base: database_engine::retained_base_v2::Limits {
+            file_bytes: 8192,
+            entries: 32,
+            key_bytes: 256,
+            work_bytes: 8193,
+        },
+        index: IndexLimits {
+            blocks: 4,
+            anchor_bytes: 64,
+        },
+        suffix: SuffixLimits {
+            bytes: 8192,
+            operations: 64,
+            work: 4096,
+        },
+        overlay: OverlayLimits {
+            entries: 32,
+            key_bytes: 256,
+        },
+    };
+    let authority = root.join("authority");
+    let catalog = root.join("catalog");
+    if operation == "setup" {
+        let source = root.join("source");
+        let store = Store::open(&source)?;
+        store.put(b"safe", b"acknowledged")?;
+        let initial = AuthorizedRetainedStore::<FileRetainedAuthority>::prepare_from_store(
+            store,
+            &source,
+            &catalog,
+            RetainedExportLimits {
+                max_log_bytes: 8192,
+                max_live_keys: 32,
+                max_live_key_bytes: 256,
+                max_output_bytes: 8192,
+            },
+            limits,
+        )?;
+        let mut provider = FileRetainedAuthority::create(&authority)?;
+        if !provider.compare_and_swap(None, initial)? {
+            return Err("authority fixture already registered".into());
+        }
+        let mut store = AuthorizedRetainedStore::open(&catalog, limits, provider)?;
+        store.compact()?;
+        println!("{}", json!({"status":"ready"}));
+        return Ok(());
+    }
+    let mut provider = FileRetainedAuthority::open(&authority)?;
+    let revision = provider
+        .read()?
+        .ok_or("missing fixture authority")?
+        .revision;
+    let mut store = AuthorizedRetainedStore::open(&catalog, limits, provider)?;
+    match operation {
+        "attempt" => {
+            let outcome = match store.reclaim_inactive_with_outcome() {
+                Ok(removed) => json!({"status":"success","removed":removed}),
+                Err(error) => {
+                    let fence = match error.fence {
+                        ReclamationFenceOutcome::NotAttempted => "not_attempted",
+                        ReclamationFenceOutcome::Unconfirmed => "unconfirmed",
+                        ReclamationFenceOutcome::Confirmed => "confirmed",
+                        _ => return Err("unknown fence outcome".into()),
+                    };
+                    let (cleanup, error) = match error.cleanup {
+                        StagingCleanupFailure::NotStarted(error) => ("not_started", error),
+                        StagingCleanupFailure::OutcomeUnknown(error) => ("unknown", error),
+                        _ => return Err("unknown cleanup outcome".into()),
+                    };
+                    let blocked = store.get(b"safe", 16).is_err();
+                    json!({"status":"error","fence":fence,"cleanup":cleanup,
+                           "errno":error.raw_os_error(),"blocked":blocked})
+                }
+            };
+            println!("{outcome}");
+        }
+        "inspect" => {
+            if store.get(b"safe", 16)?.as_deref() != Some(b"acknowledged") {
+                return Err("acknowledged retained value changed".into());
+            }
+            println!("{}", json!({"revision":revision}));
+        }
+        _ => return Err("unknown reclamation operation".into()),
+    }
+    Ok(())
+}
+
 fn main() -> ProbeResult<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
+        [command, root, operation] if command == "authorized-reclamation" => authorized_reclamation_probe(Path::new(root), operation),
         [command, root, operation] if command == "authority" => authority_probe(Path::new(root), operation),
         [command, root, format] if command == "setup" => setup(Path::new(root), format),
         [command, root, operation] if command == "setup-legacy" => setup_legacy(Path::new(root), operation),

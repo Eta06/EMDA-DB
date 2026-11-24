@@ -115,8 +115,9 @@ pub use storage::CatalogStorageLimits;
 use storage::{CatalogStorage, intersect};
 
 pub use authority::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRestoreFailure, AuthorizedRetainedStore,
-    CutoverArchiveBinding, FileRetainedAuthority, RetainedAuthority,
+    AuthorityPoint, AuthorityRecord, AuthorizedReclamationFailure, AuthorizedRestoreFailure,
+    AuthorizedRetainedStore, CutoverArchiveBinding, FileRetainedAuthority, ReclamationFenceOutcome,
+    RetainedAuthority,
 };
 
 #[cfg(test)]

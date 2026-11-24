@@ -434,7 +434,13 @@ without the retired payload. The optional `reclaim_inactive_detailed`
 reports whether this call attempted to move the inactive slot or remove
 anything from a previously interrupted retirement. An authority-backed
 call can leave the fence outcome uncertain before attempting any removal.
-Reopen to reconcile an uncertain selection before writing again.
+On an authorized catalog, `reclaim_inactive_with_outcome` separates the
+fence and removal outcomes. The provider can leave the fence unconfirmed
+even when no removal started. Reopen to reconcile an unconfirmed fence.
+A confirmed fence can accompany either a pre-removal validation error or
+uncertain removal. Cleanup resumed from an earlier call can start before
+a new fence is attempted. The original reclamation methods retain their
+removal-only classification.
 Resolve a conflicting or unrecognized retirement
 marker before rotation. Generic stages left by older releases have no replacement
 binding and retain the earlier cleanup contract. Compaction and reclaim require

@@ -18,9 +18,10 @@ pub(crate) use restore_replay::RestoreReplay;
 mod suffix_file;
 mod writable;
 pub use writable::{
-    AuthorityPoint, AuthorityRecord, AuthorizedRestoreFailure, AuthorizedRetainedStore,
-    CatalogStorageLimits, CutoverArchiveBinding, FileRetainedAuthority, ManagedRetainedStore,
-    RetainedAuthority, RetainedStore, RetainedStoreLimits,
+    AuthorityPoint, AuthorityRecord, AuthorizedReclamationFailure, AuthorizedRestoreFailure,
+    AuthorizedRetainedStore, CatalogStorageLimits, CutoverArchiveBinding, FileRetainedAuthority,
+    ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedStore,
+    RetainedStoreLimits,
 };
 
 /// An independently retained copy of the exact candidate header and witness.
