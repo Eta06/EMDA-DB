@@ -149,7 +149,7 @@ fn replayed_v3_tail_adoption_rejects_growth_after_validation() {
         Some(attached),
         Some(boundary),
         metadata,
-        (None, None),
+        StoreRecoveryLimits::default(),
         None,
     )
     .unwrap();
