@@ -8,6 +8,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+if __package__:
+    from .benchmark_host_fixture import benchmark_host_metadata
+else:
+    from benchmark_host_fixture import benchmark_host_metadata
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from benchmarks.large_crash import apply_changes, key, value, verify
 import large_crash_compare
@@ -65,8 +70,10 @@ class LargeCrashVerificationTests(unittest.TestCase):
                 return {'backend': backend, 'result': 'passed'}
 
             with (patch.object(sys, 'argv', args), patch.object(large_crash_compare, 'check', side_effect=check),
+                  benchmark_host_metadata(),
                   patch.object(large_crash_compare, 'quiet_window', return_value={'quiet': True}),
-                  patch('os.sched_getaffinity', return_value={0, 1}), patch('os.sched_setaffinity'),
+                  patch('os.sched_getaffinity', return_value={0, 1}, create=True),
+                  patch('os.sched_setaffinity', create=True),
                   contextlib.redirect_stdout(io.StringIO())):
                 with self.assertRaisesRegex(SystemExit, 'crash checks failed'):
                     large_crash_compare.main()
@@ -87,7 +94,7 @@ class LargeCrashVerificationTests(unittest.TestCase):
                     '--server', str(binary), '--prototype-preparer', str(binary),
                     '--sqlite-preparer', str(binary), '--client-cpus', '0', '--server-cpus', '1']
             with (patch.object(sys, 'argv', args), patch.object(large_crash_compare, 'check') as check,
-                  patch('os.sched_getaffinity', return_value={0, 1}),
+                  patch('os.sched_getaffinity', return_value={0, 1}, create=True),
                   contextlib.redirect_stderr(io.StringIO())):
                 with self.assertRaises(SystemExit):
                     large_crash_compare.main()

@@ -7,6 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+if __package__:
+    from .benchmark_host_fixture import benchmark_host_metadata
+else:
+    from benchmark_host_fixture import benchmark_host_metadata
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import compare_crashes
 
@@ -31,7 +36,8 @@ class CrashComparisonTests(unittest.TestCase):
 
             args = ["compare_crashes.py", "--directory", directory, "--output", str(output),
                     "--server", str(server), "--rounds", "2", "--backends", "prototype", "sqlite"]
-            with (patch.object(sys, "argv", args), patch.object(compare_crashes, "check", side_effect=check),
+            with (patch.object(sys, "argv", args), benchmark_host_metadata(),
+                  patch.object(compare_crashes, "check", side_effect=check),
                   contextlib.redirect_stdout(io.StringIO())):
                 with self.assertRaisesRegex(SystemExit, "One or more crash checks failed"):
                     compare_crashes.main()

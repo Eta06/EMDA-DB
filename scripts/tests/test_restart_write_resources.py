@@ -69,7 +69,10 @@ class RestartResourceTests(unittest.TestCase):
             (root / 'store' / 'commit.state').write_bytes(b'witness')
             (root / 'index').write_bytes(b'index')
             (root / 'unrelated').write_bytes(b'untouched')
-            with patch('restart_write_resources.os.posix_fadvise') as advise:
+            with (
+                patch('restart_write_resources.os.posix_fadvise', create=True) as advise,
+                patch('restart_write_resources.os.POSIX_FADV_DONTNEED', 4, create=True),
+            ):
                 result = evict_fixture_files(root, 'checkpoint')
             self.assertEqual([entry['file'] for entry in result],
                              ['store/records.log', 'store/commit.state', 'index'])
@@ -83,7 +86,7 @@ class RestartResourceTests(unittest.TestCase):
             (root / 'outside').write_bytes(b'untouched')
             (root / 'store' / 'records.log').symlink_to(root / 'outside')
             (root / 'store' / 'commit.state').write_bytes(b'witness')
-            with patch('restart_write_resources.os.posix_fadvise') as advise:
+            with patch('restart_write_resources.os.posix_fadvise', create=True) as advise:
                 with self.assertRaises(OSError):
                     evict_fixture_files(root, 'full')
                 advise.assert_not_called()

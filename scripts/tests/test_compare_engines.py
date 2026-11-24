@@ -9,6 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+if __package__:
+    from .benchmark_host_fixture import benchmark_host_metadata
+else:
+    from benchmark_host_fixture import benchmark_host_metadata
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import compare_engines
 from compare_engines import CASES, configure_cases, dependency_versions, run_case_command, validate_result
@@ -102,10 +107,12 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
             output = root / 'report.json'
             args = ['compare_engines.py', '--directory', directory, '--server', str(server),
                     '--output', str(output), '--backends', 'postgres', 'mongo', '--rounds', '2']
-            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
-                  patch.object(compare_engines.os, 'sched_setaffinity'),
+            with (patch.object(sys, 'argv', args),
+                  patch.object(compare_engines.os, 'sched_getaffinity',
+                               return_value={0, 1, 2, 3, 4}, create=True),
+                  patch.object(compare_engines.os, 'sched_setaffinity', create=True),
                   patch.object(compare_engines.importlib.metadata, 'version', return_value='test'),
-                  patch.object(compare_engines, 'snapshot', return_value={}),
+                  benchmark_host_metadata(), patch.object(compare_engines, 'snapshot', return_value={}),
                   patch.object(compare_engines, 'LocalService', Service)):
                 with self.assertRaisesRegex(RuntimeError, 'startup failure'):
                     compare_engines.main()
@@ -121,7 +128,9 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
             output = Path(directory) / 'report.json'
             output.write_text('prior result')
             args = ['compare_engines.py', '--directory', directory, '--output', str(output)]
-            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
+            with (patch.object(sys, 'argv', args),
+                  patch.object(compare_engines.os, 'sched_getaffinity',
+                               return_value={0, 1, 2, 3, 4}, create=True),
                   contextlib.redirect_stderr(io.StringIO())):
                 with self.assertRaises(SystemExit):
                     compare_engines.main()
@@ -132,7 +141,9 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
             output = Path(directory) / 'report.json'
             args = ['compare_engines.py', '--directory', directory, '--output', str(output),
                     '--backends', 'postgres', 'postgres']
-            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
+            with (patch.object(sys, 'argv', args),
+                  patch.object(compare_engines.os, 'sched_getaffinity',
+                               return_value={0, 1, 2, 3, 4}, create=True),
                   patch.object(compare_engines, 'LocalService') as service,
                   contextlib.redirect_stderr(io.StringIO())):
                 with self.assertRaises(SystemExit):
@@ -148,8 +159,10 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
             output = root / 'report.json'
             args = ['compare_engines.py', '--directory', directory, '--server', str(server),
                     '--output', str(output), '--backends', 'prototype', '--housekeeping-cpus', '1']
-            with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
-                  patch.object(compare_engines.os, 'sched_setaffinity') as set_affinity,
+            with (patch.object(sys, 'argv', args),
+                  patch.object(compare_engines.os, 'sched_getaffinity',
+                               return_value={0, 1, 2, 3, 4}, create=True),
+                  patch.object(compare_engines.os, 'sched_setaffinity', create=True) as set_affinity,
                   contextlib.redirect_stderr(io.StringIO())):
                 with self.assertRaises(SystemExit):
                     compare_engines.main()
@@ -188,10 +201,12 @@ class EngineComparisonConfigurationTests(unittest.TestCase):
                                 'update': {'count': 0}, 'delete': {'count': 0}}
                     return subprocess.CompletedProcess(command, 0, json.dumps(measured), '')
 
-                with (patch.object(sys, 'argv', args), patch.object(compare_engines.os, 'sched_getaffinity', return_value={0, 1, 2, 3, 4}),
-                      patch.object(compare_engines.os, 'sched_setaffinity'),
+                with (patch.object(sys, 'argv', args),
+                      patch.object(compare_engines.os, 'sched_getaffinity',
+                                   return_value={0, 1, 2, 3, 4}, create=True),
+                      patch.object(compare_engines.os, 'sched_setaffinity', create=True),
                       patch.object(compare_engines.importlib.metadata, 'version', return_value='test'),
-                      patch.object(compare_engines, 'snapshot', return_value={}),
+                      benchmark_host_metadata(), patch.object(compare_engines, 'snapshot', return_value={}),
                       patch.object(compare_engines, 'quiet_window', return_value={'quiet': True}),
                       patch.object(compare_engines, 'run_case_command', side_effect=run),
                       contextlib.redirect_stdout(io.StringIO())):

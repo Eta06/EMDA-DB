@@ -9,6 +9,7 @@ from multi_store_pair_compare import fixture_identity
 
 
 class MultiStorePairIdentityTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(os, 'setxattr'), 'requires the Linux user xattr API')
     def test_identity_includes_log_checkpoint_anchor_and_metadata(self):
         with tempfile.TemporaryDirectory() as root:
             project = Path(root) / 'project-0000'
