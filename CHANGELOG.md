@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound source-log reads during online compaction and scoped retired
+  cleanup under an optional per-maintenance-call ceiling.
+
 - Add cumulative staging work limits to document transactions, including
   repeated writes to the same key and document index maintenance.
 

@@ -1,6 +1,79 @@
 use super::*;
 
 #[test]
+fn source_read_limit_counts_both_replays_value_copies_and_confirmation() {
+    for exact in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (source, previous) = paths(root.path());
+        let store = OnlineStore::open(&source).unwrap();
+        store.with_store(|db| db.put(b"k", b"initial")).unwrap();
+        let snapshot = store.snapshot(1, 1).unwrap();
+        let initial = fs::metadata(source.join("records.log")).unwrap().len();
+        let final_length = [b"catch-up".as_slice(), b"final"]
+            .into_iter()
+            .map(|value| {
+                crate::record::encode(crate::record::Operation::Put, b"k", value)
+                    .unwrap()
+                    .len() as u64
+            })
+            .sum::<u64>()
+            + initial;
+        // Read the complete source twice. Also copy the captured value,
+        // reread both replay values and compare the final live value.
+        let total = 2 * final_length + 7 + 8 + 5 + 5;
+        store
+            .set_maintenance_source_read_limit(Some(total - u64::from(!exact)))
+            .unwrap();
+        let outcome = store.compact_reclaim_with_hooks_detailed(
+            &previous,
+            &Default::default(),
+            |at| match at {
+                copy::Point::InitialCopy => store.with_store(|db| db.put(b"k", b"catch-up")),
+                copy::Point::BeforeFinalBarrier => store.with_store(|db| db.put(b"k", b"final")),
+                _ => Ok(()),
+            },
+            crate::directory::sync_existing,
+            |_| Ok(()),
+        );
+        if exact {
+            let report = outcome.unwrap();
+            assert_eq!(report.final_log_bytes, final_length);
+            assert_ne!(report.concurrent_replay_bytes, 0);
+            assert_ne!(report.final_replay_bytes, 0);
+        } else {
+            assert!(matches!(
+                outcome,
+                Err(OnlineReclaimFailure::Compaction(crate::OnlineHandoffFailure::NotPublished(error)))
+                    if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "online maintenance source read byte limit exceeded"
+            ));
+            assert_eq!(
+                fs::metadata(source.join("records.log")).unwrap().len(),
+                final_length
+            );
+        }
+        assert!(!previous.exists());
+        assert_eq!(
+            snapshot
+                .as_snapshot()
+                .unwrap()
+                .get(b"k")
+                .unwrap()
+                .as_deref(),
+            Some(&b"initial"[..])
+        );
+        assert_eq!(
+            store.with_store(|db| db.get(b"k")).unwrap().as_deref(),
+            Some(&b"final"[..])
+        );
+        drop(snapshot);
+        drop(store);
+        let reopened = retry_lock(|| Store::open(&source)).unwrap();
+        assert_eq!(reopened.get(b"k").unwrap().as_deref(), Some(&b"final"[..]));
+    }
+}
+
+#[test]
 fn retired_snapshot_log_limit_counts_generations_and_checks_the_final_boundary() {
     let root = tempfile::tempdir().unwrap();
     let (source, previous) = paths(root.path());

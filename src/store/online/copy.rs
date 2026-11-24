@@ -21,6 +21,22 @@ pub(super) enum Point {
 
 type OwnedOperation = (Vec<u8>, Option<Vec<u8>>);
 
+pub(super) struct SourceReadBudget(pub(super) Option<u64>);
+
+impl SourceReadBudget {
+    pub(super) fn charge(&mut self, bytes: u64) -> io::Result<()> {
+        if let Some(remaining) = &mut self.0 {
+            *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "online maintenance source read byte limit exceeded",
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn boundary_locked(source: &Store) -> io::Result<u64> {
     if source.commits.failed() {
         return Err(io::Error::other(
@@ -55,7 +71,9 @@ pub(super) fn verify_initial(
     end: u64,
     options: &OnlineCompactionOptions,
     digest: Option<&mut Sha256>,
+    budget: &mut SourceReadBudget,
 ) -> io::Result<()> {
+    budget.charge(end)?;
     let mut index = BTreeMap::<Vec<u8>, ValueLocation>::new();
     let mut bytes = 0_usize;
     let data = snapshot.read_index()?;
@@ -155,11 +173,16 @@ impl<'a> Writer<'a> {
     }
 }
 
-pub(super) fn copy_snapshot(snapshot: &Snapshot<'_>, target: &Store) -> io::Result<()> {
+pub(super) fn copy_snapshot(
+    snapshot: &Snapshot<'_>,
+    target: &Store,
+    budget: &mut SourceReadBudget,
+) -> io::Result<()> {
     let index = snapshot.read_index()?;
     let log = index.log.as_ref().expect("active snapshot retains its log");
     let mut writer = Writer::new(target);
     for (key, location) in index.index.iter() {
+        budget.charge(location.length as u64)?;
         writer.push(key.clone(), Some(log.read(*location)?))?;
     }
     writer.flush()
@@ -170,19 +193,31 @@ pub(super) fn replay(
     start: u64,
     end: u64,
     digest: &mut Sha256,
+    budget: &mut SourceReadBudget,
 ) -> io::Result<()> {
+    let bytes = end
+        .checked_sub(start)
+        .ok_or_else(|| io::Error::other("source log boundary moved backward"))?;
+    budget.charge(bytes)?;
     let mut writer = Writer::new(target);
     source
         .log
         .visit_records_with_digest(start, end, end, digest, |key, location| {
             let value = location
-                .map(|location| source.log.read(location))
+                .map(|location| {
+                    budget.charge(location.length as u64)?;
+                    source.log.read(location)
+                })
                 .transpose()?;
             writer.push(key.into_owned(), value)
         })?;
     writer.flush()
 }
-pub(super) fn verify_target(source: &Store, target: &Store) -> io::Result<()> {
+pub(super) fn verify_target(
+    source: &Store,
+    target: &Store,
+    budget: &mut SourceReadBudget,
+) -> io::Result<()> {
     let source_index = source.read()?;
     let target_index = target.read()?;
     target.log.verify_index(&target_index.index)?;
@@ -197,6 +232,7 @@ pub(super) fn verify_target(source: &Store, target: &Store) -> io::Result<()> {
             .index
             .get(key)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "compacted key missing"))?;
+        budget.charge(location.length as u64)?;
         if source.log.read(*location)? != target.log.read(*target_location)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -222,13 +258,15 @@ mod tests {
         captured.put(b"key", b"captured").unwrap();
         let options = OnlineCompactionOptions::default();
         let (mut snapshot, end) = capture(&captured, &options).unwrap();
-        verify_initial(&snapshot, end, &options, None).unwrap();
-        copy_snapshot(&snapshot, &target).unwrap();
+        let mut budget = SourceReadBudget(Some(end + 8));
+        verify_initial(&snapshot, end, &options, None, &mut budget).unwrap();
+        copy_snapshot(&snapshot, &target, &mut budget).unwrap();
         assert_eq!(target.get(b"key").unwrap(), Some(b"captured".to_vec()));
         assert_eq!(source.get(b"key").unwrap(), Some(b"source!!".to_vec()));
-        assert!(verify_initial(&snapshot, 0, &options, None).is_err());
+        assert!(verify_initial(&snapshot, 0, &options, None, &mut budget).is_err());
         snapshot.cancel();
-        assert!(verify_initial(&snapshot, end, &options, None).is_err());
-        assert!(copy_snapshot(&snapshot, &target).is_err());
+        let mut unrestricted = SourceReadBudget(None);
+        assert!(verify_initial(&snapshot, end, &options, None, &mut unrestricted).is_err());
+        assert!(copy_snapshot(&snapshot, &target, &mut unrestricted).is_err());
     }
 }

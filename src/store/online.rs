@@ -98,6 +98,7 @@ struct State {
     failed: bool,
     retired: Vec<(Weak<Store>, u64)>,
     retired_limit: Option<u64>,
+    maintenance_source_read_limit: Option<u64>,
 }
 
 impl State {
@@ -361,6 +362,7 @@ impl OnlineStore {
                 failed: false,
                 retired: Vec::new(),
                 retired_limit: None,
+                maintenance_source_read_limit: None,
             }),
             maintenance: Mutex::new(()),
             reclamation_worker: AtomicBool::new(false),
@@ -452,6 +454,26 @@ impl OnlineStore {
             return Err(uncertain());
         }
         state.retired_bytes()
+    }
+
+    /// Sets an optional inclusive logical source-log read ceiling for each
+    /// online compaction or scoped retired cleanup call. It counts replay,
+    /// value reads used for copying and comparison, and the final digest
+    /// confirmation. Compaction rejects an over-budget attempt before
+    /// publication, and cleanup rejects before removal.
+    ///
+    /// A call captures the setting when it selects its source. The limit
+    /// resets on reopen. It excludes source identity and witness checks,
+    /// target reads, physical retries, and reads by other operations.
+    /// A maintenance worker uses the same limit and stops on rejection.
+    pub fn set_maintenance_source_read_limit(&self, limit: Option<u64>) -> io::Result<()> {
+        Access::check_not_active(self as *const Self as usize)?;
+        let mut state = self.state.write().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        state.maintenance_source_read_limit = limit;
+        Ok(())
     }
 
     fn capture_snapshot(
@@ -649,7 +671,13 @@ impl OnlineStore {
             || {
                 let snapshot =
                     current.snapshot(options.max_snapshot_keys, options.max_snapshot_key_bytes)?;
-                copy::verify_initial(&snapshot, boundary, options, None)
+                copy::verify_initial(
+                    &snapshot,
+                    boundary,
+                    options,
+                    None,
+                    &mut copy::SourceReadBudget(state.maintenance_source_read_limit),
+                )
             },
             sync_payload_removal,
             sync_parent,
@@ -776,12 +804,15 @@ impl OnlineStore {
         };
         options.validate()?;
         let (source, previous, parent) = compact_exchange::paths(&self.path, previous)?;
-        let current = {
+        let (current, mut budget) = {
             let state = self.state.read().map_err(|_| uncertain())?;
             if state.failed {
                 return Err(uncertain());
             }
-            Arc::clone(&state.store)
+            (
+                Arc::clone(&state.store),
+                copy::SourceReadBudget(state.maintenance_source_read_limit),
+            )
         };
         current._lock_file.verify_identity(&source)?;
         compact_exchange::source_directory_is_owned(&source)?;
@@ -793,7 +824,13 @@ impl OnlineStore {
             }
         }
         let mut replay_digest = Sha256::new();
-        copy::verify_initial(&snapshot, initial, options, Some(&mut replay_digest))?;
+        copy::verify_initial(
+            &snapshot,
+            initial,
+            options,
+            Some(&mut replay_digest),
+            &mut budget,
+        )?;
         let mut stage = crate::staging::Stage::directory(&parent)?;
         let target = Store::open_with_resource_limits(
             stage.path(),
@@ -801,7 +838,7 @@ impl OnlineStore {
             Some(options.max_snapshot_keys),
             Some(options.max_snapshot_key_bytes),
         )?;
-        copy::copy_snapshot(&snapshot, &target)?;
+        copy::copy_snapshot(&snapshot, &target, &mut budget)?;
         hook(copy::Point::InitialCopy)?;
         let mut offset = initial;
         for _ in 0..options.catchup_rounds {
@@ -809,7 +846,14 @@ impl OnlineStore {
             if end == offset {
                 break;
             }
-            copy::replay(&current, &target, offset, end, &mut replay_digest)?;
+            copy::replay(
+                &current,
+                &target,
+                offset,
+                end,
+                &mut replay_digest,
+                &mut budget,
+            )?;
             offset = end;
         }
         let concurrent_replay_bytes = offset
@@ -844,14 +888,17 @@ impl OnlineStore {
                 "final compaction suffix exceeds configured limit",
             ));
         }
+        // Reserve the complete confirmation scan before final replay.
+        budget.charge(final_boundary)?;
         copy::replay(
             &current,
             &target,
             offset,
             final_boundary,
             &mut replay_digest,
+            &mut budget,
         )?;
-        copy::verify_target(&current, &target)?;
+        copy::verify_target(&current, &target, &mut budget)?;
         let target_length = target.log.len()?;
         let original_log_limit = current.log_quota.as_ref().map(LogQuota::limit);
         let original_key_limit = current.max_live_keys;

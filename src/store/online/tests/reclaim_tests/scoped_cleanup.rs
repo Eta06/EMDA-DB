@@ -326,6 +326,21 @@ fn scoped_cleanup_keeps_retired_copy_when_verification_limits_are_too_small() {
             .contains("snapshot key count limit exceeded")
     );
     assert!(retired.exists());
+    let current_log_bytes = fs::metadata(source.join("records.log")).unwrap().len();
+    let old_bytes = fs::read(retired.join("records.log")).unwrap();
+    store
+        .set_maintenance_source_read_limit(Some(current_log_bytes - 1))
+        .unwrap();
+    assert!(matches!(
+        store.cleanup_retired_staging_detailed(&Default::default()),
+        Err(crate::StagingCleanupFailure::NotStarted(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "online maintenance source read byte limit exceeded"
+    ));
+    assert_eq!(fs::read(retired.join("records.log")).unwrap(), old_bytes);
+    store
+        .set_maintenance_source_read_limit(Some(current_log_bytes))
+        .unwrap();
     assert_eq!(retry_fixture_cleanup(&store).unwrap().removed_payloads, 1);
 }
 
