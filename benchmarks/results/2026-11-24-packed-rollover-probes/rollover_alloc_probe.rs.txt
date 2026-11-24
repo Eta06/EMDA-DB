@@ -1,0 +1,128 @@
+use database_engine::{BatchOperation, CheckpointStore, Store};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+
+struct CountingAllocator;
+static COUNTING: AtomicBool = AtomicBool::new(false);
+static CALLS: AtomicUsize = AtomicUsize::new(0);
+static BYTES: AtomicUsize = AtomicUsize::new(0);
+
+fn count(size: usize) {
+    if COUNTING.load(Relaxed) {
+        CALLS.fetch_add(1, Relaxed);
+        BYTES.fetch_add(size, Relaxed);
+    }
+}
+
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count(layout.size());
+        unsafe { System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        count(size);
+        unsafe { System.realloc(pointer, layout, size) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(pointer, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+fn key(number: u32) -> [u8; 128] {
+    let mut key = [b'k'; 128];
+    key[..4].copy_from_slice(&number.to_be_bytes());
+    key
+}
+
+fn main() -> std::io::Result<()> {
+    const BASE: u32 = 16_384;
+    let touched: u32 = std::env::args().nth(1).unwrap().parse().unwrap();
+    let directory = tempfile::tempdir()?;
+    let source = directory.path().join("store");
+    let checkpoint = directory.path().join("checkpoint");
+    let output = directory.path().join("rollover");
+    let old = [1; 64];
+    let new = [2; 64];
+    let store = Store::open(&source)?;
+    let keys = (0..BASE + touched).map(key).collect::<Vec<_>>();
+    for group in keys[..BASE as usize].chunks(512) {
+        let operations = group
+            .iter()
+            .map(|key| BatchOperation::Put { key, value: &old })
+            .collect::<Vec<_>>();
+        store.write_batch(&operations)?;
+    }
+    let digest = store.checkpoint_to(&checkpoint)?;
+    let mut changes = Vec::new();
+    for i in 0..touched {
+        changes.push(match i % 4 {
+            0 => BatchOperation::Delete {
+                key: &keys[(i * 3) as usize],
+            },
+            1 => BatchOperation::Put {
+                key: &keys[(i * 3) as usize],
+                value: &new,
+            },
+            2 => BatchOperation::Put {
+                key: &keys[(BASE + i) as usize],
+                value: &new,
+            },
+            _ => BatchOperation::Delete {
+                key: &keys[(BASE + i) as usize],
+            },
+        });
+    }
+    for group in changes.chunks(512) {
+        store.write_batch(group)?;
+    }
+    drop(store);
+    let store = CheckpointStore::open(&source, &checkpoint, &digest)?;
+    assert_eq!(store.overlay_keys()?, touched as usize);
+    let start = std::time::Instant::now();
+    COUNTING.store(true, Relaxed);
+    let result = store.rollover_managed(&output);
+    COUNTING.store(false, Relaxed);
+    let elapsed_us = start.elapsed().as_micros();
+    let digest = result?;
+    drop(store);
+    let store = CheckpointStore::open_managed(&source)?;
+    assert_eq!(store.overlay_keys()?, 0);
+    assert_eq!(store.tail_bytes()?, 0);
+    for i in 0..BASE {
+        let position = i / 3;
+        let expected = if i % 3 != 0 || position >= touched {
+            Some(old.as_slice())
+        } else {
+            match position % 4 {
+                0 => None,
+                1 => Some(new.as_slice()),
+                _ => Some(old.as_slice()),
+            }
+        };
+        assert_eq!(store.get(&keys[i as usize])?.as_deref(), expected);
+    }
+    for i in 0..touched {
+        let expected = (i % 4 == 2).then_some(new.as_slice());
+        assert_eq!(store.get(&keys[(BASE + i) as usize])?.as_deref(), expected);
+    }
+    print!(
+        "base={BASE} touched={touched} calls={} requested_bytes={} elapsed_us={elapsed_us} digest=",
+        CALLS.load(Relaxed),
+        BYTES.load(Relaxed)
+    );
+    for byte in digest {
+        print!("{byte:02x}");
+    }
+    println!();
+    Ok(())
+}
