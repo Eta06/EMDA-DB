@@ -936,40 +936,57 @@ impl SpillSession {
         Ok(())
     }
 
-    pub(super) fn next_latest(&mut self) -> io::Result<Option<(Vec<u8>, Option<ValueLocation>)>> {
+    pub(super) fn read_latest(
+        &mut self,
+        key: &mut Vec<u8>,
+    ) -> io::Result<Option<Option<ValueLocation>>> {
         // File cursors already check ordering against their previous key.
         // Avoid retaining a second copy of that key in the session.
-        let file_backed = matches!(self.emit, Emit::File(_) | Emit::Merged { .. });
+        let mut take = |next: &[u8], state| {
+            key.clear();
+            key.extend_from_slice(next);
+            state
+        };
         let next = match &mut self.emit {
             Emit::Pending => return Err(io::Error::other("suffix spill was not prepared")),
             Emit::Exhausted => return Ok(None),
-            Emit::Memory(items) => items.next(),
-            Emit::File(cursor) => cursor.next_entry()?,
+            Emit::Memory(items) => match items.next() {
+                Some((next_key, state)) => {
+                    if self
+                        .last_key
+                        .as_ref()
+                        .is_some_and(|previous| previous >= &next_key)
+                    {
+                        return Err(record::invalid_data(
+                            "suffix spill keys are not strictly ordered",
+                        ));
+                    }
+                    self.last_key
+                        .get_or_insert_with(Vec::new)
+                        .clone_from(&next_key);
+                    *key = next_key;
+                    Some(state)
+                }
+                None => None,
+            },
+            Emit::File(cursor) => cursor.next_entry_with(take)?,
             Emit::Merged {
                 inputs,
                 memory,
                 heads,
-            } => heads.next_with(inputs, memory, |key, state| Ok((key.to_vec(), state)))?,
+            } => heads.next_with(inputs, memory, |key, state| Ok(take(key, state)))?,
         };
-        let Some((key, state)) = next else {
+        if next.is_none() {
             self.emit = Emit::Exhausted;
             self.last_key = None;
-            return Ok(None);
-        };
-        if file_backed {
-            return Ok(Some((key, state)));
         }
-        if self
-            .last_key
-            .as_ref()
-            .is_some_and(|previous| previous.as_slice() >= key.as_slice())
-        {
-            return Err(record::invalid_data(
-                "suffix spill keys are not strictly ordered",
-            ));
-        }
-        self.last_key = Some(key.clone());
-        Ok(Some((key, state)))
+        Ok(next)
+    }
+
+    #[cfg(test)]
+    fn next_latest(&mut self) -> io::Result<Option<(Vec<u8>, Option<ValueLocation>)>> {
+        let mut key = Vec::new();
+        Ok(self.read_latest(&mut key)?.map(|state| (key, state)))
     }
 
     fn lookup_persisted(&self, key: &[u8]) -> io::Result<Find> {

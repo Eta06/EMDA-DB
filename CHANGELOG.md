@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse checkpoint lookup and output key buffers during bounded managed
+  rebuilds.
+
 - Resolve checkpoint suffix membership during the existing trusted index
   verification pass when building a replacement checkpoint.
 

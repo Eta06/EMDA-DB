@@ -828,18 +828,22 @@ impl CheckpointStore {
         // valid, and it yields them in order. Each child is applied before
         // the next one; their value offsets are not collapsed to the outer
         // record offset.
-        writer.visit_records_with_digest_and_limit(
-            prefix,
-            length,
-            witness,
-            &mut replayed,
-            Some(limits.max_operations),
-            |key, location| {
-                spill.push(&key, location, |key| {
-                    view.as_ref().map_or(Ok(None), |view| view.location(key))
-                })
-            },
-        )?;
+        {
+            let mut base_lookup = view.as_ref().map(CheckpointView::lookup);
+            writer.visit_records_with_digest_and_limit(
+                prefix,
+                length,
+                witness,
+                &mut replayed,
+                Some(limits.max_operations),
+                |key, location| {
+                    spill.push(&key, location, |key| match &mut base_lookup {
+                        Some(lookup) => lookup.location(key),
+                        None => Ok(None),
+                    })
+                },
+            )?;
+        }
         if writer.len()? != length {
             return Err(crate::record::invalid_data(
                 "log length changed during suffix replay",
@@ -964,51 +968,39 @@ fn emit_merged(
     mut emit: impl FnMut(&[u8], crate::log::ValueLocation) -> io::Result<()>,
 ) -> io::Result<u64> {
     let mut emitted = 0_u64;
-    let mut spill_next = spill.next_latest()?;
+    let mut spill_key = Vec::new();
+    let mut spill_next = spill.read_latest(&mut spill_key)?;
+    let mut emit_live = |key: &[u8], location| {
+        emit(key, location)?;
+        emitted = emitted
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("index count overflow"))?;
+        Ok::<_, io::Error>(())
+    };
     if let Some(view) = view {
         view.visit_entries(None, None, |key, location| {
-            while spill_next
-                .as_ref()
-                .is_some_and(|(spill_key, _)| spill_key.as_slice() < key)
-            {
-                let (spill_key, state) = spill_next.take().expect("peeked spill entry");
-                if let Some(location) = state {
-                    emit(&spill_key, location)?;
-                    emitted = emitted
-                        .checked_add(1)
-                        .ok_or_else(|| io::Error::other("index count overflow"))?;
+            while spill_next.is_some() && spill_key.as_slice() < key {
+                if let Some(Some(location)) = spill_next {
+                    emit_live(&spill_key, location)?;
                 }
-                spill_next = spill.next_latest()?;
+                spill_next = spill.read_latest(&mut spill_key)?;
             }
-            if spill_next
-                .as_ref()
-                .is_some_and(|(spill_key, _)| spill_key.as_slice() == key)
-            {
-                let (_, state) = spill_next.take().expect("matched spill entry");
+            if let Some(state) = spill_next.filter(|_| spill_key.as_slice() == key) {
                 if let Some(location) = state {
-                    emit(key, location)?;
-                    emitted = emitted
-                        .checked_add(1)
-                        .ok_or_else(|| io::Error::other("index count overflow"))?;
+                    emit_live(key, location)?;
                 }
-                spill_next = spill.next_latest()?;
+                spill_next = spill.read_latest(&mut spill_key)?;
             } else {
-                emit(key, location)?;
-                emitted = emitted
-                    .checked_add(1)
-                    .ok_or_else(|| io::Error::other("index count overflow"))?;
+                emit_live(key, location)?;
             }
             Ok(ControlFlow::Continue(()))
         })?;
     }
-    while let Some((key, state)) = spill_next {
+    while let Some(state) = spill_next {
         if let Some(location) = state {
-            emit(&key, location)?;
-            emitted = emitted
-                .checked_add(1)
-                .ok_or_else(|| io::Error::other("index count overflow"))?;
+            emit_live(&spill_key, location)?;
         }
-        spill_next = spill.next_latest()?;
+        spill_next = spill.read_latest(&mut spill_key)?;
     }
     Ok(emitted)
 }
