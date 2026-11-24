@@ -200,10 +200,20 @@ snapshot's admission limits, deadline, cancellation and reaping rules
 apply. Each query also enforces its usual document limits. These two
 storage snapshots live in the current process.
 
+For retained stores, use `DocumentSnapshot::with_managed_retained_store`
+or `DocumentSnapshot::with_authorized_retained_store`. These views borrow
+the selected generation and suffix overlay in place. The borrowed handle
+cannot write, rotate, or retire a generation while the view is in use.
+Managed capture checks the local selection. Authorized capture also checks
+the independent authority, as at the start of a retained document
+transaction. The authorized view continues to read its captured state
+until dropped. Create a new view to check the authority again.
+
 `DocumentSnapshot::with_read_limits` optionally shares one logical
 `DocumentReadLimits` budget across point reads, queries, pages and
-aggregates on the same wrapper, including metadata and indexes. It applies to both live
-snapshot types and historical checkpoints. A request that exceeds the
+aggregates on the same wrapper, including metadata and indexes. It applies
+to live snapshots, historical checkpoints, and borrowed retained selections.
+A request that exceeds the
 budget returns an error without a partial result and exhausts the wrapper
 for subsequent reads. Explicitly setting new limits starts a new budget
 over the same captured state. This limits logical read units and bytes.

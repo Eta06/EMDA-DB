@@ -4,9 +4,10 @@ use database_engine::retained_candidate::{
     OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
 };
 use database_engine::{
-    CancellationToken, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentTransactionMode, IndexDefinition, IndexQuery, MaintenanceKey,
-    RetainedExportLimits, Store, TransactionFailure,
+    AggregateStatsRequest, CancellationToken, CollectionSchema, DocumentDatabase, DocumentFilter,
+    DocumentQuery, DocumentQueryAccess, DocumentReadLimits, DocumentSnapshot,
+    DocumentTransactionMode, IndexDefinition, IndexQuery, MaintenanceKey, RetainedExportLimits,
+    Store, TransactionFailure,
 };
 use serde_json::json;
 use std::io;
@@ -85,6 +86,150 @@ fn prepare(root: &Path) -> ManagedRetainedStore {
     ManagedRetainedStore::copy_from_store(seed(&source), &source, &catalog, EXPORT, LIMITS)
         .unwrap();
     ManagedRetainedStore::open_with_auto_reclaim(&catalog, LIMITS, NonZeroU64::MIN).unwrap()
+}
+
+fn check_snapshot(snapshot: DocumentSnapshot<'_>, score: i64) {
+    assert_eq!(
+        snapshot.get("items", "a").unwrap(),
+        Some(json!({"n": score}))
+    );
+    let stats = snapshot
+        .aggregate_stats_planned(
+            "items",
+            &AggregateStatsRequest {
+                filter: DocumentFilter::Equal {
+                    path: vec!["n".into()],
+                    value: json!(score),
+                },
+                group_by: None,
+                fields: vec![vec!["n".into()]],
+                max_scanned: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        stats.access,
+        DocumentQueryAccess::UniqueEqualityIndex {
+            index: "score".into()
+        }
+    );
+    assert_eq!(stats.result.groups[0].fields[0].sum, i128::from(score));
+
+    let query = IndexQuery {
+        limit: 1,
+        ..Default::default()
+    };
+    let limits = DocumentReadLimits {
+        max_read_units: 4,
+        max_read_bytes: usize::MAX,
+    };
+    let snapshot = snapshot.with_read_limits(limits);
+    let rejected = snapshot.query_index("items", "score", &query).unwrap_err();
+    assert_eq!(rejected.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        rejected.to_string(),
+        "document snapshot read limit exceeded"
+    );
+
+    let snapshot = snapshot.with_read_limits(DocumentReadLimits {
+        max_read_units: 5,
+        ..limits
+    });
+    let first = snapshot.query_index("items", "score", &query).unwrap();
+    assert_eq!(first.documents[0].document, json!({"n": score}));
+    assert_eq!(
+        snapshot.get("items", "z").unwrap_err().to_string(),
+        rejected.to_string()
+    );
+    let next = snapshot
+        .with_read_limits(DocumentReadLimits {
+            max_read_units: 5,
+            ..limits
+        })
+        .query_index(
+            "items",
+            "score",
+            &IndexQuery {
+                after: Some(first.next.unwrap()),
+                ..query
+            },
+        )
+        .unwrap();
+    assert_eq!(next.documents[0].id, "z");
+}
+
+#[test]
+fn managed_document_snapshot_reads_selected_generation_with_shared_limits() {
+    let root = tempfile::tempdir().unwrap();
+    let catalog = root.path().join("catalog");
+    let mut store = prepare(root.path());
+    let initial = store.generation_id().unwrap();
+    check_snapshot(
+        DocumentSnapshot::with_managed_retained_store(&store).unwrap(),
+        1,
+    );
+    let db = DocumentDatabase::with_managed_retained_store(&mut store);
+    db.replace("items", "a", &json!({"n": 2}), false).unwrap();
+    db.replace("items", "a", &json!({"n": 3}), false).unwrap();
+    assert_ne!(store.generation_id().unwrap(), initial);
+    check_snapshot(
+        DocumentSnapshot::with_managed_retained_store(&store).unwrap(),
+        3,
+    );
+
+    let selection = catalog.join("active.retained");
+    let saved = std::fs::read(&selection).unwrap();
+    let mut corrupt = saved.clone();
+    corrupt[0] ^= 1;
+    std::fs::write(&selection, corrupt).unwrap();
+    let error = DocumentSnapshot::with_managed_retained_store(&store)
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    std::fs::write(selection, saved).unwrap();
+    drop(store);
+    let store = ManagedRetainedStore::open(&catalog, LIMITS).unwrap();
+    check_snapshot(
+        DocumentSnapshot::with_managed_retained_store(&store).unwrap(),
+        3,
+    );
+}
+
+#[test]
+fn authorized_document_snapshot_checks_authority_when_captured() {
+    type Catalog = AuthorizedRetainedStore<FileRetainedAuthority>;
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let catalog = root.path().join("catalog");
+    let authority = root.path().join("authority");
+    let initial =
+        Catalog::prepare_from_store(seed(&source), &source, &catalog, EXPORT, LIMITS).unwrap();
+    let mut provider = FileRetainedAuthority::create(&authority).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let open = || {
+        Catalog::open(
+            &catalog,
+            LIMITS,
+            FileRetainedAuthority::open(&authority).unwrap(),
+        )
+        .unwrap()
+    };
+    let mut store = open();
+    let snapshot = DocumentSnapshot::with_authorized_retained_store(&mut store).unwrap();
+    let mut next = initial;
+    next.revision += 1;
+    assert!(provider.compare_and_swap(Some(initial), next).unwrap());
+    check_snapshot(snapshot, 1);
+    let error = DocumentSnapshot::with_authorized_retained_store(&mut store)
+        .err()
+        .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "retained authority changed");
+    drop(store);
+    check_snapshot(
+        DocumentSnapshot::with_authorized_retained_store(&mut open()).unwrap(),
+        1,
+    );
 }
 
 #[test]

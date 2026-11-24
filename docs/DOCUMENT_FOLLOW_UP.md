@@ -271,6 +271,11 @@ remain open.
   Counts, sums and planned integer aggregates also use the captured documents
   and indexes and share that budget. Tests cover intervening writes and
   budget rejection on all three view types.
+  The managed and authority-backed retained stores also expose borrowed
+  document snapshots. A borrow excludes writes and reclamation on the
+  handle and keeps the existing sparse index and overlay in place.
+  Tests cover cumulative read limits, rotation and reopen, and rejection
+  when local selection or independent authority changes before capture.
 - [ ] Add an authenticated service and genuine project isolation in the later security/service priority. The raw reserved prefix is not an isolation boundary; uncooperative raw writes can corrupt document metadata or create undetected omissions until bounded verification.
 - [x] Establish versioned migration, import/export and compatibility policy
   before a stable release. The [version 1 archive](VERSIONING.md#portable-collection-archives)

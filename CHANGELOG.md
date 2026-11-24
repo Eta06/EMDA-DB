@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Read and aggregate documents across calls on managed and authority-backed
+  retained selections without copying the index or suffix overlay.
+
 - Run bounded counts, sums, and planned integer statistics over captured
   document snapshots, sharing their cumulative read budget.
 

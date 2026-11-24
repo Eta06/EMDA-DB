@@ -1269,7 +1269,7 @@ impl ManagedRetainedStore {
         self.store.ensure_healthy()
     }
 
-    fn verify_selection(&self) -> io::Result<()> {
+    pub(crate) fn verify_selection(&self) -> io::Result<()> {
         self.ensure_selected()?;
         self.lock.verify_identity(&self.root)?;
         self.store

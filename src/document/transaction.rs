@@ -8,6 +8,7 @@ use super::{
 };
 use crate::{
     CheckpointSnapshot, CheckpointTransaction, CheckpointView, Entry, Snapshot, Transaction,
+    retained_candidate::ManagedRetainedStore,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -42,6 +43,7 @@ enum BackendTransaction<'a, 'store> {
     OrdinarySnapshot(&'a Snapshot<'store>),
     CheckpointSnapshot(&'a CheckpointSnapshot<'store>),
     HistoricalCheckpoint(&'a CheckpointView),
+    RetainedSnapshot(&'a ManagedRetainedStore),
 }
 
 /// Cumulative logical read limits for a document transaction or snapshot wrapper.
@@ -113,6 +115,10 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         Self::with_backend(BackendTransaction::HistoricalCheckpoint(view))
     }
 
+    pub(super) fn retained_snapshot(view: &'a ManagedRetainedStore) -> Self {
+        Self::with_backend(BackendTransaction::RetainedSnapshot(view))
+    }
+
     fn with_backend(backend: BackendTransaction<'a, 'store>) -> Self {
         Self {
             backend,
@@ -165,7 +171,8 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 return Err(match self.backend {
                     BackendTransaction::OrdinarySnapshot(_)
                     | BackendTransaction::CheckpointSnapshot(_)
-                    | BackendTransaction::HistoricalCheckpoint(_) => {
+                    | BackendTransaction::HistoricalCheckpoint(_)
+                    | BackendTransaction::RetainedSnapshot(_) => {
                         key::invalid("document snapshot read limit exceeded")
                     }
                     _ => read_limit_exceeded(),
@@ -235,6 +242,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             BackendTransaction::OrdinarySnapshot(snapshot) => snapshot.get_admitted(key, admit),
             BackendTransaction::CheckpointSnapshot(snapshot) => snapshot.get_admitted(key, admit),
             BackendTransaction::HistoricalCheckpoint(view) => view.get_admitted(key, admit),
+            BackendTransaction::RetainedSnapshot(view) => view.get_admitted(key, admit),
         }
     }
 
@@ -286,7 +294,8 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             BackendTransaction::Retained(tx) => tx.stage(crate::BatchOperation::Put { key, value }),
             BackendTransaction::OrdinarySnapshot(_)
             | BackendTransaction::CheckpointSnapshot(_)
-            | BackendTransaction::HistoricalCheckpoint(_) => {
+            | BackendTransaction::HistoricalCheckpoint(_)
+            | BackendTransaction::RetainedSnapshot(_) => {
                 Err(key::invalid("document snapshot is read-only"))
             }
         }
@@ -300,7 +309,8 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             BackendTransaction::Retained(tx) => tx.stage(crate::BatchOperation::Delete { key }),
             BackendTransaction::OrdinarySnapshot(_)
             | BackendTransaction::CheckpointSnapshot(_)
-            | BackendTransaction::HistoricalCheckpoint(_) => {
+            | BackendTransaction::HistoricalCheckpoint(_)
+            | BackendTransaction::RetainedSnapshot(_) => {
                 Err(key::invalid("document snapshot is read-only"))
             }
         }
@@ -342,6 +352,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             }
             BackendTransaction::HistoricalCheckpoint(view) => {
                 view.scan_admitted(Some(after), Some(before), limit, admit)
+            }
+            BackendTransaction::RetainedSnapshot(view) => {
+                view.scan_with_staged(after, before, limit, std::iter::empty(), admit)
             }
         }?;
         budget_error.map_or(Ok(page), Err)

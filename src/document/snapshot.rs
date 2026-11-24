@@ -3,13 +3,15 @@ use super::{
     DocumentQuery, DocumentQueryExplanation, DocumentQueryResult, DocumentReadLimits,
     DocumentTransaction, IndexQuery, PlannedAggregateStatsResult, PlannedDocumentQueryResult,
 };
+use crate::retained_candidate::{AuthorizedRetainedStore, ManagedRetainedStore, RetainedAuthority};
 use crate::{CheckpointSnapshot, CheckpointView, Snapshot};
 use serde_json::Value;
 use std::io;
 
 /// Read-only queries over an already captured storage snapshot or a verified
-/// historical checkpoint. All pages use its captured documents and indexes.
-/// The caller keeps the underlying view alive and controls its limits.
+/// historical checkpoint, or over a borrowed retained selection. All pages
+/// use its captured documents and indexes. The caller keeps the underlying
+/// view alive and controls its limits.
 pub struct DocumentSnapshot<'a> {
     view: DocumentTransaction<'a, 'a>,
 }
@@ -36,6 +38,28 @@ impl<'a> DocumentSnapshot<'a> {
         Self {
             view: DocumentTransaction::historical_checkpoint(view),
         }
+    }
+
+    /// Borrows the selected managed retained generation without copying its
+    /// index or overlay. The borrow excludes writes, rotation and retirement
+    /// on this handle while the view is in use.
+    pub fn with_managed_retained_store(store: &'a ManagedRetainedStore) -> io::Result<Self> {
+        store.verify_selection()?;
+        Ok(Self {
+            view: DocumentTransaction::retained_snapshot(store),
+        })
+    }
+
+    /// Checks the independent authority and borrows the selected generation.
+    /// Like a retained document transaction, this checks authority when
+    /// capturing the view. The borrow excludes writes and maintenance on
+    /// this handle. Create a fresh view to check authority again.
+    pub fn with_authorized_retained_store<A: RetainedAuthority>(
+        store: &'a mut AuthorizedRetainedStore<A>,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            view: DocumentTransaction::retained_snapshot(store.checked_document_reader()?),
+        })
     }
 
     /// Sets a cumulative logical read budget for this wrapper, starting with
