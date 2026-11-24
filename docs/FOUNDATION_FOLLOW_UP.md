@@ -71,6 +71,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   logical scan ceilings. Tests cover exact admission before staging on
   both writable stores, V2/V3 and legacy recovery, corruption in an admitted
   backup, the generated empty-restore header, and uncertain publication.
+- [x] Verify format upgrades in one staged record pass under independent
+  output-size and scan ceilings. The parser hashes the copied bytes and
+  checks the generated header before witness installation. Tests cover
+  exact admission for legacy and witnessed sources, same-length
+  substitution of a valid header or record, and uncertain directory sync.
 - [x] Add a backup/restore reference-map fuzzer covering mixed mutations, checkpoints and source writes after the backup. A [5,048-input campaign](BACKUP_AND_FILESYSTEM_FAILURES_2026_11_06.md) on `373b00a` completed without a finding; its generated input limit reached 22 bytes, so longer checked-in seeds were added afterward. The model is serial and does not exercise physical faults.
 - [x] Run the backup model with 98-byte starting inputs and the same maximum input length. A [5,182-input address-sanitized campaign](BACKUP_AND_FILESYSTEM_FAILURES_2026_11_06.md#backup-reference-model-fuzzing) on `b067750` completed without a finding. It remains a finite serial campaign without physical fault injection.
 - [x] Repeat both file-size suites five times in release mode: all [380 scenarios](../benchmarks/results/2026-11-06-kernel-file-limit-stress.json) passed on `4aa2c91`. The first combined [hosted CI run](https://github.com/Eta06/EMDA-DB/actions/runs/42143868680) failed Rust 1.85 Clippy on a test helper; the helper was rewritten and both supported toolchains passed local Clippy and the affected tests.

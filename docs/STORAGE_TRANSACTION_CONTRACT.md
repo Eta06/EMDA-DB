@@ -97,6 +97,14 @@ used together. Admission precedes payload reads and staging. Envelope,
 framing and metadata probes, physical retries, and writes have separate
 costs.
 
+`Store::upgrade_format_with_limits_detailed` accepts `FormatUpgradeLimits`.
+Admission charges the copied source record bytes and one pass over the
+staged log, including its generated header. It checks the scan and output
+ceilings before reading records or creating a stage. Staged verification
+compares the generated header and hashes the exact bytes used by the
+record parser before installing the witness. It uses the same publication
+outcomes as `upgrade_format_detailed`.
+
 Both writable stores also provide `checkpoint_to_detailed` for an independent
 checkpoint copy. It returns the same publication classifications, and its
 successful result is a digest the caller must retain in separately trusted

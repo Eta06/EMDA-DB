@@ -54,6 +54,7 @@ fn invoke(
             upgrade_format_with_witness_hooks(
                 &source,
                 &root.join("result"),
+                FormatUpgradeLimits::default(),
                 |_| Ok(()),
                 || Ok(()),
                 hook,

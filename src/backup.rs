@@ -39,6 +39,17 @@ pub struct FullLogRestoreLimits {
     pub max_log_scan_bytes: Option<u64>,
 }
 
+/// Inclusive limits for making a verified copy in the current log format.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FormatUpgradeLimits {
+    /// Maximum output log length, including the generated header.
+    pub max_log_bytes: Option<u64>,
+    /// Maximum logical bytes read to copy the source records and verify the
+    /// staged log. Framing and metadata probes, physical retries, and writes
+    /// have separate costs.
+    pub max_log_scan_bytes: Option<u64>,
+}
+
 #[derive(PartialEq, Eq)]
 struct BackupInfo {
     log_len: u64,
@@ -166,7 +177,11 @@ fn create_with_stage_hooks(
             ));
         }
     }
-    check_scan_limit(log_len.checked_mul(2), limits.max_log_scan_bytes)?;
+    check_scan_limit(
+        log_len.checked_mul(2),
+        limits.max_log_scan_bytes,
+        "full-log backup or restore exceeds configured scan byte limit",
+    )?;
     let parent = parent_directory(destination)?;
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     temp.write_all(HEADER)?;
@@ -340,6 +355,7 @@ fn restore_with_stage_hooks(
             .checked_mul(2)
             .and_then(|bytes| bytes.checked_add(restored_log_len)),
         limits.max_log_scan_bytes,
+        "full-log backup or restore exceeds configured scan byte limit",
     )?;
     verify_payload(&backup, &info)?;
     let parent = parent_directory(destination)?;
@@ -399,38 +415,58 @@ pub(crate) fn upgrade_legacy_tracked(
             "store already has a commit witness",
         ));
     }
-    upgrade_format_tracked(source, destination, tracker)
+    upgrade_format_tracked(source, destination, FormatUpgradeLimits::default(), tracker)
 }
 
 pub(crate) fn upgrade_format(source: &Log, destination: &Path) -> io::Result<()> {
-    upgrade_format_with_hooks(source, destination, crate::directory::sync_existing, || {
-        Ok(())
-    })
+    upgrade_format_with_hooks(
+        source,
+        destination,
+        FormatUpgradeLimits::default(),
+        crate::directory::sync_existing,
+        || Ok(()),
+    )
 }
 
 pub(crate) fn upgrade_format_tracked(
     source: &Log,
     destination: &Path,
+    limits: FormatUpgradeLimits,
     tracker: &crate::publication_outcome::Tracker,
 ) -> io::Result<()> {
-    upgrade_format_with_hooks(source, destination, crate::directory::sync_existing, || {
-        tracker.begin_publication();
-        Ok(())
-    })
+    upgrade_format_with_hooks(
+        source,
+        destination,
+        limits,
+        crate::directory::sync_existing,
+        || {
+            tracker.begin_publication();
+            Ok(())
+        },
+    )
 }
 
 fn upgrade_format_with_hooks(
     source: &Log,
     destination: &Path,
+    limits: FormatUpgradeLimits,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
-    upgrade_format_with_witness_hooks(source, destination, sync_parent, before_publish, |_| Ok(()))
+    upgrade_format_with_witness_hooks(
+        source,
+        destination,
+        limits,
+        sync_parent,
+        before_publish,
+        |_| Ok(()),
+    )
 }
 
 fn upgrade_format_with_witness_hooks(
     source: &Log,
     destination: &Path,
+    limits: FormatUpgradeLimits,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
     witness_hook: impl FnMut(witness::CreationPoint) -> io::Result<()>,
@@ -438,6 +474,7 @@ fn upgrade_format_with_witness_hooks(
     upgrade_format_with_stage_hooks(
         source,
         destination,
+        limits,
         sync_parent,
         before_publish,
         witness_hook,
@@ -448,24 +485,13 @@ fn upgrade_format_with_witness_hooks(
 fn upgrade_format_with_stage_hooks(
     source: &Log,
     destination: &Path,
+    limits: FormatUpgradeLimits,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     before_publish: impl FnOnce() -> io::Result<()>,
     witness_hook: impl FnMut(witness::CreationPoint) -> io::Result<()>,
     mut stage_hook: impl FnMut(RebuildPoint) -> io::Result<()>,
 ) -> io::Result<()> {
     source.verify_witness()?;
-    let parent = parent_directory(destination)?;
-    let mut staging = crate::staging::Stage::directory(parent)?;
-    let mut lock = StagingLock::create(staging.path())?;
-    let mut target = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(staging.path().join("records.log"))?;
-    stage_hook(RebuildPoint::LogCreated)?;
-    let mut header = witness::new_header()?;
-    target.write_all(&header)?;
-    stage_hook(RebuildPoint::HeaderWritten)?;
     let start = if source.is_legacy() {
         0
     } else {
@@ -478,6 +504,32 @@ fn upgrade_format_with_stage_hooks(
     let verified_length = (witness::LOG_HEADER_SIZE as u64)
         .checked_add(length)
         .ok_or_else(|| record::invalid_data("upgraded log length overflow"))?;
+    if limits
+        .max_log_bytes
+        .is_some_and(|limit| verified_length > limit)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "upgraded log exceeds configured byte limit",
+        ));
+    }
+    check_scan_limit(
+        length.checked_add(verified_length),
+        limits.max_log_scan_bytes,
+        "format upgrade exceeds configured scan byte limit",
+    )?;
+    let parent = parent_directory(destination)?;
+    let mut staging = crate::staging::Stage::directory(parent)?;
+    let mut lock = StagingLock::create(staging.path())?;
+    let mut target = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(staging.path().join("records.log"))?;
+    stage_hook(RebuildPoint::LogCreated)?;
+    let mut header = witness::new_header()?;
+    target.write_all(&header)?;
+    stage_hook(RebuildPoint::HeaderWritten)?;
     let digest = copy_data_with_hook(
         length,
         |buffer, offset| source.read_bytes(buffer, start + offset),
@@ -493,15 +545,12 @@ fn upgrade_format_with_stage_hooks(
     stage_hook(RebuildPoint::MetadataPrepared)?;
     target.sync_all()?;
     stage_hook(RebuildPoint::LogSynced)?;
-    if target.metadata()?.len() != verified_length
-        || hash_data(length, |buffer, offset| {
-            FileExt::read_exact_at(&target, buffer, witness::LOG_HEADER_SIZE as u64 + offset)
-        })? != digest
-    {
-        return Err(record::invalid_data("upgraded log checksum mismatch"));
-    }
-    // Validate every copied record before establishing the new boundary.
-    let target = Log::verify_io(Box::new(Arc::new(target)))?;
+    let target = Log::verify_upgraded_io(
+        Box::new(Arc::new(target)),
+        verified_length,
+        &header,
+        &digest,
+    )?;
     stage_hook(RebuildPoint::LogVerified)?;
     target.install_restore_witness_with_hook(staging.path(), verified_length, witness_hook)?;
     stage_hook(RebuildPoint::WitnessInstalled)?;
@@ -616,12 +665,13 @@ fn initialize_empty_restored_log(
     Ok(header)
 }
 
-fn check_scan_limit(bytes: Option<u64>, limit: Option<u64>) -> io::Result<()> {
+fn check_scan_limit(
+    bytes: Option<u64>,
+    limit: Option<u64>,
+    message: &'static str,
+) -> io::Result<()> {
     if limit.is_some_and(|limit| bytes.is_none_or(|bytes| bytes > limit)) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "full-log backup or restore exceeds configured scan byte limit",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, message));
     }
     Ok(())
 }
@@ -720,22 +770,6 @@ fn copy_data_with_hook(
         digest.update(&buffer[..count]);
         offset += count as u64;
         hook()?;
-    }
-    Ok(digest.finalize().into())
-}
-
-fn hash_data(
-    length: u64,
-    mut read: impl FnMut(&mut [u8], u64) -> io::Result<()>,
-) -> io::Result<[u8; 32]> {
-    let mut digest = Sha256::new();
-    let mut offset = 0_u64;
-    let mut buffer = [0_u8; BUFFER_SIZE];
-    while offset < length {
-        let count = (length - offset).min(BUFFER_SIZE as u64) as usize;
-        read(&mut buffer[..count], offset)?;
-        digest.update(&buffer[..count]);
-        offset += count as u64;
     }
     Ok(digest.finalize().into())
 }

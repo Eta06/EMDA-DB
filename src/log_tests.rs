@@ -383,6 +383,37 @@ struct ReplayFile {
     fail_read: Option<usize>,
 }
 
+#[test]
+fn upgrade_verification_reads_records_once_with_the_bound_header() {
+    use sha2::Digest;
+
+    let header = witness::new_header().unwrap();
+    let records = record::encode(Operation::Put, b"large", &vec![7; 256 * 1024]).unwrap();
+    let digest = Sha256::digest(&records).into();
+    let mut bytes = header.to_vec();
+    bytes.extend_from_slice(&records);
+    let length = bytes.len() as u64;
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    Log::verify_upgraded_io(
+        Box::new(ReplayFile {
+            bytes,
+            reads: Arc::clone(&reads),
+            fail_read: None,
+        }),
+        length,
+        &header,
+        &digest,
+    )
+    .unwrap();
+    let sizes = reads.lock().unwrap();
+    assert_eq!(sizes.first(), Some(&LOG_HEADER_SIZE));
+    assert_eq!(sizes.last(), Some(&LOG_HEADER_SIZE));
+    assert_eq!(
+        sizes[1..sizes.len() - 1].iter().sum::<usize>(),
+        records.len()
+    );
+}
+
 impl LogIo for ReplayFile {
     fn len(&self) -> io::Result<u64> {
         Ok(self.bytes.len() as u64)

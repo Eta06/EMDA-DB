@@ -66,6 +66,7 @@ fn invoke(
             upgrade_format_with_stage_hooks(
                 &source,
                 &root.join("result"),
+                FormatUpgradeLimits::default(),
                 |_| Ok(()),
                 || Ok(()),
                 |_| Ok(()),

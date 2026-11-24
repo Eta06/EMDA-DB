@@ -1006,9 +1006,21 @@ impl Store {
         &self,
         destination: impl AsRef<Path>,
     ) -> Result<(), crate::PublicationFailure> {
+        self.upgrade_format_with_limits_detailed(destination, crate::FormatUpgradeLimits::default())
+    }
+
+    /// Upgrades a supported log with independent output-size and scan limits.
+    /// The logical scan charges copied source records and one pass over the
+    /// staged log, including its new header. Refusal precedes payload reads
+    /// and staging and returns `NotPublished(InvalidInput)`.
+    pub fn upgrade_format_with_limits_detailed(
+        &self,
+        destination: impl AsRef<Path>,
+        limits: crate::FormatUpgradeLimits,
+    ) -> Result<(), crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
             self.upgrade_using(destination.as_ref(), |log, destination| {
-                backup::upgrade_format_tracked(log, destination, tracker)
+                backup::upgrade_format_tracked(log, destination, limits, tracker)
             })
         })
     }

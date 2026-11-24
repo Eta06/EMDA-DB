@@ -484,11 +484,45 @@ impl Log {
         Self::verify_io_using(file, Some((length, digest)))
     }
 
+    /// Bind the generated header and verify the copied record digest from
+    /// the same stream that checks record framing and checksums.
+    pub(crate) fn verify_upgraded_io(
+        file: Box<dyn LogIo>,
+        length: u64,
+        header: &[u8; LOG_HEADER_SIZE],
+        records_digest: &[u8; 32],
+    ) -> io::Result<Self> {
+        let metadata = header.starts_with(metadata_witness::MAGIC);
+        let log_id = if metadata {
+            metadata_witness::parse_header(header)?
+        } else {
+            witness::parse_header(header)?
+        };
+        let log = Self {
+            file,
+            log_id: Some(log_id),
+            witness: None,
+            metadata,
+            anchor: None,
+        };
+        let verify_header = || {
+            let mut actual = [0; LOG_HEADER_SIZE];
+            log.file.read_exact_at(&mut actual, 0)?;
+            if actual != *header {
+                return Err(record::invalid_data("upgraded log header changed"));
+            }
+            Ok(())
+        };
+        verify_header()?;
+        log.verify_digest_range(LOG_HEADER_SIZE as u64, length, records_digest)?;
+        verify_header()?;
+        Ok(log)
+    }
+
     fn verify_io_using(
         file: Box<dyn LogIo>,
         expected: Option<(u64, &[u8; 32])>,
     ) -> io::Result<Self> {
-        use sha2::Digest;
         let (log_id, metadata) = log_identity(file.as_ref())?;
         let log = Self {
             file,
@@ -498,20 +532,26 @@ impl Log {
             anchor: None,
         };
         if let Some((length, digest)) = expected {
-            if log.len()? != length {
-                return Err(record::invalid_data("verified log length mismatch"));
-            }
-            let mut hasher = Sha256::new();
-            log.visit_records_with_digest(0, length, length, &mut hasher, |_, _| Ok(()))?;
-            if hasher.finalize().as_slice() != digest || log.len()? != length {
-                return Err(record::invalid_data(
-                    "verified log checksum or length mismatch",
-                ));
-            }
+            log.verify_digest_range(0, length, digest)?;
         } else {
             log.visit_records(0, None, |_, _| Ok(()))?;
         }
         Ok(log)
+    }
+
+    fn verify_digest_range(&self, start: u64, length: u64, digest: &[u8; 32]) -> io::Result<()> {
+        use sha2::Digest;
+        if self.len()? != length {
+            return Err(record::invalid_data("verified log length mismatch"));
+        }
+        let mut hasher = Sha256::new();
+        self.visit_records_with_digest(start, length, length, &mut hasher, |_, _| Ok(()))?;
+        if hasher.finalize().as_slice() != digest || self.len()? != length {
+            return Err(record::invalid_data(
+                "verified log checksum or length mismatch",
+            ));
+        }
+        Ok(())
     }
 
     #[cfg(test)]

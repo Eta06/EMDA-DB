@@ -10,10 +10,15 @@ fn detailed_upgrade_reports_unknown_after_parent_sync_failure() {
     drop(store);
     let (log, _) = Log::open(&source, false).unwrap();
     let destination = root.path().join("copy");
+    let log_bytes = log.len().unwrap();
     let result = crate::publication_outcome::track(|tracker| {
         upgrade_format_with_hooks(
             &log,
             &destination,
+            FormatUpgradeLimits {
+                max_log_bytes: Some(log_bytes),
+                max_log_scan_bytes: Some(2 * log_bytes - witness::LOG_HEADER_SIZE as u64),
+            },
             |_| Err(io::Error::other("injected parent sync failure")),
             || {
                 tracker.begin_publication();
@@ -27,6 +32,71 @@ fn detailed_upgrade_reports_unknown_after_parent_sync_failure() {
     ));
     let copy = crate::test_support::retry_lock(|| Store::open(&destination)).unwrap();
     assert_eq!(copy.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+}
+
+#[test]
+fn upgrade_rejects_a_different_valid_header_or_record_after_sync() {
+    for change_header in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let store = Store::open(&source).unwrap();
+        store.put(b"key", b"value").unwrap();
+        drop(store);
+        let (log, _) = Log::open(&source, false).unwrap();
+        let destination = root.path().join("copy");
+        let source_bytes = std::fs::read(source.join("records.log")).unwrap();
+        let witness = std::fs::read(source.join("commit.state")).unwrap();
+        let result = crate::publication_outcome::track(|tracker| {
+            upgrade_format_with_stage_hooks(
+                &log,
+                &destination,
+                FormatUpgradeLimits::default(),
+                crate::directory::sync_existing,
+                || {
+                    tracker.begin_publication();
+                    Ok(())
+                },
+                |_| Ok(()),
+                |point| {
+                    if point == RebuildPoint::LogSynced {
+                        let stage = std::fs::read_dir(root.path())?
+                            .map(|entry| entry.unwrap().path())
+                            .find(|path| path.extension().is_some_and(|ext| ext == "data"))
+                            .expect("upgrade staging directory");
+                        let file = OpenOptions::new()
+                            .write(true)
+                            .open(stage.join("records.log"))?;
+                        if change_header {
+                            file.write_all_at(&crate::witness::new_header()?, 0)?;
+                        } else {
+                            let record = record::encode(record::Operation::Put, b"key", b"wrong")?;
+                            file.write_all_at(&record, crate::witness::LOG_HEADER_SIZE as u64)?;
+                        }
+                        file.sync_all()?;
+                    }
+                    Ok(())
+                },
+            )
+        });
+        let expected = if change_header {
+            "upgraded log header changed"
+        } else {
+            "verified log checksum or length mismatch"
+        };
+        assert!(
+            matches!(result, Err(crate::PublicationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData && error.to_string() == expected)
+        );
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read(source.join("records.log")).unwrap(),
+            source_bytes
+        );
+        assert_eq!(std::fs::read(source.join("commit.state")).unwrap(), witness);
+        upgrade_format(&log, &destination).unwrap();
+        let copy = crate::test_support::retry_lock(|| Store::open(&destination)).unwrap();
+        assert_eq!(copy.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
+    }
 }
 
 #[test]
@@ -131,11 +201,23 @@ fn publication_crash_child() {
         }
         "upgrade-staged" => {
             let (log, _) = Log::open(&source, false).unwrap();
-            upgrade_format_with_hooks(&log, &upgraded, |_| Ok(()), pause_at_boundary)
+            upgrade_format_with_hooks(
+                &log,
+                &upgraded,
+                FormatUpgradeLimits::default(),
+                |_| Ok(()),
+                pause_at_boundary,
+            )
         }
         "upgrade-published" => {
             let (log, _) = Log::open(&source, false).unwrap();
-            upgrade_format_with_hooks(&log, &upgraded, |_| pause_at_boundary(), || Ok(()))
+            upgrade_format_with_hooks(
+                &log,
+                &upgraded,
+                FormatUpgradeLimits::default(),
+                |_| pause_at_boundary(),
+                || Ok(()),
+            )
         }
         _ => panic!("unknown test stage"),
     };
@@ -784,6 +866,7 @@ fn upgrade_parent_sync_failure_reports_uncertain_publication() {
     let error = upgrade_format_with_hooks(
         &log,
         &upgraded,
+        FormatUpgradeLimits::default(),
         |_| Err(io::Error::other("injected parent sync failure")),
         || Ok(()),
     )
@@ -839,7 +922,13 @@ fn every_backup_restore_and_upgrade_ancestor_sync_failure_is_uncertain() {
             let result = match mode {
                 "backup" => create_with_sync(&log, &destination, sync),
                 "restore" => restore_with_sync(&backup, &destination, sync),
-                "upgrade" => upgrade_format_with_hooks(&log, &destination, sync, || Ok(())),
+                "upgrade" => upgrade_format_with_hooks(
+                    &log,
+                    &destination,
+                    FormatUpgradeLimits::default(),
+                    sync,
+                    || Ok(()),
+                ),
                 _ => unreachable!(),
             };
             assert!(result.unwrap_err().to_string().contains("may exist"));

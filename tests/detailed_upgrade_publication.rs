@@ -1,8 +1,77 @@
-use database_engine::{PublicationFailure, Store};
+use database_engine::{FormatUpgradeLimits, PublicationFailure, Store};
 use std::fs;
 
 mod support;
 use support::retry_lock;
+
+#[test]
+fn format_upgrade_limits_admit_exact_legacy_and_witnessed_copies() {
+    for legacy in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let log_path = source.join("records.log");
+        if legacy {
+            fs::create_dir(&source).unwrap();
+            fs::write(&log_path, include_bytes!("fixtures/db01-legacy-record.bin")).unwrap();
+        }
+        let store = Store::open(&source).unwrap();
+        if !legacy {
+            store.put(b"legacy", b"obsolete").unwrap();
+            store.put(b"legacy", b"persisted").unwrap();
+        }
+        let source_log = fs::read(&log_path).unwrap();
+        let source_witness = fs::read(source.join("commit.state")).ok();
+        let record_start = if legacy { 0 } else { 28 };
+        let record_bytes = &source_log[record_start..];
+        let output_bytes = record_bytes.len() as u64 + 28;
+        let scan_bytes = record_bytes.len() as u64 + output_bytes;
+        let exact = FormatUpgradeLimits {
+            max_log_bytes: Some(output_bytes),
+            max_log_scan_bytes: Some(scan_bytes),
+        };
+        let destination = root.path().join("upgraded");
+        let parent = fs::File::open(root.path()).unwrap();
+        fs2::FileExt::try_lock_exclusive(&parent).unwrap();
+        for (limits, message) in [
+            (
+                FormatUpgradeLimits {
+                    max_log_bytes: Some(output_bytes - 1),
+                    ..exact
+                },
+                "upgraded log exceeds configured byte limit",
+            ),
+            (
+                FormatUpgradeLimits {
+                    max_log_scan_bytes: Some(scan_bytes - 1),
+                    ..exact
+                },
+                "format upgrade exceeds configured scan byte limit",
+            ),
+        ] {
+            let result = store.upgrade_format_with_limits_detailed(&destination, limits);
+            assert!(
+                matches!(result, Err(PublicationFailure::NotPublished(error))
+                if error.kind() == std::io::ErrorKind::InvalidInput && error.to_string() == message)
+            );
+            assert!(!destination.exists());
+            assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+        }
+        fs2::FileExt::unlock(&parent).unwrap();
+        store
+            .upgrade_format_with_limits_detailed(&destination, exact)
+            .unwrap();
+        let copied = fs::read(destination.join("records.log")).unwrap();
+        assert_eq!(copied.len() as u64, output_bytes);
+        assert_eq!(&copied[28..], record_bytes);
+        assert_eq!(fs::read(&log_path).unwrap(), source_log);
+        assert_eq!(fs::read(source.join("commit.state")).ok(), source_witness);
+        let copy = retry_lock(|| Store::open(&destination)).unwrap();
+        assert_eq!(
+            copy.get(b"legacy").unwrap().as_deref(),
+            Some(&b"persisted"[..])
+        );
+    }
+}
 
 #[test]
 fn detailed_format_upgrade_preserves_source_and_existing_destination() {
