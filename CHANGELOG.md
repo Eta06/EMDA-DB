@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse collection metadata when a planned query or aggregation falls back
+  to a scan, so it uses the same read budget as the direct scan.
+
 - Compare two fields in bounded document filters and infer their presence
   for eligible indexed queries.
 

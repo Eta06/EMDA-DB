@@ -138,6 +138,39 @@ fn check_limits(db: &DocumentDatabase<'_>) {
     })
     .unwrap();
 
+    // One metadata read, two page requests (including EOF) and two
+    // document rows fit, including when the planner chooses the scan.
+    let full_scan = DocumentQuery::default();
+    let stats_scan = AggregateStatsRequest {
+        filter: DocumentFilter::All,
+        group_by: None,
+        fields: vec![vec!["score".into()]],
+        max_scanned: 4,
+    };
+    for planned in [false, true] {
+        db.transaction_with_read_limits(limits(5, usize::MAX), mode, None, None, |tx| {
+            let result = if planned {
+                tx.query_planned("c", &full_scan)?.result
+            } else {
+                tx.query("c", &full_scan)?
+            };
+            assert_eq!(result.plan.returned, 2);
+            Ok(())
+        })
+        .unwrap();
+        db.transaction_with_read_limits(limits(5, usize::MAX), mode, None, None, |tx| {
+            let result = if planned {
+                tx.aggregate_stats_planned("c", &stats_scan)?.result
+            } else {
+                tx.aggregate_stats("c", &stats_scan)?
+            };
+            assert_eq!(result.groups[0].count, 2);
+            assert_eq!(result.groups[0].fields[0].sum, 3);
+            Ok(())
+        })
+        .unwrap();
+    }
+
     let range = DocumentFilter::Compare {
         path: vec!["score".into()],
         comparison: Comparison::GreaterOrEqual,

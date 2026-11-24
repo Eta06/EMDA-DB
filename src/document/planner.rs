@@ -1359,7 +1359,7 @@ impl DocumentTransaction<'_, '_> {
         let metadata = self.metadata(collection)?;
         let Some((access, probes)) = plan_query(&query.filter, &metadata.indexes)? else {
             return Ok(PlannedDocumentQueryResult {
-                result: self.query(collection, query)?,
+                result: self.query_with_schema(collection, &metadata.schema, query)?,
                 access: DocumentQueryAccess::CollectionScan,
             });
         };
@@ -1417,10 +1417,13 @@ impl DocumentTransaction<'_, '_> {
         let metadata = self.metadata(collection)?;
         let mut state = T::default();
         let Some((access, probes)) = plan_query(predicate, &metadata.indexes)? else {
-            let plan =
-                self.visit_filtered_documents(collection, predicate, max_scanned, |doc| {
-                    visit(&mut state, doc)
-                })?;
+            let plan = self.visit_filtered_documents_with_schema(
+                collection,
+                &metadata.schema,
+                predicate,
+                max_scanned,
+                |doc| visit(&mut state, doc),
+            )?;
             return Ok((plan, DocumentQueryAccess::CollectionScan, state));
         };
         let id_order = in_id_order(&probes, &metadata);

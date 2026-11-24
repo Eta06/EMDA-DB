@@ -775,11 +775,29 @@ impl DocumentTransaction<'_, '_> {
         }
         validate_filter(filter)?;
         let metadata = self.metadata(collection)?;
+        self.visit_filtered_documents_with_schema(
+            collection,
+            &metadata.schema,
+            filter,
+            max_scanned,
+            visit,
+        )
+    }
+
+    // The planner has already validated the filter and obtained the schema.
+    pub(super) fn visit_filtered_documents_with_schema(
+        &self,
+        collection: &str,
+        schema: &schema::CollectionSchema,
+        filter: &DocumentFilter,
+        max_scanned: usize,
+        visit: impl FnMut(&Value) -> io::Result<()>,
+    ) -> io::Result<QueryPlan> {
         let mut visitor = FilteredVisitor::new(filter, visit);
         let mut scanned = 0;
         self.visit_document_rows(
             collection,
-            &metadata.schema,
+            schema,
             max_scanned,
             MAX_SCAN_BYTES,
             |_, document| {
@@ -799,10 +817,19 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<DocumentQueryResult> {
         validate_query(query)?;
         let metadata = self.metadata(collection)?;
+        self.query_with_schema(collection, &metadata.schema, query)
+    }
+
+    pub(super) fn query_with_schema(
+        &self,
+        collection: &str,
+        schema: &schema::CollectionSchema,
+        query: &DocumentQuery,
+    ) -> io::Result<DocumentQueryResult> {
         let mut collector = QueryCollector::new(query, true);
         self.visit_document_rows(
             collection,
-            &metadata.schema,
+            schema,
             query.max_scanned,
             MAX_SCAN_BYTES,
             |id, document| collector.push(id, document),
