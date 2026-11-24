@@ -3102,7 +3102,7 @@ mod tests {
         }
         spill.prepare_for_emit().unwrap();
         let files = spill_run_paths(foreign.path());
-        assert_eq!(files.len(), 2);
+        assert_eq!(files.len(), 1);
         let alternate = files
             .iter()
             .find(|path| path.file_name() == destination.file_name())
@@ -3165,7 +3165,7 @@ mod tests {
                         prior_selection
                     );
                     let runs = spill_run_paths(&case.path);
-                    assert_eq!(runs.len(), 2, "{damage:?}: {runs:?}");
+                    assert_eq!(runs.len(), 1, "{damage:?}: {runs:?}");
                     let bytes = fs::read(&runs[0]).unwrap();
                     assert!(bytes.starts_with(b"EMDASP01"), "{damage:?}");
                     assert!(bytes.len() > 60, "{damage:?}");

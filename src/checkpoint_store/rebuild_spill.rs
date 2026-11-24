@@ -672,12 +672,15 @@ impl Drop for RunWriter {
     }
 }
 
+type ChunkRows = std::collections::btree_map::IntoIter<Vec<u8>, Option<ValueLocation>>;
+
 enum Emit {
     Pending,
-    Memory(std::collections::btree_map::IntoIter<Vec<u8>, Option<ValueLocation>>),
+    Memory(ChunkRows),
     File(Box<RunCursor>),
     Merged {
         inputs: Vec<RunCursor>,
+        memory: ChunkRows,
         heads: MergeHeads,
     },
     Exhausted,
@@ -839,31 +842,51 @@ impl SpillSession {
         if !matches!(self.emit, Emit::Pending) {
             return Err(io::Error::other("suffix spill was already prepared"));
         }
-        if !self.dirty.is_empty() {
-            if self.runs.is_empty() {
-                let items = std::mem::take(&mut self.dirty).into_iter();
-                self.chunk_key_bytes = 0;
-                self.emit = Emit::Memory(items);
-                return Ok(());
-            }
-            self.write_dirty()?;
-        }
-        while self.runs.len() > self.limits.max_merge_fan_in {
-            self.merge_newest(self.limits.max_merge_fan_in)?;
-        }
         if self.runs.is_empty() {
-            self.emit = Emit::Memory(BTreeMap::new().into_iter());
+            self.emit = Emit::Memory(std::mem::take(&mut self.dirty).into_iter());
+            self.chunk_key_bytes = 0;
             return Ok(());
         }
-        if self.runs.len() == 1 {
+        let fan_in = self.limits.max_merge_fan_in;
+        if !self.dirty.is_empty() && self.runs.len() >= fan_in {
+            self.merge_full_levels()?;
+            // Keeping the chunk in memory must not force a larger merge.
+            // Preserve the spill path when the chunk cannot join the fan-in.
+            if self.runs.len() >= fan_in {
+                self.write_dirty()?;
+            }
+        }
+        while self.runs.len() > fan_in {
+            self.merge_newest(fan_in)?;
+        }
+        let memory_inputs = usize::from(!self.dirty.is_empty());
+        if self.runs.len() == 1 && memory_inputs == 0 {
             let cursor = RunCursor::open(&self.fd, &self.runs[0], true)?;
             self.emit = Emit::File(Box::new(cursor));
         } else {
             // The checkpoint writer consumes this sorted stream once. Its
             // staging and verification do not require a materialized run.
             let mut inputs = self.open_inputs(&self.runs)?;
-            let heads = MergeHeads::new(&mut inputs, self.runs.iter().map(|run| run.id))?;
-            self.emit = Emit::Merged { inputs, heads };
+            let mut heads = MergeHeads::new(
+                &mut inputs,
+                self.runs.iter().map(|run| run.id),
+                memory_inputs,
+            )?;
+            let mut memory = std::mem::take(&mut self.dirty).into_iter();
+            self.chunk_key_bytes = 0;
+            if let Some((key, state)) = memory.next() {
+                heads.heap.push(Head {
+                    key,
+                    state,
+                    input: inputs.len(),
+                    generation: self.next_id,
+                });
+            }
+            self.emit = Emit::Merged {
+                inputs,
+                memory,
+                heads,
+            };
         }
         Ok(())
     }
@@ -877,9 +900,11 @@ impl SpillSession {
             Emit::Exhausted => return Ok(None),
             Emit::Memory(items) => items.next(),
             Emit::File(cursor) => cursor.next_entry()?,
-            Emit::Merged { inputs, heads } => {
-                heads.next_with(inputs, |key, state| Ok((key.to_vec(), state)))?
-            }
+            Emit::Merged {
+                inputs,
+                memory,
+                heads,
+            } => heads.next_with(inputs, memory, |key, state| Ok((key.to_vec(), state)))?,
         };
         let Some((key, state)) = next else {
             self.emit = Emit::Exhausted;
@@ -1146,10 +1171,11 @@ impl MergeHeads {
     fn new(
         cursors: &mut [RunCursor],
         generations: impl ExactSizeIterator<Item = u64>,
+        memory_inputs: usize,
     ) -> io::Result<Self> {
         debug_assert_eq!(cursors.len(), generations.len());
         let mut heap = BinaryHeap::new();
-        heap.try_reserve_exact(cursors.len())
+        heap.try_reserve_exact(cursors.len() + memory_inputs)
             .map_err(|_| io::Error::other("spill merge head allocation failed"))?;
         for ((input, cursor), generation) in cursors.iter_mut().enumerate().zip(generations) {
             let Some((key, state)) = cursor.next_entry()? else {
@@ -1171,6 +1197,7 @@ impl MergeHeads {
     fn next_with<T>(
         &mut self,
         cursors: &mut [RunCursor],
+        memory: &mut ChunkRows,
         mut take: impl FnMut(&[u8], Option<ValueLocation>) -> io::Result<T>,
     ) -> io::Result<Option<T>> {
         // A head owns one key buffer. After emission, give its buffer back to
@@ -1189,11 +1216,19 @@ impl MergeHeads {
                 std::mem::swap(&mut self.last, &mut key);
                 Some(output)
             };
-            if let Some(state) = cursors[input].next_entry_with(|next, state| {
-                key.clear();
-                key.extend_from_slice(next);
-                state
-            })? {
+            let next = if let Some(cursor) = cursors.get_mut(input) {
+                cursor.next_entry_with(|next, state| {
+                    key.clear();
+                    key.extend_from_slice(next);
+                    state
+                })?
+            } else {
+                memory.next().map(|(next, state)| {
+                    key = next;
+                    state
+                })
+            };
+            if let Some(state) = next {
                 self.heap.push(Head {
                     key,
                     state,
@@ -1210,6 +1245,11 @@ impl MergeHeads {
                 return Err(record::invalid_data("spill merge left unread entries"));
             }
         }
+        if memory.len() != 0 {
+            return Err(record::invalid_data(
+                "spill merge left unread chunk entries",
+            ));
+        }
         Ok(None)
     }
 }
@@ -1219,8 +1259,9 @@ fn merge_walk(
     generations: &[u64],
     mut emit: impl FnMut(&[u8], Option<ValueLocation>) -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut merge = MergeHeads::new(cursors, generations.iter().copied())?;
-    while merge.next_with(cursors, &mut emit)?.is_some() {}
+    let mut merge = MergeHeads::new(cursors, generations.iter().copied(), 0)?;
+    let mut memory = BTreeMap::new().into_iter();
+    while merge.next_with(cursors, &mut memory, &mut emit)?.is_some() {}
     Ok(())
 }
 
@@ -2030,35 +2071,77 @@ mod tests {
 
     #[test]
     fn final_merge_streams_newest_rows_and_tombstones_at_the_input_spill_limit() {
+        for spill_last in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let one = run_len(2, 2).unwrap();
+            let limit = temporary_bytes(2, 2).unwrap() + if spill_last { one } else { 0 };
+            let mut session =
+                SpillSession::create(directory.path(), limits(2, limit, 4), 0, 0).unwrap();
+            for (key, state) in [(b"a", Some(loc(100))), (b"b", Some(loc(200)))] {
+                session.push(key, state, |_| Ok(None)).unwrap();
+            }
+            session.write_dirty().unwrap();
+            for (key, state) in [(b"a", None), (b"c", Some(loc(300)))] {
+                session.push(key, state, |_| Ok(None)).unwrap();
+            }
+            if spill_last {
+                session.write_dirty().unwrap();
+            }
+            session.prepare_for_emit().unwrap();
+            assert!(matches!(session.emit, Emit::Merged { .. }));
+            let runs = 1 + usize::from(spill_last);
+            assert_eq!(session.spill_bytes(), runs as u64 * one);
+            assert_eq!(
+                stage_run_names(&session),
+                ["run-000001", "run-000002"][..runs]
+            );
+            assert_eq!(
+                session.next_latest().unwrap().unwrap(),
+                (b"a".to_vec(), None)
+            );
+            for (key, offset) in [(b"b", 200), (b"c", 300)] {
+                let (actual, state) = session.next_latest().unwrap().unwrap();
+                assert_eq!(actual, key);
+                assert_eq!(state.unwrap().offset, offset);
+            }
+            assert!(session.next_latest().unwrap().is_none());
+            assert_eq!(session.peak_open_fds(), 2);
+            drop(session);
+            assert_stage_removed(directory.path());
+        }
+    }
+
+    #[test]
+    fn final_chunk_spills_when_that_avoids_merging_a_large_older_run() {
         let directory = tempfile::tempdir().unwrap();
-        let one = run_len(2, 2).unwrap();
-        let limit = one + temporary_bytes(2, 2).unwrap();
         let mut session =
-            SpillSession::create(directory.path(), limits(2, limit, 4), 0, 0).unwrap();
-        for (key, state) in [(b"a", Some(loc(100))), (b"b", Some(loc(200)))] {
-            session.push(key, state, |_| Ok(None)).unwrap();
+            SpillSession::create(directory.path(), limits(32, 1 << 20, 100), 0, 0).unwrap();
+        for start in [0, 32] {
+            for key in start..start + 32 {
+                session
+                    .push(&[key], Some(loc(100 + key as u64)), |_| Ok(None))
+                    .unwrap();
+            }
+            session.write_dirty().unwrap();
         }
+        session.push(&[64], Some(loc(164)), |_| Ok(None)).unwrap();
         session.write_dirty().unwrap();
-        for (key, state) in [(b"a", None), (b"c", Some(loc(300)))] {
-            session.push(key, state, |_| Ok(None)).unwrap();
+        session.push(&[65], Some(loc(165)), |_| Ok(None)).unwrap();
+        let oldest = session.runs[0].id;
+        assert_eq!(session.runs[0].entries, 64);
+        assert_eq!(session.runs[1].entries, 1);
+
+        // Allow writing the last chunk and merging the two small runs.
+        // A merge between the 64-key run and the next run cannot fit.
+        session.limits.max_spill_bytes =
+            run_len(64, 64).unwrap() + 2 * run_len(1, 1).unwrap() + temporary_bytes(2, 2).unwrap();
+        let live = emitted(&mut session);
+        assert_eq!(live.len(), 66);
+        for key in 0..66 {
+            assert_eq!(live.get([key].as_slice()), Some(&loc(100 + key as u64)));
         }
-        session.prepare_for_emit().unwrap();
-        assert!(matches!(session.emit, Emit::Merged { .. }));
-        assert_eq!(session.spill_bytes(), 2 * one);
-        assert_eq!(stage_run_names(&session), ["run-000001", "run-000002"]);
-        assert_eq!(
-            session.next_latest().unwrap().unwrap(),
-            (b"a".to_vec(), None)
-        );
-        for (key, offset) in [(b"b", 200), (b"c", 300)] {
-            let (actual, state) = session.next_latest().unwrap().unwrap();
-            assert_eq!(actual, key);
-            assert_eq!(state.unwrap().offset, offset);
-        }
-        assert!(session.next_latest().unwrap().is_none());
-        assert_eq!(session.peak_open_fds(), 2);
-        drop(session);
-        assert_stage_removed(directory.path());
+        assert_eq!(session.runs[0].id, oldest);
+        assert_eq!(session.runs[1].entries, 2);
     }
 
     #[test]

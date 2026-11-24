@@ -1100,9 +1100,9 @@ fn final_spill_merge_fits_without_a_second_materialized_copy() {
             assert_eq!(&log[..8], if v2 { b"EMDALOG2" } else { b"EMDALOG3" });
 
             // A one-key run occupies 92 bytes plus an 8-byte temporary
-            // sidecar. Full replay first merges two such runs into a
-            // 124-byte run with a 16-byte sidecar.
-            let exact = if full { 2 * 92 + 124 + 16 } else { 2 * 92 + 8 };
+            // sidecar. The newest chunk stays in memory. Full replay
+            // first merges two disk runs to stay within fan-in two.
+            let exact = if full { 2 * 92 + 124 + 16 } else { 92 + 8 };
             let rebuild = |max_spill_bytes| {
                 if full {
                     CheckpointStore::rebuild_managed_selection_full_bounded(

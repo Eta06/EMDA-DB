@@ -312,6 +312,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   and sidecar and preserve the witness on one-under rejection. Corruption
   tests alter prefetched spill entries before emission and verify that
   the rebuild preserves the prior selection and pending witness.
+  The final merge can include the newest in-memory chunk. In the two-record
+  trusted-suffix fixture, this lowers the exact spill budget from 192 to
+  100 bytes. If the chunk cannot join the fan-in, the ordinary spill path
+  still admits an exact-budget merge of two small runs beside an older
+  64-key run.
   The checkpoint writer and recovered view also accept a per-open suffix
   mutation ceiling. It counts repeated writes, tombstones, and each batch
   child. The writer applies the same ceiling before append and retains it
