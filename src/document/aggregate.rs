@@ -1,7 +1,7 @@
 //! Bounded aggregation and relationship lookups over one snapshot.
 use super::{
     filter::{DocumentFilter, DocumentQuery, QueryPlan},
-    index::{self, IndexValue},
+    index::{self, IndexValue, MAX_INDEX_FIELDS},
     key,
     query::{DocumentEntry, index_definition},
     schema::{self, CollectionSchema},
@@ -191,18 +191,21 @@ impl DocumentTransaction<'_, '_> {
         for path in local_paths {
             schema::validate_path(path)?;
         }
-        let prefix = key::index(b'U', foreign_collection, foreign_index)?;
+        let mut tuple = key::index(b'U', foreign_collection, foreign_index)?;
+        let mut entry = key::index(b'I', foreign_collection, foreign_index)?;
+        let tuple_prefix = tuple.len();
+        let entry_prefix = entry.len();
         self.lookup_sources(collection, query, |document, remaining| {
-            let Some(values) = local_paths
-                .iter()
-                .map(|path| schema::field(document, path))
-                .collect::<Option<Vec<_>>>()
-            else {
-                return Ok(None);
-            };
-            let mut tuple = prefix.clone();
-            for value in values {
-                IndexValue::from_json(value)?.encode(&mut tuple)?;
+            let mut values = [None; MAX_INDEX_FIELDS];
+            for (slot, path) in values.iter_mut().zip(local_paths) {
+                let Some(value) = schema::field(document, path) else {
+                    return Ok(None);
+                };
+                *slot = Some(value);
+            }
+            tuple.truncate(tuple_prefix);
+            for value in values.into_iter().flatten() {
+                index::encode_json(value, &mut tuple)?;
             }
             if tuple.len() > MAX_KEY {
                 return Ok(None);
@@ -215,13 +218,17 @@ impl DocumentTransaction<'_, '_> {
             let target = self
                 .read_lookup_target(foreign_collection, id, &foreign.schema, remaining)?
                 .ok_or_else(|| invalid_data("unique index references a missing document"))?;
-            let keys = index::keys(foreign_collection, definition, &target, id)
+            entry.truncate(entry_prefix);
+            let indexed = index::encode_indexed_tuple(definition, &target, &mut entry)
                 .map_err(|_| invalid_data("document cannot be represented by its index"))?;
-            let Some(keys) = keys.filter(|keys| keys.unique.as_deref() == Some(tuple.as_slice()))
-            else {
+            if !indexed || entry[entry_prefix..] != tuple[tuple_prefix..] {
                 return Err(invalid_data("unique index does not match its document"));
-            };
-            if !self.has_index_entry(&keys.entry)? {
+            }
+            entry.extend_from_slice(&owner);
+            if entry.len() > MAX_KEY {
+                return Err(invalid_data("document cannot be represented by its index"));
+            }
+            if !self.has_index_entry(&entry)? {
                 return Err(invalid_data("unique index has no matching document entry"));
             }
             Ok(Some(target))

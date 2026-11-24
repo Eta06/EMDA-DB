@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse relationship lookup key buffers and encode indexed JSON strings
+  directly from borrowed values.
+
 - Follow complete scalar tuples through named unique document indexes in
   bounded relationship lookups.
 
