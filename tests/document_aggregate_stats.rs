@@ -1,6 +1,6 @@
 use database_engine::{
     AggregateRequest, AggregateStatsRequest, CheckpointStore, CollectionSchema, DocumentDatabase,
-    DocumentFilter, IndexValue, Store,
+    DocumentFilter, DocumentQueryAccess, IndexDefinition, IndexValue, Store,
 };
 use serde_json::json;
 use std::{io::ErrorKind, sync::Barrier};
@@ -18,6 +18,22 @@ fn request() -> AggregateStatsRequest {
         group_by: Some(path("group")),
         fields: vec![path("n"), path("nested.m")],
         max_scanned: 32,
+    }
+}
+
+fn index(field: &str) -> IndexDefinition {
+    IndexDefinition {
+        name: field.into(),
+        fields: vec![path(field)],
+        unique: false,
+        partial: None,
+    }
+}
+
+fn equal(field: &str, value: i64) -> DocumentFilter {
+    DocumentFilter::Equal {
+        path: path(field),
+        value: json!(value),
     }
 }
 
@@ -523,4 +539,147 @@ fn statistics_survive_full_log_and_checkpoint_backed_recovery() {
             );
         }
     }
+}
+
+#[test]
+fn planned_statistics_deduplicate_disjuncts_and_enforce_candidate_limits() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        for (id, doc) in [
+            ("a", json!({"x":1, "y":2, "n":4})),
+            ("b", json!({"x":1, "n":-7, "group":null})),
+            ("c", json!({"y":2, "n":11, "group":null})),
+            ("d", json!({"n":"out of range"})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+        db.create_index("c", index("x")).unwrap();
+        db.create_index("c", index("y")).unwrap();
+        let request = AggregateStatsRequest {
+            filter: DocumentFilter::Or(vec![equal("x", 1), equal("y", 2)]),
+            max_scanned: 4,
+            ..request()
+        };
+        let scan = db.aggregate_stats("c", &request).unwrap();
+        let planned = db.aggregate_stats_planned("c", &request).unwrap();
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::DisjunctionIndex {
+                indexes: vec!["x".into(), "y".into()],
+                probes: 2,
+            }
+        );
+        assert_eq!(planned.result, scan);
+        assert_eq!(planned.result.plan.matched, 3);
+        let limit = AggregateStatsRequest {
+            max_scanned: 3,
+            ..request
+        };
+        let error = db.aggregate_stats_planned("c", &limit).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "document scan exceeds the operation limit"
+        );
+    });
+}
+
+#[test]
+fn planned_statistics_preserve_filter_error_precedence_for_unordered_probes() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        let mut tags = vec![json!(0); 4_000];
+        *tags.last_mut().unwrap() = json!(1);
+        db.insert("c", "a", &json!({"x":2, "n":"invalid", "tags":tags}))
+            .unwrap();
+        db.insert("c", "b", &json!({"x":1, "n":3, "tags":tags}))
+            .unwrap();
+        db.create_index("c", index("x")).unwrap();
+        let mut required = vec![DocumentFilter::In {
+            path: path("x"),
+            values: vec![json!(1), json!(2)],
+        }];
+        required.extend((0..125).map(|_| DocumentFilter::ArrayContains {
+            path: path("tags"),
+            value: json!(1),
+        }));
+        let request = AggregateStatsRequest {
+            filter: DocumentFilter::And(required),
+            max_scanned: 2,
+            ..request()
+        };
+        let scan = db.aggregate_stats("c", &request).unwrap_err();
+        let planned = db.aggregate_stats_planned("c", &request).unwrap_err();
+        assert_eq!(planned.to_string(), scan.to_string());
+        assert!(
+            planned
+                .to_string()
+                .contains("membership filter comparison limit exceeded")
+        );
+    });
+}
+
+#[test]
+fn planned_statistics_fall_back_and_observe_staged_rows_and_empty_ranges() {
+    both_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("x")).unwrap();
+        assert_eq!(
+            db.aggregate_stats_planned("c", &request()).unwrap().access,
+            DocumentQueryAccess::CollectionScan,
+        );
+        let request = AggregateStatsRequest {
+            filter: equal("x", 1),
+            group_by: None,
+            max_scanned: 1,
+            ..request()
+        };
+        db.transaction_with_read_set(|tx| {
+            tx.insert("c", "staged", &json!({"x":1, "n":9}))?;
+            let staged = tx.aggregate_stats_planned("c", &request)?;
+            assert_eq!(
+                staged.access,
+                DocumentQueryAccess::EqualityIndex { index: "x".into() }
+            );
+            assert_eq!(staged.result.groups[0].fields[0].sum, 9);
+            assert!(tx.delete("c", "staged")?);
+            Ok(())
+        })
+        .unwrap();
+        let (observed, ready) = std::sync::mpsc::channel();
+        let (inserted, committed) = std::sync::mpsc::channel();
+        let timeout = std::time::Duration::from_secs(5);
+        std::thread::scope(|scope| {
+            let db = &db;
+            let writer = scope.spawn(move || {
+                ready.recv_timeout(timeout).unwrap();
+                db.insert("c", "new", &json!({"x":1, "n":7})).unwrap();
+                inserted.send(()).unwrap();
+            });
+            let result = db.transaction_with_read_set(|tx| {
+                let empty = tx.aggregate_stats_planned("c", &request)?;
+                assert_eq!(empty.result.groups[0].count, 0);
+                observed.send(()).unwrap();
+                committed.recv_timeout(timeout).unwrap();
+                tx.put_raw(b"planned-stats-phantom", b"no")
+            });
+            assert_eq!(result.unwrap_err().kind(), ErrorKind::WouldBlock);
+            writer.join().unwrap();
+        });
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"planned-stats-phantom"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.aggregate_stats_planned("c", &request)
+                .unwrap()
+                .result
+                .groups[0]
+                .count,
+            1
+        );
+    });
 }

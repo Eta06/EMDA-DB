@@ -1,11 +1,12 @@
 //! Conservative index selection for bounded queries.
 use super::{
-    filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult},
+    filter::{self, Comparison, DocumentFilter, DocumentQuery, DocumentQueryResult, QueryPlan},
     index::{IndexDefinition, IndexValue, MAX_INDEX_STRING_BYTES, PartialFilter},
     key,
     query::{IndexBound, IndexQuery, IndexScanOptions, index_definition},
     transaction::{DocumentTransaction, Metadata},
 };
+use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map::Entry};
 use std::io;
@@ -1203,11 +1204,17 @@ fn plan_query<'a>(
     }))
 }
 
-struct Candidates<'a> {
-    ids: Option<BTreeSet<String>>,
-    collector: Option<filter::QueryCollector<'a>>,
+#[derive(Default)]
+struct CandidateBudget {
     visits: usize,
     bytes: usize,
+}
+
+// Only a single complete equality tuple returns rows in document ID order.
+fn in_id_order(probes: &[IndexProbe<'_>], metadata: &Metadata) -> bool {
+    matches!(probes, [probe] if metadata.indexes.iter().any(|index|
+        index.name == probe.index && index.fields.len() == probe.equal.len()
+    ))
 }
 
 impl DocumentTransaction<'_, '_> {
@@ -1231,58 +1238,105 @@ impl DocumentTransaction<'_, '_> {
             });
         };
 
-        // A complete equality tuple visits its matching documents in ID
-        // order. An index range or a union does not generally do so.
-        let id_order = matches!(probes.as_slice(), [probe]
-        if metadata.indexes.iter().any(|index|
-            index.name == probe.index && index.fields.len() == probe.equal.len()
-        ));
-        let mut candidates = Candidates {
-            // A validated entry in a single complete tuple has a unique ID
-            // suffix. Only unordered probes need deduplication or a retry.
-            ids: (!id_order).then(BTreeSet::new),
-            collector: (id_order || filter::may_retry_in_id_order(&query.filter))
-                .then(|| filter::QueryCollector::new(query, id_order)),
-            visits: 0,
-            bytes: 0,
-        };
+        let id_order = in_id_order(&probes, &metadata);
+        // Only unordered probes need deduplication or a retry.
+        let mut ids = (!id_order).then(BTreeSet::new);
+        let mut collector = (id_order || filter::may_retry_in_id_order(&query.filter))
+            .then(|| filter::QueryCollector::new(query, id_order));
+        let mut budget = CandidateBudget::default();
         for probe in probes {
             self.collect_index_candidates(
                 collection,
                 &metadata,
                 probe,
                 query.max_scanned,
-                &mut candidates,
+                &mut budget,
+                |entry| {
+                    if ids.as_mut().is_none_or(|ids| ids.insert(entry.id.clone())) {
+                        if let Some(collector) = &mut collector {
+                            collector.push(entry.id, entry.document);
+                        }
+                    }
+                },
             )?;
         }
-        let mut result =
-            if let Some(collector) = candidates.collector.filter(|c| id_order || !c.has_failed()) {
-                collector.finish()?
-            } else {
-                // Array walks consume their budget in collection order. Other
-                // filters retry only if needed to report the first error by ID.
-                let mut collector = filter::QueryCollector::new(query, true);
-                for id in candidates
-                    .ids
-                    .expect("unordered probes retain candidate IDs")
-                {
-                    let encoded = self
-                        .read_document_bytes(&key::document(collection, &id)?, |_| Ok(()))?
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "index references a missing document",
-                            )
-                        })?;
-                    collector.push(id, Self::decode_document(&encoded, &metadata.schema)?);
-                    if collector.has_failed() {
-                        break;
-                    }
+        let mut result = if let Some(collector) = collector.filter(|c| id_order || !c.has_failed())
+        {
+            collector.finish()?
+        } else {
+            // Array walks consume their budget in collection order. Other
+            // filters retry only if needed to report the first error by ID.
+            let mut collector = filter::QueryCollector::new(query, true);
+            for id in ids.expect("unordered probes retain candidate IDs") {
+                let document = self.read_index_candidate(collection, &metadata, &id)?;
+                collector.push(id, document);
+                if collector.has_failed() {
+                    break;
                 }
-                collector.finish()?
-            };
-        result.plan.scanned = candidates.visits;
+            }
+            collector.finish()?
+        };
+        result.plan.scanned = budget.visits;
         Ok(PlannedDocumentQueryResult { result, access })
+    }
+
+    pub(super) fn visit_planned_documents(
+        &self,
+        collection: &str,
+        predicate: &DocumentFilter,
+        max_scanned: usize,
+        visit: impl FnMut(&Value) -> io::Result<()>,
+    ) -> io::Result<(QueryPlan, DocumentQueryAccess)> {
+        filter::validate_filter(predicate)?;
+        let metadata = self.metadata(collection)?;
+        let Some((access, probes)) = plan_query(predicate, &metadata.indexes)? else {
+            let plan = self.visit_filtered_documents(collection, predicate, max_scanned, visit)?;
+            return Ok((plan, DocumentQueryAccess::CollectionScan));
+        };
+        let mut ids = (!in_id_order(&probes, &metadata)).then(BTreeSet::new);
+        let mut visitor = filter::FilteredVisitor::new(predicate, visit);
+        let mut budget = CandidateBudget::default();
+        for probe in probes {
+            self.collect_index_candidates(
+                collection,
+                &metadata,
+                probe,
+                max_scanned,
+                &mut budget,
+                |entry| {
+                    if let Some(ids) = &mut ids {
+                        ids.insert(entry.id);
+                    } else {
+                        visitor.push(&entry.document);
+                    }
+                },
+            )?;
+        }
+        if let Some(ids) = ids {
+            // Preserve collection-order filter budgets and error precedence.
+            // Retain IDs only, then read each distinct candidate in order.
+            for id in ids {
+                visitor.push(&self.read_index_candidate(collection, &metadata, &id)?);
+            }
+        }
+        Ok((visitor.finish(budget.visits)?, access))
+    }
+
+    fn read_index_candidate(
+        &self,
+        collection: &str,
+        metadata: &Metadata,
+        id: &str,
+    ) -> io::Result<Value> {
+        let encoded = self
+            .read_document_bytes(&key::document(collection, id)?, |_| Ok(()))?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "index references a missing document",
+                )
+            })?;
+        Self::decode_document(&encoded, &metadata.schema)
     }
 
     fn collect_index_candidates(
@@ -1291,7 +1345,8 @@ impl DocumentTransaction<'_, '_> {
         metadata: &Metadata,
         probe: IndexProbe<'_>,
         max_scanned: usize,
-        candidates: &mut Candidates<'_>,
+        budget: &mut CandidateBudget,
+        mut visit: impl FnMut(super::query::DocumentEntry),
     ) -> io::Result<()> {
         let IndexProbe {
             index,
@@ -1309,7 +1364,7 @@ impl DocumentTransaction<'_, '_> {
             let limit = if unique_equality {
                 2
             } else {
-                (max_scanned - candidates.visits + 1).min(256)
+                (max_scanned - budget.visits + 1).min(256)
             };
             let indexed = self.visit_index_with_metadata(
                 collection,
@@ -1324,19 +1379,9 @@ impl DocumentTransaction<'_, '_> {
                 metadata,
                 IndexScanOptions {
                     after: after.as_deref(),
-                    byte_limit: Some(filter::MAX_SCAN_BYTES - candidates.bytes),
+                    byte_limit: Some(filter::MAX_SCAN_BYTES - budget.bytes),
                 },
-                |entry| {
-                    if candidates
-                        .ids
-                        .as_mut()
-                        .is_none_or(|ids| ids.insert(entry.id.clone()))
-                    {
-                        if let Some(collector) = &mut candidates.collector {
-                            collector.push(entry.id, entry.document);
-                        }
-                    }
-                },
+                &mut visit,
             )?;
             let returned = indexed.plan.returned;
             if unique_equality && returned > 1 {
@@ -1345,17 +1390,17 @@ impl DocumentTransaction<'_, '_> {
                     "unique index contains multiple matches",
                 ));
             }
-            candidates.bytes = candidates
+            budget.bytes = budget
                 .bytes
                 .checked_add(indexed.document_key_value_bytes)
                 .ok_or_else(|| key::invalid("scan byte count overflow"))?;
-            if returned > max_scanned - candidates.visits {
+            if returned > max_scanned - budget.visits {
                 return Err(key::invalid("document scan exceeds the operation limit"));
             }
             if returned == 0 {
                 break;
             }
-            candidates.visits += returned;
+            budget.visits += returned;
             if unique_equality {
                 break;
             }

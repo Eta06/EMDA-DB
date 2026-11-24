@@ -2,16 +2,19 @@
 use super::{
     filter::{DocumentFilter, QueryPlan},
     index::IndexValue,
-    key, schema,
+    key,
+    planner::DocumentQueryAccess,
+    schema,
     transaction::DocumentTransaction,
 };
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 const MAX_FIELDS: usize = 16;
 const MAX_SCANNED: usize = 256;
 
-/// A bounded collection scan computing statistics for signed integer fields.
+/// A bounded request for grouped statistics over signed integer fields.
 #[derive(Clone, Debug)]
 pub struct AggregateStatsRequest {
     /// Predicate evaluated before grouping.
@@ -56,15 +59,24 @@ pub struct AggregateStatsGroup {
     pub fields: Vec<NumericFieldStats>,
 }
 
-/// Complete groups and the actual work performed by the collection scan.
+/// Complete groups and the work performed by the access path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregateStatsResult {
     /// Requested paths, shared by every group's statistics in the same order.
     pub fields: Vec<Vec<String>>,
     /// All groups; an empty ungrouped scan still returns one empty group.
     pub groups: Vec<AggregateStatsGroup>,
-    /// Statistics from the underlying complete scan, before grouping.
+    /// Statistics from the underlying scan or index probes, before grouping.
     pub plan: QueryPlan,
+}
+
+/// Grouped integer statistics with the access path selected for this execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannedAggregateStatsResult {
+    /// Complete groups and logical candidate counts.
+    pub result: AggregateStatsResult,
+    /// The index access path or collection scan used by this execution.
+    pub access: DocumentQueryAccess,
 }
 
 fn new_group(key: Option<IndexValue>, field_count: usize) -> AggregateStatsGroup {
@@ -91,6 +103,28 @@ impl DocumentTransaction<'_, '_> {
         collection: &str,
         request: &AggregateStatsRequest,
     ) -> io::Result<AggregateStatsResult> {
+        self.aggregate_stats_using(collection, request, false)
+            .map(|planned| planned.result)
+    }
+
+    /// Computes the same statistics using qualifying index probes or a
+    /// complete scan. The candidate limit counts repeated index hits.
+    /// Unordered probes revisit distinct candidates by ID for filter
+    /// evaluation. Like a planned query, this assumes maintained indexes.
+    pub fn aggregate_stats_planned(
+        &self,
+        collection: &str,
+        request: &AggregateStatsRequest,
+    ) -> io::Result<PlannedAggregateStatsResult> {
+        self.aggregate_stats_using(collection, request, true)
+    }
+
+    fn aggregate_stats_using(
+        &self,
+        collection: &str,
+        request: &AggregateStatsRequest,
+        planned: bool,
+    ) -> io::Result<PlannedAggregateStatsResult> {
         if request.max_scanned == 0 || request.max_scanned > MAX_SCANNED {
             return Err(key::invalid(
                 "aggregate scan limit must be between 1 and 256",
@@ -112,53 +146,62 @@ impl DocumentTransaction<'_, '_> {
             schema::validate_path(path)?;
         }
         let mut groups = BTreeMap::<Vec<u8>, AggregateStatsGroup>::new();
-        let plan = self.visit_filtered_documents(
-            collection,
-            &request.filter,
-            request.max_scanned,
-            |document| {
-                let value = request
-                    .group_by
-                    .as_ref()
-                    .and_then(|path| schema::field(document, path))
-                    .map(IndexValue::from_json)
-                    .transpose()?;
-                let mut encoded = Vec::new();
-                if let Some(value) = &value {
-                    value.encode(&mut encoded)?;
+        let visit = |document: &Value| {
+            let value = request
+                .group_by
+                .as_ref()
+                .and_then(|path| schema::field(document, path))
+                .map(IndexValue::from_json)
+                .transpose()?;
+            let mut encoded = Vec::new();
+            if let Some(value) = &value {
+                value.encode(&mut encoded)?;
+            }
+            let group = groups
+                .entry(encoded)
+                .or_insert_with(|| new_group(value, request.fields.len()));
+            group.count += 1;
+            for (path, stats) in request.fields.iter().zip(&mut group.fields) {
+                let Some(value) = schema::field(document, path) else {
+                    continue;
+                };
+                if value.is_null() {
+                    continue;
                 }
-                let group = groups
-                    .entry(encoded)
-                    .or_insert_with(|| new_group(value, request.fields.len()));
-                group.count += 1;
-                for (path, stats) in request.fields.iter().zip(&mut group.fields) {
-                    let Some(value) = schema::field(document, path) else {
-                        continue;
-                    };
-                    if value.is_null() {
-                        continue;
-                    }
-                    let value = value.as_i64().ok_or_else(|| {
-                        key::invalid("aggregate statistics require signed 64-bit integers")
-                    })?;
-                    stats.count += 1;
-                    stats.sum = stats
-                        .sum
-                        .checked_add(i128::from(value))
-                        .ok_or_else(|| key::invalid("aggregate statistics sum overflow"))?;
-                    stats.min = Some(stats.min.map_or(value, |previous| previous.min(value)));
-                    stats.max = Some(stats.max.map_or(value, |previous| previous.max(value)));
-                }
-                Ok(())
-            },
-        )?;
+                let value = value.as_i64().ok_or_else(|| {
+                    key::invalid("aggregate statistics require signed 64-bit integers")
+                })?;
+                stats.count += 1;
+                stats.sum = stats
+                    .sum
+                    .checked_add(i128::from(value))
+                    .ok_or_else(|| key::invalid("aggregate statistics sum overflow"))?;
+                stats.min = Some(stats.min.map_or(value, |previous| previous.min(value)));
+                stats.max = Some(stats.max.map_or(value, |previous| previous.max(value)));
+            }
+            Ok(())
+        };
+        let (plan, access) = if planned {
+            self.visit_planned_documents(collection, &request.filter, request.max_scanned, visit)?
+        } else {
+            let plan = self.visit_filtered_documents(
+                collection,
+                &request.filter,
+                request.max_scanned,
+                visit,
+            )?;
+            (plan, DocumentQueryAccess::CollectionScan)
+        };
         if request.group_by.is_none() && groups.is_empty() {
             groups.insert(Vec::new(), new_group(None, request.fields.len()));
         }
-        Ok(AggregateStatsResult {
-            fields: request.fields.clone(),
-            groups: groups.into_values().collect(),
-            plan,
+        Ok(PlannedAggregateStatsResult {
+            access,
+            result: AggregateStatsResult {
+                fields: request.fields.clone(),
+                groups: groups.into_values().collect(),
+                plan,
+            },
         })
     }
 }

@@ -669,27 +669,74 @@ impl<'a> QueryCollector<'a> {
     }
 }
 
+// Stream all matches while retaining query error precedence: scan and
+// record-validation errors come first, then filter errors, then the first
+// callback error. A callback error must not hide a later filter error.
+pub(super) struct FilteredVisitor<'a, F> {
+    filter: &'a DocumentFilter,
+    budget: FilterValueBudget,
+    matched: usize,
+    filter_error: Option<io::Error>,
+    callback_error: Option<io::Error>,
+    visit: F,
+}
+
+impl<'a, F: FnMut(&Value) -> io::Result<()>> FilteredVisitor<'a, F> {
+    pub(super) fn new(filter: &'a DocumentFilter, visit: F) -> Self {
+        Self {
+            filter,
+            budget: FilterValueBudget::default(),
+            matched: 0,
+            filter_error: None,
+            callback_error: None,
+            visit,
+        }
+    }
+
+    pub(super) fn push(&mut self, document: &Value) {
+        if self.filter_error.is_some() {
+            return;
+        }
+        match matches(self.filter, document, &mut self.budget) {
+            Ok(true) => {
+                self.matched += 1;
+                if self.callback_error.is_none() {
+                    self.callback_error = (self.visit)(document).err();
+                }
+            }
+            Ok(false) => {}
+            Err(error) => self.filter_error = Some(error),
+        }
+    }
+
+    pub(super) fn finish(self, scanned: usize) -> io::Result<QueryPlan> {
+        if let Some(error) = self.filter_error.or(self.callback_error) {
+            return Err(error);
+        }
+        Ok(QueryPlan {
+            scanned,
+            matched: self.matched,
+            sorted: false,
+            returned: self.matched,
+        })
+    }
+}
+
 impl DocumentTransaction<'_, '_> {
-    // Stream all matches while retaining query error precedence: scan and
-    // record-validation errors come first, then filter errors, then the first
-    // callback error. A callback error must not hide a later filter error.
     pub(super) fn visit_filtered_documents(
         &self,
         collection: &str,
         filter: &DocumentFilter,
         max_scanned: usize,
-        mut visit: impl FnMut(&Value) -> io::Result<()>,
+        visit: impl FnMut(&Value) -> io::Result<()>,
     ) -> io::Result<QueryPlan> {
         if max_scanned == 0 || max_scanned > MAX_SCAN_DOCUMENTS {
             return Err(key::invalid("query scan limit must be between 1 and 1024"));
         }
         validate_filter(filter)?;
         let metadata = self.metadata(collection)?;
-        let mut budget = FilterValueBudget::default();
+        let mut visitor = FilteredVisitor::new(filter, visit);
         let mut scanned = 0;
-        let mut matched = 0;
-        let mut filter_error = None;
-        let mut callback_error = None;
         self.visit_document_rows(
             collection,
             &metadata.schema,
@@ -697,33 +744,10 @@ impl DocumentTransaction<'_, '_> {
             MAX_SCAN_BYTES,
             |_, document| {
                 scanned += 1;
-                if filter_error.is_some() {
-                    return;
-                }
-                match matches(filter, &document, &mut budget) {
-                    Ok(true) => {
-                        matched += 1;
-                        if callback_error.is_none() {
-                            callback_error = visit(&document).err();
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(error) => filter_error = Some(error),
-                }
+                visitor.push(&document);
             },
         )?;
-        if let Some(error) = filter_error {
-            return Err(error);
-        }
-        if let Some(error) = callback_error {
-            return Err(error);
-        }
-        Ok(QueryPlan {
-            scanned,
-            matched,
-            sorted: false,
-            returned: matched,
-        })
+        visitor.finish(scanned)
     }
 
     /// Executes a complete bounded scan with filter, sort, pagination and

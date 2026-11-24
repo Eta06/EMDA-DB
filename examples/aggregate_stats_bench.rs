@@ -1,6 +1,7 @@
 //! Verified in-process grouped statistics versus SQLite's normalized table scan.
 use database_engine::{
-    AggregateStatsRequest, CollectionSchema, DocumentDatabase, DocumentFilter, IndexValue, Store,
+    AggregateStatsRequest, CollectionSchema, DocumentDatabase, DocumentFilter, DocumentQueryAccess,
+    IndexDefinition, IndexValue, Store,
 };
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -12,9 +13,19 @@ type Group = (String, i64, Field, Field);
 fn prototype(
     db: &DocumentDatabase<'_>,
     request: &AggregateStatsRequest,
+    planned: bool,
 ) -> Result<Vec<Group>, Box<dyn Error>> {
-    Ok(db
-        .aggregate_stats("c", request)?
+    let result = if planned {
+        let planned = db.aggregate_stats_planned("c", request)?;
+        assert_eq!(
+            planned.access,
+            DocumentQueryAccess::EqualityIndex { index: "g".into() }
+        );
+        planned.result
+    } else {
+        db.aggregate_stats("c", request)?
+    };
+    Ok(result
         .groups
         .into_iter()
         .map(|group| {
@@ -59,9 +70,15 @@ fn sqlite(statement: &mut rusqlite::Statement<'_>) -> Result<Vec<Group>, Box<dyn
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().collect::<Vec<_>>();
-    if args.len() != 4 {
-        return Err("usage: aggregate_stats_bench DIRECTORY DOCUMENTS CYCLES".into());
-    }
+    let selective = match args.get(4).map(String::as_str) {
+        None if args.len() == 4 => false,
+        Some("selective") if args.len() == 5 => true,
+        _ => {
+            return Err(
+                "usage: aggregate_stats_bench DIRECTORY DOCUMENTS CYCLES [selective]".into(),
+            );
+        }
+    };
     let documents = args[2].parse::<usize>()?;
     let cycles = args[3].parse::<usize>()?;
     if !(1..=256).contains(&documents) || cycles == 0 || cycles > 100_000 {
@@ -87,53 +104,84 @@ fn main() -> Result<(), Box<dyn Error>> {
         )?;
     }
     transaction.commit()?;
+    if selective {
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "g".into(),
+                fields: vec![vec!["g".into()]],
+                unique: false,
+                partial: None,
+            },
+        )?;
+        connection.execute_batch("CREATE INDEX docs_g ON docs(g)")?;
+    }
     drop(store);
     let store = Store::open(&path)?;
     let db = DocumentDatabase::new(&store);
     let request = AggregateStatsRequest {
-        filter: DocumentFilter::All,
+        filter: if selective {
+            DocumentFilter::Equal {
+                path: vec!["g".into()],
+                value: json!("g00"),
+            }
+        } else {
+            DocumentFilter::All
+        },
         group_by: Some(vec!["g".into()]),
         fields: vec![vec!["n".into()], vec!["m".into()]],
         max_scanned: 256,
     };
-    let query = "SELECT g,COUNT(*),COUNT(n),COALESCE(SUM(n),0),MIN(n),MAX(n),COUNT(m),COALESCE(SUM(m),0),MIN(m),MAX(m) FROM docs GROUP BY g ORDER BY g";
+    let restriction = if selective { " WHERE g='g00'" } else { "" };
+    let query = format!(
+        "SELECT g,COUNT(*),COUNT(n),COALESCE(SUM(n),0),MIN(n),MAX(n),COUNT(m),COALESCE(SUM(m),0),MIN(m),MAX(m) FROM docs{restriction} GROUP BY g ORDER BY g"
+    );
     let plan = connection
         .prepare(&format!("EXPLAIN QUERY PLAN {query}"))?
         .query_map([], |row| row.get::<_, String>(3))?
         .collect::<rusqlite::Result<Vec<_>>>()?
         .join("; ");
-    let mut statement = connection.prepare(query)?;
+    let mut statement = connection.prepare(&query)?;
     let expected = sqlite(&mut statement)?;
+    let matched = if selective {
+        documents.div_ceil(8)
+    } else {
+        documents
+    };
     assert_eq!(
         expected.iter().map(|group| group.1).sum::<i64>(),
-        documents as i64
+        matched as i64
     );
-    assert_eq!(prototype(&db, &request)?, expected);
-    let mut samples_proto = Vec::with_capacity(cycles);
-    let mut samples_sqlite = Vec::with_capacity(cycles);
+    assert_eq!(prototype(&db, &request, false)?, expected);
+    let variants = if selective {
+        &["prototype", "planned", "sqlite"][..]
+    } else {
+        &["prototype", "sqlite"][..]
+    };
+    let mut samples = std::collections::BTreeMap::new();
     for cycle in 0..cycles + 5 {
-        for variant in if cycle % 2 == 0 { [0, 1] } else { [1, 0] } {
+        for step in 0..variants.len() {
+            let variant = variants[(step + cycle) % variants.len()];
             let start = Instant::now();
-            let actual = if variant == 0 {
-                prototype(&db, &request)?
-            } else {
-                sqlite(&mut statement)?
+            let actual = match variant {
+                "sqlite" => sqlite(&mut statement)?,
+                "planned" => prototype(&db, &request, true)?,
+                _ => prototype(&db, &request, false)?,
             };
             let elapsed = u64::try_from(start.elapsed().as_nanos())?;
             assert_eq!(actual, expected);
             if cycle >= 5 {
-                if variant == 0 {
-                    samples_proto.push(elapsed)
-                } else {
-                    samples_sqlite.push(elapsed)
-                }
+                samples
+                    .entry(variant)
+                    .or_insert_with(|| Vec::with_capacity(cycles))
+                    .push(elapsed);
             }
         }
     }
     let journal: String = connection.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
     let synchronous: i64 = connection.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
     let version: String = connection.query_row("SELECT sqlite_version()", [], |r| r.get(0))?;
-    let output: Value = json!({"documents":documents,"cycles":cycles,"prototype_reopen_verified":true,"sqlite_journal":journal,"sqlite_synchronous":synchronous,"sqlite_version":version,"sqlite_query_plan":plan,"groups":expected.len(),"samples_ns":{"prototype":samples_proto,"sqlite":samples_sqlite}});
+    let output: Value = json!({"documents":documents,"cycles":cycles,"selective":selective,"matched":matched,"prototype_reopen_verified":true,"sqlite_journal":journal,"sqlite_synchronous":synchronous,"sqlite_version":version,"sqlite_query_plan":plan,"groups":expected.len(),"samples_ns":samples});
     println!("{}", serde_json::to_string(&output)?);
     Ok(())
 }

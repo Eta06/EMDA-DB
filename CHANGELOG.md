@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in index-assisted grouped integer statistics with candidate
+  bounds, deduplication, and transaction range validation.
+
 - Stabilize managed checkpoint selection and automatic-checkpoint
   configuration before adopting a pending tail when opening a writable
   checkpoint store.

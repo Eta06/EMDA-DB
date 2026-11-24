@@ -32,6 +32,7 @@ mod point_read_tests;
 pub use aggregate::{AggregateGroup, AggregateRequest, AggregateResult, LookupEntry, LookupResult};
 pub use aggregate_stats::{
     AggregateStatsGroup, AggregateStatsRequest, AggregateStatsResult, NumericFieldStats,
+    PlannedAggregateStatsResult,
 };
 pub use bulk::{BulkOperation, BulkResult};
 pub use filter::{
@@ -588,6 +589,16 @@ impl<'a> DocumentDatabase<'a> {
         request: &AggregateStatsRequest,
     ) -> io::Result<AggregateStatsResult> {
         self.transaction(|tx| tx.aggregate_stats(collection, request))
+    }
+
+    /// Computes bounded grouped integer statistics using a qualifying index
+    /// or a complete scan and reports the chosen access path.
+    pub fn aggregate_stats_planned(
+        &self,
+        collection: &str,
+        request: &AggregateStatsRequest,
+    ) -> io::Result<PlannedAggregateStatsResult> {
+        self.transaction(|tx| tx.aggregate_stats_planned(collection, request))
     }
 
     /// Follows string IDs from a bounded source query into another collection.
