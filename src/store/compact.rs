@@ -208,10 +208,10 @@ impl<'a> GroupedCopy<'a> {
 }
 
 impl Store {
-    // The retained restore owns this unpublished, newly initialized store.
+    // The caller owns this unpublished, newly initialized store.
     // Admit the final stream before appending, and check the count and exact
     // bytes while writing. The stage is reopened and verified before publication.
-    pub(crate) fn write_private_restore<T>(
+    pub(crate) fn write_private_copy<T>(
         self,
         size: RestoreSize,
         write: impl FnOnce(&mut GroupedCopy<'_>) -> io::Result<T>,
@@ -649,7 +649,7 @@ mod tests {
             .unwrap();
             assert!(
                 store
-                    .write_private_restore(size, |_| -> io::Result<()> {
+                    .write_private_copy(size, |_| -> io::Result<()> {
                         panic!("restore read before output admission")
                     })
                     .is_err()
@@ -668,7 +668,7 @@ mod tests {
         .unwrap();
         let mut read = 0;
         store
-            .write_private_restore(size, |copy| {
+            .write_private_copy(size, |copy| {
                 for (key, value) in &entries {
                     copy.put(key, value.len(), |buffer| {
                         let flushed = read / MAX_COPY_RECORDS * MAX_COPY_RECORDS;

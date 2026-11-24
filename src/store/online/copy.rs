@@ -1,6 +1,7 @@
 //! Snapshot verification and bounded replay into an unpublished target.
 use super::OnlineCompactionOptions;
 use crate::log::ValueLocation;
+use crate::store::compact::RestoreSize;
 use crate::store::{Snapshot, Store};
 use crate::{BatchOperation, MAX_ATOMIC_BATCH_BYTES};
 use sha2::Sha256;
@@ -175,17 +176,38 @@ impl<'a> Writer<'a> {
 
 pub(super) fn copy_snapshot(
     snapshot: &Snapshot<'_>,
-    target: &Store,
+    target: Store,
     budget: &mut SourceReadBudget,
-) -> io::Result<()> {
+) -> io::Result<u64> {
     let index = snapshot.read_index()?;
     let log = index.log.as_ref().expect("active snapshot retains its log");
-    let mut writer = Writer::new(target);
+    let mut size = RestoreSize {
+        entries: index.index.len() as u64,
+        keys: 0,
+        payload: 0,
+    };
     for (key, location) in index.index.iter() {
-        budget.charge(location.length as u64)?;
-        writer.push(key.clone(), Some(log.read(*location)?))?;
+        size.keys = size
+            .keys
+            .checked_add(key.len() as u64)
+            .ok_or_else(copy_size_overflow)?;
+        size.payload = size
+            .payload
+            .checked_add((key.len() + location.length) as u64)
+            .ok_or_else(copy_size_overflow)?;
     }
-    writer.flush()
+    budget.charge(size.payload - size.keys)?;
+    let (end, ()) = target.write_private_copy(size, |copy| {
+        for (key, &location) in index.index.iter() {
+            copy.put_log_value(key, log, location, |_| {})?;
+        }
+        Ok(())
+    })?;
+    Ok(end)
+}
+
+fn copy_size_overflow() -> io::Error {
+    io::Error::other("online compaction snapshot size overflow")
 }
 pub(super) fn replay(
     source: &Store,
@@ -252,7 +274,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let source = Store::open(root.path().join("source")).unwrap();
         let captured = Store::open(root.path().join("captured")).unwrap();
-        let target = Store::open(root.path().join("target")).unwrap();
+        let target_path = root.path().join("target");
+        let target = Store::open(&target_path).unwrap();
         // Identical record layouts give the two logs overlapping locations.
         source.put(b"key", b"source!!").unwrap();
         captured.put(b"key", b"captured").unwrap();
@@ -260,13 +283,27 @@ mod tests {
         let (mut snapshot, end) = capture(&captured, &options).unwrap();
         let mut budget = SourceReadBudget(Some(end + 8));
         verify_initial(&snapshot, end, &options, None, &mut budget).unwrap();
-        copy_snapshot(&snapshot, &target, &mut budget).unwrap();
+        let end_copied = copy_snapshot(&snapshot, target, &mut budget).unwrap();
+        let target = Store::open(&target_path).unwrap();
+        assert_eq!(target.log.len().unwrap(), end_copied);
+        assert_eq!(budget.0, Some(0));
         assert_eq!(target.get(b"key").unwrap(), Some(b"captured".to_vec()));
         assert_eq!(source.get(b"key").unwrap(), Some(b"source!!".to_vec()));
         assert!(verify_initial(&snapshot, 0, &options, None, &mut budget).is_err());
+
+        let rejected_path = root.path().join("rejected");
+        let rejected = Store::open(&rejected_path).unwrap();
+        let initial = rejected.log.len().unwrap();
+        let error = copy_snapshot(&snapshot, rejected, &mut SourceReadBudget(Some(7))).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        let rejected = Store::open(&rejected_path).unwrap();
+        assert_eq!(rejected.log.len().unwrap(), initial);
+        assert_eq!(rejected.get(b"key").unwrap(), None);
+
         snapshot.cancel();
         let mut unrestricted = SourceReadBudget(None);
         assert!(verify_initial(&snapshot, end, &options, None, &mut unrestricted).is_err());
-        assert!(copy_snapshot(&snapshot, &target, &mut unrestricted).is_err());
+        let cancelled_target = Store::open(root.path().join("cancelled")).unwrap();
+        assert!(copy_snapshot(&snapshot, cancelled_target, &mut unrestricted).is_err());
     }
 }

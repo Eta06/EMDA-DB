@@ -1169,7 +1169,7 @@ fn restore_using(
                 Some(output.live_keys),
                 Some(output.live_key_bytes),
             )?;
-            store.write_private_restore(replay.size, |copy| replay.write(copy, || hook("write")))?
+            store.write_private_copy(replay.size, |copy| replay.write(copy, || hook("write")))?
         };
         {
             hook("reopen")?;

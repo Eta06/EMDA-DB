@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Write and synchronize the bounded initial snapshot for online compaction
+  before reopening the private candidate for catch-up.
+
 - Synchronize complete private compaction and retained restore copies once
   after writing their bounded groups, before output verification and publication.
 

@@ -878,13 +878,21 @@ impl OnlineStore {
             budget,
         )?;
         let mut stage = crate::staging::Stage::directory(&parent)?;
-        let target = Store::open_with_resource_limits(
-            stage.path(),
-            Some(options.max_temporary_log_bytes),
-            Some(options.max_snapshot_keys),
-            Some(options.max_snapshot_key_bytes),
-        )?;
-        copy::copy_snapshot(&snapshot, &target, budget)?;
+        let open_target = || {
+            Store::open_with_resource_limits(
+                stage.path(),
+                Some(options.max_temporary_log_bytes),
+                Some(options.max_snapshot_keys),
+                Some(options.max_snapshot_key_bytes),
+            )
+        };
+        let copied_end = copy::copy_snapshot(&snapshot, open_target()?, budget)?;
+        let target = open_target()?;
+        if target.log.len()? != copied_end {
+            return Err(crate::record::invalid_data(
+                "compacted snapshot length changed",
+            ));
+        }
         hook(copy::Point::InitialCopy)?;
         let mut offset = initial;
         for _ in 0..options.catchup_rounds {
