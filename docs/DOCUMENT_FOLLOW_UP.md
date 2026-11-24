@@ -164,6 +164,8 @@ remain open.
 - [x] Consider trailing compound fields before choosing a shorter prefix
   for range-narrowed membership. Tests cover complete tuples, deeper ranges,
   bounds on scanned candidates, and phantom conflicts on empty tuples.
+  The [fixed-corpus model run](../benchmarks/results/2026-11-24-range-narrowed-compound-model/README.md)
+  compared 2,304 planned queries with scans across both writable backends.
 - [x] Refine scalar membership probes with other required lists containing
   mixed values. On both writable backends the exact candidate limit succeeds
   in either predicate order. Read-set checks still cover surviving probes,

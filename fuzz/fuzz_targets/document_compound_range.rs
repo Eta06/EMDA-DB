@@ -183,6 +183,73 @@ fn check_complete_membership(store: &Backend, bytes: &[u8], partial: bool) {
     }
 }
 
+fn check_range_narrowed_tuple(store: &Backend, bytes: &[u8], partial: bool) {
+    let start = match bytes[2] % 5 {
+        0 => i64::MIN,
+        1 => i64::MAX - 3,
+        _ => i64::from(bytes[2] % 7) - 4,
+    };
+    let suffix = if bytes[3] & 1 == 0 {
+        Value::Null
+    } else {
+        json!(true)
+    };
+    let mut filters = vec![
+        DocumentFilter::In {
+            path: vec!["tenant".into()],
+            values: vec![json!("t"), json!("u")],
+        },
+        DocumentFilter::In {
+            path: vec!["score".into()],
+            values: vec![
+                json!(start + 3),
+                json!(start + 2),
+                json!(start + 1),
+                json!(start),
+                json!("s"),
+            ],
+        },
+        compare("score", Comparison::Greater, IndexValue::Integer(start)),
+        compare("score", Comparison::Less, IndexValue::Integer(start + 3)),
+        eq("suffix", suffix),
+    ];
+    if partial {
+        filters.push(eq("active", json!(true)));
+    }
+    let query = DocumentQuery {
+        filter: DocumentFilter::And(filters),
+        max_scanned: 16,
+        limit: 1 + usize::from(bytes[3] % 5),
+        offset: usize::from(bytes[3] % 3),
+        sort: Some(DocumentSort {
+            path: vec!["score".into()],
+            descending: bytes[3] & 2 != 0,
+        }),
+        projection: (bytes[3] & 4 != 0).then(|| vec![vec!["suffix".into()]]),
+    };
+    let db = store.db();
+    let scan = db.query("c", &query).unwrap();
+    let planned = db.query_planned("c", &query).unwrap();
+    let expected = if partial {
+        DocumentQueryAccess::PartialCompoundMembershipIndex {
+            index: "i".into(),
+            fields: 3,
+            probes: 4,
+        }
+    } else {
+        DocumentQueryAccess::CompoundMembershipIndex {
+            index: "i".into(),
+            fields: 3,
+            probes: 4,
+        }
+    };
+    assert_eq!(planned.access, expected);
+    assert_eq!(planned.result.documents, scan.documents);
+    assert_eq!(planned.result.plan.scanned, scan.plan.matched);
+    assert_eq!(planned.result.plan.matched, scan.plan.matched);
+    assert_eq!(planned.result.plan.returned, scan.plan.returned);
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() || data.len() > 96 {
         return;
@@ -246,6 +313,10 @@ fuzz_target!(|data: &[u8]| {
         }
         if complete_membership {
             check_complete_membership(&store, bytes, partial);
+            continue;
+        }
+        if bytes[0] >= 250 {
+            check_range_narrowed_tuple(&store, bytes, partial);
             continue;
         }
         let mode = bytes[0] % 25;
