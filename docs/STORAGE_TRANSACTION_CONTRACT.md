@@ -151,6 +151,13 @@ rejection returns `NotPublished(InvalidInput)` before the sibling
 publication attempt. Independent `compact_to` copies use the format's
 default limits.
 
+Both checkpoint-backed compaction paths copy large records through a
+fixed-size 1 MiB value buffer. Smaller records use bounded write groups.
+Staged log replay verifies the record checksums and the complete ordered
+set of key and value digests against the source copy. The checkpoint binds
+the exact bytes of that verified replay. Checkpoint indexes, log replay
+buffers and other allocations have separate memory costs.
+
 `OnlineStore::compact_and_replace_detailed` separately classifies destination
 publication and exchange attempts. It does not consume the handle, and other
 callbacks can write during preparation. A candidate may omit those writes;

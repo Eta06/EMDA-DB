@@ -639,20 +639,36 @@ impl Log {
     ) -> io::Result<bool> {
         let mut expected = expected.filter(|bytes| bytes.len() == location.length);
         let mut buffer = [0; crate::recovery::RECOVERY_READ_BUFFER_BYTES];
+        // A mismatch still requires reading and checking the entire value.
+        // Corruption or truncation must never be reported as a failed match.
+        self.visit_value_chunks(location, &mut buffer, |chunk| {
+            if let Some(bytes) = expected {
+                let (expected_chunk, rest) = bytes.split_at(chunk.len());
+                expected = (expected_chunk == chunk).then_some(rest);
+            }
+            Ok(())
+        })?;
+        Ok(expected.is_some())
+    }
+
+    /// Streams a value to a private consumer. A bad checksum can be detected
+    /// after chunks have been delivered, so discard partial output on error.
+    pub(crate) fn visit_value_chunks(
+        &self,
+        location: ValueLocation,
+        buffer: &mut [u8],
+        mut visit: impl FnMut(&[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        assert!(!buffer.is_empty());
         let mut checksum = crc32fast::Hasher::new();
         let mut offset = location.offset;
         let mut remaining = location.length;
-        // A mismatch still requires reading and checking the entire value.
-        // Corruption or truncation must never be reported as a failed match.
         while remaining > 0 {
             let count = remaining.min(buffer.len());
             let chunk = &mut buffer[..count];
             self.file.read_exact_at(chunk, offset)?;
             checksum.update(chunk);
-            if let Some(bytes) = expected {
-                let (expected_chunk, rest) = bytes.split_at(count);
-                expected = (expected_chunk == chunk).then_some(rest);
-            }
+            visit(chunk)?;
             offset = offset
                 .checked_add(count as u64)
                 .ok_or_else(|| record::invalid_data("stored value offset overflow"))?;
@@ -661,7 +677,7 @@ impl Log {
         if checksum.finalize() != location.checksum {
             return Err(record::invalid_data("stored value checksum mismatch"));
         }
-        Ok(expected.is_some())
+        Ok(())
     }
 
     pub(crate) fn read_i64_or_zero(&self, location: Option<ValueLocation>) -> io::Result<i64> {
@@ -1309,11 +1325,12 @@ impl Log {
         )
     }
 
-    /// Verify a private restored log and compare the SHA-256 of each value
+    /// Verify a private output log and provide the SHA-256 of each value
     /// as part of the same scan that validates its enclosing record.
-    pub(crate) fn verify_restored_records(
+    pub(crate) fn verify_private_puts(
         &self,
         end: u64,
+        digest: Option<&mut Sha256>,
         mut visit: impl FnMut(&[u8], usize, [u8; 32]) -> io::Result<()>,
     ) -> io::Result<()> {
         let verify_end = || {
@@ -1323,7 +1340,10 @@ impl Log {
             self.verify_witness()
         };
         verify_end()?;
-        let reader = RecoveryReader::at(self.file.as_ref(), end, 0)?;
+        let mut reader = RecoveryReader::at(self.file.as_ref(), end, 0)?;
+        if let Some(digest) = digest {
+            reader = reader.with_digest(digest);
+        }
         self.visit_hashed_records_to::<sha2::Sha256>(
             reader,
             end,

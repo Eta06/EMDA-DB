@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Stream large values in checkpoint-backed compaction and verify staged
+  values during log replay to reduce temporary memory and avoid value rereads.
+
 - Enforce the checkpoint view's file and block limits before publishing a
   checkpoint-backed compaction handoff candidate.
 

@@ -1,6 +1,6 @@
 //! Verified separate-copy compaction from a checkpoint-backed index.
-use super::compact::{CopyRecord, MAX_COPY_BYTES, MAX_COPY_RECORDS, flush_copy};
-use super::{Log, Operation, Store, backup, record};
+use super::compact::GroupedCopy;
+use super::{Log, Store, backup, record};
 use crate::checkpoint_view::CheckpointViewLimits;
 use crate::recovered_view::RecoveredCheckpointView;
 use sha2::{Digest, Sha256};
@@ -46,11 +46,11 @@ impl Drop for PrivateLock {
     }
 }
 
-fn hash_entry(hash: &mut Sha256, key: &[u8], value: &[u8]) {
+fn hash_entry(hash: &mut Sha256, key: &[u8], value_len: usize, value_digest: [u8; 32]) {
     hash.update((key.len() as u64).to_le_bytes());
     hash.update(key);
-    hash.update((value.len() as u64).to_le_bytes());
-    hash.update(value);
+    hash.update((value_len as u64).to_le_bytes());
+    hash.update(value_digest);
 }
 
 fn copy_live(
@@ -58,34 +58,19 @@ fn copy_live(
     view: &RecoveredCheckpointView,
     target: &Log,
 ) -> io::Result<(u64, [u8; 32])> {
-    let mut pending = Vec::with_capacity(MAX_COPY_RECORDS);
-    let mut bytes = 0_usize;
+    let mut copy = GroupedCopy::new(target, None);
     let mut count = 0_u64;
     let mut hash = Sha256::new();
     view.visit_entries(None, None, |key, location| {
-        let length = record::HEADER_SIZE + key.len() + location.length + record::CHECKSUM_SIZE;
-        if !pending.is_empty()
-            && (pending.len() == MAX_COPY_RECORDS || bytes + length > MAX_COPY_BYTES)
-        {
-            flush_copy(target, &mut pending)?;
-            bytes = 0;
-        }
-        let value = source.read(location)?;
-        hash_entry(&mut hash, key, &value);
-        let encoded = record::encode(Operation::Put, key, &value)?;
-        bytes += encoded.len();
-        pending.push(CopyRecord {
-            encoded,
-            key_len: key.len(),
-            value_len: value.len(),
-            checksum: crc32fast::hash(&value),
-        });
+        let mut value = Sha256::new();
+        copy.put_log_value(key, source, location, |chunk| value.update(chunk))?;
+        hash_entry(&mut hash, key, location.length, value.finalize().into());
         count = count
             .checked_add(1)
             .ok_or_else(|| io::Error::other("compacted key count overflow"))?;
         Ok(ControlFlow::Continue(()))
     })?;
-    flush_copy(target, &mut pending)?;
+    copy.finish()?;
     Ok((count, hash.finalize().into()))
 }
 
@@ -130,37 +115,27 @@ pub(crate) fn compact_checkpoint_with_hooks(
 
     let mut lock = PrivateLock::acquire(staging.path())?;
     let (target, boundary) = Log::open_checkpoint_view(staging.path())?;
-    if target.len()? != boundary {
-        return Err(record::invalid_data(
-            "compacted log has an unacknowledged tail",
-        ));
-    }
-    target.verify_witness()?;
     let mut previous = Vec::new();
     let mut target_count = 0_u64;
     let mut target_hash = Sha256::new();
     let mut log_hasher = Sha256::new();
-    target.visit_records_with_digest(0, boundary, boundary, &mut log_hasher, |key, location| {
-        let location =
-            location.ok_or_else(|| record::invalid_data("compacted log contains a deletion"))?;
-        if !previous.is_empty() && previous.as_slice() >= key.as_ref() {
+    target.verify_private_puts(boundary, Some(&mut log_hasher), |key, len, digest| {
+        if !previous.is_empty() && previous.as_slice() >= key {
             return Err(record::invalid_data(
                 "compacted keys are not strictly ordered",
             ));
         }
-        let value = target.read(location)?;
-        hash_entry(&mut target_hash, &key, &value);
+        hash_entry(&mut target_hash, key, len, digest);
         target_count = target_count
             .checked_add(1)
             .ok_or_else(|| io::Error::other("compacted key count overflow"))?;
-        key.as_ref().clone_into(&mut previous);
+        key.clone_into(&mut previous);
         Ok(())
     })?;
     let target_digest: [u8; 32] = target_hash.finalize().into();
     if target_count != expected_count || target_digest != source_digest {
         return Err(record::invalid_data("compacted data verification mismatch"));
     }
-    target.verify_witness()?;
     let peak = usize::try_from(target_count)
         .map_err(|_| io::Error::other("compacted key count overflow"))?;
     let digest = crate::checkpoint::create_streaming_in_private_stage(

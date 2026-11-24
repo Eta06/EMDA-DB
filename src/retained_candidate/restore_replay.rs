@@ -305,7 +305,7 @@ impl RestoreReplay {
         expected: [u8; 32],
     ) -> io::Result<()> {
         let mut hash = Sha256::new();
-        log.verify_restored_records(end, |key, length, digest| {
+        log.verify_private_puts(end, None, |key, length, digest| {
             hash_row(&mut hash, key, length, digest);
             Ok(())
         })?;

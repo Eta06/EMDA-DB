@@ -7,14 +7,14 @@ pub(super) const MAX_COPY_RECORDS: usize = 64;
 pub(super) const MAX_COPY_BYTES: usize = 4 * 1024 * 1024;
 const LARGE_RESTORE_BUFFER_BYTES: usize = 1024 * 1024;
 
-pub(super) struct CopyRecord {
-    pub(super) encoded: Vec<u8>,
-    pub(super) key_len: usize,
-    pub(super) value_len: usize,
-    pub(super) checksum: u32,
+struct CopyRecord {
+    encoded: Vec<u8>,
+    key_len: usize,
+    value_len: usize,
+    checksum: u32,
 }
 
-pub(super) fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
+fn flush_copy(target: &Log, records: &mut Vec<CopyRecord>) -> io::Result<()> {
     if records.is_empty() {
         return Ok(());
     }
@@ -97,7 +97,7 @@ pub(crate) struct GroupedCopy<'a> {
 }
 
 impl<'a> GroupedCopy<'a> {
-    fn new(target: &'a Log, remaining: Option<RestoreSize>) -> Self {
+    pub(super) fn new(target: &'a Log, remaining: Option<RestoreSize>) -> Self {
         Self {
             target,
             records: Vec::with_capacity(MAX_COPY_RECORDS),
@@ -163,6 +163,46 @@ impl<'a> GroupedCopy<'a> {
                 value.read_into(buffer)
             });
         }
+        self.put_large(key, value_len, before_value, |scratch, append| {
+            value.visit_chunks_with(scratch, append)
+        })
+    }
+
+    pub(super) fn put_log_value(
+        &mut self,
+        key: &[u8],
+        source: &Log,
+        location: ValueLocation,
+        mut observe: impl FnMut(&[u8]),
+    ) -> io::Result<()> {
+        let length = record::HEADER_SIZE + key.len() + location.length + record::CHECKSUM_SIZE;
+        if length <= MAX_COPY_BYTES {
+            return self.put(key, location.length, |buffer| {
+                source.read_into(location, buffer)?;
+                observe(buffer);
+                Ok(())
+            });
+        }
+        self.put_large(
+            key,
+            location.length,
+            || Ok(()),
+            |scratch, append| {
+                source.visit_value_chunks(location, scratch, |chunk| {
+                    observe(chunk);
+                    append(chunk)
+                })
+            },
+        )
+    }
+
+    fn put_large(
+        &mut self,
+        key: &[u8],
+        value_len: usize,
+        before_value: impl FnOnce() -> io::Result<()>,
+        produce: impl FnOnce(&mut [u8], &mut dyn FnMut(&[u8]) -> io::Result<()>) -> io::Result<()>,
+    ) -> io::Result<()> {
         if let Some(remaining) = &mut self.remaining {
             remaining.consume(key.len(), value_len)?;
         }
@@ -174,12 +214,11 @@ impl<'a> GroupedCopy<'a> {
             .map_err(io::Error::other)?;
         scratch.resize(LARGE_RESTORE_BUFFER_BYTES, 0);
         before_value()?;
-        self.target.append_private_put(key, value_len, |append| {
-            value.visit_chunks_with(&mut scratch, append)
-        })
+        self.target
+            .append_private_put(key, value_len, |append| produce(&mut scratch, append))
     }
 
-    fn finish(mut self) -> io::Result<()> {
+    pub(super) fn finish(mut self) -> io::Result<()> {
         if self
             .remaining
             .is_some_and(|size| size.entries != 0 || size.keys != 0 || size.payload != 0)

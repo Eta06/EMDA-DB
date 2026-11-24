@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn streamed_compaction_preserves_maximum_and_empty_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let checkpoint = dir.path().join("checkpoint");
+    let initial = Store::open(&path).unwrap();
+    let large: Vec<_> = (0..crate::record::MAX_VALUE)
+        .map(|index| ((index / 4096) % 251) as u8)
+        .collect();
+    initial.put(b"large", &large).unwrap();
+    initial.put(b"before", b"old").unwrap();
+    let digest = initial.checkpoint_to(&checkpoint).unwrap();
+    initial.delete(b"before").unwrap();
+    initial.put(b"later", b"").unwrap();
+    initial.close_private_store().unwrap();
+    let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    let copy = dir.path().join("copy");
+    let digest = store.compact_to_detailed(&copy).unwrap();
+    let restored = retry_lock(|| {
+        CheckpointStore::open(&copy, copy.join(crate::COMPACTED_CHECKPOINT_FILE), &digest)
+    })
+    .unwrap();
+    assert_eq!(
+        restored.get(b"large").unwrap().as_deref(),
+        Some(large.as_slice())
+    );
+    assert_eq!(restored.get(b"later").unwrap().as_deref(), Some(&[][..]));
+    assert_eq!(restored.get(b"before").unwrap(), None);
+    assert_eq!(
+        store.get(b"large").unwrap().as_deref(),
+        Some(large.as_slice())
+    );
+}
+
+#[test]
 fn detailed_checkpoint_compaction_reports_unknown_after_parent_sync_failure() {
     let (root, path, checkpoint, digest) = fixture();
     let source = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
@@ -162,6 +196,27 @@ fn streamed_compaction_rejects_corrupt_staged_data_before_publication() {
         },
     );
     assert!(result.is_err());
+    assert!(!destination.exists());
+
+    let result = crate::store::compact_checkpoint_with_hooks(
+        &store.log,
+        &state.view,
+        count,
+        (&destination, None),
+        |parent| File::open(parent)?.sync_all(),
+        || Ok(()),
+        |stage| {
+            let file = OpenOptions::new()
+                .write(true)
+                .open(stage.join("records.log"))?;
+            let replacement =
+                crate::record::encode(crate::record::Operation::Put, b"base", b"changed-data")?;
+            FileExt::write_all_at(&file, &replacement, 28)
+        },
+    );
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(error.to_string(), "compacted data verification mismatch");
     assert!(!destination.exists());
     drop(state);
     assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"value"[..]));
