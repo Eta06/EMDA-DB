@@ -92,6 +92,19 @@ pub struct BoundedSuffixAdmission {
     pub max_spill_read_bytes: Option<u64>,
 }
 
+/// Optional cumulative read ceilings for bounded managed rebuild.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BoundedRebuildReadLimits {
+    /// Logical source-log read reservation. Covers three complete passes and
+    /// up to seven witnessed identity checks. The reservation includes the
+    /// verification after checkpoint publication and assumes a stable source.
+    /// Witness files, metadata, and physical retries have separate costs.
+    pub max_source_log_read_bytes: Option<u64>,
+    /// Logical reads from the trusted checkpoint, when a base is supplied.
+    /// Includes both digest passes and uncached block reads.
+    pub max_base_checkpoint_read_bytes: Option<u64>,
+}
+
 impl CheckpointStore {
     /// Rebuild a missing or obsolete managed checkpoint by spilling a complete
     /// witnessed V2 or V3 log replay. The source log is retained. Limits
@@ -135,6 +148,7 @@ impl CheckpointStore {
             limits,
             checkpoint_limits,
             None,
+            BoundedRebuildReadLimits::default(),
         )
     }
 
@@ -156,6 +170,29 @@ impl CheckpointStore {
             limits,
             checkpoint_limits,
             Some(max_spill_read_bytes),
+            BoundedRebuildReadLimits::default(),
+        )
+    }
+
+    /// Rebuild from the full log with independent source-log and spill-read
+    /// ceilings. It reserves the source bytes under the exclusive lock before
+    /// replay, tail adoption, or publication. A full-log rebuild has no trusted
+    /// checkpoint reads. The published output has its own file and block caps.
+    pub fn rebuild_managed_selection_full_bounded_with_read_limits(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        limits: BoundedFullRebuildLimits,
+        checkpoint_limits: crate::CheckpointViewLimits,
+        max_spill_read_bytes: Option<u64>,
+        read_limits: BoundedRebuildReadLimits,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_full_with_limits(
+            path.as_ref(),
+            destination.as_ref(),
+            limits,
+            checkpoint_limits,
+            max_spill_read_bytes,
+            read_limits,
         )
     }
 
@@ -165,6 +202,7 @@ impl CheckpointStore {
         limits: BoundedFullRebuildLimits,
         checkpoint_limits: crate::CheckpointViewLimits,
         max_spill_read_bytes: Option<u64>,
+        read_limits: BoundedRebuildReadLimits,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
         crate::publication_outcome::track_managed_rebuild(|tracker| {
             checkpoint_limits.validate()?;
@@ -177,6 +215,7 @@ impl CheckpointStore {
             )?;
             spill.max_spill_read_bytes = max_spill_read_bytes;
             spill.max_log_bytes = Some(limits.max_log_bytes);
+            spill.max_source_log_read_bytes = read_limits.max_source_log_read_bytes;
             spill.max_live_keys = Some(limits.max_live_keys);
             spill.max_live_key_bytes = Some(limits.max_live_key_bytes);
             spill.checkpoint_limits = Some(checkpoint_limits);
@@ -672,7 +711,7 @@ impl CheckpointStore {
             trusted_digest,
             limits,
             admission,
-            None,
+            BoundedRebuildReadLimits::default(),
         )
     }
 
@@ -697,7 +736,34 @@ impl CheckpointStore {
             trusted_digest,
             limits,
             admission,
-            Some(max_base_checkpoint_read_bytes),
+            BoundedRebuildReadLimits {
+                max_base_checkpoint_read_bytes: Some(max_base_checkpoint_read_bytes),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Rebuild from a trusted checkpoint with independent source-log,
+    /// trusted checkpoint, and spill-read limits. The source reservation
+    /// includes the covered prefix, suffix replay, and both output rechecks.
+    /// Read-limit rejection occurs before tail adoption or publication.
+    pub fn rebuild_managed_selection_bounded_with_read_limits(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        base_checkpoint: impl AsRef<Path>,
+        trusted_digest: &[u8; 32],
+        limits: BoundedSuffixRebuildLimits,
+        admission: BoundedSuffixAdmission,
+        read_limits: BoundedRebuildReadLimits,
+    ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
+        Self::rebuild_suffix_with_admission(
+            path.as_ref(),
+            destination.as_ref(),
+            base_checkpoint.as_ref(),
+            trusted_digest,
+            limits,
+            admission,
+            read_limits,
         )
     }
 
@@ -708,7 +774,7 @@ impl CheckpointStore {
         trusted_digest: &[u8; 32],
         limits: BoundedSuffixRebuildLimits,
         admission: BoundedSuffixAdmission,
-        max_base_checkpoint_read_bytes: Option<u64>,
+        read_limits: BoundedRebuildReadLimits,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
         crate::publication_outcome::track_managed_rebuild(|tracker| {
             limits.base_checkpoint.validate()?;
@@ -721,8 +787,9 @@ impl CheckpointStore {
                 limits.max_operations,
             )?;
             spill.max_spill_read_bytes = admission.max_spill_read_bytes;
-            spill.max_base_checkpoint_read_bytes = max_base_checkpoint_read_bytes;
+            spill.max_base_checkpoint_read_bytes = read_limits.max_base_checkpoint_read_bytes;
             spill.max_log_bytes = Some(limits.max_log_bytes);
+            spill.max_source_log_read_bytes = read_limits.max_source_log_read_bytes;
             spill.max_live_keys = admission.max_live_keys;
             spill.max_live_key_bytes = admission.max_live_key_bytes;
             spill.base_checkpoint_limits = limits.base_checkpoint;
@@ -837,14 +904,22 @@ impl CheckpointStore {
                 });
             }
         });
-        if let Some(max) = limits.max_log_bytes {
-            if fs::metadata(path.join("records.log"))?.len() > max {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "existing log exceeds configured limit",
-                ));
-            }
-        }
+        let admitted_log_length =
+            if limits.max_log_bytes.is_some() || limits.max_source_log_read_bytes.is_some() {
+                let length = fs::metadata(path.join("records.log"))?.len();
+                if limits.max_log_bytes.is_some_and(|max| length > max) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "existing log exceeds configured limit",
+                    ));
+                }
+                if let Some(max) = limits.max_source_log_read_bytes {
+                    admit_source_log_reads(length, max)?;
+                }
+                limits.max_source_log_read_bytes.map(|_| length)
+            } else {
+                None
+            };
         // Malformed selection metadata is rejected before the base is trusted.
         // A valid selection may name a missing checkpoint; the caller-supplied
         // base, not that selection, is the trusted input.
@@ -865,6 +940,7 @@ impl CheckpointStore {
                     (limits.max_log_bytes, limits.max_live_keys),
                     crate::checkpoint_view::TailAdmission::Unrestricted,
                 )?;
+                require_admitted_log_length(admitted_log_length, prepared.suffix().1.end)?;
                 let base_key_bytes = prepared.live_key_bytes();
                 if limits
                     .max_live_key_bytes
@@ -895,6 +971,7 @@ impl CheckpointStore {
                 (0, witness, log.len()?, 0, 0)
             }
         };
+        require_admitted_log_length(admitted_log_length, length)?;
         if prefix > witness || witness > length {
             return Err(crate::record::invalid_data(
                 "checkpoint boundary is outside the witnessed log",
@@ -1003,6 +1080,34 @@ impl CheckpointStore {
         drop(lock_file);
         Ok(digest)
     }
+}
+
+fn admit_source_log_reads(length: u64, max: u64) -> io::Result<()> {
+    // The initial replay reads the full log, using the verified prefix and
+    // the suffix together for a trusted-base rebuild. The staged and published
+    // checkpoint checks each hash the full log again. Allow three opens and
+    // four witness identity rechecks, including the optional pre-adoption one.
+    let identity_bytes = 7 * crate::log::WITNESSED_IDENTITY_READ_BYTES;
+    if length
+        .checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(identity_bytes))
+        .is_none_or(|bytes| bytes > max)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rebuild source log read byte limit exceeded",
+        ));
+    }
+    Ok(())
+}
+
+fn require_admitted_log_length(admitted: Option<u64>, length: u64) -> io::Result<()> {
+    if admitted.is_some_and(|expected| expected != length) {
+        return Err(crate::record::invalid_data(
+            "source log length changed after rebuild admission",
+        ));
+    }
+    Ok(())
 }
 
 fn publish_selection(

@@ -1,6 +1,6 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
 use database_engine::{
-    BatchOperation, BoundedFullRebuildLimits, BoundedSuffixRebuildLimits,
+    BatchOperation, BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixRebuildLimits,
     COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging,
 };
 use serde_json::json;
@@ -243,9 +243,14 @@ fn attempt_rebuild_publication(root: &Path, operation: &str, rebuild: &str) -> P
     use database_engine::ManagedRebuildFailure;
     let source = root.join("source");
     let target = root.join("result");
+    let log_bytes = std::fs::metadata(source.join("records.log"))?.len();
+    let reads = BoundedRebuildReadLimits {
+        max_source_log_read_bytes: Some(3 * log_bytes + 7 * 36),
+        ..Default::default()
+    };
     let outcome = match rebuild {
         "ordinary" => CheckpointStore::rebuild_managed_selection_detailed(source, target),
-        "full-bounded" => CheckpointStore::rebuild_managed_selection_full_bounded(
+        "full-bounded" => CheckpointStore::rebuild_managed_selection_full_bounded_with_read_limits(
             source,
             target,
             BoundedFullRebuildLimits {
@@ -258,12 +263,15 @@ fn attempt_rebuild_publication(root: &Path, operation: &str, rebuild: &str) -> P
                 max_spill_bytes: 4096,
                 max_merge_fan_in: 2,
             },
+            Default::default(),
+            None,
+            reads,
         ),
         "suffix-bounded" => {
             let digest = std::fs::read(root.join("checkpoint.digest"))?
                 .try_into()
                 .map_err(|_| "invalid checkpoint digest")?;
-            CheckpointStore::rebuild_managed_selection_bounded_with_limits(
+            CheckpointStore::rebuild_managed_selection_bounded_with_read_limits(
                 source,
                 target,
                 root.join("checkpoint"),
@@ -278,6 +286,8 @@ fn attempt_rebuild_publication(root: &Path, operation: &str, rebuild: &str) -> P
                     base_checkpoint: Default::default(),
                     output_checkpoint: Default::default(),
                 },
+                Default::default(),
+                reads,
             )
         }
         _ => return Err("unknown rebuild path".into()),

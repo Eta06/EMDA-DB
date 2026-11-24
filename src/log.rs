@@ -1419,11 +1419,15 @@ fn add_recovery_key_bytes(current: usize, additional: usize, max: usize) -> io::
         })
 }
 
+// A witnessed identity check reads the magic and then the complete header.
+pub(crate) const WITNESSED_IDENTITY_READ_BYTES: u64 =
+    (witness::LOG_MAGIC.len() + LOG_HEADER_SIZE) as u64;
+
 fn log_identity(file: &dyn LogIo) -> io::Result<(Option<LogId>, bool)> {
     if file.len()? < witness::LOG_MAGIC.len() as u64 {
         return Ok((None, false));
     }
-    let mut magic = [0_u8; 8];
+    let mut magic = [0_u8; witness::LOG_MAGIC.len()];
     file.read_exact_at(&mut magic, 0)?;
     let metadata = &magic == metadata_witness::MAGIC;
     if &magic != witness::LOG_MAGIC && !metadata {

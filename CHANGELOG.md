@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound cumulative source-log reads before a full-log or trusted-base
+  managed checkpoint rebuild adopts a tail or publishes a checkpoint.
+
 - Optionally cap cumulative reads of the trusted base checkpoint during
   bounded managed rebuild.
 

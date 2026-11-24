@@ -428,6 +428,15 @@ the document view.
   and leaves the existing witness and selection in place. The cap excludes
   file metadata, physical retries, source-log reads, spill-file reads, and
   output checkpoint reads. It composes with the other rebuild limits.
+- The bounded rebuild methods with `BoundedRebuildReadLimits` can also
+  reserve source-log read bytes under the exclusive store lock. The
+  reservation covers replay, staged readback and the published checkpoint
+  recheck before selection. It is three times the physical log length plus
+  seven witnessed identity reads, including the optional pre-adoption read.
+  A trusted-base rebuild counts its covered-prefix and suffix reads as one
+  pass. An insufficient reservation rejects before replay or publication.
+  This assumes stable cooperating source files. Witness metadata, physical
+  retries, and reads from checkpoint and spill files have separate costs.
 - `rebuild_managed_selection_bounded_with_log_limit_detailed` additionally
   rejects an oversized whole log with `NotPublished(InvalidInput)` before
   checkpoint validation and tail adoption. This admission check assumes

@@ -1,8 +1,8 @@
 //! Public checks for bounded offline managed-checkpoint rebuild.
 use database_engine::{
-    BatchOperation, BoundedFullRebuildLimits, BoundedSuffixAdmission, BoundedSuffixRebuildLimits,
-    CheckpointStore, CheckpointViewLimits, MAX_CHECKPOINT_VIEW_BLOCK_BYTES, ManagedRebuildFailure,
-    Store, cleanup_abandoned_staging,
+    BatchOperation, BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixAdmission,
+    BoundedSuffixRebuildLimits, CheckpointStore, CheckpointViewLimits,
+    MAX_CHECKPOINT_VIEW_BLOCK_BYTES, ManagedRebuildFailure, Store, cleanup_abandoned_staging,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -1366,6 +1366,110 @@ fn spill_read_cap_rejects_before_adoption_and_accepts_exact_reads() {
                 fs::read(&reference).unwrap()
             );
             assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+            assert_ne!(witness_bytes(&path), witness);
+        }
+    }
+}
+
+#[test]
+fn source_log_read_reservation_covers_both_bounded_rebuild_paths() {
+    for v2 in [true, false] {
+        for full in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("store");
+            let base = root.path().join("base");
+            let destination = root.path().join("rebuilt");
+            let reference = root.path().join("reference");
+            let store = open_store(&path, v2);
+            store.put(b"safe", b"acknowledged").unwrap();
+            let base_digest = store.checkpoint_to(&base).unwrap();
+            let witness = witness_bytes(&path);
+            store
+                .write_batch(&[
+                    BatchOperation::Put {
+                        key: b"a",
+                        value: b"pending",
+                    },
+                    BatchOperation::Delete { key: b"safe" },
+                ])
+                .unwrap();
+            let expected = store.checkpoint_to(&reference).unwrap();
+            drop(store);
+            restore_witness(&path, &witness);
+            let log_path = path.join("records.log");
+            let log = fs::read(&log_path).unwrap();
+            let physical_bytes = log.len() as u64;
+            #[cfg(target_os = "linux")]
+            assert_eq!(&log[..8], if v2 { b"EMDALOG2" } else { b"EMDALOG3" });
+            let rebuild = |cap| {
+                let read_limits = BoundedRebuildReadLimits {
+                    max_source_log_read_bytes: Some(cap),
+                    max_base_checkpoint_read_bytes: (!full).then_some(4096),
+                };
+                if full {
+                    CheckpointStore::rebuild_managed_selection_full_bounded_with_read_limits(
+                        &path,
+                        &destination,
+                        BoundedFullRebuildLimits {
+                            max_log_bytes: physical_bytes,
+                            max_operations: 3,
+                            max_live_keys: 2,
+                            max_live_key_bytes: 5,
+                            max_chunk_keys: 2,
+                            max_chunk_key_bytes: 5,
+                            max_spill_bytes: 0,
+                            max_merge_fan_in: 2,
+                        },
+                        CheckpointViewLimits::default(),
+                        Some(0),
+                        read_limits,
+                    )
+                } else {
+                    CheckpointStore::rebuild_managed_selection_bounded_with_read_limits(
+                        &path,
+                        &destination,
+                        &base,
+                        &base_digest,
+                        BoundedSuffixRebuildLimits {
+                            max_log_bytes: physical_bytes,
+                            max_operations: 2,
+                            max_chunk_keys: 2,
+                            max_chunk_key_bytes: 5,
+                            max_spill_bytes: 0,
+                            max_merge_fan_in: 2,
+                            base_checkpoint: CheckpointViewLimits::default(),
+                            output_checkpoint: CheckpointViewLimits::default(),
+                        },
+                        BoundedSuffixAdmission {
+                            max_live_keys: Some(2),
+                            max_live_key_bytes: Some(5),
+                            max_spill_read_bytes: Some(0),
+                        },
+                        read_limits,
+                    )
+                }
+            };
+            // Three full passes, seven reads of the magic plus V2/V3 header.
+            let exact = 3 * physical_bytes + 7 * (8 + 28);
+            for cap in [0, exact - 1] {
+                assert!(
+                    matches!(rebuild(cap), Err(ManagedRebuildFailure::NotPublished(error))
+                    if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "rebuild source log read byte limit exceeded")
+                );
+                assert_eq!(witness_bytes(&path), witness);
+                assert_eq!(fs::read(&log_path).unwrap(), log);
+                assert!(!destination.exists());
+                assert!(!path.join("checkpoint.selection").exists());
+                assert_no_stages(&path);
+                assert_no_stages(root.path());
+            }
+            assert_eq!(rebuild(exact).unwrap(), expected);
+            assert_eq!(
+                fs::read(&destination).unwrap(),
+                fs::read(&reference).unwrap()
+            );
+            assert_eq!(fs::read(&log_path).unwrap(), log);
             assert_ne!(witness_bytes(&path), witness);
         }
     }

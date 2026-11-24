@@ -10,7 +10,7 @@ import tempfile
 
 operation = "checkpoint-managed-rebuild-tail-existing"
 attribute = "user.db.commit.v3"
-syscalls = "fsync,fdatasync,pwrite64,fgetxattr,fsetxattr"
+syscalls = "fsync,fdatasync,read,pread64,pwrite64,fgetxattr,fsetxattr"
 
 def probe(binary, *args):
     return json.loads(subprocess.check_output([binary, *args], text=True, timeout=30))
@@ -57,6 +57,21 @@ def run(binary, parent, format_name, rebuild, fault=None):
         assert current_log == log.read_bytes()
         if fault is None:
             assert outcome["status"] == "success", outcome
+            if rebuild in ("full-bounded", "suffix-bounded"):
+                log_reads = [line for line in lines if line.startswith(("read(", "pread64("))
+                             and f"<{log}>" in line]
+                requests = []
+                for line in log_reads:
+                    read = re.search(r", (\d+)(?:, \d+)?\)\s+= (\d+)$", line)
+                    assert read is not None, line
+                    requested, returned = map(int, read.groups())
+                    assert requested == returned, line
+                    requests.append(requested)
+                expected_reads = 3 * len(current_log) + 7 * (8 + 28)
+                assert sum(requests) == expected_reads, log_reads
+                print(json.dumps(dict(rebuild=rebuild, format=format_name,
+                                      point="source log read reservation", expected_bytes=expected_reads,
+                                      request_bytes=requests)), flush=True)
             if recovery_open:
                 assert not (root / "result").exists()
                 assert read_selection() == previous
