@@ -1009,6 +1009,12 @@ impl CheckpointStore {
                 "log length changed during suffix replay",
             ));
         }
+        let count = u64::try_from(spill.live_count())
+            .map_err(|_| io::Error::other("live key count overflow"))?;
+        let mut output_limits = limits.checkpoint_limits.unwrap_or_default();
+        output_limits.validate()?;
+        output_limits.max_file_bytes =
+            crate::checkpoint::admit_streaming_size(count, spill.live_key_bytes(), output_limits)?;
         spill.prepare_for_emit()?;
         if length > witness {
             (hooks.before_adopt)()?;
@@ -1029,8 +1035,6 @@ impl CheckpointStore {
         if let Some(view) = &view {
             view.verify_checkpoint_file()?;
         }
-        let count = u64::try_from(spill.live_count())
-            .map_err(|_| io::Error::other("live key count overflow"))?;
         let peak = spill.peak();
         if peak < spill.live_count() {
             return Err(crate::record::invalid_data(
@@ -1055,17 +1059,12 @@ impl CheckpointStore {
             crate::checkpoint::StreamingOptions {
                 tracker: tracker.map(|tracker| &tracker.checkpoint),
                 verified_log,
-                limits: limits.checkpoint_limits,
+                limits: Some(output_limits),
                 pending_tail,
             },
         )?;
         drop(spill);
-        verify_before_selection(
-            &path,
-            &destination,
-            &digest,
-            limits.checkpoint_limits.unwrap_or_default(),
-        )?;
+        verify_before_selection(&path, &destination, &digest, output_limits)?;
         drop(view);
         drop(writer);
         let next = selection::Selection::new(destination, digest)?;
@@ -2050,6 +2049,67 @@ mod tests {
             "v2={}",
             case.v2
         );
+    }
+
+    #[test]
+    fn exact_output_size_is_admitted_before_rebuild_adoption_hook() {
+        for v2 in [true, false] {
+            for full in [true, false] {
+                let Some(case) = prepare_unacknowledged_tail(v2) else {
+                    break;
+                };
+                let destination = case.root().join("rebuilt");
+                let base = (!full).then_some((case.base.as_path(), &case.digest));
+                // Four entries with seven key bytes and 100 framing bytes.
+                let exact = 100 + 4 * 18 + 7;
+                let rebuild = |max_file_bytes, before_adopt: &mut dyn FnMut() -> io::Result<()>| {
+                    let mut limits = small_limits();
+                    limits.checkpoint_limits = Some(crate::CheckpointViewLimits {
+                        max_file_bytes,
+                        ..Default::default()
+                    });
+                    track_managed_rebuild(|tracker| {
+                        with_standard_hooks(|standard| {
+                            let mut hooks = BoundedHooks {
+                                before_adopt,
+                                sync_checkpoint_ancestors: standard.sync_checkpoint_ancestors,
+                                before_selection_rename: standard.before_selection_rename,
+                                sync_selection_parent: standard.sync_selection_parent,
+                            };
+                            CheckpointStore::rebuild_spilling(
+                                &case.path,
+                                &destination,
+                                base,
+                                limits,
+                                Some(tracker),
+                                &mut hooks,
+                            )
+                        })
+                    })
+                };
+                let failure = rebuild(exact - 1, &mut || {
+                    panic!("oversized output reached adoption")
+                });
+                assert!(
+                    matches!(failure, Err(ManagedRebuildFailure::NotPublished(error))
+                    if error.kind() == io::ErrorKind::InvalidInput
+                        && error.to_string() == "checkpoint exceeds configured file size limit")
+                );
+                assert_source_unchanged(&case);
+                assert_eq!(witness_bytes(&case.path), case.rolled_back);
+                assert!(!destination.exists());
+                assert!(!selection::path(&case.path).exists());
+                assert_no_staged_markers(&case.path);
+                assert_no_staged_markers(case.root());
+
+                let digest = rebuild(exact, &mut || Ok(())).unwrap();
+                assert_eq!(destination.metadata().unwrap().len(), exact);
+                let reference = case.root().join("reference");
+                let store = retry(|| Store::open(&case.path)).unwrap();
+                assert_eq!(store.checkpoint_to(&reference).unwrap(), digest);
+                assert_eq!(fs::read(destination).unwrap(), fs::read(reference).unwrap());
+            }
+        }
     }
 
     // Before staging, witness verification observes a checksum-valid boundary

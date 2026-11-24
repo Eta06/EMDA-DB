@@ -295,6 +295,9 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   rebuild. The cap includes the recheck after checkpoint publication.
   Exact-limit tests verify the output and preserve the source and witness
   when a reservation is one byte short.
+- [x] Admit the exact encoded output size before the bounded rebuild's
+  final spill merge. Both output verification passes use that file-size
+  ceiling. Earlier replay and intermediate spills retain their own limits.
 
 - [x] Add an explicit on-disk index checkpoint verified against a separately trusted digest and suffix replay, with historical peak accounting and fail-closed corruption/format checks. The checkpoint is a derived plaintext file, not a backup or a security boundary when its digest is attacker-controlled.
 - [x] Verify checkpoint files through independent positional reads and reuse bounded key buffers. The [nested-scan regression and Linux ARM64 measurements](../benchmarks/results/2026-11-22-checkpoint-verifier-buffers/README.md) confirm independent cursor positions, one fewer allocation per scanned entry, and the same index read-byte totals.

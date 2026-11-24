@@ -800,6 +800,10 @@ impl SpillSession {
         self.current
     }
 
+    pub(super) fn live_key_bytes(&self) -> u64 {
+        self.live_key_bytes
+    }
+
     pub(super) fn peak(&self) -> usize {
         self.peak
     }
@@ -872,18 +876,24 @@ impl SpillSession {
         {
             return Err(invalid_input("rebuild historical live key limit exceeded"));
         }
-        if let Some(max_key_bytes) = self.limits.max_live_key_bytes {
-            let key_bytes = key.len() as u64;
-            let next_bytes = match (state.is_some(), location.is_some()) {
-                (false, true) => self.live_key_bytes.checked_add(key_bytes),
-                (true, false) => self.live_key_bytes.checked_sub(key_bytes),
-                _ => Some(self.live_key_bytes),
-            };
-            self.live_key_bytes = next_bytes
-                .filter(|&bytes| bytes <= max_key_bytes)
-                .ok_or_else(|| invalid_input("rebuild historical live key-byte limit exceeded"))?;
+        let key_bytes = key.len() as u64;
+        let next_bytes = match (state.is_some(), location.is_some()) {
+            (false, true) => self.live_key_bytes.checked_add(key_bytes),
+            (true, false) => self.live_key_bytes.checked_sub(key_bytes),
+            _ => Some(self.live_key_bytes),
+        }
+        .ok_or_else(|| record::invalid_data("rebuild live key-byte accounting overflow"))?;
+        if self
+            .limits
+            .max_live_key_bytes
+            .is_some_and(|max| next_bytes > max)
+        {
+            return Err(invalid_input(
+                "rebuild historical live key-byte limit exceeded",
+            ));
         }
         apply_mutation(state, location, &mut self.current, &mut self.peak)?;
+        self.live_key_bytes = next_bytes;
         self.applied += 1;
         Ok(())
     }
@@ -1585,7 +1595,10 @@ mod tests {
             limits(chunk_keys, 64 << 20, 10_000),
             base_live,
             base_peak,
-            0,
+            base.iter()
+                .filter(|(_, state)| state.is_some())
+                .map(|(key, _)| key.len() as u64)
+                .sum(),
         )
         .unwrap();
         for (key, location) in ops {
@@ -1712,6 +1725,10 @@ mod tests {
             let (mut session, _directory) = replay(chunk_keys, &base, 2, 2, &ops);
             assert_eq!(session.live_count(), count);
             assert_eq!(session.peak(), peak);
+            assert_eq!(
+                session.live_key_bytes(),
+                expected.keys().map(|key| key.len() as u64).sum::<u64>()
+            );
             let overlay = overlay_states(&mut session);
             assert!(
                 overlay.contains_key(b"d".as_slice())
@@ -2240,7 +2257,7 @@ mod tests {
     fn run_key_bounds_skip_only_impossible_lookups_and_emission_still_verifies() {
         let directory = tempfile::tempdir().unwrap();
         let mut session =
-            SpillSession::create(directory.path(), limits(2, 1 << 20, 100), 1, 1, 0).unwrap();
+            SpillSession::create(directory.path(), limits(2, 1 << 20, 100), 1, 1, 1).unwrap();
         session.push(b"b", Some(loc(100)), |_| Ok(None)).unwrap();
         session.push(b"d", None, |_| Ok(None)).unwrap();
         session.write_dirty().unwrap();

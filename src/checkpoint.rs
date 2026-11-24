@@ -305,19 +305,7 @@ fn create_streaming_in_directory(
         log.verify_witness()?;
     }
     let mut checkpoint_bytes = HEADER_BYTES + DIGEST_BYTES;
-    if limits
-        .max_file_bytes
-        .checked_sub(checkpoint_bytes)
-        .is_none_or(|room| count > room / MIN_ENTRY_BYTES)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "checkpoint exceeds configured file size limit",
-        ));
-    }
-    if count > view_block_capacity(limits.max_blocks) / MIN_ENTRY_BYTES {
-        return Err(block_limit_error());
-    }
+    admit_streaming_size(count, count, limits)?;
     let VerifiedLog {
         length: prefix,
         digest: log_digest,
@@ -400,7 +388,7 @@ fn create_streaming_in_directory(
         prefix,
         None,
         &checkpoint_digest,
-        None,
+        Some(limits.max_file_bytes),
         |_, _, _, _, _| Ok(()),
     )?;
     if verified.prefix != prefix || verified.peak as u64 != peak || verified.count != count {
@@ -716,6 +704,33 @@ pub(crate) struct IndexAdmission<'a> {
 fn view_block_capacity(max_blocks: usize) -> u64 {
     // View limits have already been validated against the supported maximum.
     max_blocks as u64 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES as u64
+}
+
+// The fixed fields and the key bytes determine the encoded size. Packing
+// can still require extra blocks, so the writer checks each entry as it goes.
+pub(crate) fn admit_streaming_size(
+    count: u64,
+    key_bytes: u64,
+    limits: CheckpointViewLimits,
+) -> io::Result<u64> {
+    let file_limit = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checkpoint exceeds configured file size limit",
+        )
+    };
+    let payload = count
+        .checked_mul(ENTRY_FIXED_BYTES)
+        .and_then(|bytes| bytes.checked_add(key_bytes))
+        .ok_or_else(file_limit)?;
+    let size = payload
+        .checked_add(HEADER_BYTES + DIGEST_BYTES)
+        .filter(|&size| size <= limits.max_file_bytes)
+        .ok_or_else(file_limit)?;
+    if payload > view_block_capacity(limits.max_blocks) {
+        return Err(block_limit_error());
+    }
+    Ok(size)
 }
 
 pub(crate) fn block_limit_error() -> io::Error {
