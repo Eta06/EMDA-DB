@@ -1,8 +1,8 @@
 //! Compound ranges must not omit documents missing an indexed suffix field.
 use database_engine::{
-    CheckpointStore, CollectionSchema, Comparison, DocumentDatabase, DocumentFilter, DocumentQuery,
-    DocumentQueryAccess, DocumentSort, IndexBound, IndexDefinition, IndexQuery, IndexValue,
-    PartialFilter, Store,
+    AggregateStatsRequest, CheckpointStore, CollectionSchema, Comparison, DocumentDatabase,
+    DocumentFilter, DocumentQuery, DocumentQueryAccess, DocumentSort, IndexBound, IndexDefinition,
+    IndexQuery, IndexValue, PartialFilter, Store,
 };
 use serde_json::{Value, json};
 use std::io::ErrorKind;
@@ -1892,6 +1892,450 @@ fn empty_compound_prefix_detects_a_concurrent_indexed_insert() {
                 (!conflict).then(|| b"committed".to_vec())
             );
             compare(db, &request, prefix_access(1, 2, false));
+        });
+    }
+}
+
+#[test]
+fn range_narrowed_prefix_preserves_complete_tuples_disjunctions_and_longer_prefixes() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                unique: true,
+                ..index(
+                    &["tenant", "score", "region"],
+                    Some(PartialFilter::Equals {
+                        path: path("active"),
+                        value: IndexValue::Boolean(true),
+                    }),
+                )
+            },
+        )
+        .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "code_region".into(),
+                unique: true,
+                ..index(&["code", "region"], None)
+            },
+        )
+        .unwrap();
+        for score in [2_i64, 3, 4] {
+            for noise in 0..6 {
+                db.insert(
+                    "c",
+                    &format!("noise-{score}-{noise}"),
+                    &json!({
+                        "tenant": "t",
+                        "score": score,
+                        "region": format!("noise-{noise}"),
+                        "active": true,
+                        "n": 100
+                    }),
+                )
+                .unwrap();
+            }
+        }
+        for (id, score, region, active, n) in [
+            ("hit-2-west", 2, "west", true, 10),
+            ("hit-4-west", 4, "west", true, 20),
+            ("hit-4-east", 4, "east", true, 30),
+            ("inactive-3-west", 3, "west", false, 40),
+            ("out-of-range-6-west", 6, "west", true, 50),
+        ] {
+            db.insert(
+                "c",
+                id,
+                &json!({
+                    "tenant": "t",
+                    "score": score,
+                    "region": region,
+                    "active": active,
+                    "n": n
+                }),
+            )
+            .unwrap();
+        }
+        db.insert(
+            "c",
+            "missing-region",
+            &json!({"tenant": "t", "score": 2, "active": true, "n": 1}),
+        )
+        .unwrap();
+
+        // Range-narrowed consecutive integer membership on a middle field must
+        // still complete the trailing equality tuple rather than scanning a prefix.
+        let complete_filter = and(vec![
+            eq("tenant", json!("t")),
+            eq("active", json!(true)),
+            cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(2)),
+            cmp("score", Comparison::LessOrEqual, IndexValue::Integer(5)),
+            membership(
+                "score",
+                vec![json!(1), json!(2), json!(3), json!(4), json!(6)],
+            ),
+            eq("region", json!("west")),
+        ]);
+        let complete_access = DocumentQueryAccess::PartialCompoundMembershipIndex {
+            index: "compound".into(),
+            fields: 3,
+            probes: 3,
+        };
+        let explanation = db
+            .explain_query("c", &query(complete_filter.clone(), 2))
+            .unwrap();
+        assert_eq!(explanation.access, complete_access);
+        assert_eq!(explanation.probes.len(), 3);
+        assert!(explanation.probes.iter().all(|probe| probe.unique_equality));
+        compare(
+            db,
+            &query(complete_filter.clone(), 40),
+            complete_access.clone(),
+        );
+        let tight = db
+            .query_planned("c", &query(complete_filter.clone(), 2))
+            .unwrap();
+        assert_eq!(tight.access, complete_access);
+        assert_eq!(tight.result.plan.scanned, 2);
+        assert_eq!(
+            tight
+                .result
+                .documents
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["hit-2-west", "hit-4-west"]
+        );
+        let stats = db
+            .aggregate_stats_planned(
+                "c",
+                &AggregateStatsRequest {
+                    filter: complete_filter,
+                    group_by: None,
+                    fields: vec![path("n")],
+                    max_scanned: 2,
+                },
+            )
+            .unwrap();
+        assert_eq!(stats.access, complete_access);
+        assert_eq!(stats.result.plan.scanned, 2);
+        assert_eq!(stats.result.groups.len(), 1);
+        assert_eq!(stats.result.groups[0].count, 2);
+
+        // Trailing disjunctions must still yield complete unique probes instead of
+        // stopping early at a range-narrowed prefix scan.
+        let disjunction_filter = and(vec![
+            eq("tenant", json!("t")),
+            eq("active", json!(true)),
+            cmp("score", Comparison::GreaterOrEqual, IndexValue::Integer(2)),
+            cmp("score", Comparison::LessOrEqual, IndexValue::Integer(5)),
+            membership("score", vec![json!(1), json!(2), json!(4), json!(6)]),
+            DocumentFilter::Or(vec![
+                eq("region", json!("west")),
+                eq("region", json!("east")),
+            ]),
+        ]);
+        let disjunction_access = DocumentQueryAccess::DisjunctionIndex {
+            indexes: vec!["compound".into()],
+            probes: 4,
+        };
+        let explained = db
+            .explain_query("c", &query(disjunction_filter.clone(), 3))
+            .unwrap();
+        assert_eq!(explained.access, disjunction_access);
+        assert_eq!(explained.probes.len(), 4);
+        assert!(explained.probes.iter().all(|probe| probe.unique_equality));
+        compare(
+            db,
+            &query(disjunction_filter.clone(), 40),
+            disjunction_access.clone(),
+        );
+        let tight = db
+            .query_planned("c", &query(disjunction_filter, 3))
+            .unwrap();
+        assert_eq!(tight.access, disjunction_access);
+        assert_eq!(tight.result.plan.scanned, 3);
+
+        // StartsWith + In on a leading compound field must also preserve trailing
+        // equality probes.
+        for noise in 0..6 {
+            db.insert(
+                "c",
+                &format!("code-noise-{noise}"),
+                &json!({"code": "ab1", "region": format!("other-{noise}")}),
+            )
+            .unwrap();
+        }
+        db.insert("c", "code-hit", &json!({"code": "ab2", "region": "west"}))
+            .unwrap();
+        db.insert(
+            "c",
+            "code-outside",
+            &json!({"code": "zz1", "region": "west"}),
+        )
+        .unwrap();
+        let starts_filter = and(vec![
+            DocumentFilter::StartsWith {
+                path: path("code"),
+                prefix: "ab".into(),
+            },
+            membership("code", vec![json!("ab1"), json!("ab2"), json!("zz1")]),
+            eq("region", json!("west")),
+        ]);
+        let starts_access = DocumentQueryAccess::CompoundMembershipIndex {
+            index: "code_region".into(),
+            fields: 2,
+            probes: 2,
+        };
+        let explained = db
+            .explain_query("c", &query(starts_filter.clone(), 1))
+            .unwrap();
+        assert_eq!(explained.access, starts_access);
+        assert!(explained.probes.iter().all(|probe| probe.unique_equality));
+        compare(db, &query(starts_filter.clone(), 40), starts_access.clone());
+        let tight = db.query_planned("c", &query(starts_filter, 1)).unwrap();
+        assert_eq!(tight.access, starts_access);
+        assert_eq!(tight.result.plan.scanned, 1);
+        assert_eq!(tight.result.documents[0].id, "code-hit");
+
+        // On a 3-field index, a range-narrowed leading field followed by equality
+        // and trailing presence must pick the 2-field prefix rather than a 1-field prefix.
+        db.create_collection("p", CollectionSchema::default())
+            .unwrap();
+        db.create_index("p", index(&["a", "b", "c"], None)).unwrap();
+        for noise in 0..6 {
+            db.insert(
+                "p",
+                &format!("p-noise-{noise}"),
+                &json!({"a": 2, "b": noise, "c": 1}),
+            )
+            .unwrap();
+        }
+        db.insert("p", "p-hit", &json!({"a": 4, "b": 99, "c": 1}))
+            .unwrap();
+        db.insert("p", "p-missing-c", &json!({"a": 4, "b": 99}))
+            .unwrap();
+        let prefix_filter = vec![
+            cmp("a", Comparison::GreaterOrEqual, IndexValue::Integer(1)),
+            cmp("a", Comparison::LessOrEqual, IndexValue::Integer(5)),
+            membership("a", vec![json!(0), json!(2), json!(4), json!(9)]),
+            eq("b", json!(99)),
+        ];
+        // Without proving c exists, the compound index cannot be used.
+        assert_eq!(
+            db.explain_query("p", &query(and(prefix_filter.clone()), 10))
+                .unwrap()
+                .access,
+            DocumentQueryAccess::CollectionScan
+        );
+        let mut with_presence = prefix_filter;
+        with_presence.push(exists("c", true));
+        let tight = db
+            .query_planned("p", &query(and(with_presence.clone()), 1))
+            .unwrap();
+        assert_eq!(tight.access, prefix_access(2, 2, false));
+        assert_eq!(tight.result.plan.scanned, 1);
+        assert_eq!(tight.result.documents[0].id, "p-hit");
+        assert_eq!(
+            tight.result.documents,
+            db.query("p", &query(and(with_presence), 10))
+                .unwrap()
+                .documents
+        );
+    });
+}
+
+#[test]
+fn range_narrowed_prefix_reaches_deeper_compound_ranges_and_falls_back_cleanly() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index(&["a", "b", "c"], None)).unwrap();
+        for b in [10_i64, 20, 30, 40, 70, 80] {
+            db.insert(
+                "c",
+                &format!("b-noise-{b}"),
+                &json!({"a": 2, "b": b, "c": 5}),
+            )
+            .unwrap();
+        }
+        for c in [10_i64, 20, 30, 40, 50, 150] {
+            db.insert(
+                "c",
+                &format!("c-noise-{c}"),
+                &json!({"a": 1, "b": 12, "c": c}),
+            )
+            .unwrap();
+        }
+        db.insert("c", "mid-hit", &json!({"a": 2, "b": 55, "c": 5}))
+            .unwrap();
+        db.insert("c", "deep-hit-1", &json!({"a": 1, "b": 12, "c": 105}))
+            .unwrap();
+        db.insert("c", "deep-hit-2", &json!({"a": 2, "b": 13, "c": 108}))
+            .unwrap();
+
+        // Leading range-narrowed membership must reach a trailing range on b.
+        let mid_range = and(vec![
+            cmp("a", Comparison::GreaterOrEqual, IndexValue::Integer(1)),
+            cmp("a", Comparison::LessOrEqual, IndexValue::Integer(5)),
+            membership("a", vec![json!(0), json!(2), json!(4), json!(9)]),
+            cmp("b", Comparison::GreaterOrEqual, IndexValue::Integer(50)),
+            cmp("b", Comparison::LessOrEqual, IndexValue::Integer(60)),
+            exists("c", true),
+        ]);
+        compare(
+            db,
+            &query(mid_range.clone(), 30),
+            membership_range_access(1, 2, false),
+        );
+        let tight = db.query_planned("c", &query(mid_range, 1)).unwrap();
+        assert_eq!(tight.access, membership_range_access(1, 2, false));
+        assert_eq!(tight.result.plan.scanned, 1);
+        assert_eq!(tight.result.documents[0].id, "mid-hit");
+
+        // Middle range-narrowed membership (both sparse and consecutive integers)
+        // must still reach a deeper trailing range on c.
+        for (b_members, expected_probes, expected_ids) in [
+            (vec![5, 12, 14, 30], 4, vec!["deep-hit-1"]),
+            (vec![5, 12, 13, 14, 30], 6, vec!["deep-hit-1", "deep-hit-2"]),
+        ] {
+            let deep_range = and(vec![
+                membership("a", vec![json!(1), json!(2)]),
+                cmp("b", Comparison::GreaterOrEqual, IndexValue::Integer(10)),
+                cmp("b", Comparison::LessOrEqual, IndexValue::Integer(20)),
+                membership("b", b_members.into_iter().map(|n| json!(n)).collect()),
+                cmp("c", Comparison::GreaterOrEqual, IndexValue::Integer(100)),
+                cmp("c", Comparison::LessOrEqual, IndexValue::Integer(110)),
+            ]);
+            let expected_access = membership_range_access(2, expected_probes, false);
+            compare(db, &query(deep_range.clone(), 30), expected_access.clone());
+            let tight = db
+                .query_planned("c", &query(deep_range, expected_ids.len()))
+                .unwrap();
+            assert_eq!(tight.access, expected_access);
+            assert_eq!(tight.result.plan.scanned, expected_ids.len());
+            assert_eq!(
+                tight
+                    .result
+                    .documents
+                    .iter()
+                    .map(|row| row.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected_ids
+            );
+        }
+
+        // When the deeper prefix product exceeds MAX_INDEX_PROBES (16 * 17 = 272),
+        // fall back cleanly to the earlier MembershipRange on (a, b) rather than scanning.
+        let deep_overflow = and(vec![
+            membership("a", (0..16).map(|n| json!(n)).collect()),
+            cmp("b", Comparison::GreaterOrEqual, IndexValue::Integer(0)),
+            cmp("b", Comparison::LessOrEqual, IndexValue::Integer(40)),
+            membership("b", (0..17).map(|n| json!(n * 2)).collect()),
+            cmp("c", Comparison::GreaterOrEqual, IndexValue::Integer(100)),
+        ]);
+        compare(
+            db,
+            &query(deep_overflow, 30),
+            membership_range_access(1, 16, false),
+        );
+
+        // When a range-narrowed leading field has consecutive integers and the next
+        // sparse membership overflows MAX_INDEX_PROBES (20 * 20 = 400), fall back to
+        // grouped integer ranges on the leading field rather than CollectionScan.
+        let prefix_overflow = and(vec![
+            cmp("a", Comparison::GreaterOrEqual, IndexValue::Integer(1)),
+            cmp("a", Comparison::LessOrEqual, IndexValue::Integer(20)),
+            membership("a", (1..=20).map(|n| json!(n)).collect()),
+            membership("b", (0..20).map(|n| json!(n * 2)).collect()),
+            exists("c", true),
+        ]);
+        compare(
+            db,
+            &query(prefix_overflow, 30),
+            DocumentQueryAccess::IntegerMembershipIndex {
+                index: "compound".into(),
+                prefix_fields: 0,
+                probes: 1,
+                partial: false,
+            },
+        );
+    });
+}
+
+#[test]
+fn range_narrowed_complete_tuple_tracks_exact_empty_probe_conflicts() {
+    use std::{sync::mpsc, time::Duration};
+    for (doc, conflict) in [
+        // Exact narrowed tuple (a in [2, 3, 4], b == 99) must conflict.
+        (json!({"a": 3, "b": 99}), true),
+        // Same a prefix with a different trailing b must not conflict.
+        (json!({"a": 3, "b": 10}), false),
+        // Listed in `In` but excluded by `a <= 5` must not conflict.
+        (json!({"a": 9, "b": 99}), false),
+    ] {
+        on_backends(|db| {
+            db.create_collection("c", CollectionSchema::default())
+                .unwrap();
+            db.create_index(
+                "c",
+                IndexDefinition {
+                    unique: true,
+                    ..index(&["a", "b"], None)
+                },
+            )
+            .unwrap();
+            let request = query(
+                and(vec![
+                    cmp("a", Comparison::GreaterOrEqual, IndexValue::Integer(1)),
+                    cmp("a", Comparison::LessOrEqual, IndexValue::Integer(5)),
+                    membership("a", vec![json!(0), json!(2), json!(3), json!(4), json!(9)]),
+                    eq("b", json!(99)),
+                ]),
+                4,
+            );
+            let expected_access = DocumentQueryAccess::CompoundMembershipIndex {
+                index: "compound".into(),
+                fields: 2,
+                probes: 3,
+            };
+            let (read, observed) = mpsc::channel();
+            let (committed, written) = mpsc::channel();
+            let doc = &doc;
+            let result = std::thread::scope(|scope| {
+                let writer = scope.spawn(move || {
+                    observed.recv_timeout(Duration::from_secs(10)).unwrap();
+                    committed.send(db.insert("c", "new", doc)).unwrap();
+                });
+                let result = db.transaction_with_read_set(|tx| {
+                    let plan = tx.query_planned("c", &request)?;
+                    assert_eq!(plan.access, expected_access);
+                    assert!(plan.result.documents.is_empty());
+                    read.send(()).unwrap();
+                    written.recv_timeout(Duration::from_secs(10)).unwrap()?;
+                    tx.put_raw(b"narrowed-tuple-phantom", b"committed")
+                });
+                drop(read);
+                writer.join().unwrap();
+                result
+            });
+            if conflict {
+                assert!(database_engine::is_transaction_conflict(
+                    &result.unwrap_err()
+                ));
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(
+                db.transaction(|tx| tx.get_raw(b"narrowed-tuple-phantom"))
+                    .unwrap(),
+                (!conflict).then(|| b"committed".to_vec())
+            );
+            compare(db, &request, expected_access);
         });
     }
 }

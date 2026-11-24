@@ -161,6 +161,9 @@ remain open.
 - [x] Swap membership in two presence-guarded indexes atomically while a read-set transaction queries their disjunction. Ordinary and checkpoint writers preserve the old snapshot for the reader, then reject its stale commit and roll back its raw receipt. Ordinary and checkpoint reopens agree with the collection scan and retain the writer's receipt.
 - [x] Add `ArrayKeepLast` to retain a bounded suffix in update order. It shares the array-work budget, schema and index validation, and transactional rollback on both writable backends.
 - [x] Intersect required scalar ranges with membership values on the same field. Planner tests compare the resulting probes with complete scans on both writable backends, exercise exact candidate limits and partial compound coverage, and check conflicts for matching inserts into empty probes.
+- [x] Consider trailing compound fields before choosing a shorter prefix
+  for range-narrowed membership. Tests cover complete tuples, deeper ranges,
+  bounds on scanned candidates, and phantom conflicts on empty tuples.
 - [x] Refine scalar membership probes with other required lists containing
   mixed values. On both writable backends the exact candidate limit succeeds
   in either predicate order. Read-set checks still cover surviving probes,

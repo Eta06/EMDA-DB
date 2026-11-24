@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject oversized bounded checkpoint rebuilds before the final spill merge,
+  using the exact encoded size of the replayed live keys.
+
+- Preserve complete compound index probes and deeper ranges when a required
+  range narrows an earlier document membership predicate.
+
 - Add a Linux memory-ceiling check for retained writable recovery. It
   exercises rotation, fresh-process reopen and full state verification,
   and retains the raw benchmark results.

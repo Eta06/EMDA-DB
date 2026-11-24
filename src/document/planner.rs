@@ -882,6 +882,12 @@ fn choose_index<'a>(
                 if let Some(values) =
                     membership_within_bounds(required, field, lower.as_ref(), upper.as_ref())
                 {
+                    // When trailing fields remain, defer an incomplete prefix
+                    // scan so complete compound tuples, deeper ranges, complete
+                    // disjunctions and longer prefixes can narrow them first.
+                    if position + 1 < index.fields.len() {
+                        break;
+                    }
                     let runs = if allow_integer_runs {
                         consecutive_integer_runs(&values)
                     } else {
@@ -903,11 +909,7 @@ fn choose_index<'a>(
                                 prefix
                             })
                             .collect();
-                        if position + 1 == index.fields.len() {
-                            Selection::CompoundMembership(prefixes)
-                        } else {
-                            Selection::CompoundPrefix(prefixes)
-                        }
+                        Selection::CompoundMembership(prefixes)
                     };
                     return Ok(Some((index, selection)));
                 }
@@ -981,7 +983,7 @@ fn choose_index<'a>(
         .iter()
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
-        for position in 1..index.fields.len() {
+        for position in (1..index.fields.len()).rev() {
             let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? else {
                 continue;
             };
@@ -992,22 +994,20 @@ fn choose_index<'a>(
                     lower.as_ref(),
                     upper.as_ref(),
                 ) {
-                    if allow_integer_runs {
-                        if let Some(runs) = consecutive_integer_runs(&values)
-                            .filter(|runs| prefixes.len() <= MAX_INDEX_PROBES / runs.len())
-                        {
-                            return Ok(Some((
-                                index,
-                                Selection::IntegerMembership { prefixes, runs },
-                            )));
-                        }
+                    let runs = allow_integer_runs
+                        .then(|| {
+                            consecutive_integer_runs(&values)
+                                .filter(|runs| prefixes.len() <= MAX_INDEX_PROBES / runs.len())
+                        })
+                        .flatten();
+                    let fits_prefix = prefixes.len() <= MAX_INDEX_PROBES / values.len();
+                    if position + 1 < index.fields.len() && (runs.is_some() || fits_prefix) {
+                        continue;
                     }
-                    if position + 1 < index.fields.len()
-                        && prefixes.len() <= MAX_INDEX_PROBES / values.len()
-                    {
+                    if let Some(runs) = runs {
                         return Ok(Some((
                             index,
-                            Selection::CompoundPrefix(extend_tuples(prefixes, &values)),
+                            Selection::IntegerMembership { prefixes, runs },
                         )));
                     }
                 }
@@ -1028,24 +1028,57 @@ fn choose_index<'a>(
 fn choose_prefix<'a>(
     required: &[Predicate<'_>],
     indexes: &'a [IndexDefinition],
+    allow_integer_runs: bool,
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
     for index in indexes
         .iter()
         .filter(|index| index.fields.len() > 1 && eligible(index, required))
     {
-        let (choices, _) = compound_choices(required, &index.fields)?;
-        let prefix_fields = choices.len();
-        if prefix_fields > 0
-            && prefix_fields < index.fields.len()
-            && fits_probe_product(&choices, MAX_INDEX_PROBES)
-            && index.fields[prefix_fields..]
+        let (mut choices, _) = compound_choices(required, &index.fields)?;
+        let full_len = choices.len();
+        if full_len == 0 {
+            continue;
+        }
+        let mut prefix_fields = full_len.min(index.fields.len() - 1);
+        while prefix_fields > 0 {
+            let narrowed = prefix_fields < full_len;
+            if narrowed
+                && !index.fields[..prefix_fields]
+                    .iter()
+                    .try_fold(false, |found, field| {
+                        Ok::<_, io::Error>(found || required_range(required, field)?.is_some())
+                    })?
+            {
+                break;
+            }
+            if index.fields[prefix_fields..]
                 .iter()
                 .all(|field| required_presence(required, field, true))
-        {
-            return Ok(Some((
-                index,
-                Selection::CompoundPrefix(expand_tuples(choices)),
-            )));
+            {
+                let last = prefix_fields - 1;
+                if allow_integer_runs && required_range(required, &index.fields[last])?.is_some() {
+                    if let Some(runs) = consecutive_integer_runs(&choices[last]).filter(|runs| {
+                        fits_probe_product(&choices[..last], MAX_INDEX_PROBES / runs.len())
+                    }) {
+                        choices.truncate(last);
+                        return Ok(Some((
+                            index,
+                            Selection::IntegerMembership {
+                                prefixes: expand_tuples(choices),
+                                runs,
+                            },
+                        )));
+                    }
+                }
+                if fits_probe_product(&choices[..prefix_fields], MAX_INDEX_PROBES) {
+                    choices.truncate(prefix_fields);
+                    return Ok(Some((
+                        index,
+                        Selection::CompoundPrefix(expand_tuples(choices)),
+                    )));
+                }
+            }
+            prefix_fields -= 1;
         }
     }
     Ok(None)
@@ -1104,7 +1137,7 @@ fn choose_disjunction<'a, 'filter>(
             // deduplicate before consuming the candidate budget.
             let mut selection = choose_index(context, indexes, false)?;
             if selection.is_none() && allow_prefix {
-                selection = choose_prefix(context, indexes)?;
+                selection = choose_prefix(context, indexes, false)?;
             }
             let covered = selection.is_some_and(|(index, selection)| {
                 admit_probes(planned, selection.into_probes(index).into_iter())
@@ -1201,7 +1234,7 @@ fn plan_query<'a>(
             // falling back to prefix scans. Complete branch plans have priority.
             let selected = match choose_literal_disjunctions(filter, indexes)? {
                 some @ Some(_) => some,
-                None => choose_prefix(&[(filter, false)], indexes)?,
+                None => choose_prefix(&[(filter, false)], indexes, true)?,
             };
             if let Some((index, selection)) = selected {
                 return Ok(Some((
