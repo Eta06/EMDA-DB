@@ -138,8 +138,10 @@ after the attempt begins is reported as outcome unknown.
 `retained_candidate::IndexedCandidate` verifies the base and independently
 retained candidate binding before returning a handle. The verification pass
 also builds an in-memory directory containing one anchor key, file range and
-SHA-256 digest per block. A block spans at most 128 KiB of whole entries or
-one larger entry. Explicit block and anchor-byte limits bound the directory.
+SHA-256 digest per block. Anchor keys share one byte buffer and each block
+stores a range into it. A block spans at most 128 KiB of whole entries or
+one larger entry. Explicit block and anchor-byte limits bound the directory
+capacities requested from the allocator.
 Opening scans all base bytes through a fixed input buffer. The file and
 block digests use the admitted value slices directly from that buffer.
 

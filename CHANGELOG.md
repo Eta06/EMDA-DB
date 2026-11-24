@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Store retained sparse-index anchors in one bounded buffer to reduce
+  per-block recovery allocations.
+
 - Add cumulative logical read limits across document snapshot pages and
   point reads, including historical checkpoint views.
 

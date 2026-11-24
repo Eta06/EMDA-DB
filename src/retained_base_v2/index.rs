@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{self, Read, Write},
+    ops::Range,
     os::unix::fs::{FileExt, MetadataExt},
     path::Path,
 };
@@ -66,7 +67,7 @@ impl BlockLayout {
 }
 
 struct Block {
-    first_key: Vec<u8>,
+    first_key: Range<usize>, // Within the shared anchor buffer.
     start: u64,
     end: u64,
     digest: [u8; 32],
@@ -75,10 +76,20 @@ struct Block {
 pub(super) struct Builder {
     layout: BlockLayout,
     blocks: Vec<Block>,
+    anchors: Vec<u8>,
     hash: Sha256,
 }
 
 impl Builder {
+    fn new(limits: IndexLimits) -> Self {
+        Self {
+            layout: BlockLayout::new(limits),
+            blocks: Vec::new(),
+            anchors: Vec::new(),
+            hash: Sha256::new(),
+        }
+    }
+
     pub(super) fn entry(
         &mut self,
         start: u64,
@@ -89,9 +100,11 @@ impl Builder {
         let end = add(start, bytes)?;
         if self.layout.admit(start, end, key.len())? {
             self.finish_block();
-            let mut first_key = Vec::new();
-            first_key.try_reserve_exact(key.len()).map_err(allocation)?;
-            first_key.extend_from_slice(key);
+            reserve_index_slots(
+                &mut self.anchors,
+                key.len(),
+                self.layout.limits.anchor_bytes,
+            )?;
             reserve_index_slots(
                 &mut self.blocks,
                 1,
@@ -100,8 +113,10 @@ impl Builder {
                     .blocks
                     .min(self.layout.limits.anchor_bytes),
             )?;
+            let first_key = self.anchors.len();
+            self.anchors.extend_from_slice(key);
             self.blocks.push(Block {
-                first_key,
+                first_key: first_key..self.anchors.len(),
                 start,
                 end,
                 digest: [0; 32],
@@ -142,21 +157,51 @@ fn retained_block_directory_reserves_within_block_and_anchor_limits() {
             anchor_bytes: 5,
         },
     ] {
-        let mut builder = Builder {
-            layout: BlockLayout::new(limits),
-            blocks: Vec::new(),
-            hash: Sha256::new(),
-        };
+        let mut builder = Builder::new(limits);
         let bytes = BLOCK_BYTES + 1;
         for block in 0..5 {
             builder
                 .entry(block * bytes, bytes, &[b'a' + block as u8], &[0; 8])
                 .unwrap();
             assert!(builder.blocks.capacity() <= 5);
+            assert!(builder.anchors.capacity() <= limits.anchor_bytes);
+            assert_eq!(
+                builder.anchors[builder.blocks[block as usize].first_key.clone()],
+                [b'a' + block as u8]
+            );
         }
         assert_eq!(builder.blocks.len(), 5);
         assert!(builder.entry(5 * bytes, bytes, b"f", &[0; 8]).is_err());
         assert_eq!(builder.blocks.len(), 5);
+        assert_eq!(builder.anchors, b"abcde");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn retained_block_anchor_ranges_survive_buffer_growth() {
+    let longest = [b'z'; MAX_KEY_BYTES];
+    let keys: [&[u8]; 4] = [b"a", b"a\0", b"middling", &longest];
+    let anchor_bytes = keys.iter().map(|key| key.len()).sum();
+    let mut builder = Builder::new(IndexLimits {
+        blocks: 5,
+        anchor_bytes,
+    });
+    let block_bytes = BLOCK_BYTES + 1;
+    for (index, key) in keys.into_iter().enumerate() {
+        builder
+            .entry(index as u64 * block_bytes, block_bytes, key, &[0; 8])
+            .unwrap();
+    }
+    assert_eq!(builder.anchors.len(), anchor_bytes);
+    assert!(builder.anchors.capacity() <= anchor_bytes);
+    assert!(
+        builder
+            .entry(4 * block_bytes, block_bytes, b"zz", &[0; 8])
+            .is_err()
+    );
+    for (block, key) in builder.blocks.iter().zip(keys) {
+        assert_eq!(&builder.anchors[block.first_key.clone()], key);
     }
 }
 
@@ -189,6 +234,7 @@ pub(crate) fn reserve_index_slots<T>(
 pub(crate) struct IndexedBase {
     file: File,
     blocks: Vec<Block>,
+    anchors: Vec<u8>,
     metadata: Validated,
 }
 
@@ -361,16 +407,13 @@ impl IndexedBase {
     }
 
     pub(crate) fn open(file: File, limits: Limits, index_limits: IndexLimits) -> io::Result<Self> {
-        let mut builder = Builder {
-            layout: BlockLayout::new(index_limits),
-            blocks: Vec::new(),
-            hash: Sha256::new(),
-        };
+        let mut builder = Builder::new(index_limits);
         let metadata = scan_buffered(&file, limits, Some(&mut builder))?;
         builder.finish_block();
         Ok(Self {
             file,
             blocks: builder.blocks,
+            anchors: builder.anchors,
             metadata,
         })
     }
@@ -465,10 +508,13 @@ impl IndexedBase {
             let Some(position) = self.preceding_block(key) else {
                 continue;
             };
-            let next_anchor = self.blocks.get(position + 1).map(|block| &block.first_key);
+            let next_anchor = self
+                .blocks
+                .get(position + 1)
+                .map(|block| self.anchor(block));
             while keys
                 .peek()
-                .is_some_and(|key| next_anchor.is_none_or(|anchor| *key < anchor.as_slice()))
+                .is_some_and(|key| next_anchor.is_none_or(|anchor| *key < anchor))
             {
                 keys.next();
             }
@@ -537,7 +583,7 @@ impl IndexedBase {
         let block = &self.blocks[position];
         // Only a single whole entry can exceed the block target size. Its
         // authenticated anchor names that entry, so a gap needs no read.
-        if block.end - block.start > BLOCK_BYTES && block.first_key.as_slice() != key {
+        if block.end - block.start > BLOCK_BYTES && self.anchor(block) != key {
             return Ok(None);
         }
         let mut result = Vec::new();
@@ -601,15 +647,13 @@ impl IndexedBase {
         };
         let mut overlay = overlay.peekable();
         for block in &self.blocks[start..] {
-            if before.is_some_and(|key| block.first_key.as_slice() >= key) {
+            let anchor = self.anchor(block);
+            if before.is_some_and(|key| anchor >= key) {
                 break;
             }
             // Earlier suffix keys can fill the page without touching this
             // block. Keys equal to its verified anchor still merge within it.
-            while overlay
-                .peek()
-                .is_some_and(|(key, _)| *key < block.first_key.as_slice())
-            {
+            while overlay.peek().is_some_and(|(key, _)| *key < anchor) {
                 let (key, value) = overlay.next().unwrap();
                 if !budget.push_overlay(&mut result, key, value)? || result.len() == limit {
                     return Ok(result);
@@ -660,8 +704,12 @@ impl IndexedBase {
 
     fn preceding_block(&self, key: &[u8]) -> Option<usize> {
         self.blocks
-            .partition_point(|block| block.first_key.as_slice() <= key)
+            .partition_point(|block| self.anchor(block) <= key)
             .checked_sub(1)
+    }
+
+    fn anchor(&self, block: &Block) -> &[u8] {
+        &self.anchors[block.first_key.clone()]
     }
 
     fn read_block(
