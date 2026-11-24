@@ -13,6 +13,7 @@ use std::io::{self, Write};
 
 const MAX_SCAN_DOCUMENTS: usize = 1024;
 pub(super) const MAX_SCAN_BYTES: usize = 32 * 1024 * 1024;
+const MAX_FILTER_NODES: usize = 128;
 const MAX_FILTER_VALUES: usize = 256;
 const MAX_FILTER_INPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FILTER_COMPARISONS: usize = 1_000_000;
@@ -81,6 +82,13 @@ pub enum DocumentFilter {
         comparison: Comparison,
         value: IndexValue,
     },
+    /// Compare two indexable scalars in the same object using index ordering.
+    /// A missing or non-indexable operand never matches.
+    CompareFields {
+        left: Vec<String>,
+        comparison: Comparison,
+        right: Vec<String>,
+    },
     /// Match every nested filter; an empty list matches all documents.
     And(Vec<DocumentFilter>),
     /// Match any nested filter; an empty list matches no documents.
@@ -96,6 +104,17 @@ pub enum Comparison {
     LessOrEqual,
     Greater,
     GreaterOrEqual,
+}
+
+impl Comparison {
+    fn accepts(self, order: Ordering) -> bool {
+        match self {
+            Self::Less => order == Ordering::Less,
+            Self::LessOrEqual => order != Ordering::Greater,
+            Self::Greater => order == Ordering::Greater,
+            Self::GreaterOrEqual => order != Ordering::Less,
+        }
+    }
 }
 
 /// Sort by an object path. Missing values sort before null in ascending order.
@@ -259,7 +278,7 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
     let mut value_budget = FilterValueBudget::default();
     while let Some((filter, depth)) = pending.pop() {
         count += 1;
-        if count > 128 || depth > 16 || pending.len() + count > 128 {
+        if count > MAX_FILTER_NODES || depth > 16 || pending.len() + count > MAX_FILTER_NODES {
             return Err(key::invalid("filter exceeds depth or node limit"));
         }
         match filter {
@@ -300,8 +319,12 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
                 schema::validate_path(path)?;
                 value.encode(&mut Vec::new())?;
             }
+            DocumentFilter::CompareFields { left, right, .. } => {
+                schema::validate_path(left)?;
+                schema::validate_path(right)?;
+            }
             DocumentFilter::And(filters) | DocumentFilter::Or(filters) => {
-                if pending.len() + count + filters.len() > 128 {
+                if pending.len() + count + filters.len() > MAX_FILTER_NODES {
                     return Err(key::invalid("filter exceeds node limit"));
                 }
                 pending.extend(filters.iter().map(|filter| (filter, depth + 1)));
@@ -313,11 +336,16 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
 }
 
 // Without an array walk, each candidate can compare at most the validated
-// number of predicate values. Even one retry in ID order stays inside the
-// query comparison budget and performs no element visits.
+// number of predicate values plus one comparison per field-comparison node.
+// Even one retry in ID order stays within the comparison budget.
 pub(super) fn may_retry_in_id_order(filter: &DocumentFilter) -> bool {
     // An over-limit page can validate two extra rows for a unique probe.
-    const { assert!(2 * (MAX_SCAN_DOCUMENTS + 2) * MAX_FILTER_VALUES < MAX_FILTER_COMPARISONS) };
+    const {
+        assert!(
+            2 * (MAX_SCAN_DOCUMENTS + 2) * (MAX_FILTER_VALUES + MAX_FILTER_NODES)
+                < MAX_FILTER_COMPARISONS
+        )
+    };
     match filter {
         DocumentFilter::ArrayContains { .. }
         | DocumentFilter::ArrayContainsAny { .. }
@@ -335,7 +363,8 @@ pub(super) fn may_retry_in_id_order(filter: &DocumentFilter) -> bool {
         | DocumentFilter::In { .. }
         | DocumentFilter::NotIn { .. }
         | DocumentFilter::ArrayLength { .. }
-        | DocumentFilter::Compare { .. } => true,
+        | DocumentFilter::Compare { .. }
+        | DocumentFilter::CompareFields { .. } => true,
     }
 }
 
@@ -440,16 +469,23 @@ fn matches(
             path,
             comparison,
             value,
+        } => schema::field(document, path)
+            .and_then(|actual| value.compare_json(actual))
+            .is_some_and(|order| comparison.accepts(order)),
+        DocumentFilter::CompareFields {
+            left,
+            comparison,
+            right,
         } => {
-            let order = schema::field(document, path).and_then(|actual| value.compare_json(actual));
-            match order {
-                None => false,
-                Some(order) => match comparison {
-                    Comparison::Less => order == Ordering::Less,
-                    Comparison::LessOrEqual => order != Ordering::Greater,
-                    Comparison::Greater => order == Ordering::Greater,
-                    Comparison::GreaterOrEqual => order != Ordering::Less,
-                },
+            let order = schema::field(document, left).and_then(|left| {
+                let right = IndexValue::from_json(schema::field(document, right)?).ok()?;
+                right.compare_json(left)
+            });
+            if let Some(order) = order {
+                value_budget.charge_comparison()?;
+                comparison.accepts(order)
+            } else {
+                false
             }
         }
         DocumentFilter::And(filters) => {

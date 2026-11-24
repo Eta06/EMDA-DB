@@ -350,6 +350,10 @@ fn proves_presence(
         } if !explicit_only && negated && !values.is_empty() => {
             path_implies_presence(field, true, path, exists)
         }
+        DocumentFilter::CompareFields { left, right, .. } if !explicit_only && !negated => {
+            path_implies_presence(left, true, path, exists)
+                || path_implies_presence(right, true, path, exists)
+        }
         DocumentFilter::Equal { path: field, .. }
         | DocumentFilter::StartsWith { path: field, .. }
         | DocumentFilter::In { path: field, .. }

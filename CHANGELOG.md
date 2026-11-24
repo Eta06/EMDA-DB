@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Compare two fields in bounded document filters and infer their presence
+  for eligible indexed queries.
+
 - Use a single lock-protected replacement for file-backed authority
   updates, avoiding directory staging-marker syncs on each retained write.
 
