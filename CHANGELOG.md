@@ -4,6 +4,14 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a persistent logical disk budget for managed checkpoint-backed stores.
+  `OnlineCheckpointStore::set_disk_budget` stores the limit in the store
+  directory. Appends and online compaction are admitted before they
+  allocate, against live files, a durable replacement reservation, previous
+  generations awaiting removal and generations still held by owned
+  snapshots. Ordinary opens, managed rebuilds, managed rollovers, automatic
+  checkpoints and the blocking handoff refuse budgeted stores.
+
 - Add `OnlineCheckpointStore` for managed checkpoint-backed stores. It
   compacts while callbacks continue, catches up acknowledged writes,
   publishes a verified replacement with its own checkpoint and managed

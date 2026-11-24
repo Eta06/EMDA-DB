@@ -24,6 +24,8 @@ pub(super) fn source_directory_is_owned(path: &Path) -> io::Result<()> {
             "commit.state",
             "checkpoint.selection",
             crate::COMPACTED_CHECKPOINT_FILE,
+            super::disk_budget::BUDGET_FILE,
+            super::disk_budget::BUDGET_TEMP,
         ]
         .iter()
         .any(|allowed| name == *allowed)
@@ -136,6 +138,8 @@ impl CheckpointStore {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::HandoffTracker>,
     ) -> io::Result<(Self, [u8; 32])> {
+        // The blocking handoff does not carry or account for the budget.
+        self.reject_under_disk_budget("blocking compaction handoff")?;
         let hook = std::cell::RefCell::new(hook);
         let (source, previous, parent) =
             crate::store::compact_exchange::paths(&self.path, previous)?;

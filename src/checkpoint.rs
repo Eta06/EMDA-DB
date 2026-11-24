@@ -15,6 +15,15 @@ const MAGIC: &[u8; 8] = b"EMDAIDX1";
 const HEADER_BYTES: u64 = 68;
 const DIGEST_BYTES: u64 = 32;
 pub(crate) const ENTRY_FIXED_BYTES: u64 = 18;
+
+/// Exact length of a checkpoint file holding `count` entries whose keys
+/// total `key_bytes` bytes, as charged during streaming creation.
+pub(crate) fn file_bytes(count: u64, key_bytes: u64) -> Option<u64> {
+    count
+        .checked_mul(ENTRY_FIXED_BYTES)?
+        .checked_add(key_bytes)?
+        .checked_add(HEADER_BYTES + DIGEST_BYTES)
+}
 const MIN_ENTRY_BYTES: u64 = ENTRY_FIXED_BYTES + 1;
 const CHUNK: usize = 64 * 1024;
 // Bump this when a checkpoint can cover a log record version that an older

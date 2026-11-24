@@ -427,6 +427,8 @@ impl Store {
         lock_result?;
         let lock_file = crate::store_lock::StoreLock::acquired(lock_file);
         lock_file.verify_identity(path)?;
+        // An ordinary store would append without charging the budget.
+        crate::checkpoint_store::disk_budget::reject_unbudgeted_writer(path)?;
         let (log, index) = open_log(path, may_initialize)?;
         let index_key_bytes = index.keys().try_fold(0_usize, |total, key| {
             total

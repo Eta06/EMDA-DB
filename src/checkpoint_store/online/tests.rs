@@ -576,3 +576,5 @@ fn process_kill_at_handoff_and_retirement_boundaries_preserves_acknowledged_data
         assert_eq!(reopened(&fixture.source), model, "{point}");
     }
 }
+
+mod budget;

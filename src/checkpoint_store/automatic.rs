@@ -306,6 +306,7 @@ impl CheckpointStore {
         before_publish: impl FnOnce() -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.reject_under_disk_budget("automatic checkpointing")?;
         let mut state = self.write()?;
         if state.selection.is_none() {
             return Err(io::Error::new(

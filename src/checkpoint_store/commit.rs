@@ -138,6 +138,10 @@ impl CheckpointStore {
         if self.max_log_bytes.is_some_and(|max| next_log > max) {
             return Err(io::Error::other("configured log byte limit would be exceeded").into());
         }
+        // Charge the complete next log length before appending anything.
+        if let Some(budget) = self.disk_budget()? {
+            budget.admit_log(next_log)?;
+        }
         let operations = mutation.operations();
         let can_rollover = state.automatic
             && state.view.tail_bytes > 0

@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 pub(crate) mod automatic;
+pub(crate) mod disk_budget;
+pub use disk_budget::{DiskBudgetPending, DiskBudgetStatus};
 mod commit;
 use commit::Mutation;
 mod compact_exchange;
@@ -191,6 +193,9 @@ pub struct CheckpointStore {
     max_tail_key_bytes: usize,
     max_log_bytes: Option<u64>,
     checkpoint_view_limits: CheckpointViewLimits,
+    disk_budget: RwLock<Option<Arc<disk_budget::DiskBudget>>>,
+    // Must remain the last field: its release marks every descriptor closed.
+    generation_token: Arc<disk_budget::GenerationToken>,
 }
 
 impl CheckpointStore {
@@ -708,6 +713,32 @@ impl CheckpointStore {
         }
         let overlay_key_bytes = view.overlay.keys().map(|key| key.len()).sum();
         let log_generation = log.id().map(GenerationId);
+        // The record is read under the exclusive store lock, so every
+        // checkpoint-store open of this directory enforces it.
+        let disk_budget = match disk_budget::read(&path)? {
+            None => None,
+            Some(record) => {
+                let Some(selected) = &selection else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "a disk-budgeted store must be opened as a managed store",
+                    ));
+                };
+                if automatic {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "a disk-budgeted store cannot use automatic checkpoints",
+                    ));
+                }
+                Some(Arc::new(disk_budget::DiskBudget::new(
+                    &path,
+                    record,
+                    log.len()?,
+                    log.id(),
+                    Some(&selected.checkpoint),
+                )?))
+            }
+        };
         let automatic_checkpoint = match &selection {
             Some(selected) if automatic_config.is_some() => {
                 let pins = automatic::indexes(&automatic::root(&path)).map(|index| {
@@ -752,6 +783,8 @@ impl CheckpointStore {
             max_tail_key_bytes,
             max_log_bytes,
             checkpoint_view_limits: checkpoint_view,
+            disk_budget: RwLock::new(disk_budget),
+            generation_token: disk_budget::generation_token(),
         })
     }
 
@@ -1330,6 +1363,9 @@ impl CheckpointStore {
         tracker: Option<&crate::publication_outcome::ManagedTracker>,
         max_scan_bytes: Option<u64>,
     ) -> io::Result<[u8; 32]> {
+        // A managed rollover writes a selected checkpoint the budget does
+        // not reserve; online compaction replaces it for budgeted stores.
+        self.reject_under_disk_budget("managed rollover")?;
         self.check_selection_destination(destination)?;
         let _writer = self.writers.write().map_err(|_| uncertain())?;
         let state = self.read()?;

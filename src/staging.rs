@@ -481,6 +481,110 @@ fn valid_stage_id(id: &str) -> bool {
     id.len() == RANDOM_LEN && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
+/// Logical length of every regular file under `path`, without following
+/// symbolic links. A missing path counts zero; other entry types fail.
+/// This is not filesystem block allocation.
+pub(crate) fn tree_bytes(path: &Path) -> io::Result<u64> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    if !metadata.is_dir() {
+        return Err(crate::record::invalid_data(
+            "unsupported file type in accounted storage",
+        ));
+    }
+    let mut total = 0_u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.is_file() {
+                total = total
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| io::Error::other("accounted storage size overflow"))?;
+            } else if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                return Err(crate::record::invalid_data(
+                    "unsupported file type in accounted storage",
+                ));
+            }
+        }
+    }
+    Ok(total)
+}
+
+// Returns the replacement identity recorded by a valid retired marker.
+fn retired_marker_owner(marker: &Path, kind: Kind) -> io::Result<Option<[u8; 16]>> {
+    let metadata = fs::symlink_metadata(marker)?;
+    if !metadata.file_type().is_file() || metadata.len() != kind.marker_len() as u64 {
+        return Ok(None);
+    }
+    let mut content = Vec::new();
+    File::open(marker)?
+        .take(kind.marker_len() as u64 + 1)
+        .read_to_end(&mut content)?;
+    let split = content.len().saturating_sub(4);
+    let valid = content.starts_with(kind.marker())
+        && content.len() == kind.marker_len()
+        && crc32fast::hash(&content[..split])
+            == u32::from_le_bytes(content[split..].try_into().expect("four checksum bytes"));
+    if !valid {
+        return Ok(None);
+    }
+    let start = kind.marker().len();
+    Ok(Some(
+        content[start..start + 16]
+            .try_into()
+            .expect("sixteen identity bytes"),
+    ))
+}
+
+/// Logical bytes in marked retired stages owned by `replacement_id`,
+/// including their markers. Unrecognized names are not counted.
+pub(crate) fn retired_stage_bytes(parent: &Path, replacement_id: &[u8; 16]) -> io::Result<u64> {
+    let mut total = 0_u64;
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(kind @ Kind::Retired) = marker_kind(&name, OWNER_SUFFIX) else {
+            continue;
+        };
+        let marker = entry.path();
+        if retired_marker_owner(&marker, kind)?.as_ref() != Some(replacement_id) {
+            continue;
+        }
+        total = [tree_bytes(&marker)?, tree_bytes(&payload_path(&marker))?]
+            .into_iter()
+            .try_fold(total, u64::checked_add)
+            .ok_or_else(|| io::Error::other("accounted storage size overflow"))?;
+    }
+    Ok(total)
+}
+
+/// Reports whether `parent` holds a copy stage or a preparation marker. Copy
+/// stages record no owner, so callers that cannot attribute them fail closed.
+pub(crate) fn has_unowned_stage(parent: &Path) -> io::Result<bool> {
+    for entry in fs::read_dir(parent)? {
+        let name = entry?.file_name();
+        if pending_marker_kind(&name).is_some()
+            || matches!(
+                marker_kind(&name, OWNER_SUFFIX),
+                Some(Kind::File | Kind::Directory)
+            )
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn pending_marker_kind(name: &OsStr) -> Option<Kind> {
     marker_kind(name, PENDING_SUFFIX).filter(|kind| kind.is_retired())
 }
@@ -819,9 +923,11 @@ enum RetiredRemovalPoint {
 
 const AUTOMATIC_ROOT: &str = ".emda-auto-checkpoints-v1";
 
-const RETIRED_CHECKPOINT_FILES: [&str; 2] = [
+const RETIRED_CHECKPOINT_FILES: [&str; 4] = [
     "checkpoint.selection",
     crate::store::COMPACTED_CHECKPOINT_FILE,
+    crate::checkpoint_store::disk_budget::BUDGET_FILE,
+    crate::checkpoint_store::disk_budget::BUDGET_TEMP,
 ];
 
 // Keep the lock until the log and witness are unlinked. This makes cleanup
@@ -908,6 +1014,8 @@ fn lock_safe_retired_payload(
         &[
             RETIRED_CHECKPOINT_FILES[0],
             RETIRED_CHECKPOINT_FILES[1],
+            RETIRED_CHECKPOINT_FILES[2],
+            RETIRED_CHECKPOINT_FILES[3],
             "records.log",
             "commit.state",
             "store.lock",

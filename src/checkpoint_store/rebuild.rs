@@ -899,6 +899,8 @@ impl CheckpointStore {
         lock_result?;
         let lock_file = crate::store_lock::StoreLock::acquired(lock_file);
         lock_file.verify_identity(&path)?;
+        // A rebuild writes a new selected checkpoint the budget does not reserve.
+        super::disk_budget::reject_unbudgeted_writer(&path)?;
         #[cfg(all(test, target_os = "linux"))]
         CAPTURE_BOUNDED_LOCK.with(|capture| {
             if capture.get() {

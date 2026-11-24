@@ -144,6 +144,10 @@ pub struct OnlineCheckpointCompactionOptions {
     pub catchup_rounds: usize,
     /// Reject final handoff if the remaining source suffix exceeds this size.
     pub max_final_delta_bytes: u64,
+    /// With a disk budget, the replacement log may grow by at most this many
+    /// bytes during catch-up; it is reserved up front and enforced as the
+    /// replacement's log limit until the exchange. Ignored without a budget.
+    pub max_catchup_bytes: u64,
     /// Ceilings for the initial copy of the captured view, as for
     /// [`CheckpointStore::compact_to_with_limits_detailed`]. Catch-up and
     /// final verification reads are not charged.
@@ -155,6 +159,7 @@ impl Default for OnlineCheckpointCompactionOptions {
         Self {
             catchup_rounds: 2,
             max_final_delta_bytes: 16 * 1024 * 1024,
+            max_catchup_bytes: 16 * 1024 * 1024,
             copy_limits: CheckpointCompactionLimits::default(),
         }
     }
@@ -377,6 +382,127 @@ impl OnlineCheckpointStore {
         })
     }
 
+    /// Installs, changes or removes the store's persistent disk budget.
+    ///
+    /// The limit is an inclusive bound on charged logical bytes, described
+    /// by [`DiskBudgetStatus`](crate::DiskBudgetStatus). It is stored in the
+    /// store directory and enforced by every later checkpoint-store open.
+    /// Ordinary `Store` opens and managed rebuilds refuse a budgeted
+    /// directory. Installing requires automatic checkpoints to be disabled
+    /// and no open snapshots, so no unaccounted retired generation can be
+    /// held. A limit below the current charge returns `WouldBlock` unchanged.
+    /// Removing requires no outstanding maintenance or pinned generations.
+    pub fn set_disk_budget(&self, limit: Option<u64>) -> io::Result<()> {
+        Access::check_not_active(self.id())?;
+        let _maintenance = match self.maintenance.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, MaintenanceBusy));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
+        };
+        let state = self.state.write().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        let current = &state.store;
+        let _writer = current.writers.write().map_err(|_| uncertain())?;
+        let existing = current.disk_budget()?;
+        match (existing, limit) {
+            (Some(budget), Some(limit)) => budget.set_limit(limit),
+            (Some(budget), None) => {
+                budget.remove()?;
+                *current.disk_budget.write().map_err(|_| uncertain())? = None;
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            (None, Some(limit)) => {
+                let (selected, automatic) = {
+                    let view = current.read()?;
+                    (
+                        view.selection
+                            .as_ref()
+                            .map(|selection| selection.checkpoint.clone()),
+                        view.automatic,
+                    )
+                };
+                if automatic {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "disable automatic checkpoints before installing a disk budget",
+                    ));
+                }
+                if current.snapshot_budget_status()?.active != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "close snapshots before installing a disk budget",
+                    ));
+                }
+                let record = super::disk_budget::Record {
+                    limit,
+                    pending: super::disk_budget::Pending::Idle,
+                };
+                let open = |record| {
+                    super::disk_budget::DiskBudget::new(
+                        &self.path,
+                        record,
+                        current.log.len()?,
+                        current.log.id(),
+                        selected.as_deref(),
+                    )
+                };
+                // The record file itself will add one more record length.
+                let projected = open(record.clone())?
+                    .status()?
+                    .charged
+                    .checked_add(super::disk_budget::RECORD_BYTES as u64)
+                    .ok_or_else(|| io::Error::other("disk budget charge overflow"))?;
+                if projected > limit {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "disk budget limit is below the charged bytes",
+                    ));
+                }
+                super::disk_budget::write(&self.path, &record)?;
+                *current.disk_budget.write().map_err(|_| uncertain())? =
+                    Some(Arc::new(open(record)?));
+                Ok(())
+            }
+        }
+    }
+
+    /// Reports usage under the persistent disk budget, if one is installed.
+    pub fn disk_budget_status(&self) -> io::Result<Option<crate::DiskBudgetStatus>> {
+        self.with_store(CheckpointStore::disk_budget_status)
+    }
+
+    /// Clears outstanding maintenance recorded by the disk budget once
+    /// nothing it could have allocated remains, and returns the new status.
+    /// For an interrupted compaction, remove the unselected candidate at the
+    /// recorded previous path and run [`crate::cleanup_abandoned_staging`]
+    /// on the parent first; for a retirement, finish it with
+    /// [`Self::cleanup_retired_staging_detailed`] or remove the named copy.
+    /// While anything remains, the charge is kept.
+    pub fn reconcile_disk_budget(&self) -> io::Result<Option<crate::DiskBudgetStatus>> {
+        Access::check_not_active(self.id())?;
+        let _maintenance = match self.maintenance.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, MaintenanceBusy));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
+        };
+        let state = self.state.read().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        let Some(budget) = state.store.disk_budget()? else {
+            return Ok(None);
+        };
+        budget.reconcile()?;
+        budget.status().map(Some)
+    }
+
     /// Releases idle expired views, including views of retired generations.
     pub fn reap_expired_snapshots(&self) -> io::Result<usize> {
         self.with_store(CheckpointStore::reap_expired_snapshots)
@@ -545,13 +671,18 @@ impl OnlineCheckpointStore {
             .path
             .parent()
             .ok_or_else(|| NotStarted(io::Error::other("store has no parent directory")))?;
-        crate::staging::cleanup_retired_detailed(
+        let report = crate::staging::cleanup_retired_detailed(
             parent,
             &id,
             || current.verify_for_checkpoint(&view).map(|_| ()),
             fs::File::sync_all,
             fs::File::sync_all,
-        )
+        )?;
+        // Clear a pending retirement only if nothing of it remains.
+        if let Some(budget) = current.disk_budget().ok().flatten() {
+            let _ = budget.reconcile();
+        }
+        Ok(report)
     }
 
     fn compact_internal(
@@ -586,6 +717,13 @@ impl OnlineCheckpointStore {
         let original_lock = current.read()?.view.base.share_store_lock()?;
         original_lock.verify_identity(&source)?;
         super::compact_exchange::source_directory_is_owned(&source)?;
+        let budget = current.disk_budget()?;
+        if budget.is_some() && retire_hook.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a disk-budgeted store must reclaim its previous generation",
+            ));
+        }
 
         // Capture a consistent view and its exact committed log boundary.
         let (snapshot, initial) = {
@@ -605,6 +743,32 @@ impl OnlineCheckpointStore {
             source_value_read_bytes: options.copy_limits.max_source_log_read_bytes,
             target_log_bytes: options.copy_limits.max_target_log_bytes,
         };
+        // Reserve the complete replacement durably before allocating any of
+        // it, then cap each part at its reserved size.
+        let mut reservation = ReservationGuard(None);
+        let mut reserved = None;
+        if let Some(budget) = &budget {
+            let (log_bytes, checkpoint_bytes) =
+                snapshot.with_captured(|view, _| replacement_bytes(view))?;
+            let total = [
+                options.max_catchup_bytes,
+                checkpoint_bytes,
+                super::disk_budget::METADATA_ALLOWANCE,
+            ]
+            .into_iter()
+            .try_fold(log_bytes, u64::checked_add)
+            .ok_or_else(|| io::Error::other("replacement reservation overflow"))?;
+            budget.reserve_compaction(&previous, total)?;
+            reservation.0 = Some(Arc::clone(budget));
+            reserved = Some(total);
+            copy.target_log_bytes = Some(
+                copy.target_log_bytes
+                    .map_or(log_bytes, |limit| limit.min(log_bytes)),
+            );
+            let mut limits = current.checkpoint_view_limits;
+            limits.max_file_bytes = limits.max_file_bytes.min(checkpoint_bytes);
+            copy.checkpoint_limits = Some(limits);
+        }
         if copy.source_value_read_bytes.is_some() {
             copy.charge_source_reads(initial)?;
         }
@@ -631,6 +795,15 @@ impl OnlineCheckpointStore {
             current.suffix_operation_limit(),
             crate::log::Log::open_checkpoint_writer,
         )?;
+        if budget.is_some() {
+            candidate.max_log_bytes = Some(
+                candidate
+                    .log
+                    .len()?
+                    .checked_add(options.max_catchup_bytes)
+                    .ok_or_else(|| io::Error::other("replacement log limit overflow"))?,
+            );
+        }
         hook(Point::InitialCopy)?;
 
         let mut offset = initial;
@@ -720,6 +893,25 @@ impl OnlineCheckpointStore {
         if enabled {
             candidate.enable_automatic_checkpoints()?;
         }
+        // Carry the budget into the replacement and prove that the private
+        // replacement stayed within its reservation before exchanging.
+        let mut exchange_accounting = None;
+        if let (Some(budget), Some(reserved)) = (&budget, reserved) {
+            super::disk_budget::write(&previous, &budget.replacement_record(&previous)?)?;
+            let measured = crate::staging::tree_bytes(&previous)?;
+            if measured > reserved {
+                return Err(io::Error::other(
+                    "replacement exceeded its disk-budget reservation",
+                ));
+            }
+            candidate.max_log_bytes = current.max_log_bytes;
+            let live_log = candidate.log.len()?;
+            let live_other = super::disk_budget::live_other_bytes(&previous, live_log, None)?;
+            // Writers are excluded, so this is the retired generation's size.
+            let retired = crate::staging::tree_bytes(&source)?;
+            *candidate.disk_budget.get_mut().map_err(|_| uncertain())? = Some(Arc::clone(budget));
+            exchange_accounting = Some((live_other, live_log, retired));
+        }
         let candidate_lock = candidate.read()?.view.base.share_store_lock()?;
         original_lock.verify_identity(&source)?;
         candidate_lock.verify_identity(&previous)?;
@@ -757,6 +949,16 @@ impl OnlineCheckpointStore {
         })?;
         drop(candidate_lock);
         candidate.path = source.clone();
+        if let (Some(budget), Some((live_other, live_log, retired))) =
+            (&budget, exchange_accounting)
+        {
+            budget.complete_exchange(
+                &previous,
+                (live_other, live_log, candidate.log.id()),
+                (current.generation_token(), retired),
+            )?;
+            reservation.0 = None;
+        }
         let candidate = Arc::new(candidate);
         // Do not let a new mutation make the replacement uncertain while
         // its last complete predecessor is being removed. Reads continue.
@@ -783,9 +985,52 @@ impl OnlineCheckpointStore {
             final_replay_bytes,
             compacted_log_bytes: candidate.log.len()?,
         };
-        let reclamation =
-            retire_hook.map(|hook| retire(&source, &previous, &parent, &candidate, &current, hook));
+        let reclamation = retire_hook.map(|hook| {
+            retire(&source, &previous, &parent, &candidate, &current, hook).and_then(|()| {
+                // Nothing of the previous generation remains named or staged.
+                match &budget {
+                    Some(budget) if !budget.reconcile()? => Err(io::Error::other(
+                        "previous generation is still charged after retirement",
+                    )),
+                    _ => Ok(()),
+                }
+            })
+        });
+        drop(reservation);
         Ok((report, reclamation))
+    }
+}
+
+// Exact encoded sizes of a replacement holding the captured live entries.
+fn replacement_bytes(view: &super::RecoveredCheckpointView) -> io::Result<(u64, u64)> {
+    let overflow = || io::Error::other("replacement size overflow");
+    let mut log = crate::witness::LOG_HEADER_SIZE as u64;
+    let (mut count, mut key_bytes) = (0_u64, 0_u64);
+    view.visit_entries(None, None, |key, location| {
+        let record = (crate::record::HEADER_SIZE
+            + key.len()
+            + location.length
+            + crate::record::CHECKSUM_SIZE) as u64;
+        log = log.checked_add(record).ok_or_else(overflow)?;
+        key_bytes = key_bytes
+            .checked_add(key.len() as u64)
+            .ok_or_else(overflow)?;
+        count = count.checked_add(1).ok_or_else(overflow)?;
+        Ok(std::ops::ControlFlow::Continue(()))
+    })?;
+    let checkpoint = crate::checkpoint::file_bytes(count, key_bytes).ok_or_else(overflow)?;
+    Ok((log, checkpoint))
+}
+
+// Releases an interrupted compaction's reservation only once nothing it
+// could have allocated remains; otherwise the charge persists on disk.
+struct ReservationGuard(Option<Arc<super::disk_budget::DiskBudget>>);
+
+impl Drop for ReservationGuard {
+    fn drop(&mut self) {
+        if let Some(budget) = self.0.take() {
+            let _ = budget.reconcile();
+        }
     }
 }
 
@@ -856,6 +1101,8 @@ fn retire(
         hook(RetirePoint::AfterAutomaticRoot)?;
         remove_optional(&hidden.join("checkpoint.selection"))?;
         remove_optional(&hidden.join(crate::COMPACTED_CHECKPOINT_FILE))?;
+        remove_optional(&hidden.join(super::disk_budget::BUDGET_FILE))?;
+        remove_optional(&hidden.join(super::disk_budget::BUDGET_TEMP))?;
         fs::File::open(&hidden)?.sync_all()?;
         hook(RetirePoint::AfterCheckpointFiles)?;
         fs::remove_file(hidden.join("records.log"))?;
