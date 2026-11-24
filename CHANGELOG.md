@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reject an over-budget writable recovery scan before verifying checkpoint
+  entries. Admitted opens still verify the full checkpoint and log.
+
 - Stream planned index candidates under their scan budget without rereading
   documents at the public index response byte boundary.
 

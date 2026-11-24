@@ -275,8 +275,9 @@ impl CheckpointStore {
     }
 
     /// Opens an explicit checkpoint with both store and recovery limits.
-    /// The inclusive log scan budget is checked after checkpoint
-    /// authentication and before replay, writer setup or tail adoption.
+    /// The checkpoint header can reject an over-budget log scan before
+    /// the index entries are verified. An admitted open authenticates the
+    /// checkpoint and rechecks the budget before replay or tail adoption.
     /// Reapply the budget on each open. Reads after open do not use it.
     pub fn open_with_recovery_limits(
         path: impl AsRef<Path>,
@@ -556,26 +557,13 @@ impl CheckpointStore {
             lock,
             checkpoint_view,
             (max_log_bytes, None),
-            crate::checkpoint_view::TailAdmission::Bounded(max_tail_bytes),
+            crate::checkpoint_view::TailAdmission::Writable {
+                max_tail_bytes,
+                max_recovery_scan_bytes: recovery.max_log_scan_bytes,
+            },
         )?;
         let (_, range, boundary) = prepared.suffix();
         let length = range.end;
-        if let Some(max) = recovery.max_log_scan_bytes {
-            let extra = if length > boundary {
-                length - range.start
-            } else {
-                0
-            };
-            if length
-                .checked_add(extra)
-                .is_none_or(|scan_bytes| scan_bytes > max)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "checkpoint recovery log scan byte limit exceeded",
-                ));
-            }
-        }
         let max_tail_operations = recovery.max_tail_operations;
         let suffix = RecoveredCheckpointView::replay_prepared(
             &prepared,

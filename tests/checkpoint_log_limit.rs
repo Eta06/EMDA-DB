@@ -71,10 +71,13 @@ fn recovery_scan_limit_counts_the_confirming_suffix_pass_only_for_pending_tails(
         for managed in [false, true] {
             let (dir, path, checkpoint, digest, prefix) = fixture_with_format(force_v2);
             let selection = path.join("checkpoint.selection");
-            if managed {
-                CheckpointStore::rebuild_managed_selection(&path, dir.path().join("managed"))
-                    .unwrap();
-            }
+            let index_path = if managed {
+                let index_path = dir.path().join("managed");
+                CheckpointStore::rebuild_managed_selection(&path, &index_path).unwrap();
+                index_path
+            } else {
+                checkpoint.clone()
+            };
             let selected = fs::read(&selection).ok();
             assert_eq!(selected.is_some(), managed);
             let log_path = path.join("records.log");
@@ -147,6 +150,23 @@ fn recovery_scan_limit_counts_the_confirming_suffix_pass_only_for_pending_tails(
                         && error.to_string() == "checkpoint recovery log scan byte limit exceeded")
                 );
             };
+            // The scan budget rejects from the header, before checking the
+            // digest trailer. Admitted recovery must authenticate the index.
+            let index = fs::read(&index_path).unwrap();
+            let mut damaged_index = index.clone();
+            *damaged_index.last_mut().unwrap() ^= 1;
+            fs::write(&index_path, &damaged_index).unwrap();
+            assert_budget(pending_limit - 1);
+            assert!(matches!(
+                open(pending_limit), Err(RecoveryOpenFailure::NotAdopted(error))
+                    if error.kind() == io::ErrorKind::InvalidData
+                        && error.to_string() == "index checkpoint checksum mismatch"
+            ));
+            assert_eq!(read_witness(), previous);
+            assert_eq!(fs::read(&selection).ok(), selected);
+            assert_eq!(fs::read(&index_path).unwrap(), damaged_index);
+            fs::write(&index_path, &index).unwrap();
+
             let mut damaged = complete.clone();
             *damaged.last_mut().unwrap() ^= 1;
             fs::write(&log_path, &damaged).unwrap();

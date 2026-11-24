@@ -654,6 +654,26 @@ pub(crate) fn checked_tail_bytes(length: u64, prefix: u64, limit: u64) -> io::Re
     Ok(tail_bytes)
 }
 
+pub(crate) fn check_recovery_scan_bytes(
+    length: u64,
+    prefix: u64,
+    witnessed_boundary: u64,
+    limit: u64,
+) -> io::Result<()> {
+    let extra = if length > witnessed_boundary {
+        length - prefix
+    } else {
+        0
+    };
+    if length.checked_add(extra).is_none_or(|total| total > limit) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "checkpoint recovery log scan byte limit exceeded",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn check_witnessed_length(length: u64, boundary: u64) -> io::Result<()> {
     if length != boundary {
         return Err(record::invalid_data(
@@ -697,6 +717,7 @@ pub(crate) struct IndexAdmission<'a> {
     pub(crate) max_live_keys: Option<usize>,
     pub(crate) max_file_bytes: Option<u64>,
     pub(crate) max_tail_bytes: Option<u64>,
+    pub(crate) max_recovery_scan_bytes: Option<u64>,
     pub(crate) max_view_blocks: Option<usize>,
     pub(crate) read_budget: Option<&'a CheckpointReadBudget>,
 }
@@ -818,6 +839,9 @@ pub(crate) fn visit_index_file(
     // checkpoint still goes through entry, digest and log-prefix verification.
     if let Some(limit) = admission.max_tail_bytes {
         checked_tail_bytes(log_length, prefix, limit)?;
+    }
+    if let Some(limit) = admission.max_recovery_scan_bytes {
+        check_recovery_scan_bytes(log_length, prefix, witness_boundary, limit)?;
     }
     let mut consumed = HEADER_BYTES;
     let mut keys = [[0_u8; record::MAX_KEY]; 2];

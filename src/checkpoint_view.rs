@@ -179,7 +179,10 @@ impl CheckpointIndex {
 
 pub(crate) enum TailAdmission {
     Unrestricted,
-    Bounded(u64),
+    Writable {
+        max_tail_bytes: u64,
+        max_recovery_scan_bytes: Option<u64>,
+    },
     Witnessed(u64),
 }
 
@@ -361,12 +364,15 @@ impl CheckpointView {
         limits.validate()?;
         let (mut log, boundary) = Log::open_checkpoint_view(path)?;
         let length = Self::check_log_limit(&log, max_log_bytes)?;
-        let max_tail_bytes = match tail {
-            TailAdmission::Unrestricted => None,
-            TailAdmission::Bounded(limit) => Some(limit),
+        let (max_tail_bytes, max_recovery_scan_bytes) = match tail {
+            TailAdmission::Unrestricted => (None, None),
+            TailAdmission::Writable {
+                max_tail_bytes,
+                max_recovery_scan_bytes,
+            } => (Some(max_tail_bytes), max_recovery_scan_bytes),
             TailAdmission::Witnessed(limit) => {
                 checkpoint::check_witnessed_length(length, boundary)?;
-                Some(limit)
+                (Some(limit), None)
             }
         };
         let checkpoint = checkpoint::open_index_file(checkpoint)?;
@@ -385,6 +391,7 @@ impl CheckpointView {
                 max_live_keys,
                 max_file_bytes: Some(limits.max_file_bytes),
                 max_tail_bytes,
+                max_recovery_scan_bytes,
                 max_view_blocks: Some(limits.max_blocks),
                 read_budget: read_budget.as_ref(),
             },
@@ -446,6 +453,9 @@ impl CheckpointView {
         }
         if matches!(tail, TailAdmission::Witnessed(_)) || length < boundary {
             checkpoint::check_witnessed_length(length, boundary)?;
+        }
+        if let Some(limit) = max_recovery_scan_bytes {
+            checkpoint::check_recovery_scan_bytes(length, verified.prefix, boundary, limit)?;
         }
         let has_tail = length > verified.prefix;
         log.release_view_witness()?;
