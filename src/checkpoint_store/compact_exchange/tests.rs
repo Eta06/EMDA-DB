@@ -98,7 +98,6 @@ fn checkpoint_handoff_log_budgets_preserve_selection_on_rejection() {
                 max_target_log_bytes: Some(target_limit),
             },
         )
-        .ok()
         .expect("exact ceilings admit the exchange");
     assert_eq!(
         fs::metadata(path.join("records.log")).unwrap().len(),
