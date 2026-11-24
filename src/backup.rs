@@ -164,6 +164,7 @@ fn create_with_stage_hooks(
     before_publish: impl FnOnce() -> io::Result<()>,
     mut hook: impl FnMut(BackupCreationPoint) -> io::Result<()>,
 ) -> io::Result<()> {
+    let parent = available_parent_directory(destination)?;
     log.verify_witness()?;
     let log_len = log.len()?;
     if let Some(limit) = limits.max_file_bytes {
@@ -182,7 +183,6 @@ fn create_with_stage_hooks(
         limits.max_log_scan_bytes,
         "full-log backup or restore exceeds configured scan byte limit",
     )?;
-    let parent = parent_directory(destination)?;
     let (mut staging, mut temp) = crate::staging::Stage::file(parent)?;
     temp.write_all(HEADER)?;
     hook(BackupCreationPoint::HeaderWritten)?;
@@ -334,6 +334,7 @@ fn restore_with_stage_hooks(
     mut witness_hook: impl FnMut(witness::CreationPoint) -> io::Result<()>,
     mut stage_hook: impl FnMut(RebuildPoint) -> io::Result<()>,
 ) -> io::Result<()> {
+    let parent = available_parent_directory(destination)?;
     let backup = crate::directory::open_regular_readonly(source, "backup is not a regular file")?;
     let info = read_frame(&backup)?;
     let restored_log_len = if info.log_len == 0 {
@@ -358,7 +359,6 @@ fn restore_with_stage_hooks(
         "full-log backup or restore exceeds configured scan byte limit",
     )?;
     verify_payload(&backup, &info)?;
-    let parent = parent_directory(destination)?;
     // Build and verify a complete store in a private staging directory. Publish
     // it atomically without replacing a pre-existing destination.
     let mut staging = crate::staging::Stage::directory(parent)?;
@@ -491,6 +491,7 @@ fn upgrade_format_with_stage_hooks(
     witness_hook: impl FnMut(witness::CreationPoint) -> io::Result<()>,
     mut stage_hook: impl FnMut(RebuildPoint) -> io::Result<()>,
 ) -> io::Result<()> {
+    let parent = available_parent_directory(destination)?;
     source.verify_witness()?;
     let start = if source.is_legacy() {
         0
@@ -518,7 +519,6 @@ fn upgrade_format_with_stage_hooks(
         limits.max_log_scan_bytes,
         "format upgrade exceeds configured scan byte limit",
     )?;
-    let parent = parent_directory(destination)?;
     let mut staging = crate::staging::Stage::directory(parent)?;
     let mut lock = StagingLock::create(staging.path())?;
     let mut target = OpenOptions::new()
@@ -786,6 +786,29 @@ pub(crate) fn parent_directory(path: &Path) -> io::Result<&Path> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new(".")))
+}
+
+// A snapshot of destination availability for early admission. The final
+// publication must still be atomic and refuse to overwrite a racing entry.
+pub(crate) fn available_parent_directory(path: &Path) -> io::Result<&Path> {
+    let parent = parent_directory(path)?;
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "destination already exists",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    if !std::fs::metadata(parent)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "destination parent is not a directory",
+        ));
+    }
+    Ok(parent)
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]

@@ -317,10 +317,31 @@ fn backup_restore_rejects_bad_inputs_and_conflicts_without_registering() {
     assert!(recorded.is_some());
     assert!(!destination.exists());
     let prepared = Catalog::prepare_from_backup(&backup, &destination, LIMITS, &binding).unwrap();
-    let wrong = match Catalog::prepare_from_backup(&backup, &destination, LIMITS, &binding) {
-        Err(AuthorizedRestoreFailure::OutcomeUnknown { prepared, .. }) => *prepared,
-        other => panic!("expected a no-clobber conflict, got {other:?}"),
+    assert!(matches!(
+        Catalog::prepare_from_backup_recorded(&backup, &destination, LIMITS, None, &binding, |_| {
+            panic!("occupied destination reached receipt preparation")
+        }),
+        Err(AuthorizedRestoreFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::AlreadyExists
+    ));
+    let raced = parent.join("raced");
+    let mut recorded = None;
+    let conflict =
+        Catalog::prepare_from_backup_recorded(&backup, &raced, LIMITS, None, &binding, |receipt| {
+            recorded = Some(receipt);
+            fs::create_dir(&raced)?;
+            fs::write(raced.join("marker"), b"other writer")
+        });
+    let wrong = match conflict {
+        Err(AuthorizedRestoreFailure::OutcomeUnknown { error, prepared })
+            if error.kind() == io::ErrorKind::AlreadyExists =>
+        {
+            *prepared
+        }
+        other => panic!("expected a late publication conflict, got {other:?}"),
     };
+    assert_eq!(recorded, Some(wrong));
+    assert_eq!(fs::read(raced.join("marker")).unwrap(), b"other writer");
     let mut provider = Provider::default();
     assert_ne!(prepared, wrong);
     assert!(Catalog::register_prepared(&destination, LIMITS, provider.clone(), wrong).is_err());

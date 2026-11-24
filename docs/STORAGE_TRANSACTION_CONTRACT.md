@@ -97,6 +97,14 @@ used together. Admission precedes payload reads and staging. Envelope,
 framing and metadata probes, physical retries, and writes have separate
 costs.
 
+Full-log backup, restore, format upgrade and retained backup and catalog
+creation check destination availability before copying payloads. An occupied
+destination detected at admission returns `NotPublished(AlreadyExists)`.
+This includes a dangling symlink. Publication still uses an atomic
+no-clobber operation, and a conflict detected during that attempt leaves
+the conservative uncertain outcome in place. For authorized retained
+restore, an initial destination rejection precedes the receipt callback.
+
 `Store::upgrade_format_with_limits_detailed` accepts `FormatUpgradeLimits`.
 Admission charges the copied source record bytes and one pass over the
 staged log, including its generated header. It checks the scan and output

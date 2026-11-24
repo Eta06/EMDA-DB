@@ -118,7 +118,7 @@ fn backup_file_limit_includes_the_envelope_before_staging_on_both_backends() {
         assert_eq!(fs::read(destination.join("records.log")).unwrap(), log);
         let conflict = backup_with_limits(scan);
         assert!(
-            matches!(conflict, Err(PublicationFailure::OutcomeUnknown(ref error))
+            matches!(conflict, Err(PublicationFailure::NotPublished(ref error))
                 if error.kind() == std::io::ErrorKind::AlreadyExists),
             "{conflict:?}"
         );
@@ -223,7 +223,7 @@ fn restore_log_limit_bounds_witnessed_and_nonempty_legacy_backups() {
         assert!(
             matches!(
                 conflict,
-                Err(PublicationFailure::OutcomeUnknown(ref error))
+                Err(PublicationFailure::NotPublished(ref error))
                     if error.kind() == std::io::ErrorKind::AlreadyExists
             ),
             "{format}: {conflict:?}"

@@ -2,6 +2,57 @@ use super::*;
 use crate::Store;
 
 #[test]
+fn full_log_copy_publication_preserves_a_late_destination_conflict() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let store = Store::open(&source).unwrap();
+    store.put(b"key", b"value").unwrap();
+    let backup = root.path().join("backup");
+    store.backup(&backup).unwrap();
+    let (log, _) = Log::open(&source, false).unwrap();
+    for operation in ["backup", "restore", "upgrade"] {
+        let destination = root.path().join(operation).with_extension("raced");
+        let result = crate::publication_outcome::track(|tracker| {
+            let before_publish = || {
+                std::fs::write(&destination, b"racing owner")?;
+                tracker.begin_publication();
+                Ok(())
+            };
+            let sync_parent = |_: &Path| panic!("occupied destination was published");
+            match operation {
+                "backup" => create_with_hooks(
+                    &log,
+                    &destination,
+                    FullLogBackupLimits::default(),
+                    sync_parent,
+                    before_publish,
+                ),
+                "restore" => restore_with_hooks(
+                    (&backup, FullLogRestoreLimits::default()),
+                    &destination,
+                    sync_parent,
+                    before_publish,
+                ),
+                "upgrade" => upgrade_format_with_hooks(
+                    &log,
+                    &destination,
+                    FormatUpgradeLimits::default(),
+                    sync_parent,
+                    before_publish,
+                ),
+                _ => unreachable!(),
+            }
+        });
+        assert!(
+            matches!(&result, Err(crate::PublicationFailure::OutcomeUnknown(error))
+                if error.kind() == io::ErrorKind::AlreadyExists),
+            "{operation}: {result:?}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"racing owner");
+    }
+}
+
+#[test]
 fn detailed_upgrade_reports_unknown_after_parent_sync_failure() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("source");

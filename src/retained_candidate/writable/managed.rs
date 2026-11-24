@@ -326,7 +326,7 @@ impl ManagedRetainedStore {
             impl FnOnce(AuthorityPoint) -> io::Result<()>,
         >,
     ) -> Result<AuthorityPoint, PublicationFailure> {
-        let parent = crate::backup::parent_directory(destination)
+        let parent = crate::backup::available_parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(candidate, parent).map_err(PublicationFailure::NotPublished)?;
         check_files(candidate, expected).map_err(PublicationFailure::NotPublished)?;
@@ -432,7 +432,7 @@ impl ManagedRetainedStore {
         catalog_magic: &'static [u8; 8],
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<AuthorityPoint, PublicationFailure> {
-        let parent = crate::backup::parent_directory(destination)
+        let parent = crate::backup::available_parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(source_path, parent).map_err(PublicationFailure::NotPublished)?;
         let source_lock = source.share_store_lock();

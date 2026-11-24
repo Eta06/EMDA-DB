@@ -42,6 +42,8 @@ impl ManagedRetainedStore {
     ) -> Result<SuffixExpected, SuffixExportFailure> {
         let mut verified = None;
         let result = crate::publication_outcome::track(|tracker| {
+            let parent = crate::backup::available_parent_directory(destination)?;
+            check_separation(&self.root, parent)?;
             self.verify_selection()?;
             let digest = self.store.hash.clone().finalize().into();
             self.store.verify_boundary(&digest)?;
@@ -53,8 +55,6 @@ impl ManagedRetainedStore {
                 self.store.suffix_len as u64,
                 "retained backup scan byte limit exceeded",
             )?;
-            let parent = crate::backup::parent_directory(destination)?;
-            check_separation(&self.root, parent)?;
             let mut stage = crate::staging::Stage::directory(parent)?;
             let candidate = stage.path().join(CANDIDATE);
             let suffix = stage.path().join(SUFFIX);
@@ -189,7 +189,7 @@ impl ManagedRetainedStore {
             impl FnOnce(AuthorityPoint) -> io::Result<()>,
         >,
     ) -> Result<AuthorityPoint, PublicationFailure> {
-        let parent = crate::backup::parent_directory(destination)
+        let parent = crate::backup::available_parent_directory(destination)
             .map_err(PublicationFailure::NotPublished)?;
         check_separation(backup, parent).map_err(PublicationFailure::NotPublished)?;
         admit_copy_scans(
