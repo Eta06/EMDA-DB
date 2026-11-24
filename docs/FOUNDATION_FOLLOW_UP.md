@@ -532,6 +532,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   source-log read ceiling. The [admission tests](../benchmarks/results/2026-11-24-online-maintenance-read-budget/README.md)
   exercise both replay phases with a captured snapshot, an exact budget,
   and refusal before either publication or retired-file removal.
+  Explicit checkpoint copies and manual checkpoint rollovers also admit
+  their logical source-log reads before replay. Exact-limit tests verify
+  checkpoint reopen, prior-selection and snapshot preservation, and
+  refusal before publication. An admitted copy still rejects an obsolete
+  record changed after replay reads its original bytes.
 - [x] Implement opt-in authority-backed retained cutover with a witnessed base and suffix, original-path older-reader rejection for the tested binaries and authority-checked selection. The [format specification](STREAMING_RETAINED_BASE_SPEC.md) defines the supported protocol and trust assumptions. The [buffered cutover campaign](../benchmarks/results/2026-11-19-buffered-retained-export/README.md) verified the complete base and exercised kernel failures before the original-path fence on Linux V2 and V3.
 - [x] Screen successor block and anchor limits against the rebased totals
   before creating the base file. Rotation checks the actual layout as it

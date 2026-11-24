@@ -84,6 +84,25 @@ fn hash_log_prefix(log: &Log, length: u64) -> io::Result<Sha256> {
     Ok(hasher)
 }
 
+// Callers hold the writer gate until every charged pass is complete.
+pub(crate) fn check_log_scan_limit(
+    log: &Log,
+    passes: u64,
+    limit: Option<u64>,
+    message: &'static str,
+) -> io::Result<()> {
+    if let Some(limit) = limit {
+        if log
+            .len()?
+            .checked_mul(passes)
+            .is_none_or(|bytes| bytes > limit)
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, message));
+        }
+    }
+    Ok(())
+}
+
 // Hash the new checkpoint's complete log from the same reads that check the
 // trusted base prefix and the exact suffix bytes consumed by replay.
 pub(crate) fn bind_replayed_log(

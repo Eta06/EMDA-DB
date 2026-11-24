@@ -1,6 +1,92 @@
 use super::*;
 
 #[test]
+fn explicit_checkpoint_scan_limits_preserve_prior_state_and_admit_exact_reads() {
+    for mode in ["copy", "rollover", "managed"] {
+        let (dir, path, checkpoint, digest) = fixture();
+        let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+        let selection = super::super::selection::path(&path);
+        if mode == "managed" {
+            store.rollover_managed(dir.path().join("selected")).unwrap();
+        }
+        store.put(b"pending", b"value").unwrap();
+        let snapshot = store.snapshot().unwrap();
+        let destination = dir.path().join("next");
+        let files = [
+            path.join("records.log"),
+            path.join("commit.state"),
+            selection,
+        ];
+        let before = files.each_ref().map(|file| fs::read(file).ok());
+        let tail = store.tail_bytes().unwrap();
+        let exact = store.log.len().unwrap() * if mode == "copy" { 2 } else { 3 };
+
+        let rejected = match mode {
+            "copy" => store
+                .checkpoint_to_with_scan_limit(&destination, exact - 1)
+                .unwrap_err(),
+            "rollover" => store
+                .rollover_to_with_scan_limit(&destination, exact - 1)
+                .unwrap_err(),
+            "managed" => match store
+                .rollover_managed_with_scan_limit(&destination, exact - 1)
+                .unwrap_err()
+            {
+                crate::ManagedRolloverFailure::NotPublished(error) => {
+                    crate::PublicationFailure::NotPublished(error)
+                }
+                error => panic!("unexpected managed outcome: {error}"),
+            },
+            _ => unreachable!(),
+        };
+        assert!(
+            matches!(rejected, crate::PublicationFailure::NotPublished(error)
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "checkpoint log scan byte limit exceeded")
+        );
+        assert!(!destination.exists());
+        assert_eq!(files.each_ref().map(|path| fs::read(path).ok()), before);
+        assert_eq!(store.tail_bytes().unwrap(), tail);
+
+        let digest = match mode {
+            "copy" => store
+                .checkpoint_to_with_scan_limit(&destination, exact)
+                .unwrap(),
+            "rollover" => store
+                .rollover_to_with_scan_limit(&destination, exact)
+                .unwrap(),
+            "managed" => store
+                .rollover_managed_with_scan_limit(&destination, exact)
+                .unwrap(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            store.tail_bytes().unwrap(),
+            if mode == "copy" { tail } else { 0 }
+        );
+        assert_eq!(
+            snapshot.get(b"pending").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+        drop(snapshot);
+        drop(store);
+        let reopened = retry_lock(|| {
+            if mode == "managed" {
+                CheckpointStore::open_managed(&path)
+            } else {
+                CheckpointStore::open(&path, &destination, &digest)
+            }
+        })
+        .unwrap();
+        assert_eq!(reopened.overlay_keys().unwrap(), 0);
+        assert_eq!(
+            reopened.get(b"pending").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+    }
+}
+
+#[test]
 fn checkpoint_paths_reject_a_same_length_log_change_after_replay_reads_it() {
     use crate::log_io::replay_fault::ReplaceAfterRead;
     use std::sync::Arc;

@@ -784,13 +784,39 @@ impl Store {
         self.checkpoint_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Creates a checkpoint under an inclusive logical source-log read limit.
+    /// It charges the full log once for replay and once for verifying the
+    /// staged checkpoint against the log. Admission precedes replay and
+    /// staging. Metadata and framing probes, checkpoint-file reads, physical
+    /// retries, and writes have separate costs.
+    pub fn checkpoint_to_with_scan_limit(
+        &self,
+        destination: impl AsRef<Path>,
+        max_scan_bytes: u64,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        self.checkpoint_to_detailed_using(
+            destination.as_ref(),
+            crate::directory::sync_existing,
+            Some(max_scan_bytes),
+        )
+    }
+
     pub(crate) fn checkpoint_to_detailed_with_sync(
         &self,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 32], crate::PublicationFailure> {
+        self.checkpoint_to_detailed_using(destination, sync_parent, None)
+    }
+
+    fn checkpoint_to_detailed_using(
+        &self,
+        destination: &Path,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+        max_scan_bytes: Option<u64>,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.checkpoint_to_using(destination, |log, index, destination| {
+            self.checkpoint_to_using(destination, max_scan_bytes, |log, index, destination| {
                 crate::checkpoint::create_with_hooks(log, index, destination, sync_parent, || {
                     tracker.begin_publication();
                     Ok(())
@@ -804,7 +830,7 @@ impl Store {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
-        self.checkpoint_to_using(destination, |log, index, destination| {
+        self.checkpoint_to_using(destination, None, |log, index, destination| {
             crate::checkpoint::create_with_sync(log, index, destination, sync_parent)
         })
     }
@@ -812,6 +838,7 @@ impl Store {
     fn checkpoint_to_using(
         &self,
         destination: &Path,
+        max_scan_bytes: Option<u64>,
         create: impl FnOnce(&Log, &BTreeMap<Vec<u8>, ValueLocation>, &Path) -> io::Result<[u8; 32]>,
     ) -> io::Result<[u8; 32]> {
         let _writer = self
@@ -822,6 +849,12 @@ impl Store {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
+        crate::checkpoint::check_log_scan_limit(
+            &self.log,
+            2,
+            max_scan_bytes,
+            "checkpoint log scan byte limit exceeded",
+        )?;
         create(&self.log, &inner.index, destination)
     }
 

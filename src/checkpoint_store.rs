@@ -944,13 +944,32 @@ impl CheckpointStore {
         self.checkpoint_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Creates a copy with the inclusive logical read ceiling of
+    /// [`Store::checkpoint_to_with_scan_limit`](crate::Store::checkpoint_to_with_scan_limit).
+    /// Verification of the covered prefix and replay of the suffix together
+    /// charge one pass over the existing log. Staged readback charges another.
+    pub fn checkpoint_to_with_scan_limit(
+        &self,
+        destination: impl AsRef<Path>,
+        max_scan_bytes: u64,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.checkpoint_to_tracked(
+                destination.as_ref(),
+                crate::directory::sync_existing,
+                Some(tracker),
+                Some(max_scan_bytes),
+            )
+        })
+    }
+
     fn checkpoint_to_detailed_with_sync(
         &self,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 32], crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.checkpoint_to_tracked(destination, sync_parent, Some(tracker))
+            self.checkpoint_to_tracked(destination, sync_parent, Some(tracker), None)
         })
     }
 
@@ -959,7 +978,7 @@ impl CheckpointStore {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
-        self.checkpoint_to_tracked(destination, sync_parent, None)
+        self.checkpoint_to_tracked(destination, sync_parent, None, None)
     }
 
     fn checkpoint_to_tracked(
@@ -967,11 +986,19 @@ impl CheckpointStore {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::Tracker>,
+        max_scan_bytes: Option<u64>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let _writer = self.writers.write().map_err(|_| uncertain())?;
         let state = self.read()?;
-        self.create_checkpoint_tracked(&state, destination, sync_parent, false, tracker)
+        self.create_checkpoint_tracked(
+            &state,
+            destination,
+            sync_parent,
+            false,
+            tracker,
+            max_scan_bytes,
+        )
     }
 
     /// Creates a checkpoint and switches the running instance to it while
@@ -997,13 +1024,32 @@ impl CheckpointStore {
         self.rollover_to_detailed_with_sync(destination.as_ref(), crate::directory::sync_existing)
     }
 
+    /// Creates and adopts an unmanaged checkpoint under an inclusive logical
+    /// log read ceiling. It charges two passes for creation, as in
+    /// [`Self::checkpoint_to_with_scan_limit`], plus one pass to open the
+    /// new view. Admission precedes replay and publication.
+    pub fn rollover_to_with_scan_limit(
+        &self,
+        destination: impl AsRef<Path>,
+        max_scan_bytes: u64,
+    ) -> Result<[u8; 32], crate::PublicationFailure> {
+        crate::publication_outcome::track(|tracker| {
+            self.rollover_to_tracked(
+                destination.as_ref(),
+                crate::directory::sync_existing,
+                Some(tracker),
+                Some(max_scan_bytes),
+            )
+        })
+    }
+
     fn rollover_to_detailed_with_sync(
         &self,
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 32], crate::PublicationFailure> {
         crate::publication_outcome::track(|tracker| {
-            self.rollover_to_tracked(destination, sync_parent, Some(tracker))
+            self.rollover_to_tracked(destination, sync_parent, Some(tracker), None)
         })
     }
 
@@ -1012,7 +1058,7 @@ impl CheckpointStore {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<[u8; 32]> {
-        self.rollover_to_tracked(destination, sync_parent, None)
+        self.rollover_to_tracked(destination, sync_parent, None, None)
     }
 
     fn rollover_to_tracked(
@@ -1020,6 +1066,7 @@ impl CheckpointStore {
         destination: &Path,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::Tracker>,
+        max_scan_bytes: Option<u64>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let _writer = self.writers.write().map_err(|_| uncertain())?;
@@ -1030,8 +1077,14 @@ impl CheckpointStore {
                 "managed stores require rollover_managed",
             ));
         }
-        let digest =
-            self.create_checkpoint_tracked(&state, destination, sync_parent, true, tracker)?;
+        let digest = self.create_checkpoint_tracked(
+            &state,
+            destination,
+            sync_parent,
+            true,
+            tracker,
+            max_scan_bytes,
+        )?;
         let next_view = self.rollover_view(&state, destination, &digest)?;
         drop(state);
         let mut state = self.state.write().map_err(|_| uncertain())?;
@@ -1095,6 +1148,27 @@ impl CheckpointStore {
         )
     }
 
+    /// Creates and selects a managed checkpoint with the three-pass ceiling
+    /// of [`Self::rollover_to_with_scan_limit`] and the outcome classifications
+    /// of [`Self::rollover_managed_detailed`]. Budget refusal precedes replay
+    /// and leaves the prior selection in place.
+    pub fn rollover_managed_with_scan_limit(
+        &self,
+        destination: impl AsRef<Path>,
+        max_scan_bytes: u64,
+    ) -> Result<[u8; 32], crate::ManagedRolloverFailure> {
+        crate::publication_outcome::track_managed(|tracker| {
+            self.rollover_managed_tracked(
+                destination.as_ref(),
+                |_| Ok(()),
+                || Ok(()),
+                selection::sync_ancestors,
+                Some(tracker),
+                Some(max_scan_bytes),
+            )
+        })
+    }
+
     fn rollover_managed_detailed_with_hooks(
         &self,
         destination: &Path,
@@ -1109,6 +1183,7 @@ impl CheckpointStore {
                 before_selection_rename,
                 sync_selection_parent,
                 Some(tracker),
+                None,
             )
         })
     }
@@ -1126,6 +1201,7 @@ impl CheckpointStore {
             before_selection_rename,
             sync_selection_parent,
             None,
+            None,
         )
     }
 
@@ -1136,6 +1212,7 @@ impl CheckpointStore {
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
         tracker: Option<&crate::publication_outcome::ManagedTracker>,
+        max_scan_bytes: Option<u64>,
     ) -> io::Result<[u8; 32]> {
         self.check_selection_destination(destination)?;
         let _writer = self.writers.write().map_err(|_| uncertain())?;
@@ -1173,6 +1250,7 @@ impl CheckpointStore {
             },
             true,
             tracker.map(|tracker| &tracker.checkpoint),
+            max_scan_bytes,
         )?;
         let next_view = self.rollover_view(&state, &destination, &digest)?;
         let next = selection::Selection::new(destination, digest)?;
@@ -1267,7 +1345,14 @@ impl CheckpointStore {
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
         for_rollover: bool,
         tracker: Option<&crate::publication_outcome::Tracker>,
+        max_scan_bytes: Option<u64>,
     ) -> io::Result<[u8; 32]> {
+        crate::checkpoint::check_log_scan_limit(
+            &self.log,
+            2 + u64::from(for_rollover),
+            max_scan_bytes,
+            "checkpoint log scan byte limit exceeded",
+        )?;
         let (count, peak, verified_log) = self.verify_for_checkpoint(state)?;
         crate::checkpoint::create_streaming_tracked(
             &self.log,

@@ -405,19 +405,12 @@ impl CheckpointStore {
         if pinned(next_slot) {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, PinnedSlot));
         }
-        if let Some(limit) = state.automatic_checkpoint_log_scan_limit() {
-            if self
-                .log
-                .len()?
-                .checked_mul(3)
-                .is_none_or(|reads| reads > limit)
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "automatic checkpoint log scan byte limit exceeded",
-                ));
-            }
-        }
+        crate::checkpoint::check_log_scan_limit(
+            &self.log,
+            3,
+            state.automatic_checkpoint_log_scan_limit(),
+            "automatic checkpoint log scan byte limit exceeded",
+        )?;
         let destination = root.join(SLOTS[next_slot]);
         // Keep the writer gate across preparation and publication. The old
         // selection and its open files remain usable while the slot is built.

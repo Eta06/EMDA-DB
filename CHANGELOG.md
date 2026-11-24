@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound source-log reads for explicit checkpoint creation and rollover with
+  opt-in per-call limits and structured publication failures.
+
 - Read and aggregate documents across calls on managed and authority-backed
   retained selections without copying the index or suffix overlay.
 
