@@ -467,6 +467,12 @@ impl CheckpointStore {
                     "automatic checkpointing requires a managed selection",
                 ));
             }
+            if config.is_some() {
+                // Only a verified, stabilized selection can authorize this
+                // cleanup. A cleanup failure must precede witness adoption.
+                crate::cleanup_abandoned_staging(&path)?;
+                crate::cleanup_abandoned_staging(automatic::root(&path))?;
+            }
             Ok(config)
         };
         let (base, log, automatic_config) = if let Some(suffix_digest) = suffix.adoption_digest {
@@ -487,12 +493,6 @@ impl CheckpointStore {
             (base, log, stabilize_configuration()?)
         };
         let mut view = suffix.attach(base);
-        if automatic_config.is_some() {
-            // The durable selection was verified and stabilized above. Stale
-            // recognized stages cannot be the selected published checkpoint.
-            crate::cleanup_abandoned_staging(&path)?;
-            crate::cleanup_abandoned_staging(automatic::root(&path))?;
-        }
         let automatic = automatic_config.unwrap_or(false);
         if let Some(view_log) = Arc::get_mut(&mut view.base.log) {
             view_log.try_share_checkpoint_view_file(&log);

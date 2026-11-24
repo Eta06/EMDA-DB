@@ -17,9 +17,34 @@ fn fixture() -> (
     [u8; 32],
     u64,
 ) {
+    fixture_with_format(false)
+}
+
+fn fixture_with_format(
+    force_v2: bool,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    [u8; 32],
+    u64,
+) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let checkpoint = dir.path().join("checkpoint");
+    if force_v2 {
+        fs::create_dir(&path).unwrap();
+        fs::write(
+            path.join("records.log"),
+            include_bytes!("fixtures/v2-empty-records.log"),
+        )
+        .unwrap();
+        fs::write(
+            path.join("commit.state"),
+            include_bytes!("fixtures/v2-empty-commit.state"),
+        )
+        .unwrap();
+    }
     let store = Store::open(&path).unwrap();
     store.put(b"a", b"old").unwrap();
     let digest = store.checkpoint_to(&checkpoint).unwrap();
@@ -221,6 +246,75 @@ fn suffix_operation_rejection_leaves_complete_tail_unadopted() {
         Some(b"recovered".as_slice())
     );
     assert_operation_limit(store.put(b"a", b"full"));
+}
+
+#[test]
+fn busy_staging_cleanup_leaves_pending_tail_unadopted() {
+    for force_v2 in [true, false] {
+        let (dir, path, checkpoint, digest, _) = fixture_with_format(force_v2);
+        let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
+        store.rollover_managed(dir.path().join("managed")).unwrap();
+        store.enable_automatic_checkpoints().unwrap();
+        let log_path = path.join("records.log");
+        let log_file = fs::File::open(&log_path).unwrap();
+        let anchor_path = path.join("commit.state");
+        let anchor = fs::read(&anchor_path).unwrap();
+        let metadata = fs::read(&log_path).unwrap().starts_with(b"EMDALOG3");
+        let read_witness = || {
+            if metadata {
+                let mut bytes = [0_u8; 36];
+                let size =
+                    rustix::fs::fgetxattr(&log_file, "user.db.commit.v3", &mut bytes).unwrap();
+                assert_eq!(size, bytes.len());
+                bytes.to_vec()
+            } else {
+                fs::read(&anchor_path).unwrap()
+            }
+        };
+        let prior = read_witness();
+        store.put(b"pending", b"complete").unwrap();
+        let acknowledged = read_witness();
+        assert_ne!(prior, acknowledged);
+        drop(store);
+        if metadata {
+            rustix::fs::fsetxattr(
+                &log_file,
+                "user.db.commit.v3",
+                &prior,
+                rustix::fs::XattrFlags::REPLACE,
+            )
+            .unwrap();
+        } else {
+            fs::write(&anchor_path, &prior).unwrap();
+        }
+        let log = fs::read(&log_path).unwrap();
+        let selection_path = path.join("checkpoint.selection");
+        let selection = fs::read(&selection_path).unwrap();
+        for parent in [&path, &path.join(".emda-auto-checkpoints-v1")] {
+            let guard = fs::File::open(parent).unwrap();
+            fs2::FileExt::try_lock_shared(&guard).unwrap();
+            let error = CheckpointStore::open_managed(&path).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            assert_eq!(read_witness(), prior, "cleanup parent: {parent:?}");
+            assert_eq!(fs::read(&log_path).unwrap(), log);
+            assert_eq!(fs::read(&selection_path).unwrap(), selection);
+            if metadata {
+                assert_eq!(fs::read(&anchor_path).unwrap(), anchor);
+            }
+            fs2::FileExt::unlock(&guard).unwrap();
+        }
+
+        let reopened = CheckpointStore::open_managed(&path).unwrap();
+        assert!(reopened.automatic_checkpoints_enabled().unwrap());
+        assert_eq!(read_witness(), acknowledged);
+        assert_eq!(fs::read(&log_path).unwrap(), log);
+        assert_eq!(fs::read(&selection_path).unwrap(), selection);
+        assert_eq!(
+            reopened.get(b"pending").unwrap().as_deref(),
+            Some(b"complete".as_slice())
+        );
+        reopened.put(b"after", b"works").unwrap();
+    }
 }
 
 #[test]
