@@ -525,6 +525,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   show eight formerly failed reopen reads recovering, while a returned
   I/O error still fails and the source files remain intact.
 - [ ] Complete live/online compaction, log garbage collection and bounded recovery. Explicit index checkpoints still hash the full covered prefix. Protect readers and snapshots during reclamation. Separate-copy compaction does not include later source writes; the guarded ordinary-store wrapper catches up later writes, can explicitly remove the old copy after handoff, and pauses callbacks for full final verification. Both blocking handoffs and the online wrapper require application coordination; the worker is explicitly started and stops on failure, and the ordinary-store compactor builds multiple in-memory indexes.
+  Online compaction and scoped retired cleanup support a per-call logical
+  source-log read ceiling. The [admission tests](../benchmarks/results/2026-11-24-online-maintenance-read-budget/README.md)
+  exercise both replay phases with a captured snapshot, an exact budget,
+  and refusal before either publication or retired-file removal.
 - [x] Implement opt-in authority-backed retained cutover with a witnessed base and suffix, original-path older-reader rejection for the tested binaries and authority-checked selection. The [format specification](STREAMING_RETAINED_BASE_SPEC.md) defines the supported protocol and trust assumptions. The [buffered cutover campaign](../benchmarks/results/2026-11-19-buffered-retained-export/README.md) verified the complete base and exercised kernel failures before the original-path fence on Linux V2 and V3.
 - [x] Screen successor block and anchor limits against the rebased totals
   before creating the base file. Rotation checks the actual layout as it
