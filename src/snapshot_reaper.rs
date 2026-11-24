@@ -1,5 +1,5 @@
 //! Optional process-local reclamation of expired, idle snapshot views.
-use crate::{CheckpointStore, Store};
+use crate::{CheckpointStore, OnlineStore, Store};
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,6 +118,14 @@ impl Target for CheckpointStore {
         self.reap_expired_snapshots()
     }
 }
+impl Target for OnlineStore {
+    fn flag(&self) -> &AtomicBool {
+        &self.snapshot_reaper_active
+    }
+    fn reap(&self) -> io::Result<usize> {
+        self.reap_expired_snapshots()
+    }
+}
 
 struct Lease<T: Target>(Arc<T>);
 impl<T: Target> Drop for Lease<T> {
@@ -227,6 +235,19 @@ impl Store {
 impl CheckpointStore {
     /// Starts one optional expired-snapshot worker with the same semantics as
     /// [`Store::start_snapshot_reaper`]. It does not compact the source log.
+    pub fn start_snapshot_reaper(
+        self: &Arc<Self>,
+        interval: Duration,
+    ) -> io::Result<SnapshotReaper> {
+        start(self, interval)
+    }
+}
+
+impl OnlineStore {
+    /// Starts one optional expired-snapshot worker with the same interval
+    /// and shutdown semantics as [`Store::start_snapshot_reaper`]. It follows
+    /// the online handle across handoffs and can release expired views of
+    /// retired generations. Stop or drop it outside an online callback.
     pub fn start_snapshot_reaper(
         self: &Arc<Self>,
         interval: Duration,

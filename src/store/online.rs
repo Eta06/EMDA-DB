@@ -88,6 +88,7 @@ pub struct OnlineStore {
     state: RwLock<State>,
     maintenance: Mutex<()>,
     reclamation_worker: AtomicBool,
+    pub(crate) snapshot_reaper_active: AtomicBool,
 }
 
 impl Drop for OnlineStore {
@@ -311,12 +312,13 @@ impl OnlineStore {
             }),
             maintenance: Mutex::new(()),
             reclamation_worker: AtomicBool::new(false),
+            snapshot_reaper_active: AtomicBool::new(false),
         })
     }
 
     /// Uses the current store for the duration of the callback. The callback
     /// must not re-enter this handle or wait for another thread that is trying
-    /// to compact it, including stopping or dropping a reclamation worker.
+    /// to compact it, including stopping or dropping either of its workers.
     /// Transactions and document operations can be run here.
     /// No borrowed store, transaction or snapshot may escape the callback.
     pub fn with_store<T>(&self, action: impl FnOnce(&Store) -> io::Result<T>) -> io::Result<T> {

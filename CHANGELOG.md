@@ -5,7 +5,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 ## [Unreleased]
 
 - Add deadlines and idle reaping for owned online snapshots, including
-  snapshots that pin an already unlinked generation.
+  snapshots that pin an already unlinked generation. The optional online
+  reaper follows the live handle across handoffs.
 
 - Share enabled direct and snapshot read admission across online handoffs,
   and release the uncaptured live index when the online handle closes.

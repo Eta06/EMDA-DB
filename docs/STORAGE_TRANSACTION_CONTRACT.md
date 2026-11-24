@@ -287,8 +287,11 @@ the document view.
   `OnlineStore::snapshot_until` stops admitting reads at its monotonic
   deadline. A later capture or `OnlineStore::reap_expired_snapshots` releases
   idle expired reservations, indexes and log ownership across generations.
-  Busy reads can finish. After closing the online handle, cancellation or
-  drop can still release the view. Health checks apply to the captured store. With direct
+  An optional `OnlineStore::start_snapshot_reaper` schedules those checks
+  through the same handle across handoffs. Do not join or drop the worker
+  inside an online callback. Busy reads can finish. After closing the online
+  handle, cancellation or drop can still release the view. Health checks
+  apply to the captured store. With direct
   and snapshot read admission enabled, in-flight reads share one counter
   across the live store and all its captured generations. Updating the
   numeric limit applies to readers from every generation and respects

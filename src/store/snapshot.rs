@@ -316,13 +316,13 @@ impl Store {
         Self::capture_snapshot(None, Some(store), max_keys, max_key_bytes, deadline)
     }
 
-    fn capture_snapshot<'a>(
-        borrowed: Option<&'a Store>,
+    fn capture_snapshot(
+        borrowed: Option<&Store>,
         owned: Option<Arc<Self>>,
         max_keys: usize,
         max_key_bytes: usize,
         deadline: Option<Instant>,
-    ) -> io::Result<Snapshot<'a>> {
+    ) -> io::Result<Snapshot<'_>> {
         let store = borrowed
             .or(owned.as_deref())
             .expect("snapshot capture has a store");
@@ -601,11 +601,22 @@ impl Snapshot<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn request_reaper_check(worker: &crate::SnapshotReaper) {
+        let checks = worker.status().checks;
+        worker.request_check().unwrap();
+        let timeout = Instant::now() + Duration::from_secs(10);
+        while worker.status().checks == checks {
+            assert!(Instant::now() < timeout, "snapshot reaper did not complete");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 
     #[test]
     fn reaping_an_owned_deadline_skips_busy_state_and_frees_capacity_once() {
         let root = tempfile::tempdir().unwrap();
-        let online = OnlineStore::open(root.path()).unwrap();
+        let online = Arc::new(OnlineStore::open(root.path()).unwrap());
         online
             .with_store(|store| {
                 store.set_snapshot_budget_limits(1, 1, 1)?;
@@ -643,18 +654,27 @@ mod tests {
         owned.cancel();
         assert!(online.snapshot(1, 1).is_err());
         drop(replacement);
+        let view = online
+            .snapshot_until(1, 1, Instant::now() + Duration::from_secs(3600))
+            .unwrap();
+        view.as_snapshot().unwrap().state.write().unwrap().deadline = Some(Instant::now());
+        let worker = online
+            .start_snapshot_reaper(Duration::from_secs(3600))
+            .unwrap();
+        request_reaper_check(&worker);
+        assert_eq!(worker.stop().unwrap().reaped, 1);
         assert!(online.snapshot(1, 1).is_ok());
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn expired_owned_snapshot_releases_an_unlinked_generation_after_handoff() {
+    fn online_reaper_releases_an_unlinked_generation_after_handoff() {
         let root = tempfile::tempdir().unwrap();
-        let online = OnlineStore::open(root.path().join("live")).unwrap();
+        let online = Arc::new(OnlineStore::open(root.path().join("live")).unwrap());
         let previous = root.path().join("previous");
         online.with_store(|store| store.put(b"k", b"old")).unwrap();
         let view = online
-            .snapshot_until(1, 1, Instant::now() + std::time::Duration::from_secs(3600))
+            .snapshot_until(1, 1, Instant::now() + Duration::from_secs(3600))
             .unwrap();
         let snapshot = view.as_snapshot().unwrap();
         let (store, log) = {
@@ -664,6 +684,17 @@ mod tests {
                 Arc::downgrade(data.log.as_ref().unwrap()),
             )
         };
+        let worker = online
+            .start_snapshot_reaper(Duration::from_secs(3600))
+            .unwrap();
+        assert_eq!(
+            online
+                .start_snapshot_reaper(Duration::from_secs(3600))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
         online
             .compact_and_reclaim_detailed(&previous, &Default::default())
             .unwrap();
@@ -675,7 +706,8 @@ mod tests {
         );
         assert!(log.upgrade().is_some());
         snapshot.state.write().unwrap().deadline = Some(Instant::now());
-        assert_eq!(online.reap_expired_snapshots().unwrap(), 1);
+        request_reaper_check(&worker);
+        assert_eq!(worker.stop().unwrap().reaped, 1);
         assert!(store.upgrade().is_none());
         assert!(log.upgrade().is_none());
         assert_eq!(
