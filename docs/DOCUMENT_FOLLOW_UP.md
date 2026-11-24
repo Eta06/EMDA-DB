@@ -249,10 +249,12 @@ remain open.
   The [document budget tests](../tests/document_read_limits.rs) check exact
   admission, pre-append rejection, genuine conflicts and document/receipt
   recovery on the ordinary and checkpoint stores.
-  Checkpoint read-set pagination reuses an observation when it already
-  covers the next page's bounds, avoiding repeated full-range capture.
+  Ordinary and checkpoint read-set pagination reuse an observation that
+  covers the next page's bounds, avoiding duplicate validation work.
   The cross-platform [range regression](../tests/checkpoint_read_set_transaction.rs)
   reads all 2,047 keys when the initial observation fills the 2 MiB key budget.
+  The ordinary-store regression commits two pages and interior reads within
+  the two validation items required by the original range.
   Point reads of present and absent keys inside that range also reuse the
   observation. Exclusive endpoints still require separate validation.
   `DocumentSnapshot::with_read_limits` extends cumulative logical read

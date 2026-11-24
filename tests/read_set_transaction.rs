@@ -166,7 +166,8 @@ fn read_set_byte_limit_rejects_new_range_before_reading() {
             for index in 0..=1024_u32 {
                 let mut lower = vec![1; 1024];
                 lower[1..5].copy_from_slice(&index.to_be_bytes());
-                let upper = vec![2; 1024];
+                let mut upper = vec![2; 1024];
+                upper[1..5].copy_from_slice(&index.to_be_bytes());
                 let result = tx.scan(Some(&lower), Some(&upper), 1);
                 if index < 1024 {
                     assert!(result?.is_empty());
@@ -196,7 +197,10 @@ fn validation_work_limit_rejects_without_publishing_staged_writes() {
         store.transaction_with_read_set(|tx| {
             for index in 0..ranges {
                 let lower = [b'a', (index >> 8) as u8, index as u8];
-                assert_eq!(tx.scan(Some(&lower), None, 1)?.len(), 1);
+                let upper = [b'z', (index >> 8) as u8, index as u8];
+                // Neither endpoint stays fixed, so each range adds a new
+                // dependency while encompassing the same live keys.
+                assert_eq!(tx.scan(Some(&lower), Some(&upper), 1)?.len(), 1);
             }
             store.put(b"0", b"outside")?;
             tx.put(marker, b"staged")

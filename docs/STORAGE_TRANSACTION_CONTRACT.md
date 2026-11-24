@@ -222,15 +222,14 @@ transaction reads that progress and stages changes together. A token returned
 inside the callback is provisional until commit is acknowledged. A caller
 with an unresolved independent intent must reconcile before advancing again.
 
-Checkpoint read-set transactions reuse a prior complete range observation
-when it contains the entire new requested range. Later pages still verify
-the checkpoint blocks they read and merge the transaction's staged changes.
-A wider request requires its own observation. The original dependency still
-covers unread keys and gaps when the transaction revalidates.
-Point reads strictly inside an observed range also use that dependency.
-The point lookup still checks any checkpoint block it reads and compares
-its location or absence with the captured range. The exclusive endpoints
-require their own point observation.
+Ordinary and checkpoint read-set transactions reuse a prior complete range
+observation when it contains the entire new requested range, including for
+point reads strictly inside it. This saves duplicate constraints and
+validation work. A wider request requires its own observation, and exclusive
+endpoints require their own point observation. The original dependency
+still covers unread keys and gaps when the transaction revalidates.
+Checkpoint reads still verify the blocks they access and check point
+locations or absence against the captured range.
 
 `DocumentDatabase::transaction_with_read_limits` can additionally cap
 cumulative logical point and scan reads inside a detailed transaction.

@@ -16,6 +16,21 @@ struct Range {
     before: Option<Vec<u8>>,
 }
 
+impl Range {
+    fn contains(&self, key: &[u8]) -> bool {
+        self.after.as_deref().is_none_or(|after| after < key)
+            && self.before.as_deref().is_none_or(|before| key < before)
+    }
+
+    fn covers(&self, after: Option<&[u8]>, before: Option<&[u8]>) -> bool {
+        self.after.as_deref() <= after
+            && self
+                .before
+                .as_deref()
+                .is_none_or(|upper| before.is_some_and(|end| end <= upper))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ReadSet {
     points: BTreeSet<Vec<u8>>,
@@ -60,7 +75,7 @@ impl ReadSet {
     }
 
     pub(super) fn point(&mut self, key: &[u8]) -> io::Result<()> {
-        if !self.points.contains(key) {
+        if !self.points.contains(key) && !self.ranges.iter().any(|range| range.contains(key)) {
             self.admit(key.len())?;
             self.points.insert(key.to_vec());
             self.bytes += key.len();
@@ -69,16 +84,16 @@ impl ReadSet {
     }
 
     pub(super) fn range(&mut self, after: Option<&[u8]>, before: Option<&[u8]>) -> io::Result<()> {
-        let candidate = Range {
+        if self.ranges.iter().any(|range| range.covers(after, before)) {
+            return Ok(());
+        }
+        let bytes = after.map_or(0, <[u8]>::len) + before.map_or(0, <[u8]>::len);
+        self.admit(bytes)?;
+        self.ranges.insert(Range {
             after: after.map(<[u8]>::to_vec),
             before: before.map(<[u8]>::to_vec),
-        };
-        if !self.ranges.contains(&candidate) {
-            let bytes = after.map_or(0, <[u8]>::len) + before.map_or(0, <[u8]>::len);
-            self.admit(bytes)?;
-            self.ranges.insert(candidate);
-            self.bytes += bytes;
-        }
+        });
+        self.bytes += bytes;
         Ok(())
     }
 
@@ -147,6 +162,47 @@ impl ReadSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_complete_range_covers_later_pages_and_interior_point_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        for key in [b"a", b"b", b"d", b"e"] {
+            store.put(key, b"old").unwrap();
+        }
+        let run = |intervening_key: &[u8], observe_endpoint, receipt: &[u8]| {
+            store.transaction_detailed_with_validation_limit(
+                crate::TransactionMode::ReadSet,
+                None,
+                None,
+                Some(2),
+                |tx| {
+                    assert_eq!(tx.scan(Some(b"a"), Some(b"e"), 1)?[0].0, b"b");
+                    assert_eq!(tx.scan(Some(b"b"), Some(b"e"), 1)?[0].0, b"d");
+                    assert_eq!(tx.get(b"b")?.as_deref(), Some(&b"old"[..]));
+                    assert_eq!(tx.get(b"c")?, None);
+                    if observe_endpoint {
+                        assert!(tx.get(b"e")?.is_some());
+                    }
+                    store.put(intervening_key, b"concurrent")?;
+                    tx.put(receipt, b"staged")
+                },
+            )
+        };
+        run(b"a", false, b"receipt").unwrap();
+        assert_eq!(
+            store.get(b"receipt").unwrap().as_deref(),
+            Some(&b"staged"[..])
+        );
+        for (key, observe_endpoint) in [(b"e", true), (b"c", false)] {
+            let result = run(key, observe_endpoint, b"rejected");
+            assert!(
+                matches!(result, Err(crate::TransactionFailure::Rejected(error))
+                if crate::is_transaction_conflict(&error))
+            );
+            assert_eq!(store.get(b"rejected").unwrap(), None);
+        }
+    }
 
     #[test]
     fn witnessed_identity_qualifies_point_and_range_observations() {

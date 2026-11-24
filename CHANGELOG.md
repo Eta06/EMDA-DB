@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reuse ordinary transaction read-set ranges for covered pages and point
+  reads, reducing duplicate dependencies and commit validation work.
+
 - Exercise writable checkpoint rollover and fresh-process recovery alongside
   retained recovery under the Linux memory ceiling.
 
