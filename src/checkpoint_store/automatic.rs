@@ -165,7 +165,7 @@ impl CheckpointStore {
     /// When enabled, a rollover needing a pinned slot returns `WouldBlock`
     /// before changing the slot, selection, or log. The checkpoint worker
     /// skips that rollover and can try again on its next check. Drop or cancel
-    /// the snapshot, or finish the transaction holding the view, to free it.
+    /// the snapshot holding the view to free it.
     /// This setting affects future slot reuse. It does not recover space from
     /// already unlinked files or impose a byte quota on the log or checkpoints.
     pub fn set_automatic_checkpoint_slot_protection(&self, enabled: bool) -> io::Result<()> {
@@ -368,14 +368,17 @@ impl CheckpointStore {
                 "managed selection points to an unknown automatic checkpoint",
             ));
         }
-        let next_slot = usize::from(selected == &indexes[0]);
         // Captured readers can only clone the current view. Once an inactive
         // slot's last owner goes away, it cannot acquire a new owner here.
-        if state.protect_pinned_automatic_slots
-            && state.automatic_slot_pins[next_slot]
-                .as_ref()
-                .is_some_and(crate::checkpoint_view::CheckpointPin::is_live)
-        {
+        let pinned = |slot: usize| {
+            state.protect_pinned_automatic_slots
+                && state.automatic_slot_pins[slot]
+                    .as_ref()
+                    .is_some_and(crate::checkpoint_view::CheckpointPin::is_live)
+        };
+        let next_slot =
+            usize::from(selected == &indexes[0] || (selected != &indexes[1] && pinned(0)));
+        if pinned(next_slot) {
             return Err(io::Error::new(io::ErrorKind::WouldBlock, PinnedSlot));
         }
         let destination = root.join(SLOTS[next_slot]);

@@ -48,40 +48,51 @@ fn automatic_slot_protection_preserves_pinned_slot_and_rejects_before_append() {
     store.put(b"b", b"two").unwrap();
     drop(store);
 
-    // Open with slot 0 already selected, then leave it via a manual rollover.
+    // Open with slot 0 already selected, then leave both slots behind via
+    // automatic and manual rollover while keeping their views pinned.
     let store =
         retry_lock(|| CheckpointStore::open_managed_with_resource_limits(&path, 1024, 1, 64, None))
             .unwrap();
     let snapshot = store.snapshot().unwrap();
-    store.rollover_managed(dir.path().join("manual")).unwrap();
     store
         .set_automatic_checkpoint_slot_protection(true)
         .unwrap();
     store.put(b"c", b"three").unwrap();
+    let second_snapshot = store.snapshot().unwrap();
+    store.rollover_managed(dir.path().join("manual")).unwrap();
+    store.put(b"d", b"four").unwrap();
 
     let root = crate::checkpoint_store::automatic::root(&path);
-    let [slot, _] = crate::checkpoint_store::automatic::indexes(&root);
+    let [first_slot, second_slot] = crate::checkpoint_store::automatic::indexes(&root);
     let files = [
         path.join("records.log"),
         crate::checkpoint_store::selection::path(&path),
-        slot,
+        first_slot.clone(),
+        second_slot.clone(),
     ];
     let before = files.each_ref().map(|file| fs::read(file).unwrap());
-    let result = store.put_detailed(b"d", b"four");
+    let result = store.put_detailed(b"e", b"five");
     assert!(matches!(
         result,
         Err(crate::MutationFailure::Rejected(error)) if error.kind() == io::ErrorKind::WouldBlock
     ));
     assert_eq!(files.each_ref().map(|file| fs::read(file).unwrap()), before);
-    assert_eq!(store.get(b"d").unwrap(), None);
+    assert_eq!(store.get(b"e").unwrap(), None);
     assert_eq!(snapshot.get(b"b").unwrap().as_deref(), Some(&b"two"[..]));
     assert_eq!(snapshot.get(b"c").unwrap(), None);
 
+    drop(second_snapshot);
+    store.put(b"e", b"five").unwrap();
+    assert_eq!(fs::read(first_slot).unwrap(), before[2]);
+    assert_eq!(
+        store.read().unwrap().selection.as_ref().unwrap().checkpoint,
+        second_slot.canonicalize().unwrap()
+    );
+    assert_eq!(snapshot.get(b"c").unwrap(), None);
     drop(snapshot);
-    store.put(b"d", b"four").unwrap();
     drop(store);
     let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
-    assert_eq!(reopened.get(b"d").unwrap().as_deref(), Some(&b"four"[..]));
+    assert_eq!(reopened.get(b"e").unwrap().as_deref(), Some(&b"five"[..]));
 }
 
 #[test]

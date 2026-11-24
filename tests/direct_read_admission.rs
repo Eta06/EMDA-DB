@@ -10,8 +10,8 @@ mod support;
 use support::retry_lock;
 
 enum Backend {
-    Ordinary(Store),
-    Checkpoint(CheckpointStore),
+    Ordinary(Box<Store>),
+    Checkpoint(Box<CheckpointStore>),
 }
 impl Backend {
     fn enable(&mut self, n: usize) -> io::Result<()> {
@@ -91,11 +91,11 @@ fn zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents()
         let digest = source.checkpoint_to(&checkpoint).unwrap();
         let mut store = if checkpoint_mode {
             drop(source);
-            Backend::Checkpoint(
+            Backend::Checkpoint(Box::new(
                 retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap(),
-            )
+            ))
         } else {
-            Backend::Ordinary(source)
+            Backend::Ordinary(Box::new(source))
         };
         assert_eq!((store.status().limit, store.status().active), (None, None));
         assert_eq!(store.get(b"key").unwrap().as_deref(), Some(&b"old"[..]));

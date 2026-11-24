@@ -18,8 +18,8 @@ mod support;
 use support::retry_lock;
 
 enum Backend {
-    Ordinary(Store),
-    Checkpoint(CheckpointStore),
+    Ordinary(Box<Store>),
+    Checkpoint(Box<CheckpointStore>),
 }
 impl Backend {
     fn db(&self) -> DocumentDatabase<'_> {
@@ -60,11 +60,11 @@ fn open(root: &Path, checkpoint_mode: bool) -> Backend {
     let digest = store.checkpoint_to(&checkpoint).unwrap();
     if checkpoint_mode {
         drop(store);
-        Backend::Checkpoint(
+        Backend::Checkpoint(Box::new(
             retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap(),
-        )
+        ))
     } else {
-        Backend::Ordinary(store)
+        Backend::Ordinary(Box::new(store))
     }
 }
 
