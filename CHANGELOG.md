@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a shared per-mutation read budget for automatic retained rotation and
+  retirement, with the same ceiling available for cleanup when enabling the
+  policy on a recovered handle.
+
 - Add a read budget for explicit retained rotation through successor verification.
 
 - Bound the active-generation verification reads used by retained retirement.
