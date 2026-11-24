@@ -8,3 +8,8 @@ at `0851ad4` recorded three successful smoke cases.
 The [raw archive](raw-artifacts.tar.gz) preserves each case record,
 command log, available sample report, and workflow metadata. All 124
 files matched the SHA-256 manifest after extraction.
+
+The [Linux CI archive](linux-hosted-smoke.tar.gz) preserves all 45
+successful smoke attempts at `0851ad4`, including the SQLite controls,
+commands, exit statuses, and outputs. The archive manifest was checked
+after extraction. [Linux CI](https://github.com/Eta06/EMDA-DB/actions/runs/45330899599).
