@@ -754,6 +754,7 @@ impl SpillSession {
         limits: SpillLimits,
         base_live: usize,
         base_peak: usize,
+        base_key_bytes: u64,
     ) -> io::Result<Self> {
         limits.validate()?;
         if base_peak < base_live {
@@ -781,7 +782,7 @@ impl SpillSession {
             spill_bytes: 0,
             next_id: 1,
             current: base_live,
-            live_key_bytes: 0,
+            live_key_bytes: base_key_bytes,
             peak: base_peak,
             applied: 0,
             emit: Emit::Pending,
@@ -1580,6 +1581,7 @@ mod tests {
             limits(chunk_keys, 64 << 20, 10_000),
             base_live,
             base_peak,
+            0,
         )
         .unwrap();
         for (key, location) in ops {
@@ -1742,6 +1744,7 @@ mod tests {
             SpillLimits::new(1, 1024, 1 << 20, 2, 127).unwrap(),
             0,
             0,
+            0,
         )
         .unwrap();
         let ops = (0..127_u64)
@@ -1788,7 +1791,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut limits = limits(8, 0, 10);
         limits.max_spill_read_bytes = Some(0);
-        let mut session = SpillSession::create(directory.path(), limits, 0, 0).unwrap();
+        let mut session = SpillSession::create(directory.path(), limits, 0, 0, 0).unwrap();
         for (key, location) in &ops {
             session.push(key, *location, |_| Ok(None)).unwrap();
         }
@@ -1803,7 +1806,8 @@ mod tests {
     #[test]
     fn memory_emission_moves_entries_and_consumes_them_in_order() {
         let directory = tempfile::tempdir().unwrap();
-        let mut session = SpillSession::create(directory.path(), limits(8, 0, 10), 0, 0).unwrap();
+        let mut session =
+            SpillSession::create(directory.path(), limits(8, 0, 10), 0, 0, 0).unwrap();
         session.push(b"b", Some(loc(20)), |_| Ok(None)).unwrap();
         session.push(b"a", None, |_| Ok(None)).unwrap();
         let original_key = session.dirty.first_key_value().unwrap().0.as_ptr();
@@ -1823,7 +1827,7 @@ mod tests {
     #[test]
     fn operation_limit_does_not_apply_the_rejected_mutation() {
         let directory = tempfile::tempdir().unwrap();
-        let mut session = SpillSession::create(directory.path(), limits(8, 0, 1), 0, 0).unwrap();
+        let mut session = SpillSession::create(directory.path(), limits(8, 0, 1), 0, 0, 0).unwrap();
         session.push(b"a", Some(loc(10)), |_| Ok(None)).unwrap();
         let error = session.push(b"a", Some(loc(99)), |_| Ok(None)).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
@@ -1868,6 +1872,7 @@ mod tests {
             SpillLimits::new(3, 1024, limit, 2, 100).unwrap(),
             0,
             0,
+            0,
         )
         .unwrap();
         let mut failure = None;
@@ -1902,6 +1907,7 @@ mod tests {
         let mut session = SpillSession::create(
             directory.path(),
             SpillLimits::new(1, 1, 0, 2, 10).unwrap(),
+            0,
             0,
             0,
         )
@@ -1972,7 +1978,7 @@ mod tests {
     fn finished_single_run() -> (SpillSession, tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let mut session =
-            SpillSession::create(directory.path(), limits(2, 1 << 20, 100), 0, 0).unwrap();
+            SpillSession::create(directory.path(), limits(2, 1 << 20, 100), 0, 0, 0).unwrap();
         session.push(b"a", Some(loc(100)), |_| Ok(None)).unwrap();
         session.push(b"b", Some(loc(200)), |_| Ok(None)).unwrap();
         session.write_dirty().unwrap();
@@ -2103,7 +2109,7 @@ mod tests {
     fn two_finished_runs() -> (SpillSession, tempfile::TempDir) {
         let directory = tempfile::tempdir().unwrap();
         let mut session =
-            SpillSession::create(directory.path(), limits(1, 1 << 20, 100), 0, 0).unwrap();
+            SpillSession::create(directory.path(), limits(1, 1 << 20, 100), 0, 0, 0).unwrap();
         session.push(b"a", Some(loc(100)), |_| Ok(None)).unwrap();
         session.push(b"b", Some(loc(200)), |_| Ok(None)).unwrap();
         session.write_dirty().unwrap();
@@ -2117,7 +2123,7 @@ mod tests {
         for damage in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let mut session =
-                SpillSession::create(directory.path(), limits(1, 1 << 20, 100), 0, 0).unwrap();
+                SpillSession::create(directory.path(), limits(1, 1 << 20, 100), 0, 0, 0).unwrap();
             for (key, offset) in [(b"b", 200), (b"a", 100)] {
                 session.push(key, Some(loc(offset)), |_| Ok(None)).unwrap();
                 session.write_dirty().unwrap();
@@ -2158,7 +2164,7 @@ mod tests {
             let one = run_len(2, 2).unwrap();
             let limit = temporary_bytes(2, 2).unwrap() + if spill_last { one } else { 0 };
             let mut session =
-                SpillSession::create(directory.path(), limits(2, limit, 4), 0, 0).unwrap();
+                SpillSession::create(directory.path(), limits(2, limit, 4), 0, 0, 0).unwrap();
             for (key, state) in [(b"a", Some(loc(100))), (b"b", Some(loc(200)))] {
                 session.push(key, state, |_| Ok(None)).unwrap();
             }
@@ -2197,7 +2203,7 @@ mod tests {
     fn final_chunk_spills_when_that_avoids_merging_a_large_older_run() {
         let directory = tempfile::tempdir().unwrap();
         let mut session =
-            SpillSession::create(directory.path(), limits(32, 1 << 20, 100), 0, 0).unwrap();
+            SpillSession::create(directory.path(), limits(32, 1 << 20, 100), 0, 0, 0).unwrap();
         for start in [0, 32] {
             for key in start..start + 32 {
                 session
@@ -2230,7 +2236,7 @@ mod tests {
     fn run_key_bounds_skip_only_impossible_lookups_and_emission_still_verifies() {
         let directory = tempfile::tempdir().unwrap();
         let mut session =
-            SpillSession::create(directory.path(), limits(2, 1 << 20, 100), 1, 1).unwrap();
+            SpillSession::create(directory.path(), limits(2, 1 << 20, 100), 1, 1, 0).unwrap();
         session.push(b"b", Some(loc(100)), |_| Ok(None)).unwrap();
         session.push(b"d", None, |_| Ok(None)).unwrap();
         session.write_dirty().unwrap();
@@ -2284,7 +2290,7 @@ mod tests {
         let (mut current, directory, path) = finished_single_run();
         let other_directory = tempfile::tempdir().unwrap();
         let mut old =
-            SpillSession::create(other_directory.path(), limits(2, 1 << 20, 100), 0, 0).unwrap();
+            SpillSession::create(other_directory.path(), limits(2, 1 << 20, 100), 0, 0, 0).unwrap();
         old.push(b"a", Some(loc(300)), |_| Ok(None)).unwrap();
         old.push(b"b", Some(loc(400)), |_| Ok(None)).unwrap();
         old.write_dirty().unwrap();
@@ -2712,7 +2718,7 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let mut session =
-            SpillSession::create(directory.path(), limits(3, 1 << 20, 100), 0, 0).unwrap();
+            SpillSession::create(directory.path(), limits(3, 1 << 20, 100), 0, 0, 0).unwrap();
         session.push(b"a", Some(loc(100)), |_| Ok(None)).unwrap();
         session.push(b"m", Some(loc(200)), |_| Ok(None)).unwrap();
         session.push(b"z", Some(loc(300)), |_| Ok(None)).unwrap();
@@ -2959,9 +2965,14 @@ mod tests {
 
     fn variant_run(entries: &[SpillEntry]) -> (SpillSession, tempfile::TempDir, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
-        let mut session =
-            SpillSession::create(directory.path(), limits(entries.len(), 1 << 20, 100), 0, 0)
-                .unwrap();
+        let mut session = SpillSession::create(
+            directory.path(),
+            limits(entries.len(), 1 << 20, 100),
+            0,
+            0,
+            0,
+        )
+        .unwrap();
         for (key, state) in entries {
             session.push(key, *state, |_| Ok(None)).unwrap();
         }

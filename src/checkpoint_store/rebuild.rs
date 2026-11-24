@@ -80,6 +80,18 @@ pub struct BoundedSuffixRebuildLimits {
     pub output_checkpoint: crate::CheckpointViewLimits,
 }
 
+/// Additional independent limits for a trusted-checkpoint rebuild.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BoundedSuffixAdmission {
+    /// Historical live-key count, including the checkpoint's recorded peak.
+    pub max_live_keys: Option<usize>,
+    /// Logical live-key bytes at the checkpoint and throughout the suffix.
+    /// The checkpoint does not record the peak bytes of earlier history.
+    pub max_live_key_bytes: Option<u64>,
+    /// Cumulative logical reads from temporary spill files, including rechecks.
+    pub max_spill_read_bytes: Option<u64>,
+}
+
 impl CheckpointStore {
     /// Rebuild a missing or obsolete managed checkpoint by spilling a complete
     /// witnessed V2 or V3 log replay. The source log is retained. Limits
@@ -570,14 +582,13 @@ impl CheckpointStore {
         trusted_digest: &[u8; 32],
         limits: BoundedSuffixRebuildLimits,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
-        Self::rebuild_bounded_with_limits(
-            path.as_ref(),
-            destination.as_ref(),
-            base_checkpoint.as_ref(),
+        Self::rebuild_managed_selection_bounded_with_admission(
+            path,
+            destination,
+            base_checkpoint,
             trusted_digest,
             limits,
-            None,
-            None,
+            BoundedSuffixAdmission::default(),
         )
     }
 
@@ -597,14 +608,16 @@ impl CheckpointStore {
         limits: BoundedSuffixRebuildLimits,
         max_live_keys: usize,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
-        Self::rebuild_bounded_with_limits(
-            path.as_ref(),
-            destination.as_ref(),
-            base_checkpoint.as_ref(),
+        Self::rebuild_managed_selection_bounded_with_admission(
+            path,
+            destination,
+            base_checkpoint,
             trusted_digest,
             limits,
-            Some(max_live_keys),
-            None,
+            BoundedSuffixAdmission {
+                max_live_keys: Some(max_live_keys),
+                ..Default::default()
+            },
         )
     }
 
@@ -623,25 +636,33 @@ impl CheckpointStore {
         max_live_keys: Option<usize>,
         max_spill_read_bytes: u64,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
-        Self::rebuild_bounded_with_limits(
-            path.as_ref(),
-            destination.as_ref(),
-            base_checkpoint.as_ref(),
+        Self::rebuild_managed_selection_bounded_with_admission(
+            path,
+            destination,
+            base_checkpoint,
             trusted_digest,
             limits,
-            max_live_keys,
-            Some(max_spill_read_bytes),
+            BoundedSuffixAdmission {
+                max_live_keys,
+                max_spill_read_bytes: Some(max_spill_read_bytes),
+                ..Default::default()
+            },
         )
     }
 
-    fn rebuild_bounded_with_limits(
-        path: &Path,
-        destination: &Path,
-        base_checkpoint: &Path,
+    /// Rebuild with combined live-set and spill-read admission. The byte cap
+    /// covers the trusted checkpoint's live keys and every ordered suffix
+    /// state, including DB02 children. Limits are inclusive. Admission failure
+    /// occurs before tail adoption or either publication. Admitted inputs
+    /// still receive full verification. These are logical limits rather than
+    /// total heap or elapsed-time bounds.
+    pub fn rebuild_managed_selection_bounded_with_admission(
+        path: impl AsRef<Path>,
+        destination: impl AsRef<Path>,
+        base_checkpoint: impl AsRef<Path>,
         trusted_digest: &[u8; 32],
         limits: BoundedSuffixRebuildLimits,
-        max_live_keys: Option<usize>,
-        max_spill_read_bytes: Option<u64>,
+        admission: BoundedSuffixAdmission,
     ) -> Result<[u8; 32], crate::ManagedRebuildFailure> {
         crate::publication_outcome::track_managed_rebuild(|tracker| {
             limits.base_checkpoint.validate()?;
@@ -653,16 +674,17 @@ impl CheckpointStore {
                 limits.max_merge_fan_in,
                 limits.max_operations,
             )?;
-            spill.max_spill_read_bytes = max_spill_read_bytes;
+            spill.max_spill_read_bytes = admission.max_spill_read_bytes;
             spill.max_log_bytes = Some(limits.max_log_bytes);
-            spill.max_live_keys = max_live_keys;
+            spill.max_live_keys = admission.max_live_keys;
+            spill.max_live_key_bytes = admission.max_live_key_bytes;
             spill.base_checkpoint_limits = limits.base_checkpoint;
             spill.checkpoint_limits = Some(limits.output_checkpoint);
             with_standard_hooks(|hooks| {
                 Self::rebuild_bounded_using(
-                    path,
-                    destination,
-                    base_checkpoint,
+                    path.as_ref(),
+                    destination.as_ref(),
+                    base_checkpoint.as_ref(),
                     trusted_digest,
                     spill,
                     Some(tracker),
@@ -782,9 +804,9 @@ impl CheckpointStore {
         let initial_selection = selection::load(&path)?;
         let check_selection = || selection::require_unchanged(&path, &initial_selection);
         crate::checkpoint::require_available_destination(&destination)?;
-        let (view, mut replayed) = match base {
+        let (view, mut replayed, base_key_bytes) = match base {
             Some((checkpoint, digest)) => {
-                let (view, prefix_hash) = CheckpointView::open_locked_with_recovery_limits(
+                let prepared = CheckpointView::prepare_locked(
                     &path,
                     &checkpoint,
                     digest,
@@ -793,9 +815,20 @@ impl CheckpointStore {
                     (limits.max_log_bytes, limits.max_live_keys),
                     crate::checkpoint_view::TailAdmission::Unrestricted,
                 )?;
-                (Some(view), prefix_hash)
+                let base_key_bytes = prepared.live_key_bytes();
+                if limits
+                    .max_live_key_bytes
+                    .is_some_and(|max| base_key_bytes > max)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "trusted checkpoint exceeds rebuild live key-byte limit",
+                    ));
+                }
+                let (view, prefix_hash) = prepared.verify()?;
+                (Some(view), prefix_hash, base_key_bytes)
             }
-            None => (None, Sha256::default()),
+            None => (None, Sha256::default(), 0),
         };
         let (prefix, witness, length, base_live, base_peak) = match &view {
             Some(view) => (
@@ -823,7 +856,7 @@ impl CheckpointStore {
                 "log length changed while opening its witness",
             ));
         }
-        let mut spill = SpillSession::create(&path, limits, base_live, base_peak)?;
+        let mut spill = SpillSession::create(&path, limits, base_live, base_peak, base_key_bytes)?;
         // `visit_records` yields DB02 children only after the outer record is
         // valid, and it yields them in order. Each child is applied before
         // the next one; their value offsets are not collapsed to the outer
@@ -3149,7 +3182,7 @@ mod tests {
         assert!(records.iter().all(|(_, location)| location.is_some()));
         let base_live = usize::from(!full);
         let mut spill =
-            SpillSession::create(foreign.path(), small_limits(), base_live, base_live).unwrap();
+            SpillSession::create(foreign.path(), small_limits(), base_live, base_live, 0).unwrap();
         for ((key, _), (_, location)) in records.iter().zip(records.iter().rev()) {
             spill.push(key, *location, |_| Ok(None)).unwrap();
         }

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Bound live key bytes at the trusted checkpoint and at every suffix state
+  during a managed rebuild, with optional count and spill-read caps.
+
 - Plan exact document index probes and prove partial equality guards when
   adjacent integer bounds leave one possible value.
 

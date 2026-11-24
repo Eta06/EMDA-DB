@@ -375,6 +375,17 @@ the document view.
   A later conflict can still follow tail adoption. Final checkpoint
   publication uses atomic no-clobber.
 - The separate opt-in `rebuild_managed_selection_bounded` and its detailed variant rebuild offline from a caller-supplied trusted checkpoint and its suffix under the exclusive store lock. They require a regular non-symlink base with a matching digest and verified log prefix; they do not fall back to full-log recovery if it is unavailable. Ordered suffix mutations extend the checkpoint's historical live-key count peak, but the checkpoint format does not retain the historical key-byte peak. Caller limits bound suffix operations, chunk keys and key bytes, logical spill-file bytes, and merge fan-in; staging markers, filesystem allocation overhead, other memory, elapsed time and prefix hashing are outside those limits. The rebuild continues hashing from the verified base-prefix state using the exact suffix bytes consumed by replay, then independently checks the staged checkpoint and its log binding before advancing the witness. A complete validated unacknowledged tail can still be adopted before either checkpoint or selection publication, so `NotPublished` does not mean the witness was unchanged. Spill cleanup on return is best effort; after a crash or cleanup error, use staging cleanup on both the store directory and the checkpoint destination's parent. Publication failures retain the same detailed classifications described above. This operation does not reclaim the live log or establish a total-memory or recovery-time bound.
+- `CheckpointStore::rebuild_managed_selection_bounded_with_admission` combines
+  optional live-key count, live-key bytes and spill-read caps. The count cap
+  includes the checkpoint's recorded peak. The byte cap starts from the
+  authenticated checkpoint's logical live-key bytes and applies after each
+  suffix operation, including individual batch children. Overwrites and
+  absent-key deletes add no live key bytes. An over-limit checkpoint rejects
+  before covered-log hashing. Admitted rebuilds still verify the full covered
+  log. A cap rejection leaves the existing witness and selection in place.
+  Use the full-log rebuild when a byte cap must cover history before the
+  checkpoint. Spill-read limits cover logical temporary-file reads. These
+  caps measure the admitted resources individually.
 - `rebuild_managed_selection_bounded_with_log_limit_detailed` additionally
   rejects an oversized whole log with `NotPublished(InvalidInput)` before
   checkpoint validation and tail adoption. This admission check assumes

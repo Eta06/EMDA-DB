@@ -260,6 +260,13 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 
 ## Priority 1: durable storage and core operations
 
+- [x] Admit a trusted-checkpoint rebuild under a live-key byte cap starting
+  from the authenticated base and applying to every suffix state. Count and
+  spill-read caps compose with the byte cap. Tests cover an oversized base,
+  an intermediate batch peak, unchanged witness and selection on rejection,
+  and a byte-identical rebuild at the exact limit. Use full-log rebuild to
+  enforce a byte cap on history before the base.
+
 - [x] Add an explicit on-disk index checkpoint verified against a separately trusted digest and suffix replay, with historical peak accounting and fail-closed corruption/format checks. The checkpoint is a derived plaintext file, not a backup or a security boundary when its digest is attacker-controlled.
 - [x] Verify checkpoint files through independent positional reads and reuse bounded key buffers. The [nested-scan regression and Linux ARM64 measurements](../benchmarks/results/2026-11-22-checkpoint-verifier-buffers/README.md) confirm independent cursor positions, one fewer allocation per scanned entry, and the same index read-byte totals.
 - [x] Compare ordinary checkpoint readback directly against the ordered live index. The [paired publication trials](../benchmarks/results/2026-11-23-ordinary-checkpoint-readback/README.md) verified identical output and substantially lower allocation traffic on macOS APFS and Linux ext4. Full-history replay still reconstructs the index before staging.

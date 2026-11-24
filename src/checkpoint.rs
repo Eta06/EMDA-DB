@@ -31,6 +31,7 @@ pub(crate) struct VerifiedCheckpoint {
     pub(crate) prefix: u64,
     pub(crate) peak: usize,
     pub(crate) log_digest: [u8; 32],
+    pub(crate) key_bytes: u64,
     count: u64,
 }
 
@@ -837,6 +838,8 @@ pub(crate) fn visit_index_file(
         prefix,
         peak,
         log_digest: expected_log_digest,
+        // Each verified entry occupies 18 fixed bytes plus its key.
+        key_bytes: payload_len - HEADER_BYTES - count * ENTRY_FIXED_BYTES,
         count,
     })
 }

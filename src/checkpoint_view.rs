@@ -191,6 +191,10 @@ pub(crate) struct PreparedCheckpoint {
 }
 
 impl PreparedCheckpoint {
+    pub(crate) fn live_key_bytes(&self) -> u64 {
+        self.verified.key_bytes
+    }
+
     pub(crate) fn suffix(&self) -> (&Log, std::ops::Range<u64>, u64) {
         (
             &self.base.log,
@@ -311,7 +315,7 @@ impl CheckpointView {
         lock_file: crate::store_lock::StoreLock,
         limits: CheckpointViewLimits,
     ) -> io::Result<Self> {
-        Self::open_locked_with_recovery_limits(
+        Self::prepare_locked(
             path,
             checkpoint,
             trusted_digest,
@@ -319,29 +323,9 @@ impl CheckpointView {
             limits,
             (None, None),
             TailAdmission::Unrestricted,
-        )
-        .map(|(view, _)| view)
-    }
-
-    pub(crate) fn open_locked_with_recovery_limits(
-        path: &Path,
-        checkpoint: &Path,
-        trusted_digest: &[u8; 32],
-        lock_file: crate::store_lock::StoreLock,
-        limits: CheckpointViewLimits,
-        log_limits: (Option<u64>, Option<usize>),
-        tail: TailAdmission,
-    ) -> io::Result<(Self, Sha256)> {
-        Self::prepare_locked(
-            path,
-            checkpoint,
-            trusted_digest,
-            lock_file,
-            limits,
-            log_limits,
-            tail,
         )?
         .verify()
+        .map(|(view, _)| view)
     }
 
     pub(crate) fn prepare_locked(

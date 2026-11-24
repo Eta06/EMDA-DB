@@ -1,7 +1,7 @@
 //! Public checks for bounded offline managed-checkpoint rebuild.
 use database_engine::{
-    BatchOperation, BoundedFullRebuildLimits, BoundedSuffixRebuildLimits, CheckpointStore,
-    CheckpointViewLimits, ManagedRebuildFailure, Store, cleanup_abandoned_staging,
+    BatchOperation, BoundedFullRebuildLimits, BoundedSuffixAdmission, BoundedSuffixRebuildLimits,
+    CheckpointStore, CheckpointViewLimits, ManagedRebuildFailure, Store, cleanup_abandoned_staging,
 };
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -227,6 +227,138 @@ fn bounded_suffix_live_key_limit_covers_the_trusted_peak_and_batch_prefixes() {
         let full = dir.path().join("full");
         let baseline = retry(|| Store::open(&path)).unwrap();
         assert_eq!(baseline.checkpoint_to(full).unwrap(), rebuilt);
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+        assert_eq!(fs::read(&base).unwrap(), base_bytes);
+    }
+}
+
+#[test]
+fn suffix_live_key_bytes_cover_the_base_and_every_ordered_batch_state() {
+    for v2 in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let base = dir.path().join("base");
+        let output = dir.path().join("rebuilt");
+        let store = open_store(&path, v2);
+        store.put(b"aa", b"old").unwrap();
+        store.put(b"keep", b"old").unwrap();
+        let retired_value = b"retired content outside the checkpoint";
+        store.put(b"a-long-retired-key", retired_value).unwrap();
+        store.delete(b"a-long-retired-key").unwrap();
+        let digest = store.checkpoint_to(&base).unwrap();
+        let base_bytes = fs::read(&base).unwrap();
+        let before = witness_bytes(&path);
+        store
+            .write_batch(&[
+                BatchOperation::Put {
+                    key: b"keep",
+                    value: b"new",
+                },
+                BatchOperation::Delete {
+                    key: b"not-in-the-base",
+                },
+                BatchOperation::Delete { key: b"aa" },
+                BatchOperation::Put {
+                    key: b"triple",
+                    value: b"temporary",
+                },
+                BatchOperation::Delete { key: b"triple" },
+                BatchOperation::Put {
+                    key: b"aa",
+                    value: b"restored",
+                },
+            ])
+            .unwrap();
+        let acknowledged = witness_bytes(&path);
+        drop(store);
+        restore_witness(&path, &before);
+        let log = fs::read(path.join("records.log")).unwrap();
+        let limits = BoundedSuffixRebuildLimits {
+            max_log_bytes: log.len() as u64,
+            max_operations: 6,
+            max_chunk_keys: 1,
+            max_chunk_key_bytes: 32,
+            max_spill_bytes: 16_384,
+            max_merge_fan_in: 2,
+            base_checkpoint: CheckpointViewLimits::default(),
+            output_checkpoint: CheckpointViewLimits::default(),
+        };
+        let rebuild = |max| {
+            CheckpointStore::rebuild_managed_selection_bounded_with_admission(
+                &path,
+                &output,
+                &base,
+                &digest,
+                limits,
+                BoundedSuffixAdmission {
+                    max_live_keys: Some(3),
+                    max_live_key_bytes: Some(max),
+                    max_spill_read_bytes: Some(1 << 20),
+                },
+            )
+        };
+        for (cap, message) in [
+            (5, "trusted checkpoint exceeds rebuild live key-byte limit"),
+            (9, "rebuild historical live key-byte limit exceeded"),
+        ] {
+            assert!(
+                matches!(rebuild(cap), Err(ManagedRebuildFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidInput && error.to_string() == message)
+            );
+            assert_eq!(witness_bytes(&path), before);
+            assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
+            assert_eq!(fs::read(&base).unwrap(), base_bytes);
+            assert!(!path.join("checkpoint.selection").exists());
+            assert!(!output.exists());
+            assert_no_stages(&path);
+            assert_no_stages(dir.path());
+        }
+
+        let offset = log
+            .windows(retired_value.len())
+            .position(|bytes| bytes == retired_value)
+            .unwrap();
+        let log_file = OpenOptions::new()
+            .write(true)
+            .open(path.join("records.log"))
+            .unwrap();
+        log_file
+            .write_all_at(&[log[offset] ^ 1], offset as u64)
+            .unwrap();
+        log_file.sync_all().unwrap();
+        assert!(
+            matches!(rebuild(5), Err(ManagedRebuildFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "trusted checkpoint exceeds rebuild live key-byte limit")
+        );
+        assert!(
+            matches!(rebuild(10), Err(ManagedRebuildFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidData
+                && error.to_string() == "checkpoint does not match log prefix")
+        );
+        assert_eq!(witness_bytes(&path), before);
+        assert!(!path.join("checkpoint.selection").exists());
+        assert!(!output.exists());
+        log_file
+            .write_all_at(&[log[offset]], offset as u64)
+            .unwrap();
+        log_file.sync_all().unwrap();
+
+        let rebuilt = rebuild(10).unwrap();
+        assert_eq!(witness_bytes(&path), acknowledged);
+        let recovered = retry(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            recovered.scan(None, None, 8).unwrap(),
+            [
+                (b"aa".to_vec(), b"restored".to_vec()),
+                (b"keep".to_vec(), b"new".to_vec()),
+            ]
+        );
+        drop(recovered);
+        let reference = dir.path().join("reference");
+        let ordinary = retry(|| Store::open(&path)).unwrap();
+        assert_eq!(ordinary.checkpoint_to(&reference).unwrap(), rebuilt);
+        assert_eq!(fs::read(&output).unwrap(), fs::read(&reference).unwrap());
         assert_eq!(fs::read(path.join("records.log")).unwrap(), log);
         assert_eq!(fs::read(&base).unwrap(), base_bytes);
     }
