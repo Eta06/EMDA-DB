@@ -529,6 +529,11 @@ the document view.
   seven witnessed identity reads, including the optional pre-adoption read.
   A trusted-base rebuild counts its covered-prefix and suffix reads as one
   pass. An insufficient reservation rejects before replay or publication.
+  After publication, managed rebuilds check the source length and witnessed
+  boundary against the rebuilt extent before reading the published checkpoint.
+  Admitted rechecks authenticate the published checkpoint and the complete
+  source extent before selection. Source drift at this point leaves the
+  old selection in place and reports a checkpoint publication uncertainty.
   This assumes stable cooperating source files. Witness metadata, physical
   retries, and reads from checkpoint and spill files have separate costs.
 - `rebuild_managed_selection_bounded_with_log_limit_detailed` additionally

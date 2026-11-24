@@ -429,6 +429,7 @@ impl CheckpointStore {
             .get()
             .expect("managed rebuild open checks the initial selection");
         selection::require_unchanged(&path, expected)?;
+        let log_length = fs::metadata(path.join("records.log"))?.len();
         let digest = if let Some(tracker) = tracker {
             match store.checkpoint_to_detailed_with_sync(&destination, sync_checkpoint_ancestors) {
                 Ok(digest) => {
@@ -444,7 +445,7 @@ impl CheckpointStore {
         } else {
             store.checkpoint_to_with_sync(&destination, sync_checkpoint_ancestors)?
         };
-        verify_before_selection(&path, &destination, &digest, Default::default())?;
+        verify_before_selection(&path, &destination, &digest, Default::default(), log_length)?;
         let next = selection::Selection::new(destination, digest)?;
         selection::require_unchanged(&path, expected)?;
         publish_selection(
@@ -918,7 +919,7 @@ impl CheckpointStore {
                 if let Some(max) = limits.max_source_log_read_bytes {
                     admit_source_log_reads(length, max)?;
                 }
-                limits.max_source_log_read_bytes.map(|_| length)
+                Some(length)
             } else {
                 None
             };
@@ -1066,7 +1067,7 @@ impl CheckpointStore {
             },
         )?;
         drop(spill);
-        verify_before_selection(&path, &destination, &digest, output_limits)?;
+        verify_before_selection(&path, &destination, &digest, output_limits, length)?;
         drop(view);
         drop(writer);
         let next = selection::Selection::new(destination, digest)?;
@@ -1140,15 +1141,21 @@ fn verify_before_selection(
     checkpoint: &Path,
     digest: &[u8; 32],
     limits: crate::CheckpointViewLimits,
+    expected_log_length: u64,
 ) -> io::Result<()> {
-    crate::checkpoint::verify_published_rebuild(store, checkpoint, digest, limits).map_err(
-        |error| {
-            io::Error::new(
-                error.kind(),
-                format!("checkpoint was published but managed verification failed: {error}"),
-            )
-        },
+    crate::checkpoint::verify_published_rebuild(
+        store,
+        checkpoint,
+        digest,
+        limits,
+        expected_log_length,
     )
+    .map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("checkpoint was published but managed verification failed: {error}"),
+        )
+    })
 }
 
 fn emit_merged(
@@ -2436,7 +2443,7 @@ mod tests {
             for (damage, message) in [
                 ("checkpoint", "index checkpoint checksum mismatch"),
                 ("covered log", "checkpoint does not match log prefix"),
-                ("log suffix", "rebuilt checkpoint has an unexpected suffix"),
+                ("log suffix", "verified checkpoint log length changed"),
                 (
                     "witness",
                     "checkpoint boundary is outside the witnessed log",
@@ -2505,6 +2512,93 @@ mod tests {
                 assert_eq!(store.get(b"p").unwrap(), Some(b"two".to_vec()));
                 assert_eq!(store.get(b"q").unwrap(), Some(b"batch".to_vec()));
                 assert_eq!(store.get(b"safe").unwrap(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn managed_rebuild_rejects_source_drift_before_reading_published_checkpoint() {
+        for v2 in [true, false] {
+            for full in [None, Some(true), Some(false)] {
+                for changed_length in [true, false] {
+                    let Some(case) = prepare_unacknowledged_tail(v2) else {
+                        break;
+                    };
+                    let prior = selection::Selection::new(case.base.clone(), case.digest).unwrap();
+                    selection::publish(&case.path, &prior, || Ok(()), selection::sync_ancestors)
+                        .unwrap();
+                    let original_selection = fs::read(selection::path(&case.path)).unwrap();
+                    let destination = case.root().join("rebuilt");
+                    let log = case.path.join("records.log");
+                    let length = case.complete_log.len() as u64;
+                    let mut after_publication = |parent: &Path| {
+                        selection::sync_ancestors(parent)?;
+                        if changed_length {
+                            OpenOptions::new()
+                                .append(true)
+                                .open(&log)?
+                                .write_all(b"x")?;
+                        } else {
+                            restore_witness(&case.path, &case.rolled_back);
+                        }
+                        // A second failure would mask the source error if
+                        // verification opened the checkpoint too early.
+                        fs::remove_file(&destination)?;
+                        Ok(())
+                    };
+                    let failure = track_managed_rebuild(|tracker| match full {
+                        None => CheckpointStore::rebuild_managed_using(
+                            &case.path,
+                            &destination,
+                            |path, check| {
+                                Store::open_with_recovery_checks(path, None, None, None, check)
+                            },
+                            after_publication,
+                            || panic!("selection attempted"),
+                            |_| panic!("selection synchronized"),
+                            Some(tracker),
+                        ),
+                        Some(full) => {
+                            let mut limits = small_limits();
+                            limits.max_log_bytes = Some(length);
+                            limits.max_source_log_read_bytes =
+                                Some(3 * length + 7 * crate::log::WITNESSED_IDENTITY_READ_BYTES);
+                            CheckpointStore::rebuild_spilling(
+                                &case.path,
+                                &destination,
+                                (!full).then_some((case.base.as_path(), &case.digest)),
+                                limits,
+                                Some(tracker),
+                                &mut BoundedHooks {
+                                    before_adopt: &mut || Ok(()),
+                                    sync_checkpoint_ancestors: &mut after_publication,
+                                    before_selection_rename: &mut || panic!("selection attempted"),
+                                    sync_selection_parent: &mut |_| {
+                                        panic!("selection synchronized")
+                                    },
+                                },
+                            )
+                        }
+                    })
+                    .unwrap_err();
+                    let expected = if changed_length {
+                        "verified checkpoint log length changed"
+                    } else {
+                        "checkpoint boundary is outside the witnessed log"
+                    };
+                    assert!(
+                        matches!(&failure, ManagedRebuildFailure::CheckpointOutcomeUnknown(error)
+                            if error.kind() == io::ErrorKind::InvalidData
+                                && error.to_string().ends_with(expected)),
+                        "{failure}"
+                    );
+                    assert_eq!(
+                        fs::read(selection::path(&case.path)).unwrap(),
+                        original_selection
+                    );
+                    assert_eq!(fs::read(&case.base).unwrap(), case.base_bytes);
+                    assert!(!destination.exists());
+                }
             }
         }
     }

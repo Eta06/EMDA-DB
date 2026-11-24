@@ -563,15 +563,24 @@ pub(crate) fn verify_published_rebuild(
     checkpoint: &Path,
     digest: &[u8; 32],
     limits: crate::CheckpointViewLimits,
+    expected_log_length: u64,
 ) -> io::Result<()> {
     limits.validate()?;
     let (log, boundary) = Log::open_checkpoint_view(store)?;
+    // Source drift already invalidates the published checkpoint. Reject it
+    // before reading the checkpoint or spending the final log scan.
+    check_checkpoint_length(&log, expected_log_length)?;
+    if boundary != expected_log_length {
+        return Err(record::invalid_data(
+            "checkpoint boundary is outside the witnessed log",
+        ));
+    }
     let file = open_index_file(checkpoint)?;
     let mut blocks_left = limits.max_blocks;
     let mut block_room = 0;
     let verified = visit_index_file(
         &file,
-        log.len()?,
+        expected_log_length,
         boundary,
         digest,
         IndexAdmission {
@@ -589,13 +598,15 @@ pub(crate) fn verify_published_rebuild(
             Ok(())
         },
     )?;
-    verify_log_prefix(&log, &verified)?;
-    if log.len()? != verified.prefix {
+    if verified.prefix != expected_log_length {
         return Err(record::invalid_data(
-            "rebuilt checkpoint has an unexpected suffix",
+            "rebuilt checkpoint does not cover the expected log length",
         ));
     }
-    log.verify_witness_at(verified.prefix)
+    check_checkpoint_length(&log, expected_log_length)?;
+    verify_log_prefix(&log, &verified)?;
+    check_checkpoint_length(&log, expected_log_length)?;
+    log.verify_witness_at(expected_log_length)
 }
 
 fn load_file(
