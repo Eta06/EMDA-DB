@@ -126,7 +126,10 @@ fn checkpoint_paths_reject_a_same_length_log_change_after_replay_reads_it() {
             "copy" => store.checkpoint_to(&destination).map(|_| ()),
             "rollover" => store.rollover_to(&destination).map(|_| ()),
             "managed" => store.rollover_managed(&destination).map(|_| ()),
-            _ => store.automatic_rollover(store.write().unwrap()).map(|_| ()),
+            _ => store
+                .automatic_rollover(store.write().unwrap())
+                .map(|_| ())
+                .map_err(crate::ManagedRolloverFailure::into_io_error),
         }
         .expect_err(mode);
         assert!(fired.load(Ordering::Relaxed), "{mode}");

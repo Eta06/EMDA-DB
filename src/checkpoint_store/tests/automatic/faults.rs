@@ -59,7 +59,26 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
                 }
             },
         );
-        assert_eq!(result.map(drop).is_ok(), phase == "success");
+        use crate::ManagedRolloverFailure::*;
+        match (phase, result.map(drop)) {
+            ("slot-staged", Err(NotPublished(error))) => {
+                assert_eq!(error.to_string(), "injected before slot publication");
+            }
+            ("slot-published", Err(CheckpointOutcomeUnknown(error))) => {
+                assert!(error.to_string().contains("injected slot sync"));
+            }
+            ("selection-staged", Err(CheckpointOutcomeUnknown(error))) => {
+                assert_eq!(error.to_string(), "injected before selection rename");
+            }
+            ("selection-published", Err(SelectionOutcomeUnknown(error))) => {
+                assert!(error.to_string().contains("injected selection sync"));
+            }
+            ("success", Ok(())) => {}
+            (_, result) => panic!("{phase}: {result:?}"),
+        }
+        let root = crate::checkpoint_store::automatic::root(&path);
+        let [slot, _] = crate::checkpoint_store::automatic::indexes(&root);
+        assert_eq!(slot.is_file(), phase != "slot-staged");
         let poisoned = store.state.read().unwrap().failed;
         assert_eq!(fs::read(path.join("records.log")).unwrap(), old_log);
         assert_eq!(poisoned, phase == "selection-published");
@@ -103,6 +122,65 @@ fn automatic_rollover_failures_preserve_or_fail_closed_before_user_writes() {
             Some(&b"recovered"[..])
         );
     }
+}
+
+#[test]
+fn detailed_write_exposes_automatic_rollover_failure_before_its_append() {
+    let (_dir, path, store) = managed_fixture(1024, 1, 64);
+    store.enable_automatic_checkpoints().unwrap();
+    store.put(b"a", b"acknowledged").unwrap();
+    store
+        .set_automatic_checkpoint_log_scan_limit(Some(0))
+        .unwrap();
+    let log_before = fs::read(path.join("records.log")).unwrap();
+    let selection_path = crate::checkpoint_store::selection::path(&path);
+    let selection_before = fs::read(&selection_path).unwrap();
+
+    let failure = store.put_detailed(b"b", b"rejected").unwrap_err();
+    let crate::MutationFailure::Rejected(error) = failure else {
+        panic!("unexpected mutation outcome: {failure:?}");
+    };
+    let assert_rejection = |error: io::Error| {
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "automatic checkpoint log scan byte limit exceeded"
+        );
+        assert!(matches!(
+            error.get_ref().and_then(|cause| cause.source()).and_then(|cause| cause.downcast_ref::<crate::ManagedRolloverFailure>()),
+            Some(crate::ManagedRolloverFailure::NotPublished(cause))
+                if cause.to_string() == "automatic checkpoint log scan byte limit exceeded"
+        ));
+    };
+    assert_rejection(error);
+    let failure = store
+        .transaction_detailed(
+            crate::CheckpointTransactionMode::ReadSet,
+            None,
+            None,
+            |tx| tx.put(b"b", b"transaction rejected"),
+        )
+        .unwrap_err();
+    let crate::TransactionFailure::Rejected(error) = failure else {
+        panic!("unexpected transaction outcome: {failure:?}");
+    };
+    assert_rejection(error);
+    let legacy = store.put(b"b", b"also rejected").unwrap_err();
+    assert_eq!(legacy.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        legacy.to_string(),
+        "automatic checkpoint log scan byte limit exceeded"
+    );
+    assert_eq!(fs::read(path.join("records.log")).unwrap(), log_before);
+    assert_eq!(fs::read(&selection_path).unwrap(), selection_before);
+    assert_eq!(store.get(b"b").unwrap(), None);
+
+    store.set_automatic_checkpoint_log_scan_limit(None).unwrap();
+    store.put_detailed(b"b", b"accepted on retry").unwrap();
+    assert_eq!(
+        store.get(b"b").unwrap().as_deref(),
+        Some(b"accepted on retry".as_slice())
+    );
 }
 
 #[test]

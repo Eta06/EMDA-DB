@@ -1,5 +1,7 @@
 //! On-demand managed checkpoint rollover using two owned checkpoint slots.
 use super::{CheckpointStore, State, StateWrite, selection};
+use crate::ManagedRolloverFailure;
+use crate::publication_outcome::{ManagedTracker, track_managed};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -334,7 +336,7 @@ impl CheckpointStore {
     pub(super) fn automatic_rollover<'a>(
         &'a self,
         state: StateWrite<'a>,
-    ) -> io::Result<StateWrite<'a>> {
+    ) -> Result<StateWrite<'a>, ManagedRolloverFailure> {
         self.automatic_rollover_with_hooks(
             state,
             || Ok(()),
@@ -357,11 +359,32 @@ impl CheckpointStore {
 
     pub(super) fn automatic_rollover_with_hooks<'a>(
         &'a self,
+        state: StateWrite<'a>,
+        before_slot_publish: impl FnOnce() -> io::Result<()>,
+        sync_slot_parent: impl FnOnce(&Path) -> io::Result<()>,
+        before_selection_rename: impl FnOnce() -> io::Result<()>,
+        sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<StateWrite<'a>, ManagedRolloverFailure> {
+        track_managed(|tracker| {
+            self.automatic_rollover_tracked(
+                state,
+                before_slot_publish,
+                sync_slot_parent,
+                before_selection_rename,
+                sync_selection_parent,
+                tracker,
+            )
+        })
+    }
+
+    fn automatic_rollover_tracked<'a>(
+        &'a self,
         mut state: StateWrite<'a>,
         before_slot_publish: impl FnOnce() -> io::Result<()>,
         sync_slot_parent: impl FnOnce(&Path) -> io::Result<()>,
         before_selection_rename: impl FnOnce() -> io::Result<()>,
         sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+        tracker: &ManagedTracker,
     ) -> io::Result<StateWrite<'a>> {
         if !state.automatic {
             return Err(invalid("automatic checkpointing is not enabled"));
@@ -441,6 +464,7 @@ impl CheckpointStore {
             },
         )?;
         before_slot_publish()?;
+        tracker.checkpoint.begin_publication();
         stage.publish(&destination)?;
         sync_slot_parent(&root).map_err(|error| {
             io::Error::new(
@@ -458,7 +482,7 @@ impl CheckpointStore {
             next,
             before_selection_rename,
             sync_selection_parent,
-            &Default::default(),
+            &tracker.selection,
         )?;
         state
             .automatic_checkpoint

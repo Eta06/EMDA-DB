@@ -100,6 +100,24 @@ pub enum ManagedRolloverFailure {
     SelectionOutcomeUnknown(io::Error),
 }
 
+impl ManagedRolloverFailure {
+    pub(crate) fn io_error(&self) -> &io::Error {
+        match self {
+            Self::NotPublished(error)
+            | Self::CheckpointOutcomeUnknown(error)
+            | Self::SelectionOutcomeUnknown(error) => error,
+        }
+    }
+
+    pub(crate) fn into_io_error(self) -> io::Error {
+        match self {
+            Self::NotPublished(error)
+            | Self::CheckpointOutcomeUnknown(error)
+            | Self::SelectionOutcomeUnknown(error) => error,
+        }
+    }
+}
+
 impl fmt::Display for ManagedRolloverFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -116,11 +134,7 @@ impl fmt::Display for ManagedRolloverFailure {
 
 impl std::error::Error for ManagedRolloverFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::NotPublished(error)
-            | Self::CheckpointOutcomeUnknown(error)
-            | Self::SelectionOutcomeUnknown(error) => Some(error),
-        }
+        Some(self.io_error())
     }
 }
 

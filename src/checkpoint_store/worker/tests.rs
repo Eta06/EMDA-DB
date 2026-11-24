@@ -139,6 +139,12 @@ fn automatic_checkpoint_scan_limit_stops_worker_before_rollover() {
         status.last_error.as_deref(),
         Some("automatic checkpoint log scan byte limit exceeded")
     );
+    assert!(matches!(
+        worker.last_rollover_failure().as_deref(),
+        Some(crate::ManagedRolloverFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "automatic checkpoint log scan byte limit exceeded"
+    ));
     assert_eq!(fs::read(&selection).unwrap(), before);
     assert_eq!(store.overlay_keys().unwrap(), 1);
     worker.stop().unwrap();
@@ -155,6 +161,79 @@ fn automatic_checkpoint_scan_limit_stops_worker_before_rollover() {
         Some(&b"pending rollover"[..])
     );
     worker.stop().unwrap();
+}
+
+#[test]
+fn worker_preserves_slot_and_selection_publication_failures() {
+    for selection_sync in [false, true] {
+        let (_root, path, store) = fixture();
+        store.put(b"tail", b"acknowledged").unwrap();
+        let log_before = fs::read(path.join("records.log")).unwrap();
+        let selection = super::super::selection::path(&path);
+        let selection_before = fs::read(&selection).unwrap();
+        let control = Arc::new(Control::default());
+        let thread_control = Arc::clone(&control);
+        let worker_store = Arc::clone(&store);
+        let thread = thread::spawn(move || {
+            run(&thread_control, Duration::from_secs(3600), || {
+                worker_store
+                    .automatic_rollover_with_hooks(
+                        worker_store
+                            .write()
+                            .map_err(ManagedRolloverFailure::NotPublished)?,
+                        || Ok(()),
+                        |parent| {
+                            if selection_sync {
+                                crate::directory::sync_existing(parent)
+                            } else {
+                                Err(io::Error::other("injected slot sync"))
+                            }
+                        },
+                        || Ok(()),
+                        |_| Err(io::Error::other("injected selection sync")),
+                    )
+                    .map(|_| true)
+            })
+        });
+        let worker = CheckpointWorker {
+            control,
+            thread: Some(thread),
+        };
+        worker.request_check().unwrap();
+        let status = wait_for(&worker, |status| status.stopped);
+        assert_eq!(status.checks, 1);
+        assert_eq!(status.checkpoints, 0);
+        let failure = worker.last_rollover_failure().unwrap();
+        match (selection_sync, failure.as_ref()) {
+            (false, ManagedRolloverFailure::CheckpointOutcomeUnknown(error)) => {
+                assert!(error.to_string().contains("injected slot sync"));
+                assert_eq!(
+                    store.get(b"tail").unwrap().as_deref(),
+                    Some(b"acknowledged".as_slice())
+                );
+            }
+            (true, ManagedRolloverFailure::SelectionOutcomeUnknown(error)) => {
+                assert!(error.to_string().contains("injected selection sync"));
+                assert!(store.get(b"tail").is_err());
+            }
+            (_, other) => panic!("unexpected worker failure: {other:?}"),
+        }
+        assert_eq!(
+            fs::read(&selection).unwrap() != selection_before,
+            selection_sync
+        );
+        assert_eq!(fs::read(path.join("records.log")).unwrap(), log_before);
+        let (stopped, cause) = worker.stop_with_rollover_failure().unwrap();
+        assert_eq!(stopped, status);
+        assert!(Arc::ptr_eq(&failure, &cause.unwrap()));
+        drop(store);
+
+        let reopened = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            reopened.get(b"tail").unwrap().as_deref(),
+            Some(b"acknowledged".as_slice())
+        );
+    }
 }
 
 #[test]
@@ -279,6 +358,7 @@ fn worker_panic_is_reported_and_recovery_preserves_acknowledged_data() {
     worker.request_check().unwrap();
     let status = wait_for(&worker, |status| status.stopped);
     assert!(status.last_error.unwrap().contains("panicked"));
+    assert!(worker.last_rollover_failure().is_none());
     assert!(store.get(b"key").is_err());
     worker.stop().unwrap();
     drop(store);

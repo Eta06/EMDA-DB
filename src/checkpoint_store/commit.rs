@@ -2,6 +2,7 @@
 use super::*;
 use crate::log::ValueLocation;
 use crate::record::batch::BatchLayout;
+use std::fmt;
 
 #[derive(Clone, Copy)]
 pub(super) enum Mutation<'a> {
@@ -55,6 +56,21 @@ impl<'a> MutationKeys<'a> {
 struct PendingAppend<'a> {
     failed: &'a AtomicBool,
     published: bool,
+}
+
+#[derive(Debug)]
+struct AutomaticRolloverRejection(crate::ManagedRolloverFailure);
+
+impl fmt::Display for AutomaticRolloverRejection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.0.io_error(), formatter)
+    }
+}
+
+impl std::error::Error for AutomaticRolloverRejection {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
 }
 
 impl Drop for PendingAppend<'_> {
@@ -146,7 +162,16 @@ impl CheckpointStore {
         let (next_tail, next_operations, new_key_bytes) = match admitted {
             Ok(value) => value,
             Err(_) if can_rollover && self.fits_empty_suffix_keys(keys) => {
-                state = self.automatic_rollover(state)?;
+                state = self.automatic_rollover(state).map_err(|failure| {
+                    if tracker.is_some() {
+                        io::Error::new(
+                            failure.io_error().kind(),
+                            AutomaticRolloverRejection(failure),
+                        )
+                    } else {
+                        failure.into_io_error()
+                    }
+                })?;
                 (
                     length as u64,
                     operations,

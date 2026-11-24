@@ -156,6 +156,19 @@ exists. Pre-existing
 files and staging artifacts can exist in any case, no error returns the new
 digest, and the classifications do not establish store health.
 
+Automatic checkpoint rollover uses the same two publication boundaries.
+A slot publication error can leave the successor slot visible while the
+previous selection remains active. A selection publication error after the
+rename attempt disables the handle and requires reconciliation on reopen.
+Pre-publication cleanup can already have removed an inactive slot. A
+detailed write or transaction rejected during automatic rollover exposes
+its `ManagedRolloverFailure` in the rejected I/O error's source chain.
+That write's append has not started. A stopped checkpoint worker exposes
+the classified cause through `CheckpointWorker::last_rollover_failure`
+or `stop_with_rollover_failure`.
+A pinned inactive slot still defers background work, and worker panics
+are reported through the existing text status.
+
 `enable_automatic_checkpoints_detailed` and
 `disable_automatic_checkpoints_detailed` classify whether this call began
 publishing the persistent automatic-checkpoint configuration. An existing

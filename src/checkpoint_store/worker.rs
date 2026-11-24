@@ -1,5 +1,6 @@
 //! Optional, stoppable background scheduling for managed checkpoints.
 use super::CheckpointStore;
+use crate::ManagedRolloverFailure;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::Ordering;
@@ -31,6 +32,7 @@ struct WorkerState {
     stopping: bool,
     requested: bool,
     status: CheckpointWorkerStatus,
+    rollover_failure: Option<Arc<ManagedRolloverFailure>>,
 }
 
 #[derive(Default)]
@@ -85,6 +87,12 @@ impl CheckpointWorker {
         self.control.lock().status.clone()
     }
 
+    /// Returns the classified cause when a rollover or its admission stopped
+    /// the worker. A panic is reported separately in `status().last_error`.
+    pub fn last_rollover_failure(&self) -> Option<Arc<ManagedRolloverFailure>> {
+        self.control.lock().rollover_failure.clone()
+    }
+
     fn shutdown(&mut self) -> io::Result<()> {
         {
             let mut state = self.control.lock();
@@ -104,6 +112,16 @@ impl CheckpointWorker {
     pub fn stop(mut self) -> io::Result<CheckpointWorkerStatus> {
         self.shutdown()?;
         Ok(self.status())
+    }
+
+    /// Requests stop and returns the final status and classified cause, even
+    /// if the check failed while this call was waiting for it to finish.
+    pub fn stop_with_rollover_failure(
+        mut self,
+    ) -> io::Result<(CheckpointWorkerStatus, Option<Arc<ManagedRolloverFailure>>)> {
+        self.shutdown()?;
+        let state = self.control.lock();
+        Ok((state.status.clone(), state.rollover_failure.clone()))
     }
 }
 
@@ -163,7 +181,9 @@ impl CheckpointStore {
             .name("checkpoint-worker".into())
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    run(&lease.0, &thread_control, interval, minimum_suffix_bytes)
+                    run(&thread_control, interval, || {
+                        lease.0.background_checkpoint(minimum_suffix_bytes)
+                    })
                 }));
                 if result.is_err() {
                     let mut state = thread_control.lock();
@@ -182,14 +202,17 @@ impl CheckpointStore {
         })
     }
 
-    fn background_checkpoint(&self, minimum_suffix_bytes: u64) -> io::Result<bool> {
-        let state = self.write()?;
+    fn background_checkpoint(
+        &self,
+        minimum_suffix_bytes: u64,
+    ) -> Result<bool, ManagedRolloverFailure> {
+        let state = self.write().map_err(ManagedRolloverFailure::NotPublished)?;
         if !state.automatic || state.view.tail_bytes < minimum_suffix_bytes {
             return Ok(false);
         }
         match self.automatic_rollover(state) {
             Ok(_) => Ok(true),
-            Err(error)
+            Err(ManagedRolloverFailure::NotPublished(error))
                 if error
                     .get_ref()
                     .is_some_and(|cause| cause.is::<super::automatic::PinnedSlot>()) =>
@@ -201,7 +224,11 @@ impl CheckpointStore {
     }
 }
 
-fn run(store: &CheckpointStore, control: &Control, interval: Duration, minimum_suffix_bytes: u64) {
+fn run(
+    control: &Control,
+    interval: Duration,
+    mut check: impl FnMut() -> Result<bool, ManagedRolloverFailure>,
+) {
     loop {
         let mut state = control.lock();
         if !state.stopping && !state.requested {
@@ -220,7 +247,7 @@ fn run(store: &CheckpointStore, control: &Control, interval: Duration, minimum_s
         state.status.in_flight = true;
         control.changed.notify_all();
         drop(state);
-        let result = store.background_checkpoint(minimum_suffix_bytes);
+        let result = check();
         let mut state = control.lock();
         state.status.in_flight = false;
         state.status.checks = state.status.checks.saturating_add(1);
@@ -228,7 +255,8 @@ fn run(store: &CheckpointStore, control: &Control, interval: Duration, minimum_s
             Ok(true) => state.status.checkpoints = state.status.checkpoints.saturating_add(1),
             Ok(false) => {}
             Err(error) => {
-                state.status.last_error = Some(error.to_string());
+                state.status.last_error = Some(error.io_error().to_string());
+                state.rollover_failure = Some(Arc::new(error));
                 state.status.stopped = true;
                 control.changed.notify_all();
                 return;
