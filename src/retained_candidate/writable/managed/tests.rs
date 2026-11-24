@@ -1630,13 +1630,64 @@ fn ceiling_recovers_the_selected_limits_after_an_uncertain_resize() {
 }
 
 #[test]
+fn detailed_rotation_reports_successor_sync_failure_before_selection() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.put(b"ack", b"kept").unwrap();
+    let old = store.active.clone();
+    let selection = fs::read(f.root.join(ACTIVE_FILE)).unwrap();
+    let result = store.compact_detailed_using(
+        LIMITS,
+        None,
+        || panic!("selection must not start"),
+        |root| {
+            assert!(Slot::B.path(root).is_dir());
+            assert_eq!(fs::read(root.join(ACTIVE_FILE))?, selection);
+            Err(io::Error::other("successor sync"))
+        },
+        |_| panic!("selection must not be synchronized"),
+    );
+    assert!(matches!(
+        result,
+        Err(RetainedRotationFailure::SuccessorOutcomeUnknown(error))
+            if error.to_string() == "successor sync"
+    ));
+    assert!(matches!(
+        store.compact_detailed(),
+        Err(RetainedRotationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::AlreadyExists
+    ));
+    assert_eq!(fs::read(f.root.join(ACTIVE_FILE)).unwrap(), selection);
+    store.put(b"later", b"still active").unwrap();
+    drop(store);
+    let mut reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), old.generation);
+    assert_eq!(reopened.get(b"ack", 4).unwrap().unwrap(), b"kept");
+    assert_eq!(
+        reopened.get(b"later", 12).unwrap().unwrap(),
+        b"still active"
+    );
+    assert!(reopened.reclaim_inactive().unwrap());
+    assert_ne!(reopened.compact_detailed().unwrap(), old.generation);
+}
+
+#[test]
 fn selection_failure_before_rename_leaves_only_old_slot_authorized() {
     let f = Fixture::new(LIMITS);
     let mut store = f.open();
     let old = store.active.clone();
     store.put(b"b", b"safe").unwrap();
-    let result = store.compact_using(|| Err(io::Error::other("before selection")), sync_existing);
-    assert!(matches!(result, Err(PublicationFailure::NotPublished(_))));
+    let result = store.compact_detailed_using(
+        LIMITS,
+        None,
+        || Err(io::Error::other("before selection")),
+        sync_existing,
+        sync_existing,
+    );
+    assert!(
+        matches!(result, Err(RetainedRotationFailure::SuccessorOutcomeUnknown(error))
+        if error.to_string() == "before selection")
+    );
     assert!(Slot::B.path(&f.root).exists());
     assert_eq!(Active::load(&f.root, old.catalog).unwrap(), old);
     store.put(b"c", b"still active").unwrap();
@@ -1656,8 +1707,17 @@ fn selection_sync_failure_blocks_writes_and_reclaim_until_reopen() {
     let mut store = f.open();
     store.put(b"b", b"safe").unwrap();
     let old = store.active.clone();
-    let result = store.compact_using(|| Ok(()), |_| Err(io::Error::other("selection sync")));
-    assert!(matches!(result, Err(PublicationFailure::OutcomeUnknown(_))));
+    let result = store.compact_detailed_using(
+        LIMITS,
+        None,
+        || Ok(()),
+        sync_existing,
+        |_| Err(io::Error::other("selection sync")),
+    );
+    assert!(
+        matches!(result, Err(RetainedRotationFailure::SelectionOutcomeUnknown(error))
+        if error.to_string() == "selection sync")
+    );
     assert!(store.get(b"b", 4).is_err());
     assert!(matches!(
         store.put(b"lost", b"value"),

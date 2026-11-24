@@ -872,6 +872,48 @@ fn automatic_rotation_recovers_after_uncertain_selection_or_reclamation_fence() 
 }
 
 #[test]
+fn detailed_rotation_reports_successor_sync_failure_before_authority_advance() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"ack", b"kept").unwrap();
+    let prior = store.current;
+    let result = store.compact_detailed_using(LIMITS, None, |root| {
+        assert!(Slot::B.path(root).is_dir());
+        assert_eq!(*f.provider.record.lock().unwrap(), Some(prior));
+        Err(io::Error::other("successor sync"))
+    });
+    assert!(matches!(
+        result,
+        Err(RetainedRotationFailure::SuccessorOutcomeUnknown(error))
+            if error.to_string() == "successor sync"
+    ));
+    assert_eq!(*f.provider.record.lock().unwrap(), Some(prior));
+    assert!(matches!(
+        store.compact_detailed(),
+        Err(RetainedRotationFailure::NotPublished(error))
+            if error.kind() == io::ErrorKind::AlreadyExists
+    ));
+    store.put(b"later", b"still active").unwrap();
+    drop(store);
+    let mut reopened = f.open();
+    assert_eq!(
+        reopened.current.committed.generation,
+        prior.committed.generation
+    );
+    assert_eq!(reopened.get(b"ack", 4).unwrap().unwrap(), b"kept");
+    assert_eq!(
+        reopened.get(b"later", 12).unwrap().unwrap(),
+        b"still active"
+    );
+    assert!(reopened.reclaim_inactive().unwrap());
+    assert_ne!(
+        reopened.compact_detailed().unwrap(),
+        prior.committed.generation
+    );
+}
+
+#[test]
 fn rotation_recovers_exact_authority_choice_after_uncertain_selection() {
     for selected in [false, true] {
         let mut f = Fixture::prepare();
@@ -880,8 +922,11 @@ fn rotation_recovers_exact_authority_choice_after_uncertain_selection() {
         store.put(b"ack", b"retained").unwrap();
         let prior = store.current.committed;
         store.authority.fault = Some((3, selected));
-        let result = store.compact();
-        assert!(matches!(result, Err(PublicationFailure::OutcomeUnknown(_))));
+        let result = store.compact_detailed();
+        assert!(
+            matches!(result, Err(RetainedRotationFailure::SelectionOutcomeUnknown(error))
+            if error.to_string().contains("injected authority failure"))
+        );
         assert!(store.get(b"ack", 8).is_err());
         assert!(Slot::A.path(&f.root).is_dir());
         assert!(Slot::B.path(&f.root).is_dir());

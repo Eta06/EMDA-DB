@@ -572,13 +572,28 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         self.compact_with_limits(self.inner.store.limits)
     }
 
+    /// Compact with separate successor publication and authority outcomes.
+    pub fn compact_detailed(&mut self) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_with_limits_detailed(self.inner.store.limits)
+    }
+
     /// Compact and adopt new limits. If selection is uncertain, retain both
     /// generations and reopen with a ceiling that admits either configuration.
     pub fn compact_with_limits(
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], PublicationFailure> {
-        self.compact_using_limits(limits, None)
+        self.compact_with_limits_detailed(limits)
+            .map_err(RetainedRotationFailure::into_selection_failure)
+    }
+
+    /// Compact and adopt new limits, distinguishing successor publication
+    /// from an authority compare-and-swap attempt.
+    pub fn compact_with_limits_detailed(
+        &mut self,
+        limits: RetainedStoreLimits,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_detailed_using(limits, None, sync_existing)
     }
 
     /// Select a successor carrying persistent catalog storage limits. For
@@ -588,25 +603,38 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         &mut self,
         limits: CatalogStorageLimits,
     ) -> Result<[u8; 16], PublicationFailure> {
-        self.compact_using_limits(self.inner.store.limits, Some(limits))
+        self.compact_with_persisted_storage_limits_detailed(limits)
+            .map_err(RetainedRotationFailure::into_selection_failure)
     }
 
-    fn compact_using_limits(
+    /// Publish a successor carrying a persistent storage policy and classify
+    /// both publication attempts.
+    pub fn compact_with_persisted_storage_limits_detailed(
+        &mut self,
+        limits: CatalogStorageLimits,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_detailed_using(self.inner.store.limits, Some(limits), sync_existing)
+    }
+
+    fn compact_detailed_using(
         &mut self,
         limits: RetainedStoreLimits,
         persisted_storage: Option<CatalogStorageLimits>,
-    ) -> Result<[u8; 16], PublicationFailure> {
-        crate::publication_outcome::track(|tracker| {
+        sync_successor: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        crate::publication_outcome::track_retained_rotation(|tracker| {
             self.verify_current()?;
             let mut next = self.current.finalized(self.current.committed)?;
             let (active, store, storage) = self.inner.prepare_successor(
                 limits,
                 self.auto_reclaim.is_some(),
                 persisted_storage,
+                &tracker.checkpoint,
+                sync_successor,
             )?;
             let point = AuthorityPoint::from_store(active.catalog, &store);
             next.committed = point;
-            tracker.begin_publication();
+            tracker.selection.begin_publication();
             self.inner.uncertain = true;
             self.advance(next)?;
             self.inner.store = store;

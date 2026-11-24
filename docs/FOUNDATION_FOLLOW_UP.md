@@ -219,6 +219,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   attempted rename in manual rollover and offline rebuild. Live manual
   and automatic rollover preserve the prior writable view if selection
   staging fails. Failure after the rename attempt still requires reopening.
+  Detailed retained rotation distinguishes successor slot publication from
+  local selection replacement or an independent authority update. The
+  [Linux sync fault traces](../benchmarks/results/2026-11-24-retained-rotation-outcomes/README.md)
+  and authority tests verify the previous or successor generation and
+  acknowledged writes after each affected publication boundary.
 - [x] Add opt-in generic staging-cleanup outcomes distinguishing calls that
   began no removals from failures after removal may have started. The result
   does not certify directory durability, cleanup, source health or a backup.

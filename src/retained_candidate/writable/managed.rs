@@ -8,7 +8,7 @@ use crate::record;
 use crate::retained_candidate::{SuffixCapacity, SuffixExpected, check_files, exact};
 use crate::{
     BatchOperation, Entry, MutationFailure, PublicationFailure, RetainedExportLimits,
-    StagingCleanupFailure, Store,
+    RetainedRotationFailure, StagingCleanupFailure, Store,
 };
 use rustix::fs::OFlags;
 use sha2::{Digest, Sha256};
@@ -739,6 +739,11 @@ impl ManagedRetainedStore {
         self.compact_with_limits(self.store.limits)
     }
 
+    /// Compact with separate successor publication and selection outcomes.
+    pub fn compact_detailed(&mut self) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_with_limits_detailed(self.store.limits)
+    }
+
     /// Compact into a successor with new persisted limits. The existing
     /// limits still bound reading and verifying the active generation.
     /// If selection is uncertain, reopen using a recovery ceiling that
@@ -747,7 +752,17 @@ impl ManagedRetainedStore {
         &mut self,
         limits: RetainedStoreLimits,
     ) -> Result<[u8; 16], PublicationFailure> {
-        self.compact_using_limits(limits, None, || Ok(()), sync_existing)
+        self.compact_with_limits_detailed(limits)
+            .map_err(RetainedRotationFailure::into_selection_failure)
+    }
+
+    /// Compact and adopt new limits, classifying both publication attempts.
+    /// Reconcile an uncertain selection with limits that admit either generation.
+    pub fn compact_with_limits_detailed(
+        &mut self,
+        limits: RetainedStoreLimits,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_detailed_using(limits, None, || Ok(()), sync_existing, sync_existing)
     }
 
     /// Publish a successor with persistent catalog storage limits. The
@@ -757,7 +772,23 @@ impl ManagedRetainedStore {
         &mut self,
         limits: CatalogStorageLimits,
     ) -> Result<[u8; 16], PublicationFailure> {
-        self.compact_using_limits(self.store.limits, Some(limits), || Ok(()), sync_existing)
+        self.compact_with_persisted_storage_limits_detailed(limits)
+            .map_err(RetainedRotationFailure::into_selection_failure)
+    }
+
+    /// Publish a successor carrying a persistent storage policy and classify
+    /// both publication attempts.
+    pub fn compact_with_persisted_storage_limits_detailed(
+        &mut self,
+        limits: CatalogStorageLimits,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        self.compact_detailed_using(
+            self.store.limits,
+            Some(limits),
+            || Ok(()),
+            sync_existing,
+            sync_existing,
+        )
     }
 
     #[cfg(test)]
@@ -769,6 +800,7 @@ impl ManagedRetainedStore {
         self.compact_using_limits(self.store.limits, None, before_select, sync_selection)
     }
 
+    #[cfg(test)]
     fn compact_using_limits(
         &mut self,
         limits: RetainedStoreLimits,
@@ -776,10 +808,33 @@ impl ManagedRetainedStore {
         before_select: impl FnOnce() -> io::Result<()>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
     ) -> Result<[u8; 16], PublicationFailure> {
-        crate::publication_outcome::track(|tracker| {
+        self.compact_detailed_using(
+            limits,
+            persisted_storage,
+            before_select,
+            sync_existing,
+            sync_selection,
+        )
+        .map_err(RetainedRotationFailure::into_selection_failure)
+    }
+
+    fn compact_detailed_using(
+        &mut self,
+        limits: RetainedStoreLimits,
+        persisted_storage: Option<CatalogStorageLimits>,
+        before_select: impl FnOnce() -> io::Result<()>,
+        sync_successor: impl FnOnce(&Path) -> io::Result<()>,
+        sync_selection: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        crate::publication_outcome::track_retained_rotation(|tracker| {
             self.verify_selection()?;
-            let (active, next, storage) =
-                self.prepare_successor(limits, self.auto_reclaim.is_some(), persisted_storage)?;
+            let (active, next, storage) = self.prepare_successor(
+                limits,
+                self.auto_reclaim.is_some(),
+                persisted_storage,
+                &tracker.checkpoint,
+                sync_successor,
+            )?;
             let generation = active.generation;
             let (mut selection, mut file) = crate::staging::Stage::file(&self.root)?;
             file.write_all(&active.encode())?;
@@ -787,7 +842,7 @@ impl ManagedRetainedStore {
             drop(file);
             before_select()?;
 
-            tracker.begin_publication();
+            tracker.selection.begin_publication();
             self.uncertain = true;
             selection.replace_file(&self.root.join(ACTIVE_FILE))?;
             sync_selection(&self.root)?;
@@ -805,6 +860,8 @@ impl ManagedRetainedStore {
         limits: RetainedStoreLimits,
         reclaim_after: bool,
         persisted_storage: Option<CatalogStorageLimits>,
+        tracker: &crate::publication_outcome::Tracker,
+        sync_successor: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<(Active, RetainedStore, Option<CatalogStorage>)> {
         if crate::staging::has_retained_stage(&self.root)? {
             return Err(io::Error::new(
@@ -883,8 +940,9 @@ impl ManagedRetainedStore {
                 "retained generation identifier collision",
             ));
         }
+        tracker.begin_publication();
         stage.publish(&destination)?;
-        sync_existing(&self.root)?;
+        sync_successor(&self.root)?;
         stage.publication_synchronized();
         next._lock.verify_identity(&destination)?;
         let active = Active {

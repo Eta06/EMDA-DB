@@ -385,6 +385,17 @@ allows compaction when a readable live set has outgrown the current base
 budget, even if the suffix is full. After an uncertain resize, one recovery
 ceiling must cover every limit in both the previous and successor generations.
 
+The managed and authority-backed retained stores offer `compact_detailed`
+and detailed variants for changing generation or persistent storage limits.
+`NotPublished` means this call attempted neither successor publication
+nor selection. `SuccessorOutcomeUnknown` means the successor may occupy the
+inactive slot and this call did not attempt selection. Inspect and reclaim
+through the catalog before retrying. `SelectionOutcomeUnknown` covers a
+local selection replacement or an independent authority compare-and-swap
+attempt. Preserve both slots and reopen against the appropriate selection
+metadata before reclaiming or retrying. The original compaction methods
+continue to classify the selection attempt only.
+
 Rebase checks the source frame, the base blocks that may contain
 suffix-touched keys, and the entire witnessed suffix while reconstructing
 historical peaks. It sizes the successor from the original encoded size,

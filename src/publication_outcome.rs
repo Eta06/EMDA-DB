@@ -82,6 +82,63 @@ impl std::error::Error for ManagedRolloverFailure {
     }
 }
 
+/// A failed retained rotation, classified by this call's successor and
+/// selection attempts. Existing slots and staging artifacts can remain in
+/// any case. The outcome does not certify store health or cleanup.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RetainedRotationFailure {
+    /// This call began neither successor publication nor selection.
+    NotPublished(io::Error),
+    /// A successor may occupy the inactive slot. This call did not attempt
+    /// selection. Inspect the slot and use catalog reclamation before retrying.
+    SuccessorOutcomeUnknown(io::Error),
+    /// Replacing the local selection or advancing the independent authority
+    /// may have succeeded. Preserve both slots and reopen before retrying.
+    SelectionOutcomeUnknown(io::Error),
+}
+
+impl RetainedRotationFailure {
+    // The original compact methods classify the selection attempt only.
+    pub(crate) fn into_selection_failure(self) -> PublicationFailure {
+        match self {
+            Self::NotPublished(error) | Self::SuccessorOutcomeUnknown(error) => {
+                PublicationFailure::NotPublished(error)
+            }
+            Self::SelectionOutcomeUnknown(error) => PublicationFailure::OutcomeUnknown(error),
+        }
+    }
+}
+
+impl fmt::Display for RetainedRotationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPublished(error) => {
+                write!(formatter, "rotation publication not started: {error}")
+            }
+            Self::SuccessorOutcomeUnknown(error) => {
+                write!(
+                    formatter,
+                    "rotation successor publication outcome unknown: {error}"
+                )
+            }
+            Self::SelectionOutcomeUnknown(error) => {
+                write!(formatter, "rotation selection outcome unknown: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RetainedRotationFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotPublished(error)
+            | Self::SuccessorOutcomeUnknown(error)
+            | Self::SelectionOutcomeUnknown(error) => Some(error),
+        }
+    }
+}
+
 /// A failed offline managed-selection rebuild, classified by this call's two
 /// publication attempts. Full-log recovery may have adopted and synchronized
 /// an unacknowledged tail before either publication begins. Existing paths and
@@ -318,6 +375,20 @@ pub(crate) fn track_managed_rebuild<T>(
         }
         ManagedRolloverFailure::SelectionOutcomeUnknown(error) => {
             ManagedRebuildFailure::SelectionOutcomeUnknown(error)
+        }
+    })
+}
+
+pub(crate) fn track_retained_rotation<T>(
+    action: impl FnOnce(&ManagedTracker) -> io::Result<T>,
+) -> Result<T, RetainedRotationFailure> {
+    track_managed(action).map_err(|failure| match failure {
+        ManagedRolloverFailure::NotPublished(error) => RetainedRotationFailure::NotPublished(error),
+        ManagedRolloverFailure::CheckpointOutcomeUnknown(error) => {
+            RetainedRotationFailure::SuccessorOutcomeUnknown(error)
+        }
+        ManagedRolloverFailure::SelectionOutcomeUnknown(error) => {
+            RetainedRotationFailure::SelectionOutcomeUnknown(error)
         }
     })
 }

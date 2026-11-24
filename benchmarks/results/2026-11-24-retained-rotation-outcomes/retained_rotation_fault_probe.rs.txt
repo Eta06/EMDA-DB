@@ -1,0 +1,90 @@
+use database_engine::retained_base_v2::Limits;
+use database_engine::retained_candidate::{
+    IndexLimits, ManagedRetainedStore, OverlayLimits, RetainedStoreLimits, SuffixLimits,
+};
+use database_engine::{RetainedExportLimits, RetainedRotationFailure, Store};
+use std::{env, error::Error, fs, path::Path};
+
+const LIMITS: RetainedStoreLimits = RetainedStoreLimits {
+    base: Limits {
+        file_bytes: 8192,
+        entries: 32,
+        key_bytes: 256,
+        work_bytes: 8193,
+    },
+    index: IndexLimits {
+        blocks: 4,
+        anchor_bytes: 64,
+    },
+    suffix: SuffixLimits {
+        bytes: 8192,
+        operations: 64,
+        work: 4096,
+    },
+    overlay: OverlayLimits {
+        entries: 32,
+        key_bytes: 256,
+    },
+};
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let args = env::args().collect::<Vec<_>>();
+    let root = Path::new(&args[2]);
+    let catalog = root.join("catalog");
+    let generation_file = root.join("previous-id");
+    if args[1] == "prepare" {
+        let source = root.join("source");
+        let store = Store::open(&source)?;
+        store.put(b"base", b"original")?;
+        let id = ManagedRetainedStore::copy_from_store(
+            store,
+            &source,
+            &catalog,
+            RetainedExportLimits {
+                max_log_bytes: 8192,
+                max_live_keys: 32,
+                max_live_key_bytes: 256,
+                max_output_bytes: 8192,
+            },
+            LIMITS,
+        )?;
+        let mut store = ManagedRetainedStore::open(&catalog, LIMITS)?;
+        store.put(b"ack", b"kept")?;
+        fs::write(generation_file, id)?;
+        return Ok(());
+    }
+    let mut store = ManagedRetainedStore::open(&catalog, LIMITS)?;
+    match args[1].as_str() {
+        "rotate" => match store.compact_detailed() {
+            Ok(_) => println!("completed"),
+            Err(error) => {
+                let (phase, cause) = match error {
+                    RetainedRotationFailure::NotPublished(error) => ("not-published", error),
+                    RetainedRotationFailure::SuccessorOutcomeUnknown(error) => {
+                        ("successor-unknown", error)
+                    }
+                    RetainedRotationFailure::SelectionOutcomeUnknown(error) => {
+                        ("selection-unknown", error)
+                    }
+                    _ => return Err(error.into()),
+                };
+                assert_eq!(cause.raw_os_error(), Some(5));
+                println!("{phase} os_error=5");
+            }
+        },
+        "reopen" => {
+            let old = fs::read(generation_file)?;
+            let label = if store.generation_id()?.as_slice() == old {
+                "old"
+            } else {
+                "new"
+            };
+            assert_eq!(store.get(b"base", 8)?.unwrap(), b"original");
+            assert_eq!(store.get(b"ack", 4)?.unwrap(), b"kept");
+            assert_eq!(label, args[3]);
+            println!("recovered={label} acknowledged-values=2");
+        }
+        _ => unreachable!(),
+    }
+    Ok(())
+}

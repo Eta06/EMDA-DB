@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Report retained successor publication and selection attempts separately
+  through the detailed compaction methods on managed and authority-backed stores.
+
 - Tighten planned document index ranges with negated comparisons when a
   required positive comparison proves that the same field is indexable.
 
