@@ -386,6 +386,11 @@ fn run_lifecycle(
     };
     let recovery_scan = limits.base.file_bytes + limits.suffix.bytes;
     let copy_scan = 2 * recovery_scan;
+    let witness_bytes = fs::metadata(root.join("retained/commit.state"))?.len();
+    let archive_scan = [copy_scan, archive.log_bytes, witness_bytes, witness_bytes]
+        .into_iter()
+        .try_fold(0, u64::checked_add)
+        .ok_or("archive scan limit overflow")?;
     let provider = FileRetainedAuthority::open(root.join("authority"))?;
     let mut catalog = Catalog::open_with_auto_reclaim(
         root.join("retained"),
@@ -402,11 +407,16 @@ fn run_lifecycle(
     );
     println!("backup_ns={}", start.elapsed().as_nanos());
     let start = Instant::now();
-    if !catalog.retire_cutover_archive(&archive, &backup, &expected)? {
+    if !catalog.retire_cutover_archive_with_scan_limit(
+        &archive,
+        &backup,
+        &expected,
+        archive_scan,
+    )? {
         return Err("expected to retire a legacy archive".into());
     }
     println!(
-        "retire_ns={} retired_log_bytes={}",
+        "retire_ns={} retired_log_bytes={} archive_retirement_scan_limit_bytes={archive_scan}",
         start.elapsed().as_nanos(),
         archive.log_bytes
     );

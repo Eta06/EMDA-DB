@@ -181,9 +181,12 @@ jobs:
                   if row["restored_verified_entries"] != live or row["source_verified_entries"] != live:
                       raise SystemExit("Expected complete restored and source verification under the ceiling")
                   recovery_scan = 140 * 1024**2  # 128 MiB base + 12 MiB suffix
+                  # Retirement verifies both retained copies, the log and both 36-byte witnesses.
+                  archive_scan = 2 * recovery_scan + row["retired_log_bytes"] + 72
                   if (row["lifecycle_recovery_scan_limit_bytes"] != recovery_scan
-                          or row["backup_restore_scan_limit_bytes"] != 2 * recovery_scan):
-                      raise SystemExit("Expected logical copy and registration scan ceilings")
+                          or row["backup_restore_scan_limit_bytes"] != 2 * recovery_scan
+                          or row["archive_retirement_scan_limit_bytes"] != archive_scan):
+                      raise SystemExit("Expected logical copy, registration and archive scan ceilings")
           if not any(row["backend"] == "retained" and row["phase"] == "mutate"
                      and row.get("rotations", 0) > 0 for row in phases):
               raise SystemExit("Expected a retained rotation under the ceiling")

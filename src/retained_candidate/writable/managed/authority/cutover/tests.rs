@@ -131,6 +131,17 @@ fn initial_catalog_quota_counts_cutover_staging_before_fencing() {
     }
 
     let initial = cutover(exact).unwrap();
+    let published = fs::read(root.join("records.log")).unwrap();
+    assert!(matches!(
+        Catalog::recover_cutover_with_recovery_scan_limit(&root, LIMITS, base_bytes - 1),
+        Err(error) if error.kind() == io::ErrorKind::InvalidInput
+            && error.to_string() == "retained recovery scan byte limit exceeded"
+    ));
+    assert_eq!(
+        Catalog::recover_cutover_with_recovery_scan_limit(&root, LIMITS, base_bytes).unwrap(),
+        initial
+    );
+    assert_eq!(fs::read(root.join("records.log")).unwrap(), published);
     assert_eq!(Catalog::recover_cutover(&root, LIMITS).unwrap(), initial);
     let mut provider = FileRetainedAuthority::create(tmp.path().join("authority")).unwrap();
     assert!(provider.compare_and_swap(None, initial).unwrap());
@@ -376,6 +387,115 @@ fn original_path_requires_fence_and_independent_registration() {
 }
 
 #[test]
+fn archive_retirement_scan_limit_covers_both_copies_and_remaining_archive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("source");
+    let source = seed(&root);
+    let log = fs::read(root.join("records.log")).unwrap();
+    let witness = fs::read(root.join("commit.state")).unwrap();
+    let archive = CutoverArchiveBinding {
+        log_bytes: log.len() as u64,
+        log_digest: Sha256::digest(&log).into(),
+        witness_digest: Sha256::digest(&witness).into(),
+    };
+    let initial = Catalog::cutover_from_store(source, &root, EXPORT, LIMITS).unwrap();
+    let fence = fs::read(root.join("records.log")).unwrap();
+    let provider_path = tmp.path().join("authority");
+    let mut provider = FileRetainedAuthority::create(&provider_path).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let mut store = Catalog::open(&root, LIMITS, provider).unwrap();
+    store.put(b"tail", b"acknowledged").unwrap();
+    let current = store.current;
+    let catalog = store.inner.root.clone();
+    let archived_log = catalog.join(ARCHIVE_LOG);
+    let archived_witness = catalog.join(ARCHIVE_WITNESS);
+    let backup = tmp.path().join("backup");
+    let expected = store.backup_to(&backup).unwrap();
+    let suffix = backup.join("suffix");
+    let suffix_bytes = fs::read(&suffix).unwrap();
+    let base = fs::read(backup.join("candidate/base")).unwrap();
+    let full = 2 * (base.len() as u64 + suffix_bytes.len() as u64)
+        + archive.log_bytes
+        + 2 * witness.len() as u64;
+    let too_small = |failure: CutoverArchiveRetirementFailure| {
+        assert_eq!(failure.step, CutoverArchiveRetirementStep::Verify);
+        assert_eq!(failure.error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            failure.error.to_string(),
+            "retained archive retirement scan byte limit exceeded"
+        );
+        assert!(!failure.log_unlinked && !failure.witness_unlinked);
+    };
+    fs::write(&suffix, vec![0; suffix_bytes.len()]).unwrap();
+    too_small(
+        store
+            .retire_cutover_archive_with_scan_limit(&archive, &backup, &expected, full - 1)
+            .unwrap_err(),
+    );
+    let corrupt = store
+        .retire_cutover_archive_with_scan_limit(&archive, &backup, &expected, full)
+        .unwrap_err();
+    assert_eq!(corrupt.step, CutoverArchiveRetirementStep::Verify);
+    assert_eq!(corrupt.error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(fs::read(&archived_log).unwrap(), log);
+    assert_eq!(fs::read(&archived_witness).unwrap(), witness);
+    fs::write(&suffix, &suffix_bytes).unwrap();
+
+    let failed = store
+        .retire_archive_using(
+            &archive,
+            (&backup, &expected),
+            Some(full),
+            sync_existing,
+            |path| {
+                if path == archived_log {
+                    fs::remove_file(path)
+                } else {
+                    Err(io::Error::other("injected witness unlink failure"))
+                }
+            },
+            |_| panic!("catalog sync after failed unlink"),
+        )
+        .unwrap_err();
+    assert_eq!(failed.step, CutoverArchiveRetirementStep::UnlinkWitness);
+    assert!(failed.log_unlinked && !failed.witness_unlinked);
+    assert_eq!(fs::read(&archived_witness).unwrap(), witness);
+    let partial = full - archive.log_bytes;
+    too_small(
+        store
+            .retire_cutover_archive_with_scan_limit(&archive, &backup, &expected, partial - 1)
+            .unwrap_err(),
+    );
+    assert!(
+        store
+            .retire_cutover_archive_with_scan_limit(&archive, &backup, &expected, partial)
+            .unwrap()
+    );
+    assert!(!archived_log.exists() && !archived_witness.exists());
+    let empty = partial - witness.len() as u64;
+    too_small(
+        store
+            .retire_cutover_archive_with_scan_limit(&archive, &backup, &expected, empty - 1)
+            .unwrap_err(),
+    );
+    assert!(
+        !store
+            .retire_cutover_archive_with_scan_limit(&archive, &backup, &expected, empty)
+            .unwrap()
+    );
+
+    assert_eq!(fs::read(root.join("records.log")).unwrap(), fence);
+    assert_eq!(fs::read(root.join("commit.state")).unwrap(), witness);
+    assert_eq!(fs::read(&suffix).unwrap(), suffix_bytes);
+    assert_eq!(fs::read(backup.join("candidate/base")).unwrap(), base);
+    assert_eq!(store.authority.read().unwrap(), Some(current));
+    assert_eq!(
+        store.get(b"tail", 12).unwrap().as_deref(),
+        Some(&b"acknowledged"[..])
+    );
+}
+
+#[test]
 fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("source");
@@ -446,8 +566,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     let parked_suffix = tmp.path().join("parked-backup-suffix");
     let result = store.retire_archive_using(
         &binding,
-        &backup,
-        &expected,
+        (&backup, &expected),
+        None,
         |directory| {
             fs::rename(&suffix, &parked_suffix)?;
             fs::write(&suffix, &saved)?;
@@ -470,8 +590,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     let damaged_suffix = vec![0; saved.len()];
     let result = store.retire_archive_using(
         &binding,
-        &backup,
-        &expected,
+        (&backup, &expected),
+        None,
         |directory| {
             fs::write(&suffix, &damaged_suffix)?;
             sync_existing(directory)
@@ -493,8 +613,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
 
     let result = store.retire_archive_using(
         &binding,
-        &backup,
-        &expected,
+        (&backup, &expected),
+        None,
         |_| Err(io::Error::other("injected backup directory sync failure")),
         |_| panic!("retirement started after backup sync failure"),
         |_| panic!("catalog sync after failed verification"),
@@ -514,8 +634,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     let failure = store
         .retire_archive_using(
             &binding,
-            &backup,
-            &expected,
+            (&backup, &expected),
+            None,
             sync_existing,
             |path| {
                 assert_eq!(path, log);
@@ -533,8 +653,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     let failure = store
         .retire_archive_using(
             &binding,
-            &backup,
-            &expected,
+            (&backup, &expected),
+            None,
             sync_existing,
             |path| {
                 if path == log {
@@ -568,8 +688,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     let failure = store
         .retire_archive_using(
             &binding,
-            &backup,
-            &expected,
+            (&backup, &expected),
+            None,
             sync_existing,
             |path| {
                 assert_eq!(path, witness);
@@ -584,8 +704,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
     let failure = store
         .retire_archive_using(
             &binding,
-            &backup,
-            &expected,
+            (&backup, &expected),
+            None,
             sync_existing,
             |_| panic!("retry attempted to unlink an absent file"),
             sync_failure,
@@ -598,8 +718,8 @@ fn archive_retirement_checks_backup_and_identity_and_resumes_partial_unlink() {
         !store
             .retire_archive_using(
                 &binding,
-                &backup,
-                &expected,
+                (&backup, &expected),
+                None,
                 sync_existing,
                 |_| panic!("retry attempted to unlink an absent file"),
                 |directory| {

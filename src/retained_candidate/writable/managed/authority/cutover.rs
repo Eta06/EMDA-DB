@@ -310,13 +310,36 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         root: impl AsRef<Path>,
         limits: RetainedStoreLimits,
     ) -> io::Result<AuthorityRecord> {
-        let fence = Fence::load(root.as_ref())?;
+        Self::recover_cutover_using(root.as_ref(), limits, None)
+    }
+
+    /// Recover an uncertain cutover under the combined logical scan ceiling of
+    /// [`Self::open_with_recovery_scan_limit`]. The initial generation remains
+    /// bound to the exact authority point recorded in the published fence.
+    pub fn recover_cutover_with_recovery_scan_limit(
+        root: impl AsRef<Path>,
+        limits: RetainedStoreLimits,
+        max_scan_bytes: u64,
+    ) -> io::Result<AuthorityRecord> {
+        Self::recover_cutover_using(
+            root.as_ref(),
+            limits,
+            Some(RecoveryScanLimit::BaseAndSuffix(max_scan_bytes)),
+        )
+    }
+
+    fn recover_cutover_using(
+        root: &Path,
+        limits: RetainedStoreLimits,
+        scan_limit: Option<RecoveryScanLimit>,
+    ) -> io::Result<AuthorityRecord> {
+        let fence = Fence::load(root)?;
         let initial = fence.initial();
         let _store = ManagedRetainedStore::open_role(
             &fence.catalog_path(),
             limits,
             CUTOVER_MAGIC,
-            (None, None),
+            (None, scan_limit),
             |root, catalog| select_authorized(root, catalog, initial.committed),
             Some(initial),
         )?;
@@ -360,8 +383,29 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     ) -> Result<bool, CutoverArchiveRetirementFailure> {
         self.retire_archive_using(
             archive,
-            backup.as_ref(),
-            expected,
+            (backup.as_ref(), expected),
+            None,
+            sync_existing,
+            |path| fs::remove_file(path),
+            sync_existing,
+        )
+    }
+
+    /// Retire under an inclusive logical read ceiling. Charge the original
+    /// root witness, each present archive file, and both the active and backup
+    /// base and suffix. Admission precedes payload verification and unlinks.
+    /// Metadata and EOF probes, I/O retries and synchronization are separate.
+    pub fn retire_cutover_archive_with_scan_limit(
+        &mut self,
+        archive: &CutoverArchiveBinding,
+        backup: impl AsRef<Path>,
+        expected: &SuffixExpected,
+        max_scan_bytes: u64,
+    ) -> Result<bool, CutoverArchiveRetirementFailure> {
+        self.retire_archive_using(
+            archive,
+            (backup.as_ref(), expected),
+            Some(max_scan_bytes),
             sync_existing,
             |path| fs::remove_file(path),
             sync_existing,
@@ -371,8 +415,8 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
     fn retire_archive_using(
         &mut self,
         archive: &CutoverArchiveBinding,
-        backup: &Path,
-        expected: &SuffixExpected,
+        (backup, expected): (&Path, &SuffixExpected),
+        max_scan_bytes: Option<u64>,
         sync_backup_directory: impl FnOnce(&Path) -> io::Result<()>,
         mut remove: impl FnMut(&Path) -> io::Result<()>,
         sync_catalog: impl FnOnce(&Path) -> io::Result<()>,
@@ -405,18 +449,40 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             }
             check_separation(&fence.root, backup)?;
             let witness_bytes = crate::witness::WITNESS_SIZE as u64;
-            if !check_archive_file(
-                &fence.root.join("commit.state"),
-                witness_bytes,
-                &archive.witness_digest,
-            )? {
-                return Err(record::invalid_data("cutover source witness is missing"));
-            }
+            let original = open_archive_file(&fence.root.join("commit.state"), witness_bytes)?
+                .ok_or_else(|| record::invalid_data("cutover source witness is missing"))?;
             let log = root.join(ARCHIVE_LOG);
             let witness = root.join(ARCHIVE_WITNESS);
-            let have_log = check_archive_file(&log, archive.log_bytes, &archive.log_digest)?;
-            let have_witness =
-                check_archive_file(&witness, witness_bytes, &archive.witness_digest)?;
+            let log_file = open_archive_file(&log, archive.log_bytes)?;
+            let witness_file = open_archive_file(&witness, witness_bytes)?;
+            let have_log = log_file.is_some();
+            let have_witness = witness_file.is_some();
+            if let Some(limit) = max_scan_bytes {
+                let base = expected.candidate.base_bytes();
+                let suffix = expected.end;
+                let scans = [
+                    witness_bytes,
+                    if have_log { archive.log_bytes } else { 0 },
+                    if have_witness { witness_bytes } else { 0 },
+                    base,
+                    suffix,
+                    base,
+                    suffix,
+                ];
+                scans
+                    .into_iter()
+                    .try_fold(limit, u64::checked_sub)
+                    .ok_or_else(|| {
+                        invalid_input("retained archive retirement scan byte limit exceeded")
+                    })?;
+            }
+            verify_archive_file(original, witness_bytes, &archive.witness_digest)?;
+            if let Some(file) = log_file {
+                verify_archive_file(file, archive.log_bytes, &archive.log_digest)?;
+            }
+            if let Some(file) = witness_file {
+                verify_archive_file(file, witness_bytes, &archive.witness_digest)?;
+            }
             self.inner
                 .store
                 .verify_complete(&self.inner.active.slot.path(&root))?;
@@ -452,17 +518,31 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
 }
 
 fn check_archive_file(path: &Path, bytes: u64, digest: &[u8; 32]) -> io::Result<bool> {
+    let Some(file) = open_archive_file(path, bytes)? else {
+        return Ok(false);
+    };
+    verify_archive_file(file, bytes, digest)?;
+    Ok(true)
+}
+
+fn open_archive_file(path: &Path, bytes: u64) -> io::Result<Option<fs::File>> {
     let file = match open_regular(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
+    if file.metadata()?.len() != bytes {
+        return Err(record::invalid_data("cutover archive fingerprint mismatch"));
+    }
+    Ok(Some(file))
+}
+
+fn verify_archive_file(file: fs::File, bytes: u64, digest: &[u8; 32]) -> io::Result<()> {
     let mut hash = Sha256::new();
-    if file.metadata()?.len() != bytes
-        || io::copy(&mut file.take(bytes.saturating_add(1)), &mut hash)? != bytes
+    if io::copy(&mut file.take(bytes.saturating_add(1)), &mut hash)? != bytes
         || <[u8; 32]>::from(hash.finalize()) != *digest
     {
         return Err(record::invalid_data("cutover archive fingerprint mismatch"));
     }
-    Ok(true)
+    Ok(())
 }

@@ -706,6 +706,8 @@ record. The original store lock remains held through synchronization.
 Register the returned initial record on absent independent authority.
 If the publication outcome is uncertain, `recover_cutover` verifies the
 visible fence and initial generation before supplying that record.
+`recover_cutover_with_recovery_scan_limit` applies the combined base and
+suffix recovery ceiling before reading those payloads.
 If the ordinary store still opens, its data can be migrated again with a
 fresh preparation. A failure before fencing can leave an inert nested
 preparation. Authorized
@@ -780,6 +782,13 @@ flags record unlink calls that returned success during that attempt.
 They describe the observed operations. Persistence requires successful
 catalog sync. Even a retry that finds neither archive name must
 synchronize the catalog directory before returning success.
+
+`retire_cutover_archive_with_scan_limit` applies an inclusive logical read
+ceiling before payload verification or unlinks. The charge includes the
+original root witness, each still-present archive file, and the complete
+base and suffix of both the active and backup copies. A retry only charges
+archive files still present and performs the same verification and sync.
+A budget refusal reports the verification step with both unlink flags false.
 
 An operator can discard a complete abandoned preparation by passing
 the 16-byte identifier encoded in its `retained-cutover-*` name.

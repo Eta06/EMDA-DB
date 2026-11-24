@@ -565,6 +565,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   describes the ceilings. Regressions verify that short budgets preserve
   the destination, retained receipt callback, local witness and authority
   as applicable, and that admitted corrupted bytes still fail verification.
+- [x] Bound uncertain cutover recovery and verification before legacy
+  archive retirement. [Cutover tests](../src/retained_candidate/writable/managed/authority/cutover/tests.rs)
+  cover exact admission, corruption under an admitted budget, and retries
+  after a partial unlink and after both archive names are absent.
 - [ ] Complete the retained-history lifecycle for independently retained backups and measure recovery at deployment scale. Retained reopen verifies the entire admitted base and replays a bounded suffix. Rotation is synchronous. Limits do not bound all allocations or the total disk space across active and retired files. Any path that skips full verification needs a documented corruption model and equivalent validation. Reclamation must preserve captured reads and transactions, recover from interrupted publication, and reject stale generations according to the authority contract.
   The [million-key larger-suffix comparison](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md)
   exercises 32,768 mutations per epoch and local authorized restore on macOS
