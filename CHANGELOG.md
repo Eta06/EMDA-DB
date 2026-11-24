@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Pack checkpoint lookup landmarks into one bounded array and use
+  fallible reservations when building the sparse block directory.
+
 - Verify a checkpoint's covered log once when adopting a complete tail.
   Recovery binds replay and the writer to the same log file.
 

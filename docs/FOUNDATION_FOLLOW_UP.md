@@ -280,6 +280,10 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   final writer descriptor and still verifies the exact replayed suffix.
   The [V3 adoption traces](../benchmarks/results/2026-11-24-checkpoint-tail-adoption/README.md)
   check both the read volume and synchronization of the updated witness.
+  The checkpoint index shares one packed landmark array across its blocks.
+  Directory and landmark capacities have fallible reservations bounded by
+  the configured file and block ceilings. [Paired allocation measurements](../benchmarks/results/2026-11-24-packed-checkpoint-landmarks/README.md)
+  cover three checkpoint fixtures and include lookups and scans.
   Checkpoint overlay versions share immutable key bytes. In the
   [allocation probe](../benchmarks/results/2026-11-24-checkpoint-overlay-keys/README.md),
   one put with a snapshot pinning 4,096 suffix keys requested 91.8% fewer

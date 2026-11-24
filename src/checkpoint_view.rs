@@ -19,12 +19,17 @@ const KEY_PREFIX_BYTES: usize = 16;
 // A sparse directory of entry offsets reduces per-lookup decoding work while
 // retaining the full block read and SHA-256 verification on every access.
 const LANDMARK_INTERVAL: usize = 16;
+const MIN_ENTRY_BYTES: usize = checkpoint::ENTRY_FIXED_BYTES as usize + 1;
+const MAX_BLOCK_LANDMARKS: usize =
+    (MAX_CHECKPOINT_VIEW_BLOCK_BYTES / MIN_ENTRY_BYTES - 1) / LANDMARK_INTERVAL;
 /// Largest checkpoint file accepted by the bounded view.
 pub const MAX_CHECKPOINT_VIEW_FILE_BYTES: u64 =
     MAX_CHECKPOINT_VIEW_BLOCKS as u64 * MAX_CHECKPOINT_VIEW_BLOCK_BYTES as u64 + 100;
 
 /// Per-view admission limits for checkpoint verification and its block directory.
-/// These logical limits are not a total process-memory or disk quota.
+/// The block and file limits bound the capacities requested for the sparse
+/// directory and its packed landmark offsets. Allocator overhead, temporary
+/// buffers and other views have separate memory costs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CheckpointViewLimits {
     /// Maximum verified checkpoint file length in bytes.
@@ -54,6 +59,31 @@ impl CheckpointViewLimits {
         }
         Ok(())
     }
+
+    fn max_landmarks(self) -> usize {
+        // Each recorded offset follows at least LANDMARK_INTERVAL distinct
+        // entries. A block's first entry needs no offset.
+        let from_bytes = self.max_file_bytes / (MIN_ENTRY_BYTES * LANDMARK_INTERVAL) as u64;
+        let from_blocks = self.max_blocks * MAX_BLOCK_LANDMARKS;
+        from_bytes.min(from_blocks as u64) as usize
+    }
+}
+
+fn reserve_directory_slot<T>(
+    directory: &mut Vec<T>,
+    limit: usize,
+    limit_error: impl FnOnce() -> io::Error,
+) -> io::Result<()> {
+    if directory.len() >= limit {
+        return Err(limit_error());
+    }
+    if directory.len() == directory.capacity() {
+        let capacity = directory.capacity().saturating_mul(2).max(4).min(limit);
+        directory
+            .try_reserve_exact(capacity - directory.len())
+            .map_err(|_| io::Error::other("checkpoint block directory allocation failed"))?;
+    }
+    Ok(())
 }
 
 struct Block {
@@ -62,7 +92,7 @@ struct Block {
     offset: u64,
     length: usize,
     digest: [u8; 32],
-    landmarks: Vec<u16>,
+    landmark_end: u32,
 }
 
 impl Block {
@@ -86,19 +116,19 @@ struct BlockBuilder {
     length: usize,
     digest: Sha256,
     entries: usize,
-    landmarks: Vec<u16>,
 }
 
 impl BlockBuilder {
-    fn finish(self) -> Block {
-        Block {
+    fn finish(self, landmarks: usize) -> io::Result<Block> {
+        Ok(Block {
             first_key_prefix: self.first_key_prefix,
             first_key_len: self.first_key_len,
             offset: self.offset,
             length: self.length,
             digest: self.digest.finalize().into(),
-            landmarks: self.landmarks,
-        }
+            landmark_end: u32::try_from(landmarks)
+                .map_err(|_| record::invalid_data("checkpoint landmark directory overflow"))?,
+        })
     }
 }
 
@@ -126,6 +156,16 @@ pub struct CheckpointView {
 struct CheckpointIndex {
     file: File,
     blocks: Vec<Block>,
+    landmarks: Vec<u16>,
+}
+
+impl CheckpointIndex {
+    fn landmarks(&self, position: usize) -> &[u16] {
+        let start = position
+            .checked_sub(1)
+            .map_or(0, |i| self.blocks[i].landmark_end);
+        &self.landmarks[start as usize..self.blocks[position].landmark_end as usize]
+    }
 }
 
 pub(crate) enum TailAdmission {
@@ -318,6 +358,8 @@ impl CheckpointView {
         };
         let checkpoint = checkpoint::open_index_file(checkpoint)?;
         let mut blocks = Vec::new();
+        let mut landmarks = Vec::new();
+        let max_landmarks = limits.max_landmarks();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;
         let verified = checkpoint::visit_index_file(
@@ -337,12 +379,19 @@ impl CheckpointView {
                     .as_ref()
                     .is_some_and(|block| block.length + size > MAX_CHECKPOINT_VIEW_BLOCK_BYTES)
                 {
-                    blocks.push(current.take().expect("current block").finish());
+                    blocks.push(
+                        current
+                            .take()
+                            .expect("current block")
+                            .finish(landmarks.len())?,
+                    );
                 }
                 if current.is_none() {
-                    if blocks.len() >= limits.max_blocks {
-                        return Err(checkpoint::block_limit_error());
-                    }
+                    reserve_directory_slot(
+                        &mut blocks,
+                        limits.max_blocks,
+                        checkpoint::block_limit_error,
+                    )?;
                     let mut first_key_prefix = [0; KEY_PREFIX_BYTES];
                     let prefix_len = key.len().min(KEY_PREFIX_BYTES);
                     first_key_prefix[..prefix_len].copy_from_slice(&key[..prefix_len]);
@@ -353,16 +402,16 @@ impl CheckpointView {
                         length: 0,
                         digest: Sha256::new(),
                         entries: 0,
-                        landmarks: Vec::new(),
                     });
                 }
                 let block = current.as_mut().expect("current block");
-                if block.entries % LANDMARK_INTERVAL == 0 {
-                    block
-                        .landmarks
-                        .push(u16::try_from(block.length).map_err(|_| {
-                            record::invalid_data("checkpoint landmark offset overflow")
-                        })?);
+                if block.entries != 0 && block.entries % LANDMARK_INTERVAL == 0 {
+                    reserve_directory_slot(&mut landmarks, max_landmarks, || {
+                        record::invalid_data("checkpoint landmark directory exceeds its bounds")
+                    })?;
+                    landmarks.push(u16::try_from(block.length).map_err(|_| {
+                        record::invalid_data("checkpoint landmark offset overflow")
+                    })?);
                 }
                 block.digest.update(key_len);
                 block.digest.update(key);
@@ -374,7 +423,7 @@ impl CheckpointView {
             },
         )?;
         if let Some(block) = current {
-            blocks.push(block.finish());
+            blocks.push(block.finish(landmarks.len())?);
         }
         let length = Self::check_log_limit(&log, max_log_bytes)?;
         if let Some(limit) = max_tail_bytes {
@@ -390,6 +439,7 @@ impl CheckpointView {
             index: Arc::new(CheckpointIndex {
                 file: checkpoint,
                 blocks,
+                landmarks,
             }),
             prefix: verified.prefix,
             log_digest: verified.log_digest,
@@ -609,12 +659,14 @@ impl CheckpointView {
             Some(key) => lookup.preceding_block(key)?.unwrap_or(0),
             None => 0,
         };
-        for (position, block) in self.index.blocks.iter().enumerate().skip(start) {
+        for position in start..self.index.blocks.len() {
             let bytes = lookup.block(position)?;
             // Blocks after the first are strictly above the lower bound.
             let lower = after.take();
             let mut cursor = match lower {
-                Some(key) => BlockCursor::at_key(bytes, self.prefix, &block.landmarks, key)?,
+                Some(key) => {
+                    BlockCursor::at_key(bytes, self.prefix, self.index.landmarks(position), key)?
+                }
                 None => BlockCursor::new(bytes, self.prefix),
             };
             while let Some((key, location)) = cursor.next()? {
@@ -683,7 +735,7 @@ impl CheckpointLookup<'_> {
             return Ok(None);
         };
         let view = self.view;
-        let landmarks = &view.index.blocks[position].landmarks;
+        let landmarks = view.index.landmarks(position);
         let mut cursor = BlockCursor::at_key(self.block(position)?, view.prefix, landmarks, key)?;
         while let Some((candidate, location)) = cursor.next()? {
             match candidate.cmp(key) {
@@ -799,6 +851,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn packed_landmarks_preserve_lookups_and_avoid_overreserving_blocks() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("index");
+        let keys = (0_u16..145)
+            .map(|number| {
+                let mut key = vec![0; 1_000];
+                key[..2].copy_from_slice(&number.to_be_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        let operations = keys
+            .iter()
+            .map(|key| crate::BatchOperation::Put { key, value: b"v" })
+            .collect::<Vec<_>>();
+        let store = crate::Store::open(&path).unwrap();
+        store.write_batch(&operations).unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        store.close_private_store().unwrap();
+        let limits = CheckpointViewLimits {
+            max_file_bytes: std::fs::metadata(&checkpoint).unwrap().len(),
+            max_blocks: 5,
+        };
+        let view = CheckpointView::open_with_limits(&path, &checkpoint, &digest, limits).unwrap();
+        assert_eq!(view.block_count(), 5);
+        assert!(view.index.blocks.capacity() <= limits.max_blocks);
+        assert_eq!(view.index.landmarks, vec![16 * 1_018; 5]);
+        assert!(view.index.landmarks.capacity() <= limits.max_landmarks());
+        for key in &keys {
+            assert_eq!(view.get(key).unwrap().as_deref(), Some(b"v".as_slice()));
+        }
+        let scan = view.scan(Some(&keys[30]), Some(&keys[66]), 100).unwrap();
+        assert_eq!(
+            scan.into_iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            keys[31..66]
+        );
+    }
+
+    #[test]
     fn snapshots_share_the_verified_file_and_directory_until_the_last_drop() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("store");
@@ -852,7 +943,7 @@ mod tests {
                 offset: 0,
                 length: 0,
                 digest: [0; 32],
-                landmarks: Vec::new(),
+                landmark_end: 0,
             };
             for key in &keys {
                 match block.compare_prefix(key) {
