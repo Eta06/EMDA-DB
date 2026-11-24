@@ -5,7 +5,7 @@ use database_engine::{
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
     MAX_SNAPSHOT_TOTAL_KEY_BYTES, MAX_SNAPSHOT_TOTAL_KEYS, Store,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use database_engine::{OnlineCompactionOptions, OnlineStore};
 use serde_json::json;
 use std::{
@@ -260,7 +260,7 @@ fn ordinary_document_point_reads_share_snapshot_admission() {
     assert_eq!(db.get("c", "id").unwrap(), Some(json!({"n":1})));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn blocking_handoffs_preserve_configured_limits_but_reopen_resets_them() {
     for checkpoint_mode in [false, true] {
@@ -314,7 +314,7 @@ fn blocking_handoffs_preserve_configured_limits_but_reopen_resets_them() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn online_compaction_rejects_a_zero_snapshot_budget_without_replacing_the_store() {
     let root = tempfile::tempdir().unwrap();

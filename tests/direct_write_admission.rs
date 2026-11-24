@@ -179,7 +179,7 @@ fn rejection_by_group_commit_releases_direct_write_admission() {
     assert_eq!(store.direct_write_status().active, 0);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn both_blocking_compaction_handoffs_preserve_limits_and_reopen_resets() {
     for checkpoint_mode in [false, true] {

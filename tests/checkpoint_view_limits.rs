@@ -384,7 +384,7 @@ fn automatic_rollover_limit_rejection_keeps_selection_and_acknowledged_writes() 
     assert_eq!(store.get(b"two").unwrap(), None);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn compaction_handoff_preserves_checkpoint_view_limits() {
     let root = tempfile::tempdir().unwrap();
@@ -416,7 +416,7 @@ fn compaction_handoff_preserves_checkpoint_view_limits() {
     store.rollover_to(root.path().join("next-index")).unwrap();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn over_limit_compaction_candidate_is_not_published() {
     let root = tempfile::tempdir().unwrap();

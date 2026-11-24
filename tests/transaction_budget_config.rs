@@ -1,4 +1,4 @@
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use database_engine::{COMPACTED_CHECKPOINT_FILE, OnlineStore};
 use database_engine::{
     CancellationToken, CheckpointStore, ControlledTransactionError, DocumentDatabase,
@@ -452,7 +452,7 @@ fn checkpoint_read_set_reservations_obey_the_same_configured_budget() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen() {
     for checkpoint_mode in [false, true] {
         let root = tempfile::tempdir().unwrap();
@@ -508,7 +508,7 @@ fn limit_survives_ordinary_and_checkpoint_compaction_but_not_reopen() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn online_handoff_preserves_the_latest_transaction_limit() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("store");

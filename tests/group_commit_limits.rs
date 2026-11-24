@@ -148,7 +148,7 @@ fn admission_rejection_releases_a_log_quota_reservation() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn compact_handoff_preserves_limits_but_a_later_reopen_resets_them() {
     let root = tempfile::tempdir().unwrap();

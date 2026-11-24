@@ -24,7 +24,7 @@ fn create_source(path: &std::path::Path, v2: bool) -> Store {
     store
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detailed_handoffs_preserve_rejected_and_successful_copies_in_both_formats() {
     for v2 in [true, false] {
@@ -125,7 +125,7 @@ fn detailed_handoffs_preserve_rejected_and_successful_copies_in_both_formats() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
 fn unsupported_detailed_handoffs_are_rejected_before_publication() {
     let root = tempfile::tempdir().unwrap();

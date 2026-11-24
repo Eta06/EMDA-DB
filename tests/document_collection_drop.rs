@@ -2,7 +2,7 @@ mod support;
 use database_engine::{
     CheckpointStore, CollectionSchema, DocumentDatabase, IndexDefinition, Store,
 };
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use database_engine::{OnlineCompactionOptions, OnlineStore};
 use serde_json::json;
 use std::{
@@ -210,7 +210,7 @@ fn backup_restore_resumes_the_captured_drop_even_if_source_progresses() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn compaction_handoffs_preserve_an_in_progress_drop() {
     let root = tempfile::tempdir().unwrap();
@@ -236,7 +236,7 @@ fn compaction_handoffs_preserve_an_in_progress_drop() {
     finish_and_check(&DocumentDatabase::with_checkpoint_store(&store));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn online_handoff_preserves_a_checkpoint_origin_drop_cursor() {
     let root = tempfile::tempdir().unwrap();

@@ -777,7 +777,7 @@ fn concurrent_batches_cannot_oversubscribe_suffix_operations() {
     assert_operation_limit(store.delete(b"a"));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn suffix_operation_limit_survives_directory_handoff() {
     let (dir, path, checkpoint, digest, _) = fixture();

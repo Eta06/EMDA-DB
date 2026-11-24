@@ -139,7 +139,7 @@ fn acknowledged_document_and_index_survive_process_termination() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn document_indexes_survive_managed_checkpoint_compaction_and_reopen() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("live");
@@ -225,7 +225,7 @@ fn document_backup_restore_captures_one_consistent_version_on_both_backends() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn ordinary_compaction_preserves_document_and_unique_index_invariants() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("live");
@@ -247,7 +247,7 @@ fn ordinary_compaction_preserves_document_and_unique_index_invariants() {
 }
 
 #[test]
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn unsupported_compaction_handoffs_preserve_documents_and_source_files() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("live");

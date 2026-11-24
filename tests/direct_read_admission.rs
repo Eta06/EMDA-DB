@@ -157,7 +157,7 @@ fn zero_blocks_direct_reads_but_not_writes_transactions_snapshots_or_documents()
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn blocking_compaction_preserves_the_limit_and_reopen_resets_it() {
     for checkpoint_mode in [false, true] {

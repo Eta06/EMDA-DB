@@ -4,9 +4,9 @@ use database_engine::{
 };
 use std::fs;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod support;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use support::retry_lock;
 
 fn create_store(path: &std::path::Path, v2: bool) -> OnlineStore {
@@ -67,7 +67,7 @@ fn owned_snapshot_keeps_a_captured_store_readable_until_cancelled() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn owned_snapshots_read_reclaimed_logs_and_share_capacity_across_generations() {
     use database_engine::{CollectionSchema, DocumentDatabase, DocumentSnapshot};
@@ -169,7 +169,7 @@ fn owned_snapshots_read_reclaimed_logs_and_share_capacity_across_generations() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detailed_online_reclamation_preserves_data_after_rejection_and_success() {
     for v2 in [true, false] {
@@ -207,7 +207,7 @@ fn detailed_online_reclamation_preserves_data_after_rejection_and_success() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn detailed_online_handoff_preserves_rejected_and_successful_copies() {
     for v2 in [true, false] {
@@ -253,7 +253,7 @@ fn detailed_online_handoff_preserves_rejected_and_successful_copies() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
 fn unsupported_detailed_online_handoff_keeps_handle_usable() {
     let root = tempfile::tempdir().unwrap();
