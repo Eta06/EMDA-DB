@@ -295,6 +295,87 @@ fn full_recovery_operation_limit_counts_batch_children_before_tail_adoption() {
 }
 
 #[test]
+fn full_recovery_scan_limit_reserves_confirmation_before_replaying_pending_log() {
+    let dir = tempdir().unwrap();
+    let path = dir.path();
+    let log = path.join("records.log");
+    let witness = path.join("commit.state");
+    let store = open_v2(path).unwrap();
+    store.put(b"earlier", b"acknowledged").unwrap();
+    let prior_witness = fs::read(&witness).unwrap();
+    store.put(b"later", b"pending").unwrap();
+    let new_witness = fs::read(&witness).unwrap();
+    drop(store);
+    fs::write(&witness, &prior_witness).unwrap();
+    let bytes = fs::read(&log).unwrap();
+    let length = bytes.len() as u64;
+    let open = |limit| {
+        Store::open_with_recovery_scan_limit_detailed(
+            path,
+            StoreRecoveryLimits {
+                max_log_bytes: Some(length),
+                max_recovery_operations: Some(2),
+                ..Default::default()
+            },
+            limit,
+        )
+    };
+    let rejected = |limit| {
+        assert!(matches!(
+            open(limit), Err(RecoveryOpenFailure::NotAdopted(error))
+                if error.kind() == io::ErrorKind::InvalidInput
+                    && error.to_string() == "full recovery log scan byte limit exceeded"
+        ));
+    };
+    let mut damaged = bytes.clone();
+    *damaged.last_mut().unwrap() ^= 1;
+    fs::write(&log, &damaged).unwrap();
+    rejected(2 * length - 1);
+    assert!(matches!(
+        open(2 * length), Err(RecoveryOpenFailure::NotAdopted(error))
+            if error.kind() == io::ErrorKind::InvalidData
+    ));
+    assert_eq!(fs::read(&log).unwrap(), damaged);
+    assert_eq!(fs::read(&witness).unwrap(), prior_witness);
+    fs::write(&log, &bytes).unwrap();
+
+    let store = open(2 * length).unwrap();
+    assert_eq!(store.get(b"later").unwrap().unwrap(), b"pending");
+    assert_eq!(fs::read(&witness).unwrap(), new_witness);
+    drop(store);
+    rejected(length - 1);
+    let reopened = open(length).unwrap();
+    assert_eq!(reopened.get(b"earlier").unwrap().unwrap(), b"acknowledged");
+    assert_eq!(fs::read(&log).unwrap(), bytes);
+    assert_eq!(fs::read(&witness).unwrap(), new_witness);
+}
+
+#[test]
+fn legacy_full_recovery_scan_limit_counts_only_one_pass() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("records.log");
+    let bytes = include_bytes!("fixtures/db01-legacy-record.bin");
+    fs::write(&log, bytes).unwrap();
+    let open = |limit| {
+        Store::open_with_recovery_scan_limit_detailed(dir.path(), Default::default(), limit)
+    };
+    assert!(matches!(
+        open(bytes.len() as u64 - 1), Err(RecoveryOpenFailure::NotAdopted(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert_eq!(
+        open(bytes.len() as u64)
+            .unwrap()
+            .scan(None, None, 2)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(fs::read(log).unwrap(), bytes);
+    assert!(!dir.path().join("commit.state").exists());
+}
+
+#[test]
 fn recovery_operation_limit_admits_empty_and_legacy_logs_at_exact_boundaries() {
     let root = tempdir().unwrap();
     let empty = root.path().join("empty");

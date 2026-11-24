@@ -265,6 +265,7 @@ impl CheckpointStore {
                     crate::Store::open_with_recovery_checks_tracked(
                         path,
                         crate::StoreRecoveryLimits::default(),
+                        None,
                         check,
                         Some(&tracker.tail_adoption),
                     )
@@ -331,6 +332,7 @@ impl CheckpointStore {
                             max_live_key_bytes,
                             ..Default::default()
                         },
+                        None,
                         check,
                         Some(&tracker.tail_adoption),
                     )

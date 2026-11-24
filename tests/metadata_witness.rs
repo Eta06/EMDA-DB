@@ -1,6 +1,6 @@
 //! V3 crash states, rollback detection, and compatibility of the one-fsync path.
 #![cfg(target_os = "linux")]
-use database_engine::{CheckpointStore, Store, StoreRecoveryLimits};
+use database_engine::{CheckpointStore, RecoveryOpenFailure, Store, StoreRecoveryLimits};
 use rustix::fs::{XattrFlags, getxattr, removexattr, setxattr};
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -489,7 +489,26 @@ fn replay_key_limit_does_not_advance_witness_for_unacknowledged_tail() {
     assert_eq!(marker(dir.path()), first_boundary);
     assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
     assert_eq!(fs::read(dir.path().join("commit.state")).unwrap(), anchor);
-    let reopened = recovery(2).unwrap();
+    let open_scan = |budget| {
+        Store::open_with_recovery_scan_limit_detailed(
+            dir.path(),
+            StoreRecoveryLimits {
+                max_recovery_operations: Some(2),
+                ..Default::default()
+            },
+            budget,
+        )
+    };
+    let bytes = log.len() as u64;
+    assert!(matches!(
+        open_scan(2 * bytes - 1), Err(RecoveryOpenFailure::NotAdopted(error))
+            if error.kind() == io::ErrorKind::InvalidInput
+                && error.to_string() == "full recovery log scan byte limit exceeded"
+    ));
+    assert_eq!(marker(dir.path()), first_boundary);
+    assert_eq!(fs::read(dir.path().join("records.log")).unwrap(), log);
+    assert_eq!(fs::read(dir.path().join("commit.state")).unwrap(), anchor);
+    let reopened = open_scan(2 * bytes).unwrap();
     assert_eq!(
         reopened.get(b"first").unwrap().as_deref(),
         Some(&b"one"[..])
@@ -499,6 +518,11 @@ fn replay_key_limit_does_not_advance_witness_for_unacknowledged_tail() {
         Some(&b"two"[..])
     );
     assert_ne!(marker(dir.path()), first_boundary);
+    drop(reopened);
+    assert_eq!(
+        open_scan(bytes).unwrap().get(b"second").unwrap().unwrap(),
+        b"two"
+    );
 }
 
 #[test]

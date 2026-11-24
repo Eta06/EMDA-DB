@@ -189,6 +189,17 @@ maintenance operations remain separate.
   encoded input. The mutation ceiling is checked only during open and
   must be supplied again at restart. The optional log and live-key
   limits continue to apply to subsequent writes.
+- `Store::open_with_recovery_scan_limit_detailed` adds an inclusive
+  ceiling on logical full-log scan bytes. A legacy or acknowledged log
+  requires one pass. With a pending tail, reserve two complete passes
+  because adoption confirms the exact replayed bytes before changing the
+  witness. Admission runs under the store lock after checking the log
+  identity and reading the witness. Over-budget recovery fails before
+  replay with `NotAdopted(InvalidInput)`, which can precede discovery
+  of corrupt records. All admitted opens retain complete verification.
+  Initialization can create the store before admission. Separate identity
+  and witness reads, physical retries, later operations and total memory
+  are outside this per-open ceiling.
 - `Store::open_with_recovery_limits_detailed` distinguishes failures before
   any tail witness update (`NotAdopted`), during the witness write or its
   required synchronization (`TailAdoptionOutcomeUnknown`), and after that

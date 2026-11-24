@@ -241,6 +241,7 @@ impl Log {
             path,
             may_initialize,
             StoreRecoveryLimits::default(),
+            None,
             || Ok(()),
             None,
         )
@@ -250,13 +251,14 @@ impl Log {
         path: &Path,
         may_initialize: bool,
         limits: StoreRecoveryLimits,
+        max_log_scan_bytes: Option<u64>,
         before_adoption: impl FnOnce() -> io::Result<()>,
         adoption_tracker: Option<&crate::publication_outcome::TailAdoptionTracker>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>)> {
         Self::open_configured(
             path,
             may_initialize,
-            limits,
+            (limits, max_log_scan_bytes),
             None,
             (|_| Ok(()), before_adoption, adoption_tracker),
         )
@@ -273,11 +275,14 @@ impl Log {
         Self::open_configured(
             path,
             may_initialize,
-            StoreRecoveryLimits {
-                max_live_keys,
-                max_log_bytes,
-                ..Default::default()
-            },
+            (
+                StoreRecoveryLimits {
+                    max_live_keys,
+                    max_log_bytes,
+                    ..Default::default()
+                },
+                None,
+            ),
             Some((checkpoint, trusted_digest)),
             (|_| Ok(()), || Ok(()), None),
         )
@@ -292,7 +297,7 @@ impl Log {
         Self::open_configured(
             path,
             may_initialize,
-            StoreRecoveryLimits::default(),
+            (StoreRecoveryLimits::default(), None),
             None,
             (hook, || Ok(()), None),
         )
@@ -301,7 +306,7 @@ impl Log {
     fn open_configured(
         path: &Path,
         may_initialize: bool,
-        limits: StoreRecoveryLimits,
+        (limits, max_log_scan_bytes): (StoreRecoveryLimits, Option<u64>),
         checkpoint: Option<(&Path, &[u8; 32])>,
         (mut initialization_hook, before_adoption, adoption_tracker): (
             impl FnMut(InitializationPoint) -> io::Result<()>,
@@ -407,8 +412,15 @@ impl Log {
             }
         };
         let file: Box<dyn LogIo> = Box::new(file);
-        let (mut log, index, validated_end) =
-            Self::from_parts(file, id, witness, boundary, metadata, limits, checkpoint)?;
+        let (mut log, index, validated_end) = Self::from_parts(
+            file,
+            id,
+            witness,
+            boundary,
+            metadata,
+            (limits, max_log_scan_bytes),
+            checkpoint,
+        )?;
         log.anchor = anchor;
         log.adopt_replayed_tail(boundary, validated_end, before_adoption, adoption_tracker)?;
         Ok((log, index))
@@ -515,7 +527,7 @@ impl Log {
             None,
             None,
             metadata,
-            StoreRecoveryLimits::default(),
+            (StoreRecoveryLimits::default(), None),
             None,
         )
         .map(|(log, index, _)| (log, index))
@@ -527,7 +539,7 @@ impl Log {
         witness: Option<Witness>,
         boundary: Option<u64>,
         metadata: bool,
-        limits: StoreRecoveryLimits,
+        (limits, max_log_scan_bytes): (StoreRecoveryLimits, Option<u64>),
         checkpoint: Option<(&Path, &[u8; 32])>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>, ReplayedEnd)> {
         let log = Self {
@@ -562,6 +574,24 @@ impl Log {
         };
         let mut peak = start.as_ref().map_or(0, |checkpoint| checkpoint.peak);
         let validated_end = log.file.len()?;
+        if let Some(limit) = max_log_scan_bytes {
+            // Pending-tail adoption confirms the entire replayed log on the
+            // same descriptor before updating its witness.
+            let confirmation = if boundary.is_some_and(|end| end < validated_end) {
+                validated_end
+            } else {
+                0
+            };
+            if validated_end
+                .checked_add(confirmation)
+                .is_none_or(|bytes| bytes > limit)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "full recovery log scan byte limit exceeded",
+                ));
+            }
+        }
         let (index, replayed_end) =
             log.recover_from(validated_end, boundary, limits, start, &mut peak)?;
         Ok((log, index, replayed_end))

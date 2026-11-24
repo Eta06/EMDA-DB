@@ -255,7 +255,7 @@ impl Store {
         path: impl AsRef<Path>,
         limits: StoreRecoveryLimits,
     ) -> io::Result<Self> {
-        Self::open_with_recovery_checks_tracked(path.as_ref(), limits, || Ok(()), None)
+        Self::open_with_recovery_checks_tracked(path.as_ref(), limits, None, || Ok(()), None)
     }
 
     /// Opens with the same limits as [`Self::open_with_recovery_limits`] and
@@ -265,7 +265,35 @@ impl Store {
         limits: StoreRecoveryLimits,
     ) -> Result<Self, RecoveryOpenFailure> {
         track_recovery_open(|tracker| {
-            Self::open_with_recovery_checks_tracked(path.as_ref(), limits, || Ok(()), Some(tracker))
+            Self::open_with_recovery_checks_tracked(
+                path.as_ref(),
+                limits,
+                None,
+                || Ok(()),
+                Some(tracker),
+            )
+        })
+    }
+
+    /// Opens with an inclusive ceiling on logical full-log scan bytes.
+    /// A pending tail requires a second full-log scan before adoption. The
+    /// budget is checked under the store lock before replay, after reading
+    /// log identity and witness metadata. Initialization may create files.
+    /// Identity and witness reads, physical retries and reads after open
+    /// are outside the ceiling. Reapply it at every open.
+    pub fn open_with_recovery_scan_limit_detailed(
+        path: impl AsRef<Path>,
+        limits: StoreRecoveryLimits,
+        max_log_scan_bytes: u64,
+    ) -> Result<Self, RecoveryOpenFailure> {
+        track_recovery_open(|tracker| {
+            Self::open_with_recovery_checks_tracked(
+                path.as_ref(),
+                limits,
+                Some(max_log_scan_bytes),
+                || Ok(()),
+                Some(tracker),
+            )
         })
     }
 
@@ -286,6 +314,7 @@ impl Store {
                 max_live_key_bytes,
                 ..Default::default()
             },
+            None,
             check,
             None,
         )
@@ -294,12 +323,20 @@ impl Store {
     pub(crate) fn open_with_recovery_checks_tracked(
         path: &Path,
         limits: StoreRecoveryLimits,
+        max_log_scan_bytes: Option<u64>,
         check: impl Fn() -> io::Result<()>,
         adoption_tracker: Option<&TailAdoptionTracker>,
     ) -> io::Result<Self> {
         let store = Self::open_using(path, |path, initialize| {
             check()?;
-            Log::open_with_recovery_limit_checked(path, initialize, limits, check, adoption_tracker)
+            Log::open_with_recovery_limit_checked(
+                path,
+                initialize,
+                limits,
+                max_log_scan_bytes,
+                check,
+                adoption_tracker,
+            )
         })?;
         Self::set_open_limits(
             store,

@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Admit ordinary recovery against a logical scan byte limit that includes
+  the additional full-log verification required for pending-tail adoption.
+
 - Report independent authority fence and file removal outcomes for
   authorized retained-generation reclamation.
 

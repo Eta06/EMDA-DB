@@ -66,12 +66,14 @@ def run(binary, parent, format_name, rebuild, fault=None):
         attempt = ("attempt-recovery-open", root, rebuild) if recovery_open else (
             "attempt-rebuild-publication", root, operation, rebuild)
         scan_cap = None
-        if fault is None and rebuild in ("managed-checkpoint-open", "explicit-checkpoint-open"):
-            scan_cap = 2 * len(current_log) - prefix
+        full_log = rebuild == "full-log-open"
+        scan_kind = "full" if full_log else "checkpoint"
+        if fault is None and recovery_open:
+            scan_cap = 2 * len(current_log) - (0 if full_log else prefix)
             rejected = probe(*command, binary, *attempt, str(scan_cap - 1))
             assert rejected == {"status": "error", "classification": "not_adopted",
                                 "kind": "InvalidInput",
-                                "message": "checkpoint recovery log scan byte limit exceeded"}, rejected
+                                "message": f"{scan_kind} recovery log scan byte limit exceeded"}, rejected
             rejected_reads = log_read_requests(trace.read_text().splitlines(), log)
             assert sum(rejected_reads) == 8 + 28, rejected_reads
             assert log.read_bytes() == current_log and read_boundary() == boundary
@@ -84,11 +86,11 @@ def run(binary, parent, format_name, rebuild, fault=None):
             assert outcome["status"] == "success", outcome
             if scan_cap is not None:
                 requests = log_read_requests(lines, log)
-                # Two identity opens and the probe's final point read are
-                # outside the byte ceiling asserted by checkpoint recovery.
-                assert sum(requests) == scan_cap + 2 * (8 + 28) + len(b"acknowledged-tail"), requests
+                identity_opens = 1 if full_log else 2
+                # Identity opens and the probe's final point read are outside the scan ceiling.
+                assert sum(requests) == scan_cap + identity_opens * (8 + 28) + len(b"acknowledged-tail"), requests
                 print(json.dumps(dict(rebuild=rebuild, format=format_name,
-                                      point="checkpoint recovery log scan limit", scan_bytes=scan_cap,
+                                      point=f"{scan_kind} recovery log scan limit", scan_bytes=scan_cap,
                                       rejected_request_bytes=rejected_reads, request_bytes=requests)), flush=True)
             if rebuild in ("full-bounded", "suffix-bounded"):
                 requests = log_read_requests(lines, log)

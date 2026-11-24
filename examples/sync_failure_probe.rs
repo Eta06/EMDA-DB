@@ -339,14 +339,17 @@ fn attempt_recovery_open(
         max_log_scan_bytes,
     };
     let result = match mode {
-        "full-log-open" => Store::open_with_recovery_limits_detailed(
-            source,
-            StoreRecoveryLimits {
+        "full-log-open" => {
+            let limits = StoreRecoveryLimits {
                 max_recovery_operations: Some(16),
                 ..Default::default()
-            },
-        )
-        .map(|store| store.get(b"tail")),
+            };
+            match max_log_scan_bytes {
+                Some(limit) => Store::open_with_recovery_scan_limit_detailed(source, limits, limit),
+                None => Store::open_with_recovery_limits_detailed(source, limits),
+            }
+            .map(|store| store.get(b"tail"))
+        }
         "managed-checkpoint-open" => {
             CheckpointStore::open_managed_with_recovery_limits(source, Default::default(), limits)
                 .map(|store| store.get(b"tail"))

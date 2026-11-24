@@ -53,7 +53,7 @@ fn replayed_tail_adoption_rejects_changes_after_validation() {
             Some(witness),
             Some(boundary),
             metadata,
-            StoreRecoveryLimits::default(),
+            (StoreRecoveryLimits::default(), None),
             checkpoint,
         )
         .unwrap();
@@ -1325,7 +1325,7 @@ fn v2_exact_tail_adoption_sync_failures_do_not_report_open_success() {
                 Some(witness),
                 Some(boundary),
                 metadata,
-                StoreRecoveryLimits::default(),
+                (StoreRecoveryLimits::default(), None),
                 None,
             )?;
             assert_eq!(end.length, original_log.len() as u64);
